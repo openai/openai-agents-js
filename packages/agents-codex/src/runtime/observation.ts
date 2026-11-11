@@ -222,6 +222,7 @@ function projectObservation(
           ? new ToolOutput(
               structuredClone(event.output.contentItems),
               event.output.success,
+              event.output.applicationData,
             )
           : null,
     });

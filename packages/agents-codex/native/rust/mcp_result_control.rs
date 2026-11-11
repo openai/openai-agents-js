@@ -122,7 +122,10 @@ pub(crate) fn validated(reply: &str) -> Option<CallToolResult> {
 
 #[derive(Debug)]
 enum AcceptedReply {
-    Result(CallToolResult),
+    Result {
+        edited: CallToolResult,
+        assignment: Option<oneshot::Sender<()>>,
+    },
     Metadata(Result<serde_json::Map<String, Value>, ()>),
 }
 
@@ -761,6 +764,29 @@ impl McpResultControl {
     // No error strings derived from a reply cross the bridge. Return false on
     // invalid or expired replies, withhold if the original owner is still live.
     pub fn resolve(&self, nonce: u64, turn_id: &str, call_id: &str, reply: &str) -> bool {
+        self.resolve_reply(nonce, turn_id, call_id, reply, None)
+    }
+
+    pub fn resolve_with_assignment(
+        &self,
+        nonce: u64,
+        turn_id: &str,
+        call_id: &str,
+        reply: &str,
+    ) -> Option<oneshot::Receiver<()>> {
+        let (assignment, receiver) = oneshot::channel();
+        self.resolve_reply(nonce, turn_id, call_id, reply, Some(assignment))
+            .then_some(receiver)
+    }
+
+    fn resolve_reply(
+        &self,
+        nonce: u64,
+        turn_id: &str,
+        call_id: &str,
+        reply: &str,
+        assignment: Option<oneshot::Sender<()>>,
+    ) -> bool {
         let mut state = self.state.lock().expect("MCP result control poisoned");
         if state.revoked
             || !state.pending.get(&nonce).is_some_and(|p| {
@@ -778,7 +804,7 @@ impl McpResultControl {
         let edited = if metadata {
             validated_metadata(reply).map(AcceptedReply::Metadata)
         } else {
-            validated(reply).map(AcceptedReply::Result)
+            validated(reply).map(|edited| AcceptedReply::Result { edited, assignment })
         };
         let edited = edited.filter(|_| Instant::now() < deadline);
         let Some(edited) = edited else {
@@ -797,6 +823,7 @@ struct Reservation<'a> {
     control: Arc<McpResultControl>,
     nonce: u64,
     turn_id: &'a str,
+    assigned: bool,
 }
 
 impl Reservation<'_> {
@@ -808,7 +835,7 @@ impl Reservation<'_> {
             .state
             .lock()
             .expect("MCP result control poisoned");
-        if state.revoked {
+        if self.assigned || state.revoked {
             return false;
         }
         let Some(results) = state.unresolved.get_mut(self.turn_id) else {
@@ -824,33 +851,44 @@ impl Reservation<'_> {
 
     fn assign_result(
         &mut self,
+        thread_store: &ExtensionData,
+        turn_store: &ExtensionData,
         result: &mut CallToolResult,
         mut edited: CallToolResult,
         peer_failed: bool,
+        assignment: Option<oneshot::Sender<()>>,
     ) {
-        let mut state = self
-            .control
-            .state
-            .lock()
-            .expect("MCP result control poisoned");
-        if !state.revoked
-            && state
-                .unresolved
-                .get(self.turn_id)
-                .is_some_and(|entry| self.nonce >= entry.first_nonce && entry.count > 0)
-        {
-            // A successful send is insufficient: a cancelled receiver might
-            // never apply it. Discharge only at raw assignment.
-            if peer_failed {
-                edited.is_error = Some(true);
-            }
-            *result = edited;
-            if let Some(results) = state.unresolved.get_mut(self.turn_id) {
-                results.count -= 1;
-                if results.count == 0 {
-                    state.unresolved.remove(self.turn_id);
+        crate::native_interception::publish_mcp_result(thread_store, turn_store, || {
+            let mut state = self
+                .control
+                .state
+                .lock()
+                .expect("MCP result control poisoned");
+            if !state.revoked
+                && state
+                    .unresolved
+                    .get(self.turn_id)
+                    .is_some_and(|entry| self.nonce >= entry.first_nonce && entry.count > 0)
+            {
+                // A successful send is insufficient: a cancelled receiver might
+                // never apply it. Discharge only at raw assignment.
+                if peer_failed {
+                    edited.is_error = Some(true);
+                }
+                *result = edited;
+                self.assigned = true;
+                if let Some(results) = state.unresolved.get_mut(self.turn_id) {
+                    results.count -= 1;
+                    if results.count == 0 {
+                        state.unresolved.remove(self.turn_id);
+                    }
                 }
             }
+        });
+        if self.assigned
+            && let Some(assignment) = assignment
+        {
+            let _ = assignment.send(());
         }
     }
 }
@@ -1063,6 +1101,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                 control,
                 nonce,
                 turn_id: input.turn_id,
+                assigned: false,
             };
             let Some(rx) = rx else {
                 crate::native_interception::expire_mcp_result(
@@ -1223,6 +1262,7 @@ impl ToolLifecycleContributor for McpResultContributor {
                 control,
                 nonce,
                 turn_id: input.turn_id,
+                assigned: false,
             };
             let Some(rx) = rx else {
                 crate::native_interception::expire_mcp_result(
@@ -1232,10 +1272,17 @@ impl ToolLifecycleContributor for McpResultContributor {
                 );
                 return;
             };
-            if let Ok(Ok(Some(AcceptedReply::Result(edited)))) =
+            if let Ok(Ok(Some(AcceptedReply::Result { edited, assignment }))) =
                 tokio::time::timeout_at(deadline, rx).await
             {
-                reservation.assign_result(input.result, edited, peer_failed);
+                reservation.assign_result(
+                    input.thread_store,
+                    input.turn_store,
+                    input.result,
+                    edited,
+                    peer_failed,
+                    assignment,
+                );
             } else {
                 crate::native_interception::expire_mcp_result(
                     input.thread_store,
@@ -1318,6 +1365,7 @@ mod tests {
             control: control.clone(),
             nonce: 1,
             turn_id: "same",
+            assigned: false,
         };
         control.state.lock().unwrap().unresolved.insert(
             "same".into(),
@@ -1331,7 +1379,9 @@ mod tests {
         let mut raw = withheld();
         let mut edited = withheld();
         edited.content = vec![json!({"type":"text","text":"stale edit"})];
-        old.assign_result(&mut raw, edited, false);
+        let thread = ExtensionData::new("root");
+        let turn = ExtensionData::new("same");
+        old.assign_result(&thread, &turn, &mut raw, edited, false, None);
         assert_eq!(raw.content, withheld().content);
         drop(old);
         let state = control.state.lock().unwrap();
@@ -1351,6 +1401,7 @@ mod tests {
                 control: control.clone(),
                 nonce: 1,
                 turn_id: "old",
+                assigned: false,
             };
             {
                 let mut state = control.state.lock().unwrap();
@@ -1384,6 +1435,7 @@ mod tests {
             control: control.clone(),
             nonce: 1,
             turn_id: "old",
+            assigned: false,
         };
         assert!(!reservation.claim_rejection());
         {
@@ -1602,6 +1654,71 @@ mod tests {
             realtime_tool_name: None,
             arguments,
             result: Some(result),
+        }
+    }
+
+    #[tokio::test]
+    async fn application_assignment_ack_requires_final_native_publication() {
+        for stopped in [true, false] {
+            let thread = ExtensionData::new("root");
+            let turn = ExtensionData::new("turn");
+            let stop = crate::native_interception::test_mcp_result_owner(&thread, &turn, !stopped);
+            let control = Arc::new(McpResultControl::new("root".into(), true));
+            let args = json!({});
+            let original = withheld();
+            let request = notice(1, "turn", &args, &original);
+            control.state.lock().unwrap().unresolved.insert(
+                "turn".into(),
+                TurnResults {
+                    first_nonce: 1,
+                    count: 1,
+                    ..Default::default()
+                },
+            );
+            let receiver = control
+                .enqueue(
+                    &mut control.state.lock().unwrap(),
+                    &request,
+                    Instant::now() + Duration::from_secs(30),
+                )
+                .unwrap();
+            assert!(control.next().await.is_some());
+            assert!(control.handoff(1));
+            let ack = control
+                .resolve_with_assignment(
+                    1,
+                    "turn",
+                    request.call_id,
+                    r#"{"content":[{"type":"text","text":"accepted"}]}"#,
+                )
+                .unwrap();
+            if stopped {
+                stop();
+            }
+            let AcceptedReply::Result { edited, assignment } = receiver.await.unwrap().unwrap()
+            else {
+                panic!("result receipt expected");
+            };
+            let mut output = withheld();
+            let mut reservation = Reservation {
+                control: control.clone(),
+                nonce: 1,
+                turn_id: "turn",
+                assigned: false,
+            };
+            reservation.assign_result(&thread, &turn, &mut output, edited, false, assignment);
+            assert_eq!(ack.await.is_ok(), !stopped);
+            assert_eq!(reservation.assigned, !stopped);
+            if stopped {
+                assert_eq!(output, withheld());
+            } else {
+                assert_eq!(
+                    output.content,
+                    vec![json!({"type":"text","text":"accepted"})]
+                );
+            }
+            drop(reservation);
+            assert!(control.release(1));
         }
     }
 
@@ -1895,6 +2012,7 @@ mod tests {
             control: control.clone(),
             nonce: 1,
             turn_id: "old",
+            assigned: false,
         };
         assert!(control.next().await.is_some());
         assert!(control.handoff(1));
@@ -1950,11 +2068,13 @@ mod tests {
             control: control.clone(),
             nonce: 1,
             turn_id: "old-turn",
+            assigned: false,
         };
         let mut new = Reservation {
             control: control.clone(),
             nonce: 2,
             turn_id: "new-turn",
+            assigned: false,
         };
         assert!(!control.resolve(1, "old-turn", "old-call", "null"));
         assert!(control.fail_pending(1, "old-turn", "old-call"));
@@ -1966,11 +2086,15 @@ mod tests {
             "new-call",
             r#"{"content":[{"type":"text","text":"safe edited result"}],"isError":false}"#,
         ));
-        let AcceptedReply::Result(edited) = new_receiver.await.unwrap().unwrap() else {
+        let AcceptedReply::Result { edited, assignment } = new_receiver.await.unwrap().unwrap()
+        else {
             panic!("expected result reply")
         };
         let mut raw_result = withheld();
-        new.assign_result(&mut raw_result, edited, false);
+        let thread = ExtensionData::new("root");
+        let turn = ExtensionData::new("new-turn");
+        let _stop = crate::native_interception::test_mcp_result_owner(&thread, &turn, false);
+        new.assign_result(&thread, &turn, &mut raw_result, edited, false, assignment);
         assert_eq!(
             raw_result.content,
             vec![json!({"type": "text", "text": "safe edited result"})]
