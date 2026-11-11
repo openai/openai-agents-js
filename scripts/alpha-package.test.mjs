@@ -48,7 +48,7 @@ test('stages a matched alpha dependency graph without changing source manifests'
   assert.deepEqual(result.os, ['linux']);
   assert.deepEqual(result.cpu, ['x64']);
   assert.deepEqual(result.libc, ['glibc']);
-  assert.equal(result.engines.node, '>=24');
+  assert.equal(result.engines.node, '>=22');
   assert.deepEqual(alphaManifest(source, version, 'linux-arm64'), {
     ...result,
     cpu: ['arm64'],

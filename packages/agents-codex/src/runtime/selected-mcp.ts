@@ -1,3 +1,4 @@
+import { projectMcpToolNames } from './mcp';
 import type {
   MCPToolStartObservation,
   MCPToolEndObservation,
@@ -46,6 +47,9 @@ export interface SelectMcpToolsOptions<Context = unknown> {
 }
 
 const invalidProviderNameCharacter = /[^A-Za-z0-9_-]/;
+const maxDiscoveredTools = 16_384;
+const maxDiscoveredNameBytes = 4_096;
+const maxDiscoveredNameBudget = 1_048_576;
 
 function freezeJson<T extends JsonValue>(value: T): T {
   if (value !== null && typeof value === 'object') {
@@ -145,11 +149,13 @@ function outputOfMcp(
 
 /**
  * Authenticate and materialize one selected namespace for a future Session.
- * The namespace and selected tool names must use only ASCII letters, digits,
- * underscores, and hyphens. The namespace `tool_search` is reserved. Each
- * namespace and tool name pair must fit in 128 bytes including two separator
- * bytes. Admitted names are used exactly as supplied.
+ * Native projected names for model-facing tools; each returned tool's `ref`
+ * for native selection. Original peer names for `toolNames` and borrowed
+ * dispatch. Namespace characters: ASCII letters, digits, underscores, and
+ * hyphens; namespace `tool_search` reserved.
  * Call again for refresh; existing snapshots and Sessions remain unchanged.
+ * Discovery limits before filtering: 16,384 tools, 4,096 UTF-8 bytes per tool
+ * name, and 1 MiB of tool-name bytes in total.
  * The caller owns connect/close and must serialize unsafe reauthentication of
  * a shared mutable client, or use separate clients for different auth scopes.
  * Cancellation joins entered discovery; it never closes the borrowed server.
@@ -240,11 +246,13 @@ export async function selectMcpTools<Context = unknown>(
   check();
   await invalidate();
   check();
-  const discovered = structuredClone(await list());
+  const listed = await list();
   check();
+  if (listed.length > maxDiscoveredTools)
+    throw new TypeError('MCP discovery exceeds the 16384-tool limit');
   const names = new Set<string>();
-  const tools: FunctionTool<Context>[] = [];
-  for (const declaration of discovered) {
+  let nameBudget = 0;
+  for (const declaration of listed) {
     if (
       typeof declaration.name !== 'string' ||
       !declaration.name ||
@@ -253,7 +261,21 @@ export async function selectMcpTools<Context = unknown>(
       throw new TypeError(
         'MCP discovery must contain unique nonempty tool names',
       );
+    const nameBytes = Buffer.byteLength(declaration.name, 'utf8');
+    if (nameBytes > maxDiscoveredNameBytes)
+      throw new TypeError(
+        'MCP discovery exceeds the 4096-byte tool name limit',
+      );
+    nameBudget += nameBytes;
+    if (nameBudget > maxDiscoveredNameBudget)
+      throw new TypeError('MCP discovery exceeds the 1048576-byte name budget');
     names.add(declaration.name);
+  }
+  const discovered = structuredClone(listed);
+  const projected = projectMcpToolNames([{ name, tools: [...names] }], false);
+  const selectedRawNames = new Set<string>();
+  const tools: FunctionTool<Context>[] = [];
+  for (const declaration of discovered) {
     if (
       (allowed.length && !allowed.includes(declaration.name)) ||
       blocked.includes(declaration.name)
@@ -269,13 +291,7 @@ export async function selectMcpTools<Context = unknown>(
     }
     if (requested && !requested.includes(declaration.name)) continue;
     const rawName = declaration.name;
-    if (invalidProviderNameCharacter.test(rawName))
-      throw new TypeError(
-        'Selected MCP tool name must use only ASCII letters, digits, underscores, and hyphens',
-      );
-    // Both names are ASCII, so their string lengths are byte lengths.
-    if (name.length + rawName.length + 2 > 128)
-      throw new TypeError('Selected MCP tool identity exceeds 128 bytes');
+    const model = projected.get(JSON.stringify([name, rawName]))!;
     const schema = jsonObject.parse(declaration.inputSchema);
     if (
       schema.type !== 'object' ||
@@ -286,10 +302,11 @@ export async function selectMcpTools<Context = unknown>(
         'MCP declarations require an object input schema and optional string description',
       );
     const parameters = freezeJson(jsonValue.parse(schema));
+    selectedRawNames.add(rawName);
     tools.push(
       createNamespacedFunctionTool<Context>({
-        namespace: capturedNamespace,
-        name: rawName,
+        namespace: { ...capturedNamespace, name: model.namespace },
+        name: model.name,
         description: declaration.description ?? '',
         parameters,
         async execute(args, callContext, admit) {
@@ -327,10 +344,7 @@ export async function selectMcpTools<Context = unknown>(
       }),
     );
   }
-  if (
-    requested &&
-    requested.some((name) => !tools.some((tool) => tool.name === name))
-  )
+  if (requested && requested.some((name) => !selectedRawNames.has(name)))
     throw new TypeError(
       'Requested MCP tools were not discovered or were filtered out',
     );

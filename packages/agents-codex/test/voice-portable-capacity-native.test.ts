@@ -11,7 +11,10 @@ const sessions: PortableVoiceSession[] = [];
 afterEach(async () => {
   await Promise.all(sessions.splice(0).map((session) => session.close()));
 });
-async function fixture(active?: 'default' | 'detached') {
+async function fixture(
+  active?: 'default' | 'detached' | 'both',
+  clearAudio = false,
+) {
   const frames: any[] = [];
   const observed: any[] = [];
   const errors: Error[] = [];
@@ -30,6 +33,7 @@ async function fixture(active?: 'default' | 'detached') {
       ),
     ),
     {
+      ...(clearAudio ? { clearOutputAudioOnInterrupt: true } : {}),
       send(frame) {
         const event = JSON.parse(frame);
         frames.push(event);
@@ -47,9 +51,19 @@ async function fixture(active?: 'default' | 'detached') {
               ? 'active-😀-"\\'
               : `complete-${responseCount}`;
           queueMicrotask(() => {
-            const response = { ...event.response, id };
+            const response = {
+              ...event.response,
+              ...(event.response?.conversation === 'none'
+                ? { conversation_id: null }
+                : {}),
+              id,
+            };
             session.receive({ type: 'response.created', response });
-            if (!(responseCount === 1 && active))
+            if (!(
+              active &&
+              (responseCount === 1 ||
+                (active === 'both' && responseCount === 2))
+            ))
               session.receive({
                 type: 'response.done',
                 response: { ...response, status: 'completed', output: [] },
@@ -596,4 +610,166 @@ describe.skipIf(!enabled)('raw JSON voice admission', () => {
     expect(() => boundedVoiceJSON(value)).toThrow(RangeError);
     expect(laterReads).toBe(0);
   });
+});
+
+describe.runIf(enabled)('WebRTC native interruption packets', () => {
+  it('clears the selected current default response', async () => {
+    const f = await fixture('default', true);
+    f.session.cancel('active-😀-"\\');
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'output_audio_buffer.clear'),
+      ).toHaveLength(1),
+    );
+    expect(
+      f.frames
+        .filter((event) =>
+          ['response.cancel', 'output_audio_buffer.clear'].includes(event.type),
+        )
+        .map((event) => event.type),
+    ).toEqual(['response.cancel', 'output_audio_buffer.clear']);
+    expect(f.errors).toEqual([]);
+  });
+  it('clears again when an interrupted default response becomes identifiable', async () => {
+    const f = await fixture(undefined, true);
+    f.session.createResponse();
+    f.session.cancel();
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'response.cancel'),
+      ).toHaveLength(1),
+    );
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'output_audio_buffer.clear'),
+      ).toHaveLength(2),
+    );
+    expect(f.errors).toEqual([]);
+  });
+  it.each([undefined, 'default'] as const)(
+    'clears output audio after cancellation with active=%s',
+    async (active) => {
+      const f = await fixture(active, true);
+      f.session.cancel();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter(
+            (event) => event.type === 'output_audio_buffer.clear',
+          ),
+        ).toHaveLength(1),
+      );
+      expect(
+        f.frames
+          .filter((event) =>
+            ['response.cancel', 'output_audio_buffer.clear'].includes(
+              event.type,
+            ),
+          )
+          .map((event) => event.type),
+      ).toEqual(
+        active
+          ? ['response.cancel', 'output_audio_buffer.clear']
+          : ['output_audio_buffer.clear'],
+      );
+      expect(f.errors).toEqual([]);
+    },
+  );
+  it('keeps default playback when cancelling a detached response', async () => {
+    const f = await fixture('both', true);
+    f.session.createResponse({ conversation: 'none' });
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'response.create'),
+      ).toHaveLength(2),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.errors).toEqual([]);
+    f.session.cancel('complete-2');
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'response.cancel'),
+      ).toHaveLength(1),
+    );
+    expect(
+      f.frames.some((event) => event.type === 'output_audio_buffer.clear'),
+    ).toBe(false);
+    f.session.cancel();
+    await vi.waitFor(() =>
+      expect(
+        f.frames.filter((event) => event.type === 'output_audio_buffer.clear'),
+      ).toHaveLength(1),
+    );
+    expect(
+      f.frames
+        .filter((event) => event.type === 'response.cancel')
+        .map((event) => event.response_id),
+    ).toEqual(['complete-2', 'active-😀-"\\']);
+    expect(f.errors).toEqual([]);
+  });
+  it.each(['count', 'bytes'] as const)(
+    'rejects the entire cancel/clear pair before mutation at the %s boundary',
+    async (boundary) => {
+      const f = await fixture('default', true);
+      let count;
+      if (boundary === 'count') {
+        count = 255;
+        for (let i = 0; i < count; i++) f.session.sendAudio('AAAA');
+      } else {
+        const cancel = {
+          type: 'response.cancel',
+          response_id: 'active-😀-"\\',
+          event_id: 'cancel_1',
+        };
+        const clear = { type: 'output_audio_buffer.clear' };
+        const leave =
+          Math.max(
+            boundedVoiceJSON(cancel, 4096).length,
+            boundedVoiceJSON(clear, 4096).length,
+          ) *
+            2 +
+          8;
+        count = fill(f.session, boundary, leave);
+      }
+      expect(() => f.session.cancel()).toThrow(RangeError);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+      f.release();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter(
+            (event) => event.type === 'input_audio_buffer.append',
+          ),
+        ).toHaveLength(count),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      f.session.cancel();
+      await vi.waitFor(() =>
+        expect(
+          f.frames.filter(
+            (event) => event.type === 'output_audio_buffer.clear',
+          ),
+        ).toHaveLength(1),
+      );
+      expect(
+        f.frames.filter((event) => event.type === 'response.cancel'),
+      ).toHaveLength(1);
+      expect(f.errors).toEqual([]);
+      expect(f.closed()).toBe(0);
+    },
+  );
+  it.each([undefined, 'default'] as const)(
+    'keeps WebSocket output free of WebRTC clear packets with active=%s',
+    async (active) => {
+      const f = await fixture(active);
+      f.session.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(
+        f.frames.some((event) => event.type === 'output_audio_buffer.clear'),
+      ).toBe(false);
+      expect(
+        f.frames.filter((event) => event.type === 'response.cancel'),
+      ).toHaveLength(active ? 1 : 0);
+      expect(f.errors).toEqual([]);
+    },
+  );
 });

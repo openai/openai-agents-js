@@ -107,9 +107,118 @@ export function captureModelResponse(response: ModelResponse): JsonObject {
     usage,
   }) as JsonObject;
 }
-/** Provider cache affinity for a borrowed model adapter; native key on omission. */
+/** HTTP options for one borrowed OpenAI client request; native cancellation is retained. */
+export interface ModelRequestOptions {
+  /** null removes a header inherited from the client. */
+  readonly headers?: Readonly<Record<string, string | null>>;
+  readonly query?: Readonly<JsonObject>;
+  /** Per HTTP attempt, excluding the client's retry backoff. */
+  readonly timeoutMs?: number;
+  readonly maxRetries?: number;
+}
+export type ModelRequestOptionsFactory = (
+  request: ModelRequest,
+) => ModelRequestOptions | undefined | Promise<ModelRequestOptions | undefined>;
+
+/** Captured cache affinity and HTTP options for a borrowed OpenAI adapter. */
 export interface ModelAdapterOptions {
   promptCacheKey?: string;
+  /** Captured once; a factory supplies a detached snapshot per native model request. */
+  requestOptions?: ModelRequestOptions | ModelRequestOptionsFactory;
+}
+
+type CapturedRequestOptions =
+  ModelRequestOptions | ModelRequestOptionsFactory | undefined;
+
+function captureRequestOptions(value: unknown): ModelRequestOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('requestOptions must be an HTTP options object');
+  if (
+    Object.keys(value).some(
+      (key) => !['headers', 'query', 'timeoutMs', 'maxRetries'].includes(key),
+    )
+  )
+    throw new TypeError('Unsupported model request option');
+  const options = copyJsonValue(
+    Object.fromEntries(
+      Object.entries(value).filter(([, item]) => item !== undefined),
+    ),
+  ) as JsonObject;
+  if (
+    options.headers !== undefined &&
+    (!options.headers ||
+      typeof options.headers !== 'object' ||
+      Array.isArray(options.headers) ||
+      Object.values(options.headers).some(
+        (item) => item !== null && typeof item !== 'string',
+      ))
+  )
+    throw new TypeError('requestOptions.headers must contain strings or null');
+  if (
+    options.query !== undefined &&
+    (!options.query ||
+      typeof options.query !== 'object' ||
+      Array.isArray(options.query))
+  )
+    throw new TypeError('requestOptions.query must be an object');
+  if (
+    options.timeoutMs !== undefined &&
+    (typeof options.timeoutMs !== 'number' || options.timeoutMs <= 0)
+  )
+    throw new TypeError('requestOptions.timeoutMs must be positive and finite');
+  if (
+    options.maxRetries !== undefined &&
+    (typeof options.maxRetries !== 'number' ||
+      !Number.isSafeInteger(options.maxRetries) ||
+      options.maxRetries < 0)
+  )
+    throw new TypeError(
+      'requestOptions.maxRetries must be a nonnegative integer',
+    );
+  return options as unknown as ModelRequestOptions;
+}
+
+function captureRequestOptionsSource(
+  options: ModelAdapterOptions,
+): CapturedRequestOptions {
+  const value = options.requestOptions;
+  return value === undefined || typeof value === 'function'
+    ? value
+    : captureRequestOptions(value);
+}
+
+async function clientRequestOptions(
+  source: CapturedRequestOptions,
+  request: ModelRequest,
+) {
+  request.signal.throwIfAborted();
+  const pending =
+    typeof source === 'function'
+      ? source(
+          Object.freeze({
+            ...request,
+            body: copyJsonValue(request.body) as JsonObject,
+          }),
+        )
+      : source;
+  const value =
+    pending &&
+    typeof (pending as Promise<ModelRequestOptions>).then === 'function'
+      ? await pending
+      : pending;
+  request.signal.throwIfAborted();
+  const selected = value === undefined ? {} : captureRequestOptions(value);
+  return {
+    ...(selected.headers === undefined ? {} : { headers: selected.headers }),
+    ...(selected.query === undefined ? {} : { query: selected.query }),
+    ...(selected.timeoutMs === undefined
+      ? {}
+      : { timeout: selected.timeoutMs }),
+    ...(selected.maxRetries === undefined
+      ? {}
+      : { maxRetries: selected.maxRetries }),
+    signal: request.signal,
+  };
 }
 
 function capturePromptCacheKey(
@@ -124,6 +233,7 @@ function capturePromptCacheKey(
 /** An injected async Chat Completions client; Core continues tools and conversation history. */
 export class ChatCompletionsModel implements NativeModel {
   readonly #promptCacheKey: string | undefined;
+  readonly #requestOptions: CapturedRequestOptions;
 
   constructor(
     readonly client: any,
@@ -131,6 +241,7 @@ export class ChatCompletionsModel implements NativeModel {
     options: ModelAdapterOptions = {},
   ) {
     this.#promptCacheKey = capturePromptCacheKey(options);
+    this.#requestOptions = captureRequestOptionsSource(options);
   }
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const messages: Record<string, unknown>[] = [];
@@ -367,7 +478,7 @@ export class ChatCompletionsModel implements NativeModel {
         stream: false,
         ...options,
       },
-      { signal: request.signal },
+      await clientRequestOptions(this.#requestOptions, request),
     );
     if (!Array.isArray(value.choices) || value.choices.length !== 1)
       throw new TypeError(
@@ -432,6 +543,7 @@ export class ChatCompletionsModel implements NativeModel {
 /** Borrow a Responses client; Core retains the turn, tool and history owners. */
 export class ResponsesModel implements NativeModel {
   readonly #promptCacheKey: string | undefined;
+  readonly #requestOptions: CapturedRequestOptions;
 
   constructor(
     readonly client: any,
@@ -439,6 +551,7 @@ export class ResponsesModel implements NativeModel {
     options: ModelAdapterOptions = {},
   ) {
     this.#promptCacheKey = capturePromptCacheKey(options);
+    this.#requestOptions = captureRequestOptionsSource(options);
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
@@ -453,7 +566,7 @@ export class ResponsesModel implements NativeModel {
             : {}),
           stream: false,
         },
-        { signal: request.signal },
+        await clientRequestOptions(this.#requestOptions, request),
       );
     } catch (error) {
       // Borrowed ESM clients can throw the other OpenAI module graph's class.

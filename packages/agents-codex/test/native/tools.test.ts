@@ -34,8 +34,12 @@ import {
 const unusedDecision: ToolContext['decide'] = () => {
   throw new Error('Unexpected decision call in synthetic tool context');
 };
+const unusedUsageReport: ToolContext['reportUsage'] = () => {
+  throw new Error('Unexpected usage report in synthetic tool context');
+};
 const context = {
   decide: unusedDecision,
+  reportUsage: unusedUsageReport,
   context: undefined,
   submission: {
     sessionId: 'root',

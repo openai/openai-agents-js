@@ -10,6 +10,7 @@ import {
   tool,
 } from '../src';
 import { ModelServer, message } from './native/fixtures/model-server';
+import type { Session as NativeSession } from '../src/runtime/session';
 
 type Frame = Record<string, any>;
 
@@ -824,4 +825,166 @@ nativeIt(
     }
   },
   30000,
+);
+
+nativeIt(
+  'rejects a stale explicit voice capture after an equal-schema public update',
+  async () => {
+    const originalEffect = vi.fn(() => 'original');
+    const replacementEffect = vi.fn(() => 'replacement');
+    const original = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: originalEffect,
+    });
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: replacementEffect,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [original],
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [original],
+        isToolEnabled: () => true,
+      });
+      const captured = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const nativeSession = session as unknown as NativeSession<
+        string,
+        unknown
+      >;
+      const select = nativeSession._realtimeFunctionTools.bind(nativeSession);
+      const selection = vi.spyOn(nativeSession, '_realtimeFunctionTools');
+      selection.mockImplementationOnce(async (...args) => {
+        const first = await select(...args);
+        captured.resolve();
+        await resume.promise;
+        return first;
+      });
+      try {
+        const updates = () =>
+          peer.frames.filter((frame) => frame.type === 'session.update').length;
+        const initialUpdates = updates();
+        const refreshing = session
+          .update({ instructions: 'Refresh the voice.' })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        await captured.promise;
+        const beforeReplacement = (session as unknown as { catalog: object })
+          .catalog;
+        const replacing = session.update({ tools: [replacement] }).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        await vi.waitFor(() =>
+          expect((session as unknown as { catalog: object }).catalog).not.toBe(
+            beforeReplacement,
+          ),
+        );
+        // Accepted replacement before the stale voice publication.
+        expect(updates()).toBe(initialUpdates);
+        resume.resolve();
+        const error = await refreshing;
+        expect(error).toBeInstanceOf(Error);
+        expect(String(error)).toMatch(/another captured catalog\/profile/);
+        await replacing;
+        expect(updates()).toBe(initialUpdates);
+        expect(originalEffect).not.toHaveBeenCalled();
+        expect(replacementEffect).not.toHaveBeenCalled();
+      } finally {
+        resume.resolve();
+        selection.mockRestore();
+        await voice.close();
+      }
+    } finally {
+      await ModelServer.closeAll();
+    }
+  },
+);
+
+nativeIt.each([false, true])(
+  'continues native Realtime after original-input recovery (approval=%s)',
+  async (managed) => {
+    const execute = vi.fn(() => 'unexpected');
+    const before = vi.fn(() => ({ action: 'allow' as const }));
+    const after = vi.fn((output) => output);
+    const approve = vi.fn(() => true);
+    const recover = vi.fn((_context, _error, original) => {
+      expect(original).toEqual({ value: 7 });
+      return 'Invalid checked input';
+    });
+    const selected = tool({
+      name: 'checked',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: managed ? approve : false,
+      inputErrorFunction: recover,
+      before,
+      after,
+      execute,
+    });
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Help.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [selected],
+      }).session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        const initial = peer.frames.filter(
+          (frame) => frame.type === 'response.create',
+        ).length;
+        peer.call('checked', { value: 7 }, 'invalid-original');
+        expect(await peer.output('invalid-original')).toBe(
+          'Invalid checked input',
+        );
+        await vi.waitFor(
+          () =>
+            expect(
+              peer.frames.filter((frame) => frame.type === 'response.create'),
+            ).toHaveLength(initial + 1),
+          { timeout: 1000 },
+        );
+        await voice.update({ instructions: 'Help.' });
+        expect(
+          peer.frames.filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(initial + 1);
+        expect(
+          peer.frames.filter(
+            (frame) =>
+              frame.type === 'conversation.item.create' &&
+              frame.item?.call_id === 'invalid-original',
+          ),
+        ).toHaveLength(1);
+        expect(recover).toHaveBeenCalledOnce();
+        expect(approve).not.toHaveBeenCalled();
+        expect(before).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+        expect(after).not.toHaveBeenCalled();
+        expect(model.requests).toHaveLength(0);
+      } finally {
+        await voice.close();
+      }
+      model.assertExhausted();
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
 );

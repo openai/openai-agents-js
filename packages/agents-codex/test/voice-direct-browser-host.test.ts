@@ -44,6 +44,8 @@ it.skipIf(
         executablePath: process.env.CHROMIUM_PATH ?? chromium.executablePath(),
         args: [
           '--no-sandbox',
+          // The local fixture must also work on loopback-only test hosts.
+          '--allow-loopback-in-peer-connection',
           '--use-fake-device-for-media-stream',
           '--use-fake-ui-for-media-stream',
           '--autoplay-policy=no-user-gesture-required',

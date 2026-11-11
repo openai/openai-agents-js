@@ -248,6 +248,7 @@ pub struct ThreadOptions {
     disabled_plugin_ids: Option<Vec<String>>,
     client_mcp_extensions: Map<String, Value>,
     user_instructions: Option<UserInstructions>,
+    user_instructions_appendix: Option<String>,
     tool_policy: Option<Policy>,
 }
 
@@ -255,6 +256,7 @@ pub struct ThreadOptions {
 #[serde(default, deny_unknown_fields)]
 struct Policy {
     allowed_tools: Option<Vec<ToolName>>,
+    allowed_mcp_tools: Option<Vec<(String, String, ToolName)>>,
     require_managed_sandbox: bool,
     require_unified_exec: bool,
     expose_additional_permissions: Option<bool>,
@@ -473,6 +475,7 @@ impl ThreadOptions {
         options.disabled_plugin_ids = self.disabled_plugin_ids;
         options.client_mcp_extensions =
             codex_protocol::mcp::ClientMcpExtensions::new(self.client_mcp_extensions);
+        options.user_instructions_appendix = self.user_instructions_appendix;
         options.user_instructions = self.user_instructions.map(|user| LoadedUserInstructions {
             instructions: user.instructions.map(|i| Instructions {
                 text: i.text,
@@ -483,6 +486,7 @@ impl ThreadOptions {
         if let Some(policy) = self.tool_policy {
             options.thread_extension_init.insert(ToolPolicy {
                 allowed_tools: policy.allowed_tools,
+                allowed_mcp_tools: policy.allowed_mcp_tools,
                 require_managed_sandbox: policy.require_managed_sandbox,
                 require_unified_exec: policy.require_unified_exec,
                 expose_additional_permissions: policy.expose_additional_permissions.unwrap_or(true),

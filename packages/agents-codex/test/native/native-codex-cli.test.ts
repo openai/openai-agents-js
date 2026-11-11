@@ -10,6 +10,7 @@ import {
   type ToolCallContext,
 } from '../../src/runtime/tools';
 import { Codex } from '@openai/codex-sdk';
+import { usageReportBinding } from '../../src/runtime/run-events';
 import {
   nativeCodexTool,
   type NativeCodexToolOptions,
@@ -746,16 +747,20 @@ it.skipIf(process.platform === 'win32')(
         }
       },
     });
+    const reports: string[] = [];
     const owner = {};
     const context = (signal: AbortSignal, callId: string) => {
       const issued = {
+        [usageReportBinding]: () => {
+          reports.push(callId);
+        },
         context: undefined,
         submission: { sessionId: 'owned-native-session' },
         threadId: 'owned-native-session',
         turnId: 'turn',
         callId,
         signal,
-      } as ToolCallContext;
+      } as unknown as ToolCallContext;
       registerToolSessionOwner(issued, owner);
       return issued;
     };
@@ -788,6 +793,7 @@ it.skipIf(process.platform === 'win32')(
     const argv = await calls();
     expect(argv).toHaveLength(2);
     expect(argv[1]).toContain('resume');
+    expect(reports).toEqual(['first', 'third']);
   },
 );
 
@@ -1006,4 +1012,224 @@ it.skipIf(process.platform === 'win32')(
     ).rejects.toBe(reason);
     expect(observed).toEqual(['thread.started']);
   },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'uses custom CLI parameters and trusted context selection through native admission',
+  async () => {
+    const { cli, calls } = await recordingCli();
+    const observed: unknown[] = [];
+    const readback: unknown[] = [];
+    const declaration = nativeCodexTool({
+      codexOptions: { codexPathOverride: cli },
+      parameters: z.object({
+        inputs: z.array(
+          z.object({ type: z.literal('text'), text: z.string() }),
+        ),
+        threadId: z.string().nullable(),
+        ticket: z.literal('validated'),
+      }),
+      async resolveThread(context) {
+        expect(context.callId).toBe('context-call');
+        return 'application-thread';
+      },
+      onStream(event, context) {
+        observed.push([event.type, context.callId]);
+      },
+      async onThread(threadId, outcome, context) {
+        readback.push([threadId, outcome, context.callId]);
+        throw new Error('Observer failure must not change success');
+      },
+    });
+    const server = new ModelServer([
+      [
+        call(
+          'codex',
+          {
+            inputs: [{ type: 'text', text: 'Run' }],
+            threadId: null,
+            ticket: 'validated',
+          },
+          { callId: 'context-call' },
+        ),
+      ],
+      [message('done')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      model: 'gpt-5',
+      instructions: 'Use codex.',
+      provider,
+      tools: [declaration],
+    }).session();
+    expect((await (await session.submit('Run')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect((await calls())[0]).toContain('application-thread');
+    expect(observed).toEqual(
+      ['thread.started', 'item.completed', 'turn.completed'].map((type) => [
+        type,
+        'context-call',
+      ]),
+    );
+    expect(readback).toEqual([
+      ['synthetic-owned-thread', 'completed', 'context-call'],
+    ]);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'reports failed CLI IDs after cleanup without admitting them for model reuse',
+  async () => {
+    const { cli, calls } = await recordingCli(false);
+    const readback: unknown[] = [];
+    const declaration = nativeCodexTool({
+      codexOptions: { codexPathOverride: cli },
+      onThread(id, outcome) {
+        readback.push([id, outcome]);
+        throw new Error('Observer cannot replace primary failure');
+      },
+    });
+    const context = {
+      context: undefined,
+      submission: { sessionId: 'readback' },
+      threadId: 'readback',
+      turnId: 'turn',
+      callId: 'call',
+      signal: new AbortController().signal,
+    } as ToolCallContext;
+    registerToolSessionOwner(context, {});
+    await expect(
+      invokeFunctionTool(
+        declaration,
+        { prompt: 'Run', threadId: null },
+        context,
+        () => {},
+      ),
+    ).rejects.toThrow('ended before successful completion');
+    await expect(
+      invokeFunctionTool(
+        declaration,
+        { prompt: 'Run', threadId: 'synthetic-owned-thread' },
+        context,
+        () => {},
+      ),
+    ).rejects.toThrow('not authorized');
+    expect(readback).toEqual([['synthetic-owned-thread', 'failed']]);
+    expect(await calls()).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'rechecks configured cancellation after trusted thread resolution before CLI effects',
+  async () => {
+    const { cli, callsPath } = await recordingCli();
+    const configured = new AbortController();
+    const reason = new Error('Resolver cancelled');
+    const declaration = nativeCodexTool({
+      codexOptions: { codexPathOverride: cli },
+      defaultTurnOptions: { signal: configured.signal },
+      async resolveThread() {
+        configured.abort(reason);
+        return 'application-thread';
+      },
+    });
+    const context = {
+      context: undefined,
+      submission: { sessionId: 'resolver' },
+      threadId: 'resolver',
+      turnId: 'turn',
+      callId: 'call',
+      signal: new AbortController().signal,
+    } as ToolCallContext;
+    registerToolSessionOwner(context, {});
+    await expect(
+      invokeFunctionTool(
+        declaration,
+        { prompt: 'Run', threadId: null },
+        context,
+        () => {},
+      ),
+    ).rejects.toBe(reason);
+    await expect(readFile(callsPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  },
+);
+
+it
+  .skipIf(process.platform === 'win32')
+  .each([
+    'sensitive',
+    'metadata',
+    'disabled',
+    'failed',
+    'oversized-unicode',
+    'malformed-status',
+  ])(
+  'traces CLI native item privacy and joined sibling ownership (%s)',
+  async (mode) => {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { fileURLToPath } = await import('node:url');
+    const { build } = await import('esbuild');
+    const { createWorkspacePackageAliases, readWorkspacePackages } =
+      await import('../../../../helpers/vitest/workspacePackageAliases');
+    const sdk = fileURLToPath(new URL('../../../../', import.meta.url));
+    const aliases = createWorkspacePackageAliases(
+      readWorkspacePackages(join(sdk, 'packages')),
+    );
+    const directory = await mkdtemp(join(tmpdir(), 'native-cli-tracing-home-'));
+    roots.push(directory);
+    const executable = join(directory, 'cli-tracing-child.mjs');
+    await build({
+      entryPoints: [
+        fileURLToPath(
+          new URL('./fixtures/native-cli-tracing-child.ts', import.meta.url),
+        ),
+      ],
+      outfile: executable,
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      target: 'es2022',
+      banner: {
+        js: "import {createRequire as cliCreateRequire} from 'node:module'; const require = cliCreateRequire(import.meta.url);",
+      },
+      plugins: [
+        {
+          name: 'existing-sdk-source-owners',
+          setup(build) {
+            build.onResolve(
+              { filter: /^@openai\/agents(?:-|$|\/)/ },
+              ({ path }) =>
+                aliases[path]
+                  ? {
+                      path: aliases[path],
+                      external:
+                        path.startsWith('@openai/agents-codex') ||
+                        path.endsWith('/_shims'),
+                    }
+                  : undefined,
+            );
+          },
+        },
+      ],
+    });
+    const result = await promisify(execFile)(
+      process.execPath,
+      ['--import', 'tsx', executable, mode],
+      {
+        timeout: 30000,
+        maxBuffer: 2097152,
+        env: { ...process.env, CODEX_HOME: directory },
+      },
+    );
+    expect(result.stdout).toContain(`PASS ${mode}`);
+  },
+  35000,
 );

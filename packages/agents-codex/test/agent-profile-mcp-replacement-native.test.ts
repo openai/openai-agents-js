@@ -398,12 +398,17 @@ nativeIt.each(['session', 'operation'] as const)(
   async (activation) => {
     const original = await peer(['find-record', 'find_record']);
     const replacement = await peer(['find-record', 'find_record']);
+    const callable = new HttpMCP({
+      name: 'records',
+      url: replacement.url,
+      tools: ['find-record', 'find_record'],
+    }).tool('find-record');
     const model = new ModelServer([
       [
         call(
-          'find_record',
+          callable.name,
           {},
-          { callId: 'raw-name-call', namespace: 'mcp__records' },
+          { callId: 'raw-name-call', namespace: callable.namespace! },
         ),
       ],
       [message('completed')],
@@ -447,6 +452,136 @@ nativeIt.each(['session', 'operation'] as const)(
       ]);
       model.assertExhausted();
     } finally {
+      await original.close();
+      await replacement.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'unpublished voice profile raw MCP identity after a cross-catalog alias collision',
+  async () => {
+    const original = await peer(['a-b']);
+    const replacement = await peer(['a_b']);
+    const model = new ModelServer([]);
+    const websocket = new WebSocketServer({ noServer: true });
+    const frames: Record<string, any>[] = [];
+    let socket: WebSocket | undefined;
+    let accepted: Record<string, any> = {};
+    model.onUpgrade((request, transport, head) =>
+      websocket.handleUpgrade(request, transport, head, (connection) =>
+        websocket.emit('connection', connection),
+      ),
+    );
+    websocket.on('connection', (connection) => {
+      socket = connection;
+      connection.on('message', (raw) => {
+        const frame = JSON.parse(raw.toString());
+        frames.push(frame);
+        if (frame.type === 'session.update') {
+          accepted = { ...accepted, ...frame.session };
+          connection.send(
+            JSON.stringify({
+              type: 'session.updated',
+              session: { ...accepted, id: 'raw-selector-collision' },
+            }),
+          );
+        }
+      });
+    });
+    const descriptor = (url: string, raw: string) =>
+      new HttpMCP({
+        name: 'records',
+        url,
+        tools: [raw],
+        approvalMode: 'preapproved',
+      });
+    try {
+      const config = await model.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-raw-selector',
+        supportsWebsockets: false,
+      });
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Read A.',
+        tools: [descriptor(original.url, 'a-b')],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        automaticallyTriggerResponseForMcpToolCalls: false,
+      });
+      const originalName = accepted.tools.find((tool: { name?: string }) =>
+        tool.name?.startsWith('mcp__records__'),
+      ).name;
+      await voice.updateAgent(
+        new Agent({
+          name: 'Unpublished B',
+          instructions: 'Read B.',
+          tools: [descriptor(replacement.url, 'a_b')],
+          provider,
+        }),
+      );
+      const name = accepted.tools.find((tool: { name?: string }) =>
+        tool.name?.startsWith('mcp__records__'),
+      ).name;
+      expect(originalName).toBe('mcp__records__a_b');
+      expect(name).toBe(originalName);
+      socket!.send(
+        JSON.stringify({
+          type: 'response.created',
+          response: { id: 'B-response' },
+        }),
+      );
+      const item = {
+        id: 'B-item',
+        type: 'function_call',
+        name,
+        call_id: 'B-call',
+        arguments: '{}',
+      };
+      socket!.send(
+        JSON.stringify({
+          type: 'response.output_item.done',
+          response_id: 'B-response',
+          output_index: 0,
+          item,
+        }),
+      );
+      socket!.send(
+        JSON.stringify({
+          type: 'response.done',
+          response: { id: 'B-response', output: [item] },
+        }),
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            frames.find((frame) => frame.item?.call_id === 'B-call'),
+          ).toBeDefined(),
+        { timeout: 10000 },
+      );
+      const outputs = frames.filter(
+        (frame) =>
+          frame.type === 'conversation.item.create' &&
+          frame.item?.type === 'function_call_output' &&
+          frame.item.call_id === 'B-call',
+      );
+      expect(outputs).toHaveLength(1);
+      expect(outputs[0].item.output).toContain('record');
+      expect(replacement.effects).toEqual([
+        expect.objectContaining({ name: 'a_b' }),
+      ]);
+      expect(original.effects).toHaveLength(0);
+      model.assertExhausted();
+    } finally {
+      for (const client of websocket.clients) client.terminate();
+      await new Promise<void>((resolve) => websocket.close(() => resolve()));
       await original.close();
       await replacement.close();
       await ModelServer.closeAll();

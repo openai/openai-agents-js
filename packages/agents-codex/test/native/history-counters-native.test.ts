@@ -1569,7 +1569,11 @@ describe(
                   typeof value === 'bigint' ? value.toString() : value,
                 ]),
               );
-              expect(state.manual_context.usage).toEqual(wire);
+              expect(state.manual_context.usage).toEqual({
+                requests: continued ? 2 : 1,
+                missingUsageRequests: 0,
+                ...wire,
+              });
             };
             const first = await open();
             const sourceTurn = await first.session.submit('begin manual');

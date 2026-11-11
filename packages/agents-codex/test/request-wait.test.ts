@@ -133,6 +133,7 @@ describe('request wait handle contract', () => {
     const result: Completed = Object.freeze({
       turn,
       finalOutput: 'done',
+      runUsage: turn.runUsage,
       threadUsage: null,
       repairAttempts: [],
     });

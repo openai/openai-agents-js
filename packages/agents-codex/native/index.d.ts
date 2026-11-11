@@ -1,5 +1,9 @@
 /** Private binding. JSON authority fields must retain their original integer text. */
 export type NativeId = string;
+export class _StoredHistoryClose {
+  private constructor();
+  apply(): Promise<void>;
+}
 export class _ProviderHttpTransports {
   private constructor();
   /** Drops cached clients; does not claim an asynchronous transport drain. */
@@ -159,6 +163,9 @@ export class NativeThread {
   _read_model_context(): Promise<string>;
   _read_plan_usage(request: _ModelHttpRequest): Promise<string | null>;
   _canonical_history(limit?: number | null): Promise<string>;
+  _stored_history(query_json: string): Promise<string>;
+  _set_stored_name(name_json: string): Promise<string>;
+  _stored_history_close_action(action_json: string): _StoredHistoryClose;
   _transact_history(
     expectedRevision: string,
     keep: number,
@@ -207,6 +214,9 @@ export class NativeThread {
     token_budget?: string | null,
   ): Promise<string>;
   _fork_settled(): Promise<NativeThread>;
+  _fork_stored(requestJson: string): Promise<NativeThread>;
+  _discard_stored_fork(): Promise<string | null>;
+  _publish_stored_fork(): Promise<string>;
   _discard_fork(): Promise<string | null>;
   _export_checkpoint(
     request_json: string | null,

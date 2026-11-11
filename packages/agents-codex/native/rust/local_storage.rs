@@ -274,6 +274,15 @@ fn recorded_turns(history: &[RolloutItem]) -> BTreeMap<String, bool> {
 }
 
 impl LocalChecklistStore {
+    pub(crate) async fn list_threads_including_empty_preview(
+        &self,
+        params: codex_thread_store::ListThreadsParams,
+    ) -> codex_thread_store::ThreadStoreResult<codex_thread_store::ThreadPage> {
+        self.inner
+            .list_threads_including_empty_preview(params)
+            .await
+    }
+
     pub(crate) async fn live_rollout_path(&self, id: ThreadId) -> ThreadStoreResult<PathBuf> {
         self.inner.live_rollout_path(id).await
     }
@@ -1578,6 +1587,33 @@ impl ThreadStore for LocalChecklistStore {
                 revision: None,
                 items,
             })
+        })
+    }
+
+    fn load_original_history(
+        &self,
+        params: LoadThreadHistoryParams,
+    ) -> ThreadStoreFuture<'_, StoredThreadHistory> {
+        Box::pin(async move {
+            let writers = self.writers.lock().await;
+            if let Some(writer) = writers.get(&params.thread_id) {
+                writer.check()?;
+            }
+            ThreadStore::load_original_history(&self.inner, params).await
+        })
+    }
+
+    fn read_original_history(
+        &self,
+        params: LoadThreadHistoryParams,
+        reader: Box<dyn codex_thread_store::OriginalHistoryReader>,
+    ) -> ThreadStoreFuture<'_, codex_thread_store::OriginalHistorySnapshot> {
+        Box::pin(async move {
+            let writers = self.writers.lock().await;
+            if let Some(writer) = writers.get(&params.thread_id) {
+                writer.check()?;
+            }
+            ThreadStore::read_original_history(&self.inner, params, reader).await
         })
     }
 

@@ -94,17 +94,76 @@ export function tokenCountToWire(value: TokenCount): TokenCountWire {
   return typeof count === 'bigint' ? count.toString() : count;
 }
 
-/** Provider-reported tokens accumulated for one root run. */
-export interface RunUsage {
-  readonly inputTokens: TokenCount;
-  readonly cachedInputTokens: TokenCount;
-  readonly cacheWriteInputTokens: TokenCount;
-  readonly outputTokens: TokenCount;
-  readonly reasoningOutputTokens: TokenCount;
-  readonly totalTokens: TokenCount;
+/** Measured logical-run totals, separate from native context-window estimates. */
+export interface RunUsage extends TokenUsage {
+  readonly requests: TokenCount;
+  readonly missingUsageRequests: TokenCount;
+}
+export const usageReportBinding = Symbol('admitted usage report');
+export type UsageReporter = (
+  usage: TokenUsage | null,
+  options?: { requests?: TokenCount },
+) => void;
+export function captureUsageReport(
+  usage: TokenUsage | null,
+  requests: TokenCount = 1,
+) {
+  const exact = (value: TokenCount): TokenCount => {
+    if (typeof value !== 'number' && typeof value !== 'bigint')
+      throw new TypeError('Usage counters require exact integers');
+    const count = parseTokenCount(value);
+    if (BigInt(count) < 0n)
+      throw new RangeError('Usage counters must be nonnegative');
+    return count;
+  };
+  const capturedRequests = exact(requests);
+  const raw: JsonObject = {};
+  if (usage !== null) {
+    if (!usage || typeof usage !== 'object' || Array.isArray(usage))
+      throw new TypeError('Usage report requires token usage or null');
+    for (const [native, publicName] of Object.entries({
+      input_tokens: 'inputTokens',
+      cached_input_tokens: 'cachedInputTokens',
+      cache_write_input_tokens: 'cacheWriteInputTokens',
+      output_tokens: 'outputTokens',
+      reasoning_output_tokens: 'reasoningOutputTokens',
+      total_tokens: 'totalTokens',
+    })) {
+      raw[native] = tokenCountToWire(
+        exact(usage[publicName as keyof TokenUsage]),
+      );
+    }
+  }
+  return {
+    raw,
+    requests: capturedRequests,
+    missing: usage === null ? capturedRequests : 0,
+  };
+}
+export function runUsageSnapshot(
+  tokens: TokenUsage | null,
+  requests: TokenCount = 0,
+  missingUsageRequests: TokenCount = 0,
+): RunUsage {
+  return Object.freeze({
+    ...(tokens ?? addRunUsage(null, {})),
+    requests,
+    missingUsageRequests,
+  });
+}
+export function mergeRunUsage(prior: RunUsage, next: RunUsage): RunUsage {
+  const { raw } = captureUsageReport(next, 0);
+  return runUsageSnapshot(
+    addRunUsage(prior, raw),
+    addTokenCounts(prior.requests, next.requests),
+    addTokenCounts(prior.missingUsageRequests, next.missingUsageRequests),
+  );
 }
 
-export function addRunUsage(prior: RunUsage | null, raw: JsonObject): RunUsage {
+export function addRunUsage(
+  prior: TokenUsage | null,
+  raw: JsonObject,
+): TokenUsage {
   const count = (name: string): TokenCount =>
     parseTokenCount(raw[name] === undefined ? 0 : raw[name]);
   return Object.freeze({
@@ -139,10 +198,20 @@ export const nonnegativeTokenCountWireSchema = z.union([
   z.string().regex(/^(?:0|[1-9]\d*)$/),
 ]);
 
-export function runUsageToWire(usage: RunUsage) {
+export function runUsageToWire(
+  usage: TokenUsage,
+  requests?: TokenCount,
+  missingUsageRequests?: TokenCount,
+) {
   const counter = (value: TokenCount): TokenCountWire =>
     nonnegativeTokenCountWireSchema.parse(tokenCountToWire(value));
   return {
+    ...(requests === undefined
+      ? {}
+      : {
+          requests: counter(requests),
+          missingUsageRequests: counter(missingUsageRequests ?? 0),
+        }),
     inputTokens: counter(usage.inputTokens),
     cachedInputTokens: counter(usage.cachedInputTokens),
     cacheWriteInputTokens: counter(usage.cacheWriteInputTokens),

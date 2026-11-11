@@ -283,6 +283,7 @@ const manualContinuationSchema = z.object({
       response_observation_id: z.string().min(1),
       call_ids: z.array(z.string().min(1)),
       outcomes: z.array(z.tuple([z.string().min(1), z.boolean()])),
+      held_call_ids: z.array(z.string().min(1)).optional(),
     })
     .optional(),
   turn_id: z.string().min(1),
@@ -340,6 +341,8 @@ const manualContextSchema = z.object({
   ),
   usage: z
     .object({
+      requests: nonnegativeTokenCountWireSchema.optional(),
+      missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
       inputTokens: nonnegativeTokenCountWireSchema,
       cachedInputTokens: nonnegativeTokenCountWireSchema,
       cacheWriteInputTokens: nonnegativeTokenCountWireSchema,

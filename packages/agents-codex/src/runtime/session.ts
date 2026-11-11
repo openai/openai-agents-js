@@ -1,9 +1,23 @@
 import { audioInputByteLimit } from './media';
 import {
+  ManagedWorkspaceCheckpoint,
+  captureRetiredWorkspace,
+  managedWorkspaceRestore,
+  type ManagedWorkspaceBinding,
+} from './managed-workspace';
+import {
   hasRealtimeAgentConfiguration,
   resolveRealtimeAgentConfiguration,
 } from './realtime-agent-config';
 import { resolveRealtimePolicy } from './realtime-policy';
+import type { ChildBeforeStepContext } from './native-agents';
+import {
+  GuardrailTripwire,
+  captureGuardrailResult,
+  type GuardrailRecord,
+  type InputGuardrail,
+  type OutputGuardrail,
+} from './guardrails';
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
@@ -19,6 +33,7 @@ import {
 import {
   captureCompletionDecision,
   type BeforeComplete,
+  type CompletionContext,
   type CompletionDecision,
   type BeforeCompact,
   type ContextTransform,
@@ -187,6 +202,7 @@ import {
   hasMcpPrePolicy,
   applyMcpPrePolicy,
   mcpToolNames,
+  mcpRefIdentity,
   checkMcpPublication,
   transformMcpResult,
   splitToolDeclarations,
@@ -234,6 +250,14 @@ import {
 import {
   tokenUsageInfo,
   addRunUsage,
+  addTokenCounts,
+  parseTokenCount,
+  captureUsageReport,
+  usageReportBinding,
+  runUsageSnapshot,
+  mergeRunUsage,
+  type TokenUsage,
+  type UsageReporter,
   runUsageToWire,
   type RunUsage,
   type TokenCount,
@@ -254,6 +278,18 @@ import {
   type CanonicalHistorySnapshot,
 } from './history';
 import type { ThreadOptions } from './options';
+import {
+  storedOptions,
+  storedTurnPage,
+  storedItemPage,
+  storedMatchPage,
+  storedSessionPage,
+  type StoredSessionPage,
+  type StoredForkOptions,
+  type StoredTurnPage,
+  type StoredItemPage,
+  type StoredMatchPage,
+} from './stored-history';
 import {
   parseSessionState,
   parseNativeCheckpoint,
@@ -276,6 +312,7 @@ import {
 import {
   managedApproval,
   ToolOutput,
+  toolOutputSchema,
   captureTools,
   isDirectFunctionTool,
   toolIdentity,
@@ -290,6 +327,7 @@ import {
   type Tool,
   type ToolCatalog,
   type FunctionTool,
+  type ToolCallContext,
 } from './tools';
 import type { NativeProviderRoutes } from './http-model';
 
@@ -298,6 +336,12 @@ type ToolStatus = 'completed' | 'failed' | 'cancelled';
 interface CapturedStepMcp {
   readonly servers: readonly McpTool[];
   readonly names: readonly ReturnType<typeof toolIdentity>[];
+  readonly projection: readonly {
+    server: string;
+    tool: string;
+    namespace: string;
+    name: string;
+  }[];
   readonly generation: bigint;
 }
 type ToolIdentity = {
@@ -333,6 +377,12 @@ export interface SessionOptions {
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
   beforeComplete?: BeforeComplete<any>;
+  inputGuardrails?: readonly InputGuardrail<any>[];
+  outputGuardrails?: readonly OutputGuardrail<any>[];
+  /** @internal Captured root declaration; profile declarations own child guards. */
+  agentInputGuardrails?: readonly InputGuardrail<any>[];
+  /** @internal Captured root declaration; profile declarations own child guards. */
+  agentOutputGuardrails?: readonly OutputGuardrail<any>[];
   beforeCompact?: BeforeCompact<any>;
   transformContext?: ContextTransform<any>;
   contextTransformPurpose?: 'turn' | 'output_repair';
@@ -376,6 +426,10 @@ export interface SessionOptions {
   onClose?: () => Promise<void>;
   /** @internal Live application source, never persisted or inherited from state. */
   environmentOwner?: EnvironmentAcquisition;
+  /** @internal Current application source; never persisted. */
+  managedWorkspace?: ManagedWorkspaceBinding;
+  /** @internal Reauthorize only a validated paired workspace opening. */
+  [managedWorkspaceRestore]?: true;
   environment?: Environment;
   state?: SessionState;
   localStorage?: boolean;
@@ -545,8 +599,10 @@ export interface Completed<OutputT = string> {
   readonly toolCall?: ToolCallInfo;
   /** Cumulative native thread usage at completion, rather than a per-turn delta. */
   readonly threadUsage: TokenUsageInfo | null;
+  readonly runUsage: RunUsage;
   readonly state?: SessionState;
   readonly repairAttempts: readonly RecordedTurn[];
+  readonly guardrailResults?: readonly GuardrailRecord[];
 }
 
 /** Wait for the captured turn's completion or its current manual request batch. */
@@ -628,6 +684,8 @@ export interface TurnCompletion<T> {
 /** @internal The Session supplies live requests; observations carry no authority. */
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
   rootResultReady?(): boolean;
+  guardrailResults?(): readonly GuardrailRecord[];
+  runUsage?(): RunUsage;
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -709,6 +767,15 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
         requests,
         steerExact,
       );
+  }
+
+  get guardrailResults(): readonly GuardrailRecord[] {
+    return Object.freeze([...(this.requests?.guardrailResults?.() ?? [])]);
+  }
+
+  /** Detached measured totals; root snapshots include exactly attributed native children. */
+  get runUsage(): RunUsage {
+    return this.requests?.runUsage?.() ?? runUsageSnapshot(null);
   }
 
   get turnId(): NativeId {
@@ -1046,6 +1113,10 @@ interface NativeCallbackDelivery {
 }
 
 class NativeTurn {
+  readonly guardrailResults: GuardrailRecord[] = [];
+  guardrailInput?: UserInput;
+  inputGuardrailsStarted = false;
+  inputGuardrailsTask?: Promise<void>;
   parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
   readonly completion = Promise.withResolvers<NativeRunResult>();
@@ -1066,13 +1137,28 @@ class NativeTurn {
   preparation?: AbortController;
   id: string | null = null;
   usage: JsonValue | null = null;
-  tokenUsage: RunUsage | null = null;
-  addUsage(raw: JsonObject): void {
+  tokenUsage: TokenUsage | null = null;
+  requests: TokenCount = 0;
+  missingUsageRequests: TokenCount = 0;
+  addUsage(
+    raw: JsonObject,
+    requests: TokenCount = 1,
+    missing: TokenCount = 0,
+  ): void {
     this.tokenUsage = addRunUsage(this.tokenUsage, raw);
+    this.requests = addTokenCounts(this.requests, requests);
+    this.missingUsageRequests = addTokenCounts(
+      this.missingUsageRequests,
+      missing,
+    );
+    this.usageParent?.addUsage(raw, requests, missing);
   }
   failure: unknown;
   nativeFailure?: NativeError;
-  constructor(private readonly beforeWait: () => void) {
+  constructor(
+    private readonly beforeWait: () => void,
+    private readonly usageParent?: NativeTurn,
+  ) {
     this.accepted.promise.catch(() => {});
     this.completion.promise.catch(() => {});
   }
@@ -2164,6 +2250,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     return this.restoredRoot.turn as Turn<OutputT>;
   }
+  private repairUsageParent?: NativeTurn;
   private apiRateLimitState: { snapshot: ApiRateLimits } = {
     snapshot: Object.freeze({}),
   };
@@ -2218,15 +2305,18 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     {
-      readonly requestId: string;
-      readonly nativeStep: string;
-      readonly accepted: boolean;
-      readonly generation: bigint;
-      readonly callId: string;
-      readonly name: string;
-      readonly namespace: string | null;
-      readonly value?: unknown;
-      readonly json?: JsonValue;
+      proposal?: {
+        readonly requestId: string;
+        readonly nativeStep: string;
+        readonly accepted: boolean;
+        readonly generation: bigint;
+        readonly callId: string;
+        readonly name: string;
+        readonly namespace: string | null;
+        readonly value?: unknown;
+        readonly json?: JsonValue;
+      };
+      observations: Map<string, { identity: ToolIdentity; status: ToolStatus }>;
     }
   >();
   private readonly terminalCalls = new WeakMap<NativeTurn, ToolCallInfo>();
@@ -2403,6 +2493,9 @@ export class Session<OutputT = string, Context = unknown> {
   // Only one-shot manual handlers report child cleanup to the owning run.
   private readonly oneShotChildCleanupErrors: unknown[] = [];
   #native: NativeThread;
+  private storedHistoryClose?: ReturnType<
+    NativeThread['_stored_history_close_action']
+  >;
   #engine: Engine;
   private environmentDisposalFinished = false;
   private environmentCloseFailure?: Promise<void>;
@@ -2814,7 +2907,10 @@ export class Session<OutputT = string, Context = unknown> {
         this.retireNativeQuestions(owner);
     const pending = this.childCallbacks.retireObservations(
       producer,
-      () => this.observations.notify(),
+      (owner) => {
+        this.flushTerminalObservations(owner);
+        this.observations.notify();
+      },
       matches,
     );
     if (!pending) return;
@@ -3806,7 +3902,10 @@ export class Session<OutputT = string, Context = unknown> {
         (mode) => this.cancelTurn(run, mode),
         undefined,
         {
+          guardrailResults: () =>
+            [...this.rootSteps(run)].flatMap((step) => step.guardrailResults),
           rootResultReady: () => scope.phase() === 'ended',
+          runUsage: () => this.runUsage(run),
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
@@ -3844,6 +3943,10 @@ export class Session<OutputT = string, Context = unknown> {
         ? { toolCall: this.terminalCalls.get(run)! }
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
+      guardrailResults: Object.freeze(
+        [...this.rootSteps(root)].flatMap((step) => step.guardrailResults),
+      ),
+      runUsage: this.runUsage(root),
       repairAttempts: Object.freeze(
         this.repairTurns
           .filter((turn) => turn.parentTurnId === result.turnId)
@@ -3886,6 +3989,56 @@ export class Session<OutputT = string, Context = unknown> {
   private owns(run: NativeTurn): boolean {
     return this.lifecycle.kind === 'turn' && this.lifecycle.run === run;
   }
+  private runUsage(run: NativeTurn): RunUsage {
+    let total = runUsageSnapshot(null);
+    const origins = new Set<string>();
+    for (const step of this.rootSteps(this.rootRun(run))) {
+      if (step.id) origins.add(step.id);
+      total = mergeRunUsage(
+        total,
+        runUsageSnapshot(
+          step.tokenUsage,
+          step.requests,
+          step.missingUsageRequests,
+        ),
+      );
+    }
+    for (const child of this.childCallbacks.forOrigins(origins))
+      total = mergeRunUsage(
+        total,
+        runUsageSnapshot(
+          child.tokenUsage,
+          child.requests,
+          child.missingUsageRequests,
+        ),
+      );
+    return total;
+  }
+
+  private toolUsageReporter(
+    owner: NativeTurn | ChildCallbackOwner,
+    check: () => boolean,
+  ): UsageReporter {
+    return (usage, options) => {
+      owner.controller.signal.throwIfAborted();
+      if (!check())
+        throw new NativeError('Usage report invocation is no longer admitted');
+      const captured = captureUsageReport(usage, options?.requests);
+      if (!check())
+        throw new NativeError('Usage report invocation is no longer admitted');
+      if (owner instanceof NativeTurn)
+        owner.addUsage(captured.raw, captured.requests, captured.missing);
+      else {
+        owner.tokenUsage = addRunUsage(owner.tokenUsage, captured.raw);
+        owner.requests = addTokenCounts(owner.requests, captured.requests);
+        owner.missingUsageRequests = addTokenCounts(
+          owner.missingUsageRequests,
+          captured.missing,
+        );
+      }
+    };
+  }
+
   private rootRun(run: NativeTurn): NativeTurn {
     for (;;) {
       const previous = submissions.get(run)?.previous;
@@ -3929,6 +4082,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private finishObservation(run: NativeTurn): void {
+    run.guardrailInput = undefined;
     submissions.get(run)!.observation = 'ended';
     this.observations.notify();
   }
@@ -4009,6 +4163,7 @@ export class Session<OutputT = string, Context = unknown> {
     callerSignal?: AbortSignal,
     maxModelSteps?: number,
     budget?: RunBudgetTracker,
+    guardrailInput?: UserInput,
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
@@ -4025,10 +4180,24 @@ export class Session<OutputT = string, Context = unknown> {
         budget,
       ),
       callerSignal,
+      undefined,
+      undefined,
+      undefined,
+      guardrailInput,
     );
 
     return this.#waitResult();
   }
+  private get hasInputGuardrails(): boolean {
+    return !!(
+      this.options.inputGuardrails?.length ||
+      this.options.agentInputGuardrails?.length ||
+      [...this.profileRuntimes.values()].some(
+        (profile) => profile.profile.declaration.inputGuardrails.length > 0,
+      )
+    );
+  }
+
   /** Register FIFO new work and issue its exact handle before native admission. */
   enqueue(
     input: UserInput,
@@ -4077,6 +4246,9 @@ export class Session<OutputT = string, Context = unknown> {
         : this.captureExecutorRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
     run.parentTrace = parentTrace;
+    run.guardrailInput = this.hasInputGuardrails
+      ? structuredClone(input)
+      : undefined;
     run.selection = selection;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
@@ -4176,6 +4348,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tracing,
       options?.writableRoots,
       parentTrace,
+      this.hasInputGuardrails ? structuredClone(input) : undefined,
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
     return this.#turnFor(run);
@@ -4317,7 +4490,7 @@ export class Session<OutputT = string, Context = unknown> {
     signal?.throwIfAborted();
     this.idle('start Realtime tools');
     const output = prepareOutput(undefined);
-    const selection = this.captureSelection(undefined, output);
+    const selection = this.captureSelection(undefined, output, undefined, true);
     const run = this.allocateRun(output, true);
     submissions.get(run)!.realtimeTools = { generation };
     run.parentTrace = parentTrace;
@@ -4362,6 +4535,8 @@ export class Session<OutputT = string, Context = unknown> {
     sourceCatalog: ToolCatalog | undefined = this.options.agentGraph
       ? this.catalog
       : undefined,
+    sourceMcp: readonly McpTool[] = this.openingMcpTools,
+    mcpIndex = this.mcpNameIndex(sourceMcp),
   ): readonly ReturnType<typeof toolIdentity>[] {
     // A graph operation captures object authority, not a historical name alias.
     // Keep ordinary mono Session selector compatibility unchanged.
@@ -4371,36 +4546,46 @@ export class Session<OutputT = string, Context = unknown> {
       policy && typeof policy === 'object' && !Array.isArray(policy)
         ? policy.allowed_tools
         : undefined;
+    const currentMcp =
+      this.hasOperationMcp && sourceMcp === this.openingMcpTools
+        ? sourceMcp === this.mcpBindings
+          ? mcpIndex
+          : this.mcpNameIndex(this.mcpBindings)
+        : undefined;
     return Object.freeze(
       selectors.map((selector) => {
-        const identity =
+        let identity =
           selector.kind === 'tool_ref'
             ? {
                 name: selector.name,
                 namespace: selector.namespace || 'functions',
               }
             : toolIdentity(selector);
+        const rawIdentity =
+          selector.kind === 'tool_ref' ? mcpRefIdentity(selector) : undefined;
+        if (rawIdentity) {
+          const declared = mcpIndex.byRaw.get(JSON.stringify(rawIdentity));
+          if (!declared)
+            throw new TypeError(
+              'MCP identity was not admitted by this Session',
+            );
+          identity = declared;
+        }
         const key = JSON.stringify([identity.namespace, identity.name]);
         // Preserve immediate rejection outside the captured opening authority.
         // Core derives tool_search from admitted leaves and still resolves every
         // reference against the actual model's candidates before sampling.
         if (selector.kind === 'tool_ref')
           assertAdmittedToolReference(identity, opening);
-        if (this.hasOperationMcp && selector.kind === 'tool_ref') {
-          const matches = (server: McpTool) =>
-            mcpToolNames([server]).some(
-              (name) =>
-                name.namespace === identity.namespace &&
-                name.name === identity.name,
-            );
-          if (
-            this.openingMcpTools.some(matches) &&
-            !this.mcpBindings.some(matches)
-          )
-            throw new TypeError(
-              'MCP selector requires a current captured raw binding',
-            );
-        }
+        if (
+          currentMcp &&
+          selector.kind === 'tool_ref' &&
+          mcpIndex.byProjected.has(key) &&
+          !currentMcp.byProjected.has(key)
+        )
+          throw new TypeError(
+            'MCP selector requires a current captured raw binding',
+          );
         if (
           selector.kind !== 'tool_ref' &&
           !(sourceCatalog
@@ -4428,6 +4613,7 @@ export class Session<OutputT = string, Context = unknown> {
     options?: OperationOptions<Context>,
     output = this.defaultOutput,
     budget = RunBudgetTracker.capture(options?.budget),
+    required = false,
   ): OperationSelection | undefined {
     if (!this.options.openCorrection) assertOutputRepairSupported(output);
     if (
@@ -4438,7 +4624,10 @@ export class Session<OutputT = string, Context = unknown> {
         'Sign in with ChatGPT does not support output repair or prepareRequest',
       );
     if (
+      !required &&
       !this.options.agentGraph &&
+      !this.options.inputGuardrails?.length &&
+      !this.options.agentInputGuardrails?.length &&
       options?.tools === undefined &&
       options?.beforeStep === undefined &&
       options?.maxModelSteps === undefined &&
@@ -4603,7 +4792,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (receipt.status !== 'steered' || receipt.turn_id !== run.id)
         throw new TurnNotSubmitted('Unexpected steering receipt');
-      this.terminalProposals.delete(run);
+      this.clearTerminalProposal(run);
       if (expectedTurnId === undefined) return;
       if (!receipt.input_id)
         throw new NativeError('Native steering input ID is unavailable');
@@ -4955,6 +5144,10 @@ export class Session<OutputT = string, Context = unknown> {
     };
     assertOwner();
     const names = run?.selection?.names;
+    const selectedNames =
+      names === undefined
+        ? undefined
+        : new Set(names.map((name) => encode([name.namespace, name.name])));
     const next = this.mcpBindings.flatMap((server) => {
       if (!(server instanceof HttpMCP) || server.activation !== 'operation')
         return this.defaultMcpTools.filter(
@@ -4971,20 +5164,16 @@ export class Session<OutputT = string, Context = unknown> {
               (selected) => selected.name === server.name,
             ),
         );
+      const projected =
+        selectedNames === undefined ? [] : mcpToolNames([server]);
       const tools =
-        names === undefined
+        selectedNames === undefined
           ? (this.defaultMcpTools.find(
               (selected) => selected.name === server.name,
             )?.tools ?? [])
-          : server.tools.filter((raw) => {
-              const projected = mcpToolNames([
-                { name: server.name, tools: [raw] },
-              ])[0];
-              return names.some(
-                (name) =>
-                  name.namespace === projected.namespace &&
-                  name.name === projected.name,
-              );
+          : server.tools.filter((_raw, index) => {
+              const name = projected[index];
+              return selectedNames.has(encode([name.namespace, name.name]));
             });
       return tools.length ? [selectHttpLeaves(server, tools)] : [];
     });
@@ -5047,6 +5236,7 @@ export class Session<OutputT = string, Context = unknown> {
     tracing?: TraceOptions,
     writableRoots?: readonly string[],
     parentTrace = this.options.parentTrace,
+    guardrailInput?: UserInput,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -5061,6 +5251,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    run.guardrailInput = this.hasInputGuardrails ? guardrailInput : undefined;
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
     submissions.get(run)!.callerSignal = callerSignal;
@@ -5109,6 +5300,8 @@ export class Session<OutputT = string, Context = unknown> {
               names: selection.names ?? null,
               before_step:
                 this.options.agentGraph !== undefined ||
+                !!this.options.inputGuardrails?.length ||
+                !!this.options.agentInputGuardrails?.length ||
                 selection.beforeStep !== undefined ||
                 selection.maxModelSteps !== undefined ||
                 selection.budget !== undefined,
@@ -5156,7 +5349,10 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
-    const run = new NativeTurn(() => this.assertCanWait(run));
+    const run = new NativeTurn(
+      () => this.assertCanWait(run),
+      this.repairUsageParent,
+    );
     run.controller.signal.addEventListener(
       'abort',
       () => this.discardTerminalValue(run),
@@ -5503,6 +5699,7 @@ export class Session<OutputT = string, Context = unknown> {
       // A correction uses the owning session's model provider and reports into
       // the same live snapshot in the order its response headers arrive.
       correction.apiRateLimitState = this.apiRateLimitState;
+      correction.repairUsageParent = run;
       correction.observations.linkRepairParent(
         this.observations,
         this.submissionIds.get(run)!,
@@ -5668,7 +5865,8 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     error = cleanupFailure(run, error);
-    if (error !== undefined) this.terminalProposals.delete(run);
+    this.flushTerminalObservations(run);
+    if (error !== undefined) this.clearTerminalProposal(run);
     if (run.toolCleanupErrors.length) {
       this.retire(error);
       void this.close().catch(() => {});
@@ -6261,6 +6459,7 @@ export class Session<OutputT = string, Context = unknown> {
         'turn_complete',
         'turn_aborted',
         'token_count',
+        'raw_response_completed',
         'hosted_tool_call_progress',
       ].includes(msg.type)
         ? event.id
@@ -6333,7 +6532,7 @@ export class Session<OutputT = string, Context = unknown> {
           owner.turnId !== turnId,
       );
     const owner =
-      msg.type === 'token_count'
+      msg.type === 'token_count' || msg.type === 'raw_response_completed'
         ? this.childCallbacks.find(id, incarnation, turnId)
         : this.childOwner(
             id,
@@ -6347,9 +6546,31 @@ export class Session<OutputT = string, Context = unknown> {
     // Only starts from this ordered reader establish prior-turn ownership.
     if (startsTurn) {
       owner.nativeStartObserved = true;
+      if (
+        owner.rootTurnId === undefined &&
+        typeof msg.root_turn_id === 'string' &&
+        msg.root_turn_id
+      )
+        owner.rootTurnId = msg.root_turn_id;
       this.observations.notify();
     }
     owner.instanceId ??= event.subagent_instance_id;
+    if (msg.type === 'raw_response_item')
+      this.releaseTerminalObservation(owner, msg.item);
+
+    if (msg.type === 'raw_response_completed' && event.id === owner.turnId) {
+      const raw = msg.token_usage;
+      const usage =
+        raw !== null && typeof raw === 'object' && !Array.isArray(raw)
+          ? raw
+          : undefined;
+      owner.tokenUsage = addRunUsage(owner.tokenUsage, usage ?? {});
+      owner.requests = addTokenCounts(owner.requests, 1);
+      owner.missingUsageRequests = addTokenCounts(
+        owner.missingUsageRequests,
+        usage ? 0 : 1,
+      );
+    }
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
@@ -6402,8 +6623,34 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (owner.observationPhase !== 'open') return;
       owner.observationPhase = 'finishing';
+      const completed = toolCompletionSchema.safeParse(msg.tool_completion);
+      const fact = completed.success ? completed.data : undefined;
+      const proposal = this.terminalProposals.get(owner)?.proposal;
+      if (
+        msg.type !== 'turn_aborted' &&
+        event.subagent_turn_failed === false &&
+        owner.failure === undefined &&
+        !owner.controller.signal.aborted &&
+        fact &&
+        proposal?.accepted &&
+        proposal.callId === fact.call_id &&
+        proposal.name === fact.name &&
+        (proposal.namespace ?? 'functions') ===
+          (fact.namespace ?? 'functions') &&
+        typeof fact.final_output === 'string' &&
+        isDeepStrictEqual(proposal.json, fact.final_output)
+      ) {
+        // Matching native completion receipt; publication of the accepted
+        // single-text body through the existing observation budget/reader path.
+        this.releaseTerminalObservation(owner, {
+          type: 'function_call_output',
+          call_id: fact.call_id,
+          output: fact.final_output,
+        });
+      }
+      this.flushTerminalObservations(owner);
       if (msg.type === 'turn_aborted' || msg.tool_completion === undefined)
-        this.terminalProposals.delete(owner);
+        this.clearTerminalProposal(owner);
       this.childCallbacks.end(id, incarnation, turnId);
       this.clearManualCalls();
       const continuation = (async () => {
@@ -6592,9 +6839,10 @@ export class Session<OutputT = string, Context = unknown> {
         !source.servers.some(
           (server) =>
             server.name === invocation.server &&
-            mcpToolNames([server]).some(
-              (identity, index) =>
-                server.tools[index] === invocation.tool &&
+            source.projection.some(
+              (identity) =>
+                identity.server === server.name &&
+                identity.tool === invocation.tool &&
                 source.names.some(
                   (name) =>
                     name.namespace === identity.namespace &&
@@ -6892,6 +7140,8 @@ export class Session<OutputT = string, Context = unknown> {
       msg.turn_id === run.id
     )
       this.observeMcp(run, event);
+    if (kind === 'raw_response_item' && event.id === run.id)
+      this.releaseTerminalObservation(run, msg.item);
     if (
       kind === 'raw_response_item' &&
       event.id === run.id &&
@@ -6988,7 +7238,7 @@ export class Session<OutputT = string, Context = unknown> {
         raw !== null && typeof raw === 'object' && !Array.isArray(raw)
           ? raw
           : undefined;
-      if (usage) run.addUsage(usage);
+      run.addUsage(usage ?? {}, 1, usage ? 0 : 1);
       run.selection?.budget?.observe(usage);
       this.notifyManualProgress();
       this.maybeSealManual(run);
@@ -7046,7 +7296,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (error === undefined && msg.tool_completion !== undefined) {
         try {
           const fact = toolCompletionSchema.parse(msg.tool_completion);
-          const proposal = this.terminalProposals.get(run);
+          const proposal = this.terminalProposals.get(run)?.proposal;
           if (
             !proposal ||
             !proposal.accepted ||
@@ -7077,7 +7327,7 @@ export class Session<OutputT = string, Context = unknown> {
           error = cause;
         }
       }
-      this.terminalProposals.delete(run);
+      this.clearTerminalProposal(run);
       this.finish(
         run,
         error,
@@ -7124,11 +7374,113 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
   }
+  private terminalState(owner: NativeTurn | ChildCallbackOwner) {
+    let state = this.terminalProposals.get(owner);
+    if (!state) {
+      state = { observations: new Map() };
+      this.terminalProposals.set(owner, state);
+    }
+    return state;
+  }
+
+  private clearTerminalProposal(owner: NativeTurn | ChildCallbackOwner): void {
+    const state = this.terminalProposals.get(owner);
+    if (state) state.proposal = undefined;
+  }
+
+  private registerTerminalObservation(
+    owner: NativeTurn | ChildCallbackOwner,
+    identity: ToolIdentity,
+    status: ToolStatus,
+  ): void {
+    const state = this.terminalState(owner);
+    if (state.observations.has(identity.callId))
+      throw new NativeError('Repeated terminal tool observation identity');
+    state.observations.set(identity.callId, {
+      identity: { ...identity },
+      status,
+    });
+  }
+
+  private releaseTerminalObservation(
+    owner: NativeTurn | ChildCallbackOwner,
+    value: unknown,
+  ): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const item = value as Record<string, unknown>;
+    if (
+      item.type !== 'function_call_output' ||
+      typeof item.call_id !== 'string'
+    )
+      return;
+    const state = this.terminalProposals.get(owner);
+    const observation = state?.observations.get(item.call_id);
+    if (!observation) return;
+    state!.observations.delete(item.call_id);
+    const parts =
+      typeof item.output === 'string'
+        ? [{ type: 'inputText', text: item.output }]
+        : Array.isArray(item.output)
+          ? item.output.map((part: unknown) => {
+              if (!part || typeof part !== 'object' || Array.isArray(part))
+                return null;
+              const { type, ...fields } = part as Record<string, unknown>;
+              if (type === 'input_text')
+                return { ...fields, type: 'inputText' };
+              if (type === 'input_file')
+                return { ...fields, type: 'inputFile' };
+              if (type === 'input_audio')
+                return { type: 'inputAudio', audioUrl: fields.audio_url };
+              if (type === 'input_image')
+                return {
+                  type: 'inputImage',
+                  ...('image_url' in fields
+                    ? { imageUrl: fields.image_url }
+                    : { fileId: fields.file_id }),
+                  ...(fields.detail === undefined
+                    ? {}
+                    : { detail: fields.detail }),
+                };
+              return null;
+            })
+          : null;
+    const output = toolOutputSchema.safeParse({
+      contentItems: parts,
+      success: observation.status === 'completed',
+    });
+    this.observeTool(
+      owner,
+      observation.identity,
+      'tool_finished',
+      observation.status,
+      output.success
+        ? new ToolOutput(output.data.contentItems, output.data.success)
+        : null,
+    );
+  }
+
+  private flushTerminalObservations(
+    owner: NativeTurn | ChildCallbackOwner,
+  ): void {
+    const state = this.terminalProposals.get(owner);
+    if (!state) return;
+    const pending = [...state.observations.values()];
+    state.observations.clear();
+    for (const observation of pending)
+      this.observeTool(
+        owner,
+        observation.identity,
+        'tool_finished',
+        owner.controller.signal.aborted ? 'cancelled' : observation.status,
+        null,
+      );
+  }
+
   private discardTerminalValue(owner: NativeTurn | ChildCallbackOwner): void {
-    const proposal = this.terminalProposals.get(owner);
+    const proposal = this.terminalProposals.get(owner)?.proposal;
     if (!proposal) return;
     const { value: _value, json: _json, ...attempt } = proposal;
-    this.terminalProposals.set(owner, { ...attempt, accepted: false });
+    this.terminalState(owner).proposal = { ...attempt, accepted: false };
   }
 
   /** Strict Core failure has no TurnComplete; this notice settles its exact waiter. */
@@ -7138,7 +7490,7 @@ export class Session<OutputT = string, Context = unknown> {
   ): boolean {
     const msg = event.msg;
     const child = !(owner instanceof NativeTurn);
-    const proposal = this.terminalProposals.get(owner);
+    const proposal = this.terminalProposals.get(owner)?.proposal;
     if (
       !proposal ||
       msg.thread !== (child ? owner.childId : this.id) ||
@@ -7149,7 +7501,8 @@ export class Session<OutputT = string, Context = unknown> {
       msg.native_step !== proposal.nativeStep
     )
       return false;
-    this.terminalProposals.delete(owner);
+    this.clearTerminalProposal(owner);
+    this.flushTerminalObservations(owner);
     owner.failure ??= new NativeError(
       'Terminal tool completion failed before durable publication',
     );
@@ -7241,12 +7594,15 @@ export class Session<OutputT = string, Context = unknown> {
         };
         signal.addEventListener('abort', abort, { once: true });
         try {
-          this.terminalProposals.delete(owner);
+          this.clearTerminalProposal(owner);
           capturedCatalog = this.sourceCatalog(
             msg,
             z.string().parse(msg.generation),
           );
           check();
+          await this.awaitInputGuardrails(
+            owner instanceof NativeTurn ? this.rootRun(owner) : owner,
+          );
           const slot = z.number().int().nonnegative().safe().parse(msg.slot);
           const captured = capturedCatalog.tools[slot];
           const declaration =
@@ -7273,7 +7629,7 @@ export class Session<OutputT = string, Context = unknown> {
             name: declaration.name,
             namespace: toolNamespace(declaration),
           };
-          this.terminalProposals.set(owner, { ...attempt, accepted: false });
+          this.terminalState(owner).proposal = { ...attempt, accepted: false };
           let output: PreparedOutput = this.childOutput;
           if (!child) {
             const submission = submissions.get(owner)!;
@@ -7291,7 +7647,7 @@ export class Session<OutputT = string, Context = unknown> {
           const converted = parseToolCompletion(output, msg.output);
           check();
           const beforeComplete = this.sourceModelCallbacks(msg).beforeComplete;
-          if (beforeComplete) {
+          if (beforeComplete && msg.guard_only !== true) {
             const scope = this.decisionScope(event.msg, signal);
             try {
               const model = z.string().parse(msg.model);
@@ -7358,12 +7714,49 @@ export class Session<OutputT = string, Context = unknown> {
             }
           }
           check();
-          this.terminalProposals.set(owner, {
-            ...attempt,
-            accepted: true,
-            value: converted.value,
-            json: converted.json,
-          });
+          await this.checkOutputGuardrails(
+            owner,
+            msg,
+            {
+              context: this.options.context,
+              text: null,
+              sessionId: this.id,
+              turnId: z.string().parse(turnId),
+              ...(child ? { subagentId: owner.childId } : {}),
+              model: z.string().parse(msg.model),
+              signal,
+              continuationCount: z
+                .number()
+                .int()
+                .nonnegative()
+                .parse(msg.continuation_count),
+              finalOutput: converted.value,
+              toolCall: terminalCallInfo(
+                {
+                  sessionId: this.id,
+                  turnId: z.string().parse(turnId),
+                  childId: child ? owner.childId : null,
+                  childIncarnation: child ? owner.incarnation : null,
+                },
+                {
+                  call_id: z.string().parse(msg.call_id),
+                  name: declaration.name,
+                  namespace: toolNamespace(declaration),
+                  final_output: converted.json,
+                },
+              ),
+            },
+            check,
+          );
+          check();
+          if (msg.guard_only === true) this.clearTerminalProposal(owner);
+          else
+            this.terminalState(owner).proposal = {
+              ...attempt,
+              accepted: true,
+              value: converted.value,
+              json: converted.json,
+            };
           check();
           if (
             !native._reply_tool_completion(
@@ -7389,6 +7782,154 @@ export class Session<OutputT = string, Context = unknown> {
         }
       }),
     );
+  }
+
+  private async awaitInputGuardrails(
+    run: NativeTurn | ChildCallbackOwner,
+  ): Promise<void> {
+    await run.inputGuardrailsTask;
+    if (run.failure !== undefined) throw run.failure;
+  }
+
+  private async checkInputGuardrails(
+    run: NativeTurn | ChildCallbackOwner,
+    message: Record<string, unknown>,
+    guards: readonly InputGuardrail<any>[],
+    childContext?: ChildBeforeStepContext<Context>,
+  ): Promise<void> {
+    if (!guards.length) return;
+    const agent = this.sourceApplicationAgent(message);
+    if (!agent) throw new NativeError('Guardrail has no source Agent');
+    const signal = run.controller.signal;
+    const check = () => {
+      signal.throwIfAborted();
+      if (!this.current(run))
+        throw new NativeError('Expired input guardrail owner');
+    };
+    const scope = this.decisionScope(message, signal);
+    try {
+      const settled = await Promise.allSettled(
+        guards.map(async (guard) => {
+          check();
+          const result = captureGuardrailResult(
+            await (childContext
+              ? guard.childCallback!(
+                  Object.freeze({
+                    ...childContext,
+                    decide: scope.decide,
+                    signal,
+                    agent,
+                    input: structuredClone(
+                      (run as ChildCallbackOwner).guardrailInput!,
+                    ),
+                  }),
+                )
+              : guard.callback(
+                  Object.freeze({
+                    decide: scope.decide,
+                    context: this.options.context,
+                    submission: this.#turnFor(this.rootRun(run as NativeTurn)),
+                    signal,
+                    agent,
+                    input: structuredClone((run as NativeTurn).guardrailInput!),
+                  }),
+                )),
+          );
+          check();
+          return Object.freeze({
+            kind: 'input' as const,
+            name: guard.name,
+            result,
+            agent,
+            sessionId: this.id,
+            turnId: z
+              .string()
+              .parse(run instanceof NativeTurn ? run.id : run.turnId),
+            ...(run instanceof NativeTurn ? {} : { subagentId: run.childId }),
+          });
+        }),
+      );
+      const records = settled.flatMap((entry) =>
+        entry.status === 'fulfilled' ? [entry.value] : [],
+      );
+      run.guardrailResults.push(...records);
+      const failed = settled.find((entry) => entry.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      check();
+      const tripped = records.find((record) => record.result.tripwireTriggered);
+      if (tripped)
+        throw new GuardrailTripwire(
+          tripped,
+          Object.freeze([...run.guardrailResults]),
+        );
+    } finally {
+      await scope.close();
+    }
+  }
+
+  private async checkOutputGuardrails(
+    owner: NativeTurn | ChildCallbackOwner,
+    message: Record<string, unknown>,
+    request: Omit<CompletionContext<any, unknown>, 'decide'>,
+    check: () => void,
+  ): Promise<void> {
+    const source = this.messageProfile(message);
+    const declaration = source
+      ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+      : undefined;
+    const agent = this.sourceApplicationAgent(message);
+    if (!agent) throw new NativeError('Guardrail has no source Agent');
+    const guards = [
+      ...(this.options.outputGuardrails ?? []),
+      ...(source
+        ? declaration!.outputGuardrails
+        : (this.options.agentOutputGuardrails ?? [])),
+    ];
+    if (!guards.length) return;
+    const scope = this.decisionScope(message, request.signal);
+    try {
+      const settled = await Promise.allSettled(
+        guards.map(async (guard) => {
+          check();
+          const result = captureGuardrailResult(
+            await guard.callback(
+              Object.freeze({
+                ...request,
+                finalOutput: structuredClone(request.finalOutput),
+                decide: scope.decide,
+              }),
+              agent,
+            ),
+          );
+          check();
+          return Object.freeze({
+            kind: 'output' as const,
+            name: guard.name,
+            result,
+            agent,
+            sessionId: request.sessionId,
+            turnId: request.turnId,
+            ...(request.subagentId ? { subagentId: request.subagentId } : {}),
+            ...(request.toolCall ? { toolCall: request.toolCall } : {}),
+          });
+        }),
+      );
+      const records = settled.flatMap((entry) =>
+        entry.status === 'fulfilled' ? [entry.value] : [],
+      );
+      owner.guardrailResults.push(...records);
+      const failed = settled.find((entry) => entry.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      check();
+      const tripped = records.find((record) => record.result.tripwireTriggered);
+      if (tripped)
+        throw new GuardrailTripwire(
+          tripped,
+          Object.freeze([...owner.guardrailResults]),
+        );
+    } finally {
+      await scope.close();
+    }
   }
 
   private sourceModelCallbacks(message: Record<string, unknown>): {
@@ -7469,6 +8010,12 @@ export class Session<OutputT = string, Context = unknown> {
           signal.addEventListener('abort', reject, { once: true });
           try {
             check();
+            if (msg.type === '_sdk_before_complete')
+              await this.awaitInputGuardrails(
+                child
+                  ? (owner as ChildCallbackOwner)
+                  : this.rootRun(owner as NativeTurn),
+              );
             const base = {
               context: this.options.context,
               sessionId: this.id,
@@ -7605,6 +8152,54 @@ export class Session<OutputT = string, Context = unknown> {
                       this.decodedOutputs.set(owner, repaired.output);
                     }
                   }
+                }
+              }
+              if (decision === undefined) {
+                const source = this.messageProfile(msg);
+                const agent = source
+                  ? this.profileRuntimes.get(source.profile_id)!.profile
+                      .declaration
+                  : this.options.applicationAgent;
+                if (
+                  (this.options.outputGuardrails?.length ?? 0) +
+                    (source
+                      ? (agent?.outputGuardrails.length ?? 0)
+                      : (this.options.agentOutputGuardrails?.length ?? 0)) >
+                  0
+                ) {
+                  let value: unknown = text ?? '';
+                  if (!child) {
+                    const submission = submissions.get(owner)!;
+                    const prepared =
+                      source &&
+                      !submission.outputOverride &&
+                      !submission.realtimeTools
+                        ? this.profileRuntimes.get(source.profile_id)!.output
+                        : submission.output;
+                    if (this.decodedOutputs.has(owner))
+                      value = this.decodedOutputs.get(owner);
+                    else {
+                      value = prepared.parse
+                        ? prepared.parse(text ?? '')
+                        : (text ?? '');
+                      this.decodedOutputs.set(owner, value);
+                    }
+                  }
+                  await this.checkOutputGuardrails(
+                    owner,
+                    msg,
+                    {
+                      ...base,
+                      text,
+                      finalOutput: value,
+                      continuationCount: z
+                        .number()
+                        .int()
+                        .nonnegative()
+                        .parse(msg.continuation_count),
+                    },
+                    check,
+                  );
                 }
               }
               if (!child && decision !== undefined)
@@ -7789,11 +8384,12 @@ export class Session<OutputT = string, Context = unknown> {
             msg,
             msg.generation as string,
           );
+          const sourceProfile = this.messageProfile(msg);
           if (
             !selection ||
             !this.current(run) ||
             msg.turn_id !== run.id ||
-            (!this.options.agentGraph &&
+            (!sourceProfile &&
               selection.generation !== sourceCatalog.generation)
           )
             throw new NativeError('Expired step selection');
@@ -7826,6 +8422,43 @@ export class Session<OutputT = string, Context = unknown> {
           assertActive();
           selection.budget?.check(assertActive);
           const stepIndex = selection.stepIndex++;
+          if (run.failure !== undefined) throw run.failure;
+          // Selection can repeat before the first provider request. Parallel
+          // input checks join at completion, not during this preparation.
+          if (!run.inputGuardrailsStarted && run.guardrailInput !== undefined) {
+            run.inputGuardrailsStarted = true;
+            const source = this.messageProfile(msg);
+            const agent = source
+              ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+              : this.options.applicationAgent;
+            if (!agent) throw new NativeError('Guardrail has no source Agent');
+            const guards = [
+              ...(this.options.inputGuardrails ?? []),
+              ...(source
+                ? agent.inputGuardrails
+                : (this.options.agentInputGuardrails ?? [])),
+            ];
+            try {
+              await this.checkInputGuardrails(
+                run,
+                msg,
+                guards.filter((guard) => guard.runInParallel === false),
+              );
+              const parallel = guards.filter(
+                (guard) => guard.runInParallel !== false,
+              );
+              if (parallel.length) {
+                run.inputGuardrailsTask = this.invokeCallback(run, () =>
+                  this.checkInputGuardrails(run, msg, parallel),
+                ).finally(() => {
+                  run.guardrailInput = undefined;
+                });
+                this.track(run, run.inputGuardrailsTask);
+              }
+            } finally {
+              if (!run.inputGuardrailsTask) run.guardrailInput = undefined;
+            }
+          }
           const scope = this.decisionScope(event.msg, signal);
           let names: ReturnType<typeof this.selectedStepNames> = [];
           let stopped = false;
@@ -7856,11 +8489,13 @@ export class Session<OutputT = string, Context = unknown> {
           }
           selection.budget?.check(assertActive);
           signal.throwIfAborted();
-          if (this.options.agentGraph) {
-            const source = this.messageProfile(msg)!;
-            const servers = this.profileStepMcp.get(
-              this.profileKey(source.profile_id, sourceCatalog.generation),
-            );
+          {
+            const source = sourceProfile;
+            const servers = source
+              ? this.profileStepMcp.get(
+                  this.profileKey(source.profile_id, sourceCatalog.generation),
+                )
+              : this.mcpTools;
             if (!servers)
               throw new NativeError(
                 'Native step has no captured source MCP bindings',
@@ -7870,14 +8505,20 @@ export class Session<OutputT = string, Context = unknown> {
             );
             this.stepMcp.set(run, {
               servers: servers.filter((server) =>
-                mcpToolNames([server]).some((identity) =>
-                  selectedNames.has(
-                    JSON.stringify([identity.namespace, identity.name]),
-                  ),
+                this.stepMcpProjection(event).some(
+                  (identity) =>
+                    identity.server === server.name &&
+                    server.tools.includes(identity.tool) &&
+                    selectedNames.has(
+                      JSON.stringify([identity.namespace, identity.name]),
+                    ),
                 ),
               ),
               names,
-              generation: sourceCatalog.generation,
+              projection: this.stepMcpProjection(event),
+              generation: source
+                ? sourceCatalog.generation
+                : this.mcpGeneration,
             });
           }
           reply(names);
@@ -8019,6 +8660,68 @@ export class Session<OutputT = string, Context = unknown> {
         this.callbackAuthorityFailed(delivery, error);
       }
       signal.throwIfAborted();
+      if (owner.failure !== undefined) throw owner.failure;
+      if (!owner.inputGuardrailsStarted) {
+        const source = this.messageProfile(event.msg);
+        const agent = source
+          ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+          : this.options.applicationAgent;
+        const guards = [
+          ...(this.options.inputGuardrails ?? []),
+          ...(source
+            ? agent!.inputGuardrails
+            : (this.options.agentInputGuardrails ?? [])),
+        ].filter((guard) => guard.childCallback !== undefined);
+        if (guards.length) {
+          if (!agent)
+            throw new NativeError('Child guardrail has no source Agent');
+          const initial = event.msg.initial_input;
+          if (
+            !Array.isArray(initial) ||
+            !initial.every(
+              (item) =>
+                item !== null &&
+                typeof item === 'object' &&
+                !Array.isArray(item),
+            )
+          )
+            throw new NativeError(
+              'Child guardrail lacks admitted initial input',
+            );
+          owner.guardrailInput = structuredClone(initial) as JsonObject[];
+          owner.inputGuardrailsStarted = true;
+          try {
+            await this.checkInputGuardrails(
+              owner,
+              event.msg,
+              guards.filter((guard) => guard.runInParallel === false),
+              context,
+            );
+            const parallel = guards.filter(
+              (guard) => guard.runInParallel !== false,
+            );
+            if (parallel.length) {
+              owner.inputGuardrailsTask = this.trackOwnedCallback(
+                owner,
+                async () => {
+                  try {
+                    await this.checkInputGuardrails(
+                      owner,
+                      event.msg,
+                      parallel,
+                      context,
+                    );
+                  } finally {
+                    owner.guardrailInput = undefined;
+                  }
+                },
+              );
+            }
+          } finally {
+            if (!owner.inputGuardrailsTask) owner.guardrailInput = undefined;
+          }
+        }
+      }
       capturedSelection.stepIndex++;
       let names: ReturnType<typeof this.selectedStepNames> = [];
       let stopped = false;
@@ -8079,9 +8782,8 @@ export class Session<OutputT = string, Context = unknown> {
     event: NativeEvent,
     sourceCatalog: ToolCatalog,
   ): OperationSelection['names'] {
-    if (!this.options.agentGraph || selection.names === undefined)
-      return selection.names;
-    const source = this.messageProfile(event.msg)!;
+    const source = this.messageProfile(event.msg);
+    if (!source || selection.names === undefined) return selection.names;
     const sourceMcp = this.profileStepMcp.get(
       this.profileKey(source.profile_id, sourceCatalog.generation),
     );
@@ -8111,6 +8813,37 @@ export class Session<OutputT = string, Context = unknown> {
     });
   }
 
+  private stepMcpProjection(event: NativeEvent) {
+    return z
+      .array(
+        z.object({
+          server: z.string(),
+          tool: z.string(),
+          namespace: z.string(),
+          name: z.string(),
+        }),
+      )
+      .parse(event.msg.mcp_names ?? []);
+  }
+
+  private mcpNameIndex(servers: readonly McpTool[]) {
+    const byRaw = new Map<string, ReturnType<typeof toolIdentity>>();
+    const byProjected = new Map<string, readonly [string, string]>();
+    for (const server of servers) {
+      const names = mcpToolNames([server]);
+      for (let index = 0; index < names.length; index++) {
+        const name = names[index]!;
+        const raw = [server.name, server.tools[index]!] as const;
+        const rawKey = JSON.stringify(raw);
+        const projectedKey = JSON.stringify([name.namespace, name.name]);
+        // Preserve the first captured declaration when identities overlap.
+        if (!byRaw.has(rawKey)) byRaw.set(rawKey, name);
+        if (!byProjected.has(projectedKey)) byProjected.set(projectedKey, raw);
+      }
+    }
+    return { byRaw, byProjected };
+  }
+
   private selectedStepNames(
     event: NativeEvent,
     selected: readonly ToolSelector<Context>[] | undefined,
@@ -8130,14 +8863,55 @@ export class Session<OutputT = string, Context = unknown> {
       event.msg.defaults === undefined
         ? undefined
         : normalize(toolNames.parse(event.msg.defaults));
+    const projection = this.stepMcpProjection(event);
+    const source = this.messageProfile(event.msg);
+    if (source && !sourceCatalog)
+      sourceCatalog = this.sourceCatalog(
+        event.msg,
+        z.string().parse(event.msg.generation),
+      );
+    const servers = source
+      ? (this.profileStepMcp.get(
+          this.profileKey(source.profile_id, sourceCatalog!.generation),
+        ) ?? [])
+      : this.mcpTools;
+    const declared = this.mcpNameIndex(servers);
+    const nativeByRaw = new Map<string, (typeof projection)[number]>();
+    for (const item of projection) {
+      const key = JSON.stringify([item.server, item.tool]);
+      if (!nativeByRaw.has(key)) nativeByRaw.set(key, item);
+    }
+    const resolve = (
+      name: ReturnType<typeof toolIdentity>,
+      selector?: ToolSelector<Context>,
+    ) => {
+      const raw =
+        selector?.kind === 'tool_ref' ? mcpRefIdentity(selector) : undefined;
+      const match =
+        raw ??
+        declared.byProjected.get(JSON.stringify([name.namespace, name.name]));
+      if (!match) return name;
+      const actual = nativeByRaw.get(JSON.stringify(match));
+      if (!actual)
+        throw new TypeError('MCP selector is outside the captured native step');
+      return { name: actual.name, namespace: actual.namespace };
+    };
+    const resolvedDefaults = defaults?.map((name) => resolve(name));
     const names =
       selected === undefined
-        ? (defaults ?? nativeDefaults ?? candidates)
-        : this.selectionNames([...selected], sourceCatalog);
+        ? (resolvedDefaults ?? nativeDefaults ?? candidates)
+        : this.selectionNames(
+            [...selected],
+            sourceCatalog,
+            servers,
+            declared,
+          ).map((name, index) => resolve(name, selected[index]));
     const ceiling =
-      defaults && this.options.agentGraph
+      resolvedDefaults && source
         ? new Set(
-            defaults.map((tool) => JSON.stringify([tool.namespace, tool.name])),
+            resolvedDefaults.map((tool) =>
+              JSON.stringify([tool.namespace, tool.name]),
+            ),
           )
         : undefined;
     const allowed = new Set(
@@ -8273,7 +9047,14 @@ export class Session<OutputT = string, Context = unknown> {
     identity: ToolIdentity,
     status: ToolStatus,
     output: ToolOutput | null = null,
+    deferred = false,
   ): void {
+    if (deferred) {
+      const state = this.terminalProposals.get(owner);
+      if (status !== 'completed' && state?.observations.delete(identity.callId))
+        this.observeTool(owner, identity, 'tool_finished', status, null);
+      return;
+    }
     this.observeTool(owner, identity, 'tool_finished', status, output);
   }
 
@@ -8461,69 +9242,14 @@ export class Session<OutputT = string, Context = unknown> {
           typeof msg.arguments === 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
             : losslessJsonValueSchema.parse(msg.arguments);
-        const grant = createManualRequest(
-          tool,
-          {
-            sessionId: this.id,
-            submissionId:
-              run instanceof NativeTurn
-                ? this.submissionIds.get(run)!
-                : `child:${run.childId}:${run.incarnation}:${run.turnId}`,
-            subagentId: run instanceof NativeTurn ? null : run.childId,
-            turnId,
-            callId,
-            call: managedCallInfo(
-              {
-                sessionId: this.id,
-                childId: run instanceof NativeTurn ? null : run.childId,
-                childIncarnation:
-                  run instanceof NativeTurn ? null : run.incarnation,
-              },
-              msg,
-            ),
-          },
-          args,
-          () => {
-            if (!this.current(run) || this.manualSealing) return false;
-            try {
-              return this.manualCurrent(event);
-            } catch {
-              return false;
-            }
-          },
-          managedApproval(tool) !== undefined,
-        );
-        this.manualCalls.set(key, {
-          run,
-          event,
-          tool,
-          grant,
-          tracing: getCurrentSpan(),
-          identity,
-          ready: false,
-        });
-        calls.add(key);
-        if (approval) {
-          if (
-            msg._sdk_restored_approval === true &&
-            msg._sdk_approval_required !== true
-          )
-            throw new NativeError(
-              'Saved manual call cannot acquire managed callback authority',
-            );
-          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+        const withApprovalContext = async <T>(
+          callback: (context: ToolCallContext, check: () => void) => Promise<T>,
+        ): Promise<T> => {
           const submission = root
             ? this.#turnFor(run)
             : await this.childSubmission(run);
-          if (!submission) return;
-          const source = JSON.stringify([
-            msg.profile_id ?? null,
-            msg.profile_epoch ?? null,
-            String(marker.generation),
-          ]);
-          const cached = this.approvalDecisions
-            .get(toolDeclarationIdentity(tool))
-            ?.get(source);
+          if (!submission)
+            throw new NativeError('Managed approval submission is unavailable');
           const scope = this.decisionScope(event.msg, run.controller.signal);
           const context = {
             decide: scope.decide,
@@ -8555,9 +9281,100 @@ export class Session<OutputT = string, Context = unknown> {
                 'Managed approval expired during policy evaluation',
               );
           };
-          let decision: Awaited<ReturnType<typeof approval.prepare>>;
           try {
-            decision = await approval.prepare(
+            return await callback(context, check);
+          } finally {
+            await scope.close();
+          }
+        };
+        const initialInput =
+          approval?.prepareOriginalInput &&
+          msg._sdk_restored_approval !== true &&
+          msg._sdk_effective_arguments === undefined
+            ? await withApprovalContext((context, check) =>
+                approval.prepareOriginalInput!(args, context, check),
+              )
+            : undefined;
+        if (initialInput && 'failure' in initialInput) {
+          run.controller.signal.throwIfAborted();
+          admission?.check();
+          if (!this.current(run) || !this.manualCurrent(event)) return;
+          const accepted = await this.#native._respond_python_tool(
+            encodeReceipt({
+              request: msg,
+              response: {
+                success: false,
+                contentItems: [
+                  { type: 'inputText', text: initialInput.failure },
+                ],
+              },
+            }),
+          );
+          if (accepted) this.observeToolEnd(run, identity, 'failed');
+          return;
+        }
+        const grant = createManualRequest(
+          tool,
+          {
+            sessionId: this.id,
+            submissionId:
+              run instanceof NativeTurn
+                ? this.submissionIds.get(run)!
+                : `child:${run.childId}:${run.incarnation}:${run.turnId}`,
+            subagentId: run instanceof NativeTurn ? null : run.childId,
+            turnId,
+            callId,
+            call: managedCallInfo(
+              {
+                sessionId: this.id,
+                childId: run instanceof NativeTurn ? null : run.childId,
+                childIncarnation:
+                  run instanceof NativeTurn ? null : run.incarnation,
+              },
+              msg,
+            ),
+          },
+          args,
+          () => {
+            if (!this.current(run) || this.manualSealing) return false;
+            try {
+              return this.manualCurrent(event);
+            } catch {
+              return false;
+            }
+          },
+          managedApproval(tool) !== undefined,
+          initialInput && 'value' in initialInput ? initialInput : undefined,
+        );
+        this.manualCalls.set(key, {
+          run,
+          event,
+          tool,
+          grant,
+          tracing: getCurrentSpan(),
+          identity,
+          ready: false,
+        });
+        calls.add(key);
+        if (approval) {
+          if (
+            msg._sdk_restored_approval === true &&
+            msg._sdk_approval_required !== true
+          )
+            throw new NativeError(
+              'Saved manual call cannot acquire managed callback authority',
+            );
+          if (!this.#native._require_tool_approval(encodeReceipt(msg))) return;
+          const source = JSON.stringify([
+            msg.profile_id ?? null,
+            msg.profile_epoch ?? null,
+            String(marker.generation),
+          ]);
+          const cached = this.approvalDecisions
+            .get(toolDeclarationIdentity(tool))
+            ?.get(source);
+          const decision = await withApprovalContext((context, check) =>
+            approval.prepare(
               args,
               context,
               check,
@@ -8565,11 +9382,14 @@ export class Session<OutputT = string, Context = unknown> {
               msg._sdk_effective_arguments === undefined
                 ? undefined
                 : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
+            ),
+          );
+          run.controller.signal.throwIfAborted();
+          admission?.check();
+          if (!this.current(run) || !this.manualCurrent(event))
+            throw new NativeError(
+              'Managed approval expired during policy evaluation',
             );
-          } finally {
-            await scope.close();
-          }
-          check();
           if (
             !this.#native._require_tool_approval(
               encodeReceipt(msg),
@@ -9241,6 +10061,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.manualRestoring) await this.readers[0];
         if (!this.current(run))
           throw new TurnAborted('Manual checkpoint cancelled');
+        const measuredUsage = this.runUsage(run);
         const state = fromNativeCheckpoint(
           this.checkpointCatalog(
             parseNativeCheckpoint(result.checkpoint),
@@ -9268,7 +10089,13 @@ export class Session<OutputT = string, Context = unknown> {
                   schema: manualResultSchema(tool),
                 })),
               usage:
-                run.tokenUsage === null ? null : runUsageToWire(run.tokenUsage),
+                run.tokenUsage === null
+                  ? null
+                  : runUsageToWire(
+                      measuredUsage,
+                      measuredUsage.requests,
+                      measuredUsage.missingUsageRequests,
+                    ),
             },
           },
           this.checkpointSelections(run),
@@ -9367,14 +10194,18 @@ export class Session<OutputT = string, Context = unknown> {
     run.accepted.resolve({ status: 'started', turn_id: run.id });
     const usage = state.manual_context.usage;
     if (usage)
-      run.addUsage({
-        input_tokens: usage.inputTokens,
-        cached_input_tokens: usage.cachedInputTokens,
-        cache_write_input_tokens: usage.cacheWriteInputTokens,
-        output_tokens: usage.outputTokens,
-        reasoning_output_tokens: usage.reasoningOutputTokens,
-        total_tokens: usage.totalTokens,
-      });
+      run.addUsage(
+        {
+          input_tokens: usage.inputTokens,
+          cached_input_tokens: usage.cachedInputTokens,
+          cache_write_input_tokens: usage.cacheWriteInputTokens,
+          output_tokens: usage.outputTokens,
+          reasoning_output_tokens: usage.reasoningOutputTokens,
+          total_tokens: usage.totalTokens,
+        },
+        parseTokenCount(usage.requests ?? 0),
+        parseTokenCount(usage.missingUsageRequests ?? 0),
+      );
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
     this.manualCheckpointRun = run;
@@ -9490,6 +10321,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       const scope = this.decisionScope(event.msg, signal);
       const context = {
+        [usageReportBinding]: this.toolUsageReporter(owner, check),
         decide: scope.decide,
         [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
@@ -9526,6 +10358,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.observeToolStart(owner, identity);
       let status: ToolStatus | undefined;
       let observedOutput: ToolOutput | null = null;
+      let deferredObservation = false;
       try {
         if (
           !(await this.realtimeFunctionEnabled(owner, msg, tool.name, signal))
@@ -9602,6 +10435,10 @@ export class Session<OutputT = string, Context = unknown> {
           return;
         }
         const responseOutput = structuredClone(response);
+        if (tool.finishTurn && responseOutput.success) {
+          this.registerTerminalObservation(owner, identity, 'completed');
+          deferredObservation = true;
+        }
         let accepted: boolean;
         try {
           accepted = await native._respond_python_tool(
@@ -9620,7 +10457,7 @@ export class Session<OutputT = string, Context = unknown> {
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
         }
-        if (accepted)
+        if (accepted && !deferredObservation)
           observedOutput = new ToolOutput(
             responseOutput.contentItems,
             responseOutput.success,
@@ -9670,6 +10507,7 @@ export class Session<OutputT = string, Context = unknown> {
           identity,
           finalStatus ?? 'failed',
           finalStatus === 'cancelled' ? null : observedOutput,
+          deferredObservation,
         );
       }
     };
@@ -11176,8 +12014,8 @@ export class Session<OutputT = string, Context = unknown> {
           }),
         toolCompletion: (raw) => {
           const fact = toolCompletionSchema.parse(raw);
-          const proposal = this.terminalProposals.get(owner);
-          this.terminalProposals.delete(owner);
+          const proposal = this.terminalProposals.get(owner)?.proposal;
+          this.clearTerminalProposal(owner);
           if (
             !proposal ||
             !proposal.accepted ||
@@ -11209,6 +12047,13 @@ export class Session<OutputT = string, Context = unknown> {
             native.turn_id,
           ),
         requests: {
+          guardrailResults: () => owner.guardrailResults,
+          runUsage: () =>
+            runUsageSnapshot(
+              owner.tokenUsage,
+              owner.requests,
+              owner.missingUsageRequests,
+            ),
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
@@ -11312,6 +12157,219 @@ export class Session<OutputT = string, Context = unknown> {
       encode({ input: parts }, audioInputByteLimit(parts)),
     );
     return this.publicChildTurn(native, producer);
+  }
+
+  /** Native stored history branch, with the source Session remaining usable.
+   * Idle LocalStorage root; fresh immutable ID at latest/before/through-turn.
+   * History only: no descendant or native VM cloning. Subsequent opening with
+   * the same LocalStorage and current Agent; no portable checkpoint conversion. */
+  async forkStored(options: StoredForkOptions = {}): Promise<string> {
+    this.checkCallbackOperation('fork stored history');
+    if (!options || typeof options !== 'object' || Array.isArray(options))
+      throw new TypeError('Stored fork options must be an object');
+    if (!this.options.localStorage)
+      throw new TypeError('Stored forks require native LocalStorage');
+    if (this.realtimeOwner)
+      throw new NativeError('Close native Realtime before a stored fork');
+    this.requireCompleteRepairReceipts();
+    if (this.graphStops.size || this.childContinuations.size)
+      throw new NativeError('Stored fork requires a settled Session');
+    const request: Record<string, string> = {};
+    for (const [name, value] of [
+      ['before_turn_id', options.beforeTurnId],
+      ['through_turn_id', options.throughTurnId],
+    ] as const) {
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || !value)
+        throw new TypeError('Stored fork turn IDs must be nonempty strings');
+      request[name] = value;
+    }
+    if (Object.keys(request).length > 1)
+      throw new TypeError('Choose either beforeTurnId or throughTurnId');
+    return this.mutate(async () => {
+      await this.discardForkCopy();
+      try {
+        const copy = await this.#native._fork_stored(encode(request));
+        this.forkCopy = copy;
+        const id = await copy._publish_stored_fork();
+        this.forkCopy = undefined;
+        return id;
+      } catch (error) {
+        try {
+          await this.discardForkCopy();
+          // Creation can succeed even when its wrapper never reaches JS.
+          const diagnostic = await this.#native._discard_stored_fork();
+          if (diagnostic) throw new NativeError(diagnostic);
+        } catch (cleanup) {
+          throw new AggregateError(
+            [error, cleanup],
+            'Stored fork and cleanup failed',
+            {
+              cause: error,
+            },
+          );
+        }
+        throw error;
+      }
+    });
+  }
+
+  /** Core has been closing this Session before reverting its stored conversation.
+   * The named turn and every later turn: excluded. Immutable Session.id;
+   * subsequent opening through the same LocalStorage and current Agent. */
+  async revertStored(options: { beforeTurnId: string }): Promise<void> {
+    const { beforeTurnId } = options;
+    if (typeof beforeTurnId !== 'string' || !beforeTurnId)
+      throw new TypeError('beforeTurnId must be a nonempty string');
+    return this.closeStoredHistory({
+      kind: 'revert',
+      before_turn_id: beforeTurnId,
+    });
+  }
+
+  /** Core has been closing this Session before deleting its stored conversation.
+   * LocalStorage only; native writer/reference exclusion and sidecar cleanup.
+   * Explicit rejection after a concurrent prior close; no silent success. */
+  async deleteStored(): Promise<void> {
+    return this.closeStoredHistory({ kind: 'delete' });
+  }
+
+  private closeStoredHistory(action: Record<string, string>): Promise<void> {
+    this.checkCallbackOperation('change stored history while closing');
+    this.idle('change stored history while closing');
+    this.storedHistoryClose = this.#native._stored_history_close_action(
+      JSON.stringify(action),
+    );
+    return this.close();
+  }
+
+  /** Persist this LocalStorage Session's label; null clears it.
+   * Surrounding whitespace trimmed; blank names rejected. Nonunique labels,
+   * immutable Session identity; no alias or resume authority. */
+  async setStoredName(name: string | null): Promise<string | null> {
+    if (name !== null && typeof name !== 'string')
+      throw new TypeError('name must be a string or null');
+    this.checkCallbackOperation('set the stored name on');
+    if (!this.isOpen || this.manualSealing || this.manualSealed)
+      throw new NativeError('Stored names require a healthy open Session');
+    return JSON.parse(
+      await this.#native._set_stored_name(JSON.stringify(name)),
+    ) as string | null;
+  }
+
+  /** Committed native Exec application-session headers from this LocalStorage.
+   * Exec category, including SDK/exec applications; interactive CLI, IDE and
+   * subagent categories excluded. Native creation-order cursor; active and
+   * approval-paused reads without snapshot isolation or totals. Archived
+   * collection only for archived=true; active collection otherwise. Potential
+   * short/empty pages with a next cursor after deletion. Concurrent opening or
+   * fork entries; no stable pagination or publication promise. Validated links;
+   * without opening the listed sessions or loading their history. Existing
+   * materialization/flush of the current owner.
+   *
+   * Page sizes 1 through 1000; default 50. Opaque cursors for the same options.
+   * Paging with the returned cursor, including empty pages:
+   * ```ts
+   * let cursor: string | undefined;
+   * const ids: string[] = [];
+   * do {
+   *   const page = await session.storedSessions({ limit: 50, cursor });
+   *   ids.push(...page.sessions.map((item) => item.id));
+   *   cursor = page.nextCursor ?? undefined;
+   * } while (cursor !== undefined);
+   * ```
+   */
+  async storedSessions(
+    options: { limit?: number; cursor?: string; archived?: boolean } = {},
+  ): Promise<StoredSessionPage> {
+    const { limit = 50, cursor, archived = false } = options;
+    const query = storedOptions(limit, cursor);
+    return storedSessionPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'sessions',
+          limit: query.limit,
+          cursor: query.cursor,
+          archived,
+        }),
+      ),
+    );
+  }
+
+  /** Core has been returning committed turn metadata and optional summary items.
+   * Active/approval-paused availability; opaque native cursors without CAS
+   * revisions. Full indexed item detail through storedItems. Unsupported stores
+   * fail without a hidden full-journal fallback. */
+  async storedTurns(
+    options: {
+      limit?: number;
+      cursor?: string;
+      direction?: 'asc' | 'desc';
+      includeSummary?: boolean;
+    } = {},
+  ): Promise<StoredTurnPage> {
+    const {
+      limit = 50,
+      cursor,
+      direction = 'asc',
+      includeSummary = false,
+    } = options;
+    const query = storedOptions(limit, cursor, direction);
+    if (typeof includeSummary !== 'boolean')
+      throw new TypeError('includeSummary must be a boolean');
+    return storedTurnPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'turns',
+          ...query,
+          include_items: includeSummary,
+        }),
+      ),
+    );
+  }
+
+  /** Core has been paging committed item projections in creation order.
+   * Raw original JSON records through historySnapshot; independent copied pages. */
+  async storedItems(
+    options: {
+      turnId?: string;
+      limit?: number;
+      cursor?: string;
+      direction?: 'asc' | 'desc';
+    } = {},
+  ): Promise<StoredItemPage> {
+    const { limit = 50, cursor, direction = 'asc', turnId } = options;
+    const query = storedOptions(limit, cursor, direction);
+    if (turnId !== undefined && (typeof turnId !== 'string' || !turnId))
+      throw new TypeError('turnId must be a nonempty string');
+    return storedItemPage(
+      await this.#native._stored_history(
+        JSON.stringify({ kind: 'items', ...query, turn_id: turnId ?? null }),
+      ),
+    );
+  }
+
+  /** Core has been searching indexed visible messages by literal substring.
+   * Case-insensitive matching; UTF-16 snippet offsets. Inclusive turnCursor for
+   * storedTurns at the matching turn. */
+  async searchHistory(
+    text: string,
+    options: { limit?: number; cursor?: string } = {},
+  ): Promise<StoredMatchPage> {
+    const { limit = 50, cursor } = options;
+    const query = storedOptions(limit, cursor);
+    if (typeof text !== 'string' || !text.trim())
+      throw new TypeError('Stored history search requires nonempty text');
+    return storedMatchPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'search',
+          limit: query.limit,
+          cursor: query.cursor,
+          text,
+        }),
+      ),
+    );
   }
 
   async #readHistory(subagentId?: string) {
@@ -12073,7 +13131,67 @@ export class Session<OutputT = string, Context = unknown> {
       .catch(() => {});
     return pending;
   }
+  /** Retire this owned Session and capture its associated durable workspace. */
+  async suspendWorkspace(): Promise<ManagedWorkspaceCheckpoint> {
+    this.checkCallbackOperation('suspend managed workspace on');
+    const managed = this.options.managedWorkspace;
+    if (!managed)
+      throw new TypeError(
+        'Managed capture requires an owned managed sandbox source',
+      );
+    if (managed.capture) return managed.capture;
+    managed.captureRequested = true;
+    let capture: Promise<SessionState>;
+    try {
+      capture =
+        this.lifecycle.kind === 'turn'
+          ? this.captureSuspendedState()
+          : this.captureIdleState(true);
+    } catch (error) {
+      managed.captureRequested = false;
+      throw error;
+    }
+    if (
+      this.lifecycle.kind !== 'mutation' &&
+      !this.manualSeal &&
+      !this.manualSealed
+    ) {
+      managed.captureRequested = false;
+      return capture.then(() => {
+        throw new NativeError('Managed capture admission was not retained');
+      });
+    }
+    const pending = capture.then(
+      async (state) => {
+        await this.close();
+        if (!managed.receipt)
+          throw new NativeError(
+            'Managed retirement omitted its workspace receipt',
+          );
+        return captureRetiredWorkspace(state, managed.receipt);
+      },
+      async (error) => {
+        try {
+          await this.close();
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            'Managed capture and cleanup failed',
+            { cause: error },
+          );
+        }
+        throw error;
+      },
+    );
+    managed.capture = pending;
+    void pending.catch(() => {});
+    return pending;
+  }
+
   async saveState(): Promise<SessionState> {
+    return this.captureIdleState(false);
+  }
+  private captureIdleState(retire: boolean): Promise<SessionState> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
@@ -12089,7 +13207,7 @@ export class Session<OutputT = string, Context = unknown> {
 
     this.idle('saveState');
     let snapshot: SessionState | null = null;
-    await this.mutate(async () => {
+    return this.mutate(async () => {
       const state = this.decorateState(
         parseNativeCheckpoint(
           await this.#native._export_checkpoint(null, false),
@@ -12097,11 +13215,22 @@ export class Session<OutputT = string, Context = unknown> {
       );
 
       snapshot = state;
+      if (retire) {
+        this.manualSealed = true;
+        this.sealedStateJson = encode(state);
+      }
+    }).then(() => {
+      if (!snapshot)
+        throw new NativeError('Native checkpoint was not captured');
+      return snapshot;
     });
-    if (!snapshot) throw new NativeError('Native checkpoint was not captured');
-    return snapshot;
   }
   async suspend(): Promise<SessionState> {
+    if (this.options.managedWorkspace?.capture)
+      throw new NativeError('Session is retiring a managed workspace');
+    return this.captureSuspendedState();
+  }
+  private captureSuspendedState(): Promise<SessionState> {
     if (this.options.chatGPTPlan)
       throw new TypeError('Sign in with ChatGPT requires settled state');
     if (this.realtimeOwner)
@@ -12113,7 +13242,7 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
       );
     if (this.sealedStateJson !== undefined)
-      return parseSessionState(this.sealedStateJson);
+      return Promise.resolve(parseSessionState(this.sealedStateJson));
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.length)
       throw new NativeError('Cannot suspend while roots are queued');
@@ -12850,6 +13979,7 @@ export class Session<OutputT = string, Context = unknown> {
             z.object({
               nonce: z.string(),
               generation: z.string().optional(),
+              mcp_identity: z.tuple([z.string(), z.string()]).optional(),
               request: losslessJsonObjectSchema,
             }),
           ])
@@ -13089,7 +14219,13 @@ export class Session<OutputT = string, Context = unknown> {
                       sourceGeneration!,
                       this.options.context,
                       submission,
-                      { ...request!, _mcp_generation: notice.generation },
+                      {
+                        ...request!,
+                        _mcp_generation: notice.generation,
+                        ...(notice.mcp_identity
+                          ? { _mcp_identity: notice.mcp_identity }
+                          : {}),
+                      },
                       signal,
                       () => {
                         if (
@@ -13221,6 +14357,8 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private async closeNative(): Promise<NativeError | undefined> {
+    const storedAction = this.storedHistoryClose;
+    this.storedHistoryClose = undefined;
     // Join exact form replies, including retirements started by earlier stops.
     // Native shutdown must still precede held schema compilation cleanup.
     await Promise.allSettled([...this.nativeFormRetirementReplies]);
@@ -13238,6 +14376,15 @@ export class Session<OutputT = string, Context = unknown> {
         ? await this.#native._close_private_root_report()
         : await this.#native._close_report();
       if (message) return new NativeError(message);
+    }
+    if (storedAction) {
+      try {
+        await storedAction.apply();
+      } catch (error) {
+        // Native shutdown has joined. Preserve the operation failure through
+        // the existing report channel while engine/carrier teardown continues.
+        return error as NativeError;
+      }
     }
     return undefined;
   }

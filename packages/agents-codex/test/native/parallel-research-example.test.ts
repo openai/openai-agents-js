@@ -962,6 +962,11 @@ describe('parallel research admission and owned lifecycle without Core', () => {
                       'Unexpected decision call in synthetic approval context',
                     );
                   },
+                  reportUsage() {
+                    throw new Error(
+                      'Unexpected usage report in synthetic approval context',
+                    );
+                  },
                   context: undefined,
                   submission: root,
                   threadId: sessionId,

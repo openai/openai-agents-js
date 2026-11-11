@@ -1,4 +1,8 @@
-import { tool as nativeTool } from '@openai/agents-codex';
+import {
+  tool as nativeTool,
+  telemetry as nativeTelemetry,
+  type ToolContext,
+} from '@openai/agents-codex';
 import { _nativeToolSessionOwner } from '@openai/agents-codex/internal';
 import {
   RunContext,
@@ -1919,6 +1923,165 @@ const nativeCliEnvironmentNames = new Set([
   'NODE_EXTRA_CA_CERTS',
 ]);
 
+// Native outcome data has a 4 KiB UTF-8 envelope and bounded JSON containers.
+// Keep a bounded preview when the richer CLI item cannot fit that envelope.
+function nativeCliTraceData(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  let truncated = false;
+  const prefix = (value: string, length: number): string => {
+    let end = Math.min(value.length, length);
+    if (
+      end > 0 &&
+      end < value.length &&
+      value.charCodeAt(end - 1) >= 0xd800 &&
+      value.charCodeAt(end - 1) <= 0xdbff
+    )
+      end--;
+    return value.slice(0, end);
+  };
+  const text = (value: string, bytes: number): string => {
+    let result = prefix(value, bytes);
+    while (Buffer.byteLength(result, 'utf8') > bytes)
+      result = prefix(result, Math.floor(result.length / 2));
+    if (result !== value) truncated = true;
+    return result;
+  };
+  const capture = (value: unknown, depth = 0): unknown => {
+    if (depth > 8) {
+      truncated = true;
+      return null;
+    }
+    if (typeof value === 'string') return text(value, 4096);
+    if (Array.isArray(value)) {
+      if (value.length > 64) truncated = true;
+      return value.slice(0, 64).map((item) => capture(item, depth + 1));
+    }
+    if (value && typeof value === 'object') {
+      const entries = Object.entries(value);
+      if (entries.length > 64) truncated = true;
+      return Object.fromEntries(
+        entries
+          .slice(0, 64)
+          .map(([key, item]) => [text(key, 256), capture(item, depth + 1)]),
+      );
+    }
+    return typeof value === 'boolean' ||
+      (typeof value === 'number' && Number.isFinite(value))
+      ? value
+      : null;
+  };
+  const captured = capture(data) as Record<string, unknown>;
+  const encoded = JSON.stringify(captured);
+  if (!truncated && Buffer.byteLength(encoded, 'utf8') <= 4096) return captured;
+  const summary = {
+    data_truncated: true,
+    ...(typeof captured.status === 'string'
+      ? { status: text(captured.status, 256) }
+      : {}),
+    ...(typeof captured.exitCode === 'number'
+      ? { exitCode: captured.exitCode }
+      : {}),
+    preview: prefix(encoded, 4096),
+  };
+  while (Buffer.byteLength(JSON.stringify(summary), 'utf8') > 4096)
+    summary.preview = prefix(
+      summary.preview,
+      Math.floor(summary.preview.length / 2),
+    );
+  return summary;
+}
+
+class NativeCliItemSpans {
+  private readonly spans = new Map<
+    string,
+    {
+      span: Awaited<ReturnType<typeof nativeTelemetry.startSpan>>;
+      data: Record<string, unknown>;
+    }
+  >();
+  async observe(event: ThreadEvent): Promise<void> {
+    if (!nativeTelemetry.getCurrentSpan() || !('item' in event)) return;
+    const item = event.item;
+    let name: string;
+    let data: Record<string, unknown>;
+    if (isCommandExecutionItem(item)) {
+      name = 'Codex command execution';
+      data = buildCommandSpanData(item, true);
+    } else if (isFileChangeItem(item)) {
+      name = 'Codex file change';
+      data = buildFileChangeSpanData(item, true);
+    } else if (isMcpToolCallItem(item)) {
+      name = 'Codex MCP tool call';
+      data = buildMcpToolSpanData(item, true);
+    } else if (isWebSearchItem(item)) {
+      name = 'Codex web search';
+      data = buildWebSearchSpanData(item, true);
+    } else if (isTodoListItem(item)) {
+      name = 'Codex todo list';
+      data = buildTodoListSpanData(item, true);
+    } else if (isErrorItem(item)) {
+      name = 'Codex error';
+      data = buildErrorSpanData(item, true);
+    } else if (isReasoningItem(item)) {
+      name = 'Codex reasoning';
+      data = buildReasoningSpanData(item, true);
+    } else return;
+    data = nativeCliTraceData(data);
+    if (event.type === 'item.started' && !this.spans.has(item.id)) {
+      this.spans.set(item.id, {
+        span: await nativeTelemetry.startSpan({ name }),
+        data,
+      });
+    }
+    const active = this.spans.get(item.id);
+    if (!active) return;
+    active.data = data;
+    if (event.type === 'item.completed') {
+      this.spans.delete(item.id);
+      try {
+        active.span.end({
+          status:
+            ('status' in item && item.status === 'failed') ||
+            item.type === 'error'
+              ? 'error'
+              : 'ok',
+          data: JSON.parse(JSON.stringify(data)),
+        });
+      } finally {
+        active.span.close();
+      }
+    }
+  }
+  close(outcome: 'completed' | 'failed' | 'cancelled'): void {
+    try {
+      for (const { span, data } of this.spans.values()) {
+        try {
+          span.end({
+            status:
+              outcome === 'completed'
+                ? 'ok'
+                : outcome === 'cancelled'
+                  ? 'cancelled'
+                  : 'error',
+            data: JSON.parse(JSON.stringify(data)),
+          });
+        } catch {
+          /* Optional trace output cannot change CLI completion. */
+        } finally {
+          try {
+            span.close();
+          } catch {
+            /* Preserve cleanup of sibling spans. */
+          }
+        }
+      }
+    } finally {
+      this.spans.clear();
+    }
+  }
+}
+
 export type NativeCodexToolOptions = Pick<
   CodexToolOptions,
   | 'name'
@@ -1929,11 +2092,26 @@ export type NativeCodexToolOptions = Pick<
   | 'defaultTurnOptions'
   | 'persistSession'
   | 'threadId'
+  | 'outputSchema'
 > & {
+  /** Capture a custom Zod input schema; prompt or inputs feeds the CLI input. */
+  parameters?: z.ZodType;
   /** Observes CLI events without changing execution success; observer failures are isolated. */
   onEvent?: (event: ThreadEvent) => void | Promise<void>;
   /** Resolve a model image reference to an authorized CLI-readable asset; null denies it. */
   resolveImage?: (reference: string) => string | null | Promise<string | null>;
+  /** Authorize a thread using trusted application context for this call. */
+  resolveThread?: (
+    context: ToolContext,
+  ) => string | null | Promise<string | null>;
+  /** Read each event with the native invocation context; observer failures are isolated. */
+  onStream?: (event: ThreadEvent, context: ToolContext) => void | Promise<void>;
+  /** Read the known ID after cleanup without granting failed IDs to the Session. */
+  onThread?: (
+    threadId: string,
+    outcome: 'completed' | 'failed' | 'cancelled',
+    context: ToolContext,
+  ) => void | Promise<void>;
 };
 
 /**
@@ -1978,6 +2156,7 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
   const threadOptions = options.defaultThreadOptions
     ? structuredClone(options.defaultThreadOptions)
     : undefined;
+  const outputSchema = resolveOutputSchema(options.outputSchema);
   const turnOptions = options.defaultTurnOptions
     ? {
         ...options.defaultTurnOptions,
@@ -1990,9 +2169,23 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
           : {}),
       }
     : undefined;
+  const capturedTurnOptions = outputSchema
+    ? { ...turnOptions, outputSchema: structuredClone(outputSchema) }
+    : turnOptions;
   const persistSession = options.persistSession ?? false;
   const onEvent = options.onEvent;
   const resolveImage = options.resolveImage;
+  const resolveThread = options.resolveThread;
+  const onStream = options.onStream;
+  const onThread = options.onThread;
+  for (const [name, callback] of Object.entries({
+    resolveThread,
+    onStream,
+    onThread,
+  })) {
+    if (callback !== undefined && typeof callback !== 'function')
+      throw new TypeError(`${name} must be a function`);
+  }
   if (resolveImage !== undefined && typeof resolveImage !== 'function')
     throw new TypeError('resolveImage must be a function');
   const threadIdSchema = z
@@ -2010,53 +2203,59 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
     object,
     { persisted?: Thread; pending: Promise<void>; issuedIds: Set<string> }
   >();
+  const inputSchema = z.object({
+    prompt: z.union([
+      z.string().min(1),
+      z
+        .array(
+          z.union([
+            z
+              .object({
+                type: z.literal('text'),
+                text: z
+                  .string()
+                  .refine(
+                    (value) => value.trim().length > 0,
+                    'Text inputs must not be empty',
+                  ),
+              })
+              .strict(),
+            z
+              .object({
+                type: z.literal('local_image'),
+                path: z
+                  .string()
+                  .refine(
+                    (value) => value.trim().length > 0,
+                    'Local image references must not be empty',
+                  ),
+              })
+              .strict(),
+          ]),
+        )
+        .min(1),
+    ]),
+    threadId: threadIdSchema
+      .nullable()
+      .default(null)
+      .describe(
+        'A thread ID returned by this Session or configured by the application.',
+      ),
+  });
   return nativeTool({
     name: resolveCodexToolName(options.name ?? DEFAULT_CODEX_TOOL_NAME),
     description:
       options.description ??
       'Run an external Codex CLI task in the configured workspace.',
-    parameters: z.object({
-      prompt: z.union([
-        z.string().min(1),
-        z
-          .array(
-            z.union([
-              z
-                .object({
-                  type: z.literal('text'),
-                  text: z
-                    .string()
-                    .refine(
-                      (value) => value.trim().length > 0,
-                      'Text inputs must not be empty',
-                    ),
-                })
-                .strict(),
-              z
-                .object({
-                  type: z.literal('local_image'),
-                  path: z
-                    .string()
-                    .refine(
-                      (value) => value.trim().length > 0,
-                      'Local image references must not be empty',
-                    ),
-                })
-                .strict(),
-            ]),
-          )
-          .min(1),
-      ]),
-      threadId: threadIdSchema
-        .nullable()
-        .default(null)
-        .describe(
-          'A thread ID returned by this Session or configured by the application.',
-        ),
-    }),
-    execute: async ({ prompt, threadId }, context) => {
-      const signal = turnOptions?.signal
-        ? AbortSignal.any([context.signal, turnOptions.signal])
+    parameters: options.parameters ?? inputSchema,
+    execute: async (input, context) => {
+      const values = input as unknown as Record<string, unknown>;
+      const { prompt, threadId } = inputSchema.parse({
+        prompt: values.prompt ?? values.inputs,
+        threadId: values.threadId ?? null,
+      });
+      const signal = capturedTurnOptions?.signal
+        ? AbortSignal.any([context.signal, capturedTurnOptions.signal])
         : context.signal;
       const sessionOwner = _nativeToolSessionOwner(context);
       let state = sessions.get(sessionOwner);
@@ -2075,12 +2274,23 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
         // every earlier invocation to release ownership.
         state.pending = previous.then(() => slot);
       }
+      let observedThread: Thread | undefined;
+      let outcome: 'completed' | 'failed' | 'cancelled' = 'failed';
+      const spans = new NativeCliItemSpans();
       try {
         if (persistSession) await waitForNativeCodexSlot(previous, signal);
         signal.throwIfAborted();
+        let trustedThreadId: string | undefined;
+        if (resolveThread) {
+          const selected = await resolveThread(context);
+          signal.throwIfAborted();
+          if (selected !== null)
+            trustedThreadId = threadIdSchema.parse(selected);
+        }
         if (
           threadId !== null &&
           threadId !== initialThreadId &&
+          threadId !== trustedThreadId &&
           !state.issuedIds.has(threadId)
         ) {
           throw new UserError(
@@ -2127,37 +2337,62 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
         signal.throwIfAborted();
         const persisted = persistSession ? state.persisted : undefined;
         const selectedThreadId =
-          threadId ?? (persisted ? undefined : initialThreadId);
+          threadId ??
+          trustedThreadId ??
+          (persisted ? undefined : initialThreadId);
         const thread =
           selectedThreadId !== undefined
             ? codex.resumeThread(selectedThreadId, threadOptions)
             : (persisted ?? codex.startThread(threadOptions));
-        const stream = await thread.runStreamed(authorizedPrompt, {
-          ...turnOptions,
-          signal,
-        });
+        observedThread = thread;
         let response = '';
         let usage: CodexUsage | null = null;
         let completed = false;
-        for await (const event of stream.events) {
-          signal.throwIfAborted();
-          if (onEvent)
-            await Promise.allSettled([
-              Promise.resolve().then(() => onEvent(event)),
-            ]);
-          signal.throwIfAborted();
-          if (
-            event.type === 'item.completed' &&
-            event.item.type === 'agent_message'
-          )
-            response = event.item.text;
-          else if (event.type === 'turn.completed') {
-            usage = event.usage;
-            completed = true;
-          } else if (event.type === 'turn.failed')
-            throw new Error(event.error.message);
-          else if (event.type === 'error') throw new Error(event.message);
+        let failure: Error | undefined;
+        const cliController = new AbortController();
+        const abortCli = () => cliController.abort(signal.reason);
+        signal.addEventListener('abort', abortCli, { once: true });
+        if (signal.aborted) abortCli();
+        try {
+          const stream = await thread.runStreamed(authorizedPrompt, {
+            ...capturedTurnOptions,
+            signal: cliController.signal,
+          });
+          for await (const event of stream.events) {
+            signal.throwIfAborted();
+            try {
+              await spans.observe(event);
+            } catch {
+              /* Native privacy and span cleanup remain authoritative. */
+            }
+            if (onEvent)
+              await Promise.allSettled([
+                Promise.resolve().then(() => onEvent(event)),
+              ]);
+            if (onStream)
+              await Promise.allSettled([
+                Promise.resolve().then(() => onStream(event, context)),
+              ]);
+            signal.throwIfAborted();
+            if (
+              event.type === 'item.completed' &&
+              event.item.type === 'agent_message'
+            )
+              response = event.item.text;
+            else if (event.type === 'turn.completed') {
+              usage = event.usage;
+              completed = true;
+            } else if (event.type === 'turn.failed')
+              failure ??= new Error(event.error.message);
+            else if (event.type === 'error')
+              failure ??= new Error(event.message);
+          }
+        } finally {
+          // The SDK retires process listeners with its generator. Later native
+          // callback retirement must not abort that already retired subprocess.
+          signal.removeEventListener('abort', abortCli);
         }
+        if (failure) throw failure;
         signal.throwIfAborted();
         if (!completed) {
           throw new Error(
@@ -2165,10 +2400,22 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
           );
         }
         const completedThreadId = thread.id;
-        if (completedThreadId) state.issuedIds.add(completedThreadId);
-        if (persistSession) state.persisted = thread;
+        context.reportUsage(
+          usage === null
+            ? null
+            : {
+                inputTokens: usage.input_tokens,
+                cachedInputTokens: usage.cached_input_tokens,
+                cacheWriteInputTokens: 0,
+                outputTokens: usage.output_tokens,
+                reasoningOutputTokens: 0,
+                totalTokens: usage.input_tokens + usage.output_tokens,
+              },
+        );
+        outcome = 'completed';
         return { threadId: completedThreadId, response, usage };
       } catch (error) {
+        if (signal.aborted) outcome = 'cancelled';
         // Node spawn wraps AbortSignal.reason. Preserve the native cancellation
         // identity so a joined expected abort is not reported as cleanup failure.
         if (
@@ -2180,7 +2427,24 @@ export function nativeCodexTool(options: NativeCodexToolOptions = {}) {
           throw context.signal.reason;
         throw error;
       } finally {
-        release?.();
+        try {
+          spans.close(outcome);
+          if (onThread && observedThread?.id) {
+            const threadId = observedThread.id;
+            await Promise.allSettled([
+              Promise.resolve().then(() =>
+                onThread(threadId, outcome, context),
+              ),
+            ]);
+          }
+          if (outcome === 'completed') {
+            signal.throwIfAborted();
+            if (observedThread?.id) state.issuedIds.add(observedThread.id);
+            if (persistSession) state.persisted = observedThread;
+          }
+        } finally {
+          release?.();
+        }
       }
     },
   });

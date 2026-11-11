@@ -86,6 +86,7 @@ async function peer(
   heldCall?: Promise<void>,
   toolResult?: JsonObject,
   closeResponseForKey?: string,
+  extraNames: readonly string[] = [],
 ) {
   const effects: JsonObject[] = [];
   const failures: unknown[] = [];
@@ -113,7 +114,9 @@ async function peer(
         };
       }
       if (rpc.method === 'tools/list')
-        result = { tools: [{ ...recordTool, name: raw }] };
+        result = {
+          tools: [raw, ...extraNames].map((name) => ({ ...recordTool, name })),
+        };
       if (rpc.method === 'tools/call') {
         const params = rpc.params as JsonObject;
         effects.push(
@@ -171,6 +174,7 @@ async function open(
   children = false,
   programmaticToolCalling = false,
   tracing?: import('../../src/runtime/telemetry').TraceOptions,
+  profileGraph = false,
 ) {
   const executor = children ? await startPublicExecutor() : undefined;
   if (executor) cleanup.push(() => executor.close());
@@ -189,6 +193,16 @@ async function open(
     model: 'gpt-5.5',
     tools: [descriptor, ...(children ? [new NativeAgents()] : [])],
     programmaticToolCalling,
+    handoffs: profileGraph
+      ? [
+          new Agent({
+            name: 'unused',
+            instructions: 'Unused target',
+            provider,
+            model: 'gpt-5.5',
+          }),
+        ]
+      : undefined,
   });
   const session = await agent.session(
     executor
@@ -295,7 +309,11 @@ it('REQ133 reconnects native stdio after a lost reply without replaying the effe
   const turn = await session.submit('Record both entries.');
   expect((await turn.wait()).finalOutput).toBe('done');
   model.assertExhausted();
-  expectToolOutput(model.requests[1]!, firstEffect, /\btransport ?closed\b/i);
+  expectToolOutput(
+    model.requests[1]!,
+    firstEffect,
+    'MCP tool invocation failed',
+  );
 
   const recorded = await readRecords(effects);
   expect(recorded, 'stdio effects by process').toMatchObject([
@@ -330,7 +348,11 @@ it('REQ133 reconnects native streamable HTTP after an SSE response closes before
   const turn = await session.submit('Record both entries.');
   expect((await turn.wait()).finalOutput).toBe('done');
   model.assertExhausted();
-  expectToolOutput(model.requests[1]!, firstEffect, /\btransport ?closed\b/i);
+  expectToolOutput(
+    model.requests[1]!,
+    firstEffect,
+    'MCP tool invocation failed',
+  );
   expectToolOutput(model.requests[2]!, laterEffect, laterResult);
   expect(remote.initializations, 'HTTP initialize requests').toBe(2);
   expect(remote.effects).toMatchObject([
@@ -2240,3 +2262,228 @@ it('restores the native MCP carrier with Session-only tracing and strict restric
     await telemetry.forceFlush();
   }
 });
+
+it('routes colliding raw names through stable aliases while step selection narrows', async () => {
+  const remote = await peer('a.b', undefined, undefined, undefined, ['a_b']);
+  const descriptor = new HttpMCP({
+    name: 'docs',
+    url: remote.url,
+    approvalMode: 'preapproved',
+    tools: ['a.b', 'a_b'],
+  });
+  const dotted = descriptor.tool('a.b');
+  const underscored = descriptor.tool('a_b');
+  const { session, model } = await open(descriptor, [
+    [
+      call(
+        dotted.name,
+        { key: 'one' },
+        { namespace: dotted.namespace!, callId: 'first' },
+      ),
+    ],
+    [
+      call(
+        underscored.name,
+        { key: 'two' },
+        { namespace: underscored.namespace!, callId: 'second' },
+      ),
+    ],
+    [
+      call(
+        dotted.name,
+        { key: 'three' },
+        { namespace: dotted.namespace!, callId: 'third' },
+      ),
+    ],
+    [message('complete')],
+  ]);
+  const selections = [[dotted, underscored], [underscored], [dotted], [dotted]];
+  const turn = await session.submit('read', {
+    beforeStep: ({ stepIndex }) => selections[stepIndex],
+  });
+  expect((await turn.wait()).finalOutput).toBe('complete');
+  expect(remote.effects.map((effect) => effect.name)).toEqual([
+    'a.b',
+    'a_b',
+    'a.b',
+  ]);
+  expect(JSON.stringify(model.requests)).toContain(dotted.name);
+});
+
+it('routes a missing peer result through the existing native result transform', async () => {
+  const remote = await peer('lookup', undefined, undefined, 'fail');
+  const seen: string[] = [];
+  const descriptor = new HttpMCP({
+    name: 'fixture',
+    url: remote.url,
+    approvalMode: 'preapproved',
+    tools: ['lookup'],
+    executionTimeout: 0.25,
+    transformResult(context, result) {
+      seen.push(context.callId);
+      expect(result.isError).toBe(true);
+      return {
+        content: [{ type: 'text', text: 'safe-failure-outcome' }],
+        isError: true,
+      };
+    },
+  });
+  const { session, model } = await open(descriptor, [
+    [
+      call(
+        'lookup',
+        { key: 'fail' },
+        { namespace: 'mcp__fixture', callId: 'failed-call' },
+      ),
+    ],
+    [message('complete')],
+  ]);
+  expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+    'complete',
+  );
+  expect(seen).toEqual(['failed-call']);
+  expect(remote.effects).toHaveLength(1);
+  expect(JSON.stringify(model.requests)).toContain('safe-failure-outcome');
+});
+
+it('resolves a partial declaration against the full peer catalog without admitting its colliding sibling', async () => {
+  const remote = await peer('a.b', undefined, undefined, undefined, ['a_b']);
+  const complete = new HttpMCP({
+    name: 'docs',
+    url: remote.url,
+    approvalMode: 'preapproved',
+    tools: ['a.b', 'a_b'],
+  });
+  const actual = complete.tool('a.b');
+  const seen: string[] = [];
+  const partial = new HttpMCP({
+    name: 'docs',
+    url: remote.url,
+    approvalMode: 'preapproved',
+    tools: ['a.b'],
+    before: (context) => {
+      seen.push(context.toolName);
+      return { action: 'allow' };
+    },
+  });
+  expect(partial.tool('a.b').name).not.toBe(actual.name);
+  const { session, model } = await open(partial, [
+    [
+      call(
+        actual.name,
+        { key: 'partial' },
+        { namespace: actual.namespace!, callId: 'partial' },
+      ),
+    ],
+    [message('complete')],
+  ]);
+  const turn = await session.submit('read', {
+    tools: [partial.tool('a.b')],
+    beforeStep: () => [partial.tool('a.b')],
+  });
+  expect((await turn.wait()).finalOutput).toBe('complete');
+  const denied = await session.submit('deny', {
+    beforeStep: () => [complete.tool('a_b')],
+  });
+  await expect(denied.wait()).rejects.toThrow();
+  expect(seen).toEqual(['a.b']);
+  expect(remote.effects.map((effect) => effect.name)).toEqual(['a.b']);
+  expect(model.requests).toHaveLength(2);
+  expect(JSON.stringify(model.requests[0])).toContain(actual.name);
+  expect(JSON.stringify(model.requests[0])).not.toContain(
+    complete.tool('a_b').name,
+  );
+});
+
+it('does not synthesize a result policy after native peer request cancellation', async () => {
+  const release = Promise.withResolvers<void>();
+  const remote = await peer('lookup', release.promise);
+  const transform = vi.fn(
+    (_context: MCPResultContext, result: JsonObject) => result,
+  );
+  const { session, model } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      tools: ['lookup'],
+      approvalMode: 'preapproved',
+      transformResult: transform,
+    }),
+    [[lookup()], [message('must not continue')]],
+  );
+  const turn = await session.submit('read');
+  const observed = turn.wait().catch((error) => error);
+  try {
+    await vi.waitFor(() => expect(remote.effects).toHaveLength(1));
+    await turn.cancel();
+    expect(await observed).toBeInstanceOf(TurnAborted);
+    expect(transform).not.toHaveBeenCalled();
+    expect(model.requests).toHaveLength(1);
+    expect(remote.effects).toHaveLength(1);
+  } finally {
+    release.resolve();
+    await session.close();
+  }
+}, 15000);
+
+it.each(['before', 'approval'] as const)(
+  'retains raw MCP %s policy identity after an idle graph update',
+  async (phase) => {
+    const remote = await peer('a.b', undefined, undefined, undefined, ['a_b']);
+    const complete = new HttpMCP({
+      name: 'docs',
+      url: remote.url,
+      tools: ['a.b', 'a_b'],
+      approvalMode: 'preapproved',
+    });
+    const actual = complete.tool('a.b');
+    const stopped = vi.fn(() => ({ action: 'stop' as const }));
+    const partial = new HttpMCP({
+      name: 'docs',
+      url: remote.url,
+      tools: ['a.b'],
+      approvalMode: 'preapproved',
+      before: phase === 'before' ? stopped : undefined,
+      approval: phase === 'approval' ? stopped : undefined,
+    });
+    const { session, model } = await open(
+      partial,
+      [
+        [message('ready')],
+        [
+          call(
+            actual.name,
+            { key: 'after' },
+            { namespace: actual.namespace!, callId: 'after' },
+          ),
+        ],
+        [message('must not continue')],
+      ],
+      false,
+      false,
+      undefined,
+      true,
+    );
+    expect((await (await session.submit('warm')).wait()).finalOutput).toBe(
+      'ready',
+    );
+    await session.update({ tools: [partial] });
+    await expect(
+      (
+        await session.submit('after update', {
+          tools: [partial.tool('a.b')],
+          beforeStep: () => [partial.tool('a.b')],
+        })
+      ).wait(),
+    ).rejects.toThrow();
+    expect(stopped).toHaveBeenCalledTimes(1);
+    expect(remote.effects).toEqual([]);
+    expect(model.requests).toHaveLength(2);
+    const denied = await session.submit('deny sibling', {
+      beforeStep: () => [complete.tool('a_b')],
+    });
+    await expect(denied.wait()).rejects.toThrow();
+    expect(model.requests).toHaveLength(2);
+  },
+  15000,
+);
