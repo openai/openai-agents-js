@@ -1,9 +1,11 @@
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  Environment,
+  NativeAgents,
   HttpMCP,
   NativeProvider,
   ToolOutput,
@@ -11,6 +13,8 @@ import {
   tool,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { startPublicExecutor } from './fixtures/public-executor';
+import type { JsonObject } from '../../src/runtime/binding';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(() => ModelServer.closeAll());
@@ -359,7 +363,7 @@ nativeIt(
       for await (const event of source.events()) {
         if (!pause.match(event)) continue;
         expect(turn.applicationToolOutputs).toHaveLength(1);
-        state = await source.saveState();
+        state = await source.suspend();
         break;
       }
     }
@@ -387,4 +391,106 @@ nativeIt(
     );
     model.assertExhausted();
   },
+);
+
+nativeIt(
+  'exposes accepted child application data through its completed result and detached getter',
+  async () => {
+    let roots = 0,
+      children = 0;
+    const respond = (request: JsonObject) => {
+      const meta = request.client_metadata as Record<string, string>;
+      const { agent_name } = JSON.parse(meta['x-codex-turn-metadata']);
+      if (agent_name === '/root') {
+        if (++roots === 1)
+          return [
+            call(
+              'spawn_agent',
+              { task_name: 'worker', message: 'Use record.' },
+              { namespace: 'collaboration', callId: 'spawn-data-child' },
+            ),
+          ];
+        if (roots === 2) return [call('pause', {}, { callId: 'parent-pause' })];
+        return [message('root done')];
+      }
+      return ++children === 1
+        ? [call('record', {}, { callId: 'child-data' })]
+        : [message('child done')];
+    };
+    const model = new ModelServer(Array.from({ length: 5 }, () => respond));
+    const pause = manualTool({
+      name: 'pause',
+      description: 'Pause',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const executor = await startPublicExecutor();
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Delegate then pause.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [
+          new NativeAgents(),
+          pause,
+          tool({
+            name: 'record',
+            parameters: z.object({}),
+            execute: () =>
+              new ToolOutput(
+                [{ type: 'inputText', text: 'child public' }],
+                true,
+                { ticket: 'private-child-ticket' },
+              ),
+          }),
+        ],
+      }).session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+      });
+      const root = await session.submit('Delegate');
+      const pending = await root.wait({ until: 'manual_tool' });
+      if (!('requests' in pending)) throw new Error('Expected parent pause');
+      const child = await vi.waitUntil(
+        async () =>
+          (await Array.fromAsync(session.subagents()))[0]?.turn ?? false,
+        { timeout: 3000 },
+      );
+      const completed = await child.wait();
+      expect(completed.applicationToolOutputs).toEqual([
+        expect.objectContaining({
+          callId: 'child-data',
+          applicationData: { ticket: 'private-child-ticket' },
+        }),
+      ]);
+      expect(child.applicationToolOutputs).toEqual(
+        completed.applicationToolOutputs,
+      );
+      completed.applicationToolOutputs![0]!.applicationData.ticket = 'changed';
+      expect(child.applicationToolOutputs[0]?.applicationData).toEqual({
+        ticket: 'private-child-ticket',
+      });
+      const request = pause.match(pending.requests[0]);
+      if (!request) throw new Error('Expected exact parent request');
+      await session.respond(request.reply('continue'));
+      expect((await root.wait()).applicationToolOutputs).toEqual([
+        expect.objectContaining({
+          callId: 'child-data',
+          applicationData: { ticket: 'private-child-ticket' },
+        }),
+      ]);
+      expect(JSON.stringify(model.requests)).not.toContain(
+        'private-child-ticket',
+      );
+      model.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  30000,
 );

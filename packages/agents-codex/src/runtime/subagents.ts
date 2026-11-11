@@ -62,6 +62,7 @@ export interface ChildTurn extends Pick<
   | 'instanceId'
   | 'events'
   | 'runUsage'
+  | 'applicationToolOutputs'
 > {
   wait(): Promise<ChildCompleted>;
   wait(
@@ -184,8 +185,10 @@ export function issueChildTurn(
       }),
       wire,
     );
+    const applicationToolOutputs = turn.applicationToolOutputs;
     return Object.freeze({
       turn,
+      ...(applicationToolOutputs.length ? { applicationToolOutputs } : {}),
       finalOutput: result.final_output,
       ...(result.tool_completion
         ? { toolCall: callbacks.toolCompletion!(result.tool_completion) }
