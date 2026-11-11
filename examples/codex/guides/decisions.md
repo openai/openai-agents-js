@@ -2,7 +2,7 @@
 
 Use `agent.decide()` or `ctx.decide()` for a boolean, a choice, or a structured value. A decision provider sends the request. The SDK validates raw JSON before applying the requested output type. Configure the provider on an Agent or override it for one bound call.
 
-Decisions support is not in the latest published preview. [Build the matching source](building.md) and set `OPENAI_API_KEY` before running these examples.
+Decisions support has been requiring the [matching source build](building.md). The live examples on this page have been using `OPENAI_API_KEY`; the scripted routing recipe below has been running without model credentials.
 
 ## Return a typed value
 
@@ -65,6 +65,37 @@ console.log(result.finalOutput);
 Before-step, request-preparation, function-tool, native-agent approval, and completion callbacks inherit the captured Agent provider through `ctx.decide()`. Await each decision in its callback. A yielded tool can still decide after the root turn completes while its own callback remains live. Once the callback returns, its saved helper expires. Cancellation signals propagate to the provider. The helper does not add its question or answer to the conversation.
 
 `beforeComplete` receives proposed text before output validation. Returning `undefined` accepts it. Returning `{ action: 'continue', instructions }` adds feedback to the conversation and continues the same turn. Returning `{ action: 'stop' }` stops the issuing turn. The hook also receives terminal tool proposals through `finalOutput` and `toolCall`. When prompted output needs repair, the original hook checks each repaired candidate with its original context. Already streamed text remains visible and recorded. The callback does not run after a provider error or cancellation. Bound continuations with a count check or a run budget.
+
+## Route to an authorized specialist
+
+The [runnable routing recipe](../decisions-routing.ts) has been using `ToolContext.decide()` at an application-owned `consult` tool. The main Agent has been keeping its generative `model` and `provider` for orchestration. Its separate `decisions` setting has been selecting among specialist IDs only after the application has been filtering candidates by current permissions.
+
+From the repository root, after the matching source build, the following command has been running six deterministic cases without API credentials or live API calls:
+
+```sh
+pnpm exec tsx examples/codex/decisions-routing.ts
+```
+
+The fixtures have been exercising these outcomes:
+
+| Case | Authorized candidates | Selected specialist | Policy |
+| --- | --- | --- | --- |
+| Default support route | `billing`, `technical` | `billing` | Application default; zero Decisions calls |
+| Opt-in support route | `billing`, `technical` | `technical` | Decisions |
+| Opt-in research route | `catalog`, `risk` | `risk` | Decisions |
+| Unauthorized provider choice | `billing` | `billing` | Validated fallback |
+| Permission revoked during selection | `catalog`, `risk`, then `catalog` | `catalog` | Rechecked fallback |
+| Decisions timeout | `catalog`, `risk` | `catalog` | Authorized fallback |
+
+The application has been passing only the request and authorized candidate descriptions as explicit decision input. The `choices` option has been constraining the response to those IDs. The invalid-choice fixture has been returning `technical` after the application has been authorizing only `billing`; SDK validation has been rejecting that response before delegation. Each tool call has been rebuilding candidates, then rechecking authorization after the decision has been finishing. The recipe has been falling back only to a still-authorized application default and throwing before delegation when no such default has been remaining.
+
+The one-second decision deadline has been limiting selection work. The tool has been falling back for `DecisionError`, `OutputValidationError`, or its own decision deadline. Parent cancellation and unexpected transport failures have been propagating. The timeout fixture has been awaiting the provider's abort signal, with provider work finishing before fallback delegation.
+
+The recipe has been reusing [`consultSpecialist`](../specialist-agent.ts) for a separate specialist Session. That helper has been awaiting Session opening, forwarding cancellation through Session close, joining cleanup, and disposing the Session before returning the summary. Only the selected catalog title has been reaching the specialist context. The application tool has been returning its summary to the main Agent, which has been continuing orchestration. This pattern has been retaining control in the application; it has not been transferring the parent Session to a native handoff target.
+
+The assertions have been checking selected titles, zero Decisions calls on the default route, authorization filtering, fallback outcomes, and a final response from the main Agent. Scripted providers have been demonstrating the routing contract and lifecycle composition without measuring live selection quality, latency, or cost.
+
+For an application integration, `new OpenAIDecisions()` has been supplying the Decisions provider through the same `decisions` setting. The generative provider, model, application authorization checks, and specialist Session ownership have been remaining independently configured.
 
 ## Replace the provider
 
