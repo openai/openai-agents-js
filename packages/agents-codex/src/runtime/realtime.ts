@@ -3009,7 +3009,7 @@ class NativeRealtimeOwner {
           .map(([, item]) => item),
       );
       const keptBatches = new Set(
-        initialBatches.filter((batch) =>
+        [...this.toolBatches].filter((batch) =>
           batch.callIds.some((id) => preserved.has(id)),
         ),
       );

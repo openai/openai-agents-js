@@ -10671,11 +10671,6 @@ export class Session<OutputT = string, Context = unknown> {
           parseTokenCount(historicalUsage.missingUsageRequests ?? 0),
         ),
       );
-      run.addUsage(
-        raw,
-        parseTokenCount(historicalUsage.requests ?? 0),
-        parseTokenCount(historicalUsage.missingUsageRequests ?? 0),
-      );
     }
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
