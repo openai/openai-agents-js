@@ -706,12 +706,12 @@
     },
     {
       "path": "sdk-portable-realtime-raw-client-events.patch",
-      "sha256": "bd342b2230e59ca84744c4dde08680c154a6eb59afc29d02521c21e1be1bb5a6"
+      "sha256": "88d34b6286fcc7d370aaff958dc624625acf920cf5bab5238e1de42bd4ce03b3"
     },
     {
       "path": "sdk-portable-realtime-hosted-completion.patch",
       "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
     }
   ],
-  "result_tree": "9e064e97b694e06a802263225b33251de3cf3f30"
+  "result_tree": "97138d1b6d4b39487ea893f0c49daad0e14a436b"
 }
