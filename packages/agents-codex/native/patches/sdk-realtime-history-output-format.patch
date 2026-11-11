@@ -1,0 +1,101 @@
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs
+@@ -1385,6 +1385,7 @@
+                 if let Ok(QueuedWireMessage {
+                     message: Ok(Message::Text(text)),
+                     history_observation,
++                    configuration,
+                     ..
+                 }) = &queued
+                     && match observation {
+@@ -1397,11 +1398,15 @@
+                     && let Ok(body @ serde_json::Value::Object(_)) = serde_json::from_str(text)
+                 {
+                     let history_observation = *history_observation;
++                    let output_audio_format = configuration
++                        .as_ref()
++                        .and_then(|configuration| configuration.output_format);
+                     *self.pending_frame.lock().unwrap() = queued.ok();
+                     return Ok(Some((
+                         RealtimeEvent::RawProviderEvent(RealtimeRawProviderEvent {
+                             event: body,
+                             history_observation,
++                            output_audio_format,
+                         }),
+                         None,
+                     )));
+@@ -2680,6 +2685,7 @@
+                 Some(RealtimeEvent::RawProviderEvent(RealtimeRawProviderEvent {
+                     event: frame,
+                     history_observation: false,
++                    output_audio_format: None,
+                 }))
+             );
+         }
+@@ -2687,6 +2693,52 @@
+             events.next_event().await,
+             Ok(Some(RealtimeEvent::InputAudioSpeechStarted(_)))
+         ));
++    }
++
++    #[tokio::test]
++    async fn raw_history_observation_carries_the_response_output_codec() {
++        let (connection, send, server) = readiness_connection(json!({}), false).await;
++        send.send(json!({"type":"session.created","session":{
++            "id":"session", "output_audio_format":"pcm16"
++        }}))
++        .await
++        .unwrap();
++        connection.wait_ready().await.unwrap();
++        send.send(json!({"type":"response.created","response":{
++            "id":"response", "conversation_id":"conv_default",
++            "output_audio_format":"g711_ulaw"
++        }}))
++        .await
++        .unwrap();
++        let item = json!({"type":"response.output_item.done","response_id":"response",
++            "item":{"id":"audio","type":"message","role":"assistant",
++                "content":[{"type":"output_audio","audio":"AQIDBAUGBwg="}]}});
++        send.send(item.clone()).await.unwrap();
++        loop {
++            let (event, _) = tokio::time::timeout(
++                Duration::from_secs(1),
++                connection.events().next_event_with_provider_observations(
++                    codex_protocol::protocol::RealtimeProviderEventObservation::History,
++                ),
++            )
++            .await
++            .unwrap()
++            .unwrap()
++            .unwrap();
++            if let RealtimeEvent::RawProviderEvent(raw) = event
++                && raw.event == item
++            {
++                assert!(raw.history_observation);
++                assert_eq!(
++                    raw.output_audio_format,
++                    Some(codex_protocol::realtime_settings::RealtimeAudioFormat::G711Ulaw)
++                );
++                break;
++            }
++        }
++        connection.writer().abort_and_join().await;
++        server.abort();
++        let _ = server.await;
+     }
+ 
+     #[tokio::test]
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -680,6 +680,9 @@
+     pub event: Value,
+     /// Native ownership classification for consumers maintaining linked history.
+     pub history_observation: bool,
++    /// Accepted output codec for this frame's response scope.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub output_audio_format: Option<crate::realtime_settings::RealtimeAudioFormat>,
+ }
+ 
+ impl std::fmt::Debug for RealtimeRawProviderEvent {

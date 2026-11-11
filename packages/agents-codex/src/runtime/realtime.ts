@@ -858,12 +858,15 @@ class NativeRealtimeOwner {
     return this.conversation.snapshot();
   }
   /** @internal Record native-selected linked provider observations without writes. */
-  _observeProviderFrame(value: unknown): void {
+  _observeProviderFrame(
+    value: unknown,
+    outputFormat?: NativeRealtimeAudioFormat,
+  ): void {
     const event = value as { response?: unknown } | undefined;
     this.conversation.observe(
       value,
       outputAudioBytesPerMillisecond(
-        event?.response,
+        outputFormat ? { output_audio_format: outputFormat } : event?.response,
         this.outputAudioBytesPerMillisecond,
       ),
     );
@@ -2126,7 +2129,9 @@ class NativeRealtimeOwner {
         : entries[0]
     ) as [string, any];
     if (name === 'RawProviderEvent') {
-      if (value.history_observation) this._observeProviderFrame(value.event);
+      if (value.history_observation) {
+        this._observeProviderFrame(value.event, value.output_audio_format);
+      }
       if (this.options.includeRawProviderEvents)
         this.emit({ type: 'raw_provider_event', event: value.event });
     } else if (name === 'ProviderRequestError') {

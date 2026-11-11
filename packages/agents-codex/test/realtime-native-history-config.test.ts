@@ -1685,6 +1685,8 @@ nativeIt.each(['pcm16', 'g711_ulaw', 'g711_alaw'] as const)(
       await using voice = await session.realtime({
         model: 'fixture-realtime',
         settings: { outputFormat: 'pcm16', outputVoice: 'marin' },
+        historyStoreAudio: true,
+        includeRawProviderEvents: true,
       });
       const seen: NativeRealtimeEvent[] = [];
       const reading = (async () => {
@@ -1714,6 +1716,51 @@ nativeIt.each(['pcm16', 'g711_ulaw', 'g711_alaw'] as const)(
           type: 'response.created',
           response: { id: responseId, metadata: create.response.metadata },
         });
+        const embeddedId = `embedded-${format}`;
+        const embedded = Buffer.alloc(64, 7);
+        const completedItem = {
+          type: 'response.output_item.done',
+          response_id: responseId,
+          output_index: 0,
+          item: {
+            id: embeddedId,
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              { type: 'output_audio', audio: embedded.toString('base64') },
+            ],
+          },
+        };
+        peer.send(completedItem);
+        const retainedItem = () =>
+          voice.providerHistory().find((item) => item.id === embeddedId);
+        await vi.waitFor(() => {
+          expect(retainedItem()).toMatchObject({
+            content: completedItem.item.content,
+          });
+          expect(seen).toContainEqual({
+            type: 'raw_provider_event',
+            event: completedItem,
+          });
+        });
+        peer.send({
+          type: 'conversation.item.truncated',
+          item_id: embeddedId,
+          content_index: 0,
+          audio_end_ms: 1,
+        });
+        const bytesAtOneMs = format === 'pcm16' ? 48 : 8;
+        await vi.waitFor(() =>
+          expect(retainedItem()).toMatchObject({
+            content: [
+              {
+                type: 'output_audio',
+                audio: embedded.subarray(0, bytesAtOneMs).toString('base64'),
+              },
+            ],
+          }),
+        );
         const data = Buffer.from([1, 2, 3, 4]);
         peer.send({
           type: 'response.output_audio.delta',
