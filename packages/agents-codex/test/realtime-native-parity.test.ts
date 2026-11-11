@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
@@ -25,6 +25,7 @@ type Frame = Record<string, any>;
 class RealtimePeer {
   readonly frames: Frame[] = [];
   readonly authorization: (string | undefined)[] = [];
+  readonly upgrades: { url: string; headers: IncomingHttpHeaders }[] = [];
   readonly pendingUpdates: Frame[] = [];
   autoAck = true;
   private socket?: WebSocket;
@@ -33,6 +34,10 @@ class RealtimePeer {
   constructor(model: ModelServer) {
     model.onUpgrade((request, transport, head) => {
       this.authorization.push(request.headers.authorization);
+      this.upgrades.push({
+        url: request.url ?? '',
+        headers: { ...request.headers },
+      });
       this.server.handleUpgrade(request, transport, head, (connection) =>
         this.server.emit('connection', connection, request),
       );
@@ -143,6 +148,73 @@ async function providerFor(model: ModelServer) {
 }
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+
+nativeIt.each(['provider', 'override', 'backend'] as const)(
+  'scopes exact WebSocket routing and %s credentials to one native connection',
+  async (kind) => {
+    const model = new ModelServer([]);
+    const original = new RealtimePeer(model);
+    const gateway = new ModelServer([]);
+    const overridden = new RealtimePeer(gateway);
+    const credential = vi.fn(() => 'synthetic-connection-key');
+    const baseUrl = `http://127.0.0.1:${await model.port()}/v1`;
+    const path =
+      '/tenant/custom-voice?route=one&route=two&model=fixture-realtime';
+    const url = `ws://127.0.0.1:${await gateway.port()}${path}`;
+    vi.stubEnv('OPENAI_API_KEY', 'synthetic-ambient-key');
+    try {
+      await using provider = new NativeProvider({
+        baseUrl,
+        apiKey: 'synthetic-provider-key',
+        headers: { 'x-provider-only': 'synthetic-provider-header' },
+        organization: 'synthetic-organization',
+        supportsWebsockets: false,
+        ...(kind === 'backend'
+          ? {
+              modelBackend: { complete: () => ({ output: [message('text')] }) },
+            }
+          : {}),
+      });
+      await using session = await new Agent({
+        instructions: 'Help.',
+        provider,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        url,
+        ...(kind === 'override' ? { apiKey: credential } : {}),
+      });
+      await voice.sendText('Use the scoped endpoint.');
+      await overridden.frame((frame) => frame.type === 'response.create');
+      expect(original.upgrades).toEqual([]);
+      expect(overridden.upgrades).toHaveLength(1);
+      expect(overridden.upgrades[0].url).toBe(path);
+      expect(overridden.upgrades[0].headers.authorization).toBe(
+        kind === 'override' ? 'Bearer synthetic-connection-key' : undefined,
+      );
+      expect(overridden.upgrades[0].headers['x-provider-only']).toBeUndefined();
+      expect(
+        overridden.upgrades[0].headers['openai-organization'],
+      ).toBeUndefined();
+      expect(credential).toHaveBeenCalledTimes(kind === 'override' ? 1 : 0);
+      await voice.close();
+
+      const next = await session.realtime({ model: 'fixture-realtime' });
+      expect(original.upgrades).toHaveLength(1);
+      expect(original.upgrades[0].url).toBe(
+        '/v1/realtime?model=fixture-realtime',
+      );
+      expect(original.authorization).toEqual(['Bearer synthetic-provider-key']);
+      expect(overridden.upgrades).toHaveLength(1);
+      await next.close();
+    } finally {
+      vi.unstubAllEnvs();
+      await Promise.all([original.close(), overridden.close()]);
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
 
 nativeIt.each(['provider', 'environment', 'override', 'missing'] as const)(
   'keeps custom text backend credentials separate from %s Realtime credentials',
