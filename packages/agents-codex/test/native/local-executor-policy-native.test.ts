@@ -494,14 +494,59 @@ it.skipIf(process.platform !== 'darwin')(
         [dirname(process.execPath), process.env.PATH].join(delimiter),
       );
       const host = userInfo();
+      expect(
+        execFileSync('/usr/bin/id', ['-un'], {
+          encoding: 'utf8',
+          timeout: 5_000,
+        }).trim(),
+      ).toBe(host.username);
+      const sshArgs = ['-G', '-F', '/dev/null', 'sdk-fixture.invalid'];
+      const sshUser = `user ${host.username}`;
+      const hostSsh = execFileSync('/usr/bin/ssh', sshArgs, {
+        encoding: 'utf8',
+        timeout: 5_000,
+      });
+      expect(hostSsh.split('\n')).toContain(sshUser);
+      const tlsArgs = [
+        '-u',
+        'CURL_CA_BUNDLE',
+        '-u',
+        'SSL_CERT_FILE',
+        '-u',
+        'SSL_CERT_DIR',
+        '-u',
+        'CURL_SSL_BACKEND',
+        '/usr/bin/curl',
+        '--disable',
+        '--fail',
+        '--silent',
+        '--show-error',
+        '--max-time',
+        '20',
+        '--proto',
+        '=https',
+        '--write-out',
+        '%{ssl_verify_result}',
+        'https://github.com/robots.txt',
+      ];
+      const hostBody = join(base, 'host-robots.txt');
+      const hostTls = await promisify(execFile)(
+        '/usr/bin/env',
+        [...tlsArgs, '-o', hostBody],
+        { timeout: 22_000 },
+      );
+      expect(hostTls.stdout).toBe('0');
+      expect((await readFile(hostBody)).length).toBeGreaterThan(0);
+      const curl = ['/usr/bin/env', ...tlsArgs].map(shellQuote).join(' ');
       const command = [
         'set -eu',
         `test "$(/usr/bin/id -u)" = ${host.uid} || exit 11`,
         `test "$(/usr/bin/id -un)" = ${shellQuote(host.username)} || exit 12`,
-        '/usr/bin/ssh -G -F /dev/null sdk-fixture.invalid > "$TMPDIR/ssh-config"',
+        `/usr/bin/ssh ${sshArgs.map(shellQuote).join(' ')} > "$TMPDIR/ssh-config"`,
         '/usr/bin/grep -qx "hostname sdk-fixture.invalid" "$TMPDIR/ssh-config"',
+        `/usr/bin/grep -Fqx ${shellQuote(sshUser)} "$TMPDIR/ssh-config"`,
         `test "$(node --version)" = ${shellQuote(process.version)} || exit 13`,
-        'verify=$(/usr/bin/curl --disable --fail --silent --show-error --max-time 20 --proto "=https" --write-out "%{ssl_verify_result}" https://github.com/robots.txt -o "$TMPDIR/robots.txt")',
+        `verify=$(${curl} -o "$TMPDIR/robots.txt")`,
         'test "$verify" = 0 || exit 14',
         'test -s "$TMPDIR/robots.txt"',
         `test "$(cat ${shellQuote(outside)})" = outside`,
@@ -553,7 +598,7 @@ it.skipIf(process.platform !== 'darwin')(
       await rm(temporary, { recursive: true, force: true });
     }
   },
-  45_000,
+  75_000,
 );
 
 it.skipIf(!supported).for(['strict', 'trusted_workspace_write'] as const)(
@@ -2782,6 +2827,14 @@ it
     const domain = launchctl('print', gui).status === 0 ? gui : `user/${uid}`;
     const label = `org.openai.agents.sdk-test.${randomUUID()}`;
     const service = `${domain}/${label}`;
+    const submitLabel = `org.openai.agents.sdk-submit-test.${randomUUID()}`;
+    const submitService = `${domain}/${submitLabel}`;
+    const bootout = (target: string) => {
+      const stopped = launchctl('bootout', target);
+      if (stopped.status !== 0) {
+        expect(launchctl('print', target).status, stopped.stderr).not.toBe(0);
+      }
+    };
     const runCount = () => {
       const result = launchctl('print', service);
       expect(result.status, result.stderr).toBe(0);
@@ -2796,6 +2849,7 @@ it
       const root = await realpath(directory);
       const cwd = join(root, 'workspace');
       const marker = join(root, 'launchd-marker');
+      const submitMarker = join(root, 'launchd-submit-marker');
       const plist = join(cwd, `${label}.plist`);
       await mkdir(cwd);
       const xmlMarker = marker
@@ -2822,21 +2876,33 @@ it
 `,
       );
 
+      const submitArgs = [
+        '-l',
+        submitLabel,
+        '--',
+        '/usr/bin/touch',
+        submitMarker,
+      ];
       const attempts = [
         ['bootstrap', [domain, plist]],
         ['kickstart', [service]],
+        ['submit', submitArgs],
       ] as const;
       const server = new ModelServer(
         attempts.flatMap(([operation, args]) => {
           const command = ['/bin/launchctl', operation, ...args]
             .map(quote)
             .join(' ');
+          const checkWrite =
+            operation === 'bootstrap'
+              ? `if /usr/bin/touch ${quote(marker)} 2>/dev/null; then exit 20; fi; `
+              : '';
           return [
             [
               call(
                 'exec_command',
                 {
-                  cmd: `rc=0; ${command} || rc=$?; printf '${operation} exit %s\\n' "$rc"`,
+                  cmd: `${checkWrite}rc=0; ${command} || rc=$?; printf '${operation} exit %s\\n' "$rc"`,
                   yield_time_ms: 10_000,
                 },
                 { callId: operation },
@@ -2859,7 +2925,9 @@ it
             writePolicy,
           }),
         });
-        const tryDelegation = async (operation: 'bootstrap' | 'kickstart') => {
+        const tryDelegation = async (
+          operation: (typeof attempts)[number][0],
+        ) => {
           const turn = await session.submit(`Try launchctl ${operation}.`);
           expect((await turn.wait()).finalOutput).toBe('checked');
           const command = (await Array.fromAsync(session.items()))
@@ -2880,6 +2948,11 @@ it
         await tryDelegation('kickstart');
         expect(runCount()).toBe(0);
         expect(existsSync(marker)).toBe(false);
+
+        await tryDelegation('submit');
+        expect(launchctl('list', submitLabel).status).not.toBe(0);
+        expect(launchctl('print', submitService).status).not.toBe(0);
+        expect(existsSync(submitMarker)).toBe(false);
       }
 
       const kicked = launchctl('kickstart', service);
@@ -2888,14 +2961,30 @@ it
         timeout: 5_000,
       });
       expect(runCount()).toBe(1);
+      const submitted = launchctl('submit', ...submitArgs);
+      expect(submitted.status, submitted.stderr).toBe(0);
+      await vi.waitFor(() => expect(existsSync(submitMarker)).toBe(true), {
+        timeout: 5_000,
+      });
       server.assertExhausted();
     } finally {
       try {
-        const stopped = launchctl('bootout', service);
-        if (stopped.status !== 0) {
-          expect(launchctl('print', service).status, stopped.stderr).not.toBe(
-            0,
-          );
+        try {
+          const removed = launchctl('remove', submitLabel);
+          if (removed.status !== 0) {
+            expect(
+              launchctl('list', submitLabel).status,
+              removed.stderr,
+            ).not.toBe(0);
+          }
+        } finally {
+          // Legacy submit uses the caller's bootstrap context. The managed
+          // worker and test host can be in different launchd domains.
+          try {
+            bootout(submitService);
+          } finally {
+            bootout(service);
+          }
         }
       } finally {
         await rm(directory, { recursive: true, force: true });
