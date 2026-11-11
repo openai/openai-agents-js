@@ -699,7 +699,11 @@
     {
       "path": "sdk-bounded-one-shot-history.patch",
       "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
+    },
+    {
+      "path": "sdk-deferred-followup-trace.patch",
+      "sha256": "df82643e5fa33fbd6c089c50557b27d23b4a47eb88a82e8949a5754757bcec06"
     }
   ],
-  "result_tree": "356ac51e5a7dead1ac68c980ef7b5eb2af74950e"
+  "result_tree": "acfb8e9e40e88bf7acffd836ffc45841a0406527"
 }
