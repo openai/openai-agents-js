@@ -683,7 +683,15 @@
     {
       "path": "sdk-trace-credential-destination.patch",
       "sha256": "9179fc33da3c5f1f7bba84de3da43f7a5257bd9a81ebbc108373a851c7288170"
+    },
+    {
+      "path": "sdk-portable-realtime-tool-results.patch",
+      "sha256": "dc81239e4bc33557ddc8fa24be6e49712776cca64413a4982b7c86a7635d325f"
+    },
+    {
+      "path": "sdk-portable-realtime-raw-client-events.patch",
+      "sha256": "265efdbc07913c9509c1205af751c9c617b29bb22d02906e9006611e70bb348d"
     }
   ],
-  "result_tree": "ce23418d8f278e388fe87c8371c90167c52e8001"
+  "result_tree": "9b2ac6541e5fae60b8f1e8d43365919efde76496"
 }

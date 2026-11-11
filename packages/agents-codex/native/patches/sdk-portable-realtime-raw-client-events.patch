@@ -1,0 +1,1100 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -247,6 +247,24 @@
+     Update {
+         config: Config,
+     },
++    SendEvent {
++        event: Value,
++        #[serde(default)]
++        validate: bool,
++        #[serde(default)]
++        history: Vec<Value>,
++        #[serde(default)]
++        profile_id: u64,
++    },
++    UpdateSettings {
++        session: Value,
++        profile_id: u64,
++    },
++    ClearOutputAudio,
++    Retrieve {
++        item_id: String,
++        event_id: Option<String>,
++    },
+     Cancel {
+         response_id: Option<String>,
+     },
+@@ -273,6 +291,7 @@
+     },
+     Delete {
+         item_id: String,
++        event_id: Option<String>,
+     },
+     ValidateCancel {
+         response_id: Option<String>,
+@@ -282,6 +301,7 @@
+     },
+     ValidateDelete {
+         item_id: String,
++        event_id: Option<String>,
+     },
+     ValidateTruncate {
+         item_id: String,
+@@ -352,6 +372,7 @@
+     },
+     Ready,
+     Configured,
++    ConfigurationRejected,
+     Retire {
+         response_id: String,
+     },
+@@ -437,6 +458,7 @@
+ }
+ struct PendingDeletion {
+     event_id: String,
++    delete_event_id: Option<String>,
+     retrieving: bool,
+ }
+ struct Batch {
+@@ -467,6 +489,7 @@
+     pending_profile_id: u64,
+     response_profile_id: u64,
+     pending_response: Option<Value>,
++    pending_response_event: Option<String>,
+     pending_default: Option<ResponseScope>,
+     pending_default_event: Option<String>,
+     default_metadata_generated: bool,
+@@ -478,11 +501,13 @@
+     next_cancel: u64,
+     pending_send: BTreeSet<u64>,
+     pending_deletions: BTreeMap<String, PendingDeletion>,
++    pending_retrieval: Option<(String, String)>,
+     deletion_proofs: BTreeMap<String, DeletionEvidence>,
+     deletion_order: VecDeque<String>,
+     incoming: VecDeque<(Value, usize)>,
+     incoming_bytes: usize,
+     startup_send: Option<u64>,
++    raw_settings_event: Option<String>,
+     startup_sent: bool,
+     startup_accepted: bool,
+     updating: bool,
+@@ -492,6 +517,8 @@
+     completed_responses: BTreeSet<String>,
+     completed_response_order: VecDeque<String>,
+     cancel_before_created: bool,
++    pending_cancel_event: Option<String>,
++    raw_cancel_events: VecDeque<String>,
+     cancel_waiting: Option<String>,
+     hosted_mcp_auto_response: bool,
+     guardrail_output: Option<String>,
+@@ -523,6 +550,7 @@
+             pending_profile_id: 0,
+             response_profile_id: 0,
+             pending_response: None,
++            pending_response_event: None,
+             pending_default: None,
+             pending_default_event: None,
+             default_metadata_generated: false,
+@@ -534,11 +562,13 @@
+             next_cancel: 0,
+             pending_send: BTreeSet::new(),
+             pending_deletions: BTreeMap::new(),
++            pending_retrieval: None,
+             deletion_proofs: BTreeMap::new(),
+             deletion_order: VecDeque::new(),
+             incoming: VecDeque::new(),
+             incoming_bytes: 0,
+             startup_send: None,
++            raw_settings_event: None,
+             startup_sent: false,
+             startup_accepted: false,
+             updating: false,
+@@ -548,6 +578,8 @@
+             completed_responses: BTreeSet::new(),
+             completed_response_order: VecDeque::new(),
+             cancel_before_created: false,
++            pending_cancel_event: None,
++            raw_cancel_events: VecDeque::new(),
+             cancel_waiting: None,
+             hosted_mcp_auto_response: true,
+             guardrail_output: None,
+@@ -560,8 +592,15 @@
+     }
+     fn send(&mut self, mut event: Value, effects: &mut Vec<Effect>) -> u64 {
+         if event["type"] == "response.cancel" {
+-            event["event_id"] = json!(self.next_cancel_id());
+-            self.next_cancel += 1;
++            if let Some(event_id) = event["event_id"].as_str() {
++                if self.raw_cancel_events.len() == MAX_CALLS {
++                    self.raw_cancel_events.pop_front();
++                }
++                self.raw_cancel_events.push_back(event_id.to_owned());
++            } else {
++                event["event_id"] = json!(self.next_cancel_id());
++                self.next_cancel += 1;
++            }
+         }
+         self.next_send += 1;
+         self.pending_send.insert(self.next_send);
+@@ -666,6 +705,158 @@
+             };
+         vec![Effect::Preflight { event, immediate }]
+     }
++    fn client_command(
++        &self,
++        mut event: Value,
++        history: Vec<Value>,
++        profile_id: u64,
++    ) -> Result<(Command, Option<String>), String> {
++        self.require_ready()?;
++        let fields = event
++            .as_object_mut()
++            .ok_or("Realtime event must be an object")?;
++        let event_id = match fields.remove("event_id") {
++            Some(Value::String(id)) if !id.is_empty() && id.len() <= 512 => Some(id),
++            None | Some(Value::Null) => None,
++            _ => return Err("Invalid Realtime event ID".into()),
++        };
++        let kind = match fields.get("type").and_then(Value::as_str) {
++            Some("input_audio_buffer.append") => "audio",
++            Some("input_audio_buffer.commit") => "commit_audio",
++            Some("input_audio_buffer.clear") => "clear_audio",
++            Some("output_audio_buffer.clear") => "clear_output_audio",
++            Some("conversation.item.create") if !fields.contains_key("create_response") => {
++                fields.insert("create_response".into(), json!(false));
++                "input"
++            }
++            Some("conversation.item.retrieve") => "retrieve",
++            Some("conversation.item.delete") => "delete",
++            Some("conversation.item.truncate") => "truncate",
++            Some("response.create") if !fields.contains_key("history") => {
++                fields.insert("history".into(), json!(history));
++                "create_response"
++            }
++            Some("response.cancel") => "cancel",
++            Some("session.update") if !fields.contains_key("profile_id") => {
++                fields.insert("profile_id".into(), json!(profile_id));
++                "update_settings"
++            }
++            _ => return Err("Unsupported raw Realtime client event".into()),
++        };
++        fields.insert("type".into(), json!(kind));
++        // Serde unit variants do not inspect leftover object fields.
++        if matches!(kind, "commit_audio" | "clear_audio" | "clear_output_audio")
++            && fields.len() != 1
++        {
++            return Err("Invalid raw Realtime client event".into());
++        }
++        let command =
++            serde_json::from_value(event).map_err(|_| "Invalid raw Realtime client event")?;
++        match &command {
++            Command::Audio { audio } => validate_audio(audio)?,
++            Command::Input {
++                item,
++                previous_item_id,
++                ..
++            } => {
++                Self::validate_input(item)?;
++                if previous_item_id.as_ref().is_some_and(|id| {
++                    !id.is_null() && id.as_str().is_none_or(|id| id.is_empty() || id.len() > 512)
++                }) {
++                    return Err("Invalid previous conversation item ID".into());
++                }
++            }
++            Command::Retrieve { item_id, .. }
++            | Command::Delete { item_id, .. }
++            | Command::Truncate { item_id, .. } => validate_client_id(item_id)?,
++            Command::Cancel {
++                response_id: Some(id),
++            } => {
++                validate_client_id(id)?;
++                if self.responses.sdk_response_id.as_ref() != Some(id)
++                    && self.default_cancel_target().as_ref() != Some(id)
++                    && !self.has_received_default_response(Some(id))
++                    && self
++                        .detached
++                        .get(id)
++                        .is_none_or(|response| !response.active)
++                {
++                    return Err("Unknown response cancellation identity".into());
++                }
++            }
++            Command::CreateResponse {
++                response: Some(response),
++                ..
++            } => {
++                self.validate_response(response)?;
++                if response["conversation"] == "none"
++                    && (self.pending_detached.is_some() || self.detached.len() >= MAX_CALLS)
++                {
++                    return Err("Detached response request exceeds capacity".into());
++                }
++            }
++            Command::UpdateSettings { session, .. } => {
++                self.updated_session(session)?;
++            }
++            _ => {}
++        }
++        Ok((command, event_id))
++    }
++    fn client_preflight(
++        &self,
++        command: &Command,
++        event_id: Option<&str>,
++    ) -> Result<Vec<Effect>, String> {
++        let mut effects = match command {
++            Command::Cancel { response_id } => self.cancel_preflight(response_id.as_deref()),
++            Command::CreateResponse { response, .. } => self.response_preflight(response.as_ref()),
++            Command::UpdateSettings { session, .. } => {
++                let id = event_id
++                    .map(str::to_owned)
++                    .unwrap_or_else(|| format!("portable-settings-{}", self.next_send + 1));
++                return Ok(vec![Effect::Preflight {
++                    event: with_event_id(
++                        json!({"type":"session.update","session":self.updated_session(session)?}),
++                        Some(&id),
++                    ),
++                    immediate: true,
++                }]);
++            }
++            _ => vec![],
++        };
++        for effect in &mut effects {
++            if let Effect::Preflight { event, .. } = effect {
++                if event["type"] != "output_audio_buffer.clear" {
++                    if let Some(id) = event_id {
++                        event["event_id"] = json!(id);
++                    }
++                }
++            }
++        }
++        Ok(effects)
++    }
++    fn updated_session(&self, changes: &Value) -> Result<Value, String> {
++        let fields = changes
++            .as_object()
++            .ok_or("Realtime session settings must be an object")?;
++        for (key, value) in fields {
++            match key.as_str() {
++                "model" | "tools" if self.accepted_session.get(key) != Some(value) => {
++                    return Err("Update the agent to change its model or tool catalog".into());
++                }
++                "type" if value != "realtime" => {
++                    return Err("Expected Realtime session settings".into());
++                }
++                "instructions" if !value.is_string() => {
++                    return Err("Instructions must be a string".into());
++                }
++                _ => {}
++            }
++        }
++        let mut session = self.accepted_session.clone();
++        merge_settings(&mut session, changes);
++        Ok(session)
++    }
+     pub fn apply(&mut self, command: Command) -> Result<Vec<Effect>, String> {
+         if let Command::ValidateCancel { response_id } = &command {
+             return Ok(self.cancel_preflight(response_id.as_deref()));
+@@ -673,14 +864,20 @@
+         if let Command::ValidateResponse { response } = &command {
+             return Ok(self.response_preflight(response.as_ref()));
+         }
+-        if let Command::ValidateDelete { item_id } = &command {
++        if let Command::ValidateDelete { item_id, event_id } = &command {
+             let event = if self.require_ready().is_ok()
+                 && !self.pending_deletions.contains_key(item_id)
+                 && self.validate_live_deletion(item_id).is_ok()
+                 && item_id.len() <= 512
+                 && self.pending_deletions.len() < MAX_CALLS
+             {
+-                Some(self.deletion_event(item_id, self.validate_deletion(item_id).is_err()))
++                let retrieving = self.validate_deletion(item_id).is_err();
++                let event = self.deletion_event(item_id, retrieving);
++                Some(if retrieving {
++                    event
++                } else {
++                    with_event_id(event, event_id.as_deref())
++                })
+             } else {
+                 None
+             };
+@@ -721,7 +918,22 @@
+             }
+             return Ok(vec![]);
+         }
+-        let result = self.transition(command);
++        let (command, event_id) = match command {
++            Command::SendEvent {
++                event,
++                validate,
++                history,
++                profile_id,
++            } => {
++                let (command, event_id) = self.client_command(event, history, profile_id)?;
++                if validate {
++                    return self.client_preflight(&command, event_id.as_deref());
++                }
++                (command, event_id)
++            }
++            command => (command, None),
++        };
++        let result = self.transition(command, event_id.as_deref());
+         if result.is_err() {
+             self.retire();
+         }
+@@ -742,6 +954,10 @@
+         self.pending_detached = None;
+         self.detached_bytes = 0;
+         self.pending_response = None;
++        self.pending_response_event = None;
++        self.raw_settings_event = None;
++        self.pending_cancel_event = None;
++        self.raw_cancel_events.clear();
+         self.pending_default = None;
+         self.pending_default_event = None;
+         self.detached_guardrails.clear();
+@@ -749,6 +965,7 @@
+         self.batches.clear();
+         self.pending_send.clear();
+         self.pending_deletions.clear();
++        self.pending_retrieval = None;
+         self.deletion_proofs.clear();
+         self.deletion_order.clear();
+         self.incoming.clear();
+@@ -763,7 +980,11 @@
+         self.cancel_waiting = None;
+         self.next_cancel = 0;
+     }
+-    fn transition(&mut self, command: Command) -> Result<Vec<Effect>, String> {
++    fn transition(
++        &mut self,
++        command: Command,
++        event_id: Option<&str>,
++    ) -> Result<Vec<Effect>, String> {
+         if self.phase == Phase::Closed {
+             return if matches!(command, Command::Close) {
+                 Ok(vec![])
+@@ -777,7 +998,10 @@
+             | Command::ValidateTruncate { .. }
+             | Command::ValidateHistory { .. }
+             | Command::ValidateCancel { .. }
+-            | Command::ValidateResponse { .. } => unreachable!("control preflight is read-only"),
++            | Command::ValidateResponse { .. }
++            | Command::SendEvent { .. } => {
++                unreachable!("client commands are decoded before transition")
++            }
+             Command::Start {
+                 config,
+                 clear_output_audio_on_interrupt,
+@@ -794,6 +1018,49 @@
+                     return Err("Realtime configuration is not accepted".into());
+                 }
+                 self.configure(config, true, &mut effects)?;
++            }
++            Command::UpdateSettings {
++                session,
++                profile_id,
++            } => {
++                if self.phase != Phase::Ready {
++                    return Err("Realtime configuration is not accepted".into());
++                }
++                let session = self.updated_session(&session)?;
++                let id = event_id
++                    .map(str::to_owned)
++                    .unwrap_or_else(|| format!("portable-settings-{}", self.next_send + 1));
++                self.pending_tools = self.tools.clone();
++                self.pending_hosted = self.hosted.clone();
++                self.pending_profile_id = profile_id;
++                self.configure_session(session, true, Some(&id), &mut effects);
++                self.raw_settings_event = Some(id);
++            }
++            Command::ClearOutputAudio => {
++                self.require_ready()?;
++                self.send(
++                    with_event_id(json!({"type":"output_audio_buffer.clear"}), event_id),
++                    &mut effects,
++                );
++            }
++            Command::Retrieve {
++                item_id,
++                event_id: retrieve_id,
++            } => {
++                self.require_ready()?;
++                validate_client_id(&item_id)?;
++                if self.pending_retrieval.is_some() {
++                    return Err("Realtime history retrieval is already pending".into());
++                }
++                let event_id = event_id
++                    .or(retrieve_id.as_deref())
++                    .map(str::to_owned)
++                    .unwrap_or_else(|| format!("portable-history-{}", self.next_send + 1));
++                self.send(
++                    json!({"type":"conversation.item.retrieve","item_id":item_id,"event_id":event_id}),
++                    &mut effects,
++                );
++                self.pending_retrieval = Some((item_id, event_id));
+             }
+             Command::Cancel { response_id } => {
+                 self.require_ready()?;
+@@ -814,14 +1081,14 @@
+                     self.abort_scope(&id, &mut effects);
+                     self.detached_guardrails.remove(id);
+                     self.send(
+-                        json!({"type":"response.cancel","response_id":id}),
++                        with_event_id(json!({"type":"response.cancel","response_id":id}), event_id),
+                         &mut effects,
+                     );
+                 } else {
+                     if let Some(id) = response_id {
+-                        self.cancel_selected_default(&id, &mut effects);
++                        self.cancel_selected_default(&id, event_id, &mut effects);
+                     } else {
+-                        self.interrupt(&mut effects, target, true)?;
++                        self.interrupt(&mut effects, target, true, event_id)?;
+                     }
+                 }
+             }
+@@ -860,7 +1127,12 @@
+                         return Err("Guardrail does not own the active response".into());
+                     }
+                     self.last_completed = None;
+-                    self.interrupt(&mut effects, self.responses.sdk_response_id.clone(), false)?;
++                    self.interrupt(
++                        &mut effects,
++                        self.responses.sdk_response_id.clone(),
++                        false,
++                        None,
++                    )?;
+                     self.guardrail_output = Some(output);
+                     self.release_guardrail(&mut effects);
+                     if !effects.iter().any(|effect|matches!(effect,Effect::Retire {response_id:id} if id == &response_id)) {
+@@ -870,27 +1142,28 @@
+             }
+             Command::Audio { audio } => {
+                 self.require_ready()?;
+-                if audio.is_empty()
+-                    || audio.len() > MAX_CALL_BYTES
+-                    || audio.len() % 4 != 0
+-                    || !audio.bytes().all(|byte| {
+-                        byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
+-                    })
+-                {
+-                    return Err("Audio must be bounded base64 data".into());
+-                }
++                validate_audio(&audio)?;
+                 self.send(
+-                    json!({"type":"input_audio_buffer.append","audio":audio}),
++                    with_event_id(
++                        json!({"type":"input_audio_buffer.append","audio":audio}),
++                        event_id,
++                    ),
+                     &mut effects,
+                 );
+             }
+             Command::CommitAudio => {
+                 self.require_ready()?;
+-                self.send(json!({"type":"input_audio_buffer.commit"}), &mut effects);
++                self.send(
++                    with_event_id(json!({"type":"input_audio_buffer.commit"}), event_id),
++                    &mut effects,
++                );
+             }
+             Command::ClearAudio => {
+                 self.require_ready()?;
+-                self.send(json!({"type":"input_audio_buffer.clear"}), &mut effects);
++                self.send(
++                    with_event_id(json!({"type":"input_audio_buffer.clear"}), event_id),
++                    &mut effects,
++                );
+             }
+             Command::CreateResponse { response, history } => {
+                 self.require_ready()?;
+@@ -898,12 +1171,16 @@
+                     self.validate_response(&response)?;
+                     if response["conversation"] == "none" {
+                         let scope = self.new_scope(response, history);
+-                        self.send_detached(scope, &mut effects)?;
++                        self.send_detached(scope, event_id, &mut effects)?;
+                     } else {
+                         self.pending_response = Some(response);
++                        self.pending_response_event = event_id.map(str::to_owned);
+                         self.request_response(&mut effects);
+                     }
+                 } else {
++                    if event_id.is_some() {
++                        self.pending_response_event = event_id.map(str::to_owned);
++                    }
+                     self.request_response(&mut effects);
+                 }
+             }
+@@ -942,14 +1219,17 @@
+                     }
+                     event["previous_item_id"] = previous;
+                 }
+-                self.send(event, &mut effects);
++                self.send(with_event_id(event, event_id), &mut effects);
+                 if create_response {
+                     self.request_response(&mut effects);
+                 }
+             }
+-            Command::Delete { item_id } => {
++            Command::Delete {
++                item_id,
++                event_id: delete_id,
++            } => {
+                 self.require_ready()?;
+-                self.begin_deletion(&item_id, &mut effects);
++                self.begin_deletion(&item_id, event_id.or(delete_id.as_deref()), &mut effects);
+             }
+             Command::Truncate {
+                 item_id,
+@@ -961,7 +1241,10 @@
+                     return Err("Missing conversation item identity".into());
+                 }
+                 self.send(
+-                    Self::truncate_event(&item_id, content_index, audio_end_ms),
++                    with_event_id(
++                        Self::truncate_event(&item_id, content_index, audio_end_ms),
++                        event_id,
++                    ),
+                     &mut effects,
+                 );
+             }
+@@ -988,7 +1271,7 @@
+                     };
+                     self.incoming_bytes -= bytes;
+                     // Each queued event remains a canonical transition, including readiness.
+-                    effects.extend(self.transition(Command::Provider { event })?);
++                    effects.extend(self.transition(Command::Provider { event }, None)?);
+                 }
+                 self.release_guardrail(&mut effects);
+             }
+@@ -1059,6 +1342,7 @@
+             self.hosted = std::mem::take(&mut self.pending_hosted);
+             self.profile_id = self.pending_profile_id;
+             self.accepted_session = self.expected_session.clone();
++            self.raw_settings_event = None;
+             effects.push(if self.updating {
+                 Effect::Configured
+             } else {
+@@ -1145,18 +1429,28 @@
+         };
+         json!({"type":kind,"item_id":item_id,"event_id":format!("portable-history-{}", self.next_send + 1)})
+     }
+-    fn send_deletion(&mut self, item_id: &str, retrieving: bool, effects: &mut Vec<Effect>) {
+-        let event = self.deletion_event(item_id, retrieving);
++    fn send_deletion(
++        &mut self,
++        item_id: &str,
++        retrieving: bool,
++        delete_event_id: Option<&str>,
++        effects: &mut Vec<Effect>,
++    ) {
++        let mut event = self.deletion_event(item_id, retrieving);
++        if !retrieving {
++            event = with_event_id(event, delete_event_id);
++        }
+         self.pending_deletions.insert(
+             item_id.into(),
+             PendingDeletion {
+                 event_id: event["event_id"].as_str().unwrap().to_owned(),
++                delete_event_id: delete_event_id.map(str::to_owned),
+                 retrieving,
+             },
+         );
+         self.send(event, effects);
+     }
+-    fn begin_deletion(&mut self, item_id: &str, effects: &mut Vec<Effect>) {
++    fn begin_deletion(&mut self, item_id: &str, event_id: Option<&str>, effects: &mut Vec<Effect>) {
+         if self.pending_deletions.contains_key(item_id) {
+             return;
+         }
+@@ -1166,9 +1460,9 @@
+         {
+             Self::reject_deletion(item_id, effects);
+         } else if self.validate_deletion(item_id).is_ok() {
+-            self.send_deletion(item_id, false, effects);
++            self.send_deletion(item_id, false, event_id, effects);
+         } else {
+-            self.send_deletion(item_id, true, effects);
++            self.send_deletion(item_id, true, event_id, effects);
+         }
+     }
+     fn deletion_proof(&self, id: &str) -> Option<DeletionProof> {
+@@ -1337,14 +1631,25 @@
+         session.as_object_mut().unwrap().extend(config.settings);
+         // Catalog changes become observable only after the ordered exact ACK.
+         self.pending_tools = tools;
++        self.configure_session(session, updating, None, effects);
++        Ok(())
++    }
++    fn configure_session(
++        &mut self,
++        session: Value,
++        updating: bool,
++        event_id: Option<&str>,
++        effects: &mut Vec<Effect>,
++    ) {
+         self.phase = Phase::Configuring;
+         self.updating = updating;
+         self.startup_sent = false;
+         self.startup_accepted = false;
+         self.expected_session = session.clone();
+-        self.startup_send =
+-            Some(self.send(json!({"type":"session.update","session":session}), effects));
+-        Ok(())
++        self.startup_send = Some(self.send(
++            with_event_id(json!({"type":"session.update","session":session}), event_id),
++            effects,
++        ));
+     }
+     fn new_scope(&self, mut request: Value, history: Vec<Value>) -> ResponseScope {
+         let mut tools = self.tools.clone();
+@@ -1386,6 +1691,7 @@
+     fn send_detached(
+         &mut self,
+         scope: ResponseScope,
++        event_id: Option<&str>,
+         effects: &mut Vec<Effect>,
+     ) -> Result<(), String> {
+         if self.pending_detached.is_some() || self.detached.len() >= MAX_CALLS {
+@@ -1398,7 +1704,10 @@
+             return Err("Detached response context exceeds capacity".into());
+         }
+         self.send(
+-            json!({"type":"response.create","response":scope.request}),
++            with_event_id(
++                json!({"type":"response.create","response":scope.request}),
++                event_id,
++            ),
+             effects,
+         );
+         self.pending_detached = Some(scope);
+@@ -1427,7 +1736,7 @@
+             request["instructions"] = json!(output);
+             scope.request = request.clone();
+             scope.continuation = request;
+-            self.send_detached(scope, effects)?;
++            self.send_detached(scope, None, effects)?;
+         }
+         Ok(())
+     }
+@@ -1680,11 +1989,19 @@
+             self.send(json!({"type":"output_audio_buffer.clear"}), effects);
+         }
+     }
+-    fn send_default_cancel(&mut self, id: &str, effects: &mut Vec<Effect>) {
+-        self.send(json!({"type":"response.cancel","response_id":id}), effects);
++    fn send_default_cancel(&mut self, id: &str, event_id: Option<&str>, effects: &mut Vec<Effect>) {
++        self.send(
++            with_event_id(json!({"type":"response.cancel","response_id":id}), event_id),
++            effects,
++        );
+         self.clear_output_audio(effects);
+     }
+-    fn cancel_selected_default(&mut self, id: &String, effects: &mut Vec<Effect>) {
++    fn cancel_selected_default(
++        &mut self,
++        id: &String,
++        event_id: Option<&str>,
++        effects: &mut Vec<Effect>,
++    ) {
+         let scope = self.default_cancel_scope(id);
+         self.remember_retired_response(id.clone());
+         self.abort_scope(id, effects);
+@@ -1695,16 +2012,19 @@
+             self.responses.active_default_response = false;
+             self.responses.pending_create = false;
+             self.pending_response = None;
++            self.pending_response_event = None;
+             self.cancel_before_created = false;
++            self.pending_cancel_event = None;
+         }
+         if scope.matches_pending {
+             self.pending_default = None;
+             self.pending_default_event = None;
+             self.cancel_before_created = false;
++            self.pending_cancel_event = None;
+         }
+         if scope.live {
+             self.cancel_waiting = Some(id.clone());
+-            self.send_default_cancel(id, effects);
++            self.send_default_cancel(id, event_id, effects);
+         } else if !scope.preserves_other {
+             self.clear_output_audio(effects);
+         }
+@@ -1714,6 +2034,7 @@
+         effects: &mut Vec<Effect>,
+         target: Option<String>,
+         fence_received: bool,
++        event_id: Option<&str>,
+     ) -> Result<(), String> {
+         let mut retired = BTreeSet::new();
+         if let Some(id) = &self.responses.sdk_response_id {
+@@ -1778,7 +2099,7 @@
+             retired.insert(id.clone());
+             self.remember_retired_response(id.clone());
+             self.cancel_waiting = Some(id.clone());
+-            self.send_default_cancel(&id, effects);
++            self.send_default_cancel(&id, event_id, effects);
+         } else {
+             if unidentified {
+                 self.cancel_before_created = true;
+@@ -1796,11 +2117,17 @@
+             }
+         }
+         self.pending_response = None;
++        self.pending_response_event = None;
+         if self.pending_default.is_some() {
+             self.cancel_before_created = true;
+         }
+-        if !self.cancel_before_created {
++        if self.cancel_before_created {
++            if let Some(id) = event_id {
++                self.pending_cancel_event = Some(id.to_owned());
++            }
++        } else {
+             self.pending_default_event = None;
++            self.pending_cancel_event = None;
+         }
+         for (id, call) in &mut self.calls {
+             if !call
+@@ -1881,6 +2208,8 @@
+             "error"
+                 if !self.is_response_race(event)
+                     && !self.is_cancel_race(event)
++                    && !self.is_settings_rejection(event)
++                    && !self.is_retrieval_error(event)
+                     && self.deletion_error_item(event).is_none() =>
+             {
+                 return Err("Realtime provider rejected the operation".into());
+@@ -1892,13 +2221,24 @@
+     fn is_cancel_race(&self, event: &Value) -> bool {
+         event["error"]["type"] == "invalid_request_error"
+             && event["error"]["event_id"].as_str().is_some_and(|event_id| {
+-                event_id
+-                    .strip_prefix("cancel_")
+-                    .and_then(|value| value.parse::<u64>().ok())
+-                    .is_some_and(|id| {
+-                        id > 0 && id <= self.next_cancel && event_id == format!("cancel_{id}")
+-                    })
++                self.raw_cancel_events.iter().any(|id| id == event_id)
++                    || event_id
++                        .strip_prefix("cancel_")
++                        .and_then(|value| value.parse::<u64>().ok())
++                        .is_some_and(|id| {
++                            id > 0 && id <= self.next_cancel && event_id == format!("cancel_{id}")
++                        })
+             })
++    }
++    fn is_retrieval_error(&self, event: &Value) -> bool {
++        self.pending_retrieval
++            .as_ref()
++            .is_some_and(|(_, id)| event["error"]["event_id"].as_str() == Some(id))
++    }
++    fn is_settings_rejection(&self, event: &Value) -> bool {
++        self.raw_settings_event
++            .as_deref()
++            .is_some_and(|id| event["error"]["event_id"].as_str() == Some(id))
+     }
+     fn is_response_race(&self, event: &Value) -> bool {
+         self.pending_default_event
+@@ -1933,13 +2273,21 @@
+             generated_metadata,
+         )
+     }
+-    fn send_default(&mut self, response: Option<Value>, effects: &mut Vec<Effect>) {
++    fn send_default(
++        &mut self,
++        response: Option<Value>,
++        event_id: Option<&str>,
++        effects: &mut Vec<Effect>,
++    ) {
+         self.responses.mark_started();
+         let Some(response) = response else {
+             self.response_tools = self.tools.clone();
+             self.response_hosted = self.hosted.clone();
+             self.response_profile_id = self.profile_id;
+-            self.send(json!({"type":"response.create"}), effects);
++            self.send(
++                with_event_id(json!({"type":"response.create"}), event_id),
++                effects,
++            );
+             return;
+         };
+         let (event, generated_metadata) =
+@@ -1947,11 +2295,11 @@
+         if let Some(token) = event["event_id"].as_str() {
+             self.default_metadata_generated = generated_metadata;
+             self.pending_default = Some(self.new_scope(event["response"].clone(), vec![]));
+-            self.pending_default_event = Some(token.to_owned());
++            self.pending_default_event = Some(event_id.unwrap_or(token).to_owned());
+         } else {
+             self.capture_response_tools();
+         }
+-        self.send(event, effects);
++        self.send(with_event_id(event, event_id), effects);
+     }
+     fn has_received_default_response(&self, response_id: Option<&str>) -> bool {
+         self.incoming.iter().any(|(event, _)| {
+@@ -1980,7 +2328,8 @@
+             self.responses.pending_create = true;
+         } else if self.responses.request_create() {
+             let response = self.pending_response.take();
+-            self.send_default(response, effects);
++            let event_id = self.pending_response_event.take();
++            self.send_default(response, event_id.as_deref(), effects);
+         }
+     }
+     fn provider(&mut self, event: Value, effects: &mut Vec<Effect>) -> Result<(), String> {
+@@ -1994,7 +2343,17 @@
+             effects.push(Effect::Event { event });
+             return Ok(());
+         }
++        if kind == "error" && self.is_retrieval_error(&event) {
++            self.pending_retrieval = None;
++        }
+         if kind == "conversation.item.retrieved" {
++            if self
++                .pending_retrieval
++                .as_ref()
++                .is_some_and(|(id, _)| event["item"]["id"].as_str() == Some(id))
++            {
++                self.pending_retrieval = None;
++            }
+             if let Some(item_id) = event["item"]["id"].as_str().map(str::to_owned) {
+                 if self
+                     .pending_deletions
+@@ -2002,9 +2361,14 @@
+                     .is_some_and(|pending| pending.retrieving)
+                 {
+                     self.observe_deletion_item(&event["item"]);
+-                    self.pending_deletions.remove(&item_id);
++                    let pending = self.pending_deletions.remove(&item_id).unwrap();
+                     if self.validate_deletion(&item_id).is_ok() {
+-                        self.send_deletion(&item_id, false, effects);
++                        self.send_deletion(
++                            &item_id,
++                            false,
++                            pending.delete_event_id.as_deref(),
++                            effects,
++                        );
+                     } else {
+                         Self::reject_deletion(&item_id, effects);
+                     }
+@@ -2146,6 +2510,19 @@
+             }
+         }
+         match kind {
++            "error" if self.is_settings_rejection(&event) => {
++                self.phase = Phase::Ready;
++                self.updating = false;
++                self.raw_settings_event = None;
++                self.startup_send = None;
++                self.expected_session = self.accepted_session.clone();
++                self.pending_tools.clear();
++                self.pending_hosted.clear();
++                effects.push(Effect::ConfigurationRejected);
++                if self.responses.pending_create {
++                    self.request_response(effects);
++                }
++            }
+             "error" if self.is_response_race(&event) => {
+                 let cancelled = self.cancel_before_created;
+                 let response = self.pending_default.take().map(|scope| scope.request);
+@@ -2168,7 +2545,7 @@
+                     .as_bool()
+                     != Some(false)
+                 {
+-                    self.interrupt(effects, self.default_cancel_target(), true)?;
++                    self.interrupt(effects, self.default_cancel_target(), true, None)?;
+                 }
+             }
+             "response.cancelled" => {
+@@ -2204,7 +2581,8 @@
+                     self.pending_default_event = None;
+                     self.remember_retired_response(id.clone());
+                     self.cancel_waiting = Some(id.clone());
+-                    self.send_default_cancel(&id, effects);
++                    let event_id = self.pending_cancel_event.take();
++                    self.send_default_cancel(&id, event_id.as_deref(), effects);
+                     effects.push(Effect::Retire {
+                         response_id: self.cancel_waiting.clone().unwrap(),
+                     });
+@@ -2530,7 +2908,7 @@
+                 request["input"] = json!(input);
+                 scope.request = request.clone();
+                 scope.continuation = request;
+-                self.send_detached(scope, effects)?;
++                self.send_detached(scope, None, effects)?;
+                 self.batches.get_mut(&id).unwrap().continued = true;
+             } else if !self.responses.active_default_response
+                 && self.cancel_waiting.is_none()
+@@ -2558,6 +2936,7 @@
+                             | Command::ValidateHistory { .. }
+                             | Command::ValidateCancel { .. }
+                             | Command::ValidateResponse { .. }
++                            | Command::SendEvent { validate: true, .. }
+                     );
+                     self.apply(command)
+                 })
+@@ -2580,6 +2959,39 @@
+     deserializer: D,
+ ) -> Result<Option<Value>, D::Error> {
+     Value::deserialize(deserializer).map(Some)
++}
++fn with_event_id(mut event: Value, event_id: Option<&str>) -> Value {
++    if let Some(id) = event_id {
++        event["event_id"] = json!(id);
++    }
++    event
++}
++fn validate_client_id(id: &str) -> Result<(), String> {
++    if id.is_empty() || id.len() > 512 {
++        return Err("Invalid Realtime item or response ID".into());
++    }
++    Ok(())
++}
++fn validate_audio(audio: &str) -> Result<(), String> {
++    if audio.is_empty()
++        || audio.len() > MAX_CALL_BYTES
++        || audio.len() % 4 != 0
++        || !audio
++            .bytes()
++            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
++    {
++        return Err("Audio must be bounded base64 data".into());
++    }
++    Ok(())
++}
++fn merge_settings(target: &mut Value, patch: &Value) {
++    if let (Some(target), Some(patch)) = (target.as_object_mut(), patch.as_object()) {
++        for (key, value) in patch {
++            merge_settings(target.entry(key.clone()).or_insert(Value::Null), value);
++        }
++    } else {
++        *target = patch.clone();
++    }
+ }
+ fn string(value: &Value, key: &str) -> Result<String, String> {
+     value
+@@ -2655,6 +3067,117 @@
+             json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
+         )
+     }
++    fn raw(control: &mut Control, event: Value, validate: bool) -> Value {
++        command(
++            control,
++            json!({"type":"send_event","event":event,"validate":validate}),
++        )
++    }
++
++    #[test]
++    fn raw_client_events_preserve_ids_and_native_ownership() {
++        let mut control = ready();
++        for event in [
++            json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"foreign","output":"bad"}}),
++            json!({"type":"conversation.item.create","item":{"type":"mcp_approval_response","approval_request_id":"foreign","approve":true}}),
++            json!({"type":"input_audio_buffer.clear","extra":true}),
++            json!({"type":"response.cancel","response_id":"foreign"}),
++            json!({"type":"session.update","session":{"tools":[]}}),
++        ] {
++            let rejected = raw(&mut control, event, true);
++            assert!(rejected.get("error").is_some(), "{rejected}");
++        }
++        for event in [
++            json!({"type":"input_audio_buffer.append","audio":"AA==","event_id":"audio-1"}),
++            json!({"type":"input_audio_buffer.commit","event_id":"commit-1"}),
++            json!({"type":"input_audio_buffer.clear","event_id":"clear-1"}),
++            json!({"type":"output_audio_buffer.clear","event_id":"playback-1"}),
++            json!({"type":"conversation.item.create","event_id":"message-1","previous_item_id":null,
++                "item":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}),
++            json!({"type":"conversation.item.truncate","event_id":"truncate-1","item_id":"message-1","content_index":0,"audio_end_ms":10}),
++        ] {
++            let effect = raw(&mut control, event.clone(), false);
++            assert_eq!(effect["effects"].as_array().unwrap().len(), 1, "{effect}");
++            assert_eq!(effect["effects"][0]["event"], event);
++            command(
++                &mut control,
++                json!({"type":"sent","id":effect["effects"][0]["id"]}),
++            );
++        }
++        let create = raw(
++            &mut control,
++            json!({"type":"response.create","event_id":"response-request"}),
++            false,
++        );
++        assert_eq!(
++            create["effects"][0]["event"]["event_id"],
++            "response-request"
++        );
++        command(
++            &mut control,
++            json!({"type":"sent","id":create["effects"][0]["id"]}),
++        );
++        let early = raw(
++            &mut control,
++            json!({"type":"response.cancel","event_id":"cancel-request"}),
++            false,
++        );
++        assert_eq!(early["effects"], json!([]));
++        let cancelled = command(
++            &mut control,
++            json!({"type":"provider","event":{
++                "type":"response.created","response":{"id":"response-1"}
++            }}),
++        );
++        assert!(cancelled["effects"].as_array().unwrap().iter().any(|effect| effect["event"] == json!({
++            "type":"response.cancel","response_id":"response-1","event_id":"cancel-request"
++        })), "{cancelled}");
++    }
++
++    #[test]
++    fn raw_settings_rejection_preserves_the_last_accepted_configuration() {
++        let mut control = ready();
++        let settings = json!({"type":"session.update","event_id":"settings-1","session":{
++            "type":"realtime","instructions":"Revised.",
++            "audio":{"input":{"transcription":{"model":"gpt-4o-mini-transcribe"}}}
++        }});
++        let sent = raw(&mut control, settings.clone(), false);
++        let event = &sent["effects"][0]["event"];
++        assert_eq!(event["event_id"], "settings-1");
++        assert_eq!(event["session"]["tools"], control.accepted_session["tools"]);
++        command(
++            &mut control,
++            json!({"type":"sent","id":sent["effects"][0]["id"]}),
++        );
++        let rejected = command(
++            &mut control,
++            json!({"type":"provider","event":{
++                "type":"error","error":{"type":"invalid_request_error","event_id":"settings-1"}
++            }}),
++        );
++        assert_eq!(rejected["effects"][0]["type"], "configuration_rejected");
++        assert_eq!(control.accepted_session["instructions"], "Help.");
++        let resent = raw(&mut control, settings, false);
++        command(
++            &mut control,
++            json!({"type":"sent","id":resent["effects"][0]["id"]}),
++        );
++        let accepted = command(
++            &mut control,
++            json!({"type":"provider","event":{
++                "type":"session.updated","session":resent["effects"][0]["event"]["session"]
++            }}),
++        );
++        assert!(
++            accepted["effects"]
++                .as_array()
++                .unwrap()
++                .iter()
++                .any(|effect| effect["type"] == "configured")
++        );
++        assert_eq!(control.accepted_session["instructions"], "Revised.");
++    }
++
+     #[test]
+     fn only_foreground_tool_results_request_a_continuation() {
+         for (background, explicit_create, mixed) in [
