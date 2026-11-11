@@ -588,7 +588,7 @@ index f69668a1..392b7cfa 100644
                                  }
                                  let response = Self::aborted_response(&call, secs);
 diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
-index 0be3c4a2..46e50ee4 100644
+index 0be3c4a2..7d172890 100644
 --- a/codex-rs/core/src/tools/registry.rs
 +++ b/codex-rs/core/src/tools/registry.rs
 @@ -54,7 +54,7 @@ pub use codex_tools::ToolExposure;
@@ -600,9 +600,9 @@ index 0be3c4a2..46e50ee4 100644
      /// Whether this built-in control tool needs a structured tool-call event.
      fn is_builtin_control_tool(&self) -> bool {
          false
-@@ -453,6 +453,16 @@ impl ToolRegistry {
+@@ -402,6 +402,16 @@ impl ToolRegistry {
+             Entry::Vacant(entry) => {
                  entry.insert(RegisteredTool { runtime, exposure });
-                 true
              }
 +            Entry::Occupied(mut entry)
 +                if matches!(runtime.spec(), codex_tools::ToolSpec::ApplyPatch {})
@@ -615,59 +615,30 @@ index 0be3c4a2..46e50ee4 100644
 +                true
 +            }
              Entry::Occupied(entry) => {
-                 tracing::warn!(
-                     tool_name = %entry.key(),
-@@ -523,7 +533,8 @@ impl ToolRegistry {
+                 let tool_name = entry.key();
+                 error_or_panic(format!("tool {tool_name} already registered"));
+@@ -523,6 +533,7 @@ impl ToolRegistry {
                  | ToolSpec::CodeInterpreter(_)
                  | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
--                | ToolSpec::Computer { .. }
 +                | ToolSpec::ApplyPatch {}
-+            | ToolSpec::Computer { .. }
+                 | ToolSpec::Computer { .. }
                  | ToolSpec::ComputerUsePreview { .. }
                  | ToolSpec::WebSearch { .. } => "",
-             };
-@@ -853,6 +864,40 @@ impl ToolRegistry {
-                             "native computer result must retain its protocol type and call ID".into(),
-                         ));
-                     }
-+                }
-+                let final_item: codex_protocol::models::ResponseItem = result
-+                    .result
-+                    .to_response_item(&result.call_id, &result.payload)
-+                    .into();
-+                if matches!(invocation.payload, ToolPayload::ApplyPatch { .. })
+@@ -846,7 +857,12 @@ impl ToolRegistry {
+                         .result
+                         .to_response_item(&result.call_id, &result.payload)
+                         .into();
+-                    if matches!(invocation.payload, ToolPayload::Computer { .. })
++                    if matches!(invocation.payload, ToolPayload::ApplyPatch { .. })
 +                    && !matches!(&final_item, codex_protocol::models::ResponseItem::ApplyPatchCallOutput { call_id, .. } if call_id == &invocation.call_id)
 +                {
 +                    return Err(FunctionCallError::Fatal("application patch result must retain its protocol type and call ID".into()));
 +                }
 +                if matches!(invocation.payload, ToolPayload::Computer { .. })
-+                    && !matches!(&final_item, codex_protocol::models::ResponseItem::ComputerCallOutput { call_id, .. } if call_id == &invocation.call_id)
-+                {
-+                    return Err(FunctionCallError::Fatal(
-+                        "native computer result must retain its protocol type and call ID".into(),
-+                    ));
-+                }
-+                crate::file_admission::validate_response_items(
-+                    invocation
-+                        .session
-+                        .captured_provider_image_reference_policy(),
-+                    &invocation.step_context.settings.model_info,
-+                    std::iter::once(&final_item),
-+                )
-+                .map_err(FunctionCallError::Fatal)?;
-+                if invocation.session.captured_provider_image_reference_policy()
-+                    == codex_protocol::provider_reference_profile::ProviderImageReferencePolicy::QualifiedStandardResponses
-+                {
-+                    let supported = crate::image_preparation::inline_data_url_low_detail_supported(
-+                        &invocation.turn.config, &invocation.step_context.settings.model_info,
-+                    );
-+                    let reference_policy = crate::image_preparation::reference_policy_for_model(
-+                        invocation.session.captured_provider_image_reference_policy(),
-+                        invocation.step_context.settings.model_info.use_responses_lite, supported,
-                     crate::file_admission::validate_response_items(
-                         invocation
-                             .session
+                         && !matches!(&final_item, codex_protocol::models::ResponseItem::ComputerCallOutput { call_id, .. } if call_id == &invocation.call_id)
+                     {
+                         return Err(FunctionCallError::Fatal(
 diff --git a/codex-rs/core/src/tools/registry_tests.rs b/codex-rs/core/src/tools/registry_tests.rs
 index b926ebeb..0c0cdc32 100644
 --- a/codex-rs/core/src/tools/registry_tests.rs
