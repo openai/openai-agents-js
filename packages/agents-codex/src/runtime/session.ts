@@ -2315,6 +2315,7 @@ export class Session<OutputT = string, Context = unknown> {
         readonly namespace: string | null;
         readonly value?: unknown;
         readonly json?: JsonValue;
+        waiterConsumed?: true;
       };
       observations: Map<string, { identity: ToolIdentity; status: ToolStatus }>;
     }
@@ -2393,7 +2394,7 @@ export class Session<OutputT = string, Context = unknown> {
       active: boolean;
     }
   >();
-  private readonly nativeFormRetirementReplies = new Set<Promise<void>>();
+  private readonly nativeQuestionRetirementReplies = new Set<Promise<void>>();
   private readonly nativeQuestionKeys = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     Set<string>
@@ -2909,6 +2910,8 @@ export class Session<OutputT = string, Context = unknown> {
       producer,
       (owner) => {
         this.flushTerminalObservations(owner);
+        if (this.terminalProposals.get(owner)?.proposal?.waiterConsumed)
+          this.clearTerminalProposal(owner);
         this.observations.notify();
       },
       matches,
@@ -3187,11 +3190,11 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
-  private trackNativeFormRetirement(reply: Promise<void>): void {
-    this.nativeFormRetirementReplies.add(reply);
+  private trackNativeQuestionRetirement(reply: Promise<void>): void {
+    this.nativeQuestionRetirementReplies.add(reply);
     void reply.then(
-      () => this.nativeFormRetirementReplies.delete(reply),
-      () => this.nativeFormRetirementReplies.delete(reply),
+      () => this.nativeQuestionRetirementReplies.delete(reply),
+      () => this.nativeQuestionRetirementReplies.delete(reply),
     );
   }
 
@@ -3210,7 +3213,7 @@ export class Session<OutputT = string, Context = unknown> {
         preparation.decline,
         preparation.questionId,
       );
-      this.trackNativeFormRetirement(reply);
+      this.trackNativeQuestionRetirement(reply);
       replies.push(reply);
       void reply.catch(() => {});
     }
@@ -3228,7 +3231,8 @@ export class Session<OutputT = string, Context = unknown> {
           record.decline,
           record.questionId,
         );
-        if (record.form) this.trackNativeFormRetirement(reply);
+        if (record.form || request.type === 'user_verification_request')
+          this.trackNativeQuestionRetirement(reply);
         replies.push(reply);
         void reply.catch(() => {});
       }
@@ -6649,7 +6653,11 @@ export class Session<OutputT = string, Context = unknown> {
         });
       }
       this.flushTerminalObservations(owner);
-      if (msg.type === 'turn_aborted' || msg.tool_completion === undefined)
+      if (
+        proposal?.waiterConsumed ||
+        msg.type === 'turn_aborted' ||
+        msg.tool_completion === undefined
+      )
         this.clearTerminalProposal(owner);
       this.childCallbacks.end(id, incarnation, turnId);
       this.clearManualCalls();
@@ -12015,7 +12023,6 @@ export class Session<OutputT = string, Context = unknown> {
         toolCompletion: (raw) => {
           const fact = toolCompletionSchema.parse(raw);
           const proposal = this.terminalProposals.get(owner)?.proposal;
-          this.clearTerminalProposal(owner);
           if (
             !proposal ||
             !proposal.accepted ||
@@ -12025,10 +12032,15 @@ export class Session<OutputT = string, Context = unknown> {
               (fact.namespace ?? 'functions') ||
             typeof fact.final_output !== 'string' ||
             !isDeepStrictEqual(proposal.json, fact.final_output)
-          )
+          ) {
+            this.clearTerminalProposal(owner);
             throw new NativeError(
               'Child terminal tool completion has no matching accepted proposal',
             );
+          }
+          // The ordered reader still needs the accepted proposal to publish.
+          if (owner.observationPhase === 'open') proposal.waiterConsumed = true;
+          else this.clearTerminalProposal(owner);
           return terminalCallInfo(
             {
               sessionId: this.id,
@@ -14359,9 +14371,9 @@ export class Session<OutputT = string, Context = unknown> {
   private async closeNative(): Promise<NativeError | undefined> {
     const storedAction = this.storedHistoryClose;
     this.storedHistoryClose = undefined;
-    // Join exact form replies, including retirements started by earlier stops.
+    // Join exact form and verification declines, including earlier retirements.
     // Native shutdown must still precede held schema compilation cleanup.
-    await Promise.allSettled([...this.nativeFormRetirementReplies]);
+    await Promise.allSettled([...this.nativeQuestionRetirementReplies]);
     if (
       this.environment instanceof Environment &&
       !this.selectedEnvironmentRetirementAttempted

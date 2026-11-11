@@ -6,6 +6,7 @@ import {
   NativeProvider,
   type Session,
 } from '../../src';
+import { binding, type NativeThread } from '../../src/runtime/binding';
 import type { UserVerificationRequest } from '../../src/runtime/verification';
 import { TurnAborted } from '../../src/runtime/session';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -201,6 +202,21 @@ it('revokes the exact pending request on cancellation and physically joins the p
 }, 30_000);
 
 it('joins an aborted signer callback and refuses its late proof', async () => {
+  const { NativeThread: Thread } = await binding();
+  let declineEntered = false;
+  const releaseDecline = Promise.withResolvers<void>();
+  const respond = Thread.prototype._respond_owned_native_question;
+  vi.spyOn(
+    Thread.prototype,
+    '_respond_owned_native_question',
+  ).mockImplementation(async function (this: NativeThread, id, wire) {
+    if (JSON.parse(wire).kind === 'decline_elicitation') {
+      declineEntered = true;
+      await releaseDecline.promise;
+    }
+    return respond.call(this, id, wire);
+  });
+  const nativeClose = vi.spyOn(Thread.prototype, '_close_report');
   const peer = await startVerificationPeer();
   const f = await application(peer.url);
   const entered = Promise.withResolvers<void>();
@@ -248,12 +264,18 @@ it('joins an aborted signer callback and refuses its late proof', async () => {
     await expect
       .poll(() => callbackSignal?.aborted, { timeout: 5_000 })
       .toBe(true);
+    expect(declineEntered).toBe(true);
+    // Let native close start if it can pass the held decline.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(nativeClose).not.toHaveBeenCalled();
     expect(joined).toBe(false);
     expect(closed).toBe(false);
+    releaseDecline.resolve();
     release.resolve();
     peer.releaseVerification();
     await expect(operation).rejects.toThrow();
     await closing;
+    expect(nativeClose).toHaveBeenCalled();
     expect(joined).toBe(true);
     expect(
       peer.replies.every((answer) => answer.result?.action !== 'accept'),
@@ -261,6 +283,7 @@ it('joins an aborted signer callback and refuses its late proof', async () => {
     expect(() => received!.reply(peer.proof(received!.challenge))).toThrow();
     await expect.poll(() => peer.joinedCalls, { timeout: 5_000 }).toBe(1);
   } finally {
+    releaseDecline.resolve();
     release.resolve();
     peer.releaseVerification();
     await operation.catch(() => {});

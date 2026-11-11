@@ -3600,6 +3600,16 @@ nativeIt(
             output: [authority],
           },
         });
+        await vi.waitFor(() =>
+          expect(
+            seen.some(
+              (event) =>
+                event.type === 'response' &&
+                event.status === 'done' &&
+                event.responseId === 'catalog-response',
+            ),
+          ).toBe(true),
+        );
         after = peer.frames.length;
         const removing = voice.updateHistory([first, last]);
         void removing.catch(() => {});
