@@ -1,3 +1,8 @@
+import { isZodObject } from '@openai/agents-core/utils';
+import {
+  getSchemaAndParserFromInputType,
+  stripStrictNullsForZodSchema,
+} from '@openai/agents-core/utils/internal';
 import type { ApprovedArguments } from './manual';
 import {
   decisionBinding,
@@ -215,6 +220,8 @@ export interface ToolDeclaration {
   readonly parameters: JsonValue;
   /** Discover this selected schema natively when the model supports discovery. */
   readonly deferLoading?: boolean;
+  readonly strict?: boolean;
+  readonly outputSchema?: JsonObject;
 }
 
 const prepareInvocation = Symbol('function tool binding');
@@ -405,6 +412,10 @@ export function tool<
   finishTurn?: boolean;
   /** Defer selected schema presentation; does not change execution admission. */
   deferLoading?: boolean;
+  /** Opt into strict Responses input schema generation. */
+  strict?: boolean;
+  /** Describe the JSON object encoded in string results for a native Responses request or ResponsesModel. */
+  outputSchema?: JsonObject;
   /**
    * Callback-body deadline in seconds, at most 2_147_483.647.
    * Aborts the callback signal and joins entered work; effects are not rolled back.
@@ -519,6 +530,29 @@ export function tool<
     throw new TypeError('inputErrorFunction must be a function');
   if (errorFunction != null && typeof errorFunction !== 'function')
     throw new TypeError('errorFunction must be a function');
+  const strict = options.strict ?? false;
+  if (options.strict !== undefined && typeof options.strict !== 'boolean')
+    throw new TypeError('strict must be a boolean');
+  const outputSchema =
+    options.outputSchema === undefined
+      ? undefined
+      : losslessJsonObjectSchema.parse(options.outputSchema);
+  if (outputSchema !== undefined && outputSchema.type !== 'object')
+    throw new TypeError('outputSchema must define a JSON object');
+  let inputSchema: unknown;
+  if (strict) {
+    if (!isZodObject(parameters))
+      throw new TypeError('Strict tool parameters must be a Zod object');
+    inputSchema = getSchemaAndParserFromInputType(parameters, name, {
+      strict,
+    }).schema;
+  } else {
+    inputSchema = z.toJSONSchema(parameters, { io: 'input' });
+  }
+  const parseInput = (value: unknown): z.output<T> =>
+    parameters.parse(
+      strict ? stripStrictNullsForZodSchema(parameters, value) : value,
+    );
   const recoverRunError = async (
     phase: ToolErrorContext['phase'],
     error: unknown,
@@ -589,10 +623,9 @@ export function tool<
     timeoutErrorFunction,
     errorFunction,
     deferLoading: options.deferLoading ?? false,
-    parameters: decode(
-      losslessJsonValueSchema,
-      JSON.stringify(z.toJSONSchema(parameters, { io: 'input' })),
-    ),
+    ...(strict ? { strict } : {}),
+    ...(outputSchema === undefined ? {} : { outputSchema }),
+    parameters: decode(losslessJsonValueSchema, JSON.stringify(inputSchema)),
     async [prepareInvocation](
       args: JsonValue,
       context: ToolCallContext<Context>,
@@ -609,11 +642,10 @@ export function tool<
       );
       let parsed: z.output<T>;
       if (approved) parsed = approved.value as z.output<T>;
-      else if (effectiveArgs !== undefined)
-        parsed = parameters.parse(effectiveArgs);
+      else if (effectiveArgs !== undefined) parsed = parseInput(effectiveArgs);
       else {
         try {
-          parsed = parameters.parse(args);
+          parsed = parseInput(args);
         } catch (error) {
           const text = await recoverOriginalInput(
             error,
@@ -668,7 +700,7 @@ export function tool<
           };
         }
         if (decision?.action === 'replaceArguments') {
-          parsed = parameters.parse(decision.arguments);
+          parsed = parseInput(decision.arguments);
           callContext = {
             ...callContext,
             effectiveArguments: Object.freeze({
@@ -833,7 +865,7 @@ export function tool<
               return undefined;
             admit();
             try {
-              return { value: parameters.parse(structuredClone(args)) };
+              return { value: parseInput(structuredClone(args)) };
             } catch (error) {
               return {
                 failure: await recoverOriginalInput(
@@ -858,10 +890,10 @@ export function tool<
           ),
         )
       : {},
-    parseInput: (args) => parameters.parse(structuredClone(args)),
+    parseInput: (args) => parseInput(structuredClone(args)),
     async prepare(args, context, admit, skipPredicate = false, effectiveArgs) {
       admit();
-      let parsed = parameters.parse(
+      let parsed = parseInput(
         structuredClone(effectiveArgs === undefined ? args : effectiveArgs),
       );
       let effective = effectiveArgs;
@@ -906,7 +938,7 @@ export function tool<
         }
         if (decision.action === 'replaceArguments') {
           effective = losslessJsonValueSchema.parse(decision.arguments);
-          parsed = parameters.parse(structuredClone(effective));
+          parsed = parseInput(structuredClone(effective));
           callContext = {
             ...callContext,
             effectiveArguments: Object.freeze({
@@ -999,6 +1031,10 @@ export function captureTools(
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
       parameters: losslessJsonValueSchema.parse(tool.parameters),
+      ...(tool.outputSchema === undefined
+        ? {}
+        : { outputSchema: losslessJsonObjectSchema.parse(tool.outputSchema) }),
+      ...(tool.strict ? { strict: true } : {}),
     });
     declarationOwners.set(binding, declarationOwners.get(tool) ?? tool);
     return binding;
@@ -1029,6 +1065,10 @@ export function captureTools(
       description: tool.description,
       inputSchema: tool.parameters,
       deferLoading: tool.deferLoading ?? false,
+      ...(tool.strict ? { strict: true } : {}),
+      ...(tool.outputSchema === undefined
+        ? {}
+        : { outputSchema: tool.outputSchema }),
     };
     const namespace = tool.kind === 'manual' ? undefined : tool.namespace;
     return namespace !== undefined
