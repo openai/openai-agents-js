@@ -1,0 +1,153 @@
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 5439465ee2e78e91b0a0453abbfbe88475b23392..889f8e2ca678082774d22c030c77163feb4b33f2 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -3992,6 +3992,9 @@ impl Session {
+                 settings = Arc::new(inherited_settings);
+             }
+         }
++        if turn::tool_choice_reset_applies(&settings, &turn_context.extension_data) {
++            Arc::make_mut(&mut settings).release_forced_tool_choice();
++        }
+         let token_budget = token_budget::resolve_token_budget(
+             turn_context.configured_token_budget.as_ref(),
+             turn_context.use_model_token_budget_defaults,
+diff --git a/codex-rs/core/src/session/step_settings.rs b/codex-rs/core/src/session/step_settings.rs
+index 5f00339c2696f7b350855b1d226e5fd8c92e045e..368ff49510bb140e8fae8b5b34212c7909b54b9f 100644
+--- a/codex-rs/core/src/session/step_settings.rs
++++ b/codex-rs/core/src/session/step_settings.rs
+@@ -102,6 +102,14 @@ impl ResolvedStepSettings {
+         &self.selected.request_controls
+     }
+ 
++    pub(super) fn release_forced_tool_choice(&mut self) {
++        if self.tool_choice() == ToolChoice::Required {
++            let selected = Arc::make_mut(&mut self.selected);
++            selected.tool_choice = Some(ToolChoice::Auto);
++            selected.request_controls.named_tool_choice = Some(None);
++        }
++    }
++
+     pub(super) fn with_agent_profile(
+         mut self,
+         profile: Option<Arc<codex_extension_api::CapturedAgentProfile>>,
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 3b42c3db775f0a94d9f1ab20b1446d6300b3cd77..a4c2042ac673d7ee0bb5be4f8e7ebe8660656500 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -429,6 +429,7 @@ pub(crate) async fn run_turn(
+             &turn_context.sub_id,
+             &history.items,
+         )?;
++        record_tool_choice_use(&first_step_context, &tools);
+         first_step_context
+             .turn
+             .extension_data
+@@ -633,6 +634,7 @@ pub(crate) async fn run_turn(
+                     last_agent_message: sampling_request_last_agent_message,
+                     settled_tools,
+                 } = sampling_request_output;
++                record_tool_choice_use(&step_context, &settled_tools);
+                 pending_agent_handoff = accepted_handoff;
+                 if model_needs_follow_up {
+                     sess.input_queue
+@@ -1999,6 +2001,12 @@ async fn run_sampling_request(
+                 base_instructions.clone(),
+             );
+             prompt.request_controls = step_context.settings.request_controls().clone();
++            if prompt.tool_choice == codex_protocol::config_types::ToolChoice::Required
++                && tool_choice_reset_applies(&step_context.settings, &turn_context.extension_data)
++            {
++                prompt.tool_choice = codex_protocol::config_types::ToolChoice::Auto;
++                prompt.request_controls.named_tool_choice = Some(None);
++            }
+             prompt.prefer_buffered_response = sess
+                 .services
+                 .thread_extension_data
+@@ -2354,6 +2362,40 @@ struct SamplingRequestResult {
+ /// Serialized terminal payloads and host initializers cannot construct this type.
+ pub(crate) struct ValidatedToolCompletion(pub(crate) codex_protocol::protocol::ToolTurnCompletion);
+ 
++/// One accepted use on the current captured profile, owned by this logical turn.
++struct ToolChoiceUse {
++    profile: Option<codex_extension_api::AgentProfileReceipt>,
++}
++
++pub(super) fn tool_choice_reset_applies(
++    settings: &super::step_settings::ResolvedStepSettings,
++    store: &codex_extension_api::ExtensionData,
++) -> bool {
++    settings.request_controls().reset_tool_choice.flatten() == Some(true)
++        && store.get::<ToolChoiceUse>().is_some_and(|used| {
++            used.profile.as_ref()
++                == settings
++                    .agent_profile
++                    .as_ref()
++                    .map(|profile| &profile.receipt)
++        })
++}
++
++fn record_tool_choice_use(step: &StepContext, tools: &SettledDirectTools) {
++    if step.settings.request_controls().reset_tool_choice.flatten() == Some(true)
++        && !tools.calls.is_empty()
++        && !tools.outputs.is_empty()
++    {
++        step.turn.extension_data.insert(ToolChoiceUse {
++            profile: step
++                .settings
++                .agent_profile
++                .as_ref()
++                .map(|profile| profile.receipt.clone()),
++        });
++    }
++}
++
+ /// Original direct-call order and accepted outputs from this sample only.
+ #[derive(Debug, Default)]
+ struct SettledDirectTools {
+diff --git a/codex-rs/protocol/src/model_request_controls.rs b/codex-rs/protocol/src/model_request_controls.rs
+index fb4bd92a3f640b60d241fd87d9122a0ce98063ff..b30f72b200644bac8cc9c6149ea0ed4467e8ecd8 100644
+--- a/codex-rs/protocol/src/model_request_controls.rs
++++ b/codex-rs/protocol/src/model_request_controls.rs
+@@ -159,6 +159,15 @@ pub struct ModelRequestControls {
+     #[ts(optional = nullable, as = "Option<ToolName>")]
+     #[schemars(with = "Option<ToolName>")]
+     pub named_tool_choice: Option<Option<ToolName>>,
++    /// Local opt-in: release forced choice after an accepted tool use on this profile.
++    #[serde(
++        default,
++        skip_serializing_if = "Option::is_none",
++        with = "serde_with::rust::double_option"
++    )]
++    #[ts(optional = nullable, as = "Option<bool>")]
++    #[schemars(with = "Option<bool>")]
++    pub reset_tool_choice: Option<Option<bool>>,
+ }
+ 
+ impl ModelRequestControls {
+@@ -179,6 +188,7 @@ impl ModelRequestControls {
+             && self.prompt_cache_retention.is_none()
+             && self.prompt_cache_ttl.is_none()
+             && self.named_tool_choice.is_none()
++            && self.reset_tool_choice.is_none()
+     }
+ 
+     pub fn apply_patch(&mut self, patch: &Self) {
+@@ -231,6 +241,9 @@ impl ModelRequestControls {
+         if patch.named_tool_choice.is_some() {
+             self.named_tool_choice = patch.named_tool_choice.clone();
+         }
++        if patch.reset_tool_choice.is_some() {
++            self.reset_tool_choice = patch.reset_tool_choice;
++        }
+     }
+ 
+     /// Check wire shapes independently of uncertain model-level support.
+@@ -258,6 +271,7 @@ impl ModelRequestControls {
+         if let Some(Some(body)) = &self.extra_body {
+             const RESERVED: &[&str] = &[
+                 "input_modalities",
++                "reset_tool_choice",
+                 "type",
+                 "generate",
+                 "model",
