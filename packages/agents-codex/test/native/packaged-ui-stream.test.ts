@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { DefaultChatTransport, readUIMessageStream, type UIMessage } from 'ai';
 import { z } from 'zod';
 import {
@@ -16,11 +16,80 @@ import {
   vercelResponse,
 } from '@openai/agents/ui';
 import { call, message, ModelServer } from './fixtures/model-server';
+import { binding } from '../../src/runtime/binding';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
+
+it.each([
+  [false, false, 'Reasoning'],
+  [true, false, 'Reasoning'],
+  [true, true, 'Reasoning'],
+  [true, true, 'AgentMessage'],
+] as const)(
+  'signals a gap for an unowned model item (opt-in=%s, child=%s, type=%s)',
+  async (includeModelOutputItems, child, itemType) => {
+    const { NativeThread } = await binding();
+    const nextEvents = NativeThread.prototype._next_session_events;
+    const drained = Promise.withResolvers<void>();
+    vi.spyOn(NativeThread.prototype, '_next_session_events')
+      .mockImplementationOnce(async function (
+        this: typeof NativeThread.prototype,
+      ) {
+        return [
+          JSON.stringify({
+            id: 'retired-turn',
+            ...(child
+              ? {
+                  subagent_id: 'child-session',
+                  subagent_incarnation: 'child-incarnation',
+                  subagent_instance_id: '1',
+                }
+              : {}),
+            msg: {
+              type: 'item_completed',
+              thread_id: child ? 'child-session' : this.id,
+              turn_id: 'retired-turn',
+              item:
+                itemType === 'Reasoning'
+                  ? {
+                      type: 'Reasoning',
+                      id: 'late',
+                      summary_text: ['Late reasoning.'],
+                    }
+                  : {
+                      type: 'AgentMessage',
+                      id: 'late',
+                      content: [{ type: 'Text', text: 'Late assistant.' }],
+                    },
+            },
+          }),
+        ];
+      })
+      .mockImplementationOnce(function (this: typeof NativeThread.prototype) {
+        drained.resolve();
+        return nextEvents.call(this);
+      });
+    await using provider = await peer();
+    await using session = await new Agent({
+      instructions: 'Read.',
+      provider,
+    }).session({ includeModelOutputItems });
+    await drained.promise;
+    await session.close();
+    const events = await Array.fromAsync(session.events());
+    expect(events.some((event) => event.type === 'gap')).toBe(
+      includeModelOutputItems,
+    );
+    expect(
+      events.some((event) => event.type === 'model_output_item_completed'),
+    ).toBe(false);
+    expect(events.some((event) => event.type === 'turn_started')).toBe(false);
+  },
+);
 
 /** Actual Responses text deltas and function calls through the native engine. */
 async function peer(
@@ -63,6 +132,7 @@ async function peer(
           item: {
             id: current ? 'current-reasoning' : 'earlier-reasoning',
             type: 'reasoning',
+            encrypted_content: 'private-reasoning-fixture',
             summary: [
               {
                 type: 'summary_text',
@@ -199,6 +269,54 @@ it.each([false, true])(
       expect(output.toolCallId).toBe('current-call');
       expect(JSON.stringify(output.output)).toContain('result:current-secret');
     } else expect(JSON.stringify(values)).not.toContain('current-secret');
+  },
+);
+
+it.each([false, true])(
+  'observes detached assistant output for the selected native turn (%s)',
+  async (includeModelOutputItems) => {
+    await using provider = await peer('Provider summary.');
+    await using session = await new Agent({
+      instructions: 'Read.',
+      provider,
+      tools: [lookup()],
+    }).session({ includeModelOutputItems });
+    await (await session.submit('earlier')).wait();
+    const turn = await session.submit('current');
+    const events = await Array.fromAsync(turn.events());
+    const output = events.filter(
+      (event) => event.type === 'model_output_item_completed',
+    );
+    if (!includeModelOutputItems) {
+      expect(output).toEqual([]);
+      return;
+    }
+    expect(output.map((event) => event.item.type)).toEqual([
+      'reasoning',
+      'message',
+    ]);
+    expect(output.every((event) => event.turnId === turn.turnId)).toBe(true);
+    const reasoning = output[0]!.item;
+    expect(reasoning).toMatchObject({
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: 'Provider summary.' }],
+    });
+    expect(output[1]!.item).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Found it.' }],
+    });
+    expect(JSON.stringify(output)).not.toContain('Earlier reasoning secret.');
+    expect(JSON.stringify(output)).not.toContain('private-reasoning-fixture');
+    if (reasoning.type !== 'reasoning')
+      throw new Error('Expected reasoning summary');
+    (reasoning.summary as unknown[]).splice(0);
+    const replay = await Array.fromAsync(turn.events());
+    expect(
+      replay.find((event) => event.type === 'model_output_item_completed'),
+    ).toMatchObject({
+      item: { summary: [{ type: 'summary_text', text: 'Provider summary.' }] },
+    });
   },
 );
 

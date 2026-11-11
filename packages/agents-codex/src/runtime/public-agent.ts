@@ -192,6 +192,8 @@ export interface SessionBaseOptions<Context = undefined> {
    * Memory grows with emitted payloads until Session references are released.
    * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
   observationRetention?: 'bounded' | 'all';
+  /** Record completed assistant messages and provider reasoning summaries. */
+  includeModelOutputItems?: boolean;
   /**
    * Capture Responses provider JSON in the Session's observation buffer.
    * Use includeExecutionDetails on an observation reader to receive it.
@@ -272,7 +274,7 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
-  'tools' | 'includeRawProviderEvents'
+  'tools' | 'includeModelOutputItems' | 'includeRawProviderEvents'
 > {
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
@@ -330,6 +332,7 @@ interface CapturedOpening {
   readonly decisions?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
   readonly observationRetention?: 'bounded' | 'all';
+  readonly includeModelOutputItems?: boolean;
   readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
@@ -983,6 +986,9 @@ export class Agent<Context = undefined, Output = string> {
     const observationRetention = opening
       ? opening.observationRetention
       : options.observationRetention;
+    const includeModelOutputItems = opening
+      ? opening.includeModelOutputItems
+      : options.includeModelOutputItems;
     const includeRawProviderEvents =
       options.includeRawProviderEvents ?? opening?.includeRawProviderEvents;
     const maxFunctionConcurrency = opening
@@ -1766,6 +1772,7 @@ export class Agent<Context = undefined, Output = string> {
         chatGPTPlan: plan !== undefined,
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
+        includeModelOutputItems,
         includeRawProviderEvents,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
@@ -1850,6 +1857,7 @@ export class Agent<Context = undefined, Output = string> {
               });
               const correctionOptions: OwnedSessionOptions<undefined> = {
                 parentTrace,
+                includeModelOutputItems,
                 includeRawProviderEvents,
                 [correctionOpening]: {
                   apiKey: lease.realtimeApiKey,
@@ -1890,6 +1898,7 @@ export class Agent<Context = undefined, Output = string> {
             toolErrorFormatter,
             maxFunctionConcurrency,
             observationRetention,
+            includeModelOutputItems,
             includeRawProviderEvents,
             contextTransformPurpose,
             beforeCompact,
