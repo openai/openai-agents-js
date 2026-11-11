@@ -89,9 +89,12 @@ it.each([false, true])(
       const child = await agent.session({ storage, resume: childId! });
       let savedChild: Awaited<ReturnType<typeof child.saveState>>;
       let expectedChild: Awaited<ReturnType<typeof child.historySnapshot>>;
+      const expectedChildTurns: string[] = [];
       let grandchildId: string;
       try {
         expectedChild = await child.historySnapshot();
+        for await (const turn of child.turns())
+          expectedChildTurns.push(turn.id);
         savedChild = await portableDataCopy(expectedChild.items);
         grandchildId = await child.forkStored();
       } finally {
@@ -147,7 +150,7 @@ it.each([false, true])(
         expect(JSON.stringify(raw)).toContain(output);
         const turns: string[] = [];
         for await (const turn of restored.turns()) turns.push(turn.id);
-        expect(turns).toEqual(turnIds!);
+        expect(turns).toEqual(expectedChildTurns);
       }
       // Exported copies have isolated memory ownership, without local resume authority.
       for (const state of [savedSource!, savedChild!]) {
