@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { jsonObject } from '../../src/runtime/binding';
-import { codeInterpreter, fileSearch, imageGeneration, tool } from '../../src';
+import {
+  codeInterpreter,
+  fileSearch,
+  hostedShell,
+  imageGeneration,
+  tool,
+} from '../../src';
 import { hostedToolSpecs } from '../../src/runtime/hosted-tools';
 import {
   projectHostedToolItem,
@@ -20,6 +26,33 @@ import type {
 import { vi } from 'vitest';
 
 describe('native provider-hosted declarations', () => {
+  it('captures managed shell configuration and rejects local execution', () => {
+    const environment = {
+      type: 'container_auto' as const,
+      file_ids: ['file_shell'],
+      network_policy: { type: 'disabled' as const },
+    };
+    const shell = hostedShell({ environment, allowedCallers: ['direct'] });
+    environment.file_ids.push('file_after_capture');
+
+    const declarations = splitToolDeclarations([shell]);
+    expect(declarations.tools).toEqual([]);
+    expect(hostedToolSpecs(declarations.hostedTools)).toEqual([
+      {
+        type: 'shell',
+        environment: {
+          type: 'container_auto',
+          file_ids: ['file_shell'],
+          network_policy: { type: 'disabled' },
+        },
+        allowed_callers: ['direct'],
+      },
+    ]);
+    expect(() =>
+      hostedShell({ environment: { type: 'local' } as never }),
+    ).toThrow('Hosted shell requires a managed container environment');
+  });
+
   it.each([{ value: false }, { value: 0 }, { value: '' }, { value: [] }])(
     'rejects non-object provider data: $value',
     ({ value }) => {
@@ -142,6 +175,9 @@ describe('native provider-hosted declarations', () => {
   it.each([
     fileSearch('vs_synthetic'),
     codeInterpreter({ container: { type: 'auto' } }),
+    hostedShell({
+      environment: { type: 'container_reference', container_id: 'cntr_shell' },
+    }),
     imageGeneration(),
   ])('reserves $kind without local dispatch', (hosted) => {
     expect(() => splitToolDeclarations([hosted, hosted])).toThrow('only once');
@@ -164,6 +200,16 @@ describe('provider hosted result fidelity', () => {
       outputs: null,
     },
     { type: 'image_generation_call', result: null },
+    {
+      type: 'shell_call',
+      call_id: 'call_shell',
+      action: { commands: ['printf parity'] },
+    },
+    {
+      type: 'shell_call_output',
+      call_id: 'call_shell',
+      output: [{ stdout: 'parity', stderr: '' }],
+    },
   ])(
     'excludes only reserved Core metadata from $type provider_data',
     (fields) => {

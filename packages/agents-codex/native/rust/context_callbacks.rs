@@ -11,8 +11,79 @@ pub(super) struct ContextProjection {
     explicit_tools: bool,
 }
 
+// The same preparation nonce follows streaming consumption instead of ending at stream start.
+struct ContextLease {
+    wait: StepWait,
+    callback: Arc<CallbackRelease>,
+    cancellation: CancellationToken,
+    generation: Arc<Generation>,
+    active: Option<ActiveSelection>,
+    _tracing: Option<codex_otel::sdk_trace::ContextLease>,
+}
+impl ContextLease {
+    fn validate(&self) -> Result<()> {
+        let tools = &self.wait.tools;
+        ensure!(
+            !self.cancellation.is_cancelled()
+                && tools.admits_generation(&self.generation)
+                && self.callback.model_attempt.as_ref().is_none_or(|attempt| {
+                    !attempt.cancellation().is_cancelled() && !attempt.sampling_stop().requested()
+                }),
+            "Expired model callback owner"
+        );
+        let current = tools
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        ensure!(
+            match (&self.active, &*current) {
+                (Some(active), Some(current)) =>
+                    current.turn == active.turn
+                        && Arc::ptr_eq(&current.generation, &active.generation),
+                (None, None) => true,
+                _ => false,
+            },
+            "Expired model callback operation"
+        );
+        Ok(())
+    }
+    async fn finish(self) -> Result<()> {
+        let tools = &self.wait.tools;
+        let id = self.wait.id;
+        {
+            let replies = tools
+                .step_replies
+                .lock()
+                .expect("JavaScript step replies poisoned");
+            if replies
+                .get(&id)
+                .is_some_and(|pending| pending.reply.is_closed())
+                && !self.callback.entered.load(Ordering::Acquire)
+            {
+                self.callback.release();
+            }
+        }
+        tokio::select! { biased;
+            _ = self.cancellation.cancelled() => { tools.retire_step_callback(id); self.callback.wait().await; },
+            _ = self.callback.wait() => {},
+        }
+        if !self.callback.retains_failed_attempt() {
+            tools
+                .step_replies
+                .lock()
+                .expect("JavaScript step replies poisoned")
+                .remove(&id);
+        }
+        ensure!(
+            !self.callback.cleanup_failed.load(Ordering::Acquire),
+            "Model callback cleanup failed"
+        );
+        self.validate()
+    }
+}
+
 pub(super) enum PreparationReply {
-    Model(oneshot::Sender<std::result::Result<ModelReply, ()>>),
+    Model(ModelDelivery),
     ModelRetry(
         oneshot::Sender<std::result::Result<codex_protocol::model_retry::ModelRetryResolution, ()>>,
     ),
@@ -34,7 +105,8 @@ pub(super) enum PreparationReply {
 impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
-            Self::Model(reply) => reply.is_closed(),
+            Self::Model(ModelDelivery::Waiting(reply)) => reply.is_closed(),
+            Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
             Self::ModelRetry(reply) => reply.is_closed(),
             Self::PreparedRequest { reply, .. } => reply.is_closed(),
             Self::Selection(reply) => reply.is_closed(),
@@ -278,9 +350,34 @@ impl PythonTools {
         turn: &str,
         cancellation: CancellationToken,
         model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
-        mut message: Value,
+        message: Value,
         prepare: impl FnOnce(oneshot::Sender<std::result::Result<T, ()>>) -> PreparationReply,
     ) -> Result<T> {
+        let (reply, lease) = self
+            .exchange_context_retained(
+                step,
+                thread,
+                turn,
+                cancellation,
+                model_attempt,
+                message,
+                prepare,
+            )
+            .await?;
+        lease.finish().await?;
+        Ok(reply)
+    }
+
+    async fn exchange_context_retained<T>(
+        self: &Arc<Self>,
+        step: Option<&ExtensionData>,
+        thread: &str,
+        turn: &str,
+        cancellation: CancellationToken,
+        model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+        mut message: Value,
+        prepare: impl FnOnce(oneshot::Sender<std::result::Result<T, ()>>) -> PreparationReply,
+    ) -> Result<(T, ContextLease)> {
         let generation = self.generation_for_step(step)?;
         let profile = self.source_profile(step)?;
         let active = self
@@ -341,7 +438,7 @@ impl PythonTools {
                     },
                 );
         }
-        let _wait = StepWait {
+        let wait = StepWait {
             tools: self.clone(),
             id,
         };
@@ -378,59 +475,26 @@ impl PythonTools {
             },
             received = receive => received.context("Model callback cancelled"),
         };
-        {
-            let replies = self
-                .step_replies
-                .lock()
-                .expect("JavaScript step replies poisoned");
-            if replies
-                .get(&id)
-                .is_some_and(|pending| pending.reply.is_closed())
-                && !callback.entered.load(Ordering::Acquire)
-            {
-                callback.release();
-            }
-        }
         if received.is_err() {
             self.retire_step_callback(id);
         }
-        tokio::select! { biased;
-            _ = cancellation.cancelled() => { self.retire_step_callback(id); callback.wait().await; },
-            _ = callback.wait() => {},
+        let lease = ContextLease {
+            wait,
+            callback,
+            cancellation,
+            generation,
+            active,
+            _tracing: tracing,
+        };
+        match received {
+            Ok(Ok(value)) => Ok((value, lease)),
+            received => {
+                lease.finish().await?;
+                received?
+                    .map_err(|()| anyhow::anyhow!("Model callback failed"))
+                    .map(|_| unreachable!())
+            }
         }
-        if !callback.retains_failed_attempt() {
-            self.step_replies
-                .lock()
-                .expect("JavaScript step replies poisoned")
-                .remove(&id);
-        }
-        ensure!(
-            !callback.cleanup_failed.load(Ordering::Acquire),
-            "Model callback cleanup failed"
-        );
-        ensure!(
-            !cancellation.is_cancelled()
-                && self.admits_generation(&generation)
-                && callback.model_attempt.as_ref().is_none_or(|attempt| {
-                    !attempt.cancellation().is_cancelled() && !attempt.sampling_stop().requested()
-                }),
-            "Expired model callback owner"
-        );
-        let current = self
-            .selection
-            .lock()
-            .expect("JavaScript selection poisoned");
-        ensure!(
-            match (&active, &*current) {
-                (Some(active), Some(current)) =>
-                    current.turn == active.turn
-                        && Arc::ptr_eq(&current.generation, &active.generation),
-                (None, None) => true,
-                _ => false,
-            },
-            "Expired model callback operation"
-        );
-        received?.map_err(|()| anyhow::anyhow!("Model callback failed"))
     }
 
     pub(crate) async fn transform_context(
@@ -632,6 +696,54 @@ impl PythonTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn cancelled_stream_closes_saturated_channel_before_joining_callback() {
+        use futures_util::StreamExt;
+        let tools = super::super::pending_tests::tools();
+        let callback =
+            CallbackRelease::new(json!({"kind":"preparation","thread":"root","id":"17"}));
+        callback.entered.store(true, Ordering::Release);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let (events, receiver) = tokio::sync::mpsc::channel(8);
+        for _ in 0..8 {
+            events
+                .send(codex_api::ResponseEvent::Created { response_id: None })
+                .await
+                .unwrap();
+        }
+        let release = callback.clone();
+        let producer = tokio::spawn(async move {
+            assert!(events.reserve().await.is_err());
+            release.release();
+        });
+        let (_finish_sender, finish) = oneshot::channel();
+        let generation = tools.current.read().unwrap().clone();
+        let cursor = ModelStreamCursor {
+            events: receiver,
+            finish: Some(finish),
+            accepted: Vec::new().into_iter(),
+            failed: false,
+            lease: Some(ContextLease {
+                wait: StepWait { tools, id: 17 },
+                callback,
+                cancellation,
+                generation,
+                active: None,
+                _tracing: None,
+            }),
+        };
+        let mut stream = cursor.into_stream();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+                .await
+                .expect("saturated producer and callback cleanup must retire")
+                .expect("cancellation event")
+                .is_err()
+        );
+        producer.await.unwrap();
+    }
+
     fn owner() -> Value {
         json!({"thread":"root","turn_id":"turn","generation":"0","request_id":"17"})
     }
@@ -803,6 +915,92 @@ mod tests {
     }
 }
 
+type ModelStreamFinish = std::result::Result<Vec<codex_api::ResponseEvent>, codex_api::ApiError>;
+pub(super) enum ProducedResponse {
+    Complete(ModelReply),
+    Stream {
+        events: tokio::sync::mpsc::Receiver<codex_api::ResponseEvent>,
+        finish: oneshot::Receiver<ModelStreamFinish>,
+    },
+}
+pub(super) enum ModelDelivery {
+    Waiting(oneshot::Sender<std::result::Result<ProducedResponse, ()>>),
+    Streaming {
+        events: tokio::sync::mpsc::Sender<codex_api::ResponseEvent>,
+        finish: oneshot::Sender<ModelStreamFinish>,
+        projection: codex_api::ApplicationModelStream,
+    },
+}
+struct ModelStreamCursor {
+    events: tokio::sync::mpsc::Receiver<codex_api::ResponseEvent>,
+    finish: Option<oneshot::Receiver<ModelStreamFinish>>,
+    accepted: std::vec::IntoIter<codex_api::ResponseEvent>,
+    lease: Option<ContextLease>,
+    failed: bool,
+}
+fn model_stream_error(error: impl std::fmt::Display) -> codex_api::ApiError {
+    codex_api::ApiError::InvalidRequest {
+        message: error.to_string(),
+    }
+}
+impl ModelStreamCursor {
+    fn into_stream(self) -> codex_extension_api::ModelResponseStream {
+        use futures_util::StreamExt;
+        futures_util::stream::unfold(self, |mut cursor| async move {
+            match cursor.next().await {
+                Ok(Some(event)) => Some((Ok(event), cursor)),
+                Ok(None) => None,
+                Err(error) => {
+                    cursor.events.close();
+                    if let Some(lease) = cursor.lease.take() {
+                        let _ = lease.finish().await;
+                    }
+                    cursor.failed = true;
+                    Some((Err(error), cursor))
+                }
+            }
+        })
+        .boxed()
+    }
+    async fn next(
+        &mut self,
+    ) -> std::result::Result<Option<codex_api::ResponseEvent>, codex_api::ApiError> {
+        if self.failed {
+            return Ok(None);
+        }
+        if let Some(event) = self.accepted.next() {
+            return Ok(Some(event));
+        }
+        let Some(lease) = &self.lease else {
+            return Ok(None);
+        };
+        lease.validate().map_err(model_stream_error)?;
+        let event = tokio::select! { biased;
+            _ = lease.cancellation.cancelled() => return Err(model_stream_error("Native model stream cancelled")),
+            event = self.events.recv() => event,
+        };
+        if let Some(event) = event {
+            lease.validate().map_err(model_stream_error)?;
+            return Ok(Some(event));
+        }
+        let finish = self
+            .finish
+            .take()
+            .ok_or_else(|| model_stream_error("Native model stream already finished"))?;
+        let result = finish
+            .await
+            .map_err(|_| model_stream_error("Native model stream was abandoned"))?;
+        self.lease
+            .take()
+            .expect("retained model callback lease")
+            .finish()
+            .await
+            .map_err(model_stream_error)?;
+        self.accepted = result?.into_iter();
+        Ok(self.accepted.next())
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ModelReply {
@@ -830,7 +1028,6 @@ impl PythonTools {
         mut request: Value,
         admission: Arc<dyn codex_extension_api::ModelToolAdmission>,
     ) -> Result<codex_extension_api::ModelResponseStream> {
-        use codex_extension_api::ResponseEvent;
         use futures_util::StreamExt;
         self.restore_schema_request(&mut request)?;
         let turn = admission.turn_store().level_id();
@@ -852,27 +1049,145 @@ impl PythonTools {
             message["retry_configured"] = json!(attempt.retry_configured());
             message["disable_provider_retries"] = json!(attempt.disable_provider_retries());
         }
-        let reply = self
-            .exchange_context(
+        let (reply, lease) = self
+            .exchange_context_retained(
                 admission.step_store(),
                 admission.thread_id(),
                 turn,
                 cancellation,
                 attempt.clone(),
                 message,
-                PreparationReply::Model,
+                |reply| PreparationReply::Model(ModelDelivery::Waiting(reply)),
             )
             .await?;
+        match reply {
+            ProducedResponse::Complete(reply) => {
+                lease.finish().await?;
+                ensure!(
+                    !reply.response_id.trim().is_empty(),
+                    "Native model response requires an identifier"
+                );
+                Ok(
+                    futures_util::stream::iter(codex_extension_api::completed_model_response(
+                        reply.response_id,
+                        reply.output,
+                        reply.usage,
+                    ))
+                    .boxed(),
+                )
+            }
+            ProducedResponse::Stream { events, finish } => {
+                let cursor = ModelStreamCursor {
+                    events,
+                    finish: Some(finish),
+                    accepted: Vec::new().into_iter(),
+                    lease: Some(lease),
+                    failed: false,
+                };
+                Ok(cursor.into_stream())
+            }
+        }
+    }
+    pub(crate) fn start_model_producer_stream(&self, response: &StepReply) -> Result<()> {
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self
+            .step_replies
+            .lock()
+            .expect("JavaScript step replies poisoned");
+        let id = crate::native_id(&response.request_id)?;
         ensure!(
-            !reply.response_id.trim().is_empty(),
-            "Native model response requires an identifier"
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.thread,
+                response,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::Model(ModelDelivery::Waiting(_))
+            )),
+            "Expired model stream start"
         );
-        let events = codex_extension_api::completed_model_response(
-            reply.response_id,
-            reply.output,
-            reply.usage,
-        );
-        Ok(futures_util::stream::iter(events).boxed())
+        let (events, receive_events) = tokio::sync::mpsc::channel(8);
+        let (finish, receive_finish) = oneshot::channel();
+        let pending = replies.get_mut(&id).expect("checked model request");
+        let PreparationReply::Model(ModelDelivery::Waiting(reply)) = std::mem::replace(
+            &mut pending.reply,
+            PreparationReply::Model(ModelDelivery::Streaming {
+                events,
+                finish,
+                projection: codex_api::ApplicationModelStream::default(),
+            }),
+        ) else {
+            unreachable!()
+        };
+        reply
+            .send(Ok(ProducedResponse::Stream {
+                events: receive_events,
+                finish: receive_finish,
+            }))
+            .map_err(|_| anyhow::anyhow!("Expired model stream start"))
+    }
+    pub(crate) async fn push_model_producer_event(
+        &self,
+        response: &StepReply,
+        data: &str,
+    ) -> Result<bool> {
+        let id = crate::native_id(&response.request_id)?;
+        let (projected, sender, continuing) = {
+            let active = self
+                .selection
+                .lock()
+                .expect("JavaScript selection poisoned");
+            let mut replies = self
+                .step_replies
+                .lock()
+                .expect("JavaScript step replies poisoned");
+            ensure!(
+                replies.get(&id).is_some_and(|pending| self.step_matches(
+                    &response.thread,
+                    response,
+                    active.as_ref(),
+                    pending
+                )),
+                "Expired model stream event"
+            );
+            let PreparationReply::Model(ModelDelivery::Streaming {
+                events, projection, ..
+            }) = &mut replies.get_mut(&id).expect("checked model request").reply
+            else {
+                anyhow::bail!("Model stream has not started")
+            };
+            let (projected, continuing) = projection.push(data);
+            (projected, events.clone(), continuing)
+        };
+        for event in projected {
+            let permit = sender
+                .reserve()
+                .await
+                .context("Expired model stream reader")?;
+            let active = self
+                .selection
+                .lock()
+                .expect("JavaScript selection poisoned");
+            let replies = self
+                .step_replies
+                .lock()
+                .expect("JavaScript step replies poisoned");
+            ensure!(
+                replies.get(&id).is_some_and(|pending| self.step_matches(
+                    &response.thread,
+                    response,
+                    active.as_ref(),
+                    pending
+                )),
+                "Expired model stream event"
+            );
+            permit.send(event);
+        }
+        Ok(continuing)
     }
     pub(crate) fn reply_model_producer(&self, response: ModelProducerReply) -> Result<()> {
         let active = self
@@ -901,6 +1216,12 @@ impl PythonTools {
             .and_then(|pending| pending.callback.as_ref())
             .and_then(|callback| callback.model_attempt.as_ref())
             .cloned();
+        let streaming = replies.get(&id).is_some_and(|pending| {
+            matches!(
+                pending.reply,
+                PreparationReply::Model(ModelDelivery::Streaming { .. })
+            )
+        });
         let parsed = if response.failed {
             ensure!(
                 response.data.is_none(),
@@ -914,6 +1235,16 @@ impl PythonTools {
                     .map_err(anyhow::Error::msg)?;
             }
             Err(())
+        } else if streaming {
+            ensure!(
+                response.failure.is_none(),
+                "Successful model reply contains failure"
+            );
+            if response.data.is_none() {
+                Ok(None)
+            } else {
+                Err(())
+            }
         } else {
             ensure!(
                 response.failure.is_none(),
@@ -931,15 +1262,44 @@ impl PythonTools {
                     .report_usage(usage.clone())
                     .map_err(anyhow::Error::msg)?;
             }
-            Ok(reply)
+            Ok(Some(reply))
         };
         let pending = take_pending_step(&mut replies, id).expect("checked model producer reply");
         let PreparationReply::Model(reply) = pending.reply else {
             unreachable!()
         };
-        reply
-            .send(parsed)
-            .map_err(|_| anyhow::anyhow!("Expired model producer reply"))
+        match reply {
+            ModelDelivery::Waiting(reply) => reply
+                .send(parsed.map(|reply| {
+                    ProducedResponse::Complete(reply.expect("parsed complete response"))
+                }))
+                .map_err(|_| anyhow::anyhow!("Expired model producer reply")),
+            ModelDelivery::Streaming {
+                finish, projection, ..
+            } => {
+                let result = projection.finish(
+                    parsed
+                        .is_err()
+                        .then_some("Native model stream producer failed"),
+                );
+                if let (Some(attempt), Ok(events)) = (&attempt, &result) {
+                    for event in events {
+                        if let codex_api::ResponseEvent::Completed {
+                            token_usage: Some(usage),
+                            ..
+                        } = event
+                        {
+                            attempt
+                                .report_usage(usage.clone())
+                                .map_err(anyhow::Error::msg)?;
+                        }
+                    }
+                }
+                finish
+                    .send(result)
+                    .map_err(|_| anyhow::anyhow!("Expired model producer reply"))
+            }
+        }
     }
 }
 
