@@ -877,6 +877,7 @@ pub struct Control {
 struct Channel {
     observe_raw_provider_events: AtomicBool,
     state: Mutex<State>,
+    raw_usage: Mutex<Option<Arc<codex_core::SdkRawUsageLink>>>,
     graph: crate::graph_stop::Graph,
     // At most MAX_PENDING live requests. Cancellation messages must not be
     // dropped when that bound is full, hence the unbounded control channel.
@@ -903,6 +904,23 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn raw_usage_active(&self) -> bool {
+        self.channel
+            .raw_usage
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|link| link.is_active())
+    }
+
+    pub(crate) fn bind_raw_usage(&self, link: codex_core::SdkRawUsageLink) {
+        *self
+            .channel
+            .raw_usage
+            .lock()
+            .expect("raw usage link poisoned") = Some(Arc::new(link));
+    }
+
     pub(crate) fn bind_context_tools(&self, tools: &Arc<crate::python_tools::PythonTools>) {
         let _ = self.context_tools.set(Arc::downgrade(tools));
     }
@@ -1069,6 +1087,7 @@ impl Control {
             command_tty: std::sync::OnceLock::new(),
             sentinel_request: Mutex::new(SentinelState::default()),
             channel: Arc::new(Channel {
+                raw_usage: Mutex::new(None),
                 observe_raw_provider_events: AtomicBool::new(false),
                 graph: crate::graph_stop::Graph::default(),
                 state: Mutex::new(State {
@@ -3071,6 +3090,17 @@ impl TurnLifecycleContributor for Boundary {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(control) = input.thread_store.get::<Control>() {
+                if !control.root {
+                    if let Some(link) = control
+                        .channel
+                        .raw_usage
+                        .lock()
+                        .expect("raw usage link poisoned")
+                        .as_ref()
+                    {
+                        link.attach(input.thread_store);
+                    }
+                }
                 if !control.stopped.is_cancelled()
                     && control
                         .channel

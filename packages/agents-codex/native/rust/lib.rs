@@ -4331,10 +4331,13 @@ impl NativeThread {
         for_replay: Option<bool>,
     ) -> napi::Result<String> {
         let inner = self.current()?;
-        let value =
-            canonical_history::snapshot(&inner, limit.map(|n| n as usize), for_replay.unwrap_or(false))
-                .await
-                .map_err(native_error)?;
+        let value = canonical_history::snapshot(
+            &inner,
+            limit.map(|n| n as usize),
+            for_replay.unwrap_or(false),
+        )
+        .await
+        .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
@@ -4386,6 +4389,51 @@ impl NativeThread {
             .await
             .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_raw_usage")]
+    pub fn start_raw_usage(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = inner.thread.sdk_start_raw_usage();
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_attach_raw_usage")]
+    pub fn attach_raw_usage(&self, parent: &NativeThread) -> napi::Result<()> {
+        let inner = self.current()?;
+        let parent = parent.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = parent
+            .thread
+            .sdk_raw_usage_link()
+            .ok_or_else(|| native_error("Provider usage capture was not started"))?;
+        link.attach(inner.thread.thread_extension_data());
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_raw_usage")]
+    pub fn take_raw_usage(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .thread
+            .sdk_take_raw_usage(&turn_id)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "_start_produced_items")]
