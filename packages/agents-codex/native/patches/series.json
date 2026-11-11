@@ -702,8 +702,8 @@
     },
     {
       "path": "sdk-deferred-followup-trace.patch",
-      "sha256": "df82643e5fa33fbd6c089c50557b27d23b4a47eb88a82e8949a5754757bcec06"
+      "sha256": "bb5bfe944f0278638fd9eb50a913cf89341c19815382af5a1c47e3dded0ada46"
     }
   ],
-  "result_tree": "acfb8e9e40e88bf7acffd836ffc45841a0406527"
+  "result_tree": "29745405b98ce9496148954ea5ad430a28e30601"
 }

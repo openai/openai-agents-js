@@ -15,7 +15,7 @@ index 2db8d2f..fd2810a 100644
          let generation = {
              let guard = self.state.lock().await;
 diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
-index 9befb60..8c4924a 100644
+index 9befb60..136c3b6 100644
 --- a/codex-rs/core/src/session/handlers.rs
 +++ b/codex-rs/core/src/session/handlers.rs
 @@ -1,4 +1,5 @@
@@ -24,7 +24,7 @@ index 9befb60..8c4924a 100644
  use crate::WithTurnExtensionData;
  use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
  use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
-@@ -78,16 +79,30 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
+@@ -78,16 +79,28 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
  
  /// Queues an inter-agent message, then lets the shared pending-work scheduler
  /// decide whether an idle session should start a regular turn.
@@ -40,7 +40,6 @@ index 9befb60..8c4924a 100644
 -    sess.input_queue
 -        .enqueue_mailbox_communication(communication, start_options)
 -        .await;
-+    let trace = trace.filter(|_| trigger_turn);
 +    let trace = if sess.is_shutting_down().await {
 +        None
 +    } else {
@@ -48,10 +47,9 @@ index 9befb60..8c4924a 100644
 +    };
 +    {
 +        let active = sess.active_turn.lock().await;
-+        let requires_wake = trigger_turn
-+            && active
-+                .as_ref()
-+                .is_some_and(|turn| turn.mailbox_start_sealed);
++        let requires_wake = active
++            .as_ref()
++            .is_some_and(|turn| turn.mailbox_start_sealed && turn.task.is_none());
 +        sess.input_queue
 +            .enqueue_mailbox_submission(communication, start_options, trace, requires_wake)
 +            .await;
@@ -59,7 +57,7 @@ index 9befb60..8c4924a 100644
      crate::agent_communication::emit_agent_communication_receive(&sub_id);
      if trigger_turn || sess.has_outstanding_durable_sleep() {
          sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
-@@ -287,16 +302,29 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
+@@ -287,16 +300,29 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
      }
  }
  
@@ -90,7 +88,7 @@ index 9befb60..8c4924a 100644
      let _ = sess.conversation.shutdown().await;
      sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
      {
-@@ -468,7 +496,7 @@ pub(super) async fn submission_loop(
+@@ -468,7 +494,7 @@ pub(super) async fn submission_loop(
              } => {
                  match update {
                      Ok(true) => {
@@ -99,25 +97,26 @@ index 9befb60..8c4924a 100644
                          if sess.has_outstanding_durable_sleep() {
                              sess.maybe_start_turn_for_pending_work().await;
                          }
-@@ -999,7 +1027,12 @@ pub(super) async fn submission_loop(
+@@ -999,7 +1025,13 @@ pub(super) async fn submission_loop(
                      communication,
                      start_options,
                  } => {
 -                    inter_agent_communication(&sess, sub.id.clone(), communication, start_options)
-+                    let trace = if communication.trigger_turn {
-+                        MailboxTrace::from_submission(&sub.id, sub.trace, sub.trace_policy)
-+                    } else {
-+                        None
-+                    };
++                    let trace = MailboxTrace::from_submission(
++                        &sub.id,
++                        sub.trace,
++                        sub.trace_policy,
++                        communication.trigger_turn,
++                    );
 +                    inter_agent_communication(&sess, sub.id, communication, start_options, trace)
                          .await;
                      false
                  }
 diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
-index cb24780..c57d74a 100644
+index cb24780..d204b09 100644
 --- a/codex-rs/core/src/session/input_queue.rs
 +++ b/codex-rs/core/src/session/input_queue.rs
-@@ -5,9 +5,14 @@ use crate::state::MailboxDeliveryPhase;
+@@ -5,19 +5,27 @@ use crate::state::MailboxDeliveryPhase;
  use crate::state::TurnState;
  use codex_diagnostics::GaugeGuard;
  use codex_history::ResponseItemEnvelope;
@@ -132,7 +131,11 @@ index cb24780..c57d74a 100644
  use codex_protocol::turn_input::TurnStartOptions;
  use codex_protocol::user_input::UserInput;
  use serde::Deserialize;
-@@ -18,6 +23,8 @@ use tokio::sync::Mutex;
+ use serde::Serialize;
+ use std::collections::VecDeque;
+ use std::sync::Arc;
++use std::sync::Weak;
+ use tokio::sync::Mutex;
  use tokio::sync::watch;
  use tokio_util::sync::CancellationToken;
  use tokio_util::task::AbortOnDropHandle;
@@ -141,7 +144,7 @@ index cb24780..c57d74a 100644
  
  /// Host capture metadata belonging to one input, including steers within another turn.
  #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-@@ -101,9 +108,73 @@ pub(crate) struct InputQueue {
+@@ -101,9 +109,98 @@ pub(crate) struct InputQueue {
  pub(crate) struct PendingMailboxCommunication {
      pub(crate) communication: InterAgentCommunication,
      start_options: TurnStartOptions,
@@ -157,7 +160,22 @@ index cb24780..c57d74a 100644
 +pub(super) struct MailboxTrace {
 +    submission_id: String,
 +    carrier: W3cTraceContext,
-+    policy: Arc<sdk_trace::ScopePolicy>,
++    policy: MailboxTracePolicy,
++}
++
++#[derive(Clone)]
++enum MailboxTracePolicy {
++    Trigger(Arc<sdk_trace::ScopePolicy>),
++    Queued(Weak<sdk_trace::ScopePolicy>),
++}
++
++impl MailboxTracePolicy {
++    fn as_ptr(&self) -> *const sdk_trace::ScopePolicy {
++        match self {
++            Self::Trigger(policy) => Arc::as_ptr(policy),
++            Self::Queued(policy) => policy.as_ptr(),
++        }
++    }
 +}
 +
 +impl MailboxTrace {
@@ -165,8 +183,15 @@ index cb24780..c57d74a 100644
 +        submission_id: &str,
 +        carrier: Option<W3cTraceContext>,
 +        policy: Option<Arc<sdk_trace::ScopePolicy>>,
++        trigger_turn: bool,
 +    ) -> Option<Self> {
 +        let (carrier, policy) = carrier.zip(policy)?;
++        let policy = if trigger_turn {
++            MailboxTracePolicy::Trigger(policy)
++        } else {
++            // Queue-only mail can veto another owner's trace without retaining its own lease.
++            MailboxTracePolicy::Queued(Arc::downgrade(&policy))
++        };
 +        Some(Self {
 +            submission_id: submission_id.to_owned(),
 +            carrier,
@@ -175,7 +200,7 @@ index cb24780..c57d74a 100644
 +    }
 +
 +    fn same_owner(&self, other: &Self) -> bool {
-+        self.carrier == other.carrier && Arc::ptr_eq(&self.policy, &other.policy)
++        self.carrier == other.carrier && std::ptr::eq(self.policy.as_ptr(), other.policy.as_ptr())
 +    }
 +}
 +
@@ -193,8 +218,11 @@ index cb24780..c57d74a 100644
 +            return Span::current();
 +        }
 +        let parent = self.trace.as_ref().and_then(|trace| {
++            let MailboxTracePolicy::Trigger(policy) = &trace.policy else {
++                return None;
++            };
 +            context_from_w3c_trace_context(&trace.carrier)
-+                .map(|context| (trace, context.with_value(Arc::clone(&trace.policy))))
++                .map(|context| (trace, context.with_value(Arc::clone(policy))))
 +        });
 +        let parent = match parent {
 +            Some((trace, _)) if trace.submission_id == sub_id => return Span::current(),
@@ -215,7 +243,7 @@ index cb24780..c57d74a 100644
  impl InputQueue {
      /// Linearize validated terminal selection against input acceptance. Locks are
      /// released before any persistence I/O. The live task remains the finishing owner.
-@@ -141,7 +212,7 @@ impl InputQueue {
+@@ -141,7 +238,7 @@ impl InputQueue {
          let state = turn.turn_state.lock().await;
          if !state.pending_input.is_empty()
              || state.has_pending_waiters()
@@ -224,7 +252,7 @@ index cb24780..c57d74a 100644
          {
              return false;
          }
-@@ -183,8 +254,10 @@ impl InputQueue {
+@@ -183,8 +280,10 @@ impl InputQueue {
              .map(|(_, _, updates)| updates.clone())
      }
  
@@ -237,7 +265,7 @@ index cb24780..c57d74a 100644
      }
  
      fn read_mailbox(&self, pending: &mut VecDeque<PendingMailboxCommunication>) {
-@@ -196,6 +269,9 @@ impl InputQueue {
+@@ -196,6 +295,9 @@ impl InputQueue {
                      .map(|communication| PendingMailboxCommunication {
                          communication,
                          start_options: TurnStartOptions::default(),
@@ -247,7 +275,7 @@ index cb24780..c57d74a 100644
                          _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
                      }),
              );
-@@ -260,10 +336,22 @@ impl InputQueue {
+@@ -260,10 +362,22 @@ impl InputQueue {
          true
      }
  
@@ -270,7 +298,7 @@ index cb24780..c57d74a 100644
      ) {
          let mut pending = self.mailbox_pending_mails.lock().await;
          // Mail retained while unloaded precedes new submissions to the loaded session.
-@@ -271,17 +359,25 @@ impl InputQueue {
+@@ -271,17 +385,25 @@ impl InputQueue {
          pending.push_back(PendingMailboxCommunication {
              communication,
              start_options,
@@ -300,7 +328,7 @@ index cb24780..c57d74a 100644
      }
  
      pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
-@@ -298,8 +394,100 @@ impl InputQueue {
+@@ -298,8 +420,97 @@ impl InputQueue {
          pending.drain(..).collect()
      }
  
@@ -327,22 +355,19 @@ index cb24780..c57d74a 100644
 +            .position(|mail| mail.ends_startup_batch)
 +            .map_or(mails.len(), |end| end + 1);
 +        let (mails, later) = mails.split_at_mut(len);
-+        if let Some(trigger) = later
-+            .iter_mut()
-+            .find(|mail| mail.communication.trigger_turn)
-+        {
-+            // A trigger may have arrived after interruption and before this retry reserved.
-+            trigger.requires_wake = true;
++        if let Some(mail) = later.first_mut() {
++            // Mail admitted between reservations still follows the original sealed prefix.
++            mail.requires_wake = true;
 +        }
-+        let mut triggers = mails.iter().filter(|mail| mail.communication.trigger_turn);
-+        let first = triggers.next();
++        let first = mails.iter().find(|mail| mail.communication.trigger_turn);
 +        if mails.is_empty() || (first.is_none() && !wake_durable_sleep) {
 +            return None;
 +        }
 +        let trace = first
 +            .and_then(|mail| mail.trace.as_ref())
 +            .filter(|owner| {
-+                triggers.all(|mail| {
++                // The startup commits the whole prefix, including queued messages.
++                mails.iter().all(|mail| {
 +                    mail.trace
 +                        .as_ref()
 +                        .is_some_and(|trace| owner.same_owner(trace))
@@ -384,7 +409,7 @@ index cb24780..c57d74a 100644
 +    pub(crate) async fn drain_ready_mailbox(&self) -> Vec<PendingMailboxCommunication> {
 +        let mut pending = self.mailbox_pending_mails.lock().await;
 +        self.read_mailbox(&mut pending);
-+        // The first deferred trigger fences its suffix as well, preserving FIFO.
++        // The first deferred envelope fences its suffix as well, preserving FIFO.
 +        let ready = pending
 +            .iter()
 +            .take_while(|mail| !mail.requires_wake)
@@ -402,7 +427,7 @@ index cb24780..c57d74a 100644
          // A later follow-up supersedes the earlier choice, including an omitted choice.
          let mut start_options = pending_mails
              .iter()
-@@ -325,6 +513,13 @@ impl InputQueue {
+@@ -325,6 +536,13 @@ impl InputQueue {
                      .filter(|id| !id.trim().is_empty())
              })
              .map(str::to_string);
@@ -416,7 +441,7 @@ index cb24780..c57d74a 100644
          let items = pending_mails
              .into_iter()
              .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
-@@ -459,27 +654,21 @@ impl InputQueue {
+@@ -459,27 +677,21 @@ impl InputQueue {
          &self,
          active_turn: &Mutex<Option<ActiveTurn>>,
      ) -> (Vec<TurnInput>, TurnStartOptions) {
@@ -457,7 +482,7 @@ index cb24780..c57d74a 100644
          if pending_input.is_empty() {
              (mailbox_items, start_options)
          } else {
-@@ -498,7 +687,9 @@ impl InputQueue {
+@@ -498,7 +710,9 @@ impl InputQueue {
              let active = active_turn.lock().await;
              match active.as_ref() {
                  Some(active_turn) => {
@@ -468,14 +493,15 @@ index cb24780..c57d74a 100644
                          return false;
                      }
                      let turn_state = active_turn.turn_state.lock().await;
-@@ -773,6 +964,49 @@ mod tests {
+@@ -773,6 +987,56 @@ mod tests {
          assert!(!input_queue.has_pending_mailbox_items().await);
      }
  
 +    #[tokio::test]
-+    async fn retry_mailbox_wake_fences_a_trigger_admitted_without_a_reservation() {
++    async fn retry_mailbox_wake_fences_mail_admitted_without_a_reservation() {
 +        let queue = InputQueue::new();
 +        let first = make_mail(AgentPath::root(), AgentPath::root(), "first", true);
++        let queued = make_mail(AgentPath::root(), AgentPath::root(), "queued", false);
 +        let later = make_mail(AgentPath::root(), AgentPath::root(), "later", true);
 +
 +        queue
@@ -487,7 +513,10 @@ index cb24780..c57d74a 100644
 +            .expect("original wake");
 +        assert_eq!(original.len, 1);
 +
-+        // Interruption leaves the first batch in the queue. No active seal marks this enqueue.
++        // Interruption leaves the first batch in the queue. No active seal marks these enqueues.
++        queue
++            .enqueue_mailbox_communication(queued.clone(), Default::default())
++            .await;
 +        queue
 +            .enqueue_mailbox_communication(later.clone(), Default::default())
 +            .await;
@@ -510,7 +539,10 @@ index cb24780..c57d74a 100644
 +        queue.commit_mailbox_wake(next.len, &state).await;
 +        assert_eq!(
 +            state.lock().await.pending_input.items,
-+            vec![TurnInput::InterAgentCommunication(later)]
++            vec![
++                TurnInput::InterAgentCommunication(queued),
++                TurnInput::InterAgentCommunication(later)
++            ]
 +        );
 +        assert!(!queue.has_trigger_turn_mailbox_items().await);
 +    }
@@ -542,10 +574,10 @@ index 5439465..5e472c7 100644
      pub(crate) async fn clear_connector_selection(&self) {
          let mut state = self.state.lock().await;
 diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
-index f435a1a..e9c0319 100644
+index f435a1a..e64deef 100644
 --- a/codex-rs/core/src/session/tests.rs
 +++ b/codex-rs/core/src/session/tests.rs
-@@ -13253,6 +13253,695 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
+@@ -13253,6 +13253,786 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
      assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
  }
  
@@ -670,6 +702,7 @@ index f435a1a..e9c0319 100644
 +        &submission.id,
 +        submission.trace,
 +        submission.trace_policy,
++        communication.trigger_turn,
 +    );
 +    handlers::inter_agent_communication(
 +        &session,
@@ -728,13 +761,25 @@ index f435a1a..e9c0319 100644
 +    assert!(Arc::ptr_eq(&start.policy.unwrap(), &caller_policy));
 +}
 +
-+#[test_case(false, false; "late trigger")]
-+#[test_case(true, false; "interrupt and retry the sealed prefix")]
-+#[test_case(false, true; "coalesced owners share carrier but not policy")]
++#[derive(Clone, Copy, Eq, PartialEq)]
++enum MailboxStartupMail {
++    LateTrigger,
++    MixedTriggers,
++    QueuedPrefix,
++    QueuedDuringSeal,
++    QueuedDuringTurn,
++}
++
++#[test_case(false, MailboxStartupMail::LateTrigger; "late trigger")]
++#[test_case(true, MailboxStartupMail::LateTrigger; "interrupt and retry the sealed prefix")]
++#[test_case(false, MailboxStartupMail::MixedTriggers; "coalesced owners share carrier but not policy")]
++#[test_case(false, MailboxStartupMail::QueuedPrefix; "disabled queue-only mail before enabled trigger")]
++#[test_case(false, MailboxStartupMail::QueuedDuringSeal; "queue-only mail during seal waits for a later trigger")]
++#[test_case(false, MailboxStartupMail::QueuedDuringTurn; "queue-only mail after registration can join the active turn")]
 +#[tokio::test]
 +async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
 +    interrupt: bool,
-+    mixed: bool,
++    mail: MailboxStartupMail,
 +) {
 +    use codex_extension_api::TurnStartPhase;
 +    use codex_otel::sdk_trace;
@@ -774,6 +819,7 @@ index f435a1a..e9c0319 100644
 +        message: &str,
 +        trace_byte: &str,
 +        disabled: bool,
++        trigger_turn: bool,
 +    ) -> Arc<sdk_trace::ScopePolicy> {
 +        let trace_id = trace_byte.repeat(16);
 +        let options = json!({
@@ -798,10 +844,10 @@ index f435a1a..e9c0319 100644
 +            AgentPath::root(),
 +            Vec::new(),
 +            message.to_owned(),
-+            /*trigger_turn*/ true,
++            trigger_turn,
 +        );
 +        let start_options = codex_protocol::turn_input::TurnStartOptions {
-+            parent_turn_id: Some("caller-turn".to_string()),
++            parent_turn_id: trigger_turn.then(|| "caller-turn".to_string()),
 +            ..Default::default()
 +        };
 +        let submission = Submission {
@@ -822,6 +868,7 @@ index f435a1a..e9c0319 100644
 +            id,
 +            Some(trace),
 +            Some(Arc::clone(&policy)),
++            trigger_turn,
 +        );
 +        handlers::inter_agent_communication(
 +            session,
@@ -842,6 +889,12 @@ index f435a1a..e9c0319 100644
 +            .expect("start gate event")
 +    }
 +
++    let queue_only_prefix = mail == MailboxStartupMail::QueuedPrefix;
++    let mixed = queue_only_prefix || mail == MailboxStartupMail::MixedTriggers;
++    let queued_during_seal = mail == MailboxStartupMail::QueuedDuringSeal;
++    let queued_during_turn = mail == MailboxStartupMail::QueuedDuringTurn;
++    const SUFFIX: &str = "synthetic later queue-only suffix";
++    const NEXT_TRIGGER: &str = "synthetic follow-up after the first turn";
 +    const FIRST: &str = "synthetic mail accepted before the startup seal";
 +    const LATE: &str = "synthetic mail from the disabled late sender";
 +    let _tracing = install_test_tracing("codex-core-tests");
@@ -867,6 +920,7 @@ index f435a1a..e9c0319 100644
 +    let (before_tx, before_rx) = async_channel::unbounded();
 +    let (regular_tx, regular_rx) = async_channel::unbounded();
 +    let release_registration = Arc::new(tokio::sync::Semaphore::new(0));
++    let release_sampling = Arc::new(tokio::sync::Semaphore::new(0));
 +    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
 +    builder.turn_lifecycle_contributor(Arc::new(StartGate {
 +        phase: TurnStartPhase::BeforeTaskRegistration,
@@ -876,7 +930,7 @@ index f435a1a..e9c0319 100644
 +    builder.turn_lifecycle_contributor(Arc::new(StartGate {
 +        phase: TurnStartPhase::RegularTaskStart,
 +        started: regular_tx,
-+        release: None,
++        release: (queued_during_seal || queued_during_turn).then(|| Arc::clone(&release_sampling)),
 +    }));
 +    let home = tempfile::tempdir().expect("synthetic Codex home");
 +    let (mut session, _, events) = make_session_and_context_with_auth_config_home_and_rx(
@@ -911,18 +965,33 @@ index f435a1a..e9c0319 100644
 +        .input_queue
 +        .defer_mailbox_delivery_to_next_turn(&session.active_turn, &old.sub_id)
 +        .await;
-+    let owner_a = submit(&session, "admit-a", FIRST, "11", false).await;
++    let owner_a = submit(
++        &session,
++        "admit-a",
++        FIRST,
++        "11",
++        queue_only_prefix,
++        !queue_only_prefix,
++    )
++    .await;
++    if queue_only_prefix {
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(before_rx.is_empty());
++    }
 +    let mixed_owner = if mixed {
 +        // The same carrier does not establish common ownership of policy or storage.
-+        Some(submit(&session, "admit-b", LATE, "11", true).await)
++        Some(submit(&session, "admit-b", LATE, "11", !queue_only_prefix, true).await)
 +    } else {
 +        None
 +    };
 +    finish_old.notify_one();
 +    let (reserved, _) = receive(&before_rx).await;
-+    let owner_b = match mixed_owner {
-+        Some(owner) => owner,
-+        None => submit(&session, "admit-b", LATE, "22", true).await,
++    let owner_b = if let Some(owner) = mixed_owner {
++        Some(owner)
++    } else if queued_during_turn {
++        None
++    } else {
++        Some(submit(&session, "admit-b", LATE, "22", true, !queued_during_seal).await)
 +    };
 +    assert!(first_request.requests().is_empty());
 +    assert!(regular_rx.is_empty());
@@ -987,9 +1056,23 @@ index f435a1a..e9c0319 100644
 +        assert!(first_policy.disabled);
 +        assert!(!first_policy.include_sensitive_data);
 +        assert!(!Arc::ptr_eq(&first_policy, &owner_a));
-+        assert!(!Arc::ptr_eq(&first_policy, &owner_b));
++        assert!(!Arc::ptr_eq(
++            &first_policy,
++            owner_b.as_ref().expect("mixed caller policy")
++        ));
 +    } else {
 +        assert!(Arc::ptr_eq(&first_policy, &owner_a));
++    }
++    if queued_during_seal {
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(first_request.requests().is_empty());
++        submit(&session, "admit-suffix", SUFFIX, "33", true, false).await;
++        release_sampling.add_permits(1);
++    } else if queued_during_turn {
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(first_request.requests().is_empty());
++        submit(&session, "admit-current", LATE, "22", true, false).await;
++        release_sampling.add_permits(1);
 +    }
 +    let completion = async |turn_id: &str| {
 +        timeout(Duration::from_secs(10), async {
@@ -1019,7 +1102,7 @@ index f435a1a..e9c0319 100644
 +            .count(),
 +        1
 +    );
-+    if mixed {
++    if mixed || queued_during_turn {
 +        assert!(late_position.is_some());
 +        assert!(first_position < late_position);
 +        assert_eq!(
@@ -1031,6 +1114,41 @@ index f435a1a..e9c0319 100644
 +        );
 +        assert!(second_request.requests().is_empty());
 +        assert!(regular_rx.is_empty());
++    } else if queued_during_seal {
++        assert_eq!(late_position, None);
++        assert!(input.iter().all(|item| !item.to_string().contains(SUFFIX)));
++        assert!(second_request.requests().is_empty());
++        assert!(before_rx.is_empty());
++        assert!(regular_rx.is_empty());
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        let next = tokio::spawn({
++            let session = Arc::clone(&session);
++            async move { submit(&session, "admit-next", NEXT_TRIGGER, "44", false, true).await }
++        });
++        let (next_reservation, _) = receive(&before_rx).await;
++        release_registration.add_permits(1);
++        let (next_turn, next_policy) = receive(&regular_rx).await;
++        assert_eq!(next_turn, next_reservation);
++        assert_ne!(next_turn, first_turn);
++        let next_policy = next_policy.expect("mixed successor policy");
++        assert!(next_policy.disabled);
++        assert!(!next_policy.include_sensitive_data);
++        release_sampling.add_permits(1);
++        completion(&next_turn).await;
++        next.await.expect("later follow-up submitted");
++        let input = second_request.single_request().input();
++        let positions = [LATE, SUFFIX, NEXT_TRIGGER].map(|text| {
++            let matching = input
++                .iter()
++                .enumerate()
++                .filter_map(|(index, item)| item.to_string().contains(text).then_some(index))
++                .collect::<Vec<_>>();
++            let [position] = matching.as_slice() else {
++                panic!("expected exactly one delivery for {text}, got {matching:?}");
++            };
++            *position
++        });
++        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
 +    } else {
 +        assert_eq!(late_position, None);
 +        let (late_reservation, _) = receive(&before_rx).await;
@@ -1038,7 +1156,10 @@ index f435a1a..e9c0319 100644
 +        let (second_turn, second_policy) = receive(&regular_rx).await;
 +        assert_ne!(first_turn, second_turn);
 +        assert_eq!(late_reservation, second_turn);
-+        assert!(Arc::ptr_eq(&second_policy.expect("late policy"), &owner_b));
++        assert!(Arc::ptr_eq(
++            &second_policy.expect("late policy"),
++            &owner_b.expect("late caller policy")
++        ));
 +        completion(&second_turn).await;
 +        let late_matches = second_request
 +            .single_request()
@@ -1152,6 +1273,7 @@ index f435a1a..e9c0319 100644
 +            tracestate: None,
 +        }),
 +        Some(policy),
++        /*trigger_turn*/ true,
 +    );
 +    session
 +        .input_queue
@@ -1216,6 +1338,7 @@ index f435a1a..e9c0319 100644
 +            tracestate: None,
 +        }),
 +        Some(policy),
++        /*trigger_turn*/ true,
 +    );
 +    session
 +        .input_queue
