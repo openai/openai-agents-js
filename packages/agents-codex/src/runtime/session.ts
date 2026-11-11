@@ -283,6 +283,8 @@ import {
   storedTurnPage,
   storedItemPage,
   storedMatchPage,
+  storedSessionPage,
+  type StoredSessionPage,
   type StoredForkOptions,
   type StoredTurnPage,
   type StoredItemPage,
@@ -12199,6 +12201,45 @@ export class Session<OutputT = string, Context = unknown> {
       JSON.stringify(action),
     );
     return this.close();
+  }
+
+  /** Committed native Exec application-session headers from this LocalStorage.
+   * Exec category, including SDK/exec applications; interactive CLI, IDE and
+   * subagent categories excluded. Native creation-order cursor; active and
+   * approval-paused reads without snapshot isolation or totals. Archived
+   * collection only for archived=true; active collection otherwise. Potential
+   * short/empty pages with a next cursor after deletion. Concurrent opening or
+   * fork entries; no stable pagination or publication promise. Validated links;
+   * without opening the listed sessions or loading their history. Existing
+   * materialization/flush of the current owner.
+   *
+   * Page sizes 1 through 1000; default 50. Opaque cursors for the same options.
+   * Paging with the returned cursor, including empty pages:
+   * ```ts
+   * let cursor: string | undefined;
+   * const ids: string[] = [];
+   * do {
+   *   const page = await session.storedSessions({ limit: 50, cursor });
+   *   ids.push(...page.sessions.map((item) => item.id));
+   *   cursor = page.nextCursor ?? undefined;
+   * } while (cursor !== undefined);
+   * ```
+   */
+  async storedSessions(
+    options: { limit?: number; cursor?: string; archived?: boolean } = {},
+  ): Promise<StoredSessionPage> {
+    const { limit = 50, cursor, archived = false } = options;
+    const query = storedOptions(limit, cursor);
+    return storedSessionPage(
+      await this.#native._stored_history(
+        JSON.stringify({
+          kind: 'sessions',
+          limit: query.limit,
+          cursor: query.cursor,
+          archived,
+        }),
+      ),
+    );
   }
 
   /** Core has been returning committed turn metadata and optional summary items.

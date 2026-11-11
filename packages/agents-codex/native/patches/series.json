@@ -659,7 +659,23 @@
     {
       "path": "sdk-realtime-captured-mcp-policy.patch",
       "sha256": "44cf60e7dfdac93b14839a5885991d4899e97731ae9216ea9720b58d20a35f50"
+    },
+    {
+      "path": "sdk-webrtc-output-audio-clear.patch",
+      "sha256": "9c9d8d0b4a570f3d3fc1f77717e8208f7fc300d91c43b8ec4a9df67cf6b40c8d"
+    },
+    {
+      "path": "sdk-provider-compaction-prompt-boundary.patch",
+      "sha256": "77e0de10c45e19b433a07437917870b43d9ca68fb3d2147b5279d5ed22845d49"
+    },
+    {
+      "path": "sdk-stored-session-discovery-and-compaction-restore.patch",
+      "sha256": "437fd62f8654c5c83b6a78fde663e15386bf8f1e11d3401e40ca47f9591ac1ea"
+    },
+    {
+      "path": "sdk-native-compaction-provider-window.patch",
+      "sha256": "51748b7cd628e84a055b0af35c84bd157dbf097f170fe1025e59e7ab4b2d6d72"
     }
   ],
-  "result_tree": "5dcd23d1ea24a19cb161215b1e223b30a7a5d44d"
+  "result_tree": "8fb40873a67e3a3f55dcc7c2fef07e677e28519f"
 }

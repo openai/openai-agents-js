@@ -19,6 +19,8 @@ import {
 
 /** Host effects for the target-neutral Rust Realtime control crate. */
 export interface PortableVoiceTransport {
+  /** WebRTC transports clear their server output buffer when default playback is interrupted. */
+  readonly clearOutputAudioOnInterrupt?: boolean;
   send(frame: string): void | Promise<void>;
   close(): void | Promise<void>;
 }
@@ -205,6 +207,7 @@ export class PortableVoiceSession {
   readonly #history: VoiceConversationHistory;
   readonly #historyUpdates: PortableVoiceHistory;
   readonly #storeAudio: boolean;
+  readonly #clearOutputAudioOnInterrupt: boolean;
   #updating:
     { resolve: () => void; reject: (error: unknown) => void } | undefined;
   #updates: Promise<void> = Promise.resolve();
@@ -228,6 +231,8 @@ export class PortableVoiceSession {
     private readonly transport: PortableVoiceTransport,
     private options: PortableVoiceOptions,
   ) {
+    this.#clearOutputAudioOnInterrupt =
+      transport.clearOutputAudioOnInterrupt ?? false;
     this.#storeAudio = options.storeAudio ?? false;
     this.#history = new VoiceConversationHistory({
       storeAudio: options.storeAudio,
@@ -265,6 +270,9 @@ export class PortableVoiceSession {
       this.#dispatch({
         type: 'start',
         config: await this.#configuration(this.#profile),
+        ...(this.#clearOutputAudioOnInterrupt
+          ? { clear_output_audio_on_interrupt: true }
+          : {}),
       });
     } catch (error) {
       this.fail(error);
@@ -526,14 +534,20 @@ export class PortableVoiceSession {
     bytes = 8 * 1024 * 1024 - this.#queuedSendBytes,
   ): void {
     if (this.#closed) throw new Error('Portable voice session is closed.');
+    const immediate = { sends, bytes };
+    const deferred = { sends: 256, bytes: 8 * 1024 * 1024 };
     for (const effect of this.control.apply(command)) {
       if (effect.type !== 'preflight')
         throw new Error('Invalid native voice egress preflight.');
-      const availableSends = effect.immediate ? sends : 256;
-      const availableBytes = effect.immediate ? bytes : 8 * 1024 * 1024;
-      if (availableSends < 1)
+      const capacity = effect.immediate ? immediate : deferred;
+      if (capacity.sends < 1)
         throw new RangeError('Portable voice input exceeds capacity.');
-      boundedVoiceJSON(effect.event, Math.floor(availableBytes / 2));
+      const frame = boundedVoiceJSON(
+        effect.event,
+        Math.floor(capacity.bytes / 2),
+      );
+      capacity.sends--;
+      capacity.bytes -= frame.length * 2;
     }
   }
 

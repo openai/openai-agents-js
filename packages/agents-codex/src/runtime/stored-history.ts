@@ -1,3 +1,40 @@
+/** Stored Exec application-session header; no history or resume grant. */
+export interface StoredSession {
+  readonly id: string;
+  readonly forkedFromId: string | null;
+  readonly parentThreadId: string | null;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface StoredSessionPage {
+  readonly sessions: readonly StoredSession[];
+  readonly nextCursor: string | null;
+}
+
+export function storedSessionPage(encoded: string): StoredSessionPage {
+  const raw: {
+    sessions: {
+      id: string;
+      forked_from_id: string | null;
+      parent_thread_id: string | null;
+      created_at_ms: number;
+      updated_at_ms: number;
+    }[];
+    next_cursor: string | null;
+  } = JSON.parse(encoded);
+  return {
+    sessions: raw.sessions.map((session) => ({
+      id: session.id,
+      forkedFromId: session.forked_from_id,
+      parentThreadId: session.parent_thread_id,
+      createdAtMs: session.created_at_ms,
+      updatedAtMs: session.updated_at_ms,
+    })),
+    nextCursor: raw.next_cursor,
+  };
+}
+
 /** One native turn boundary; omitted fields select the latest committed prefix. */
 export interface StoredForkOptions {
   readonly beforeTurnId?: string;
