@@ -212,6 +212,12 @@ export class NativeThread {
     call_id: string,
     reply: string,
   ): boolean;
+  _resolve_native_mcp_result_with_assignment(
+    nonce: NativeId,
+    turn_id: string,
+    call_id: string,
+    reply: string,
+  ): Promise<[boolean, boolean]>;
   _read_goal(): Promise<string>;
   _set_paused_goal(
     objective: string,
@@ -320,7 +326,10 @@ export class NativeThread {
     allocate_generation?: boolean,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
-  _respond_python_tool(response_json: string): Promise<boolean>;
+  _respond_python_tool(
+    response_json: string,
+    wait_for_acceptance?: boolean,
+  ): Promise<boolean>;
   _require_tool_approval(requestJson: string, argumentsJson?: string): boolean;
   _approve_manual_tool(requestJson: string): Promise<boolean>;
   _configure_manual_tools(
@@ -347,6 +356,9 @@ export class NativeThread {
     tracing_context?: string,
     observationSubmissionId?: string,
   ): Promise<string>;
+  _start_raw_usage(): void;
+  _attach_raw_usage(parent: NativeThread): void;
+  _take_raw_usage(turn_id: string): string;
   _start_produced_items(): void;
   _take_produced_items(turn_id: string): string;
   read_thread_history(subagent_id: string | null): Promise<string>;
@@ -483,6 +495,12 @@ export function shutdown_telemetry(timeout_ms?: number): Promise<void>;
 export function start_trace_span(options_json: string): string;
 export function end_trace_span(handle: string, outcome_json: string): void;
 export function retain_trace_context(handle: string): string;
+export function borrow_trace_context(
+  parent: string,
+  restrictions_parent: string | null,
+  disabled: boolean,
+  include_sensitive_data: boolean,
+): string;
 export function _retain_callback_dispatch_context(
   handle: string,
   key: string,
@@ -537,6 +555,7 @@ declare const binding: {
   start_trace_span: typeof start_trace_span;
   end_trace_span: typeof end_trace_span;
   retain_trace_context: typeof retain_trace_context;
+  borrow_trace_context: typeof borrow_trace_context;
   _retain_callback_dispatch_context: typeof _retain_callback_dispatch_context;
   release_trace_context: typeof release_trace_context;
   trace_span_context: typeof trace_span_context;

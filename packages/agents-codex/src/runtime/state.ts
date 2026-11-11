@@ -392,10 +392,42 @@ const outputContextSchema = z
     fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
+const applicationToolOutputSchema = z
+  .object({
+    submissionId: z.string(),
+    turnId: z.string(),
+    callId: z.string(),
+    name: z.string(),
+    namespace: z.string().nullable(),
+    rootTurnId: z.string().optional(),
+    applicationData: losslessJsonObjectSchema,
+  })
+  .strict();
+
+/** Passive accepted tool data. Display identities never authorize tool execution. */
+export type ApplicationToolOutput = z.infer<typeof applicationToolOutputSchema>;
+
 const sdkOutputState = {
   output_context: outputContextSchema,
   repair_turns: z.array(repairTurnWireSchema).default([]),
   repair_items: z.array(repairItemWireSchema).default([]),
+  application_tool_outputs: z.array(applicationToolOutputSchema).optional(),
+  pending_application_tool_outputs: z
+    .array(applicationToolOutputSchema)
+    .superRefine((outputs, ctx) => {
+      const seen = new Set<string>();
+      outputs.forEach((output, index) => {
+        const key = JSON.stringify([output.turnId, output.callId]);
+        if (seen.has(key))
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Duplicate pending application tool output',
+            path: [index],
+          });
+        seen.add(key);
+      });
+    })
+    .optional(),
 };
 const checkpointTreeSchema = z.object({ ...rootState, ...treeState });
 const planProviderPrefix = 'native_agent_siwc_v1_';
@@ -435,6 +467,8 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'output_context',
         'repair_turns',
         'repair_items',
+        'application_tool_outputs',
+        'pending_application_tool_outputs',
         'manual_continuation',
         'manual_context',
         'operation_tools',
@@ -778,10 +812,76 @@ export const sessionStateSchema = z
     }
     validateCheckpointTree(state, ctx);
   });
+// Saved histories cannot authorize a hosted prompt. Live declarations travel
+// separately; the native serializer deliberately omits their references.
+function checkpointRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+function validateStoredPromptControls(
+  state: z.infer<typeof checkpointTreeSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const check = (controls: unknown, path: (string | number)[]) => {
+    if (
+      checkpointRecord(checkpointRecord(controls)?.hosted_prompt)?.reference !=
+      null
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path,
+        message: 'Stored hosted prompt references are not authorized',
+      });
+  };
+  const metadata = (value: unknown, path: (string | number)[]) => {
+    const profile = checkpointRecord(
+      checkpointRecord(value)?.sdk_agent_profile,
+    );
+    check(checkpointRecord(profile?.model)?.request_controls, path);
+  };
+  const row = (value: unknown, path: (string | number)[]) => {
+    const item = checkpointRecord(value);
+    const payload = checkpointRecord(item?.payload);
+    if (item?.type === 'response_item') metadata(item.metadata, path);
+    if (
+      item?.type === 'event_msg' &&
+      payload?.type === 'thread_settings_applied'
+    )
+      check(checkpointRecord(payload.thread_settings)?.request_controls, path);
+    if (
+      item?.type === 'compacted' &&
+      Array.isArray(payload?.replacement_history_metadata)
+    )
+      payload.replacement_history_metadata.forEach((entry, i) =>
+        metadata(entry, [
+          ...path,
+          'payload',
+          'replacement_history_metadata',
+          i,
+        ]),
+      );
+  };
+  state.history.forEach((value, i) => row(value, ['history', i]));
+  state.descendants?.forEach((child, i) =>
+    child.history.forEach((value, j) =>
+      row(value, ['descendants', i, 'history', j]),
+    ),
+  );
+  const accepted = checkpointRecord(
+    checkpointRecord(checkpointRecord(state)?.manual_continuation)
+      ?.accepted_replies,
+  );
+  if (accepted)
+    for (const [id, value] of Object.entries(accepted))
+      row(value, ['manual_continuation', 'accepted_replies', id]);
+}
+
 function validateCheckpointTree(
   state: z.infer<typeof checkpointTreeSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  validateStoredPromptControls(state, ctx);
   if (
     state.root_checklist &&
     state.root_checklist.thread_id !== state.source_session_id
@@ -942,10 +1042,7 @@ export function withOutputState(
   state: SessionState,
   identity: OutputIdentity,
   prior?: SessionState | null,
-  repairs?: {
-    readonly turns: readonly RepairTurnWire[];
-    readonly items: readonly RepairItemWire[];
-  },
+  repairs?: OutputRepairs,
 ): SessionState {
   const receipts = isOutputAwareState(prior)
     ? prior
@@ -971,6 +1068,8 @@ export function withOutputState(
 type OutputRepairs = {
   readonly turns: readonly RepairTurnWire[];
   readonly items: readonly RepairItemWire[];
+  readonly applicationToolOutputs?: readonly ApplicationToolOutput[];
+  readonly pendingApplicationToolOutputs?: readonly ApplicationToolOutput[];
 };
 function outputStateFields(
   sessionId: string,
@@ -986,7 +1085,20 @@ function outputStateFields(
     | undefined,
   repairs: OutputRepairs | undefined,
 ) {
+  const applicationOutputs =
+    repairs?.applicationToolOutputs ?? receipts?.application_tool_outputs;
+  const pendingApplicationOutputs =
+    repairs?.pendingApplicationToolOutputs ??
+    receipts?.pending_application_tool_outputs;
   return {
+    ...(pendingApplicationOutputs !== undefined &&
+    (pendingApplicationOutputs.length ||
+      receipts?.pending_application_tool_outputs !== undefined)
+      ? { pending_application_tool_outputs: pendingApplicationOutputs }
+      : {}),
+    ...(applicationOutputs?.length
+      ? { application_tool_outputs: applicationOutputs }
+      : {}),
     output_context: identity,
     repair_turns: (repairs?.turns ?? receipts?.repair_turns ?? []).map(
       (turn) => ({ ...turn, parentSessionId: sessionId }),
@@ -1049,6 +1161,8 @@ export function nativeCheckpoint(state: SessionState) {
     executor_read_only: _readOnly,
     repair_turns: _turns,
     repair_items: _items,
+    application_tool_outputs: _applicationOutputs,
+    pending_application_tool_outputs: _pendingApplicationOutputs,
     ...checkpoint
   } = state;
   return {

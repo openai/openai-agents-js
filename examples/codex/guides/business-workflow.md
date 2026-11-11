@@ -39,6 +39,21 @@ SDK metadata has been using the `sdk.metadata.` attribute prefix in lifecycle re
 
 A synthetic private-content sentinel has been passing through prompts, tool arguments, tool results, and model output. Assertions have been checking its absence in both processes' callback records and the received OTLP batches. This local check has been covering these synthetic paths; custom names and metadata have still been requiring application allowlists. No content policy has been sanitizing arbitrary application metadata on the application's behalf.
 
+## Privacy ownership beyond exported spans
+
+The sentinel check has been covering this fixture's exported records. The application has been managing these other data copies and policies separately:
+
+| Data | Control and ownership |
+| --- | --- |
+| Trace scopes and children | An ancestor's disabled or metadata-only restriction has been constraining child scopes. Each service has been choosing its own [trace policy](telemetry.md#trace-one-workflow) and [recorded payloads](telemetry.md#choose-recorded-payloads). A zero `toolResultMaxBytes` has been limiting result text; native records have still been accepting full tool arguments. The external-parent constraint above has been applying to this fixture's worker. |
+| Observations and raw provider frames | [Observation readers](sessions.md#observations-and-interruption) have been receiving application data independently of export policy. Opted-in raw frames have been retaining decoded provider payloads, as exercised by the [raw-frame tests](../../../packages/agents-codex/test/native/raw-provider-events-native.test.ts). The application has been controlling reader access, retention, and publication. |
+| Application logs and journals | The application has been choosing what its own logs and durable receipts retain. The [external-job guidance](recovery.md#resume-external-work) has been assigning private receipt storage and validated model output to the host. Trace content switches have not been sanitizing those stores. |
+| Headers and wire payloads | [W3C headers](telemetry.md#carry-a-w3c-parent-across-services) have been carrying ancestry only. Each receiving service has been selecting its own privacy policy. Service authentication and request or response payload handling have been remaining application-owned. |
+| History and checkpoints | [Portable checkpoints](state.md#output-and-checkpoint-versions) have been retaining native history, including absolute paths. The application has been [checking integrity and saved policy](state.md#restore-instructions-and-tools) before restore and protecting stored content. Trace restrictions have not been removing conversation content. |
+| Export destinations and credentials | The application has been configuring approved collectors and [private export credentials](trace-processors.md#export-credential-lifetime). Saved Session state has been omitting exporter destinations, headers, and TLS paths. Route replacement has been changing telemetry destinations separately from history, journals, and application logs. |
+
+This local fixture has not been diagnosing missing exports in a production backend or measuring filtering and buffering overhead.
+
 ## Routes, loss, and delivery evidence
 
 Both processes have been configuring native OTLP export, then adding a callback receipt processor with `telemetry.addTraceProcessor()`. That additive registration has been preserving the OTLP route. During `stopped`, an additional orchestrator processor has been throwing deliberately, creating known delivery loss while fulfilment and the other destinations have been continuing. The orchestrator flush assertion has been requiring `failedDeliveries > 0`; the worker receipt has been requiring zero loss.

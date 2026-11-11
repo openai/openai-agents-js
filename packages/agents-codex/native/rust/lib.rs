@@ -1840,6 +1840,28 @@ impl NativeThread {
             .is_some_and(|owner| owner.resolve(nonce, turn_id, call_id, reply)))
     }
 
+    #[napi(js_name = "_resolve_native_mcp_result_with_assignment")]
+    pub async fn _resolve_native_mcp_result_with_assignment(
+        &self,
+        nonce: String,
+        turn_id: String,
+        call_id: String,
+        reply: String,
+    ) -> napi::Result<Vec<bool>> {
+        let receiver = {
+            let inner = self.current()?;
+            let _operation = inner.engine.operation(false).map_err(native_error)?;
+            let nonce = crate::native_id(&nonce)?;
+            self.mcp_result_control()?
+                .and_then(|control| control.owner(nonce))
+                .and_then(|owner| owner.resolve_with_assignment(nonce, &turn_id, &call_id, &reply))
+        };
+        let Some(receiver) = receiver else {
+            return Ok(vec![false, false]);
+        };
+        Ok(vec![true, receiver.await.is_ok()])
+    }
+
     #[napi(js_name = "_check_native_mcp_result")]
     pub fn _check_native_mcp_result(
         &self,
@@ -3608,11 +3630,21 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_respond_python_tool")]
-    pub async fn _respond_python_tool(&self, response_json: String) -> napi::Result<bool> {
+    pub async fn _respond_python_tool(
+        &self,
+        response_json: String,
+        wait_for_acceptance: Option<bool>,
+    ) -> napi::Result<bool> {
         let response: python_tools::Reply =
             serde_json::from_str(&response_json).map_err(native_error)?;
         let inner = self.current()?;
-        (async move {
+        let (acceptance, accepted) = if wait_for_acceptance == Some(true) {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        let delivered = (async move {
             let _context_operation = inner.engine.operation(false).map_err(native_error)?;
             // Suspension cannot seal while an acknowledged real receipt is
             // still in flight between removal from pending and writer flush.
@@ -3622,7 +3654,7 @@ impl NativeThread {
                 .thread_extension_data()
                 .get::<python_tools::PythonTools>()
             else {
-                return Ok(false);
+                return Ok::<bool, napi::Error>(false);
             };
             let python_tools::Reply {
                 request,
@@ -3705,6 +3737,7 @@ impl NativeThread {
                     .send(python_tools::ToolReply {
                         response: response.clone(),
                         start_response,
+                        acceptance,
                     })
                     .is_ok();
                 if sent {
@@ -3713,7 +3746,12 @@ impl NativeThread {
                 Ok(sent)
             }
         })
-        .await
+        .await?;
+        // The delivery future releases writer leases before Core acceptance joins.
+        if delivered && let Some(accepted) = accepted {
+            return Ok(accepted.await.is_ok());
+        }
+        Ok(delivered)
     }
 
     #[napi(js_name = "_require_tool_approval")]
@@ -3913,9 +3951,12 @@ impl NativeThread {
         else {
             return Ok(false);
         };
-        let saved = checkpoint::export(&inner, (!tools.has_restored_manual()).then_some(&first))
-            .await
-            .map_err(native_error)?;
+        let saved = if tools.has_restored_manual() {
+            checkpoint::export_restored_manual(&inner).await
+        } else {
+            checkpoint::export(&inner, Some(&first)).await
+        }
+        .map_err(native_error)?;
         // Run the frame validator first. Permanent invalid/duplicate history
         // must fail even while another unrelated callback is not ready.
         let checked = tools
@@ -4304,7 +4345,7 @@ impl NativeThread {
             let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
-            let (mut frame, items, settings) = tools
+            let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if !items.is_empty() {
@@ -4327,7 +4368,7 @@ impl NativeThread {
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
-            let result = ops::recover_prepared(
+            let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
                 frame.reply_order,
@@ -4342,6 +4383,7 @@ impl NativeThread {
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
                 tools.retire_manual();
+                result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
             }
             serde_json::to_string(&result).map_err(native_error)
         })
@@ -4479,6 +4521,51 @@ impl NativeThread {
             .await
             .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_raw_usage")]
+    pub fn start_raw_usage(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = inner.thread.sdk_start_raw_usage();
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_attach_raw_usage")]
+    pub fn attach_raw_usage(&self, parent: &NativeThread) -> napi::Result<()> {
+        let inner = self.current()?;
+        let parent = parent.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = parent
+            .thread
+            .sdk_raw_usage_link()
+            .ok_or_else(|| native_error("Provider usage capture was not started"))?;
+        link.attach(inner.thread.thread_extension_data());
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_raw_usage")]
+    pub fn take_raw_usage(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .thread
+            .sdk_take_raw_usage(&turn_id)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "_start_produced_items")]
@@ -5746,6 +5833,22 @@ pub fn end_trace_span(handle: String, outcome_json: String) -> napi::Result<()> 
 #[napi(js_name = "retain_trace_context")]
 pub fn retain_trace_context(handle: String) -> napi::Result<String> {
     codex_otel::sdk_trace::retain_trace_context(&handle).map_err(native_error)
+}
+
+#[napi(js_name = "borrow_trace_context")]
+pub fn borrow_trace_context(
+    parent: String,
+    restrictions_parent: Option<String>,
+    disabled: bool,
+    include_sensitive_data: bool,
+) -> napi::Result<String> {
+    codex_otel::sdk_trace::borrow_trace_context(
+        &parent,
+        restrictions_parent.as_deref(),
+        disabled,
+        include_sensitive_data,
+    )
+    .map_err(native_error)
 }
 
 #[napi(js_name = "_retain_callback_dispatch_context")]
