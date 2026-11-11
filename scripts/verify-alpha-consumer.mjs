@@ -74,8 +74,8 @@ for (const [path, entry] of Object.entries(lock.packages)) {
 }
 assert.deepEqual(locked.sort(), names.sort());
 
-// Each facade export must retain the runtime owner's object identity in both
-// module systems, including constructors, symbols, and experimental helpers.
+// Forwarded exports retain the runtime owner's identity in both module systems.
+// The root also exposes the Classic Realtime namespace.
 for (const esm of [false, true]) {
   for (const suffix of [
     '',
@@ -102,11 +102,16 @@ for (const esm of [false, true]) {
             (!esm || (key !== '__esModule' && key !== 'module.exports')),
         )
         .sort();
-    assert.deepEqual(
-      keys(facade),
-      keys(runtime),
-      `Forwarded exports: ${suffix}`,
-    );
+    const expected = keys(runtime);
+    if (suffix === '') {
+      const realtime = esm
+        ? await import('@openai/agents-realtime')
+        : require('@openai/agents-realtime');
+      assert.equal(facade.realtime, realtime, 'Classic Realtime namespace');
+      expected.push('realtime');
+      expected.sort();
+    }
+    assert.deepEqual(keys(facade), expected, `Forwarded exports: ${suffix}`);
     for (const key of keys(runtime))
       assert.equal(
         facade[key],
