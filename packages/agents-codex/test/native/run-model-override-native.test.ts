@@ -125,10 +125,10 @@ nativeIt(
     const seen: unknown[] = [];
     const addon = await binding();
     const submit = addon.NativeThread.prototype._submit;
-    let native: NativeThread | undefined;
+    const submitted: NativeThread[] = [];
     vi.spyOn(addon.NativeThread.prototype, '_submit').mockImplementation(
       function (this: NativeThread, ...args) {
-        native = this;
+        submitted.push(this);
         return Reflect.apply(submit, this, args);
       },
     );
