@@ -647,7 +647,7 @@ class NativeRealtimeOwner {
         !url.hostname ||
         url.username ||
         url.password ||
-        url.hash
+        url.href.includes('#')
       )
         throw new TypeError(
           'Realtime URL requires ws or wss without credentials or fragments',

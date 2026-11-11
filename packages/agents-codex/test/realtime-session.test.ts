@@ -120,6 +120,7 @@ it.each([
   'https://gateway.invalid/realtime',
   'wss://user:password@gateway.invalid/realtime',
   'wss://gateway.invalid/realtime#fragment',
+  'wss://gateway.invalid/realtime#',
 ])(
   'rejects invalid WebSocket URL %s before credentials and native work',
   async (url) => {
