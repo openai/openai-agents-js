@@ -998,12 +998,14 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
     raw.type === 'computer_call_output' ||
+    raw.type === 'shell_call_output' ||
     raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
     raw.type === 'computer_call' ||
     raw.type === 'local_shell_call' ||
+    raw.type === 'shell_call' ||
     raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
@@ -1892,10 +1894,16 @@ export function projectHostedToolItem(
   turnId: string,
 ): HostedToolItem | undefined {
   const raw = object(value);
-  if (!raw || typeof raw.id !== 'string') return;
+  if (!raw) return;
   const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
+  const id =
+    text(raw.id) ??
+    (shell && typeof raw.call_id === 'string'
+      ? raw.call_id + (raw.type === 'shell_call_output' ? ':output' : '')
+      : null);
+  if (!id) return;
   const identity = {
-    id: raw.id,
+    id,
     turnId,
     turn_id: turnId,
   };

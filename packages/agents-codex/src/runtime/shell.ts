@@ -50,7 +50,8 @@ const shellCallSchema: z.ZodType<ShellCall> = z.looseObject({
   }),
 });
 
-const shellOutputSchema: z.ZodType<ShellOutput> = z.object({
+/** @internal The same structured output contract applies to external reconciliation. */
+export const shellOutputSchema: z.ZodType<ShellOutput> = z.object({
   output: z.array(
     z.object({
       stdout: z.string(),

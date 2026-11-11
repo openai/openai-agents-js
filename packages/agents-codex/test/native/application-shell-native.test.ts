@@ -1,9 +1,13 @@
 import { afterEach, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   Agent,
   NativeProvider,
   shellTool,
   hostedShell,
+  fileSessionStore,
   isFunctionApprovalRequest,
   parseSessionState,
   type FunctionApprovalRequest,
@@ -419,5 +423,138 @@ it('rejects mixed application and hosted Shell declarations before model dispatc
   );
   expect(effects).toBe(0);
   expect(server.requests).toHaveLength(0);
+  server.assertExhausted();
+});
+
+it('commits typed Shell receipts to canonical storage and replays them after cold reopen', async () => {
+  let effects = 0;
+  const local = shellTool({
+    execute() {
+      effects++;
+      return output;
+    },
+  });
+  const server = new ModelServer([
+    [shellCall],
+    [message('Stored Shell output.')],
+    [message('Reopened Shell output.')],
+  ]);
+  const directory = await mkdtemp(join(tmpdir(), 'native-application-shell-'));
+  try {
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      provider,
+      model: 'gpt-5',
+      instructions: 'Use the application Shell.',
+      tools: [local],
+    });
+    const storage = fileSessionStore(directory);
+    const session = await agent.session({ storage });
+    const identity = session.id;
+    try {
+      expect(
+        (await (await session.submit('Execute.')).wait()).finalOutput,
+      ).toBe('Stored Shell output.');
+    } finally {
+      await session.close();
+    }
+    await using restored = await agent.session({ storage, resume: identity });
+    const items = await Array.fromAsync(restored.items());
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'shell_call',
+          call_id: 'call_application',
+        }),
+        expect.objectContaining({
+          type: 'shell_call_output',
+          call_id: 'call_application',
+        }),
+      ]),
+    );
+    expect(
+      (await (await restored.submit('Continue.')).wait()).finalOutput,
+    ).toBe('Reopened Shell output.');
+    expect(effects).toBe(1);
+    expect(server.requests[2].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'shell_call',
+          call_id: 'call_application',
+        }),
+        expect.objectContaining({
+          type: 'shell_call_output',
+          call_id: 'call_application',
+          output: output.output,
+        }),
+      ]),
+    );
+    server.assertExhausted();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('rejects selective compaction of half a Shell pair before changing context', async () => {
+  let effects = 0;
+  const server = new ModelServer([
+    [shellCall],
+    [message('Shell finished.')],
+    [message('Retained complete Shell pair.')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    provider,
+    model: 'gpt-5',
+    instructions: 'Use the application Shell.',
+    tools: [
+      shellTool({
+        execute() {
+          effects++;
+          return output;
+        },
+      }),
+    ],
+  }).session();
+  expect((await (await session.submit('Execute.')).wait()).finalOutput).toBe(
+    'Shell finished.',
+  );
+  const snapshot = await session.modelContext();
+  const call = snapshot.items.findIndex((item) => item.type === 'shell_call');
+  const result = snapshot.items.findIndex(
+    (item) => item.type === 'shell_call_output',
+  );
+  expect(call).toBeGreaterThanOrEqual(0);
+  expect(result).toBeGreaterThan(call);
+  await expect(
+    session.compact({
+      summary: 'Retain the completed Shell.',
+      snapshot,
+      retain: [call],
+    }),
+  ).rejects.toThrow(/call.*result|call.*output|pair/i);
+  expect((await session.modelContext()).items).toEqual(snapshot.items);
+  expect(server.requests).toHaveLength(2);
+  await session.compact({
+    summary: 'Retain the completed Shell.',
+    snapshot,
+    retain: [call, result],
+  });
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Retained complete Shell pair.',
+  );
+  expect(server.requests[2].input).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'shell_call',
+        call_id: 'call_application',
+      }),
+      expect.objectContaining({
+        type: 'shell_call_output',
+        call_id: 'call_application',
+      }),
+    ]),
+  );
+  expect(effects).toBe(1);
   server.assertExhausted();
 });
