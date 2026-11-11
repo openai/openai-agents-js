@@ -427,6 +427,33 @@ it('clears prior provider bytes on an empty same-item audio update in the Node o
   expect((owner.providerHistory()[0].content as any[])[0].audio).toBe('');
 });
 
+it('truncates embedded provider audio using the accepted Node output format', async () => {
+  const { owner, emit } = await ownerFixture({ historyStoreAudio: true });
+  await owner.update({ outputFormat: 'g711_ulaw' });
+  const audio = Buffer.alloc(24, 7);
+  emit({
+    RawProviderEvent: {
+      type: 'response.output_item.done',
+      item: {
+        ...message('output', ''),
+        content: [{ type: 'output_audio', audio: audio.toString('base64') }],
+      },
+    },
+  });
+  emit({
+    RawProviderEvent: {
+      type: 'conversation.item.truncated',
+      item_id: 'output',
+      content_index: 0,
+      audio_end_ms: 1,
+    },
+  });
+  expect((owner.providerHistory()[0].content as any[])[0].audio).toBe(
+    audio.subarray(0, 8).toString('base64'),
+  );
+  await owner.close();
+});
+
 it('captures exact tool-source history before later input and isolates each callback view', async () => {
   const { owner, emit, source } = await ownerFixture();
   emit({

@@ -422,6 +422,40 @@ it.runIf(native)(
 );
 
 it.runIf(native)(
+  'truncates first-observed provider audio using the portable response format',
+  async () => {
+    const { session } = await nativeFixture();
+    session.receive({
+      type: 'response.created',
+      response: {
+        id: 'g711',
+        audio: { output: { format: { type: 'audio/pcmu' } } },
+      },
+    });
+    const audio = Buffer.alloc(24, 7);
+    session.receive({
+      type: 'response.output_item.done',
+      response_id: 'g711',
+      item: {
+        ...message('output'),
+        role: 'assistant',
+        content: [{ type: 'output_audio', audio: audio.toString('base64') }],
+      },
+    });
+    session.receive({
+      type: 'conversation.item.truncated',
+      item_id: 'output',
+      content_index: 0,
+      audio_end_ms: 1,
+    });
+    expect((session.history[0].content as any[])[0].audio).toBe(
+      audio.subarray(0, 8).toString('base64'),
+    );
+    await session.close();
+  },
+);
+
+it.runIf(native)(
   'reports direct deletion after closing synchronously without a provider request',
   async () => {
     const onError = vi.fn();

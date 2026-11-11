@@ -2,6 +2,29 @@ import { decodeBase64, encodeBase64 } from './base64';
 
 export type VoiceHistoryItem = Readonly<Record<string, unknown>>;
 
+/** Realtime output is mono: 24kHz PCM16 or 8kHz G.711. */
+export function outputAudioBytesPerMillisecond(
+  value: any,
+  fallback: number,
+): number {
+  const format =
+    value?.audio?.output?.format ??
+    value?.output_audio_format ??
+    value?.output_format;
+  switch (typeof format === 'string' ? format : format?.type) {
+    case 'audio/pcmu':
+    case 'audio/pcma':
+    case 'g711_ulaw':
+    case 'g711_alaw':
+      return 8;
+    case 'audio/pcm':
+    case 'pcm16':
+      return 48;
+    default:
+      return fallback;
+  }
+}
+
 /** Local provider observations only; these rows confer no execution authority. */
 export class VoiceConversationHistory {
   private readonly items = new Map<string, Record<string, unknown>>();

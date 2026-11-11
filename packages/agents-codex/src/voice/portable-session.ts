@@ -1,6 +1,9 @@
 import { abortable } from './abortable';
 import { boundedVoiceJSON } from './bounded-voice-json';
-import { VoiceConversationHistory } from './conversation-history';
+import {
+  outputAudioBytesPerMillisecond,
+  VoiceConversationHistory,
+} from './conversation-history';
 import {
   PortableVoiceHistory,
   type PortableHistoryUpdate,
@@ -873,7 +876,12 @@ export class PortableVoiceSession {
     const detached = this.#detachedResponses.has(
       event.response_id ?? event.response?.id,
     );
-    if (!detached && this.#history.observe(event))
+    const bytesPerMillisecond = outputAudioBytesPerMillisecond(
+      event.response,
+      this.#responseAudioBytesPerMillisecond.get(responseId) ??
+        this.#outputAudioBytesPerMillisecond,
+    );
+    if (!detached && this.#history.observe(event, bytesPerMillisecond))
       this.#emit('history_updated', this.history);
     if (!detached) this.#historyUpdates.observe(event);
     if (
@@ -887,8 +895,7 @@ export class PortableVoiceSession {
         event.item_id,
         event.content_index ?? 0,
         decodeBase64(event.delta),
-        this.#responseAudioBytesPerMillisecond.get(responseId) ??
-          this.#outputAudioBytesPerMillisecond,
+        bytesPerMillisecond,
       );
     }
     const outputKind = event.type?.startsWith(
@@ -1240,22 +1247,5 @@ export class PortableVoiceSession {
         if (!signal?.aborted) this.fail(error);
       })
       .finally(() => this.#tasks.delete(task));
-  }
-}
-
-/** Realtime output is mono: 24kHz PCM16 or 8kHz G.711. */
-function outputAudioBytesPerMillisecond(value: any, fallback: number): number {
-  const format = value?.audio?.output?.format ?? value?.output_audio_format;
-  switch (typeof format === 'string' ? format : format?.type) {
-    case 'audio/pcmu':
-    case 'audio/pcma':
-    case 'g711_ulaw':
-    case 'g711_alaw':
-      return 8;
-    case 'audio/pcm':
-    case 'pcm16':
-      return 48;
-    default:
-      return fallback;
   }
 }
