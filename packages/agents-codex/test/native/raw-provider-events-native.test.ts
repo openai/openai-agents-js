@@ -282,36 +282,48 @@ it.each(['sse', 'websocket'] as const)(
   },
 );
 
-it('captures a buffered Responses object before native splitting', async () => {
-  const body = {
-    id: 'resp-json',
-    status: 'completed',
-    output: [message('done')],
-    provider_extension: { opaque: marker },
-  };
-  const server = new ModelServer([
-    {
-      status: 200,
-      body: JSON.stringify(body),
-      headers: { 'content-type': 'application/json' },
-    },
-  ]);
-  await using provider = await providerFor(server, {
-    responseMode: 'buffered',
-  });
-  await using session = await new Agent({
-    instructions: 'Answer.',
-    model: 'fixture',
-    provider,
-  }).session({ includeRawProviderEvents: true });
-  const turn = await session.submit('answer');
-  expect((await turn.wait()).finalOutput).toBe('done');
-  expect(server.requests[0].stream).toBe(false);
-  expect(
-    rawEvents(await collect(turn.events({ includeExecutionDetails: true }))),
-  ).toEqual([expect.objectContaining({ transport: 'json', payload: body })]);
-  expect(JSON.stringify(await session.saveState())).not.toContain(marker);
-});
+it.each([false, true])(
+  'captures buffered Responses with model output opt-in=%s',
+  async (includeModelOutputItems) => {
+    const body = {
+      id: 'resp-json',
+      status: 'completed',
+      output: [message('done')],
+      provider_extension: { opaque: marker },
+    };
+    const server = new ModelServer([
+      {
+        status: 200,
+        body: JSON.stringify(body),
+        headers: { 'content-type': 'application/json' },
+      },
+    ]);
+    await using provider = await providerFor(server, {
+      responseMode: 'buffered',
+    });
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'fixture',
+      provider,
+    }).session({ includeRawProviderEvents: true, includeModelOutputItems });
+    const turn = await session.submit('answer');
+    expect((await turn.wait()).finalOutput).toBe('done');
+    expect(server.requests[0].stream).toBe(false);
+    const detailed = await collect(
+      turn.events({ includeExecutionDetails: true }),
+    );
+    expect(rawEvents(detailed)).toEqual([
+      expect.objectContaining({ transport: 'json', payload: body }),
+    ]);
+    const modelItems = detailed.filter(
+      (event) => event.type === 'model_output_item_completed',
+    );
+    expect(modelItems).toHaveLength(includeModelOutputItems ? 1 : 0);
+    if (includeModelOutputItems)
+      expect(JSON.stringify(modelItems)).toContain('done');
+    expect(JSON.stringify(await session.saveState())).not.toContain(marker);
+  },
+);
 
 it('exposes the original failure object before the native turn rejects', async () => {
   const frame = {
