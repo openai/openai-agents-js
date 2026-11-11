@@ -665,25 +665,22 @@ export function tool<
         );
       try {
         value = await invokeWithTimeout(
-          errorFunction
-            ? async (signal) => {
-                try {
-                  return await invoke(signal);
-                } catch (error) {
-                  throw new FunctionBodyError(error);
-                }
-              }
-            : invoke,
+          invoke,
           context.signal,
           callbackTimeout,
           name,
           timeoutBehavior === 'raise_exception' ? onTimeout : () => {},
           timeoutError,
           timeoutBehavior,
+          errorFunction ? (error) => new FunctionBodyError(error) : undefined,
         );
       } catch (error) {
         if (error instanceof FunctionBodyError) {
-          admit();
+          try {
+            admit();
+          } catch {
+            throw error.original;
+          }
           const text = await errorFunction!(callContext, error.original);
           admit();
           if (typeof text !== 'string')
@@ -1007,8 +1004,16 @@ export async function invokeWithTimeout<T>(
   onTimeout: (error: Error) => void,
   timeoutError?: Error,
   timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
+  wrapBodyError?: (error: unknown) => unknown,
 ): Promise<T> {
-  if (timeoutSeconds === undefined) return invoke(parentSignal);
+  if (timeoutSeconds === undefined) {
+    if (!wrapBodyError) return invoke(parentSignal);
+    try {
+      return await invoke(parentSignal);
+    } catch (error) {
+      throw wrapBodyError(error);
+    }
+  }
   const controller = new AbortController();
   const signal = AbortSignal.any([parentSignal, controller.signal]);
   const timeout =
@@ -1036,7 +1041,7 @@ export async function invokeWithTimeout<T>(
         if (timeoutBehavior !== 'error_as_result' || !parentSignal.aborted)
           controller.signal.throwIfAborted();
       }
-      throw error;
+      throw wrapBodyError ? wrapBodyError(error) : error;
     }
     if (performance.now() >= deadline) expire();
     signal.throwIfAborted();

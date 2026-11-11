@@ -190,7 +190,10 @@ it.each(['body', 'formatter'] as const)(
       name: 'lookup',
       parameters: z.object({ key: z.string() }),
       async execute(_args, context) {
-        if (phase === 'body') await waitForAbort(context);
+        if (phase === 'body') {
+          await waitForAbort(context);
+          return 'late body';
+        }
         throw new Error('body failed');
       },
       async errorFunction(context) {
