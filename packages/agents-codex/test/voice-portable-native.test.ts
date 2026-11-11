@@ -287,7 +287,13 @@ describe.runIf(enabled)('portable Rust control', () => {
     }
   });
 
-  it.each(['dispatch', 'arguments', 'needsApproval', 'approval'] as const)(
+  it.each([
+    'dispatch',
+    'arguments',
+    'needsApproval',
+    'approval',
+    'before',
+  ] as const)(
     'rechecks live tool enablement after %s before portable execution',
     async (phase) => {
       const state = { enabled: true };
@@ -339,6 +345,13 @@ describe.runIf(enabled)('portable Rust control', () => {
                       return true;
                     }
                   : phase === 'approval',
+              before:
+                phase === 'before'
+                  ? async () => {
+                      await hold();
+                      return { action: 'allow' as const };
+                    }
+                  : undefined,
               execute,
             },
           ],
@@ -389,6 +402,148 @@ describe.runIf(enabled)('portable Rust control', () => {
       }
     },
   );
+
+  it('keeps accepted tool and handoff callbacks during settings-only updates', async () => {
+    const source = agent();
+    const originalHandoff = vi.fn();
+    const changedHandoff = vi.fn();
+    const changedExecute = vi.fn(
+      async (_args: Record<string, unknown>) => 'changed',
+    );
+    const changedApproval = vi.fn(async () => false);
+    const target = { model: 'test-realtime', instructions: 'Transferred.' };
+    const handoff = {
+      name: 'transfer',
+      description: 'Transfer.',
+      agent: target,
+      onHandoff: originalHandoff,
+    };
+    const options = { ...source.options, handoffs: [handoff] };
+    const frames: any[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      options,
+    );
+    try {
+      await session.start();
+      options.tools[0].execute = changedExecute;
+      options.onApproval = changedApproval;
+      handoff.onHandoff = changedHandoff;
+      handoff.agent = {
+        model: 'test-realtime',
+        instructions: 'Changed target.',
+      };
+      await session.sendEvent({
+        type: 'session.update',
+        session: { instructions: 'Revised.' },
+      });
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      await vi.waitFor(() =>
+        expect(
+          frames.find((event) => event.item?.call_id === 'call-1')?.item.output,
+        ).toBe('7'),
+      );
+      expect(source.execute).toHaveBeenCalledOnce();
+      expect(source.onApproval).toHaveBeenCalledOnce();
+      expect(changedExecute).not.toHaveBeenCalled();
+      expect(changedApproval).not.toHaveBeenCalled();
+      const transfer = {
+        ...item,
+        id: 'item-2',
+        call_id: 'call-2',
+        name: 'transfer',
+        arguments: '{}',
+      };
+      session.receive({
+        type: 'response.created',
+        response: { id: 'response-2' },
+      });
+      session.receive({
+        type: 'response.done',
+        response: { id: 'response-2', status: 'completed', output: [transfer] },
+      });
+      await vi.waitFor(() =>
+        expect(
+          frames.find((event) => event.item?.call_id === 'call-2'),
+        ).toBeDefined(),
+      );
+      expect(originalHandoff).toHaveBeenCalledOnce();
+      expect(changedHandoff).not.toHaveBeenCalled();
+      expect(
+        frames.filter((event) => event.type === 'session.update').at(-1).session
+          .instructions,
+      ).toBe('Transferred.');
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('reuses accepted raw tool_choice in a subsequent agent update', async () => {
+    const frames: any[] = [];
+    const source = agent();
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update')
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+        },
+        close() {},
+      },
+      source.options,
+    );
+    try {
+      await session.start();
+      await session.sendEvent({
+        type: 'session.update',
+        session: { tool_choice: 'none' },
+      });
+      // Reading the accepted options exercises the same captured profile reused by raw updates.
+      await session.updateAgent({
+        ...(session as any).options,
+        instructions: 'Updated.',
+      });
+      expect(
+        frames.filter((event) => event.type === 'session.update').at(-1)
+          .session,
+      ).toMatchObject({
+        tool_choice: 'none',
+        instructions: 'Updated.',
+        tools: frames[0].session.tools,
+      });
+      await session.sendEvent({
+        type: 'session.update',
+        session: { tool_choice: 'auto' },
+      });
+      for (const event of fixtureEvents({ tools: [] }).slice(1))
+        session.receive(event);
+      await vi.waitFor(() => expect(source.execute).toHaveBeenCalledOnce());
+    } finally {
+      await session.close();
+    }
+  });
 
   it('discards a late portable tool allowance after close', async () => {
     const definition = agent();

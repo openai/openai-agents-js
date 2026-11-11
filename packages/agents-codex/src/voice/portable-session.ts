@@ -19,6 +19,7 @@ import { decodeBase64 } from './base64';
 import { VoiceEventObservers, detachVoiceObservation } from './event-observers';
 import {
   NativeRealtimeGuardrails,
+  captureRealtimeGuardrails,
   type NativeRealtimeOutputGuardrail,
 } from '../runtime/realtime-guardrails';
 import {
@@ -469,14 +470,17 @@ export class PortableVoiceSession {
           ...settings
         } = snapshot.session as Record<string, unknown>;
         const options = this.#profile.options;
-        const profile = this.#makeProfile({
-          ...options,
-          instructions:
-            typeof instructions === 'string'
-              ? instructions
-              : options.instructions,
-          settings: mergeSessionSettings(options.settings ?? {}, settings),
-        });
+        const profile = this.#makeProfile(
+          {
+            ...options,
+            instructions:
+              typeof instructions === 'string'
+                ? instructions
+                : options.instructions,
+            settings: mergeSessionSettings(options.settings ?? {}, settings),
+          },
+          this.#profile,
+        );
         await this.#acceptUpdate(profile, {
           ...command,
           profile_id: profile.id,
@@ -700,12 +704,12 @@ export class PortableVoiceSession {
     });
   }
 
-  #makeProfile(options: PortableVoiceOptions): Profile {
+  #makeProfile(options: PortableVoiceOptions, captured?: Profile): Profile {
     options = { ...options };
     if (this.#profiles.size >= 256)
       throw new Error('Portable voice profile capacity exceeded.');
-    const tools = new Map<string, PortableVoiceTool<any>>();
-    for (const tool of options.tools ?? []) {
+    const tools = new Map<string, PortableVoiceTool<any>>(captured?.tools);
+    for (const tool of captured ? [] : (options.tools ?? [])) {
       if (tools.has(tool.name))
         throw new Error('Duplicate portable voice tool.');
       tools.set(tool.name, {
@@ -713,9 +717,11 @@ export class PortableVoiceSession {
         parameters: JSON.parse(JSON.stringify(tool.parameters)),
       });
     }
-    for (const handoff of (options.handoffs ?? []).map((value) => ({
-      ...value,
-    }))) {
+    for (const handoff of (captured ? [] : (options.handoffs ?? [])).map(
+      (value) => ({
+        ...value,
+      }),
+    )) {
       if (tools.has(handoff.name))
         throw new Error('Duplicate portable voice tool.');
       tools.set(handoff.name, {
@@ -744,8 +750,11 @@ export class PortableVoiceSession {
         },
       });
     }
+    const outputGuardrails = captureRealtimeGuardrails(
+      captured?.options.outputGuardrails ?? options.outputGuardrails ?? [],
+    );
     const guardrails = new NativeRealtimeGuardrails<PortableVoiceOptions>({
-      guardrails: options.outputGuardrails ?? [],
+      guardrails: outputGuardrails,
       threshold: options.guardrailTextThreshold,
       source: () => ({ agent: options, context: options.context }),
       invoke: async (callback) => callback(),
@@ -763,10 +772,11 @@ export class PortableVoiceSession {
     });
     const profile = {
       id: this.#nextProfile++,
-      options: { ...options },
+      options: { ...options, outputGuardrails },
       tools,
       handoffs: new Set(
-        (options.handoffs ?? []).map((handoff) => handoff.name),
+        captured?.handoffs ??
+          (options.handoffs ?? []).map((handoff) => handoff.name),
       ),
       guardrails,
     };
@@ -1397,6 +1407,18 @@ export class PortableVoiceSession {
               if (decision?.action === 'deny') {
                 output = decision.reason;
               } else {
+                if (tool.before && typeof tool.isEnabled === 'function') {
+                  const enabled = await tool.isEnabled(context);
+                  if (this.#closed || call.abort.signal.aborted) return;
+                  if (!enabled) {
+                    this.#dispatch({
+                      type: 'tool_result',
+                      call_id: effect.call_id,
+                      output: `Tool ${effect.name} not found`,
+                    });
+                    return;
+                  }
+                }
                 try {
                   output = await tool.execute(
                     arguments_,
