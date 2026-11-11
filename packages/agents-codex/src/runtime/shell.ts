@@ -67,7 +67,7 @@ export const shellOutputSchema: z.ZodType<ShellOutput> = z.object({
 
 type ShellPolicies<Context> = Pick<
   Parameters<
-    typeof tool<typeof shellCallSchema, Context, typeof shellOutputSchema>
+    typeof tool<typeof shellCallSchema, Context, z.ZodType<ShellOutput>>
   >[0],
   | 'needsApproval'
   | 'runBeforeApproval'
