@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  GuardrailTripwire,
   Environment,
   NativeAgents,
   HttpMCP,
@@ -607,5 +608,125 @@ nativeIt(
       'private-staged-manual',
     );
     model.assertExhausted();
+  },
+);
+
+nativeIt.each([false, true])(
+  'keeps a restored terminal candidate staged until canonical acceptance, reject=%s',
+  async (reject) => {
+    const model = new ModelServer([
+      [
+        call('record', {}, { callId: 'held-staged' }),
+        call('pause', {}, { callId: 'held-pause' }),
+      ],
+      ...(reject ? [] : [[message('ordinary after held')]]),
+    ]);
+    await using provider = await providerFor(model);
+    const record = manualTool({
+      name: 'record',
+      description: 'Record',
+      parameters: z.object({}),
+      result: z.string().transform(
+        (text) =>
+          new ToolOutput([{ type: 'inputText', text }], true, {
+            ticket: 'private-held-stage',
+          }),
+      ),
+    });
+    const pause = manualTool({
+      name: 'pause',
+      description: 'Pause',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const originalAgent = new Agent({
+      instructions: 'Use both tools.',
+      provider,
+      tools: [record, pause],
+    });
+    let firstState;
+    {
+      await using source = await originalAgent.session();
+      const turn = await source.submit('Begin');
+      const waiting = await turn.wait({ until: 'manual_tool' });
+      if (!('requests' in waiting))
+        throw new Error('Expected both manual calls');
+      expect(waiting.requests).toHaveLength(2);
+      firstState = await source.suspend();
+    }
+    let state;
+    {
+      await using source = await originalAgent.session({ state: firstState });
+      const turn = source.restoredTurn!;
+      const waiting = await turn.wait({ until: 'manual_tool' });
+      if (!('requests' in waiting)) throw new Error('Expected restored calls');
+      const request = waiting.requests
+        .map((row) => record.match(row))
+        .find(Boolean);
+      if (!request) throw new Error('Expected record grant');
+      await source.respond(request.reply('held public'));
+      state = await source.suspend();
+    }
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const execute = vi.fn(() => 'must not execute');
+    await using final = await new Agent({
+      instructions: 'Use both tools.',
+      provider,
+      tools: [
+        tool({
+          name: 'record',
+          parameters: z.object({}),
+          finishTurn: true,
+          execute,
+        }),
+        pause,
+      ],
+      outputGuardrails: [
+        {
+          name: 'hold-terminal',
+          async callback(context) {
+            if (context.toolCall?.callId === 'held-staged') {
+              entered.resolve();
+              await release.promise;
+            }
+            return { tripwireTriggered: reject };
+          },
+        },
+      ],
+    }).session({ state });
+    try {
+      const turn = final.restoredTurn!;
+      const waiting = await turn.wait({ until: 'manual_tool' });
+      if (!('requests' in waiting))
+        throw new Error('Expected final manual grant');
+      const request = pause.match(waiting.requests[0]);
+      if (!request) throw new Error('Expected exact pause grant');
+      const replied = final.respond(request.reply('ready'));
+      await entered.promise;
+      await replied;
+      expect(turn.applicationToolOutputs).toEqual([]);
+      release.resolve();
+      if (reject) {
+        await expect(turn.wait()).rejects.toBeInstanceOf(GuardrailTripwire);
+        expect(turn.applicationToolOutputs).toEqual([]);
+        expect(JSON.stringify(await final.saveState())).not.toContain(
+          'private-held-stage',
+        );
+      } else {
+        const complete = await turn.wait();
+        expect(complete.finalOutput).toBe('ordinary after held');
+        expect(complete.applicationToolOutputs).toEqual([
+          expect.objectContaining({
+            callId: 'held-staged',
+            applicationData: { ticket: 'private-held-stage' },
+          }),
+        ]);
+      }
+      expect(execute).not.toHaveBeenCalled();
+      model.assertExhausted();
+    } finally {
+      release.resolve();
+    }
   },
 );

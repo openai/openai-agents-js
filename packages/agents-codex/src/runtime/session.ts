@@ -359,6 +359,12 @@ type ToolIdentity = {
   family: 'function' | 'mcp';
 };
 
+const manualCompletionSchema = z.object({
+  status: z.literal('started'),
+  turn_id: z.string(),
+  canonical_call_ids: z.array(z.string()),
+});
+
 const submissionSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('started'), turn_id: z.string() }),
   z.object({
@@ -7517,6 +7523,7 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Terminal tool completion has no matching accepted proposal',
             );
+          this.promotePendingApplicationOutputs(run, fact.call_id);
           this.decodedOutputs.set(run, proposal.value);
           this.terminalCalls.set(
             run,
@@ -7614,7 +7621,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   private promotePendingApplicationOutputs(
     owner: NativeTurn | ChildCallbackOwner,
-    callId?: string,
+    callId: string,
   ): void {
     const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
     for (
@@ -7623,11 +7630,7 @@ export class Session<OutputT = string, Context = unknown> {
       index--
     ) {
       const pending = this.pendingApplicationOutputs[index]!;
-      if (
-        pending.turnId !== turnId ||
-        (callId !== undefined && pending.callId !== callId)
-      )
-        continue;
+      if (pending.turnId !== turnId || pending.callId !== callId) continue;
       this.pendingApplicationOutputs.splice(index, 1);
       this.recordApplicationOutput(
         owner,
@@ -7704,17 +7707,29 @@ export class Session<OutputT = string, Context = unknown> {
     );
   }
 
-  private flushTerminalObservations(
+  private discardPendingApplicationOutputs(
     owner: NativeTurn | ChildCallbackOwner,
+    callId?: string,
   ): void {
     const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
     for (
       let index = this.pendingApplicationOutputs.length - 1;
       index >= 0;
       index--
-    )
-      if (this.pendingApplicationOutputs[index]!.turnId === turnId)
+    ) {
+      const pending = this.pendingApplicationOutputs[index]!;
+      if (
+        pending.turnId === turnId &&
+        (callId === undefined || pending.callId === callId)
+      )
         this.pendingApplicationOutputs.splice(index, 1);
+    }
+  }
+
+  private flushTerminalObservations(
+    owner: NativeTurn | ChildCallbackOwner,
+  ): void {
+    this.discardPendingApplicationOutputs(owner);
     const state = this.terminalProposals.get(owner);
     if (!state) return;
     const pending = [...state.observations.values()];
@@ -7814,6 +7829,8 @@ export class Session<OutputT = string, Context = unknown> {
         let capturedCatalog: ToolCatalog | undefined;
         const reject = () => {
           if (replied) return;
+          if (typeof msg.call_id === 'string')
+            this.discardPendingApplicationOutputs(owner, msg.call_id);
           replied = true;
           try {
             native._reply_tool_completion(
@@ -10160,17 +10177,15 @@ export class Session<OutputT = string, Context = unknown> {
             this.submissionIds.get(run)!,
           )
           .then((wire) => {
-            const submission = decode(submissionSchema, wire);
-            if (
-              submission.status !== 'started' ||
-              submission.turn_id !== run.id
-            )
+            const submission = decode(manualCompletionSchema, wire);
+            if (submission.turn_id !== run.id)
               throw new NativeError(
                 'Manual continuation changed the original turn',
               );
-            // Native has durably injected every accepted recovered output before
-            // starting this exact turn; those rows do not emit live output events.
-            this.promotePendingApplicationOutputs(run);
+            // Only exact native canonical receipts cross this recovery fence.
+            // Held terminal candidates retain their final publication event.
+            for (const callId of submission.canonical_call_ids)
+              this.promotePendingApplicationOutputs(run, callId);
           });
         this.track(run, completion, run.manualReplies);
         await completion;

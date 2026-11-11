@@ -4212,7 +4212,7 @@ impl NativeThread {
             let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
-            let (mut frame, items, settings) = tools
+            let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if !items.is_empty() {
@@ -4235,7 +4235,7 @@ impl NativeThread {
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
-            let result = ops::recover_prepared(
+            let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
                 frame.reply_order,
@@ -4250,6 +4250,7 @@ impl NativeThread {
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
                 tools.retire_manual();
+                result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
             }
             serde_json::to_string(&result).map_err(native_error)
         })
@@ -4401,7 +4402,10 @@ impl NativeThread {
     pub fn take_produced_items(&self, turn_id: String) -> napi::Result<String> {
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
-        inner.thread.sdk_take_produced_items(&turn_id).map_err(native_error)
+        inner
+            .thread
+            .sdk_take_produced_items(&turn_id)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "read_thread_history")]
