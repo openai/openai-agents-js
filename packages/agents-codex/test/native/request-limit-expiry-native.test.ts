@@ -295,6 +295,33 @@ it('expires MCP startup before publishing a Session or admitting a tool effect',
   const peer = await timeoutPeer('initialize'),
     model = new ModelServer([]),
     provider = await providerFor(model);
+  const native = await binding();
+  const read = native.NativeThread.prototype._next_session_events;
+  const close = native.Engine.prototype._close_report;
+  const engineClosed = Promise.withResolvers<void>();
+  let readerFailure: unknown;
+  // Exercise a reader that reaches the addon after the real engine shuts down.
+  vi.spyOn(
+    native.NativeThread.prototype,
+    '_next_session_events',
+  ).mockImplementation(async function (this: NativeThread) {
+    await engineClosed.promise;
+    try {
+      return await read.call(this);
+    } catch (error) {
+      readerFailure = error;
+      throw error;
+    }
+  });
+  const engineClose = vi
+    .spyOn(native.Engine.prototype, '_close_report')
+    .mockImplementation(async function (this: typeof native.Engine.prototype) {
+      try {
+        return await close.call(this);
+      } finally {
+        engineClosed.resolve();
+      }
+    });
   const opening = new Agent({
     instructions: 'Read.',
     model: 'gpt-5.5',
@@ -313,6 +340,7 @@ it('expires MCP startup before publishing a Session or admitting a tool effect',
     (error) => ({ error }),
   );
   cleanup.push(async () => {
+    engineClosed.resolve();
     peer.release.resolve();
     const result = await outcome;
     if ('session' in result) await result.session.close();
@@ -320,11 +348,16 @@ it('expires MCP startup before publishing a Session or admitting a tool effect',
   await peer.entered.promise;
   const result = await beforeDefaultDeadline(outcome);
   expect(result).toHaveProperty('error');
+  expect(peer.effects).toEqual([]);
+  expect(model.requests).toEqual([]);
+  expect(readerFailure).toMatchObject({
+    code: 'GenericFailure',
+    message: 'Codex thread is closed',
+  });
+  await expect(engineClose.mock.results[0]?.value).resolves.toBeNull();
   expect('error' in result && String(result.error)).toContain(
     'Native MCP publication was not confirmed',
   );
-  expect(peer.effects).toEqual([]);
-  expect(model.requests).toEqual([]);
   peer.release.resolve();
   await Promise.all([...peer.active]);
   model.assertExhausted();
