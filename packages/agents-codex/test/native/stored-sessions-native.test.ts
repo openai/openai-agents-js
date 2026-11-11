@@ -108,9 +108,6 @@ it('pages cold application identities and authoritative fork-parent links', asyn
     originalId,
   );
   await expect(reader.storedSessions({ limit: 0 })).rejects.toThrow('limit');
-  await expect(
-    reader.storedSessions({ archived: 1 as unknown as boolean }),
-  ).rejects.toThrow('archived');
   const invalid = reader.storedSessions({ cursor: 'SYNTHETIC_SECRET_CURSOR' });
   await expect(invalid).rejects.toThrow(/cursor/);
   await expect(invalid).rejects.not.toThrow('SYNTHETIC_SECRET_CURSOR');

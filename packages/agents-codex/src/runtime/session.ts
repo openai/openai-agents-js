@@ -12230,8 +12230,6 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<StoredSessionPage> {
     const { limit = 50, cursor, archived = false } = options;
     const query = storedOptions(limit, cursor);
-    if (typeof archived !== 'boolean')
-      throw new TypeError('archived must be a boolean');
     return storedSessionPage(
       await this.#native._stored_history(
         JSON.stringify({
