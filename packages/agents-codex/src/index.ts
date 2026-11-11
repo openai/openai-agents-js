@@ -322,6 +322,7 @@ export {
   codeInterpreter,
   hostedShell,
   imageGeneration,
+  toolSearch,
 } from './runtime/hosted-tools';
 export type {
   FileSearch,
@@ -333,6 +334,11 @@ export type {
   HostedShellOptions,
   ImageGeneration,
   ImageGenerationOptions,
+  ToolSearch,
+  ToolSearchOptions,
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
 export type {

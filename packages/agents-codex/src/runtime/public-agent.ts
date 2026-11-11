@@ -117,6 +117,7 @@ import {
   captureTools,
   isDirectFunctionTool,
   toolIdentity,
+  isClientToolSearchTool,
   type Tool,
   type SessionTool,
 } from './tools';
@@ -1290,8 +1291,11 @@ export class Agent<Context = undefined, Output = string> {
         name: tool.kind,
         namespace: 'functions',
       })),
-      ...declarations.tools.map(toolIdentity),
-      ...(deferredSchemas
+      ...declarations.tools
+        .filter((tool) => !isClientToolSearchTool(tool))
+        .map(toolIdentity),
+      ...(deferredSchemas &&
+      !declarations.hostedTools.some((tool) => tool.kind === 'tool_search')
         ? [{ name: 'tool_search', namespace: 'functions' }]
         : []),
       ...(declarations.nativeGoals
@@ -1610,7 +1614,12 @@ export class Agent<Context = undefined, Output = string> {
               ) ??
                 false),
           },
-          _hosted_tools: hostedToolSpecs(declarations.hostedTools),
+          _hosted_tools: hostedToolSpecs(
+            declarations.hostedTools.filter(
+              (tool) =>
+                tool.kind !== 'tool_search' || tool.execution !== 'client',
+            ),
+          ),
           ...(provider.responseMode === 'buffered'
             ? { _buffered_responses: true }
             : {}),

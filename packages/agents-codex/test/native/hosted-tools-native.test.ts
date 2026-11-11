@@ -7,6 +7,7 @@ import {
   codeInterpreter,
   hostedShell,
   imageGeneration,
+  toolSearch,
   tool,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -14,6 +15,88 @@ import type { JsonObject } from '../../src/runtime/binding';
 import type { CodeInterpreterOptions } from '../../src';
 
 afterEach(() => ModelServer.closeAll());
+
+it('advertises deferred tools to provider search and runs a discovered function', async () => {
+  const parameters = {
+    type: 'object',
+    properties: { paths: { type: 'array', items: { type: 'string' } } },
+  };
+  const model = new ModelServer([
+    [
+      {
+        type: 'tool_search_call',
+        id: 'tsc_account_lookup',
+        call_id: 'call_account_search',
+        status: 'completed',
+        execution: 'server',
+        arguments: { paths: ['lookup_account'] },
+      },
+      call(
+        'lookup_account',
+        { account: 'blue' },
+        { callId: 'call_account_lookup' },
+      ),
+    ],
+    [message('Account loaded.')],
+  ]);
+  const config = await model.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as JsonObject)
+      .base_url as string,
+    apiKey: 'synthetic-provider-search',
+    supportsWebsockets: false,
+  });
+  const accounts: string[] = [];
+  await using session = await new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Look up accounts.',
+    tools: [
+      toolSearch({
+        execution: 'server',
+        description: 'Find account tools.',
+        parameters,
+      }),
+      tool({
+        name: 'lookup_account',
+        description: 'Look up an account.',
+        parameters: z.object({ account: z.string() }),
+        deferLoading: true,
+        execute({ account }) {
+          accounts.push(account);
+          return 'active';
+        },
+      }),
+    ],
+  }).session();
+  const result = await (await session.submit('Find account blue.')).wait();
+  expect(result.finalOutput).toBe('Account loaded.');
+  expect(accounts).toEqual(['blue']);
+  expect(model.requests).toHaveLength(2);
+  const requestTools = model.requests[0].tools as JsonObject[];
+  expect(requestTools.filter((spec) => spec.type === 'tool_search')).toEqual([
+    {
+      type: 'tool_search',
+      execution: 'server',
+      description: 'Find account tools.',
+      parameters,
+    },
+  ]);
+  const declarations = requestTools.flatMap((spec) =>
+    spec.type === 'namespace' ? (spec.tools as JsonObject[]) : [spec],
+  );
+  expect(declarations).toContainEqual(
+    expect.objectContaining({ name: 'lookup_account', defer_loading: true }),
+  );
+  expect(model.requests[1].input).toContainEqual(
+    expect.objectContaining({
+      type: 'function_call_output',
+      call_id: 'call_account_lookup',
+      output: 'active',
+    }),
+  );
+  model.assertExhausted();
+}, 30_000);
 
 it('completes a shell-only response and retains its provider-hosted output', async () => {
   const shellCall: JsonObject = {
