@@ -1,8 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  fileSessionStore,
+  isFunctionApprovalRequest,
+  localStorage,
   manualTool,
   parseSessionState,
   tool,
@@ -24,6 +30,93 @@ async function providerFor(server: ModelServer) {
 
 const exceeded = { code: 'run_budget_exceeded', retryable: false };
 const missing = { code: 'run_budget_usage_unavailable', retryable: false };
+
+it.each([1, 2])(
+  'keeps a budget of %i through live managed approval',
+  async (maxRequests) => {
+    const effects: string[] = [];
+    const record = tool({
+      name: 'record',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: () => {
+        effects.push('accepted');
+        return 'recorded';
+      },
+    });
+    const server = new ModelServer([
+      [call('record', {}, { callId: 'approved-effect' })],
+      ...(maxRequests === 2 ? [[message('Done')]] : []),
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Record and answer.',
+      provider,
+      tools: [record],
+    });
+    await using session = await agent.session();
+    const turn = await session.submit('begin', { budget: { maxRequests } });
+    let approved = false;
+    for await (const event of session.interactions()) {
+      if (!isFunctionApprovalRequest(event)) continue;
+      expect(effects).toEqual([]);
+      await expect(session.suspend()).rejects.toThrow(
+        'Cannot capture an active run with a budget',
+      );
+      await session.respond(event.approve());
+      approved = true;
+      break;
+    }
+    expect(approved).toBe(true);
+    if (maxRequests === 1)
+      await expect(turn.wait()).rejects.toMatchObject(exceeded);
+    else
+      await expect(turn.wait()).resolves.toMatchObject({ finalOutput: 'Done' });
+    expect(effects).toEqual(['accepted']);
+    expect(server.requests).toHaveLength(maxRequests);
+    server.assertExhausted();
+  },
+);
+
+it.each(['local', 'custom'])(
+  'starts a fresh budget after settled %s store reopen',
+  async (backend) => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-budget-reopen-'));
+    try {
+      const storage =
+        backend === 'local'
+          ? localStorage(join(directory, 'profile'))
+          : fileSessionStore(directory);
+      const server = new ModelServer([[message('First')], [message('Second')]]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({ instructions: 'Answer.', provider });
+      const session = await agent.session({ storage });
+      const identity = session.id;
+      try {
+        await expect(
+          (
+            await session.submit('first', { budget: { maxRequests: 1 } })
+          ).wait(),
+        ).resolves.toMatchObject({ finalOutput: 'First' });
+        await expect(session.saveState()).rejects.toThrow('Persistent storage');
+      } finally {
+        await session.close();
+      }
+      await using reopened = await agent.session({ storage, resume: identity });
+      expect(reopened.id).toBe(identity);
+      await expect(
+        (
+          await reopened.submit('second', { budget: { maxRequests: 1 } })
+        ).wait(),
+      ).resolves.toMatchObject({ finalOutput: 'Second' });
+      expect(server.requests).toHaveLength(2);
+      expect(JSON.stringify(server.requests[1]!.input)).toContain('First');
+      server.assertExhausted();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 function reported(total: number): string {
   return JSON.stringify({
