@@ -4,7 +4,48 @@ import { binding, copyJsonValue } from './binding';
 import type { SpanContext, TraceOptions } from './telemetry';
 type Native = Awaited<ReturnType<typeof binding>>;
 
-const ambient = new AsyncLocalStorage<TraceSpan | undefined>();
+/** Storage for JavaScript trace and span scopes. */
+export interface TraceContextStorage {
+  getStore(): TraceSpan | undefined;
+  run<T>(span: TraceSpan | undefined, callback: () => T): T;
+}
+
+type HostTraceScope =
+  | { storage: TraceContextStorage }
+  | { storage?: undefined; span: TraceSpan | undefined };
+
+const hostTraceScope = new AsyncLocalStorage<HostTraceScope>();
+let configuredStorage: TraceContextStorage | undefined;
+const ambient: TraceContextStorage = {
+  getStore() {
+    const scope = hostTraceScope.getStore();
+    if (!scope) return configuredStorage?.getStore();
+    return scope.storage ? scope.storage.getStore() : scope.span;
+  },
+  run(span, callback) {
+    const scope = hostTraceScope.getStore();
+    const storage = scope ? scope.storage : configuredStorage;
+    if (storage) {
+      return hostTraceScope.run({ storage }, () => storage.run(span, callback));
+    }
+    return hostTraceScope.run({ span }, callback);
+  },
+};
+
+/** Set storage for new trace scopes. Pass undefined to restore the built-in storage. */
+export function setTraceContextStorage(storage?: TraceContextStorage): void {
+  if (
+    storage !== undefined &&
+    (typeof storage?.getStore !== 'function' ||
+      typeof storage?.run !== 'function')
+  ) {
+    throw new TypeError(
+      'Trace context storage must implement getStore and run',
+    );
+  }
+  configuredStorage = storage;
+}
+
 const processorSuppressed = new AsyncLocalStorage<boolean>();
 let tracingDisabled = false;
 let sensitiveDataLoggingEnabled = true;

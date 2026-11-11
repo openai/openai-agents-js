@@ -41,6 +41,26 @@ const lookup = tool({
 
 The returned text has been becoming a failed tool result before approval, input policy, or execution, allowing native continuation. Replacement and restored approval arguments, output validation, and arbitrary application exceptions have been remaining outside this formatter. Without a formatter, schema validation has been failing the owning turn; malformed native JSON has been retaining the default failed response.
 
+### Recover from callback-body errors
+
+With `errorFunction(context, error)`, the SDK has been publishing the returned string as a failed tool result and continuing the model turn. The formatter has been receiving the captured `ToolContext`, including the original and effective arguments. Omitting the formatter has been preserving the existing turn failure.
+
+```ts
+import { tool } from '@openai/agents';
+import { z } from 'zod';
+
+const lookup = tool({
+  name: 'lookup',
+  parameters: z.object({ key: z.string() }),
+  execute() {
+    throw new Error('Synthetic lookup failure');
+  },
+  errorFunction: () => 'Lookup failed. Try another key.',
+});
+```
+
+This handler has been covering callback-body exceptions only. Cancellation, callback deadlines, approval and input policies, argument/result validation, and cleanup failures have been retaining their existing handling. Formatted failures have been bypassing the `result` schema and `after` hook, and have not been completing a `finishTurn` tool. Formatter exceptions and non-string returns have been failing the turn. Formatting has been remaining outside `callbackTimeout`, under the turn's cancellation and admission checks. Neither failure formatting nor cancellation has been undoing earlier external effects.
+
 ### Finish a turn from a function tool
 
 With the current [source build](building.md), set `finishTurn: true` when declaring an automatic function tool:
