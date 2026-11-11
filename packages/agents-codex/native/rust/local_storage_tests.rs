@@ -658,6 +658,7 @@ async fn native_local_start_and_mutation_reject_unsupported_authority_before_nat
             None,
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
@@ -738,7 +739,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
         .unwrap();
     assert_eq!(
         native
-            ._replace_tools("1".into(), specs(), None, None)
+            ._replace_tools("1".into(), specs(), None, None, None)
             .await
             .unwrap(),
         "1"
@@ -747,7 +748,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
     renamed[0]["name"] = json!("outside_opening_ceiling");
     assert!(
         native
-            ._replace_tools("2".into(), renamed.to_string(), None, None)
+            ._replace_tools("2".into(), renamed.to_string(), None, None, None)
             .await
             .unwrap_err()
             .reason
@@ -755,7 +756,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
     );
     assert_eq!(
         native
-            ._replace_tools("2".into(), specs(), None, None)
+            ._replace_tools("2".into(), specs(), None, None, None)
             .await
             .unwrap(),
         "2"
@@ -780,7 +781,7 @@ async fn native_local_requires_managed_policy_and_preserves_admitted_replacement
         .unwrap();
     assert_eq!(
         native
-            ._replace_tools("1".into(), renamed.to_string(), None, None)
+            ._replace_tools("1".into(), renamed.to_string(), None, None, None)
             .await
             .unwrap(),
         "1"
