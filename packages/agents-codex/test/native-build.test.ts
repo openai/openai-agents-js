@@ -14,6 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -23,6 +24,62 @@ const temporary: string[] = [];
 afterEach(() => {
   for (const dir of temporary.splice(0))
     rmSync(dir, { force: true, recursive: true });
+});
+
+describe('native addon loading', () => {
+  it('preserves a missing system library reason in the diagnostic message', () => {
+    const original = Object.assign(
+      new Error(
+        'libssl.so.3: cannot open shared object file: No such file or directory',
+      ),
+      { code: 'ERR_DLOPEN_FAILED' },
+    );
+    expect(() =>
+      runInNewContext(
+        readFileSync(
+          resolve(import.meta.dirname, '../native/index.js'),
+          'utf8',
+        ),
+        {
+          require: (id: string) => {
+            if (id === './codex.node') throw original;
+            return { join };
+          },
+          process,
+        },
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'ERR_DLOPEN_FAILED',
+        cause: original,
+        message: expect.stringContaining(original.message),
+      }),
+    );
+  });
+
+  it.each([
+    { addon: 'missing', code: 'MODULE_NOT_FOUND' },
+    { addon: 'incompatible', code: 'ERR_DLOPEN_FAILED' },
+  ])('explains how to fix a $addon native addon', ({ addon, code }) => {
+    const dir = mkdtempSync(join(tmpdir(), 'agents-native-loader-'));
+    temporary.push(dir);
+    const entry = join(dir, 'index.cjs');
+    copyFileSync(resolve(import.meta.dirname, '../native/index.js'), entry);
+    if (addon === 'incompatible') {
+      writeFileSync(join(dir, 'codex.node'), 'invalid native addon');
+    }
+
+    const load = createRequire(import.meta.url);
+    expect(() => load(entry)).toThrow(
+      expect.objectContaining({
+        code,
+        message: expect.stringContaining(
+          `${process.platform}/${process.arch}. Install the native bundle`,
+        ),
+        cause: expect.objectContaining({ code }),
+      }),
+    );
+  });
 });
 
 function emptySeries(native: string, source: string, revision: string): void {
