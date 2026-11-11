@@ -4354,11 +4354,16 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_canonical_history")]
-    pub async fn canonical_history(&self, limit: Option<u32>) -> napi::Result<String> {
+    pub async fn canonical_history(
+        &self,
+        limit: Option<u32>,
+        for_replay: Option<bool>,
+    ) -> napi::Result<String> {
         let inner = self.current()?;
-        let value = canonical_history::snapshot(&inner, limit.map(|n| n as usize))
-            .await
-            .map_err(native_error)?;
+        let value =
+            canonical_history::snapshot(&inner, limit.map(|n| n as usize), for_replay.unwrap_or(false))
+                .await
+                .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
@@ -5659,6 +5664,28 @@ pub fn end_trace_span(handle: String, outcome_json: String) -> napi::Result<()> 
 #[napi(js_name = "retain_trace_context")]
 pub fn retain_trace_context(handle: String) -> napi::Result<String> {
     codex_otel::sdk_trace::retain_trace_context(&handle).map_err(native_error)
+}
+
+#[napi(js_name = "_retain_callback_dispatch_context")]
+pub fn retain_callback_dispatch_context(
+    handle: String,
+    key: String,
+    #[napi(ts_arg_type = "() => void")] release: napi::threadsafe_function::ThreadsafeFunction<
+        (),
+        (),
+        (),
+        napi::Status,
+        false,
+        true,
+    >,
+) -> napi::Result<String> {
+    codex_otel::sdk_trace::retain_callback_dispatch_context(&handle, key, move || {
+        let _ = release.call(
+            (),
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+        );
+    })
+    .map_err(native_error)
 }
 
 #[napi(js_name = "trace_span_context")]

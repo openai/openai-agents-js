@@ -934,7 +934,9 @@ impl Control {
         if self.native_ancestor.is_some() {
             // A child created without tracing keeps that choice on later turns.
             codex_otel::sdk_trace::CapturedContext {
-                context: self.creation_tracing(),
+                context: self
+                    .creation_tracing()
+                    .map(|lease| Arc::new(lease.retain())),
             }
         } else {
             codex_otel::sdk_trace::CapturedContext::capture()
@@ -3027,6 +3029,9 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     .expect("interception boundary poisoned")
                     .retain(|_, owner| !Arc::ptr_eq(&owner.control, &control));
                 let _ = self.close_pending_code_import(&control, None).await;
+                if let Some(tracing) = control.creation_tracing() {
+                    tracing.release_callback_ownership();
+                }
             }
         })
     }
@@ -4134,7 +4139,9 @@ impl DirectRequest {
         // Model output can arrive on another task. Keep the turn that issued
         // the request, including an expired or untraced owner's empty context.
         let tracing = match &self.owner.settlement {
-            Some(receipt) => receipt.upgrade().and_then(|turn| turn.tracing.clone()),
+            Some(receipt) => receipt
+                .upgrade()
+                .and_then(|turn| turn.tracing.as_ref().map(|lease| Arc::new(lease.retain()))),
             None => self.control.tracing_context().context,
         };
         let request = Request {
