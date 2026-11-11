@@ -501,6 +501,7 @@ export type SessionItem = ItemIdentity &
         type: 'web_search_call';
         status: ItemStatus;
         action: WebSearchAction | null;
+        results?: JsonValue[];
       }
     | {
         type: 'create_subagent_call';
@@ -688,6 +689,7 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('web_search_call'),
       status: repairItemStatusSchema,
+      results: z.array(jsonValue).optional(),
       action: z
         .discriminatedUnion('type', [
           z.object({
@@ -1045,6 +1047,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       type: 'web_search_call',
       status: 'completed',
       action: webAction(raw),
+      ...(raw.results == null ? {} : { results: raw.results as JsonValue[] }),
     };
   return null;
 }
@@ -1240,6 +1243,9 @@ function nativeItems(
           type: 'web_search_call',
           status: done ? 'completed' : 'in_progress',
           action: webAction(raw),
+          ...(raw.results == null
+            ? {}
+            : { results: raw.results as JsonValue[] }),
         },
       ];
     case 'Extension':
@@ -1250,6 +1256,9 @@ function nativeItems(
               type: 'web_search_call',
               status: done ? 'completed' : 'in_progress',
               action: webAction(raw),
+              ...(raw.results == null
+                ? {}
+                : { results: raw.results as JsonValue[] }),
             },
           ]
         : [];

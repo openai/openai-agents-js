@@ -675,7 +675,11 @@
     {
       "path": "sdk-native-compaction-provider-window.patch",
       "sha256": "51748b7cd628e84a055b0af35c84bd157dbf097f170fe1025e59e7ab4b2d6d72"
+    },
+    {
+      "path": "sdk-native-web-search-images.patch",
+      "sha256": "87c4c6eda5d7d3086c434c0227fab9301c847c94c97eae32eabba7598f4e67bf"
     }
   ],
-  "result_tree": "8fb40873a67e3a3f55dcc7c2fef07e677e28519f"
+  "result_tree": "5a1838d1962f4b97cb670ac7b735f5e74ac68f0b"
 }

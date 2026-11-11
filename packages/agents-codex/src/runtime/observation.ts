@@ -201,8 +201,12 @@ function projectObservation(
         ? structuredClone(event.record)
         : summarizeResponseFactRecord(event.record),
     });
-  if (event.type === 'search_item_completed')
-    return Object.freeze({ ...event, item: structuredClone(event.item) });
+  if (event.type === 'search_item_completed') {
+    const item = { ...event.item };
+    if (!includeExecutionDetails && item.type === 'web_search_call')
+      delete item.results;
+    return Object.freeze({ ...event, item: structuredClone(item) });
+  }
   if (event.type === 'hosted_tool_item_completed') {
     if (includeExecutionDetails)
       return Object.freeze({ ...event, item: structuredClone(event.item) });

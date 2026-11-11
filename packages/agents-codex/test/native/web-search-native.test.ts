@@ -18,7 +18,11 @@ import {
 import { ModelServer, call, message } from './fixtures/model-server';
 import { searchPeer } from './fixtures/web-search-peer';
 import { startPublicExecutor } from './fixtures/public-executor';
-import { binding, type JsonObject } from '../../src/runtime/binding';
+import {
+  binding,
+  type JsonObject,
+  type JsonValue,
+} from '../../src/runtime/binding';
 
 afterEach(() => ModelServer.closeAll());
 const providerAt = (url: string, key = 'synthetic-web-current') =>
@@ -136,6 +140,10 @@ it('captures hosted controls and retains search evidence through events, history
     { type: 'url', url: 'https://reports.example.test/data' },
   ];
   const action = { type: 'search', query: 'annual report', sources };
+  const results: JsonValue[] = [
+    { type: 'image', image_url: 'https://reports.example.test/chart.png' },
+    { type: 'future_result', details: { caption: 'Synthetic annual chart' } },
+  ];
   const markup =
     '<oai-mem-citation><citation_entries>MEMORY.md:1-2|note=[fixture]</citation_entries></oai-mem-citation>';
   const content: JsonObject[] = [
@@ -192,6 +200,7 @@ it('captures hosted controls and retains search evidence through events, history
           id: 'ws_fixture',
           status: 'completed',
           action,
+          results,
         },
         { ...message('unused'), content },
       ],
@@ -216,11 +225,15 @@ it('captures hosted controls and retains search evidence through events, history
     city: 'Chicago',
     timezone: 'America/Chicago',
   };
+  const searchContentTypes: ('text' | 'image')[] = ['text', 'image'];
+  const imageSettings = { maxResults: 3, caption: false };
   const grant = webSearch({
     route: 'hosted',
     allowedDomains,
     blockedDomains,
     location,
+    searchContentTypes,
+    imageSettings,
   });
   const agent = new Agent({
     instructions: 'Research the user question.',
@@ -236,10 +249,15 @@ it('captures hosted controls and retains search evidence through events, history
     },
     user_location: { type: 'approximate', ...location },
     external_web_access: false,
+    search_content_types: ['text', 'image'],
+    image_settings: { max_results: 3, caption: false },
   };
   allowedDomains.push('other.test');
   blockedDomains[0] = 'other.test';
   location.timezone = 'Etc/UTC';
+  searchContentTypes.splice(0, searchContentTypes.length, 'text');
+  imageSettings.caption = true;
+  imageSettings.maxResults = 9;
 
   await using session = await agent.session({
     modelSettings: { toolChoice: 'required' },
@@ -250,6 +268,18 @@ it('captures hosted controls and retains search evidence through events, history
   expect(peer.model.requests).toHaveLength(0);
   const turn = await session.submit('Find the annual report.');
   const events = Array.fromAsync(turn.events());
+  const detailedEvents = Array.fromAsync(
+    turn.events({ includeExecutionDetails: true }),
+  );
+  const sessionReads = [false, true].map(async (includeExecutionDetails) => {
+    const observed = [];
+    for await (const event of session.events({ includeExecutionDetails })) {
+      observed.push(event);
+      if (event.type === 'turn_finished' && event.turnId === turn.turnId)
+        return observed;
+    }
+    throw new Error('Session observations ended before the turn finished');
+  });
   const result = await turn.wait();
   const displayText = 'Annual report. Appendix. Notes.';
   expect(result.finalOutput).toBe(displayText);
@@ -257,6 +287,7 @@ it('captures hosted controls and retains search evidence through events, history
     expect.objectContaining({
       type: 'web_search_call',
       action: { ...action, queries: null },
+      results,
     }),
     expect.objectContaining({
       type: 'message',
@@ -271,6 +302,23 @@ it('captures hosted controls and retains search evidence through events, history
       (item.type === 'message' && item.role === 'assistant'),
   );
   expect(historyEvidence).toEqual(evidence);
+  const defaultSearch = Object.fromEntries(
+    Object.entries(historyEvidence[0]).filter(([key]) => key !== 'results'),
+  );
+  for (const [index, read] of [
+    sessionReads[0],
+    detailedEvents,
+    sessionReads[1],
+  ].entries()) {
+    expect(
+      (await read).flatMap((event) =>
+        event.type === 'search_item_completed' &&
+        event.item.type === 'web_search_call'
+          ? [event.item]
+          : [],
+      ),
+    ).toEqual([index === 0 ? defaultSearch : historyEvidence[0]]);
+  }
   const sequence = (await events).filter(
     (event) =>
       event.type === 'turn_started' ||
@@ -282,7 +330,7 @@ it('captures hosted controls and retains search evidence through events, history
     expect.objectContaining({
       type: 'search_item_completed',
       turnId: turn.turnId,
-      item: historyEvidence[0],
+      item: defaultSearch,
     }),
     expect.objectContaining({
       type: 'search_item_completed',
@@ -312,7 +360,10 @@ it('captures hosted controls and retains search evidence through events, history
   expect(peer.model.requests[0]).toMatchObject({
     tools: expect.arrayContaining([expect.objectContaining(expectedPolicy)]),
     tool_choice: 'required',
-    include: expect.arrayContaining(['web_search_call.action.sources']),
+    include: expect.arrayContaining([
+      'web_search_call.action.sources',
+      'web_search_call.results',
+    ]),
   });
 
   await using restored = await agent.session({
@@ -353,7 +404,7 @@ it('captures hosted controls and retains search evidence through events, history
         role: 'user',
         content: [{ type: 'input_text', text: 'Find the annual report.' }],
       }),
-      expect.objectContaining({ type: 'web_search_call', action }),
+      expect.objectContaining({ type: 'web_search_call', action, results }),
       expect.objectContaining({
         type: 'message',
         role: 'assistant',
@@ -1379,4 +1430,83 @@ it.each(wireUsageCases)(
     }
   },
   60000,
+);
+
+it.each(
+  (['standalone', 'hosted'] as const).flatMap((route) =>
+    (['low', 'medium', 'high', undefined] as const).map(
+      (searchContextSize) => ({
+        route,
+        searchContextSize,
+      }),
+    ),
+  ),
+)(
+  'captures context budget on native $route route ($searchContextSize)',
+  async ({ route, searchContextSize }) => {
+    await using peer = await searchPeer(
+      route === 'standalone'
+        ? [[searchCall(false)], [message('done')]]
+        : [[message('done')]],
+    );
+    await using provider = providerAt(peer.url);
+    await using session = await new Agent({
+      instructions: 'Use selected search.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [webSearch({ route, searchContextSize })],
+    }).session();
+    expect((await (await session.submit('Research')).wait()).finalOutput).toBe(
+      'done',
+    );
+    if (route === 'standalone') {
+      expect(peer.searches).toHaveLength(1);
+      const settings = peer.searches[0].body.settings as JsonObject;
+      if (searchContextSize === undefined)
+        expect(settings).not.toHaveProperty('search_context_size');
+      else expect(settings.search_context_size).toBe(searchContextSize);
+    } else {
+      expect(peer.searches).toHaveLength(0);
+      const tools = peer.model.requests[0].tools as Array<
+        Record<string, unknown>
+      >;
+      const search = tools.find((item) => item.type === 'web_search');
+      expect(search).toBeDefined();
+      if (searchContextSize === undefined)
+        expect(search).not.toHaveProperty('search_context_size');
+      else expect(search?.search_context_size).toBe(searchContextSize);
+    }
+  },
+);
+
+it.each<{ contentTypes: ('text' | 'image')[] }>([
+  { contentTypes: ['text'] },
+  { contentTypes: ['image'] },
+  { contentTypes: ['image', 'text'] },
+])(
+  'hosted content selection $contentTypes requests image results',
+  async ({ contentTypes }) => {
+    await using peer = await searchPeer([
+      [message('Selected search controls.')],
+    ]);
+    await using provider = providerAt(peer.url);
+    await using session = await new Agent({
+      instructions: 'Research the question.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [webSearch({ route: 'hosted', searchContentTypes: contentTypes })],
+    }).session();
+    await (await session.submit('Research.')).wait();
+    const [request] = peer.model.requests;
+    const tool = (request.tools as JsonObject[]).find(
+      (item) => item.type === 'web_search',
+    );
+    expect(tool?.search_content_types).toEqual(contentTypes);
+    expect(tool).not.toHaveProperty('image_settings');
+    expect(
+      (request.include as string[]).includes('web_search_call.results'),
+    ).toBe(contentTypes.includes('image'));
+    expect(peer.searches).toHaveLength(0);
+    peer.model.assertExhausted();
+  },
 );
