@@ -39,6 +39,7 @@ it.each([undefined, 1])(
         undefined,
         undefined,
         undefined,
+        undefined,
         () => {
           throw failure;
         },

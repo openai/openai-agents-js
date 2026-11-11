@@ -117,7 +117,7 @@ for (const configured of [false, true]) {
             }
           : {}),
       });
-      if (mode === 'accepted') {
+      if (mode !== 'empty') {
         await expect(agent.run('run')).rejects.toThrow();
         expect(server.requests).toHaveLength(1);
       } else {
@@ -169,8 +169,9 @@ for (const configured of [false, true]) {
         supportsWebsockets: false,
       });
       const agent = new Agent({
-        model: 'gpt-5.5',
         instructions: 'Answer.',
+        hostedPrompt: { id: 'pmpt_read_only' },
+        tools: [],
         provider,
         ...(configured
           ? {
@@ -191,3 +192,48 @@ for (const configured of [false, true]) {
     30_000,
   );
 }
+
+it.each(['safe', 'unknown', 'unsafe'] as const)(
+  'requires captured provider advice for opaque hosted dispatch (%s)',
+  async (replaySafety) => {
+    let calls = 0;
+    const failure = Object.assign(new Error('opaque provider failure'), {
+      status: 503,
+      code: 'server_error',
+    });
+    await using provider = new NativeProvider({
+      modelBackend: {
+        getRetryAdvice: () => ({ suggested: true, replaySafety }),
+        complete() {
+          calls++;
+          if (calls === 1) throw failure;
+          return { output: [message('recovered')] };
+        },
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      hostedPrompt: { id: 'pmpt_provider_tools' },
+      provider,
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: () => ({
+            retry: true,
+            delayMs: 0,
+            approveUnsafeReplay: true,
+          }),
+        },
+      },
+    });
+    if (replaySafety === 'safe') {
+      expect((await agent.run('run')).finalOutput).toBe('recovered');
+      expect(calls).toBe(2);
+    } else {
+      await expect(agent.run('run')).rejects.toBe(failure);
+      expect(calls).toBe(1);
+    }
+  },
+  30_000,
+);
