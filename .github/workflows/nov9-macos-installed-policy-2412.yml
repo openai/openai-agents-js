@@ -1,0 +1,57 @@
+name: macOS installed local policy controls for 2412
+
+on:
+  push:
+    branches: [codex/2412-macos-installed-controls]
+    paths:
+      - .github/workflows/nov9-macos-installed-policy-2412.yml
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 18
+    env:
+      SDK_COMMIT: e727b885102bafc18318d7bd7cce9e17438198fd
+      NATIVE_INPUTS: 1400d1d7659efa24a8806318f2be56675b6c4dc38fab8fa449162f119a6a27a3
+      ALPHA_VERSION: 0.22.0-alpha.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SDK_COMMIT }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Read the diagnostic from the triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: diagnostics-checkout
+          persist-credentials: false
+      - name: Stage the pinned diagnostic files
+        run: |
+          fixtures=diagnostics-checkout/.github/diagnostics
+          echo "ac758b217034e8327c99e5ff70ddab06d1569d16876da2fbf2d23a7c4e81f5a4  $fixtures/qualify-installed-darwin-2412.mjs" | shasum -a 256 -c -
+          echo "28b4ec3988e1e0a65e8c8fb0abf90bab841d79f17937b0d1a96fb3752b9c9ec7  $fixtures/selected-darwin-login-2412.patch" | shasum -a 256 -c -
+          cp "$fixtures/qualify-installed-darwin-2412.mjs" "$fixtures/selected-darwin-login-2412.patch" "$RUNNER_TEMP/"
+          rm -rf diagnostics-checkout
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Restore the official Darwin ARM64 transfer from Alpha 42982974471
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: '{"artifact-id":"13840227631","artifact-digest":"3b7432287ac4252f2070a582772931191af9a4b4b39b5a20c9e3896d67872ee8"}'
+        run: node scripts/restore-native-bundle.mjs
+      - name: Install exact landed SDK tarballs and run the stock controls
+        run: |
+          pnpm install --frozen-lockfile
+          node scripts/build-packages.mjs
+          node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+          node "$RUNNER_TEMP/qualify-installed-darwin-2412.mjs" "$RUNNER_TEMP/agents-alpha" "$RUNNER_TEMP/selected-darwin-login-2412.patch"
