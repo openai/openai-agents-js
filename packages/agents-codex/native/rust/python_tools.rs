@@ -1075,6 +1075,7 @@ impl PythonTools {
                         ToolName::plain(match tool {
                             codex_tools::HostedToolSpec::FileSearch(_) => "file_search",
                             codex_tools::HostedToolSpec::CodeInterpreter(_) => "code_interpreter",
+                            codex_tools::HostedToolSpec::Shell(_) => "shell",
                             codex_tools::HostedToolSpec::ImageGeneration(_) => "image_generation",
                         })
                         .with_default_namespace()
