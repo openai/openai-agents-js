@@ -100,6 +100,11 @@ const processorSuppressed = new AsyncLocalStorage<boolean>();
 let tracingDisabled = false;
 let sensitiveDataLoggingEnabled = true;
 
+/** Generate an ID for grouping workflow traces. */
+export function generateGroupId(): string {
+  return `group_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+}
+
 /** Synchronous ID policy for newly admitted SDK scopes, excluding engine spans. */
 export interface TracingIdGenerator {
   /** Return a nonzero 32-digit hexadecimal ID. */
