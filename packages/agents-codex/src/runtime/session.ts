@@ -9584,7 +9584,7 @@ export class Session<OutputT = string, Context = unknown> {
         type: 'function_approval_requested',
         submissionId: action.submissionId,
         turnId: action.turnId,
-        approvalId: action.callId,
+        approvalId: action.approvalId,
         callId: action.call.callId,
         name: action.name,
       });

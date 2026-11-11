@@ -260,7 +260,7 @@ async function pendingApproval(
       isFunctionApprovalRequest(request) &&
       request.submissionId === event.submissionId &&
       request.turnId === event.turnId &&
-      request.callId === event.approvalId &&
+      request.approvalId === event.approvalId &&
       request.call?.callId === event.callId,
   );
 }
@@ -278,7 +278,7 @@ async function retainedFrames(
       'includeToolData' | 'includeReasoningSummaries'
     >
   >,
-  approvalCalls: ReadonlySet<string>,
+  approvalCalls: ReadonlyMap<string, string>,
   signal: AbortSignal,
 ): Promise<VercelMessageChunk[]> {
   const calls = new Map<
@@ -344,11 +344,13 @@ async function retainedFrames(
     else await localWait(closing, signal);
   }
   for (const [id, call] of calls) {
+    const approvalId = approvalCalls.get(id);
+    const toolCallId = approvalId ?? id;
     const output = call.type === 'mcp_call' ? call : outputs.get(id);
     outputs.delete(id);
     if (!output || output.status === 'in_progress')
       throw new ProjectionError('Missing completed tool result');
-    if (!approvalCalls.has(id)) {
+    if (approvalId === undefined) {
       let input = call.arguments;
       if (typeof input === 'string') {
         try {
@@ -372,7 +374,7 @@ async function retainedFrames(
       output.error !== null || output.status !== 'completed'
         ? {
             type: 'tool-output-error',
-            toolCallId: id,
+            toolCallId,
             errorText:
               typeof output.error === 'string'
                 ? output.error
@@ -381,14 +383,14 @@ async function retainedFrames(
           }
         : {
             type: 'tool-output-available',
-            toolCallId: id,
+            toolCallId,
             output: output.output,
             dynamic: true,
           },
     );
   }
   if (outputs.size) throw new ProjectionError('Tool result without call');
-  for (const id of approvalCalls)
+  for (const id of approvalCalls.keys())
     if (!calls.has(id))
       throw new ProjectionError('Approval without tool result');
   return frames;
@@ -432,7 +434,7 @@ function createVercelStream<Chunk>(
     async *project(signal) {
       const shown = new Map<string, ShownText>();
       const streamedText = new Set<string>();
-      const approvalCalls = new Set<string>();
+      const approvalCalls = new Map<string, string>();
       let replayedApprovals = 0;
       let prompt: VercelMessageChunk[] | undefined;
       let shownBytes = 0;
@@ -477,7 +479,11 @@ function createVercelStream<Chunk>(
                 break;
               }
               if (event.approvalId === approvals[replayedApprovals]) {
-                approvalCalls.add(event.callId);
+                if (approvalCalls.has(event.callId)) {
+                  lost = true;
+                  break;
+                }
+                approvalCalls.set(event.callId, event.approvalId);
                 replayedApprovals++;
               }
               continue;
@@ -494,15 +500,15 @@ function createVercelStream<Chunk>(
             prompt = [
               {
                 type: 'tool-input-available',
-                toolCallId: event.callId,
-                toolName: event.name,
+                toolCallId: request.approvalId,
+                toolName: request.name,
                 input,
                 dynamic: true,
               },
               {
                 type: 'tool-approval-request',
-                toolCallId: event.callId,
-                approvalId: event.approvalId,
+                toolCallId: request.approvalId,
+                approvalId: request.approvalId,
               },
             ];
             break;

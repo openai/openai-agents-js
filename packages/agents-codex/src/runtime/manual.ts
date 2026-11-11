@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -78,6 +79,8 @@ export interface FunctionApprovalRequest<
   Input = unknown,
 > extends ManualToolRequest<Input, never> {
   readonly approvalRequired: true;
+  /** Opaque identifier for matching an approval event to this live request. */
+  readonly approvalId: string;
   /** Validated arguments after the pre-approval input policy.
    * Plain objects, arrays and dates are detached; opaque values retain application identity.
    */
@@ -378,6 +381,7 @@ export function createManualRequest<Input, Result>(
         ...(managedApproval
           ? {
               approvalRequired: true as const,
+              approvalId: randomUUID(),
               approve: (options: { always?: boolean } = {}) =>
                 approvalReply(
                   true,

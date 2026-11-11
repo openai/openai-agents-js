@@ -15,7 +15,7 @@ import {
   vercelMessageStream,
   vercelResponse,
 } from '@openai/agents/ui';
-import { call } from './fixtures/model-server';
+import { call, message, ModelServer } from './fixtures/model-server';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -306,16 +306,24 @@ it.each([
     const expectedEffects = ['earlier-secret'];
     let decided: UIMessage | undefined;
     for (const [index, approve] of decisions.entries()) {
-      const toolCallId = ids[index];
       const input = { key: inputKeys[index] };
       const displayed = await read(decided);
+      const part = displayed.parts.find(
+        (part) =>
+          part.type === 'dynamic-tool' && part.state === 'approval-requested',
+      );
+      if (part?.type !== 'dynamic-tool' || part.state !== 'approval-requested')
+        throw new Error('Expected a live approval part');
+      const toolCallId = part.toolCallId;
+      const approvalId = part.approval.id;
+      expect(toolCallId).toBe(approvalId);
       expect(displayed.parts).toContainEqual(
         expect.objectContaining({
           type: 'dynamic-tool',
           toolCallId,
           state: 'approval-requested',
           input,
-          approval: { id: toolCallId },
+          approval: { id: approvalId },
         }),
       );
       expect(JSON.stringify(displayed)).not.toContain('current-secret');
@@ -326,15 +334,15 @@ it.each([
         .find(
           (candidate) =>
             candidate.submissionId === turn.submissionId &&
-            candidate.callId === toolCallId,
+            candidate.approvalId === approvalId,
         );
-      expect(request?.callId).toBe(toolCallId);
+      expect(request?.callId).toBe(ids[index]);
       if (index === 0) {
-        for (const approvalId of [toolCallId, 'wrong-approval']) {
+        for (const prematureId of [approvalId, 'wrong-approval']) {
           const premature = await frames(
             vercelResponse(turn, session, {
               includeToolApprovals: true,
-              afterApprovals: [approvalId],
+              afterApprovals: [prematureId],
             }),
           );
           expect(premature).toContainEqual({
@@ -346,7 +354,7 @@ it.each([
       await session.respond(
         approve ? request!.approve() : request!.reject('Declined.'),
       );
-      afterApprovals.push(toolCallId);
+      afterApprovals.push(approvalId);
       if (approve) expectedEffects.push(input.key);
       decided = {
         ...displayed,
@@ -370,10 +378,10 @@ it.each([
       expect(final.parts).toContainEqual(
         expect.objectContaining({
           type: 'dynamic-tool',
-          toolCallId: ids[index],
+          toolCallId: afterApprovals[index],
           state: 'output-available',
           input: { key: inputKeys[index] },
-          approval: { id: ids[index], approved: approve },
+          approval: { id: afterApprovals[index], approved: approve },
           output: approve ? 'result:' + inputKeys[index] : 'Declined.',
         }),
       );
@@ -391,6 +399,89 @@ it.each([
     expect((await turn.wait()).finalOutput).toBe('Found it.');
   },
 );
+
+it('binds approval frames to distinct native grants with the same provider call ID', async () => {
+  const server = new ModelServer([
+    [
+      call('read_a', { key: 'value-a' }, { callId: 'reused' }),
+      call('read_b', { key: 'value-b' }, { callId: 'reused' }),
+    ],
+    [message('Done.')],
+  ]);
+  cleanups.push(ModelServer.closeAll);
+  await using provider = new NativeProvider({
+    baseUrl: `http://127.0.0.1:${await server.port()}/v1`,
+    apiKey: 'synthetic',
+    supportsWebsockets: false,
+  });
+  const effects: string[] = [];
+  const guarded = (name: string) =>
+    tool({
+      name,
+      parameters: z.object({ key: z.string() }),
+      needsApproval: true,
+      execute: ({ key }) => {
+        effects.push(key);
+        return key;
+      },
+    });
+  await using session = await new Agent({
+    instructions: 'Read two records.',
+    provider,
+    tools: [guarded('read_a'), guarded('read_b')],
+  }).session();
+  const turn = await session.submit('Read both.');
+  const live = async () =>
+    (await session.pendingInteractions()).filter(isFunctionApprovalRequest);
+  await expect.poll(async () => (await live()).length).toBe(2);
+  const afterApprovals: string[] = [];
+  const presentedInputs: string[] = [];
+  for (const approve of [true, false]) {
+    const values = await frames(
+      vercelResponse(turn, session, {
+        includeToolApprovals: true,
+        afterApprovals,
+      }),
+    );
+    const input = values.find((value) => value.type === 'tool-input-available');
+    const approval = values.find(
+      (value) => value.type === 'tool-approval-request',
+    );
+    expect(input).toBeDefined();
+    expect(approval).toMatchObject({ toolCallId: input.toolCallId });
+    const request = (await live()).find(
+      (candidate) => candidate.name === input.toolName,
+    );
+    expect(request).toBeDefined();
+    expect(request!.callId).toBe('reused');
+    expect(request!.approvalId).toBe(approval.approvalId);
+    expect(input.toolCallId).toBe(request!.approvalId);
+    expect(input.input).toEqual(request!.effectiveArguments);
+    presentedInputs.push(input.input.key);
+    afterApprovals.push(approval.approvalId);
+    await session.respond(
+      approve ? request!.approve() : request!.reject('Declined.'),
+    );
+  }
+  expect(new Set(afterApprovals).size).toBe(2);
+  expect(new Set(presentedInputs)).toEqual(new Set(['value-a', 'value-b']));
+  expect((await turn.wait()).finalOutput).toBe('Done.');
+  expect(effects).toEqual([presentedInputs[0]]);
+  const result = await frames(
+    vercelResponse(turn, session, {
+      includeToolApprovals: true,
+      afterApprovals,
+    }),
+  );
+  expect(result).toContainEqual({
+    type: 'error',
+    errorText: 'resync_required',
+  });
+  expect(result.some((value) => value.type === 'tool-output-available')).toBe(
+    false,
+  );
+  server.assertExhausted();
+});
 
 it('streams typed native AI SDK chunks with opt-in provider summaries', async () => {
   const summary = 'Checked the current record.';
