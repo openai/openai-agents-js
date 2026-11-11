@@ -273,7 +273,9 @@ The retained `@openai/agents/realtime` entrypoint has been continuing to expose 
 
 `Session.realtime({apiKey})` accepts a string or a synchronous or asynchronous callback. The callback receives an optional `AbortSignal` and resolves once per connection. Omit it to use the Session provider's credentials. This override does not change credentials for the Session's text turns. Honor cancellation during credential lookup and release any resources your callback opens.
 
-With the current [source build](building.md), use `Session.realtime({ url, apiKey })` to select an exact `ws:` or `wss:` endpoint for built-in WebSocket media or SIP sideband control. The URL must omit embedded credentials and fragments. Only the explicit `apiKey` supplies credentials for this connection. WebRTC and custom adapters reject the URL override.
+With the current [source build](building.md), use `Session.realtime({ url, apiKey })` to select an endpoint for built-in WebSocket media or SIP sideband control. The URL must omit embedded credentials and fragments. WebRTC and custom adapters reject the URL override.
+
+Only the explicit `apiKey` supplies credentials for an override. The SDK sends it in the authorization header. Require `wss:` for remote endpoints. Use `ws:` only for loopback tests with synthetic credentials. Validate the scheme and host of application-supplied URLs against this policy before connecting.
 
 ### Implement a custom adapter
 
