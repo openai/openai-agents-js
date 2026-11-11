@@ -189,7 +189,7 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
 
 struct PendingCall {
     // Captured by native enqueue, never reconstructed from a host reply.
-    computer_arguments: Option<String>,
+    original_payload: Option<ToolPayload>,
     media: Option<NativeMediaContext>,
     deadline: Option<Arc<codex_extension_api::ModelInvocationDeadlineState>>,
     invocation: u64,
@@ -305,7 +305,7 @@ impl From<DynamicToolResponse> for ToolReply {
 fn functions(
     specs: &[DynamicToolSpec],
 ) -> Vec<(
-    Option<&DynamicToolNamespaceSpec>,
+    Option<Cow<'_, DynamicToolNamespaceSpec>>,
     Cow<'_, DynamicToolFunctionSpec>,
 )> {
     let mut functions = Vec::new();
@@ -315,9 +315,17 @@ fn functions(
             DynamicToolSpec::Computer(tool) => {
                 functions.push((None, Cow::Owned(tool.callback_spec())))
             }
+            DynamicToolSpec::HostedMcp(tool) => functions.push((
+                Some(Cow::Owned(DynamicToolNamespaceSpec {
+                    name: "hosted_mcp".into(),
+                    description: String::new(),
+                    tools: Vec::new(),
+                })),
+                Cow::Owned(tool.callback_spec()),
+            )),
             DynamicToolSpec::Namespace(namespace) => {
                 for DynamicToolNamespaceTool::Function(tool) in &namespace.tools {
-                    functions.push((Some(namespace), Cow::Borrowed(tool)));
+                    functions.push((Some(Cow::Borrowed(namespace)), Cow::Borrowed(tool)));
                 }
             }
         }
@@ -328,7 +336,9 @@ fn functions(
 fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
-            DynamicToolSpec::Function(_) | DynamicToolSpec::Computer(_) => true,
+            DynamicToolSpec::Function(_)
+            | DynamicToolSpec::Computer(_)
+            | DynamicToolSpec::HostedMcp(_) => true,
             DynamicToolSpec::Namespace(ns) => ns.tools.len() == 1,
         }),
         "invalid JavaScript tool slot projection"
@@ -346,8 +356,11 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
     }
     let mut seen = HashSet::new();
     for (namespace, tool) in functions(specs) {
-        let key = ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone())
-            .with_default_namespace();
+        let key = ToolName::new(
+            namespace.as_ref().map(|ns| ns.name.clone()),
+            tool.name.clone(),
+        )
+        .with_default_namespace();
         ensure!(seen.insert(key.clone()), "Duplicate JavaScript tool: {key}");
         ensure!(
             !(key.is_default_namespace()
@@ -406,8 +419,11 @@ pub(crate) fn tool_names(specs: &[DynamicToolSpec]) -> HashSet<ToolName> {
     functions(specs)
         .into_iter()
         .map(|(namespace, tool)| {
-            ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone())
-                .with_default_namespace()
+            ToolName::new(
+                namespace.as_ref().map(|ns| ns.name.clone()),
+                tool.name.clone(),
+            )
+            .with_default_namespace()
         })
         .collect()
 }
@@ -1072,18 +1088,32 @@ impl PythonTools {
                     .tools
                     .iter()
                     .map(|tool| {
-                        ToolName::plain(match tool {
-                            codex_tools::HostedToolSpec::FileSearch(_) => "file_search",
-                            codex_tools::HostedToolSpec::CodeInterpreter(_) => "code_interpreter",
-                            codex_tools::HostedToolSpec::Shell(_) => "shell",
-                            codex_tools::HostedToolSpec::ImageGeneration(_) => "image_generation",
-                        })
+                        match tool {
+                            codex_tools::HostedToolSpec::Mcp(tool) => {
+                                ToolName::new(Some("hosted_mcp".into()), tool.server_label.clone())
+                            }
+                            codex_tools::HostedToolSpec::FileSearch(_) => {
+                                ToolName::plain("file_search")
+                            }
+                            codex_tools::HostedToolSpec::CodeInterpreter(_) => {
+                                ToolName::plain("code_interpreter")
+                            }
+                            codex_tools::HostedToolSpec::Shell(_) => ToolName::plain("shell"),
+                            codex_tools::HostedToolSpec::ImageGeneration(_) => {
+                                ToolName::plain("image_generation")
+                            }
+                        }
                         .with_default_namespace()
                     })
                     .collect()
             })
             .unwrap_or_default();
-        fixed.extend(hosted_names.iter().cloned());
+        fixed.extend(
+            hosted_names
+                .iter()
+                .filter(|name| name.namespace.as_deref() != Some("hosted_mcp"))
+                .cloned(),
+        );
         let policy = startup
             .thread_extension_init
             .get::<ToolPolicy>()
@@ -1349,21 +1379,25 @@ impl PythonTools {
         key: &PendingKey,
         response: DynamicToolResponse,
     ) -> Result<Option<ResponseItem>> {
-        let arguments = {
+        let payload = {
             let pending = self.pending.lock().expect("tool replies poisoned");
             let Some(call) = pending.get(key) else {
                 return Ok(None);
             };
-            call.computer_arguments.clone()
+            call.original_payload.clone()
         };
-        let Some(arguments) = arguments else {
+        let Some(payload) = payload else {
             return Ok(Some(PythonOutput(response).receipt(key)));
         };
-        let output = codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
-            .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?;
-        let mut item: ResponseItem = output
-            .to_response_item(&key.call, &ToolPayload::Computer { arguments })
-            .into();
+        let output: Box<dyn ToolOutput> = match &payload {
+            ToolPayload::Computer { arguments } => Box::new(
+                codex_tools::ComputerToolOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?,
+            ),
+            ToolPayload::HostedMcpApproval { .. } => Box::new(hosted_mcp_output(response)?),
+            _ => return Ok(Some(PythonOutput(response).receipt(key))),
+        };
+        let mut item: ResponseItem = output.to_response_item(&key.call, &payload).into();
         if let ResponseItem::ComputerCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
@@ -1395,7 +1429,10 @@ impl PythonTools {
             .then(|| codex_protocol::ThreadId::new().to_string());
         validate_declarations(&specs)?;
         for (declaration, (namespace, tool)) in specs.iter().zip(functions(&specs)) {
-            let name = ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone());
+            let name = ToolName::new(
+                namespace.as_ref().map(|ns| ns.name.clone()),
+                tool.name.clone(),
+            );
             let key = name.clone().with_default_namespace();
             ensure!(
                 !self.fixed.contains(&key),
@@ -1413,8 +1450,13 @@ impl PythonTools {
             }
             let spec = if let DynamicToolSpec::Computer(computer) = declaration {
                 codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?
+            } else if let DynamicToolSpec::HostedMcp(mcp) = declaration {
+                ToolSpec::Mcp(codex_tools::HostedMcpTool {
+                    server_label: mcp.server_label.clone(),
+                    provider_data: serde_json::Map::new(),
+                })
             } else {
-                match namespace.filter(|_| !key.is_default_namespace()) {
+                match namespace.as_ref().filter(|_| !key.is_default_namespace()) {
                     None => ToolSpec::Function(function),
                     Some(ns) => ToolSpec::Namespace(ResponsesApiNamespace {
                         name: ns.name.clone(),
@@ -1430,7 +1472,9 @@ impl PythonTools {
             entries.push(Entry {
                 name,
                 spec,
-                exposure: if matches!(declaration, DynamicToolSpec::Computer(_)) {
+                exposure: if matches!(declaration, DynamicToolSpec::HostedMcp(_)) {
+                    ToolExposure::Hidden
+                } else if matches!(declaration, DynamicToolSpec::Computer(_)) {
                     ToolExposure::DirectModelOnly
                 } else if tool.defer_loading {
                     ToolExposure::Deferred
@@ -1920,11 +1964,17 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
-                    computer_arguments: matches!(
-                        entry.spec,
-                        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. }
-                    )
-                    .then(|| request["msg"]["arguments"].to_string()),
+                    original_payload: match &entry.spec {
+                        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {
+                            Some(ToolPayload::Computer {
+                                arguments: request["msg"]["arguments"].to_string(),
+                            })
+                        }
+                        ToolSpec::Mcp(_) => Some(ToolPayload::HostedMcpApproval {
+                            request: serde_json::from_value(request["msg"]["arguments"].clone())?,
+                        }),
+                        _ => None,
+                    },
                     media,
                     invocation,
                     retired: false,
@@ -2640,14 +2690,17 @@ impl ToolContributor for PythonContributor {
                     .as_ref()
                     .is_some_and(|names| !names.contains(&entry.name))
                 || !allows(&entry.name)
-                || entry.exposure == ToolExposure::Deferred
+                || matches!(
+                    entry.exposure,
+                    ToolExposure::Deferred | ToolExposure::Hidden
+                )
             {
                 continue;
             }
             declarations.push(codex_extension_api::RealtimeToolDeclaration {
                 native_name: entry.name.clone(),
                 spec: codex_extension_api::PreparedToolPresentation {
-                    namespace: namespace.map(|namespace| namespace.name.clone()),
+                    namespace: namespace.as_ref().map(|namespace| namespace.name.clone()),
                     name: raw.name.clone(),
                     kind: "function".into(),
                     strict: match &entry.spec {
@@ -3490,6 +3543,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     )?) as Box<dyn ToolOutput>,
                 );
             }
+            if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: hosted_mcp_output(response.response)?,
+                    start_response: response.start_response,
+                }) as Box<dyn ToolOutput>);
+            }
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
                 start_response: response.start_response,
@@ -3500,11 +3559,29 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
 
 pub(crate) struct PythonOutput(pub(crate) DynamicToolResponse);
 
-struct RealtimeToolOutput {
-    output: PythonOutput,
+fn hosted_mcp_output(
+    response: DynamicToolResponse,
+) -> std::result::Result<codex_tools::HostedMcpApprovalDecision, FunctionCallError> {
+    if !response.success {
+        return Err(FunctionCallError::Fatal(
+            "Hosted MCP approval callback failed".into(),
+        ));
+    }
+    let [DynamicToolCallOutputContentItem::InputText { text }] = response.content_items.as_slice()
+    else {
+        return Err(FunctionCallError::Fatal(
+            "Invalid Hosted MCP approval decision".into(),
+        ));
+    };
+    serde_json::from_str(text)
+        .map_err(|_| FunctionCallError::Fatal("Invalid Hosted MCP approval decision".into()))
+}
+
+struct RealtimeToolOutput<T> {
+    output: T,
     start_response: bool,
 }
-impl ToolOutput for RealtimeToolOutput {
+impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
     fn log_output(&self) -> String {
         self.output.log_output()
     }

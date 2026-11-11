@@ -1932,6 +1932,24 @@ export function projectHostedToolItem(
         result: text(raw.result),
         revised_prompt: text(raw.revised_prompt),
       };
+    case 'mcp_list_tools':
+      return {
+        ...common,
+        type: raw.type,
+        server_label: text(raw.server_label) ?? '',
+        tools: raw.tools ?? [],
+        error: raw.error ?? null,
+      };
+    case 'mcp_call':
+      return {
+        ...common,
+        type: raw.type,
+        server_label: text(raw.server_label) ?? '',
+        name: text(raw.name) ?? '',
+        arguments: text(raw.arguments) ?? '',
+        output: raw.output ?? null,
+        error: raw.error ?? null,
+      };
     case 'shell_call':
       if (typeof raw.call_id !== 'string') return;
       return {

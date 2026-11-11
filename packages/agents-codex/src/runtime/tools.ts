@@ -35,6 +35,7 @@ import type { HttpMCP, StdioMCP } from './mcp';
 import { assembleManualTool, type ManualTool } from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
+import { hostedMcpBinding } from './hosted-mcp-binding';
 
 const toolContentSchema = z.unknown().transform((value, context) => {
   try {
@@ -230,7 +231,10 @@ const computerDeclaration = Symbol('native computer declaration');
 /** @internal The plan route admits only direct local function declarations. */
 export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
-    tool.kind !== 'manual' && !tool.deferLoading && !tool[computerDeclaration]
+    tool.kind !== 'manual' &&
+    !tool.deferLoading &&
+    !tool[computerDeclaration] &&
+    !hostedMcpBinding(tool)
   );
 }
 type Invocation<Context> = (
@@ -297,6 +301,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
+  if (hostedMcpBinding(tool)) return 'hosted_mcp';
   return tool.kind === 'manual' ? null : (tool.namespace ?? null);
 }
 
@@ -1046,6 +1051,19 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
+    const mcp = hostedMcpBinding(tool);
+    if (mcp) {
+      if (
+        tool.name !== mcp.serverLabel ||
+        tool.deferLoading ||
+        (tool.kind !== 'manual' &&
+          (tool.namespace !== 'hosted_mcp' || tool.finishTurn))
+      )
+        throw new TypeError(
+          'Hosted MCP declarations retain their server identity',
+        );
+      return { type: 'hostedMcp', serverLabel: mcp.serverLabel };
+    }
     if (tool.kind !== 'manual' && tool[computerDeclaration]) {
       if (
         tool.name !== 'computer' ||

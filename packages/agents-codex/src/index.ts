@@ -327,6 +327,15 @@ export type {
   ImageGenerationOptions,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
+export { hostedMcp } from './runtime/hosted-mcp';
+export type {
+  HostedMCPApprovalArguments,
+  HostedMCPApprovalRequest,
+  HostedMCPApprovalDecision,
+  HostedMCPOptions,
+  HostedMCPFunction,
+  HostedMCPManual,
+} from './runtime/hosted-mcp';
 export type {
   HostedToolProgress,
   HostedToolItemSummary,

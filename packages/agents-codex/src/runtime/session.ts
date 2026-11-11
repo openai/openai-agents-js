@@ -1,5 +1,9 @@
 import { audioInputByteLimit } from './media';
 import {
+  assertHostedMcpConfigurations,
+  hostedMcpBinding,
+} from './hosted-mcp-binding';
+import {
   ManagedWorkspaceCheckpoint,
   captureRetiredWorkspace,
   managedWorkspaceRestore,
@@ -10113,6 +10117,16 @@ export class Session<OutputT = string, Context = unknown> {
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
   ): Promise<SessionState> {
+    if (
+      [...this.manualCalls.values()].some(
+        (call) => call.run === run && hostedMcpBinding(call.tool),
+      )
+    )
+      return Promise.reject(
+        new NativeError(
+          'Pending Hosted MCP approval requires a live reply; portable suspension is not supported',
+        ),
+      );
     const refusal = manualCaptureRefusal(run.selection);
     if (refusal) return Promise.reject(new NativeError(refusal));
     this.requireCompleteRepairReceipts();
@@ -11533,6 +11547,10 @@ export class Session<OutputT = string, Context = unknown> {
             'Updated MCP tools must have been declared when the Session opened',
           );
       const replacements = captureTools(next.tools);
+      assertHostedMcpConfigurations(
+        replacements.tools,
+        this.threadOptions._hosted_tools ?? [],
+      );
       if (
         this.options.customStore &&
         replacements.tools.some((tool) => tool.kind === 'manual')

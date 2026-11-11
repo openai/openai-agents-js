@@ -291,6 +291,20 @@ export type HostedToolItem = HostedItemIdentity &
         revised_prompt: string | null;
       }
     | {
+        type: 'mcp_list_tools';
+        server_label: string;
+        tools: import('./binding').JsonValue;
+        error: import('./binding').JsonValue;
+      }
+    | {
+        type: 'mcp_call';
+        server_label: string;
+        name: string;
+        arguments: string;
+        output: import('./binding').JsonValue;
+        error: import('./binding').JsonValue;
+      }
+    | {
         type: 'shell_call';
         call_id: string;
         action: import('./binding').JsonValue;
