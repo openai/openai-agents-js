@@ -4269,6 +4269,18 @@ impl NativeThread {
         serde_json::to_string(&result).map_err(native_error)
     }
 
+    #[napi(js_name = "_enable_raw_provider_events")]
+    pub fn enable_raw_provider_events(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let store = inner.thread.thread_extension_data();
+        store.insert(codex_core::ObserveRawProviderEvents);
+        if let Some(control) = store.get::<crate::native_interception::Control>() {
+            control.enable_raw_provider_events();
+        }
+        Ok(())
+    }
+
     #[napi(js_name = "_canonical_history")]
     pub async fn canonical_history(
         &self,
