@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 24102faafa998983a47ba85d9e32dab12f7082e1..ba2d7affe925616810edb6009d397bfbfc426e17 100644
+index 24102faa..ba2d7aff 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -3086,8 +3086,10 @@ where
@@ -16,7 +16,7 @@ index 24102faafa998983a47ba85d9e32dab12f7082e1..ba2d7affe925616810edb6009d397bfb
                      if let ResponseEvent::ResponseFact(received) = &mut event {
                          received.upstream_request_id = upstream_request_id.map(str::to_owned);
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index 2adca4ea51dde8bb71c874d21fa6cfc7a201926e..c226bc1ee8005b3c5ae7cc5b00535fd2def7a4f0 100644
+index 2adca4ea..c226bc1e 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
 @@ -333,6 +333,31 @@ impl CodexThread {
@@ -52,7 +52,7 @@ index 2adca4ea51dde8bb71c874d21fa6cfc7a201926e..c226bc1ee8005b3c5ae7cc5b00535fd2
      pub fn sdk_start_produced_items(&self) {
          self.thread_extension_data()
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index ade863fb459ce2bb98a10cc7036c09a099312660..4c3739c9594d4561181a586453825a861599b598 100644
+index ade863fb..4c3739c9 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
 @@ -17,6 +17,8 @@ use crate::hook_runtime::run_pre_compact_hooks;
@@ -127,7 +127,7 @@ index ade863fb459ce2bb98a10cc7036c09a099312660..4c3739c9594d4561181a586453825a86
                      output,
                  });
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index 6e23d57b2b596a431d49a66b939e4ce6f6337dc1..02be17fe732580cde22ffe2eddcf6fe2028b1baf 100644
+index 6e23d57b..02be17fe 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
 @@ -26,6 +26,8 @@ use crate::responses_retry::ResponsesStreamRequest;
@@ -187,7 +187,7 @@ index 6e23d57b2b596a431d49a66b939e4ce6f6337dc1..02be17fe732580cde22ffe2eddcf6fe2
          compaction_output,
          response_id,
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index 8d8e18f973dd07be9cbdc2a22805abadd3123f75..7fdac3f18fe3e20e023ee161674a6a3e1dfa7471 100644
+index 8d8e18f9..7fdac3f1 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -69,6 +69,7 @@ pub use codex_thread::GuardianRootMessage;
@@ -199,7 +199,7 @@ index 8d8e18f973dd07be9cbdc2a22805abadd3123f75..7fdac3f18fe3e20e023ee161674a6a3e
  pub use thread_startup_metadata::ThreadStartupMetadata;
  mod agent;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index f69e4a3bbd72e9bd7c9234ca1ecd16cb6b1ce975..c163922e3eb2b92237f835ef9b33aa6bf8696e5c 100644
+index f69e4a3b..c163922e 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -267,6 +267,7 @@ pub(crate) mod sdk_produced_items;
@@ -212,7 +212,7 @@ index f69e4a3bbd72e9bd7c9234ca1ecd16cb6b1ce975..c163922e3eb2b92237f835ef9b33aa6b
  pub(crate) mod startup_prewarm;
 diff --git a/codex-rs/core/src/session/sdk_raw_usage.rs b/codex-rs/core/src/session/sdk_raw_usage.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..8250370990b08ae00c3155087bb8048bd10b8af0
+index 00000000..82503709
 --- /dev/null
 +++ b/codex-rs/core/src/session/sdk_raw_usage.rs
 @@ -0,0 +1,198 @@
@@ -415,7 +415,7 @@ index 0000000000000000000000000000000000000000..8250370990b08ae00c3155087bb8048b
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index ae0efac6e9a1377dae48947058aefe687b9bac3a..440367980c446073ff9c5206b87e17f6ccc52657 100644
+index ae0efac6..44036798 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
 @@ -2812,7 +2812,10 @@ async fn propose_tool_completion(
