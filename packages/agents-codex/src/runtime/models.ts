@@ -364,6 +364,8 @@ export class ChatCompletionsModel implements NativeModel {
           throw new TypeError(
             'ChatCompletionsModel supports native function tools',
           );
+        if (tool.output_schema != null)
+          throw new TypeError('Tool output schemas require the Responses API');
         return {
           type: 'function',
           function: Object.fromEntries(
@@ -937,7 +939,11 @@ export class AiSdkModel implements NativeModel {
             'AiSdkModel supports the default function namespace',
           );
         for (const tool of item.tools as JsonObject[]) addTool(tool);
-      } else if (item.type === 'function')
+      } else if (item.type === 'function') {
+        if (item.output_schema != null)
+          throw new TypeError(
+            'AiSdkModel does not support tool output schemas',
+          );
         tools.push({
           type: 'function',
           name: item.name,
@@ -945,7 +951,7 @@ export class AiSdkModel implements NativeModel {
           inputSchema: item.parameters,
           ...(item.strict == null ? {} : { strict: item.strict }),
         });
-      else throw new TypeError('AiSdkModel supports function tools');
+      } else throw new TypeError('AiSdkModel supports function tools');
     };
     for (const declaration of declarations) addTool(declaration);
     const choice = body.tool_choice;
