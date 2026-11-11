@@ -167,9 +167,17 @@ it('retains original providers and replaces or clears only current workspace gui
   }
 }, 30_000);
 
-it.each(['create', 'borrow', 'read-only boundary'] as const)(
+it.each([
+  ['create', ['fixture-mount', 'fixture-unmount']],
+  ['borrow', []],
+  ['read-only boundary', undefined],
+  [
+    'oversized command allowlist',
+    Array.from({ length: 2500 }, (_, index) => `fixture-mount-${index}`),
+  ],
+] as const)(
   'opens with oversized mount guidance and discovery off (%s)',
-  async (opening) => {
+  async (opening, commands) => {
     const readOnly = opening === 'read-only boundary';
     const base = await mkdtemp(join(tmpdir(), 'bounded-workspace-guidance-'));
     const home = join(base, 'codex-home');
@@ -196,6 +204,8 @@ it.each(['create', 'borrow', 'read-only boundary'] as const)(
         : workspace;
       const manifest = new Manifest({
         root: mountRoot,
+        remoteMountCommandAllowlist:
+          commands === undefined ? undefined : [...commands],
         entries: {
           ...(!readOnly && {
             data: s3Mount({
@@ -211,6 +221,14 @@ it.each(['create', 'borrow', 'read-only boundary'] as const)(
               ? 'x'.repeat(39_213)
               : 'Keep this short description.',
             mountStrategy: { type: 'modal_cloud_bucket' },
+          }),
+          ...(!readOnly && {
+            src: {
+              type: 'dir',
+              children: {
+                'café.ts': { type: 'file', content: 'export {};\n' },
+              },
+            },
           }),
         },
       });
@@ -260,6 +278,27 @@ it.each(['create', 'borrow', 'read-only boundary'] as const)(
       const text = latestUserInstructions(request);
       expect(text).toContain('# Current SDK workspace snapshot');
       expect(text.includes(`Executor read-only: ${readOnly}`)).toBe(true);
+      if (!readOnly) {
+        const layout = text.split('Filesystem layout:\n')[1]?.split('\n\n')[0];
+        expect(layout).toBe(
+          JSON.stringify([
+            `${join(mountRoot, 'src')}/`,
+            join(mountRoot, 'src/café.ts'),
+          ]),
+        );
+      }
+      if (opening === 'borrow' || opening === 'oversized command allowlist') {
+        expect(
+          text.includes('Do not use remote mount management commands.'),
+        ).toBe(true);
+        expect(text).not.toContain('Allowed remote mount commands:');
+        expect(text).not.toContain('fixture-mount-0');
+      } else {
+        const allowlist = JSON.stringify(manifest.remoteMountCommandAllowlist);
+        expect(
+          text.includes(`Allowed remote mount commands: ${allowlist}.`),
+        ).toBe(true);
+      }
       const storage = text
         .split('Declared storage access:\n')[1]
         ?.split('\n\n')[0];
