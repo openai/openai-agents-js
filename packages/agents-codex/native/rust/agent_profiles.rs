@@ -390,6 +390,16 @@ fn restored_envelope<'a>(
         !receipt.model.model.is_empty(),
         "Invalid restored Agent settings"
     );
+    ensure!(
+        receipt
+            .model
+            .request_controls
+            .hosted_prompt
+            .as_ref()
+            .and_then(|prompt| prompt.as_ref())
+            .is_none_or(|prompt| prompt.reference.is_none()),
+        "Stored hosted prompt references require current declarations"
+    );
     Ok(Some((envelope, receipt)))
 }
 
