@@ -231,10 +231,8 @@ export class PortableVoiceSession {
     private readonly transport: PortableVoiceTransport,
     private options: PortableVoiceOptions,
   ) {
-    const clearOutputAudio = transport.clearOutputAudioOnInterrupt;
-    if (clearOutputAudio !== undefined && typeof clearOutputAudio !== 'boolean')
-      throw new TypeError('Invalid output-audio interruption capability.');
-    this.#clearOutputAudioOnInterrupt = clearOutputAudio ?? false;
+    this.#clearOutputAudioOnInterrupt =
+      transport.clearOutputAudioOnInterrupt ?? false;
     this.#storeAudio = options.storeAudio ?? false;
     this.#history = new VoiceConversationHistory({
       storeAudio: options.storeAudio,
