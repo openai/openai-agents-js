@@ -1,11 +1,13 @@
 import type { VoiceHistoryItem } from './conversation-history';
+import { detachVoiceObservation } from './event-observers';
 
 export type PortableHistoryUpdate =
   | readonly VoiceHistoryItem[]
   | ((history: readonly VoiceHistoryItem[]) => readonly VoiceHistoryItem[]);
 
 type Edit =
-  | { type: 'delete'; item_id: string }
+  | { type: 'delete'; item_id: string; event_id?: string }
+  | { type: 'retrieve'; item_id: string; event_id?: string }
   | {
       type: 'input';
       item: VoiceHistoryItem;
@@ -40,7 +42,7 @@ export class PortableVoiceHistory {
         frame?: HistoryFrame;
         pauseDeadline(): void;
         trackSend(sending: Promise<void>): void;
-        resolve(): void;
+        resolve(item?: VoiceHistoryItem): void;
         reject(error: Error): void;
       }
     | undefined;
@@ -83,31 +85,51 @@ export class PortableVoiceHistory {
     });
   }
 
-  async delete(itemId: string): Promise<void> {
-    return this.enqueue(itemId.length * 2, () =>
-      this.apply({ type: 'delete', item_id: itemId }),
+  async delete(itemId: string, eventId?: string): Promise<void> {
+    await this.request('delete', itemId, eventId);
+  }
+
+  async retrieve(itemId: string, eventId?: string): Promise<VoiceHistoryItem> {
+    const item = await this.request('retrieve', itemId, eventId);
+    if (!item) throw new Error('Provider omitted the requested history item.');
+    return item;
+  }
+
+  private request(
+    type: 'delete' | 'retrieve',
+    itemId: string,
+    eventId?: string,
+  ) {
+    return this.enqueue((itemId.length + (eventId?.length ?? 0)) * 2, () =>
+      this.apply({
+        type,
+        item_id: itemId,
+        ...(eventId ? { event_id: eventId } : {}),
+      }),
     );
   }
 
   dispatchAfterEdits(
     command: Record<string, unknown>,
     dispatch: (command: Record<string, unknown>) => void,
-  ): void {
+  ): void | Promise<void> {
     if (this.closed) throw this.closed;
     if (this.queued === 0) {
       dispatch(command);
       return;
     }
     const captured = JSON.stringify(command);
-    void this.enqueue(captured.length * 2, async () => {
+    const queued = this.enqueue(captured.length * 2, async () => {
       dispatch(JSON.parse(captured));
-    }).catch(() => {});
+    });
+    void queued.catch(() => {});
+    return queued;
   }
 
-  private enqueue(
+  private enqueue<T>(
     bytes: number,
-    work: (retain: (bytes: number) => void) => Promise<void>,
-  ): Promise<void> {
+    work: (retain: (bytes: number) => void) => Promise<T>,
+  ): Promise<T> {
     if (this.closed) throw this.closed;
     if (this.queued >= 16 || this.queuedBytes + bytes > CAPACITY) {
       const error = new Error('Portable history queue exceeds capacity.');
@@ -120,7 +142,7 @@ export class PortableVoiceHistory {
     const operation = this.tail.then(async () => {
       try {
         if (this.closed) throw this.closed;
-        await work((additionalBytes) => {
+        return await work((additionalBytes) => {
           if (this.queuedBytes + additionalBytes > CAPACITY)
             throw new Error('Portable history queue exceeds capacity.');
           retainedBytes += additionalBytes;
@@ -136,7 +158,10 @@ export class PortableVoiceHistory {
         this.queuedBytes -= retainedBytes;
       }
     });
-    this.tail = operation.catch(() => {});
+    this.tail = operation.then(
+      () => {},
+      () => {},
+    );
     return operation;
   }
 
@@ -160,6 +185,12 @@ export class PortableVoiceHistory {
           type !== 'conversation.item.delete')
       )
         return;
+    } else if (pending.edit.type === 'retrieve') {
+      if (
+        type !== 'conversation.item.retrieve' ||
+        item_id !== pending.edit.item_id
+      )
+        return;
     } else if (
       type !== 'conversation.item.create' ||
       item?.id !== pending.edit.item.id
@@ -181,6 +212,14 @@ export class PortableVoiceHistory {
   observe(event: Record<string, any>): void {
     const pending = this.pending;
     if (!pending) return;
+    if (pending.edit.type === 'retrieve') {
+      if (pending.frame && matchesReceipt(pending.frame, event)) {
+        if (event.type === 'error')
+          pending.reject(new Error('Provider rejected the history retrieval.'));
+        else pending.resolve(detachVoiceObservation(event.item));
+      }
+      return;
+    }
     if (pending.edit.type === 'delete') {
       if (
         pending.frame?.type === 'conversation.item.delete' &&
@@ -220,8 +259,8 @@ export class PortableVoiceHistory {
     this.pending?.reject(this.closed);
   }
 
-  private async apply(edit: Edit): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
+  private apply(edit: Edit): Promise<VoiceHistoryItem | undefined> {
+    return new Promise<VoiceHistoryItem | undefined>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let settled = false;
       let latestSend: Promise<void> | undefined;
@@ -259,9 +298,9 @@ export class PortableVoiceHistory {
             }, 10_000);
           }, rejectEdit);
         },
-        resolve: () => {
+        resolve: (item) => {
           finish();
-          resolve();
+          resolve(item);
         },
         reject: rejectEdit,
       };

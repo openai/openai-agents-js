@@ -2,7 +2,7 @@
 
 You can stay on v0; upgrading is optional. When you upgrade, prefer a direct native port of one complete workflow. Use classic temporarily when a concrete dependency blocks that port.
 
-This guide describes the native v1 API in `0.22.0-alpha.2`. Follow the [installation guide](installation.md) for a matching build, or [build the current source](building.md). The v0 example targets stable `@openai/agents@0.21.0`.
+This guide has been describing the native v1 API from `0.22.0-alpha.2` alongside explicitly labeled current-source additions. The [installation guide](installation.md) has been pairing release bundles with their matching guides, while [the source-build guide](building.md) has been supporting the current checkout and repository examples. The v0 example has been targeting stable `@openai/agents@0.21.0`.
 
 ## Install a matching build
 
@@ -86,7 +86,7 @@ Use native [state and storage](state.md) for native conversations. Restore check
 
 Run the application's existing checks and focused migration tests. Verify typed answers, tool arguments and results, permissions, provider failures, streaming completion, cancellation cleanup, and recovery where applicable. Compare outcomes before routing production traffic.
 
-A frontier coding agent can confidently perform the migration when it has the matching SDK source, the application, and concrete tests. Give it these instructions and acceptance criteria:
+The following coding-agent prompt has been specifying the migration scope and acceptance criteria. Supplying the matching SDK source, application code, and concrete tests has been giving the agent the evidence needed to check the port:
 
 ```text
 Port this v0 workflow directly to native v1. Read the matching SDK source and

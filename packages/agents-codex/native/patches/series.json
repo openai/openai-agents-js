@@ -1,5 +1,5 @@
 {
-  "result_tree": "d55f13340e1f1a85f6574c57326bdbf65eefb6b9",
+  "result_tree": "2f9860fcb3cd08fbc3be44a12f6bc70779b9f724",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -738,8 +738,28 @@
       "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
     },
     {
+      "path": "sdk-portable-realtime-tool-results.patch",
+      "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
+    },
+    {
+      "path": "sdk-portable-realtime-raw-client-events.patch",
+      "sha256": "88d34b6286fcc7d370aaff958dc624625acf920cf5bab5238e1de42bd4ce03b3"
+    },
+    {
+      "path": "sdk-portable-realtime-hosted-completion.patch",
+      "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
+    },
+    {
+      "path": "sdk-realtime-history-output-format.patch",
+      "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
+    },
+    {
+      "path": "sdk-reset-tool-choice-after-use.patch",
+      "sha256": "6252ab047f0858279bb1ecb400bd1afa39ff368ebf284b2f1720d917431f8e05"
+    },
+    {
       "path": "sdk-native-model-response-stream.patch",
-      "sha256": "043d40e59af9ce390c8cb8e3eedd9d5104b413a14e943cfa0c09241b8a57f533"
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
     }
   ]
 }

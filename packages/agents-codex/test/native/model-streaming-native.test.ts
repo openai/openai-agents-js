@@ -54,6 +54,151 @@ function complete(): never {
   throw new Error('Streaming request entered buffered complete');
 }
 
+it('rejects retained byte overflow before admitting tool effects and joins iterator cleanup', async () => {
+  const effects: string[] = [];
+  let requests = 0;
+  let closed = false;
+  const record = tool({
+    name: 'record',
+    parameters: z.object({ value: z.string() }),
+    execute({ value }) {
+      effects.push(value);
+      return 'recorded';
+    },
+  });
+  await using provider = new NativeProvider({
+    modelBackend: {
+      complete,
+      async *stream(): AsyncGenerator<JsonObject> {
+        requests++;
+        try {
+          yield call();
+          for (let index = 0; index < 5; index++)
+            yield {
+              type: 'response.output_text.delta',
+              delta: 'x'.repeat(2 * 1024 * 1024),
+            };
+          yield completed('oversized-suffix');
+        } finally {
+          closed = true;
+        }
+      },
+    },
+  });
+  await expect(
+    new Agent({
+      model: 'fixture-stream-model',
+      instructions: 'Use record.',
+      provider,
+      tools: [record],
+    }).run('Begin.'),
+  ).rejects.toThrow('Native model stream deferred output exceeds its limit');
+  expect(effects).toEqual([]);
+  expect(requests).toBe(1);
+  expect(closed).toBe(true);
+}, 20_000);
+
+it.each([false, true])(
+  'retains successful terminal observations with a tool suffix %s',
+  async (withTool) => {
+    let requests = 0;
+    const record = tool({
+      name: 'record',
+      parameters: z.object({ value: z.string() }),
+      execute: () => 'recorded',
+    });
+    await using provider = new NativeProvider({
+      modelBackend: {
+        complete,
+        async *stream(): AsyncGenerator<JsonObject> {
+          const attempt = ++requests;
+          if (withTool && attempt === 1) yield call();
+          else
+            for (const event of text(`observed-${attempt}`, 'finished'))
+              yield event;
+          yield {
+            type: 'response.completed',
+            response: {
+              id: `observed-response-${attempt}`,
+              status: 'completed',
+              usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+            },
+          };
+        },
+      },
+    });
+    await using session = await new Agent({
+      model: 'fixture-stream-model',
+      instructions: 'Answer.',
+      provider,
+      tools: withTool ? [record] : [],
+    }).session();
+    expect((await (await session.submit('Begin.')).wait()).finalOutput).toBe(
+      'finished',
+    );
+    const responses = [];
+    for await (const recorded of session.turns())
+      responses.push(...(recorded.responses ?? []));
+    expect(responses).toHaveLength(withTool ? 2 : 1);
+    for (const [index, response] of responses.entries())
+      expect(response).toMatchObject({
+        responseId: `observed-response-${index + 1}`,
+        status: 'completed',
+        usageSource: 'received',
+        usage: { inputTokens: 3, outputTokens: 2, totalTokens: 5 },
+      });
+  },
+);
+
+it('accepts many small text deltas after a deferred tool without admitting its effects early', async () => {
+  let requests = 0;
+  const effects: string[] = [];
+  const record = tool({
+    name: 'record',
+    parameters: z.object({ value: z.string() }),
+    execute({ value }) {
+      effects.push(value);
+      return 'recorded';
+    },
+  });
+  await using provider = new NativeProvider({
+    modelBackend: {
+      complete,
+      async *stream(): AsyncGenerator<JsonObject> {
+        if (++requests === 1) {
+          yield call();
+          const [added, , done] = text('long-text', 'x'.repeat(4096));
+          yield { ...added, output_index: 1 };
+          for (let index = 0; index < 4096; index++)
+            yield {
+              type: 'response.output_text.delta',
+              item_id: 'long-text',
+              output_index: 1,
+              content_index: 0,
+              delta: 'x',
+            };
+          yield { ...done, output_index: 1 };
+          expect(effects).toEqual([]);
+          yield completed('long-text-response');
+          expect(effects).toEqual([]);
+        } else {
+          for (const event of text('after-long-text', 'finished')) yield event;
+          yield completed('after-long-text');
+        }
+      },
+    },
+  });
+  const result = await new Agent({
+    model: 'fixture-stream-model',
+    instructions: 'Use record.',
+    tools: [record],
+    provider,
+  }).run('Begin.');
+  expect(result.finalOutput).toBe('finished');
+  expect(effects).toEqual(['once']);
+  expect(requests).toBe(2);
+}, 20_000);
+
 it('delivers a native text delta before the application stream finishes', async () => {
   const release = Promise.withResolvers<void>();
   await using provider = new NativeProvider({
