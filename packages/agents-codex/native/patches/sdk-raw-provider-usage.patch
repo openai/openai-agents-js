@@ -1,3 +1,20 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 24102faafa998983a47ba85d9e32dab12f7082e1..ba2d7affe925616810edb6009d397bfbfc426e17 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -3086,8 +3086,10 @@ where
+                     }
+                 }
+                 Ok(mut event) => {
+-                    if let ResponseEvent::ResponseObserved(observation) = &mut event {
+-                        observation.upstream_request_id = upstream_request_id.map(str::to_owned);
++                    if let ResponseEvent::ResponseObserved(observation) = &mut event
++                        && let Some(upstream_request_id) = upstream_request_id
++                    {
++                        observation.upstream_request_id = Some(upstream_request_id.to_owned());
+                     }
+                     if let ResponseEvent::ResponseFact(received) = &mut event {
+                         received.upstream_request_id = upstream_request_id.map(str::to_owned);
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
 index 2adca4ea51dde8bb71c874d21fa6cfc7a201926e..c226bc1ee8005b3c5ae7cc5b00535fd2def7a4f0 100644
 --- a/codex-rs/core/src/codex_thread.rs
@@ -195,10 +212,10 @@ index f69e4a3bbd72e9bd7c9234ca1ecd16cb6b1ce975..c163922e3eb2b92237f835ef9b33aa6b
  pub(crate) mod startup_prewarm;
 diff --git a/codex-rs/core/src/session/sdk_raw_usage.rs b/codex-rs/core/src/session/sdk_raw_usage.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..5146ce251c24e5501f15c3794ad7474e959b871f
+index 0000000000000000000000000000000000000000..8250370990b08ae00c3155087bb8048bd10b8af0
 --- /dev/null
 +++ b/codex-rs/core/src/session/sdk_raw_usage.rs
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,198 @@
 +use crate::session::turn_context::TurnContext;
 +use std::io;
 +use std::io::Write;
@@ -271,6 +288,13 @@ index 0000000000000000000000000000000000000000..5146ce251c24e5501f15c3794ad7474e
 +pub struct SdkRawUsageLink(Weak<Mutex<Capture>>);
 +
 +impl SdkRawUsageLink {
++    /// Reports whether this existing invocation still accepts capture.
++    pub fn is_active(&self) -> bool {
++        self.0.upgrade().is_some_and(|capture| {
++            !capture.lock().unwrap_or_else(|error| error.into_inner()).finished
++        })
++    }
++
 +    /// Attach this invocation's capture without extending its lifetime.
 +    pub fn attach(&self, store: &codex_extension_api::ExtensionData) {
 +        if self.0.strong_count() == 0 {

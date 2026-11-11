@@ -1,5 +1,5 @@
 {
-  "result_tree": "e305443a8d9d66c89f00564b9d3f4b003ba904f1",
+  "result_tree": "5f2fb44c39637757635d6af8a13414216eaf9fc5",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -774,8 +774,12 @@
       "sha256": "1d030d1488ae51cbbb7c75c6814a8a3eedb7454573480e32d44ade99a4d31afc"
     },
     {
+      "path": "sdk-native-model-response-stream.patch",
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
       "path": "sdk-raw-provider-usage.patch",
-      "sha256": "c014fc224c3426bc089bf7a29ba633eb6cfb75218138b1b5e47a918512ef5751"
+      "sha256": "e73ef7c3553999d2538f22fa7dd59e3d7bbebe8372fa4f471292fe490d000654"
     }
   ]
 }
