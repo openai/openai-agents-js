@@ -223,6 +223,14 @@ impl Stream for GuardedStream {
                 | ResponseItem::ComputerCall { call_id, .. }
                 | ResponseItem::ComputerCallOutput { call_id, .. } => Some(call_id.as_str()),
                 ResponseItem::FunctionCallOutput { call_id, .. } => call_id.as_deref(),
+                ResponseItem::ShellCall {
+                    provider_fields, ..
+                }
+                | ResponseItem::ShellCallOutput {
+                    provider_fields, ..
+                } => provider_fields
+                    .get("call_id")
+                    .and_then(serde_json::Value::as_str),
                 _ => None,
             };
             if id.is_some_and(|id| this.original_ids.contains(id)) {
@@ -333,7 +341,7 @@ mod tests {
         assert!(guarded.next().await.is_none());
     }
     #[tokio::test]
-    async fn recovery_fences_original_computer_calls_and_outputs_before_forwarding() {
+    async fn recovery_fences_original_computer_and_shell_calls_and_outputs_before_forwarding() {
         let computer: ResponseItem = serde_json::from_value(json!({
             "type":"computer_call", "call_id":"original", "actions":[{"type":"click","x":1,"y":2}]
         }))
@@ -344,7 +352,15 @@ mod tests {
             "acknowledged_safety_checks":[]
         }))
         .unwrap();
-        for item in [computer, output] {
+        let shell: ResponseItem = serde_json::from_value(json!({
+            "type":"shell_call", "call_id":"original", "action":{"commands":["true"]}
+        }))
+        .unwrap();
+        let shell_output: ResponseItem = serde_json::from_value(json!({
+            "type":"shell_call_output", "call_id":"original", "output":[]
+        }))
+        .unwrap();
+        for item in [computer, output, shell, shell_output] {
             for added in [true, false] {
                 let event = if added {
                     ResponseEvent::OutputItemAdded(item.clone())

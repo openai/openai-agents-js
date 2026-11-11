@@ -9,6 +9,7 @@ import {
   captureTools,
   invokeFunctionTool,
   registerToolSessionOwner,
+  toolApplicationData,
 } from '../../src/runtime/tools';
 
 function context(owner: object, signal = new AbortController().signal) {
@@ -79,6 +80,76 @@ const invoke = (
 ) => invokeFunctionTool(tool, call(fields), context(owner, signal), () => {});
 
 describe('native computer callback adapter', () => {
+  it.each([undefined, null])(
+    'allows an extractor to omit application data with %s',
+    async (data) => {
+      const { device } = driver(),
+        owner = {};
+      const output = await invoke(
+        computerTool({ computer: device, extractApplicationData: () => data }),
+        owner,
+      );
+      expect(toolApplicationData(output)).toBeUndefined();
+      expect(
+        JSON.parse((output.contentItems[0] as { text: string }).text).output
+          .image_url,
+      ).toBe('data:image/png;base64,aA==');
+      await closeComputerResources(owner);
+    },
+  );
+  it('rejects a non-callable extractor before acquiring a computer', () => {
+    const create = vi.fn(() => driver().device);
+    expect(() =>
+      computerTool({
+        computer: { create },
+        extractApplicationData: 1 as never,
+      }),
+    ).toThrow('extractApplicationData must be callable');
+    expect(create).not.toHaveBeenCalled();
+  });
+  it('rejects non-object application data and disposes the acquired computer', async () => {
+    const { device } = driver(),
+      owner = {},
+      dispose = vi.fn();
+    const tool = computerTool({
+      computer: { create: () => device, dispose },
+      extractApplicationData: () => [] as never,
+    });
+    await expect(invoke(tool, owner)).rejects.toThrow();
+    await closeComputerResources(owner);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+  it('joins a cancelled extractor and rejects its late application data', async () => {
+    const { device } = driver(),
+      owner = {},
+      controller = new AbortController();
+    const entered = Promise.withResolvers<void>(),
+      release = Promise.withResolvers<void>();
+    const dispose = vi.fn();
+    let settled = false;
+    const tool = computerTool({
+      computer: { create: () => device, dispose },
+      async extractApplicationData(context) {
+        expect(context.signal).toBe(controller.signal);
+        entered.resolve();
+        await release.promise;
+        return { late: 'private' };
+      },
+    });
+    const result = invoke(tool, owner, {}, controller.signal).finally(() => {
+      settled = true;
+    });
+    const rejected = expect(result).rejects.toThrow('extractor stop');
+    await entered.promise;
+    controller.abort(new Error('extractor stop'));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(dispose).not.toHaveBeenCalled();
+    release.resolve();
+    await rejected;
+    await closeComputerResources(owner);
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
   it('publishes dedicated GA and preview declarations', () => {
     const { device } = driver();
     expect(

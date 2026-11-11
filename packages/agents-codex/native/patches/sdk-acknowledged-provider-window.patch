@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index fb088942..88828c19 100644
+index afc2ea3..934292f 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -301,6 +301,7 @@ pub struct ModelClient {
@@ -72,7 +72,7 @@ index fb088942..88828c19 100644
          let reasoning = if prompt_owns_model {
              Reasoning {
                  effort,
-@@ -2110,7 +2128,7 @@ impl ModelClientSession {
+@@ -2132,7 +2150,7 @@ impl ModelClientSession {
          )
      )]
      async fn stream_responses_api(
@@ -81,7 +81,7 @@ index fb088942..88828c19 100644
          prompt: &Prompt,
          model_info: &ModelInfo,
          session_telemetry: &SessionTelemetry,
-@@ -2168,8 +2186,19 @@ impl ModelClientSession {
+@@ -2190,8 +2208,19 @@ impl ModelClientSession {
                  .client
                  .request_contributors
                  .iter()
@@ -103,7 +103,7 @@ index fb088942..88828c19 100644
              let chatgpt_plan = self.client.uses_chatgpt_plan();
              if chatgpt_plan && direct.is_none() {
                  return Err(CodexErr::Fatal(
-@@ -2283,6 +2312,9 @@ impl ModelClientSession {
+@@ -2305,6 +2334,9 @@ impl ModelClientSession {
              )?;
              self.client
                  .prepare_response_items_for_request(&mut request.input);
@@ -113,7 +113,7 @@ index fb088942..88828c19 100644
              if crate::guardian::is_basic_session_source(&self.client.state.session_source) {
                  crate::guardian::observe_guardian_request(session_telemetry, &request);
              }
-@@ -2339,6 +2371,23 @@ impl ModelClientSession {
+@@ -2361,6 +2393,23 @@ impl ModelClientSession {
                      },
                  )
              };
@@ -137,7 +137,7 @@ index fb088942..88828c19 100644
              let produced = crate::model_request::produce_response(&interceptors, &request)
                  .await
                  .map_err(CodexErr::Fatal)?;
-@@ -2374,7 +2423,7 @@ impl ModelClientSession {
+@@ -2396,7 +2445,7 @@ impl ModelClientSession {
  
              match stream_result {
                  Ok((request_id, interrupt, events, producer_task, producer_stop)) => {
@@ -146,7 +146,7 @@ index fb088942..88828c19 100644
                          request_id,
                          crate::model_request::intercept_stream(events, interceptors),
                          request_session_telemetry,
-@@ -2390,6 +2439,8 @@ impl ModelClientSession {
+@@ -2412,6 +2461,8 @@ impl ModelClientSession {
                      stream.producer_task = producer_task;
                      stream.producer_stop = producer_stop;
                      stream.request_observation = request_observation;
@@ -155,7 +155,7 @@ index fb088942..88828c19 100644
                      return Ok(stream);
                  }
                  Err(ApiError::Transport(unauthorized_transport))
-@@ -2929,6 +2980,7 @@ impl ModelClientSession {
+@@ -2951,6 +3002,7 @@ impl ModelClientSession {
              ));
          }
          let thread_id = self.client.state.thread_id.to_string();
@@ -163,7 +163,7 @@ index fb088942..88828c19 100644
          let mut transformed = None;
          for contributor in &self.client.request_contributors {
              if !contributor.transforms_context(&thread_id) {
-@@ -2971,6 +3023,9 @@ impl ModelClientSession {
+@@ -2993,6 +3045,9 @@ impl ModelClientSession {
          {
              recorder.invalidate_wire_inventory_loss(&prompt.input, &projected.input);
          }
@@ -173,7 +173,7 @@ index fb088942..88828c19 100644
          let prompt = transformed.as_ref().unwrap_or(prompt);
          let wire_api = self.client.state.provider.info().wire_api;
          match wire_api {
-@@ -3001,22 +3056,77 @@ impl ModelClientSession {
+@@ -3023,22 +3078,77 @@ impl ModelClientSession {
                      }
                  }
  
@@ -263,7 +263,7 @@ index fb088942..88828c19 100644
      /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
      ///
      /// This is used after exhausting the provider retry budget, to force subsequent requests onto
-@@ -3784,6 +3894,71 @@ impl WebsocketTelemetry for ApiTelemetry {
+@@ -3808,6 +3918,71 @@ impl WebsocketTelemetry for ApiTelemetry {
      }
  }
  
@@ -336,7 +336,7 @@ index fb088942..88828c19 100644
  #[path = "client_tests.rs"]
  mod tests;
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
-index 494c4d84..318a8b6e 100644
+index 494c4d8..318a8b6 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
 @@ -2913,15 +2913,14 @@ mod direct_model_http_transport {
@@ -401,10 +401,10 @@ index 494c4d84..318a8b6e 100644
 +    assert!(!receipt.matches_provider(&client, &same_scope));
 +}
 diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
-index 80e5ddf8..810cbce8 100644
+index 64da3de..6cad4db 100644
 --- a/codex-rs/core/src/compact.rs
 +++ b/codex-rs/core/src/compact.rs
-@@ -373,6 +373,9 @@ pub(crate) async fn run_custom_post_turn_compaction(
+@@ -375,6 +375,9 @@ pub(crate) async fn run_custom_post_turn_compaction(
          automatic: true,
          optional: true,
          candidate_indexes: &candidate_indexes,
@@ -414,7 +414,7 @@ index 80e5ddf8..810cbce8 100644
          items: &items,
      };
      for contributor in contributors {
-@@ -474,6 +477,9 @@ async fn try_custom_compaction_with_history(
+@@ -476,6 +479,9 @@ async fn try_custom_compaction_with_history(
                  automatic: matches!(metadata.trigger(), CompactionTrigger::Auto),
                  optional: matches!(metadata.phase(), CompactionPhase::PostTurn),
                  candidate_indexes: &indexes,
@@ -425,7 +425,7 @@ index 80e5ddf8..810cbce8 100644
              };
              &current_input
 diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
-index b3654ddc..cc53553a 100644
+index b3654dd..cc53553 100644
 --- a/codex-rs/core/src/context_manager/history.rs
 +++ b/codex-rs/core/src/context_manager/history.rs
 @@ -74,6 +74,7 @@ use std::ops::Deref;
@@ -464,7 +464,7 @@ index b3654ddc..cc53553a 100644
          Arc::new(SharedConversationHistory {
              items: Arc::clone(&self.items),
 diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
-index f146f130..7d0f84c2 100644
+index f146f13..7d0f84c 100644
 --- a/codex-rs/core/src/context_manager/history_tests.rs
 +++ b/codex-rs/core/src/context_manager/history_tests.rs
 @@ -3714,3 +3714,18 @@ fn provider_compaction_accounting_ignores_old_files_and_reasoning() {
@@ -487,7 +487,7 @@ index f146f130..7d0f84c2 100644
 +    assert!(!ContextManager::new().matches_window_receipt(&initial));
 +}
 diff --git a/codex-rs/core/src/context_manager/mod.rs b/codex-rs/core/src/context_manager/mod.rs
-index ccce3d01..3106756a 100644
+index ccce3d0..3106756 100644
 --- a/codex-rs/core/src/context_manager/mod.rs
 +++ b/codex-rs/core/src/context_manager/mod.rs
 @@ -4,6 +4,7 @@ pub(crate) mod updates;
@@ -499,7 +499,7 @@ index ccce3d01..3106756a 100644
  pub(crate) use history::estimate_item_token_count;
  pub(crate) use history::is_provider_compaction_boundary;
 diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
-index 1a44cdb3..9976e4d2 100644
+index 1a44cdb..9976e4d 100644
 --- a/codex-rs/core/src/model_request.rs
 +++ b/codex-rs/core/src/model_request.rs
 @@ -65,6 +65,10 @@ struct BoundInterceptor {
@@ -549,10 +549,10 @@ index 1a44cdb3..9976e4d2 100644
 +    assert!(!unknown.preserves_provider_message_window());
 +}
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index dba9d9b9..641fdc58 100644
+index 34a55a2..00fd7f3 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -524,6 +524,16 @@ pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
+@@ -525,6 +525,16 @@ pub(crate) const SUBMISSION_CHANNEL_CAPACITY: usize = 512;
  const CYBER_VERIFY_URL: &str = "https://chatgpt.com/cyber";
  const CYBER_SAFETY_URL: &str = "https://developers.openai.com/codex/concepts/cyber-safety";
  
@@ -569,7 +569,7 @@ index dba9d9b9..641fdc58 100644
  impl Session {
      /// Spawn and initialize a new session.
      /// Hide the concrete startup future from callers while keeping initialization lazy.
-@@ -1580,6 +1590,40 @@ impl Session {
+@@ -1581,6 +1591,40 @@ impl Session {
          history.estimate_token_count(turn_context)
      }
  
@@ -611,10 +611,10 @@ index dba9d9b9..641fdc58 100644
          let state = self.state.lock().await;
          BaseInstructions {
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 47da6b9d..f5a6ce47 100644
+index 9d8eae4..8122fd5 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -4991,6 +4991,24 @@ async fn try_run_sampling_request(
+@@ -5022,6 +5022,24 @@ async fn try_run_sampling_request(
          }
      }
  
@@ -640,7 +640,7 @@ index 47da6b9d..f5a6ce47 100644
          result.settled_tools = settled_tools;
          result.accepted_handoff = tool_runtime.accepted_handoff();
 diff --git a/codex-rs/core/src/state/session.rs b/codex-rs/core/src/state/session.rs
-index c69309e3..6d5d88eb 100644
+index c69309e..6d5d88e 100644
 --- a/codex-rs/core/src/state/session.rs
 +++ b/codex-rs/core/src/state/session.rs
 @@ -70,6 +70,7 @@ pub(crate) struct SessionState {
@@ -660,7 +660,7 @@ index c69309e3..6d5d88eb 100644
              sdk_originals_replay_policy: None,
              history_reset: CancellationToken::new(),
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index e6b17102..d0e7154e 100644
+index e6b1710..d0e7154 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
 @@ -162,6 +162,7 @@ pub use model_request::ModelResponseError;
@@ -672,7 +672,7 @@ index e6b17102..d0e7154e 100644
  pub use model_request::ToolsOnlyCallInput;
  pub use model_request::ToolsOnlyWorkCancellation;
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
-index bdaa894f..6803777c 100644
+index bdaa894..6803777 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
 @@ -143,6 +143,14 @@ pub struct ModelContextInput<'a> {

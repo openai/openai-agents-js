@@ -62,7 +62,7 @@ async fn turn(thread: &NativeThread, text: &str) -> Result<(), String> {
                 let accepted = native(thread._respond_python_tool(json!({
                     "request": event["msg"],
                     "response":{"contentItems":[{"type":"inputText","text":"fixture receipt"}],"success":true}
-                }).to_string())).await?;
+                }).to_string(), None)).await?;
                 if !accepted {
                     return Err("fixture reply was not accepted".into());
                 }

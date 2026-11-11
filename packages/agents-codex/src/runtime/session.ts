@@ -334,6 +334,7 @@ import {
   readChecklist,
   type ChecklistState,
   type SessionState,
+  type ApplicationToolOutput,
 } from './state';
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
@@ -347,6 +348,7 @@ import {
   supportsInputErrorRecovery,
   ToolOutput,
   toolOutputSchema,
+  toolApplicationData,
   captureTools,
   isDirectFunctionTool,
   toolIdentity,
@@ -388,6 +390,12 @@ type ToolIdentity = {
   namespace: string | null;
   family: 'function' | 'mcp';
 };
+
+const manualCompletionSchema = z.object({
+  status: z.literal('started'),
+  turn_id: z.string(),
+  canonical_call_ids: z.array(z.string()),
+});
 
 const submissionSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('started'), turn_id: z.string() }),
@@ -497,6 +505,7 @@ export type OneShotOptions = {
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
   beforeStep?: OperationOptions<any>['beforeStep'];
+  returnRawUsage?: boolean;
   /** Private single-use owned-factory grant; never interpreted by truthiness. */
   privateEngineGrant?: object;
 };
@@ -639,6 +648,24 @@ const sessionStopSchema = z
   })
   .strict();
 
+/** Original usage from one accepted provider response. */
+export interface RawProviderUsage {
+  readonly responseId: string;
+  readonly upstreamRequestId: string | null;
+  readonly usage: Readonly<Record<string, JsonValue>>;
+}
+
+const rawProviderUsageSchema = z.array(
+  z.object({
+    response_id: z.string(),
+    upstream_request_id: z.string().nullable(),
+    // The binding has already decoded JSON. Retain the original object keys.
+    usage: z.custom<Record<string, JsonValue>>(
+      (value) =>
+        value !== null && typeof value === 'object' && !Array.isArray(value),
+    ),
+  }),
+);
 /** An accepted assistant or tool item and its producing Agent. */
 export interface ProducedItem {
   readonly item: HistoryItem;
@@ -662,9 +689,12 @@ export interface Completed<OutputT = string> {
   readonly state?: SessionState;
   /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
   readonly history?: CanonicalHistorySnapshot['items'];
+  readonly rawUsage?: readonly RawProviderUsage[];
   readonly items?: readonly ProducedItem[];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
+  /** Detached application-only records from this logical run. */
+  readonly applicationToolOutputs?: readonly ApplicationToolOutput[];
 }
 
 /** Wait for the captured turn's completion or its current manual request batch. */
@@ -747,6 +777,7 @@ export interface TurnCompletion<T> {
 export interface TurnRequestWait<T, NativeId extends string | null = string> {
   rootResultReady?(): boolean;
   guardrailResults?(): readonly GuardrailRecord[];
+  applicationToolOutputs?(): readonly ApplicationToolOutput[];
   runUsage?(): RunUsage;
   notify(): void;
   rateLimits(): ApiRateLimits;
@@ -833,6 +864,11 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
 
   get guardrailResults(): readonly GuardrailRecord[] {
     return Object.freeze([...(this.requests?.guardrailResults?.() ?? [])]);
+  }
+
+  /** Passive accepted tool data, independent of observation retention. */
+  get applicationToolOutputs(): readonly ApplicationToolOutput[] {
+    return this.requests?.applicationToolOutputs?.() ?? Object.freeze([]);
   }
 
   /** Detached measured totals; root snapshots include exactly attributed native children. */
@@ -1325,6 +1361,32 @@ function realtimeToolSelection(
 }
 
 export class Session<OutputT = string, Context = unknown> {
+  #collectingRawUsage = false;
+
+  /** @internal */
+  _startRawUsage(): void {
+    if (this.#collectingRawUsage) return;
+    this.#native._start_raw_usage();
+    this.#collectingRawUsage = true;
+  }
+
+  /** @internal */
+  _takeRawUsage(turnId: string): readonly RawProviderUsage[] {
+    if (!this.#collectingRawUsage)
+      throw new NativeError('Provider usage capture was not started');
+    this.#collectingRawUsage = false;
+    return Object.freeze(
+      decode(rawProviderUsageSchema, this.#native._take_raw_usage(turnId)).map(
+        (record) =>
+          Object.freeze({
+            responseId: record.response_id,
+            upstreamRequestId: record.upstream_request_id,
+            usage: Object.freeze(record.usage),
+          }),
+      ),
+    );
+  }
+
   private profileRuntimes: ReadonlyMap<string, AgentProfileRuntime> = new Map();
   private readonly voiceProfileGraphs = new Map<string, CapturedAgentGraph>();
   private voiceGraphGeneration?: string;
@@ -2403,13 +2465,22 @@ export class Session<OutputT = string, Context = unknown> {
         readonly json?: JsonValue;
         waiterConsumed?: true;
       };
-      observations: Map<string, { identity: ToolIdentity; status: ToolStatus }>;
+      observations: Map<
+        string,
+        {
+          identity: ToolIdentity;
+          status: ToolStatus;
+          applicationData?: JsonObject;
+        }
+      >;
     }
   >();
   private readonly terminalCalls = new WeakMap<NativeTurn, ToolCallInfo>();
   private readonly childOutput = prepareOutput<string>(undefined);
   private readonly repairTurns: RepairTurnWire[];
   private readonly repairItems: RepairItemWire[];
+  private readonly applicationOutputs: ApplicationToolOutput[];
+  private readonly pendingApplicationOutputs: ApplicationToolOutput[];
   private repairReceiptsIncomplete = false;
   private readonly completedResults = new WeakMap<
     NativeRunResult,
@@ -2627,6 +2698,13 @@ export class Session<OutputT = string, Context = unknown> {
       (item) => ({ ...item, parentSessionId: native.id }),
     );
 
+    this.applicationOutputs = structuredClone(
+      receipts?.application_tool_outputs ?? [],
+    );
+    this.pendingApplicationOutputs = structuredClone(
+      receipts?.pending_application_tool_outputs ?? [],
+    );
+
     this.defaultTools = checkpointDefaultTools(
       readCheckpointSelections(restored).default_tools,
       catalog,
@@ -2784,29 +2862,17 @@ export class Session<OutputT = string, Context = unknown> {
           throw new NativeError('Native model settings were not acknowledged');
       }
       if (
-        (this.restored ||
-          this.threadOptions._sdk_resume_thread_id !== undefined) &&
-        !this.options.agentGraph
+        this.restored ||
+        this.threadOptions._sdk_resume_thread_id !== undefined
       ) {
-        const settings = this.options.initialModelSettings;
-        // Native merges retry patches field by field. Clear the checkpoint's
-        // retry settings before applying the current declaration.
-        const patches = [
-          modelOverrides(undefined, {
-            attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
-            retry: null,
-          }),
-        ];
-        if (settings?.retry != null)
-          patches.push(modelOverrides(undefined, { retry: settings.retry }));
-        for (const patch of patches) {
-          if (
-            (await this.#native._update_model_settings(encode(patch))) !== true
-          )
-            throw new NativeError(
-              'Restored retry declaration was not acknowledged',
-            );
-        }
+        const graph = this.options.agentGraph;
+        const source = graph?.restoredSource;
+        const settings =
+          source && source.profile_id !== graph!.rootId
+            ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+                .modelSettings
+            : this.options.initialModelSettings;
+        await this.restoreModelControls(settings);
       }
       this.configureNative(this.#native);
       if (
@@ -2938,6 +3004,21 @@ export class Session<OutputT = string, Context = unknown> {
           await this.commitProfile(allocated.active, true);
         } else await this.commitProfile(allocated.active, false);
       }
+      if (
+        this.options.agentGraph &&
+        (this.restored ||
+          this.threadOptions._sdk_resume_thread_id !== undefined) &&
+        (!this.restored || !isManualSessionState(this.restored))
+      ) {
+        const source = this.profileCurrent!;
+        const settings =
+          source.profile_id === this.options.agentGraph.rootId
+            ? this.options.initialModelSettings
+            : this.profileRuntimes.get(source.profile_id)!.profile.declaration
+                .modelSettings;
+        await this.restoreModelControls(settings);
+        await this.acknowledgeProfilePublication();
+      }
       if (startup.cause) throw startup.cause.value;
       this.starting = undefined;
     } catch (error) {
@@ -2963,6 +3044,28 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.starting) this.failStartup(error);
       else this.readerFailed(error);
     });
+  }
+
+  private async restoreModelControls(
+    settings: ModelSettings | undefined,
+  ): Promise<void> {
+    // Native merges retry patches field by field. Clear the checkpoint's
+    // retry settings before applying the current declaration.
+    const patches = [
+      modelOverrides(undefined, {
+        invocationTimeoutMs: settings?.invocationTimeoutMs ?? null,
+        attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
+        retry: null,
+      }),
+    ];
+    if (settings?.retry != null)
+      patches.push(modelOverrides(undefined, { retry: settings.retry }));
+    for (const patch of patches) {
+      if ((await this.#native._update_model_settings(encode(patch))) !== true)
+        throw new NativeError(
+          'Restored retry declaration was not acknowledged',
+        );
+    }
   }
 
   private configureNative(native: NativeThread): void {
@@ -4039,6 +4142,7 @@ export class Session<OutputT = string, Context = unknown> {
         {
           guardrailResults: () =>
             [...this.rootSteps(run)].flatMap((step) => step.guardrailResults),
+          applicationToolOutputs: () => this.applicationOutputSnapshot(run),
           rootResultReady: () => scope.phase() === 'ended',
           runUsage: () => this.runUsage(run),
           notify: () => this.observations.notify(),
@@ -4081,6 +4185,9 @@ export class Session<OutputT = string, Context = unknown> {
       guardrailResults: Object.freeze(
         [...this.rootSteps(root)].flatMap((step) => step.guardrailResults),
       ),
+      ...(this.applicationOutputSnapshot(root).length
+        ? { applicationToolOutputs: this.applicationOutputSnapshot(root) }
+        : {}),
       runUsage: this.runUsage(root),
       repairAttempts: Object.freeze(
         this.repairTurns
@@ -5861,6 +5968,8 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         stoppedBeforeAdmission = !check(true);
         if (!stoppedBeforeAdmission) {
+          if (this.#collectingRawUsage)
+            correction.#native._attach_raw_usage(this.#native);
           // startTurn checks the live Session before invoking native admission.
           repair.run = correction.startTurn(
             JSON.stringify({
@@ -6755,6 +6864,7 @@ export class Session<OutputT = string, Context = unknown> {
             event.subagent_instance_id,
           );
     if (!owner) return;
+    const submissionId = `child:${id}:${incarnation}:${turnId}`;
     // An acknowledged future turn can exist before an older start is read.
     // Only starts from this ordered reader establish prior-turn ownership.
     if (startsTurn) {
@@ -6763,8 +6873,17 @@ export class Session<OutputT = string, Context = unknown> {
         owner.rootTurnId === undefined &&
         typeof msg.root_turn_id === 'string' &&
         msg.root_turn_id
-      )
-        owner.rootTurnId = msg.root_turn_id;
+      ) {
+        const rootTurnId = msg.root_turn_id;
+        owner.rootTurnId = rootTurnId;
+        for (const output of this.applicationOutputs) {
+          if (
+            output.submissionId === submissionId &&
+            output.rootTurnId === undefined
+          )
+            output.rootTurnId = rootTurnId;
+        }
+      }
       this.observations.notify();
     }
     this.attachChildUsage(owner);
@@ -6794,7 +6913,6 @@ export class Session<OutputT = string, Context = unknown> {
           : undefined;
       addModelReportedUsage(owner, usage ?? {}, 1, usage ? 0 : 1);
     }
-    const submissionId = `child:${id}:${incarnation}:${turnId}`;
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
     if (
@@ -7585,6 +7703,7 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Terminal tool completion has no matching accepted proposal',
             );
+          this.promotePendingApplicationOutputs(run, fact.call_id);
           this.decodedOutputs.set(run, proposal.value);
           this.terminalCalls.set(
             run,
@@ -7668,6 +7787,7 @@ export class Session<OutputT = string, Context = unknown> {
     owner: NativeTurn | ChildCallbackOwner,
     identity: ToolIdentity,
     status: ToolStatus,
+    applicationData?: JsonObject,
   ): void {
     const state = this.terminalState(owner);
     if (state.observations.has(identity.callId))
@@ -7675,7 +7795,34 @@ export class Session<OutputT = string, Context = unknown> {
     state.observations.set(identity.callId, {
       identity: { ...identity },
       status,
+      applicationData,
     });
+  }
+
+  private promotePendingApplicationOutputs(
+    owner: NativeTurn | ChildCallbackOwner,
+    callId: string,
+  ): void {
+    const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
+    for (
+      let index = this.pendingApplicationOutputs.length - 1;
+      index >= 0;
+      index--
+    ) {
+      const pending = this.pendingApplicationOutputs[index]!;
+      if (pending.turnId !== turnId || pending.callId !== callId) continue;
+      this.pendingApplicationOutputs.splice(index, 1);
+      this.recordApplicationOutput(
+        owner,
+        {
+          callId: pending.callId,
+          toolName: pending.name,
+          namespace: pending.namespace,
+          family: 'function',
+        },
+        pending.applicationData,
+      );
+    }
   }
 
   private releaseTerminalObservation(
@@ -7690,6 +7837,7 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     const state = this.terminalProposals.get(owner);
+    this.promotePendingApplicationOutputs(owner, item.call_id);
     const observation = state?.observations.get(item.call_id);
     if (!observation) return;
     state!.observations.delete(item.call_id);
@@ -7730,14 +7878,38 @@ export class Session<OutputT = string, Context = unknown> {
       'tool_finished',
       observation.status,
       output.success
-        ? new ToolOutput(output.data.contentItems, output.data.success)
+        ? new ToolOutput(
+            output.data.contentItems,
+            output.data.success,
+            observation.applicationData,
+          )
         : null,
     );
+  }
+
+  private discardPendingApplicationOutputs(
+    owner: NativeTurn | ChildCallbackOwner,
+    callId?: string,
+  ): void {
+    const turnId = owner instanceof NativeTurn ? owner.id : owner.turnId;
+    for (
+      let index = this.pendingApplicationOutputs.length - 1;
+      index >= 0;
+      index--
+    ) {
+      const pending = this.pendingApplicationOutputs[index]!;
+      if (
+        pending.turnId === turnId &&
+        (callId === undefined || pending.callId === callId)
+      )
+        this.pendingApplicationOutputs.splice(index, 1);
+    }
   }
 
   private flushTerminalObservations(
     owner: NativeTurn | ChildCallbackOwner,
   ): void {
+    this.discardPendingApplicationOutputs(owner);
     const state = this.terminalProposals.get(owner);
     if (!state) return;
     const pending = [...state.observations.values()];
@@ -7837,6 +8009,8 @@ export class Session<OutputT = string, Context = unknown> {
         let capturedCatalog: ToolCatalog | undefined;
         const reject = () => {
           if (replied) return;
+          if (typeof msg.call_id === 'string')
+            this.discardPendingApplicationOutputs(owner, msg.call_id);
           replied = true;
           try {
             native._reply_tool_completion(
@@ -8579,7 +8753,10 @@ export class Session<OutputT = string, Context = unknown> {
                 } else {
                   const returned = await backend.complete(request);
                   check();
-                  const data = captureModelResponse(returned);
+                  const data = captureModelResponse(
+                    returned,
+                    msg.capture_raw_usage === true,
+                  );
                   check();
                   reply({ data });
                 }
@@ -9751,6 +9928,63 @@ export class Session<OutputT = string, Context = unknown> {
           `A tool callback cannot ${operation} its own session`,
         );
   }
+  private applicationOutputSnapshot(
+    owner?: NativeTurn | ChildCallbackOwner,
+  ): readonly ApplicationToolOutput[] {
+    const ids =
+      owner instanceof NativeTurn
+        ? new Set([...this.rootSteps(owner)].map((step) => step.id))
+        : undefined;
+    const child =
+      owner && !(owner instanceof NativeTurn)
+        ? `child:${owner.childId}:${owner.incarnation}:${owner.turnId}`
+        : undefined;
+    return Object.freeze(
+      this.applicationOutputs
+        .filter(
+          (row) =>
+            !owner ||
+            (ids
+              ? ids.has(row.turnId) ||
+                (row.rootTurnId !== undefined && ids.has(row.rootTurnId))
+              : row.submissionId === child),
+        )
+        .map((row) => Object.freeze(structuredClone(row))),
+    );
+  }
+
+  private recordApplicationOutput(
+    owner: NativeTurn | ChildCallbackOwner,
+    identity: ToolIdentity,
+    applicationData?: JsonObject,
+  ): void {
+    if (applicationData === undefined) return;
+    this.applicationOutputs.push(
+      this.applicationOutputRecord(owner, identity, applicationData),
+    );
+  }
+
+  private applicationOutputRecord(
+    owner: NativeTurn | ChildCallbackOwner,
+    identity: ToolIdentity,
+    applicationData: JsonObject,
+  ): ApplicationToolOutput {
+    return {
+      turnId: owner instanceof NativeTurn ? owner.id! : owner.turnId,
+      submissionId:
+        owner instanceof NativeTurn
+          ? this.submissionIds.get(owner)!
+          : `child:${owner.childId}:${owner.incarnation}:${owner.turnId}`,
+      callId: identity.callId,
+      name: identity.toolName,
+      namespace: identity.namespace,
+      ...(!(owner instanceof NativeTurn) && owner.rootTurnId !== undefined
+        ? { rootTurnId: owner.rootTurnId }
+        : {}),
+      applicationData: losslessJsonObjectSchema.parse(applicationData),
+    };
+  }
+
   private observeToolStart(
     owner: NativeTurn | ChildCallbackOwner,
     identity: ToolIdentity,
@@ -10427,19 +10661,36 @@ export class Session<OutputT = string, Context = unknown> {
       this.notifyManualProgress();
       const run = call.run;
       const operation = (async () => {
+        const data = toolApplicationData(output);
+        const pendingApplicationOutput =
+          data !== undefined && this.manualRestoring
+            ? this.applicationOutputRecord(run, call.identity, data)
+            : undefined;
+        if (pendingApplicationOutput)
+          this.pendingApplicationOutputs.push(pendingApplicationOutput);
         let accepted = false;
         if (this.manualRestoring) {
-          await this.#native._respond_manual_continuation(
-            encodeReceipt({
-              request: call.event.msg,
-              response: output,
-            }),
-          );
-          accepted = true;
+          try {
+            await this.#native._respond_manual_continuation(
+              encodeReceipt({ request: call.event.msg, response: output }),
+            );
+            accepted = true;
+          } catch (error) {
+            if (pendingApplicationOutput) {
+              const index = this.pendingApplicationOutputs.indexOf(
+                pendingApplicationOutput,
+              );
+              if (index >= 0) this.pendingApplicationOutputs.splice(index, 1);
+            }
+            throw error;
+          }
         } else {
           accepted = await this.#native._respond_python_tool(
             encodeReceipt({ request: call.event.msg, response: output }),
+            data !== undefined,
           );
+          if (accepted && data !== undefined)
+            this.recordApplicationOutput(run, call.identity, data);
         }
         call.tracing = undefined;
         this.manualCalls.delete(key);
@@ -10492,34 +10743,43 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TurnAborted(
             'Manual continuation stopped before native admission',
           );
-        const wire = await this.#native._complete_manual_continuation(
-          schema == null ? undefined : encodeReceipt(schema),
-          run.selection
-            ? encodeOperationSelection({
-                generation: this.catalog.generation.toString(),
-                ...(run.selection.operationDeclarationSource
-                  ? {
-                      operation_declaration_source:
-                        run.selection.operationDeclarationSource,
-                    }
-                  : {}),
-                names: run.selection.names ?? null,
-                before_step:
-                  run.selection.maxModelSteps !== undefined ||
-                  this.options.agentGraph !== undefined,
-              })
-            : undefined,
-          this.options.parentTrace
-            ? encode(this.options.parentTrace.toHeaders())
-            : undefined,
-          tracingContext,
-          this.submissionIds.get(run)!,
-        );
-        const submission = decode(submissionSchema, wire);
-        if (submission.status !== 'started' || submission.turn_id !== run.id)
-          throw new NativeError(
-            'Manual continuation changed the original turn',
-          );
+        const completion = this.#native
+          ._complete_manual_continuation(
+            schema == null ? undefined : encodeReceipt(schema),
+            run.selection
+              ? encodeOperationSelection({
+                  generation: this.catalog.generation.toString(),
+                  ...(run.selection.operationDeclarationSource
+                    ? {
+                        operation_declaration_source:
+                          run.selection.operationDeclarationSource,
+                      }
+                    : {}),
+                  names: run.selection.names ?? null,
+                  before_step:
+                    run.selection.maxModelSteps !== undefined ||
+                    this.options.agentGraph !== undefined,
+                })
+              : undefined,
+            this.options.parentTrace
+              ? encode(this.options.parentTrace.toHeaders())
+              : undefined,
+            tracingContext,
+            this.submissionIds.get(run)!,
+          )
+          .then((wire) => {
+            const submission = decode(manualCompletionSchema, wire);
+            if (submission.turn_id !== run.id)
+              throw new NativeError(
+                'Manual continuation changed the original turn',
+              );
+            // Only exact native canonical receipts cross this recovery fence.
+            // Held terminal candidates retain their final publication event.
+            for (const callId of submission.canonical_call_ids)
+              this.promotePendingApplicationOutputs(run, callId);
+          });
+        this.track(run, completion, run.manualReplies);
+        await completion;
       } catch (error) {
         if (
           [...this.graphStops].some(
@@ -10838,7 +11098,14 @@ export class Session<OutputT = string, Context = unknown> {
           ),
           submissions.get(run)!.output.identity,
           this.restored,
-          { turns: this.repairTurns, items: this.repairItems },
+          {
+            turns: this.repairTurns,
+            items: this.repairItems,
+            applicationToolOutputs: this.applicationOutputSnapshot(),
+            pendingApplicationToolOutputs: structuredClone(
+              this.pendingApplicationOutputs,
+            ),
+          },
           {
             manual_continuation: result.manual_continuation,
             manual_context: {
@@ -11389,11 +11656,22 @@ export class Session<OutputT = string, Context = unknown> {
           return;
         }
         const responseOutput = structuredClone(response);
+        const applicationData = toolApplicationData(response);
+        const waitForApplicationAcceptance = applicationData !== undefined;
         if (tool.finishTurn && responseOutput.success) {
-          this.registerTerminalObservation(owner, identity, 'completed');
+          this.registerTerminalObservation(
+            owner,
+            identity,
+            'completed',
+            applicationData,
+          );
+          if (applicationData !== undefined)
+            this.pendingApplicationOutputs.push(
+              this.applicationOutputRecord(owner, identity, applicationData),
+            );
           deferredObservation = true;
         }
-        let accepted: boolean;
+        let accepted = false;
         try {
           accepted = await native._respond_python_tool(
             encodeReceipt({
@@ -11403,19 +11681,28 @@ export class Session<OutputT = string, Context = unknown> {
                 ? { start_response: false }
                 : {}),
             }),
+            waitForApplicationAcceptance,
           );
+          if (accepted && applicationData !== undefined && !deferredObservation)
+            this.recordApplicationOutput(owner, identity, applicationData);
           if (accepted && msg._sdk_managed_approved === true) {
             const key = this.manualCallKey(event, true);
             if (key !== undefined) this.manualCalls.delete(key);
           }
         } catch (error) {
           this.callbackAuthorityFailed(delivery, error);
+        } finally {
+          if (deferredObservation && !accepted)
+            this.discardPendingApplicationOutputs(owner, identity.callId);
         }
-        if (accepted && !deferredObservation)
+        if (accepted && !deferredObservation) {
+          const data = toolApplicationData(response);
           observedOutput = new ToolOutput(
             responseOutput.contentItems,
             responseOutput.success,
+            data,
           );
+        }
         status = accepted
           ? responseOutput.success
             ? 'completed'
@@ -12554,6 +12841,7 @@ export class Session<OutputT = string, Context = unknown> {
         selected.before ||
         selected.approval ||
         selected.transformResult ||
+        selected.extractApplicationData ||
         (selected as { requestMetadata?: unknown }).requestMetadata ||
         (selected instanceof StdioMCP &&
           (selected.lifetime !== 'session' || selected.location !== 'host')) ||
@@ -13040,6 +13328,7 @@ export class Session<OutputT = string, Context = unknown> {
           ),
         requests: {
           guardrailResults: () => owner.guardrailResults,
+          applicationToolOutputs: () => this.applicationOutputSnapshot(owner),
           runUsage: () =>
             runUsageSnapshot(
               owner.tokenUsage,
@@ -14604,7 +14893,14 @@ export class Session<OutputT = string, Context = unknown> {
         state,
         this.defaultOutput.identity,
         this.restored,
-        { turns: this.repairTurns, items: this.repairItems },
+        {
+          turns: this.repairTurns,
+          items: this.repairItems,
+          applicationToolOutputs: this.applicationOutputSnapshot(),
+          pendingApplicationToolOutputs: structuredClone(
+            this.pendingApplicationOutputs,
+          ),
+        },
         undefined,
         this.checkpointSelections(),
         networkPolicyDigest(this.environment?.network),
@@ -14634,7 +14930,14 @@ export class Session<OutputT = string, Context = unknown> {
       decorated,
       this.defaultOutput.identity,
       this.restored,
-      { turns: this.repairTurns, items: this.repairItems },
+      {
+        turns: this.repairTurns,
+        items: this.repairItems,
+        applicationToolOutputs: this.applicationOutputSnapshot(),
+        pendingApplicationToolOutputs: structuredClone(
+          this.pendingApplicationOutputs,
+        ),
+      },
       undefined,
       this.checkpointSelections(),
       networkPolicyDigest(this.environment?.network),
@@ -14768,12 +15071,43 @@ export class Session<OutputT = string, Context = unknown> {
             );
           }
           if (!requestExpired && this.current(owner)) {
-            const accepted = native._resolve_native_mcp_result(
-              notice.nonce,
-              notice.turn_id,
-              notice.call_id,
-              JSON.stringify(losslessJsonValueSchema.parse(response)),
+            const data =
+              notice.phase !== 'metadata' &&
+              response &&
+              typeof response === 'object'
+                ? toolApplicationData(response)
+                : undefined;
+            const reply = JSON.stringify(
+              losslessJsonValueSchema.parse(response),
             );
+            let accepted: boolean;
+            if (data !== undefined) {
+              const [delivered, assigned] =
+                await native._resolve_native_mcp_result_with_assignment(
+                  notice.nonce,
+                  notice.turn_id,
+                  notice.call_id,
+                  reply,
+                );
+              accepted = delivered;
+              if (assigned)
+                this.recordApplicationOutput(
+                  owner,
+                  {
+                    callId: notice.call_id,
+                    toolName: notice.callable_name,
+                    namespace: notice.callable_namespace ?? null,
+                    family: 'mcp',
+                  },
+                  data,
+                );
+            } else
+              accepted = native._resolve_native_mcp_result(
+                notice.nonce,
+                notice.turn_id,
+                notice.call_id,
+                reply,
+              );
             if (
               !accepted &&
               native._check_native_mcp_result(

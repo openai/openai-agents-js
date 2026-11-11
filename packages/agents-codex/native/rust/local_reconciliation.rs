@@ -25,6 +25,9 @@ pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>
         }
         | ResponseItem::CustomToolCallOutput { call_id: call, .. }
         | ResponseItem::ComputerCallOutput { call_id: call, .. } => call,
+        ResponseItem::ShellCallOutput {
+            provider_fields, ..
+        } => provider_fields.get("call_id")?.as_str()?,
         _ => return None,
     };
     Some((call, item.turn_id()))
@@ -57,8 +60,49 @@ pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseIt
                 call_id: actual, ..
             },
         ) => expected == actual,
+        (
+            ResponseItem::ShellCall {
+                provider_fields: call,
+                ..
+            },
+            ResponseItem::ShellCallOutput {
+                provider_fields: output,
+                ..
+            },
+        ) => call
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|expected| {
+                output.get("call_id").and_then(serde_json::Value::as_str) == Some(expected)
+            }),
         _ => false,
     }
+}
+
+pub(crate) fn matches_acknowledged_output(
+    accepted: &ResponseItem,
+    candidate: &ResponseItem,
+    native_cancellation: bool,
+) -> bool {
+    if !native_cancellation {
+        return same_acknowledged_output(accepted, candidate);
+    }
+    let same_owner = matches!(
+        (output_identity(accepted), output_identity(candidate)),
+        (Some((left_call, Some(left_turn))), Some((right_call, Some(right_turn))))
+            if left_call == right_call && left_turn == right_turn
+    );
+    same_owner
+        && matches!(
+            (accepted, candidate),
+            (
+                ResponseItem::FunctionCallOutput { .. },
+                ResponseItem::FunctionCallOutput { .. }
+            ) | (
+                ResponseItem::CustomToolCallOutput { .. },
+                ResponseItem::CustomToolCallOutput { .. }
+            )
+        )
 }
 
 pub(crate) fn same_acknowledged_output(left: &ResponseItem, right: &ResponseItem) -> bool {
@@ -140,6 +184,21 @@ pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> 
                 ..
             },
         ) => left == right && left_checks == right_checks,
+        (
+            ResponseItem::ShellCallOutput {
+                provider_fields: left,
+                ..
+            },
+            ResponseItem::ShellCallOutput {
+                provider_fields: right,
+                ..
+            },
+        ) => {
+            left.get("output")
+                .zip(right.get("output"))
+                .is_some_and(|(left, right)| left == right)
+                && left.get("max_output_length") == right.get("max_output_length")
+        }
         _ => false,
     }
 }
@@ -176,6 +235,76 @@ pub(crate) fn computer_receipt(
         ..Default::default()
     });
     Ok(item)
+}
+
+pub(crate) fn shell_receipt(
+    invocation: &ResponseItem,
+    response: codex_protocol::dynamic_tools::DynamicToolResponse,
+    turn: &str,
+) -> Result<ResponseItem> {
+    use codex_tools::ToolOutput as _;
+    let ResponseItem::ShellCall {
+        provider_fields, ..
+    } = invocation
+    else {
+        anyhow::bail!("Shell reconciliation requires its original call");
+    };
+    ensure!(
+        provider_fields
+            .get("container_id")
+            .is_none_or(serde_json::Value::is_null)
+            && provider_fields
+                .get("environment")
+                .filter(|value| !value.is_null())
+                .is_none_or(|environment| {
+                    environment.get("type").and_then(serde_json::Value::as_str) == Some("local")
+                }),
+        "Shell reconciliation requires an application-owned local call"
+    );
+    let call_id = provider_fields
+        .get("call_id")
+        .and_then(serde_json::Value::as_str)
+        .context("Shell reconciliation requires its original call ID")?;
+    let arguments = serde_json::to_string(invocation)
+        .map_err(|_| anyhow::anyhow!("Invalid original shell call"))?;
+    let output = codex_tools::ApplicationShellOutput::from_dynamic_response(&arguments, response)
+        .map_err(|_| {
+        anyhow::anyhow!("Shell reconciliation requires valid structured output")
+    })?;
+    let mut item: ResponseItem = output
+        .to_response_item(call_id, &codex_tools::ToolPayload::Shell { arguments })
+        .into();
+    let ResponseItem::ShellCallOutput {
+        internal_chat_message_metadata_passthrough,
+        ..
+    } = &mut item
+    else {
+        unreachable!("validated shell output has the native shell shape");
+    };
+    *internal_chat_message_metadata_passthrough = Some(InternalChatMessageMetadataPassthrough {
+        turn_id: Some(turn.to_owned()),
+        ..Default::default()
+    });
+    Ok(item)
+}
+
+fn shell_reconciliation(
+    invocation: &ResponseItem,
+    result: &str,
+    turn: &str,
+) -> Result<ResponseItem> {
+    shell_receipt(
+        invocation,
+        codex_protocol::dynamic_tools::DynamicToolResponse {
+            content_items: vec![
+                codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                    text: result.to_owned(),
+                },
+            ],
+            success: true,
+        },
+        turn,
+    )
 }
 
 fn computer_reconciliation(
@@ -299,6 +428,12 @@ fn uncertain_call(
             serde_json::to_string(invocation)
                 .map_err(|_| anyhow::anyhow!("Invalid recorded computer invocation"))?,
         ),
+        ResponseItem::ShellCall { .. } => (
+            "shell".to_owned(),
+            None,
+            serde_json::to_string(invocation)
+                .map_err(|_| anyhow::anyhow!("Invalid recorded shell invocation"))?,
+        ),
         _ => unreachable!("the call index only retains supported invocations"),
     };
     Ok(UncertainCall {
@@ -345,6 +480,10 @@ fn tag(item: &ResponseItem) -> Option<&str> {
         | ResponseItem::ComputerCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
+        }
+        | ResponseItem::ShellCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
         } => internal_chat_message_metadata_passthrough.as_ref()?,
         _ => return None,
     };
@@ -352,6 +491,15 @@ fn tag(item: &ResponseItem) -> Option<&str> {
         [ContentItemKind(tag)] if tag == APPLIED || tag == NOT_APPLIED => Some(tag),
         _ => None,
     }
+}
+
+pub(crate) fn is_application_shell_call(row: &ResponseItemEnvelope) -> bool {
+    matches!(row.item, ResponseItem::ShellCall { .. })
+        && row
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.sdk_application_tool.as_deref())
+            == Some("shell")
 }
 
 fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
@@ -375,6 +523,35 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
                             Call {
                                 invocation: item,
                                 output: None,
+                            }
+                        )
+                        .is_none(),
+                    "ambiguous tool call identity in local history"
+                );
+            }
+            ResponseItem::ShellCall {
+                provider_fields, ..
+            } => {
+                let Some(call_id) = provider_fields
+                    .get("call_id")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                if !is_application_shell_call(envelope) {
+                    continue;
+                }
+                let call_id = provider_fields
+                    .get("call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("recorded shell call has no valid call ID")?;
+                ensure!(
+                    calls
+                        .insert(
+                            (owner, call_id.to_owned()),
+                            Call {
+                                invocation: item,
+                                output: None
                             }
                         )
                         .is_none(),
@@ -472,17 +649,32 @@ pub(crate) fn validate_settled(history: &[RolloutItem]) -> Result<()> {
     Ok(())
 }
 
-fn retained_result(item: &ResponseItem, receipt: &Receipt) -> bool {
+fn retained_result(invocation: &ResponseItem, item: &ResponseItem, receipt: &Receipt) -> bool {
     tag(item) == Some(receipt.outcome.tag())
         && output(item).is_some_and(|(_, payload)| {
             matches!(&payload.body, FunctionCallOutputBody::Text(text) if text == &receipt.result)
         }) || tag(item) == Some(receipt.outcome.tag()) && computer_result_matches(item, &receipt.result)
+        || tag(item) == Some(receipt.outcome.tag())
+            && matches!(invocation, ResponseItem::ShellCall { .. })
+            && shell_reconciliation(invocation, &receipt.result, &receipt.turn_id)
+                .is_ok_and(|expected| same_output_payload(item, &expected))
 }
 
 fn response(invocation: &ResponseItem, receipt: &Receipt) -> Result<RolloutItem> {
-    if matches!(invocation, ResponseItem::ComputerCall { .. }) {
-        let mut result = computer_reconciliation(invocation, &receipt.result, &receipt.turn_id)?;
+    if matches!(
+        invocation,
+        ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+    ) {
+        let mut result = if matches!(invocation, ResponseItem::ComputerCall { .. }) {
+            computer_reconciliation(invocation, &receipt.result, &receipt.turn_id)?
+        } else {
+            shell_reconciliation(invocation, &receipt.result, &receipt.turn_id)?
+        };
         if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        }
+        | ResponseItem::ShellCallOutput {
             internal_chat_message_metadata_passthrough: Some(metadata),
             ..
         } = &mut result
@@ -580,10 +772,12 @@ pub(crate) fn plan(
             .context("reconciliation does not identify one retained invocation")?;
         if matches!(call.invocation, ResponseItem::ComputerCall { .. }) {
             computer_reconciliation(call.invocation, &receipt.result, &receipt.turn_id)?;
+        } else if matches!(call.invocation, ResponseItem::ShellCall { .. }) {
+            shell_reconciliation(call.invocation, &receipt.result, &receipt.turn_id)?;
         }
         if let Some(existing) = call.output {
             ensure!(
-                retained_result(existing, receipt),
+                retained_result(call.invocation, existing, receipt),
                 "reconciliation conflicts with a retained result"
             );
             continue;
@@ -796,5 +990,31 @@ mod computer_recovery_tests {
             .unwrap(),
         )));
         assert!(validate_settled(&counterfeit).is_err());
+    }
+}
+
+#[cfg(test)]
+mod acknowledged_cancellation_tests {
+    use super::*;
+    fn output(call: &str, turn: &str, text: &str) -> ResponseItem {
+        serde_json::from_value(serde_json::json!({"type":"function_call_output","call_id":call,"output":text,"internal_chat_message_metadata_passthrough":{"turn_id":turn}})).unwrap()
+    }
+    #[test]
+    fn only_native_cancellation_for_the_same_owned_call_reuses_receipt() {
+        let accepted = output("call", "turn", "genuine-first-result");
+        let cancelled = output("call", "turn", "aborted by user after 2.0s");
+        assert!(!matches_acknowledged_output(&accepted, &cancelled, false));
+        assert!(matches_acknowledged_output(&accepted, &cancelled, true));
+        assert!(!matches_acknowledged_output(
+            &accepted,
+            &output("foreign", "turn", "aborted"),
+            true
+        ));
+        assert!(!matches_acknowledged_output(
+            &accepted,
+            &output("call", "foreign", "aborted"),
+            true
+        ));
+        assert!(matches_acknowledged_output(&accepted, &accepted, false));
     }
 }

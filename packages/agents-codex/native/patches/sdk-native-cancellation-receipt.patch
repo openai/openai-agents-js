@@ -1,0 +1,179 @@
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 32cf6a9..34a55a2 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -264,10 +264,10 @@ pub(crate) mod multi_agents;
+ mod plugin_selection;
+ mod realtime_history;
+ mod retained_context;
+-pub(crate) mod sdk_produced_items;
+ mod review;
+ mod rollout_budget;
+ mod rollout_reconstruction;
++pub(crate) mod sdk_produced_items;
+ pub(crate) mod sdk_raw_usage;
+ #[allow(clippy::module_inception)]
+ pub(crate) mod session;
+@@ -3690,23 +3690,39 @@ impl Session {
+     ) {
+         // SDK stores can acknowledge a result before Core's ordered drain. Reuse
+         // that exact item instead of minting a second original identity or time.
+-        if let Some(live) = self.live_thread() {
+-            for envelope in &mut items {
+-                if matches!(
++        let live = self.live_thread();
++        for envelope in &mut items {
++            let native_cancellation = envelope
++                .metadata
++                .as_mut()
++                .is_some_and(|metadata| std::mem::take(&mut metadata.native_tool_cancellation));
++            if native_cancellation
++                && envelope
++                    .metadata
++                    .as_ref()
++                    .is_some_and(|metadata| metadata == &CodexHarnessMetadata::default())
++            {
++                envelope.metadata = None;
++            }
++            if let Some(live) = &live
++                && matches!(
+                     &envelope.item,
+                     ResponseItem::FunctionCallOutput { .. }
+                         | ResponseItem::CustomToolCallOutput { .. }
+                         | ResponseItem::ComputerCallOutput { .. }
+-                ) {
+-                    match live.canonical_tool_output(&envelope.item).await {
+-                        Ok(Some(accepted)) => envelope.item = accepted,
+-                        Ok(None) => {}
+-                        Err(error) => {
+-                            error!("failed to resolve acknowledged tool output: {error:#}");
+-                            // The existing live-thread durability latch fences subsequent
+-                            // model/tool admission. No part of this batch enters live history.
+-                            return;
+-                        }
++                )
++            {
++                match live
++                    .canonical_tool_output(&envelope.item, native_cancellation)
++                    .await
++                {
++                    Ok(Some(accepted)) => envelope.item = accepted,
++                    Ok(None) => {}
++                    Err(error) => {
++                        error!("failed to resolve acknowledged tool output: {error:#}");
++                        // The existing live-thread durability latch fences subsequent
++                        // model/tool admission. No part of this batch enters live history.
++                        return;
+                     }
+                 }
+             }
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 8a8fc04..a986bbe 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -28,6 +28,7 @@ use crate::tools::registry::ToolArgumentDiffConsumer;
+ use crate::tools::router::ToolCall;
+ use crate::tools::router::ToolCallSource;
+ use crate::unified_exec::PendingLocalExec;
++use codex_history::CodexHarnessMetadata;
+ use codex_history::ResponseItemEnvelope;
+ use codex_protocol::error::CodexErr;
+ use codex_protocol::models::ResponseInputItem;
+@@ -393,7 +394,10 @@ impl ToolCallRuntime {
+                     let _ = execution_started_at.set(Instant::now());
+                 }
+ 
+-                if let Some(captured) = step_context.extension_data.get::<codex_extension_api::CapturedModelAttempt>() {
++                if let Some(captured) = step_context
++                    .extension_data
++                    .get::<codex_extension_api::CapturedModelAttempt>()
++                {
+                     captured.0.mark_local_effect();
+                 }
+                 let result = router
+@@ -526,7 +530,10 @@ impl ToolCallRuntime {
+             _ => Box::new(AbortedToolOutput { message }),
+         };
+         AnyToolResult {
+-            harness_metadata: None,
++            harness_metadata: Some(CodexHarnessMetadata {
++                native_tool_cancellation: true,
++                ..Default::default()
++            }),
+             call_id: call.call_id.clone(),
+             payload: call.payload.clone(),
+             result,
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index 31e88ee..39ffca3 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -63,6 +63,12 @@ pub struct ResponseItemEnvelope {
+ ///
+ #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+ pub struct CodexHarnessMetadata {
++    /// Transient proof from the native cancellation branch, consumed before recording.
++    /// Neither stored input nor provider/tool JSON can mint this provenance.
++    #[serde(skip)]
++    #[schemars(skip)]
++    pub native_tool_cancellation: bool,
++
+     /// Accepted native background-result disposition; absent means foreground.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_start_response: Option<bool>,
+@@ -613,3 +619,20 @@ fn multi_agent_version_from_items(
+ #[cfg(test)]
+ #[path = "tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++mod native_cancellation_provenance_tests {
++    use super::CodexHarnessMetadata;
++    #[test]
++    fn native_cancellation_is_not_serialized_or_imported() {
++        let metadata = CodexHarnessMetadata {
++            native_tool_cancellation: true,
++            ..Default::default()
++        };
++        let value = serde_json::to_value(&metadata).unwrap();
++        assert!(value.get("native_tool_cancellation").is_none());
++        let imported: CodexHarnessMetadata =
++            serde_json::from_value(serde_json::json!({"native_tool_cancellation":true})).unwrap();
++        assert!(!imported.native_tool_cancellation);
++    }
++}
+diff --git a/codex-rs/thread-store/src/live_thread.rs b/codex-rs/thread-store/src/live_thread.rs
+index 69e98f3..d470de3 100644
+--- a/codex-rs/thread-store/src/live_thread.rs
++++ b/codex-rs/thread-store/src/live_thread.rs
+@@ -376,11 +376,12 @@ impl LiveThread {
+     pub async fn canonical_tool_output(
+         &self,
+         output: &codex_protocol::models::ResponseItem,
++        native_cancellation: bool,
+     ) -> ThreadStoreResult<Option<codex_protocol::models::ResponseItem>> {
+         self.check_canonical_history()?;
+         let result = self
+             .thread_store
+-            .canonical_tool_output(self.thread_id, output)
++            .canonical_tool_output(self.thread_id, output, native_cancellation)
+             .await;
+         self.retain_canonical_result(result)
+     }
+diff --git a/codex-rs/thread-store/src/store.rs b/codex-rs/thread-store/src/store.rs
+index b54508f..a433738 100644
+--- a/codex-rs/thread-store/src/store.rs
++++ b/codex-rs/thread-store/src/store.rs
+@@ -208,10 +208,13 @@ pub trait ThreadStore: Any + Send + Sync {
+ 
+     /// Reuses an acknowledged result before assigning its live history representation.
+     /// This does not create a receipt or settle a pending external effect.
++    /// Native cancellation provenance permits only an existing same-owner receipt;
++    /// serialized metadata and cancellation-looking text provide no such provenance.
+     fn canonical_tool_output<'a>(
+         &'a self,
+         _thread_id: ThreadId,
+         _output: &'a codex_protocol::models::ResponseItem,
++        _native_cancellation: bool,
+     ) -> ThreadStoreFuture<'a, Option<codex_protocol::models::ResponseItem>> {
+         Box::pin(async { Ok(None) })
+     }

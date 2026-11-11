@@ -100,6 +100,11 @@ const processorSuppressed = new AsyncLocalStorage<boolean>();
 let tracingDisabled = false;
 let sensitiveDataLoggingEnabled = true;
 
+/** Generate an ID for grouping workflow traces. */
+export function generateGroupId(): string {
+  return `group_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+}
+
 /** Synchronous ID policy for newly admitted SDK scopes, excluding engine spans. */
 export interface TracingIdGenerator {
   /** Return a nonzero 32-digit hexadecimal ID. */
@@ -233,6 +238,7 @@ export class TraceSpan {
     /** @internal */ readonly workflow?: TraceSpan,
   ) {
     this.context = Object.freeze(context);
+    this.ended = kind === 'context';
     let token: string | undefined;
     try {
       token = native.retain_trace_context(handle);
@@ -577,6 +583,51 @@ export function startTrace(options: TraceOptions = {}): Promise<TraceSpan> {
 }
 export function startSpan(options: TraceOptions = {}): Promise<TraceSpan> {
   return start(options, 'custom');
+}
+
+/** Retained local ancestry without trace lifecycle events or portable owner lookup. */
+export async function withTraceContext<T>(
+  source: TraceSpan,
+  callback: () => T | Promise<T>,
+): Promise<T> {
+  const current = ambient.getStore();
+  const parent = source.retain();
+  let restriction: string | undefined;
+  const policy = admissionPolicy();
+  try {
+    restriction = current?.retain();
+    const native = await binding();
+    const handle = native.borrow_trace_context(
+      parent,
+      restriction ?? null,
+      policy.disabled ?? false,
+      policy.includeSensitiveData ?? true,
+    );
+    try {
+      const context = JSON.parse(
+        native.trace_span_context(handle),
+      ) as WireSpanContext;
+      const span = new TraceSpan(
+        native,
+        handle,
+        'context',
+        {
+          traceId: context.trace_id,
+          spanId: context.span_id,
+          parentSpanId: context.parent_span_id,
+          disabled: context.disabled,
+          includeSensitiveData: context.include_sensitive_data,
+        },
+        source.kind === 'workflow' ? source : source.workflow,
+      );
+      return await ambient.run(span, callback);
+    } finally {
+      native.release_trace_context(handle);
+    }
+  } finally {
+    if (restriction) current!.releaseContext(restriction);
+    source.releaseContext(parent);
+  }
 }
 async function scoped<T>(
   options: TraceOptions,

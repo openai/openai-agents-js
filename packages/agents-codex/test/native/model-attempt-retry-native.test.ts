@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  manualTool,
   tool,
   type ModelRequest,
   type ModelResponse,
@@ -607,6 +608,244 @@ it.each([false, true])(
       expect(complete).toHaveBeenCalledTimes(1);
       expect(transforms).toBe(2);
     }
+  },
+  20_000,
+);
+
+it.each(['retry', 'attempt', 'invocation'] as const)(
+  'rebinds forged graph %s controls to current declarations',
+  async (control) => {
+    let restored = false;
+    let roundtrip = false;
+    let routes = 0;
+    const complete = vi.fn(
+      async (request: ModelRequest): Promise<ModelResponse> => {
+        if (restored) {
+          if (roundtrip && routes++ < 2)
+            return {
+              output: [
+                {
+                  type: 'function_call',
+                  name:
+                    routes === 1 ? 'transfer_to_worker' : 'transfer_to_root',
+                  call_id: `roundtrip-${routes}`,
+                  arguments: '{}',
+                },
+              ],
+              usage: { input_tokens: 1 },
+            };
+          if (control === 'retry')
+            throw failure('current no-retry declaration');
+          await delay(100, undefined, { signal: request.signal });
+        }
+        return message('ok');
+      },
+    );
+    await using provider = new NativeProvider({
+      modelBackend: { complete, getRetryAdvice: () => ({ suggested: true }) },
+    });
+    const target = new Agent({
+      name: 'Worker',
+
+      instructions: 'Answer.',
+      provider,
+      modelSettings: { retry: { maxRetries: 0 } },
+    });
+    const agent = new Agent({
+      name: 'Root',
+
+      instructions: 'Answer.',
+      provider,
+      modelSettings: { retry: { maxRetries: 0 } },
+      handoffs: [target],
+    });
+    target.handoffs = [agent];
+    let state;
+    {
+      await using original = await agent.session();
+      expect((await (await original.submit('seed')).wait()).finalOutput).toBe(
+        'ok',
+      );
+      state = await original.saveState();
+    }
+    let changed = 0;
+    const forged = JSON.parse(JSON.stringify(state), (key, value: unknown) => {
+      if (key !== 'sdk_agent_profile') return value;
+      const receipt = z
+        .object({ model: z.record(z.string(), z.unknown()) })
+        .passthrough()
+        .parse(value);
+      const controls = z
+        .record(z.string(), z.unknown())
+        .parse(receipt.model.request_controls ?? {});
+      if (control === 'retry') {
+        controls.retry = {
+          configured: true,
+          has_policy: false,
+          max_retries: 2,
+          backoff: {
+            initial_delay_ms: 0,
+            max_delay_ms: 0,
+            multiplier: 1,
+            jitter: false,
+          },
+        };
+      } else if (control === 'attempt') controls.attempt_timeout_ms = 1;
+      else receipt.model.invocation_timeout_ms = 1;
+      receipt.model.request_controls = controls;
+      changed++;
+      return receipt;
+    }) as typeof state;
+    expect(changed).toBeGreaterThan(0);
+    restored = true;
+    complete.mockClear();
+    await using session = await agent.session({ state: forged });
+    const turn = await session.submit('continue');
+    if (control === 'retry')
+      await expect(turn.wait()).rejects.toThrow('current no-retry declaration');
+    else expect((await turn.wait()).finalOutput).toBe('ok');
+    expect(complete).toHaveBeenCalledTimes(1);
+    roundtrip = true;
+    complete.mockClear();
+    const returned = await session.submit('handoff away and back');
+    if (control === 'retry')
+      await expect(returned.wait()).rejects.toThrow(
+        'current no-retry declaration',
+      );
+    else expect((await returned.wait()).finalOutput).toBe('ok');
+    expect(complete).toHaveBeenCalledTimes(3);
+  },
+  20_000,
+);
+
+it('uses the restored worker retry bound instead of the root bound', async () => {
+  let restored = false;
+  let seedCalls = 0;
+  const complete = vi.fn((): ModelResponse => {
+    if (restored) throw failure('worker retry boundary');
+    if (++seedCalls === 1)
+      return {
+        output: [
+          {
+            type: 'function_call',
+            name: 'transfer_to_worker',
+            call_id: 'worker-handoff',
+            arguments: '{}',
+          },
+        ],
+        usage: { input_tokens: 1 },
+      };
+    return message('saved');
+  });
+  await using provider = new NativeProvider({
+    modelBackend: { complete, getRetryAdvice: () => ({ suggested: true }) },
+  });
+  const worker = new Agent({
+    name: 'Worker',
+    provider,
+    instructions: 'Worker.',
+    modelSettings: { retry: { maxRetries: 0 } },
+  });
+  const root = new Agent({
+    name: 'Root',
+    provider,
+    instructions: 'Root.',
+    handoffs: [worker],
+    modelSettings: {
+      retry: { maxRetries: 1, backoff: { initialDelayMs: 0, jitter: false } },
+    },
+  });
+  let state;
+  {
+    await using original = await root.session();
+    expect((await (await original.submit('handoff')).wait()).finalOutput).toBe(
+      'saved',
+    );
+    expect(await original.getActiveAgent()).toBe(worker);
+    state = await original.saveState();
+  }
+  restored = true;
+  complete.mockClear();
+  await using session = await root.session({ state });
+  expect(await session.getActiveAgent()).toBe(worker);
+  await expect((await session.submit('continue')).wait()).rejects.toThrow(
+    'worker retry boundary',
+  );
+  expect(complete).toHaveBeenCalledTimes(1);
+}, 20_000);
+
+it.each([false, true])(
+  'keeps current invocation authority through manual restore (graph=%s)',
+  async (graph) => {
+    let calls = 0;
+    const lookup = manualTool({
+      name: 'lookup',
+      description: 'Ask.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    await using provider = new NativeProvider({
+      modelBackend: {
+        async complete(request: ModelRequest): Promise<ModelResponse> {
+          if (++calls === 1)
+            return {
+              output: [
+                {
+                  type: 'function_call',
+                  name: 'lookup',
+                  call_id: 'manual-clock',
+                  arguments: '{}',
+                },
+              ],
+              usage: { input_tokens: 1 },
+            };
+          await delay(50, undefined, { signal: request.signal });
+          return message('resumed');
+        },
+      },
+    });
+    const worker = new Agent({
+      name: 'Worker',
+      provider,
+      instructions: 'Worker.',
+      modelSettings: { invocationTimeoutMs: 1000 },
+    });
+    const agent = new Agent({
+      provider,
+      instructions: 'Ask.',
+      tools: [lookup],
+      modelSettings: { invocationTimeoutMs: 1000 },
+      handoffs: graph ? [worker] : [],
+    });
+    let state;
+    {
+      await using original = await agent.session();
+      const turn = await original.submit('ask');
+      const completion = turn.wait().catch((error: unknown) => error);
+      const pending = await turn.wait({ until: 'manual_tool' });
+      expect('requests' in pending).toBe(true);
+      state = await original.suspend();
+      await completion;
+    }
+    let changed = 0;
+    const forged = JSON.parse(JSON.stringify(state), (key, value: unknown) => {
+      if (key !== 'thread_settings') return value;
+      const settings = z.record(z.string(), z.unknown()).parse(value);
+      if ('invocation_timeout_ms' in settings) {
+        settings.invocation_timeout_ms = 1;
+        changed++;
+      }
+      return settings;
+    }) as typeof state;
+    expect(changed).toBeGreaterThan(0);
+    await using restored = await agent.session({ state: forged });
+    for await (const event of restored.events()) {
+      if (event.type !== 'action_requested') continue;
+      await restored.respond(event.reply('accepted'));
+      break;
+    }
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe('resumed');
+    expect(calls).toBe(2);
   },
   20_000,
 );

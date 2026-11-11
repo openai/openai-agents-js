@@ -8,6 +8,7 @@ Use capability reports to inspect what a Session admitted, readiness checks to i
 | Inspect whether portable capture is currently possible | [Check capture readiness](#check-capture-readiness). |
 | Confirm an uncertain external operation | [Reconcile external effects](#reconcile-external-effects). |
 | Continue a manual tool's durable job after a host restart | [Resume external work](#resume-external-work). |
+| Choose budget behavior while waiting or reopening | [Budgets while waiting and recovering](#budgets-while-waiting-and-recovering). |
 
 For capture and restore, use [Session history and state](state.md#save-or-suspend-a-session). For stored conversations, choose [application-owned canonical files](session-store.md) or [native local profiles](local-state.md), each with its own recovery procedure.
 
@@ -74,3 +75,48 @@ The journal must enforce current application authority, immutable request bindin
 Keep provider keys, receipts and credentials in private host storage. The registered `project` function selects a small validated result for the model. Options use milliseconds. Caller abort waits for local work but does not cancel the external job. Remote cancellation requires an explicit authorized `cancel` operation. This route supports portable plain and prompted manual roots, not local storage, child grants, Environment sessions or native structured-output pending roots.
 
 See [Run an external job across processes](../../../packages/agents-codex/EXTERNAL_JOBS.md) for the complete journal, provider and recovery example.
+
+## Budgets while waiting and recovering
+
+A direct native root's `budget` has been following live replies, managed function approvals, retained steering, and SDK output repair. Portable checkpoints have not been carrying this `RunBudget` across a restart. A settled conversation has been accepting a new input with a fresh budget. This section has been describing the matching source checkout; [source-build setup](building.md) has been providing the native prerequisites.
+
+The approval rows have been referring to managed function approvals. Native approval prompts and Realtime interactions have been retaining their own capture restrictions.
+
+| Operation | Without `budget` | With `budget` | Preserved state and next allowance |
+| --- | --- | --- | --- |
+| Waiting for a manual result in the original Session | `session.respond(request.reply(value))` has been answering the pending request. | The same live reply has been remaining available. | The original Turn and consumed allowance have been remaining live. |
+| Waiting for managed function approval | `session.respond(request.approve())` or `session.respond(request.reject(reason))` has been supplying the decision. | The same live decision has been remaining available. | Approval has been running the current callback once; later sampling has been sharing the original budget. |
+| Capturing active automatic work | `saveState()` has been requiring idle state; `suspend()` has been requiring a settled pending manual request. | Both calls have been rejecting active automatic work; readiness has been reporting the budget refusal. | Arbitrary running work has not been becoming portable state. |
+| Suspending a supported manual or approval request | `await session.suspend()` has been sealing the existing turn. | Capture has been rejecting with `Cannot capture an active run with a budget`. | Successful suspension has been preserving accepted history and pending replies while retiring the original Session. |
+| Restoring a supported pending portable checkpoint | `agent.run(null, { state, onInteraction })` has been resuming the existing turn. | Adding `budget` has been throwing `TypeError`: `Cannot add a run budget when resuming a run`. | Current matching declarations have been supplying fresh reply authority; no `RunBudget` has been coming from the checkpoint. |
+| Saving and reopening settled portable state | `saveState()` has been exporting history for `agent.session({ state })`. | Idle capture has been remaining available after completion. | A new input has been starting a fresh root with its caller's new budget. |
+| Reopening settled local or custom-store history | `agent.session({ storage, resume: savedId })` has been reopening the same conversation. | `submit(input, { budget })` has been starting fresh. | The backend has been preserving committed history and Session identity, without restoring a live Turn's budget. |
+| Exporting portable state from a storage-backed Session | `saveState()` and `suspend()` have been rejecting persistent storage. | The same storage restriction has been applying. | The backend and Session ID have been supplying the reopen route. |
+
+For a budgeted pending manual or managed approval request, `checkpointStatus({ kind: 'manualWait' })` has been reporting `notReady` with `Cannot capture an active run with a budget`. `suspend()` has been rejecting with that same message. The live reply has been remaining usable after refusal. Storage-backed `suspend()` has been throwing `TypeError` with `Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend`.
+
+During ordinary active automatic work, `saveState()` has been rejecting with `NativeError`: `saveState requires a settled open session`. Without a pending manual request, `suspend()` has been rejecting with `NativeError`: `suspend requires a pending manual-tool boundary`. These checks have been applying before a manual-budget capture attempt.
+
+A one-shot budgeted run without an interaction handler has been reaching the manual request, then rejecting with `InteractionRequired` and the active-capture error as its cause. No portable continuation has been carrying the budget. Python has been rejecting a corresponding reachable-manual configuration before inference; explicit Sessions and interaction handlers have been supplying the supported live route in both languages.
+
+### Keep model steps separate from RunBudget
+
+The separate `maxModelSteps` has been storing its remaining root preparations in a supported manual checkpoint. A limit of one has been allowing the request that reaches the manual tool, then blocking the next preparation after restore with `NativeError.code === 'max_model_steps_exceeded'`. A limit of two has been permitting that next preparation. `agent.run(null, { state, maxModelSteps: 5 })` has been throwing `TypeError` with `Cannot replace the model step budget when resuming a run`.
+
+Independent submissions have been starting fresh. Provider retries, child work, and SDK output repairs have been retaining the separate [model-step contract](tools.md#limit-model-steps). Combining `maxModelSteps` with `budget` has been keeping the active `RunBudget` capture restriction. Python has not been offering `maxModelSteps`.
+
+### Distinguish waiting from stopping
+
+A pending request has been keeping its Turn live. `turn.cancel()` has been stopping the captured root and joining its cleanup; `session.interrupt()` has been acknowledging a stop request with its selected scope. Session closure has been joining owned cleanup. These operations have not been saving an arbitrary instruction pointer. A later submission has been starting a new root, and stored history has not been restarting the interrupted Turn automatically.
+
+With `budget: { maxRequests: 1 }`, approval has been remaining able to run the callback after the first model admission. The next admission has been rejecting with `run_budget_exceeded`, while the accepted effect has been remaining recorded. Token and cost limits have been checking before the next admission; an admitted completion has been remaining able to overshoot and finish. Application receipts have been supplying evidence for uncertain effects before any retry.
+
+### Verify the combinations
+
+From the repository root with the matching native build and test dependencies active, this command has been selecting the synthetic loopback budget and model-step cases:
+
+```sh
+pnpm exec vitest run packages/agents-codex/test/native/run-budget-native.test.ts packages/agents-codex/test/native/model-preparation-cap.test.ts
+```
+
+[The budget suite](../../../packages/agents-codex/test/native/run-budget-native.test.ts) has been exercising live manual replies, approval budgets of one and two admissions, rejected capture, idle portable restore, and settled local/custom-store reopen. [The model-step suite](../../../packages/agents-codex/test/native/model-preparation-cap.test.ts) has been asserting remaining steps and blocked replacement after manual suspension. [The approval suite](../../../packages/agents-codex/test/native/function-approvals-native.test.ts) has been covering unbudgeted fresh-process restore and accepted siblings. These fixtures have not been establishing live-provider billing or same-turn `RunBudget` recovery. The automatic-turn and interruption rows have been reflecting source contracts and neighboring lifecycle tests, rather than a full budget-by-storage interruption matrix.
