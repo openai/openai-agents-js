@@ -1,5 +1,5 @@
 {
-  "result_tree": "7bcef86b00aa56b933b506abd2f37e2629423a37",
+  "result_tree": "5744bbfa4726717c48b0f0f2137b2aaaff52dc90",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -798,8 +798,12 @@
       "sha256": "812668a895ed2a195a841cdee417e40619068b5d17d4dce9b0591628562c7e6c"
     },
     {
+      "path": "sdk-application-tool-output-acceptance.patch",
+      "sha256": "f385082704b0d3dd5fa1e15645a152c2c7c342ed29551429d9f2051808a79365"
+    },
+    {
       "path": "sdk-application-shell.patch",
-      "sha256": "5f067f4e96f0f067c8bbeca6f290def6a086ee0bff1190723f29d927b434d35e"
+      "sha256": "348b596329d213e842f3e3ddedc99fb0a3e8d71453239f5264a795a2d0321238"
     },
     {
       "path": "sdk-application-tool-durable-owner.patch",

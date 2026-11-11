@@ -62,10 +62,19 @@ export type ToolImageReference = { detail?: ImageDetail | null } & (
 export class ToolOutput {
   declare private readonly toolOutputBrand: void;
 
+  /** Application-only JSON; never part of provider content or tracing. */
+  declare readonly applicationData?: JsonObject;
+
   constructor(
     readonly contentItems: z.infer<typeof toolOutputSchema>['contentItems'],
     readonly success = true,
-  ) {}
+    applicationData?: JsonObject | null,
+  ) {
+    if (applicationData != null) {
+      const captured = losslessJsonObjectSchema.parse(applicationData);
+      if (Object.keys(captured).length) this.applicationData = captured;
+    }
+  }
 
   /** Preserve legacy string construction and allow an explicit provider reference. */
   static image(reference: string | ToolImageReference): ToolOutput {
@@ -82,6 +91,40 @@ export class ToolOutput {
       captureToolPart({ type: 'inputFile', ...mediaRecord(reference) }),
     ]);
   }
+}
+
+// This transient carrier never survives JSON or structuredClone into native replies.
+const applicationDataBinding = Symbol('application tool output');
+type ApplicationToolResponse = ToolResponse & {
+  readonly [applicationDataBinding]?: JsonObject;
+};
+
+/** @internal Read detached passive data after the native result has been accepted. */
+export function toolApplicationData(response: object): JsonObject | undefined {
+  const data = (response as ApplicationToolResponse)[applicationDataBinding];
+  return data === undefined ? undefined : losslessJsonObjectSchema.parse(data);
+}
+
+/** @internal Carry passive data across an owned callback without serializing it. */
+export function withToolApplicationData<T extends object>(
+  value: T,
+  data: JsonObject | null | undefined,
+): T {
+  if (data != null) {
+    const captured = losslessJsonObjectSchema.parse(data);
+    if (Object.keys(captured).length)
+      Object.defineProperty(value, applicationDataBinding, { value: captured });
+  }
+  return value;
+}
+
+function captureToolResponse(value: ToolResponse | ToolOutput): ToolResponse {
+  const response = toolOutputSchema.parse(value);
+  const data =
+    value instanceof ToolOutput
+      ? value.applicationData
+      : toolApplicationData(value);
+  return withToolApplicationData(response, data);
 }
 
 /** An elapsed native function callback deadline; effects are not rolled back. */
@@ -379,7 +422,7 @@ export function createNamespacedFunctionTool<Context>(options: {
         onTimeout,
       );
       admit();
-      return toolOutputSchema.parse(result);
+      return captureToolResponse(result);
     },
   });
 }
@@ -845,6 +888,7 @@ export function tool<
         const original = new ToolOutput(
           response.contentItems,
           response.success,
+          toolApplicationData(response),
         );
         const accepted = await after(original, callContext);
         admit();
@@ -856,7 +900,7 @@ export function tool<
         if (!(output instanceof ToolOutput))
           throw new TypeError('Tool after must return ToolOutput');
         try {
-          response = toolOutputSchema.parse(output);
+          response = captureToolResponse(output);
         } catch {
           throw new TypeError('Tool result failed validation');
         }
@@ -982,7 +1026,7 @@ export function tool<
 }
 
 export function outputOf(value: unknown): ToolResponse {
-  if (value instanceof ToolOutput) return toolOutputSchema.parse(value);
+  if (value instanceof ToolOutput) return captureToolResponse(value);
   return {
     success: true,
     contentItems: [
