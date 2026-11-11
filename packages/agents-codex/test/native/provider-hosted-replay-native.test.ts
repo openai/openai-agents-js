@@ -1,6 +1,8 @@
+import OpenAI from 'openai';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Agent, NativeProvider } from '../../src';
 import { ModelServer, message } from './fixtures/model-server';
+import { ResponsesModel } from '../../src/runtime/models';
 
 afterEach(() => ModelServer.closeAll());
 
@@ -234,6 +236,55 @@ it.each(['safe', 'unknown', 'unsafe'] as const)(
       await expect(agent.run('run')).rejects.toBe(failure);
       expect(calls).toBe(1);
     }
+  },
+  30_000,
+);
+
+it.each(['hosted', 'empty', 'plain'] as const)(
+  'bounds first borrowed-provider dispatch for %s requests',
+  async (mode) => {
+    const fetch = vi.fn(async () =>
+      Response.json(
+        { error: { message: 'temporary' } },
+        { status: 503, headers: { 'retry-after-ms': '0' } },
+      ),
+    );
+    const client = new OpenAI({
+      apiKey: 'synthetic-inner-retry',
+      baseURL: 'https://fixture.invalid/v1',
+      maxRetries: 2,
+      fetch,
+    });
+    const adapter = new ResponsesModel(
+      client,
+      undefined,
+      mode === 'hosted'
+        ? {
+            requestOptions: async () => ({ maxRetries: 4 }),
+          }
+        : {},
+    );
+    await using provider = new NativeProvider({ modelBackend: adapter });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider,
+      ...(mode === 'plain'
+        ? { model: 'gpt-5.5' }
+        : {
+            hostedPrompt: { id: 'pmpt_inner_retry' },
+            ...(mode === 'empty' ? { tools: [] } : {}),
+          }),
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          backoff: { initialDelayMs: 0, jitter: false },
+          policy: () => ({ retry: false }),
+        },
+      },
+    });
+    await expect(agent.run('run')).rejects.toBeInstanceOf(OpenAI.APIError);
+    expect(fetch).toHaveBeenCalledTimes(mode === 'hosted' ? 1 : 3);
+    expect(client.maxRetries).toBe(2);
   },
   30_000,
 );

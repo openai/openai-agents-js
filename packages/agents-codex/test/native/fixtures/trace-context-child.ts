@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFile, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import {
@@ -201,7 +202,11 @@ async function storeReopen(path: string) {
   return { id, turns, callbacks };
 }
 
-async function ownedChildren(flags?: string, steering = false) {
+async function ownedChildren(
+  flags?: string,
+  steering = false,
+  overlap = false,
+) {
   const callbackTurns: string[] = [];
   const callbacks: ReturnType<TraceContext['toHeaders']>[] = [];
   let rootCallback: ReturnType<TraceContext['toHeaders']> | undefined;
@@ -213,6 +218,35 @@ async function ownedChildren(flags?: string, steering = false) {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let workflow: Awaited<ReturnType<typeof telemetry.startTrace>> | undefined;
+  const openingStorage = new AsyncLocalStorage<
+    telemetry.TraceSpan | undefined
+  >();
+  const submissionStorage = new AsyncLocalStorage<
+    telemetry.TraceSpan | undefined
+  >();
+  const successorStorage = new AsyncLocalStorage<
+    telemetry.TraceSpan | undefined
+  >();
+  const successorEntered = Promise.withResolvers<void>();
+  const releaseSuccessor = Promise.withResolvers<void>();
+  let successorActive = false;
+  let retainedStorage:
+    | {
+        submission: boolean;
+        opening: boolean;
+        successor: boolean;
+        overlapping: boolean;
+      }
+    | undefined;
+  const childStorage: { submission: boolean; opening: boolean }[] = [];
+  const recordChildStorage = () => {
+    const span = telemetry.getCurrentSpan();
+    assert(span);
+    childStorage.push({
+      submission: submissionStorage.getStore() === span,
+      opening: openingStorage.getStore() === span,
+    });
+  };
   let traceId = flags ? PARENT.slice(3, 35) : undefined;
   let policyChecks = 0;
   const checkPolicy = () => {
@@ -231,8 +265,19 @@ async function ownedChildren(flags?: string, steering = false) {
     const metadata = request.client_metadata as Record<string, string>;
     const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
     rootId ??= id;
-    if (id === rootId)
-      return ++roots === 1
+    if (id === rootId) {
+      roots++;
+      if (overlap && roots === 4) {
+        successorActive = true;
+        successorEntered.resolve();
+        try {
+          await releaseSuccessor.promise;
+          return [final('successor done')];
+        } finally {
+          successorActive = false;
+        }
+      }
+      return roots === 1
         ? [call('root_observe', {}, { callId: 'root-observe' })]
         : roots === 2
           ? [
@@ -243,6 +288,7 @@ async function ownedChildren(flags?: string, steering = false) {
               ),
             ]
           : [final('root done')];
+    }
     children++;
     sampledMarker.push(JSON.stringify(request.input).includes(marker));
     if (steering && children === 2) {
@@ -253,7 +299,9 @@ async function ownedChildren(flags?: string, steering = false) {
       ? [call('observe', {}, { callId: `child-observe-${children}` })]
       : [final('child done')];
   };
-  const server = new ModelServer(Array.from({ length: 7 }, () => respond));
+  const server = new ModelServer(
+    Array.from({ length: overlap ? 8 : 7 }, () => respond),
+  );
   const agent = new Agent({
     instructions: 'Delegate.',
     model: 'gpt-5.5',
@@ -283,10 +331,24 @@ async function ownedChildren(flags?: string, steering = false) {
           assert(context.traceContext);
           callbacks.push(context.traceContext.toHeaders());
           callbackTurns.push(context.turnId);
-          if (callbacks.length === 2) continued.resolve();
+          if (callbacks.length === 2) {
+            if (overlap) {
+              const span = telemetry.getCurrentSpan();
+              assert(span);
+              retainedStorage = {
+                submission: submissionStorage.getStore() === span,
+                opening: openingStorage.getStore() === span,
+                successor: successorStorage.getStore() === span,
+                overlapping: successorActive,
+              };
+            }
+            continued.resolve();
+          }
           if (callbacks.length === 1) {
+            if (!flags) recordChildStorage();
             entered.resolve();
             await release.promise;
+            if (!flags) recordChildStorage();
           }
           await Promise.resolve();
           checkPolicy();
@@ -298,6 +360,7 @@ async function ownedChildren(flags?: string, steering = false) {
   const executor = await startPublicExecutor();
   try {
     const open = async () => {
+      if (!flags) telemetry.setTraceContextStorage(openingStorage);
       const session = await agent.session({
         ...(flags
           ? { parentTrace: parent(PARENT.slice(0, -2) + flags) }
@@ -311,7 +374,18 @@ async function ownedChildren(flags?: string, steering = false) {
         }),
       });
       try {
-        const root = await session.submit('delegate');
+        if (!flags) telemetry.setTraceContextStorage(submissionStorage);
+        const root = flags
+          ? await session.submit('delegate')
+          : await telemetry.withTrace(
+              { name: 'carrier.owner', includeSensitiveData: false },
+              (original) => {
+                workflow = original;
+                traceId = original.context.traceId;
+                telemetry.setTraceContextStorage(openingStorage);
+                return session.submit('delegate');
+              },
+            );
         assert.equal((await root.wait()).finalOutput, 'root done');
         return { session, root };
       } catch (error) {
@@ -320,16 +394,7 @@ async function ownedChildren(flags?: string, steering = false) {
         throw error;
       }
     };
-    const { session, root } = flags
-      ? await open()
-      : await telemetry.withTrace(
-          { name: 'carrier.owner', includeSensitiveData: false },
-          async (original) => {
-            workflow = original;
-            traceId = original.context.traceId;
-            return open();
-          },
-        );
+    const { session, root } = await open();
     try {
       const deadline = Date.now() + 5_000;
       let owned = await Array.fromAsync(session.subagents());
@@ -347,7 +412,6 @@ async function ownedChildren(flags?: string, steering = false) {
         }),
       ]);
       release.resolve();
-      let later;
       if (steering) {
         await sampled.promise;
         const steered = await telemetry.withTrace(
@@ -370,12 +434,36 @@ async function ownedChildren(flags?: string, steering = false) {
         assert.deepEqual(sampledMarker.slice(0, 3), [false, false, true]);
       } else {
         assert.equal((await child.turn.wait()).finalOutput, 'child done');
-        later = await telemetry.withTrace(
-          { name: 'unrelated.caller', includeSensitiveData: true },
-          () => child.submit('call observe again'),
-        );
+        let successor;
+        const timeout = overlap
+          ? setTimeout(releaseSuccessor.resolve, 5_000)
+          : undefined;
+        try {
+          if (overlap) {
+            telemetry.setTraceContextStorage(successorStorage);
+            successor = await telemetry.withSpan({ name: 'successor' }, () =>
+              session.submit('hold the next root'),
+            );
+            await Promise.race([
+              successorEntered.promise,
+              releaseSuccessor.promise.then(() => {
+                throw new Error('Successor root did not reach the model');
+              }),
+            ]);
+          }
+          const later = await telemetry.withTrace(
+            { name: 'unrelated.caller', includeSensitiveData: true },
+            () => child.submit('call observe again'),
+          );
+          assert.equal((await later.wait()).finalOutput, 'child done');
+          assert.equal(later.turnId, callbackTurns[1]);
+        } finally {
+          clearTimeout(timeout);
+          releaseSuccessor.resolve();
+        }
+        if (successor)
+          assert.equal((await successor.wait()).finalOutput, 'successor done');
       }
-      if (later) assert.equal((await later.wait()).finalOutput, 'child done');
       if (steering) assert.deepEqual(sampledMarker, [false, false, true, true]);
       assert.equal(callbacks.length, 2);
       server.assertExhausted();
@@ -385,6 +473,8 @@ async function ownedChildren(flags?: string, steering = false) {
         sampledMarker,
         traceId,
         rootCallback,
+        childStorage,
+        retainedStorage,
         callbacks,
         callbackTurns,
         rootTurn: root.turnId,
@@ -394,9 +484,11 @@ async function ownedChildren(flags?: string, steering = false) {
     } finally {
       release.resolve();
       releaseSample.resolve();
+      releaseSuccessor.resolve();
       await session.close();
     }
   } finally {
+    if (!flags) telemetry.setTraceContextStorage();
     release.resolve();
     releaseSample.resolve();
     await executor.close();
@@ -590,19 +682,21 @@ async function main() {
         ? await storeReopen(path!)
         : mode?.startsWith('owned-steering-')
           ? await ownedChildren(mode.slice('owned-steering-'.length), true)
-          : mode?.startsWith('owned-children-')
-            ? await ownedChildren(
-                mode === 'owned-children-scoped'
-                  ? undefined
-                  : mode.slice('owned-children-'.length),
-              )
-            : mode === 'graph'
-              ? await graph()
-              : mode === 'compact'
-                ? await compact()
-                : mode === 'review'
-                  ? await review()
-                  : await manual(mode!, path!);
+          : mode === 'owned-children-overlap'
+            ? await ownedChildren(undefined, false, true)
+            : mode?.startsWith('owned-children-')
+              ? await ownedChildren(
+                  mode === 'owned-children-scoped'
+                    ? undefined
+                    : mode.slice('owned-children-'.length),
+                )
+              : mode === 'graph'
+                ? await graph()
+                : mode === 'compact'
+                  ? await compact()
+                  : mode === 'review'
+                    ? await review()
+                    : await manual(mode!, path!);
     console.log(JSON.stringify(result));
   } finally {
     await telemetry.shutdown();

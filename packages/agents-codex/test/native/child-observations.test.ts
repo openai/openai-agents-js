@@ -7,7 +7,11 @@ import { ObservationBuffer } from '../../src/runtime/observation';
 
 it('delivers an entered callback tail before retirement EOF without revoking it', async () => {
   const callbacks = new ChildCallbacks();
-  const producer = { ended: false, eventReaderEnded: false };
+  const producer = {
+    ended: false,
+    eventReaderEnded: false,
+    callbackTraceStorages: new Map(),
+  };
   const owner = callbacks.owner('child', 'incarnation', 'turn', producer);
   const release = Promise.withResolvers<void>();
   const entered = Promise.withResolvers<void>();
@@ -66,7 +70,11 @@ it('delivers an entered callback tail before retirement EOF without revoking it'
 
 it('preserves callback failure for its result owner after observation retirement', async () => {
   const callbacks = new ChildCallbacks();
-  const producer = { ended: true, eventReaderEnded: true };
+  const producer = {
+    ended: true,
+    eventReaderEnded: true,
+    callbackTraceStorages: new Map(),
+  };
   const owner = callbacks.owner('child', 'incarnation', 'turn', producer);
   const failure = new Error('Callback failed');
   const failed = vi.fn(async () => {});
@@ -88,8 +96,16 @@ it('preserves callback failure for its result owner after observation retirement
 
 it('matches the captured producer and exact instance without overtaking a publisher', async () => {
   const callbacks = new ChildCallbacks();
-  const producer = { ended: false, eventReaderEnded: false };
-  const successor = { ended: false, eventReaderEnded: false };
+  const producer = {
+    ended: false,
+    eventReaderEnded: false,
+    callbackTraceStorages: new Map(),
+  };
+  const successor = {
+    ended: false,
+    eventReaderEnded: false,
+    callbackTraceStorages: new Map(),
+  };
   const old = callbacks.owner('child', 'old', 'turn', producer);
   expect(
     callbacks.owner('child', 'old', 'turn', producer, '9007199254740993'),
@@ -137,6 +153,7 @@ it('allows queued auxiliary publication before retirement and late handles after
   const producer: ChildObservationProducer = {
     ended: false,
     eventReaderEnded: false,
+    callbackTraceStorages: new Map(),
   };
   const owner = callbacks.owner('child', 'incarnation', 'turn', producer);
   const buffer = new ObservationBuffer('session');
