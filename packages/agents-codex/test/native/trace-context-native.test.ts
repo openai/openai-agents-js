@@ -136,11 +136,23 @@ it('exports isolated root and compaction parents, queued snapshots, exact callba
       }
     }
     const scoped = await run('owned-children-scoped');
+    expect(scoped.childStorage).toEqual([
+      { submission: true, opening: false },
+      { submission: true, opening: false },
+    ]);
     expect(scoped.rootCallback.traceparent.slice(3, 35)).toBe(scoped.traceId);
     expect(scoped.callbacks).toHaveLength(2);
     expect(scoped.policyChecks).toBeGreaterThanOrEqual(4);
     for (const callback of scoped.callbacks)
       expect(callback.traceparent.slice(3, 35)).toBe(scoped.traceId);
+    const overlap = await run('owned-children-overlap');
+    expect(overlap.retainedStorage).toEqual({
+      submission: true,
+      opening: false,
+      successor: false,
+      overlapping: true,
+    });
+    expect(overlap.callbacks[1].traceparent.slice(3, 35)).toBe(overlap.traceId);
     const reopened = await run('store-reopen');
     expectParent(dispatch(reopened.turns[0]), PARENT);
     expectParent(dispatch(reopened.turns[1]), WORKER);

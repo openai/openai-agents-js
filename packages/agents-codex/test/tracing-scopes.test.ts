@@ -11,6 +11,18 @@ const harness = vi.hoisted(() => {
   const released = new Set<string>();
   const aliases = new Set<string>();
   const aliasedHandles = new Set<string>();
+  const callbackDispatches = new Map<
+    string,
+    { key: string; release: () => void; references: number }
+  >();
+  const retainContext = (handle: string) => {
+    const context = contexts.get(handle);
+    if (!context || released.has(handle))
+      throw new Error('Unknown or released native tracing context');
+    const token = `lease-${++id}`;
+    contexts.set(token, context);
+    return token;
+  };
   const native = {
     configure_telemetry: vi.fn(async (_wire: string) => {}),
     start_trace_span: vi.fn((json: string) => {
@@ -53,25 +65,46 @@ const harness = vi.hoisted(() => {
             false),
       };
       contexts.set(handle, context);
-      return JSON.stringify(context);
+      const dispatch =
+        options.kind === 'callback' && !options.detached
+          ? callbackDispatches.get(options.parent)
+          : undefined;
+      return JSON.stringify({
+        ...context,
+        callback_storage_key: dispatch?.key,
+      });
     }),
     end_trace_span: vi.fn(),
     release_trace_span: vi.fn((handle: string) => {
       released.add(handle);
     }),
     retain_trace_context: vi.fn((handle: string) => {
-      if (!contexts.has(handle) || released.has(handle))
-        throw new Error('Unknown or released native tracing context');
-      const token = `lease-${++id}`;
-      contexts.set(token, contexts.get(handle)!);
+      const token = retainContext(handle);
+      const dispatch = callbackDispatches.get(handle);
+      if (dispatch) {
+        dispatch.references++;
+        callbackDispatches.set(token, dispatch);
+      }
       if (handle.startsWith('span-') && !aliasedHandles.has(handle)) {
         aliases.add(token);
         aliasedHandles.add(handle);
       }
       return token;
     }),
+    _retain_callback_dispatch_context: vi.fn(
+      (handle: string, key: string, release: () => void) => {
+        const token = retainContext(handle);
+        callbackDispatches.set(token, { key, release, references: 1 });
+        return token;
+      },
+    ),
     release_trace_context: vi.fn((token: string) => {
       released.add(token);
+      const dispatch = callbackDispatches.get(token);
+      if (dispatch) {
+        callbackDispatches.delete(token);
+        if (--dispatch.references === 0) queueMicrotask(dispatch.release);
+      }
     }),
     register_trace_credentials: vi.fn(() => 'credential-1'),
     release_trace_credentials: vi.fn(),
@@ -518,7 +551,8 @@ it.each([
     const events = Array.from({ length: 4 }, () =>
       Promise.withResolvers<string>(),
     );
-    const submitted: Record<string, unknown>[] = [];
+    let submitted = 0;
+    let childToken: string | undefined;
     const replied = Promise.withResolvers<void>();
     const interceptions = Promise.withResolvers<string>();
     let original: Awaited<ReturnType<typeof startTrace>> | undefined;
@@ -560,10 +594,15 @@ it.each([
           });
     const session = await rootFixture(
       async (wire) => {
-        submitted.push(JSON.parse(wire));
+        if (++submitted === 1) {
+          // Native child work retains its own carrier before the root ends.
+          childToken = harness.native.retain_trace_context(
+            JSON.parse(wire).tracing_context,
+          );
+        }
         return JSON.stringify({
           status: 'started',
-          turn_id: `root-${submitted.length}`,
+          turn_id: `root-${submitted}`,
         });
       },
       {
@@ -609,7 +648,6 @@ it.each([
       [probe],
       callback === 'manual' ? { input: 'run' } : undefined,
     );
-    let childToken: string | undefined;
     try {
       const discarded = await (async () => {
         const first = await withTrace(
@@ -618,13 +656,6 @@ it.each([
             original = workflow;
             return session.submit('original root');
           },
-        );
-        // Native child work retains its own borrowed carrier before the root ends.
-        const operation = harness.contexts.get(
-          submitted[0].tracing_context as string,
-        )!;
-        childToken = harness.native.retain_trace_context(
-          operation.handle as string,
         );
         events[0].resolve(
           JSON.stringify({
@@ -1400,7 +1431,7 @@ it.each(['traced', 'disabled', 'untraced'] as const)(
       Promise.withResolvers<string>(),
     );
     const interception = Promise.withResolvers<string>();
-    let submitted: Record<string, unknown> = {};
+    let token: string | undefined;
     const child = {
       session_id: 'trace-fixture',
       child_id: 'child',
@@ -1410,7 +1441,9 @@ it.each(['traced', 'disabled', 'untraced'] as const)(
     } as import('../native/index.js')._NativeChildTurn;
     const session = await rootFixture(
       async (wire) => {
-        submitted = JSON.parse(wire);
+        const context = JSON.parse(wire).tracing_context;
+        if (context !== undefined)
+          token = harness.native.retain_trace_context(context);
         return JSON.stringify({ status: 'started', turn_id: 'root' });
       },
       { nativeAgents: new NativeAgents() },
@@ -1434,7 +1467,6 @@ it.each(['traced', 'disabled', 'untraced'] as const)(
       [declaration],
     );
     let workflow: Awaited<ReturnType<typeof startTrace>> | undefined;
-    let token: string | undefined;
     try {
       if (mode === 'untraced') await session.submit('run');
       else
@@ -1445,11 +1477,6 @@ it.each(['traced', 'disabled', 'untraced'] as const)(
             await session.submit('run');
           },
         );
-      const operation = harness.contexts.get(
-        submitted.tracing_context as string,
-      );
-      if (operation)
-        token = harness.native.retain_trace_context(operation.handle as string);
       const requestReady = (async () => {
         for await (const event of session.events()) {
           const request = declaration.match(event);
@@ -2310,8 +2337,8 @@ it('releases discarded workflow aliases while a native callback carrier keeps it
 it('counts the complete traced audio envelope before encoding or native submission', async () => {
   const { TraceCapture } = await import('../src/runtime/tracing-context');
   const context = vi
-    .spyOn(TraceCapture.prototype, 'context')
-    .mockResolvedValue('t'.repeat(1024));
+    .spyOn(TraceCapture.prototype, 'dispatchContext')
+    .mockReturnValue('t'.repeat(1024));
   const submit = vi.fn(async () => {
     throw new Error('unexpected native submission');
   });
