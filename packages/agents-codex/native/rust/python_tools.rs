@@ -3491,12 +3491,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                 return Ok(Box::new(codex_tools::ApplyPatchToolOutput::from_dynamic_response(arguments, response.response)?) as Box<dyn ToolOutput>);
             }
             if let ToolPayload::Computer { arguments } = &call.payload {
-                return Ok(
-                    Box::new(codex_tools::ComputerToolOutput::from_dynamic_response(
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ComputerToolOutput::from_dynamic_response(
                         arguments,
                         response.response,
-                    )?) as Box<dyn ToolOutput>,
-                );
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
             }
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
@@ -3509,17 +3511,20 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
 
 pub(crate) struct PythonOutput(pub(crate) DynamicToolResponse);
 
-struct RealtimeToolOutput {
-    output: PythonOutput,
+struct RealtimeToolOutput<T: ToolOutput> {
+    output: T,
     start_response: bool,
     acceptance: Option<oneshot::Sender<()>>,
 }
-impl ToolOutput for RealtimeToolOutput {
+impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
     fn log_output(&self) -> String {
         self.output.log_output()
     }
     fn success_for_logging(&self) -> bool {
         self.output.success_for_logging()
+    }
+    fn contains_external_context(&self) -> bool {
+        self.output.contains_external_context()
     }
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         self.output.to_response_item(call_id, payload)
@@ -3528,6 +3533,7 @@ impl ToolOutput for RealtimeToolOutput {
         self.start_response
     }
     fn mark_accepted(&mut self) {
+        self.output.mark_accepted();
         if let Some(acceptance) = self.acceptance.take() {
             let _ = acceptance.send(());
         }
@@ -3727,6 +3733,26 @@ impl ToolOutput for PythonOutput {
 #[cfg(test)]
 mod pending_tests {
     use super::*;
+
+    #[test]
+    fn computer_output_preserves_external_context_and_acceptance() {
+        let arguments = json!({"type":"computer_call","call_id":"computer-data","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}).to_string();
+        let response = serde_json::from_value(json!({"success":true,"contentItems":[{"type":"inputText","text":json!({"output":{"type":"computer_screenshot","image_url":"data:image/png;base64,aA=="},"acknowledged_safety_checks":[]}).to_string()}]})).unwrap();
+        let (acceptance, mut accepted) = oneshot::channel();
+        let mut output = RealtimeToolOutput {
+            output: codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
+                .unwrap(),
+            start_response: true,
+            acceptance: Some(acceptance),
+        };
+        assert!(output.contains_external_context());
+        assert!(matches!(
+            accepted.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        output.mark_accepted();
+        assert_eq!(accepted.try_recv(), Ok(()));
+    }
 
     #[test]
     fn response_scheduling_flag_stays_out_of_user_content() {
