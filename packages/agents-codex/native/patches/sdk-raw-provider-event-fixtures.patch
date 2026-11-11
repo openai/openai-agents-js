@@ -1,0 +1,52 @@
+--- a/codex-rs/codex-api/src/endpoint/responses_json_tests.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_json_tests.rs
+@@ -40,6 +40,7 @@
+         },
+         Duration::from_secs(5),
+         None,
++        false,
+     )
+     .1
+ }
+@@ -267,6 +268,7 @@
+             },
+             Duration::from_secs(5),
+             None,
++            false,
+         );
+         assert_eq!(polls.load(Ordering::SeqCst), 0);
+         if stage > 0 {
+@@ -305,6 +307,7 @@
+         },
+         Duration::from_millis(1),
+         None,
++        false,
+     );
+     let reset = pending.next().await;
+     assert!(default_header_reset(reset.as_ref()));
+@@ -323,6 +326,7 @@
+         },
+         Duration::from_secs(5),
+         None,
++        false,
+     );
+     let events: Events = events.collect().await;
+     assert!(default_header_reset(events.first()));
+@@ -350,6 +354,7 @@
+         },
+         Duration::from_secs(5),
+         None,
++        false,
+     );
+     let events: Events = events.collect().await;
+     assert!(default_header_reset(events.first()));
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -1250,6 +1250,7 @@
+                 None,
+                 &context,
+                 rx_interrupt,
++                false,
+             )
+             .await
+             .unwrap_err();
