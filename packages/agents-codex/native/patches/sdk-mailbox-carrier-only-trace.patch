@@ -1,0 +1,352 @@
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index d204b092744fae65f80018f7bf339423cc58d579..9030dbbe983ff8a39ce5702b09f31dc1bd6dbe88 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -121,7 +121,7 @@ pub(crate) struct PendingMailboxCommunication {
+ pub(super) struct MailboxTrace {
+     submission_id: String,
+     carrier: W3cTraceContext,
+-    policy: MailboxTracePolicy,
++    policy: Option<MailboxTracePolicy>,
+ }
+
+ #[derive(Clone)]
+@@ -146,13 +146,15 @@ impl MailboxTrace {
+         policy: Option<Arc<sdk_trace::ScopePolicy>>,
+         trigger_turn: bool,
+     ) -> Option<Self> {
+-        let (carrier, policy) = carrier.zip(policy)?;
+-        let policy = if trigger_turn {
+-            MailboxTracePolicy::Trigger(policy)
+-        } else {
+-            // Queue-only mail can veto another owner's trace without retaining its own lease.
+-            MailboxTracePolicy::Queued(Arc::downgrade(&policy))
+-        };
++        let carrier = carrier?;
++        let policy = policy.map(|policy| {
++            if trigger_turn {
++                MailboxTracePolicy::Trigger(policy)
++            } else {
++                // Queue-only mail can veto another owner's trace without retaining its own lease.
++                MailboxTracePolicy::Queued(Arc::downgrade(&policy))
++            }
++        });
+         Some(Self {
+             submission_id: submission_id.to_owned(),
+             carrier,
+@@ -161,7 +163,12 @@ impl MailboxTrace {
+     }
+
+     fn same_owner(&self, other: &Self) -> bool {
+-        self.carrier == other.carrier && std::ptr::eq(self.policy.as_ptr(), other.policy.as_ptr())
++        self.carrier == other.carrier
++            && self
++                .policy
++                .as_ref()
++                .zip(other.policy.as_ref())
++                .is_some_and(|(left, right)| std::ptr::eq(left.as_ptr(), right.as_ptr()))
+     }
+ }
+
+@@ -179,11 +186,13 @@ impl MailboxWakeBatch {
+             return Span::current();
+         }
+         let parent = self.trace.as_ref().and_then(|trace| {
+-            let MailboxTracePolicy::Trigger(policy) = &trace.policy else {
+-                return None;
++            let context = context_from_w3c_trace_context(&trace.carrier)?;
++            let context = match &trace.policy {
++                Some(MailboxTracePolicy::Trigger(policy)) => context.with_value(Arc::clone(policy)),
++                Some(MailboxTracePolicy::Queued(_)) => return None,
++                None => context,
+             };
+-            context_from_w3c_trace_context(&trace.carrier)
+-                .map(|context| (trace, context.with_value(Arc::clone(policy))))
++            Some((trace, context))
+         });
+         let parent = match parent {
+             Some((trace, _)) if trace.submission_id == sub_id => return Span::current(),
+@@ -455,11 +464,13 @@ impl InputQueue {
+             .and_then(|mail| mail.trace.as_ref())
+             .filter(|owner| {
+                 // The startup commits the whole prefix, including queued messages.
+-                mails.iter().all(|mail| {
+-                    mail.trace
+-                        .as_ref()
+-                        .is_some_and(|trace| owner.same_owner(trace))
+-                })
++                // A carrier alone identifies a parent, but does not establish shared ownership.
++                len == 1
++                    || mails.iter().all(|mail| {
++                        mail.trace
++                            .as_ref()
++                            .is_some_and(|trace| owner.same_owner(trace))
++                    })
+             })
+             .cloned();
+         let batch = MailboxWakeBatch {
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index e64deef4eb39f074aa66ed44b14d1051ce60beea..1b6b5a47047e903e2abd7a8ff89c065c9af006d1 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -13253,12 +13253,32 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
+     assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
+ }
+
+-#[test_case(false, false; "idle")]
+-#[test_case(true, false; "deferred")]
+-#[test_case(false, true; "idle with disabled tracing")]
+-#[test_case(true, true; "deferred with disabled tracing")]
+-#[tokio::test]
+-async fn trigger_mailbox_turn_inherits_dispatch_trace(deferred: bool, disabled: bool) {
++#[derive(Clone, Copy)]
++enum MailboxDispatchTrace {
++    Scoped(bool),
++    Bare(u8),
++    Missing,
++    Invalid,
++}
++
++#[test_case(false, MailboxDispatchTrace::Scoped(false), None; "idle")]
++#[test_case(true, MailboxDispatchTrace::Scoped(false), None; "deferred")]
++#[test_case(false, MailboxDispatchTrace::Scoped(true), None; "idle with disabled tracing")]
++#[test_case(true, MailboxDispatchTrace::Scoped(true), None; "deferred with disabled tracing")]
++#[test_case(false, MailboxDispatchTrace::Bare(0x02), None; "idle bare unsampled carrier")]
++#[test_case(false, MailboxDispatchTrace::Bare(0x03), None; "idle bare sampled carrier")]
++#[test_case(true, MailboxDispatchTrace::Bare(0x02), None; "deferred bare unsampled carrier")]
++#[test_case(true, MailboxDispatchTrace::Bare(0x03), None; "deferred bare sampled carrier")]
++#[test_case(true, MailboxDispatchTrace::Bare(0x03), Some(MailboxDispatchTrace::Bare(0x03)); "same bare carrier lacks shared ownership")]
++#[test_case(true, MailboxDispatchTrace::Bare(0x03), Some(MailboxDispatchTrace::Missing); "coalesced mail with missing carrier")]
++#[test_case(true, MailboxDispatchTrace::Scoped(false), Some(MailboxDispatchTrace::Bare(0x01)); "scoped and bare mail share carrier only")]
++#[test_case(false, MailboxDispatchTrace::Invalid, None; "idle invalid carrier")]
++#[tokio::test]
++async fn trigger_mailbox_turn_inherits_dispatch_trace(
++    deferred: bool,
++    first: MailboxDispatchTrace,
++    second: Option<MailboxDispatchTrace>,
++) {
+     use codex_otel::sdk_trace;
+
+     struct TurnStart {
+@@ -13297,21 +13317,6 @@ async fn trigger_mailbox_turn_inherits_dispatch_trace(deferred: bool, disabled:
+
+     const TRACE_ID: &str = "00000000000000000000000000000055";
+     let _tracing = install_test_tracing("codex-core-tests");
+-    let options = json!({
+-        "name": "mail sender",
+-        "kind": "workflow",
+-        "trace_id": TRACE_ID,
+-        "disabled": disabled,
+-        "include_sensitive_data": false,
+-    });
+-    let readback = sdk_trace::start_trace_span(&options.to_string()).expect("start caller scope");
+-    let root: serde_json::Value = serde_json::from_str(&readback).expect("caller scope readback");
+-    let handle = root["handle"].as_str().expect("caller scope handle");
+-    let caller_policy =
+-        sdk_trace::policy_for_context(&sdk_trace::context(handle).expect("caller context"))
+-            .expect("caller policy");
+-    sdk_trace::release_trace_span(handle);
+-
+     let (mut session, turn) = make_session_and_context().await;
+     let (starts_tx, starts) = async_channel::unbounded();
+     let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
+@@ -13339,52 +13344,91 @@ async fn trigger_mailbox_turn_inherits_dispatch_trace(deferred: bool, disabled:
+             .await;
+     }
+
+-    let mail = InterAgentCommunication::new(
+-        AgentPath::try_from("/root/worker").expect("worker path"),
+-        AgentPath::root(),
+-        Vec::new(),
+-        "trigger a turn".to_string(),
+-        /*trigger_turn*/ true,
+-    );
+-    let submission = Submission {
+-        id: "mail-submission".to_string(),
+-        op: Op::InterAgentCommunication {
+-            communication: mail.clone(),
+-            start_options: Default::default(),
+-        },
+-        trace: Some(W3cTraceContext {
+-            traceparent: Some(format!("00-{TRACE_ID}-0000000000000066-01")),
+-            tracestate: None,
+-        }),
+-        trace_policy: Some(Arc::clone(&caller_policy)),
+-        turn_extension_init: None,
+-        parent_turn_id: None,
+-        root_turn_id: None,
+-        residency_guard: None,
+-    };
+-    let span = submission_dispatch_span(&submission);
+-    let Op::InterAgentCommunication {
+-        communication,
+-        start_options,
+-    } = submission.op
+-    else {
+-        unreachable!()
++    let submit = async |id: &str, mode: MailboxDispatchTrace| {
++        let policy = if let MailboxDispatchTrace::Scoped(disabled) = mode {
++            let options = json!({
++                "name": "mail sender",
++                "kind": "workflow",
++                "trace_id": TRACE_ID,
++                "disabled": disabled,
++                "include_sensitive_data": false,
++            });
++            let readback =
++                sdk_trace::start_trace_span(&options.to_string()).expect("start caller scope");
++            let root: serde_json::Value =
++                serde_json::from_str(&readback).expect("caller scope readback");
++            let handle = root["handle"].as_str().expect("caller scope handle");
++            let policy =
++                sdk_trace::policy_for_context(&sdk_trace::context(handle).expect("caller context"))
++                    .expect("caller policy");
++            sdk_trace::release_trace_span(handle);
++            Some(policy)
++        } else {
++            None
++        };
++        let traceparent = match mode {
++            MailboxDispatchTrace::Scoped(_) => Some(format!("00-{TRACE_ID}-0000000000000066-01")),
++            MailboxDispatchTrace::Bare(flags) => {
++                Some(format!("00-{TRACE_ID}-0000000000000066-{flags:02x}"))
++            }
++            MailboxDispatchTrace::Missing => None,
++            MailboxDispatchTrace::Invalid => Some("invalid".to_owned()),
++        };
++        let mail = InterAgentCommunication::new(
++            AgentPath::try_from("/root/worker").expect("worker path"),
++            AgentPath::root(),
++            Vec::new(),
++            id.to_owned(),
++            /*trigger_turn*/ true,
++        );
++        let submission = Submission {
++            id: id.to_owned(),
++            op: Op::InterAgentCommunication {
++                communication: mail.clone(),
++                start_options: Default::default(),
++            },
++            trace: traceparent.map(|traceparent| W3cTraceContext {
++                traceparent: Some(traceparent),
++                tracestate: Some("vendor=mailbox".to_owned()),
++            }),
++            trace_policy: policy.clone(),
++            turn_extension_init: None,
++            parent_turn_id: None,
++            root_turn_id: None,
++            residency_guard: None,
++        };
++        let span = submission_dispatch_span(&submission);
++        let Op::InterAgentCommunication {
++            communication,
++            start_options,
++        } = submission.op
++        else {
++            unreachable!()
++        };
++        let trace = super::input_queue::MailboxTrace::from_submission(
++            &submission.id,
++            submission.trace,
++            submission.trace_policy,
++            communication.trigger_turn,
++        );
++        handlers::inter_agent_communication(
++            &session,
++            submission.id,
++            communication,
++            start_options,
++            trace,
++        )
++        .instrument(span)
++        .await;
++        (TurnInput::InterAgentCommunication(mail), policy)
+     };
+-    let trace = super::input_queue::MailboxTrace::from_submission(
+-        &submission.id,
+-        submission.trace,
+-        submission.trace_policy,
+-        communication.trigger_turn,
+-    );
+-    handlers::inter_agent_communication(
+-        &session,
+-        submission.id,
+-        communication,
+-        start_options,
+-        trace,
+-    )
+-    .instrument(span)
+-    .await;
++
++    let (first_input, caller_policy) = submit("mail-submission", first).await;
++    let mut expected_input = vec![first_input];
++    if let Some(second) = second {
++        let (second_input, _) = submit("second-mail", second).await;
++        expected_input.push(second_input);
++    }
+
+     if deferred {
+         assert!(
+@@ -13411,26 +13455,45 @@ async fn trigger_mailbox_turn_inherits_dispatch_trace(deferred: bool, disabled:
+     session.abort_all_tasks(TurnAbortReason::Replaced).await;
+
+     assert_ne!(start.id, turn.sub_id);
+-    assert_eq!(input, vec![TurnInput::InterAgentCommunication(mail)]);
++    assert_eq!(input, expected_input);
+     assert!(starts.is_empty());
+-    let trace_id = start
++    let expected_trace_id = TraceId::from_hex(TRACE_ID).expect("trace ID");
++    let trace = start
+         .trace
+         .as_ref()
+-        .and_then(codex_otel::context_from_w3c_trace_context)
+-        .map(|ctx| ctx.span().span_context().trace_id());
+-    let policy = start
+-        .policy
+-        .as_ref()
+-        .map(|p| (p.disabled, p.include_sensitive_data));
+-    assert_eq!(
+-        (trace_id, policy),
+-        (
+-            Some(TraceId::from_hex(TRACE_ID).expect("trace ID")),
+-            Some((disabled, false))
+-        ),
+-        "mailbox task should inherit the sender's trace and sensitive-data policy"
+-    );
+-    assert!(Arc::ptr_eq(&start.policy.unwrap(), &caller_policy));
++        .and_then(codex_otel::context_from_w3c_trace_context);
++    let span = trace.as_ref().map(|context| context.span());
++    let span_context = span.as_ref().map(|span| span.span_context());
++    match (first, second) {
++        (_, Some(_)) | (MailboxDispatchTrace::Missing | MailboxDispatchTrace::Invalid, _) => {
++            assert_ne!(
++                span_context.map(|span| span.trace_id()),
++                Some(expected_trace_id)
++            );
++            let policy = start.policy.expect("suppressed trace policy");
++            assert!(policy.disabled);
++            assert!(!policy.include_sensitive_data);
++        }
++        (MailboxDispatchTrace::Scoped(disabled), None) => {
++            assert_eq!(
++                span_context.expect("scoped trace").trace_id(),
++                expected_trace_id
++            );
++            let policy = start.policy.expect("scoped trace policy");
++            assert_eq!(
++                (policy.disabled, policy.include_sensitive_data),
++                (disabled, false)
++            );
++            assert!(Arc::ptr_eq(&policy, &caller_policy.expect("caller policy")));
++        }
++        (MailboxDispatchTrace::Bare(flags), None) => {
++            let span = span_context.expect("bare W3C parent should reach the mailbox task");
++            assert_eq!(span.trace_id(), expected_trace_id);
++            assert_eq!(span.trace_flags().to_u8(), flags);
++            assert_eq!(span.trace_state().get("vendor"), Some("mailbox"));
++            assert!(start.policy.is_none());
++        }
++    }
+ }
+
+ #[derive(Clone, Copy, Eq, PartialEq)]
