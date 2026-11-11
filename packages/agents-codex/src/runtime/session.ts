@@ -9470,17 +9470,20 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Managed approval expired during policy evaluation',
             );
+          const effectiveInput =
+            decision.effective === undefined ? args : decision.effective;
           if (
             !this.#native._require_tool_approval(
               encodeReceipt(msg),
-              encodeReceipt(
-                decision.effective === undefined ? args : decision.effective,
-              ),
+              encodeReceipt(effectiveInput),
             )
           )
             return;
           if (decision.denial === undefined)
-            grant.setValidatedEffectiveArguments(decision.validated);
+            grant.setValidatedEffectiveArguments(
+              decision.validated,
+              effectiveInput,
+            );
           const action = grant.request();
           if (!isFunctionApprovalRequest(action))
             throw new NativeError('Managed approval capability was not issued');
@@ -9571,6 +9574,21 @@ export class Session<OutputT = string, Context = unknown> {
     const action = call.grant.request();
     if (!action) return;
     const handler = this.options.onInteraction;
+    if (
+      !handler &&
+      isFunctionApprovalRequest(action) &&
+      action.call?.route === 'direct' &&
+      action.call.callId
+    ) {
+      this.observations.append({
+        type: 'function_approval_requested',
+        submissionId: action.submissionId,
+        turnId: action.turnId,
+        approvalId: action.callId,
+        callId: action.call.callId,
+        name: action.name,
+      });
+    }
     if (handler) {
       const root =
         run instanceof NativeTurn

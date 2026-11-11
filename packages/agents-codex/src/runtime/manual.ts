@@ -123,8 +123,18 @@ export interface ManualTool<
 interface RequestAuthority {
   definition: Definition;
   current(): boolean;
+  approvalInput?: JsonValue;
 }
 const requests = new WeakMap<object, RequestAuthority>();
+
+/** @internal Display the exact JSON accepted by the approval input policy. */
+export function functionApprovalInput(
+  request: FunctionApprovalRequest,
+): JsonValue | undefined {
+  const authority = requests.get(request);
+  if (authority?.current() && authority.approvalInput !== undefined)
+    return copyJsonValue(authority.approvalInput);
+}
 const replies = new WeakMap<
   object,
   {
@@ -329,9 +339,15 @@ export function createManualRequest<Input, Result>(
       effectiveArguments = copyInput(definition.parseInput(value));
       checkCurrent();
     },
-    setValidatedEffectiveArguments(value: unknown): void {
+    setValidatedEffectiveArguments(value: unknown, input: JsonValue): void {
       checkCurrent();
       effectiveArguments = copyInput(value);
+      try {
+        authority.approvalInput = copyJsonValue(input);
+      } catch {
+        // Native approval can still handle an input outside browser JSON.
+        authority.approvalInput = undefined;
+      }
     },
     executionArguments(): ApprovedArguments | undefined {
       const approved = approvedArguments;
