@@ -116,6 +116,33 @@ describe('reconciled tool result normalization', () => {
     commit: async () => {},
     release: async () => {},
   };
+  it.each([false, true])(
+    'rejects private application data before reconciliation effects, credential=%s',
+    async (withCredential) => {
+      nativeReconcile.mockClear();
+      const credential = vi.fn();
+      await expect(
+        reconcileSessionStore(
+          store,
+          {
+            sessionId: 'session',
+            turnId: 'turn',
+            callId: 'call',
+            result: new ToolOutput(
+              [{ type: 'inputText', text: 'verified' }],
+              true,
+              { ticket: 'private-reconciliation' },
+            ),
+          },
+          withCredential
+            ? { signInWithChatGPT: { getCredential: credential } }
+            : undefined,
+        ),
+      ).rejects.toThrow('applicationData');
+      expect(credential).not.toHaveBeenCalled();
+      expect(nativeReconcile).not.toHaveBeenCalled();
+    },
+  );
   it('joins cleanup retries without repeating reconciliation', async () => {
     const started = deferred();
     const finish = deferred();
@@ -157,6 +184,8 @@ describe('reconciled tool result normalization', () => {
   });
   it.each([
     'verified text',
+    new ToolOutput([{ type: 'inputText', text: 'empty data' }], true, {}),
+    new ToolOutput([{ type: 'inputText', text: 'null data' }], true, null),
     new ToolOutput([{ type: 'inputText', text: 'verified failure' }], false),
     new ToolOutput([
       { type: 'inputText', text: 'caption' },
