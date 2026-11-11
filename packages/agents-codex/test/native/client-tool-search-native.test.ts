@@ -397,3 +397,117 @@ it('joins a cancelled client callback before returning without admitting its dis
   );
   model.assertExhausted();
 }, 30_000);
+
+it.each(['object', 'reference'] as const)(
+  'selects an accepted discovered %s in beforeStep',
+  async (kind) => {
+    const model = new ModelServer([
+      [search('select_search', {})],
+      [call('selected_discovery', {}, { callId: 'selected_call' })],
+      [message('Selected callback completed.')],
+    ]);
+    await using provider = await providerFor(model);
+    let searched = false;
+    let executions = 0;
+    const discovered = tool({
+      name: 'selected_discovery',
+      parameters: z.object({}),
+      execute: () => {
+        executions++;
+        return 'selected';
+      },
+    });
+    await using session = await new Agent({
+      provider,
+      model: 'fixture',
+      instructions: 'Discover and select a callback.',
+      tools: [
+        toolSearch({
+          execution: 'client',
+          execute: () => {
+            searched = true;
+            return discovered;
+          },
+        }),
+      ],
+    }).session();
+    const turn = await session.submit('Select the discovered callback.', {
+      beforeStep: () =>
+        searched
+          ? [kind === 'object' ? discovered : toolRef(discovered.name)]
+          : undefined,
+    });
+    expect((await turn.wait()).finalOutput).toBe(
+      'Selected callback completed.',
+    );
+    expect(executions).toBe(1);
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it.each(['unaccepted', 'prior-turn'] as const)(
+  'rejects a same-name %s declaration in beforeStep',
+  async (kind) => {
+    const model = new ModelServer([
+      ...(kind === 'prior-turn'
+        ? [
+            [search('earlier_search', {})],
+            [call('selected_discovery', {}, { callId: 'earlier_call' })],
+            [message('Earlier turn completed.')],
+          ]
+        : []),
+      [search('current_search', {})],
+      [call('selected_discovery', {}, { callId: 'current_call' })],
+      [message('Unexpected selection completed.')],
+    ]);
+    await using provider = await providerFor(model);
+    const effects: string[] = [];
+    const declaration = (label: string) =>
+      tool({
+        name: 'selected_discovery',
+        parameters: z.object({}),
+        execute: () => {
+          effects.push(label);
+          return label;
+        },
+      });
+    const earlier = declaration('earlier');
+    const current = declaration('current');
+    let searches = 0;
+    await using session = await new Agent({
+      provider,
+      model: 'fixture',
+      instructions: 'Discover callbacks.',
+      tools: [
+        toolSearch({
+          execution: 'client',
+          execute: () => {
+            searches++;
+            return kind === 'prior-turn' && searches === 1 ? earlier : current;
+          },
+        }),
+      ],
+    }).session();
+    if (kind === 'prior-turn') {
+      expect(
+        (await (await session.submit('Run the earlier callback.')).wait())
+          .finalOutput,
+      ).toBe('Earlier turn completed.');
+      expect(effects).toEqual(['earlier']);
+    }
+    const targetSearch = kind === 'prior-turn' ? 2 : 1;
+    const turn = await session.submit(
+      'Select a declaration outside this turn.',
+      {
+        beforeStep: () => (searches === targetSearch ? [earlier] : undefined),
+      },
+    );
+    await expect(turn.wait()).rejects.toThrow(
+      /was not admitted by this Session/,
+    );
+    expect(effects).toEqual(kind === 'prior-turn' ? ['earlier'] : []);
+    expect(model.requests).toHaveLength(kind === 'prior-turn' ? 4 : 1);
+  },
+  30_000,
+);

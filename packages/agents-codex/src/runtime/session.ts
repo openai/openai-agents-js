@@ -2094,9 +2094,8 @@ export class Session<OutputT = string, Context = unknown> {
   private clientSearchCatalogKey(
     message: Record<string, unknown>,
     generation: string,
+    marker = message._sdk_python_tool as Record<string, unknown> | undefined,
   ): string | undefined {
-    const marker = message._sdk_python_tool as
-      Record<string, unknown> | undefined;
     if (!marker || typeof marker.thread !== 'string') return undefined;
     const source = this.messageProfile(message);
     return JSON.stringify([
@@ -2107,6 +2106,20 @@ export class Session<OutputT = string, Context = unknown> {
       source?.epoch.toString() ?? null,
       generation,
     ]);
+  }
+
+  private retainedClientSearchCatalogs(
+    owner: NativeTurn | ChildCallbackOwner,
+    sourceKey: string | undefined,
+  ): readonly ClientSearchCatalog[] {
+    if (!sourceKey) return [];
+    return [...(owner.clientSearchCatalogKeys ?? [])].flatMap((key) => {
+      const catalog = this.profileCatalogs.get(key) as
+        ClientSearchCatalog | undefined;
+      return catalog && catalog[clientSearchCatalogSource] === sourceKey
+        ? [catalog]
+        : [];
+    });
   }
 
   private async executeClientToolSearch(
@@ -2152,15 +2165,7 @@ export class Session<OutputT = string, Context = unknown> {
       message,
       sourceCatalog.generation.toString(),
     );
-    const retained = [...(owner.clientSearchCatalogKeys ?? [])].flatMap(
-      (key) => {
-        const catalog = this.profileCatalogs.get(key) as
-          ClientSearchCatalog | undefined;
-        return catalog && catalog[clientSearchCatalogSource] === sourceKey
-          ? [catalog]
-          : [];
-      },
-    );
+    const retained = this.retainedClientSearchCatalogs(owner, sourceKey);
     for (const tool of [sourceCatalog, ...retained].flatMap((catalog) => [
       ...catalog.tools,
     ])) {
@@ -4830,6 +4835,7 @@ export class Session<OutputT = string, Context = unknown> {
       : undefined,
     sourceMcp: readonly McpTool[] = this.openingMcpTools,
     mcpIndex = this.mcpNameIndex(sourceMcp),
+    admittedClientTools: ToolCatalog['tools'] = [],
   ): readonly ReturnType<typeof toolIdentity>[] {
     // A graph operation captures object authority, not a historical name alias.
     // Keep ordinary mono Session selector compatibility unchanged.
@@ -4865,10 +4871,13 @@ export class Session<OutputT = string, Context = unknown> {
           identity = declared;
         }
         const key = JSON.stringify([identity.namespace, identity.name]);
-        // Preserve immediate rejection outside the captured opening authority.
-        // Core derives tool_search from admitted leaves and still resolves every
-        // reference against the actual model's candidates before sampling.
-        if (selector.kind === 'tool_ref')
+        const clientTool = admittedClientTools.find((tool) => {
+          const admitted = toolIdentity(tool);
+          return JSON.stringify([admitted.namespace, admitted.name]) === key;
+        });
+        // Captured discovery extends this step's authority. Other references
+        // retain the opening policy and current model candidate checks.
+        if (selector.kind === 'tool_ref' && !clientTool)
           assertAdmittedToolReference(identity, opening);
         if (
           currentMcp &&
@@ -4881,6 +4890,11 @@ export class Session<OutputT = string, Context = unknown> {
           );
         if (
           selector.kind !== 'tool_ref' &&
+          !(
+            clientTool &&
+            toolDeclarationIdentity(clientTool) ===
+              toolDeclarationIdentity(selector)
+          ) &&
           !(sourceCatalog
             ? sourceCatalog.tools.some(
                 (tool) =>
@@ -8935,6 +8949,7 @@ export class Session<OutputT = string, Context = unknown> {
             if (isStepStop(selected)) stopped = true;
             else
               names = this.selectedStepNames(
+                run,
                 event,
                 selected,
                 this.profileOperationNames(selection, event, sourceCatalog),
@@ -9226,7 +9241,7 @@ export class Session<OutputT = string, Context = unknown> {
         );
         if (selected !== skipped) {
           if (isStepStop(selected)) stopped = true;
-          else names = this.selectedStepNames(event, selected);
+          else names = this.selectedStepNames(owner, event, selected);
         }
       } finally {
         await scope.close();
@@ -9315,6 +9330,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private selectedStepNames(
+    owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
     selected: readonly ToolSelector<Context>[] | undefined,
     defaults?: readonly ReturnType<typeof toolIdentity>[],
@@ -9340,6 +9356,20 @@ export class Session<OutputT = string, Context = unknown> {
         event.msg,
         z.string().parse(event.msg.generation),
       );
+    const identityKey = (tool: ReturnType<typeof toolIdentity>) =>
+      JSON.stringify([tool.namespace, tool.name]);
+    const candidateKeys = new Set(candidates.map(identityKey));
+    const sourceKey = this.clientSearchCatalogKey(
+      event.msg,
+      z.string().parse(event.msg.generation),
+      { thread: event.msg.thread, instance: event.subagent_incarnation },
+    );
+    const admittedClientTools = this.retainedClientSearchCatalogs(
+      owner,
+      sourceKey,
+    )
+      .flatMap((catalog) => [...catalog.tools])
+      .filter((tool) => candidateKeys.has(identityKey(toolIdentity(tool))));
     const servers = source
       ? (this.profileStepMcp.get(
           this.profileKey(source.profile_id, sourceCatalog!.generation),
@@ -9367,6 +9397,16 @@ export class Session<OutputT = string, Context = unknown> {
       return { name: actual.name, namespace: actual.namespace };
     };
     const resolvedDefaults = defaults?.map((name) => resolve(name));
+    if (resolvedDefaults) {
+      const seen = new Set(resolvedDefaults.map(identityKey));
+      for (const tool of admittedClientTools) {
+        const identity = toolIdentity(tool);
+        if (!seen.has(identityKey(identity))) {
+          seen.add(identityKey(identity));
+          resolvedDefaults.push(identity);
+        }
+      }
+    }
     const names =
       selected === undefined
         ? (resolvedDefaults ?? nativeDefaults ?? candidates)
@@ -9375,6 +9415,7 @@ export class Session<OutputT = string, Context = unknown> {
             sourceCatalog,
             servers,
             declared,
+            admittedClientTools,
           ).map((name, index) => resolve(name, selected[index]));
     const ceiling =
       resolvedDefaults && source
