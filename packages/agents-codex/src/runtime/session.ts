@@ -266,6 +266,7 @@ import {
 import {
   projectHistory,
   projectExecutionItem,
+  projectModelOutputItem,
   projectSearchItem,
   projectNativeHostedToolItem,
   threadHistorySchema,
@@ -380,6 +381,7 @@ export interface SessionOptions {
   realtimeApiKey?: string;
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
+  includeModelOutputItems?: boolean;
   includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
@@ -6591,13 +6593,18 @@ export class Session<OutputT = string, Context = unknown> {
           id,
         );
     }
-    if (msg.type === 'item_completed' && msg.thread_id === id) {
+    const completedItem = msg.type === 'item_completed' && msg.thread_id === id;
+    const modelItem =
+      completedItem && this.options.includeModelOutputItems
+        ? projectModelOutputItem(msg.item, turnId, id)
+        : undefined;
+    if (completedItem) {
       const item = projectExecutionItem(msg.item, turnId, id);
       const searchItem = item
         ? undefined
         : projectSearchItem(msg.item, turnId, id);
       const hostedItem = projectNativeHostedToolItem(msg.item, turnId);
-      if (item || searchItem || hostedItem) {
+      if (item || searchItem || hostedItem || modelItem) {
         const owner = this.childCallbacks.find(id, incarnation, turnId);
         if (
           owner &&
@@ -6625,6 +6632,13 @@ export class Session<OutputT = string, Context = unknown> {
               turnId,
               submissionId,
               item: searchItem,
+            });
+          if (modelItem)
+            this.observations.append({
+              type: 'model_output_item_completed',
+              turnId,
+              submissionId,
+              item: modelItem,
             });
         } else {
           this.observations.gap();
@@ -7106,7 +7120,10 @@ export class Session<OutputT = string, Context = unknown> {
       ? undefined
       : projectSearchItem(msg.item, msg.turn_id, this.id);
     const hostedItem = projectNativeHostedToolItem(msg.item, msg.turn_id);
-    if (!item && !searchItem && !hostedItem) return;
+    const modelItem = this.options.includeModelOutputItems
+      ? projectModelOutputItem(msg.item, msg.turn_id, this.id)
+      : undefined;
+    if (!item && !searchItem && !hostedItem && !modelItem) return;
     const owner = this.lastRun;
     if (
       owner?.id === msg.turn_id &&
@@ -7133,6 +7150,13 @@ export class Session<OutputT = string, Context = unknown> {
           turnId: msg.turn_id,
           submissionId,
           item: searchItem,
+        });
+      if (modelItem)
+        this.observations.append({
+          type: 'model_output_item_completed',
+          turnId: msg.turn_id,
+          submissionId,
+          item: modelItem,
         });
     } else this.observations.gap();
   }
