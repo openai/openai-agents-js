@@ -31,6 +31,13 @@ import {
 import type { TraceEvent, Exporter } from '../../../src/runtime/telemetry';
 import { startPublicExecutor } from './public-executor';
 
+type LogRecord = {
+  attributes?: { key: string; value: { stringValue?: string } }[];
+};
+type LogBatch = {
+  resourceLogs?: { scopeLogs?: { logRecords?: LogRecord[] }[] }[];
+};
+
 type Span = {
   name: string;
   traceId: string;
@@ -521,12 +528,6 @@ async function controlCase(batches: unknown[]) {
     { label: 'metadata-only', disabled: false, includeSensitiveData: false },
     { label: 'sensitive', disabled: false, includeSensitiveData: true },
   ];
-  type LogRecord = {
-    attributes?: { key: string; value: { stringValue?: string } }[];
-  };
-  type LogBatch = {
-    resourceLogs?: { scopeLogs?: { logRecords?: LogRecord[] }[] }[];
-  };
 
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
@@ -821,6 +822,235 @@ async function processorCase(batches: unknown[]) {
   );
   assert.equal(effects, 2, 'Processor failure altered actual tool effects');
 }
+async function mailboxReceiverCase(
+  batches: unknown[],
+  wake: 'scoped' | 'bare',
+  origin: 'disabled' | 'metadata-only' | 'permissive',
+) {
+  const executor = await startPublicExecutor();
+  const native = await binding();
+  const submit = native.NativeThread.prototype._submit;
+  const bareHeaders = {
+    traceparent: '00-83838383838383838383838383838383-8484848484848484-01',
+    tracestate: 'test=bare',
+  };
+  const bareParent = new TraceContext(bareHeaders);
+  let bareAdmissions = 0;
+  native.NativeThread.prototype._submit = function (raw: string) {
+    const request = JSON.parse(raw);
+    if (request.trace?.traceparent === bareHeaders.traceparent) {
+      bareAdmissions++;
+      assert.equal(Object.hasOwn(request, 'tracing_context'), false);
+    }
+    return submit.call(this, raw);
+  };
+  const policy = {
+    disabled: origin === 'disabled',
+    includeSensitiveData: origin === 'permissive',
+  };
+  try {
+    const start = batches.length;
+    let childId: string | undefined;
+    let replacementId: string | undefined;
+    let wakeRequest: number | undefined;
+    let childRequests = 0;
+    let replacementRequests = 0;
+    const initial: JsonObject = {
+      ...message('initial receiver canary'),
+      phase: 'final_answer',
+    };
+    const resumed: JsonObject = {
+      ...message('follow-up receiver canary'),
+      phase: 'final_answer',
+    };
+    const spawn = (name: string) =>
+      call(
+        'spawn_agent',
+        {
+          task_name: name,
+          fork_turns: 'none',
+          message: 'Complete the assigned work.',
+        },
+        { namespace: 'collaboration', callId: 'spawn-' + name },
+      );
+    let nextRootCall: JsonObject | undefined = spawn('receiver');
+    const respond = (request: JsonObject): JsonObject[] => {
+      const metadata = request.client_metadata as Record<string, string>;
+      const id = String(
+        JSON.parse(metadata['x-codex-turn-metadata']!).thread_id,
+      );
+      if (id === rootId) {
+        const selected = nextRootCall;
+        nextRootCall = undefined;
+        return selected ? [selected] : [message('root done')];
+      }
+      childId ??= id;
+      if (id !== childId) {
+        replacementId ??= id;
+        assert.equal(id, replacementId);
+        assert.equal(++replacementRequests, 1);
+        return [message('replacement done')];
+      }
+      if (++childRequests === 1) return [initial];
+      assert.equal(childRequests, 2);
+      wakeRequest = server.requests.length - 1;
+      return [resumed];
+    };
+    const server = new ModelServer(Array.from({ length: 9 }, () => respond));
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-mailbox-receiver',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      instructions: 'Delegate.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [new NativeAgents({ maxChildren: 1 })],
+    }).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+    });
+    const rootId = session.id;
+    const find = async (id: string | undefined) =>
+      (await Array.fromAsync(session.subagents())).find(
+        (child) => child.id === id,
+      );
+    const waitForChild = async (
+      id: () => string | undefined,
+      previousTurn?: string,
+    ) => {
+      const until = performance.now() + 5_000;
+      do {
+        const child = await find(id());
+        if (child?.isLive && child.turn && child.turn.turnId !== previousTurn)
+          return child.turn;
+        await delay(25);
+      } while (performance.now() < until);
+      throw new Error('Missing live receiver fixture turn');
+    };
+    const firstRoot = await session.submit('Start the receiver.', {
+      tracing: { parent: null, ...policy },
+    });
+    assert.equal((await firstRoot.wait()).finalOutput, 'root done');
+    const first = await waitForChild(() => childId);
+    assert.equal((await first.wait()).finalOutput, 'initial receiver canary');
+    assert.equal(
+      (await telemetry.forceFlush({ timeoutMs: 5_000 })).status,
+      'success',
+    );
+
+    nextRootCall = spawn('replacement');
+    const replacementRoot = await session.submit('Start the replacement.');
+    assert.equal((await replacementRoot.wait()).finalOutput, 'root done');
+    const replacement = await waitForChild(() => replacementId);
+    assert.equal((await replacement.wait()).finalOutput, 'replacement done');
+    const evicted = await find(childId);
+    assert.ok(evicted && !evicted.isLive && evicted.turn === null);
+    assert.ok(childId && first.instanceId);
+    nextRootCall = call(
+      'followup_task',
+      {
+        target: childId,
+        message: 'Complete the follow-up request.',
+      },
+      { namespace: 'collaboration', callId: 'wake-receiver' },
+    );
+    const root = await session.submit(
+      'Wake the receiver.',
+      wake === 'bare'
+        ? { parentTrace: bareParent }
+        : {
+            tracing: {
+              parent: null,
+              disabled: false,
+              includeSensitiveData: true,
+            },
+          },
+    );
+    assert.equal((await root.wait()).finalOutput, 'root done');
+    const reloaded = await waitForChild(() => childId, first.turnId);
+    assert.ok(reloaded.instanceId);
+    assert.notEqual(reloaded.instanceId, first.instanceId);
+    assert.equal(
+      (await reloaded.wait()).finalOutput,
+      'follow-up receiver canary',
+    );
+    assert.equal(childRequests, 2);
+    assert.equal(replacementRequests, 1);
+    server.assertExhausted();
+    assert.equal(
+      (await telemetry.forceFlush({ timeoutMs: 5_000 })).status,
+      'success',
+    );
+    if (wake === 'bare') {
+      const dispatch = decoded(batches.slice(start)).filter(
+        (span) =>
+          span.name.startsWith('op.dispatch.') &&
+          attrs(span)['submission.id'] === root.turnId,
+      );
+      assert.equal(dispatch.length, 1);
+      assert.equal(
+        identity(dispatch[0]!.traceId),
+        bareHeaders.traceparent.slice(3, 35),
+      );
+      assert.equal(
+        identity(dispatch[0]!.parentSpanId!),
+        bareHeaders.traceparent.slice(36, 52),
+      );
+      assert.notEqual(wakeRequest, undefined);
+      const headers = server.requestHeaders[wakeRequest!]!;
+      assert.equal(
+        String(headers.traceparent).slice(3, 35),
+        bareHeaders.traceparent.slice(3, 35),
+      );
+      assert.equal(headers.tracestate, bareHeaders.tracestate);
+    }
+    const records = (batches.slice(start) as LogBatch[])
+      .flatMap((batch) => batch.resourceLogs ?? [])
+      .flatMap((resource) => resource.scopeLogs ?? [])
+      .flatMap((scope) => scope.logRecords ?? [])
+      .map(({ attributes }) =>
+        Object.fromEntries(
+          (attributes ?? []).map(({ key, value }) => [key, value.stringValue]),
+        ),
+      )
+      .filter((record) => record['event.name'] === 'codex.agent_response');
+    const responses = [initial, resumed].map((item, index) => {
+      const matching = records.filter(
+        (record) => record['item.id'] === item.id,
+      );
+      for (const record of matching) {
+        assert.equal(record['agent.type'], 'subagent');
+        assert.equal(
+          record['turn.id'],
+          (index === 0 ? first : reloaded).turnId,
+        );
+        assert.equal(
+          record.response,
+          index === 0 ? 'initial receiver canary' : 'follow-up receiver canary',
+        );
+      }
+      return matching.length;
+    });
+    assert.equal(bareAdmissions, wake === 'bare' ? 1 : 0);
+    assert.deepEqual(
+      responses,
+      policy.includeSensitiveData ? [1, 1] : [0, 0],
+      `${wake} wake after ${origin} child creation`,
+    );
+  } finally {
+    native.NativeThread.prototype._submit = submit;
+    await executor.close();
+  }
+}
+
 async function retainedCase(
   batches: unknown[],
   authorization: (string | undefined)[],
@@ -1764,6 +1994,10 @@ async function main() {
     return;
   }
   const collector = await receiver();
+  const receiverWake =
+    /^mailbox-receiver-(scoped|bare)-(disabled|metadata-only|permissive)$/.exec(
+      mode ?? '',
+    );
   try {
     await telemetry.configure({
       traces: {
@@ -1774,7 +2008,7 @@ async function main() {
           ? { headers: { authorization: 'Bearer synthetic-default' } }
           : {}),
       },
-      ...(mode === 'control'
+      ...(mode === 'control' || receiverWake
         ? {
             logs: {
               kind: 'otlp-http',
@@ -1783,13 +2017,19 @@ async function main() {
             },
           }
         : {}),
-      logUserPrompt: true,
+      logUserPrompt: !receiverWake,
       logAgentResponses: true,
       toolResultMaxBytes: 4096,
     });
     try {
       if (mode === 'context') await contextCase(collector.batches);
       else if (mode === 'control') await controlCase(collector.batches);
+      else if (receiverWake)
+        await mailboxReceiverCase(
+          collector.batches,
+          receiverWake[1] as 'scoped' | 'bare',
+          receiverWake[2] as 'disabled' | 'metadata-only' | 'permissive',
+        );
       else if (mode === 'processors') await processorCase(collector.batches);
       else if (mode === 'restore') await restoreCase(collector.batches);
       else if (mode === 'model-preparation') await preparedRequestCase();
