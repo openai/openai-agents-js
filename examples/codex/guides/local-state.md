@@ -6,6 +6,12 @@ Use `localStorage(directory)` to keep a native conversation profile across proce
 
 For application-owned canonical snapshot files, use [Store canonical conversation state in application-owned files](session-store.md#store-canonical-conversation-state-in-application-owned-files). That preview `SessionStore` route, including `fileSessionStore`, rejects native goals and has its own writer, commit, and recovery protocol. `nativeGoals()` requires the native `localStorage` route described here.
 
+## Default storage and workspace
+
+Without a storage option: process-local memory history. Explicit `localStorage(directory)` for a durable profile across process lifetimes.
+
+Without an explicit workspace configuration: a temporary workspace under the SDK's private runtime home. An explicit [Environment](local-execution.md) for application files; a separate profile directory for conversation history. Workspace files and a durable conversation profile: separate owners and cleanup policies.
+
 ## Local native profiles
 
 `localStorage(path)` returns a frozen readonly `{ path }` descriptor. The factory resolves relative paths once, without opening files. Session opening also accepts a structural descriptor with an absolute path. Only trusted application configuration should choose that directory.
@@ -116,6 +122,70 @@ A terminal event or final output reports turn progress. The managed result flush
 Close can reject a persistence error even after physical cleanup finishes. Incomplete cleanup retains its owners and temporary files. Retry `session.close()`. If opening failed before returning a Session, close any other active Sessions, then call the captured `agent.provider.close()` or explicit provider's `close()` to finish retained cleanup. That call fences new openings and joins every started failed-opening cleanup attempt. It never makes the failed opening successful. Preserve the original opening error and any cleanup failures for diagnosis.
 
 For canonical failures that remain visible after cleanup, see [native-profile durability](#compare-native-profile-durability).
+
+## Query stored history
+
+Current source builds: indexed reads from the native store, including a cold reopened LocalStorage profile. Store index support required; rejection on unsupported stores, without a fallback scan of application journals.
+
+| Public read | Result |
+| --- | --- |
+| `storedTurns({ limit, cursor, direction, includeSummary })` | Turn metadata and optional `summaryItems`; `nextCursor` and `backwardsCursor`. |
+| `storedItems({ turnId, limit, cursor, direction })` | Stored item projections, with optional turn filtering. |
+| `searchHistory(text, { limit, cursor })` | Literal, case-insensitive text matches and snippets. |
+
+Default page limit: 50; accepted limits: 1 through 1000. Turn/item direction: `asc` by default or `desc`. Opaque cursors, scoped to the conversation and query; `backwardsCursor` for a page in the opposite direction. Search offsets: UTF-16 positions in the snippet; `turnCursor` for the matching turn in `storedTurns`. Item `updatedAtOrdinal`: a decimal string, without integer precision loss. Independent returned data copies; no tool execution or restored callback authority from a query.
+
+Example helper with the application's current configured Agent and an existing absolute profile directory:
+
+```ts
+import { localStorage, type Agent } from '@openai/agents';
+
+export async function inspectProfile(
+  agent: Agent,
+  profileDirectory: string,
+  sessionId: string,
+) {
+  await using session = await agent.session({
+    storage: localStorage(profileDirectory),
+    resume: sessionId,
+  });
+  const page = await session.storedTurns({ limit: 25 });
+  const matches = await session.searchHistory('invoice', { limit: 10 });
+  const first = page.turns[0];
+  const items = first
+    ? await session.storedItems({ turnId: first.id, limit: 25 })
+    : null;
+  return { page, matches, items };
+}
+```
+
+### Revert or delete a stored conversation
+
+Idle native LocalStorage Sessions only. `await session.revertStored({ beforeTurnId })`: removal of the named turn and later history. `await session.deleteStored()`: deletion of the conversation. Both operations: source Session closure and joined native writer cleanup before the store mutation. Successful reversion: reopen the same Session ID with the current Agent and profile. Successful deletion: no later resume of that conversation.
+
+Current store ownership and referenced-branch checks still required. A mutation failure can leave the source Session closed; preservation of the original error and cleanup diagnostics for the application. No reversal of external tool effects or workspace file changes.
+
+## Fork stored history
+
+Current source builds: `await session.forkStored()` for a new durable conversation ID in the same native LocalStorage profile. Optional `beforeTurnId` or `throughTurnId` for a prefix boundary; the two options mutually exclusive. Omitted boundary: the latest settled history.
+
+```ts
+import { localStorage, type Agent } from '@openai/agents';
+
+export async function forkProfile(
+  agent: Agent,
+  profileDirectory: string,
+  sourceId: string,
+) {
+  const storage = localStorage(profileDirectory);
+  await using source = await agent.session({ storage, resume: sourceId });
+  const branchId = await source.forkStored();
+  await using branch = await agent.session({ storage, resume: branchId });
+  return { branchId, turns: await branch.storedTurns({ limit: 25 }) };
+}
+```
+
+Source continuity after publication; current trusted Agent, credentials, tools, and Environment on branch opening. History only: no workspace snapshot, live JavaScript task, or native Code Mode state. Settled native work and current store checks required. Referenced source history protected from conflicting reversion or deletion while the branch still depends on it. Portable [`fork()`](state.md#fork-a-conversation): a separate route with its existing checkpoint limits.
 
 ## Native local goals
 

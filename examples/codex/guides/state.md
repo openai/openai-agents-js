@@ -113,6 +113,8 @@ Hot limited reads: copies of selected records only. Durable reopen: full stored-
 
 ## Save or suspend a session
 
+Native LocalStorage branch IDs and indexed reads: [stored history](local-state.md#query-stored-history). Portable checkpoint operations below: a separate storage route.
+
 Persistent storage (`LocalStorage` or `CustomStorage`) cannot export portable state with `saveState()`, `suspend()`, or `fork()`. Retain `Session.id` and reopen with the same storage backend and current application bindings.
 
 `saveState()` exports idle conversation state. `suspend()` seals a supported pending manual boundary and exports its continuation. Restore with `agent.session({ state })`, supplying current trusted declarations. Snapshots contain conversation data. They contain neither running JavaScript nor a workspace backup. Python checkpoint interchange is not supported.
@@ -172,13 +174,15 @@ Output-aware envelopes retain passive repair receipts separately from native his
 
 ## Fork a conversation
 
+Two separate routes: portable `fork()` below, or native LocalStorage [`forkStored()`](local-state.md#fork-stored-history) for a durable branch ID. Indexed stored reads and destructive store operations: [Query stored history](local-state.md#query-stored-history).
+
 Use `saveState()` to capture the current conversation identity for later restore. Use `fork()` to create portable state for a fresh, independently owned root with the full retained history up to the capture boundary. Forking makes no model request and does not replay recorded tool effects. Later source turns do not enter the branch. You can continue using the source and close either Session independently.
 
 On a settled portable source Session, await `source.fork()`. Pass the returned state to `await agent.session({ state })` to open the branch. Submit its new input, await the returned Turn's `wait()`, and read `finalOutput` after that wait succeeds. Close the branch in an async disposal scope or `finally`. The [native fork tests](../../../packages/agents-codex/test/native/settled-fork-native.test.ts) verify the copied history boundary and independent Session ownership.
 
 Restore with the current trusted declarations described in [restore instructions and tools](#restore-instructions-and-tools). The destination uses the saved accepted model settings and current application credentials, callbacks, context, and Environment. A branch's new Session ID does not create a new external business operation: retain the original application effect key when checking or deduplicating effects. Close the source as well as the branch when their owners finish.
 
-Fork requires settled portable root history without descendants, pending effects, or live background terminals. Local profiles and custom SessionStore storage do not support it. Retained checklist and goal data do not grant destination tools or resume autonomous work. An [application-supplied summary](session-configuration.md#context-compaction) is an optional context replacement with its own stricter limits. The [summary-and-fork helper](../fork-summary.ts) composes the two operations; a full-history fork needs no summary.
+Fork requires settled portable root history without descendants, pending effects, or live background terminals. Portable `fork()`: unavailable for local profiles and custom SessionStore storage. Native LocalStorage: the separate `forkStored()` route. Retained checklist and goal data do not grant destination tools or resume autonomous work. An [application-supplied summary](session-configuration.md#context-compaction) is an optional context replacement with its own stricter limits. The [summary-and-fork helper](../fork-summary.ts) composes the two operations; a full-history fork needs no summary.
 
 ## Storage and recovery tasks
 
@@ -190,6 +194,8 @@ Continue with the guide for the storage or recovery task you need.
 | <a id="check-capture-readiness"></a>Inspect portable capture readiness | [Check capture readiness](recovery.md#check-capture-readiness). |
 | <a id="reconcile-external-effects"></a>Confirm an uncertain external outcome | [Reconcile external effects](recovery.md#reconcile-external-effects). |
 | <a id="resume-external-work"></a>Continue a durable manual job | [Resume external work](recovery.md#resume-external-work). |
+| Query indexed native history | [Query stored history](local-state.md#query-stored-history). |
+| Fork a durable native profile | [Fork stored history](local-state.md#fork-stored-history). |
 | <a id="local-native-profiles"></a>Open or resume a native profile | [Local native profiles](local-state.md#local-native-profiles). |
 | <a id="profile-ownership"></a>Separate profile and workspace ownership | [Profile ownership](local-state.md#profile-ownership). |
 | <a id="supported-capabilities"></a>Choose supported native-profile features | [Supported capabilities](local-state.md#supported-capabilities). |
