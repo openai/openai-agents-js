@@ -260,6 +260,7 @@ export type {
   OtelTlsConfig,
   TelemetryOptions,
   TraceOptions,
+  TracingIdGenerator,
   SpanContext,
   TraceEvent,
   TraceProcessor,
