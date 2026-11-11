@@ -433,6 +433,14 @@ export type {
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
+export { shellTool } from './runtime/shell';
+export type {
+  ShellCall,
+  ShellCommandOutput,
+  ShellOutput,
+  ShellSkill,
+  ShellToolOptions,
+} from './runtime/shell';
 export { computerTool, ComputerSafetyError } from './runtime/computer';
 export type {
   Computer,
