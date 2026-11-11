@@ -33,6 +33,14 @@ afterEach(() => {
 });
 
 describe('captured native WebSearch', () => {
+  it.each(
+    [['video'], ['text', 'video'], [1], 'image'].map((value) => ({ value })),
+  )('rejects unsupported search content types: $value', ({ value }) => {
+    expect(() =>
+      webSearch({ route: 'hosted', searchContentTypes: value as never }),
+    ).toThrow('content types must contain only text or image');
+  });
+
   it.each([1.5, -1, Number.NaN, Infinity, -Infinity, 2 ** 63, 2 ** 64])(
     'rejects an image count outside the native integer domain: %s',
     (maxResults) => {
@@ -52,23 +60,35 @@ describe('captured native WebSearch', () => {
     },
   );
 
-  it('rejects a structural image count before acquiring its provider', async () => {
-    await using provider = new NativeProvider();
-    const acquire = vi.spyOn(provider, '_acquire');
-    await expect(
-      new Agent({
-        instructions: 'Act',
-        provider,
-        tools: [
-          {
-            ...webSearch({ route: 'hosted' }),
-            imageSettings: { maxResults: 1.5 },
-          },
-        ],
-      }).session(),
-    ).rejects.toThrow('non-negative integer');
-    expect(acquire).not.toHaveBeenCalled();
-  });
+  it.each([
+    {
+      controls: { imageSettings: { maxResults: 1.5 } },
+      message: 'non-negative integer',
+    },
+    {
+      controls: { searchContentTypes: ['video'] },
+      message: 'content types must contain only text or image',
+    },
+  ])(
+    'rejects invalid structural controls before acquiring its provider: $controls',
+    async ({ controls, message }) => {
+      await using provider = new NativeProvider();
+      const acquire = vi.spyOn(provider, '_acquire');
+      await expect(
+        new Agent({
+          instructions: 'Act',
+          provider,
+          tools: [
+            {
+              ...webSearch({ route: 'hosted' }),
+              ...controls,
+            } as WebSearch,
+          ],
+        }).session(),
+      ).rejects.toThrow(message);
+      expect(acquire).not.toHaveBeenCalled();
+    },
+  );
 
   it('defaults to an immutable cached standalone opening declaration', () => {
     expect(webSearch()).toEqual({

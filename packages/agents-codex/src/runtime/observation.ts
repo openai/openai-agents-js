@@ -179,6 +179,12 @@ export type TurnObservationScope = {
   phase: () => ObservationPhase;
 };
 
+function withoutSearchResults(item: SearchItem): SearchItem {
+  const summary = { ...item };
+  if (summary.type === 'web_search_call') delete summary.results;
+  return summary;
+}
+
 function projectObservation(
   event: RetainedObservation,
   includeExecutionDetails: boolean,
@@ -202,9 +208,9 @@ function projectObservation(
         : summarizeResponseFactRecord(event.record),
     });
   if (event.type === 'search_item_completed') {
-    const item = { ...event.item };
-    if (!includeExecutionDetails && item.type === 'web_search_call')
-      delete item.results;
+    const item = includeExecutionDetails
+      ? event.item
+      : withoutSearchResults(event.item);
     return Object.freeze({ ...event, item: structuredClone(item) });
   }
   if (event.type === 'hosted_tool_item_completed') {
@@ -239,6 +245,7 @@ export class ObservationBuffer {
     event: RetainedObservation;
     size: number;
     payloadSize: number;
+    detailsMissing?: boolean;
   }> = [];
   private characters = 0;
   private payloadCharacters = 0;
@@ -343,15 +350,29 @@ export class ObservationBuffer {
       sessionId,
       sequence: ++this.sequence,
     });
-    // Only the provider's partial-image byte string has a separate budget.
-    // Metadata and every other payload retain the ordinary observation limit.
+    // Image bytes and raw search results share a separate detail budget.
+    // Search metadata remains useful when the raw results cannot be retained.
     const partial =
       event.type === 'hosted_tool_call_progress' &&
       event.event.type === 'response.image_generation_call.partial_image' &&
       typeof event.event.partial_image_b64 === 'string'
         ? event.event.partial_image_b64
         : undefined;
-    const payloadSize = partial?.length ?? 0;
+    const searchResults =
+      event.type === 'search_item_completed' &&
+      event.item.type === 'web_search_call'
+        ? event.item.results
+        : undefined;
+    const searchSummary =
+      searchResults !== undefined && event.type === 'search_item_completed'
+        ? Object.freeze({
+            ...event,
+            item: withoutSearchResults(event.item),
+          })
+        : undefined;
+    let payloadSize =
+      partial?.length ??
+      (searchResults === undefined ? 0 : JSON.stringify(searchResults).length);
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
       event.type === 'tool_finished' && event.output
@@ -361,7 +382,7 @@ export class ObservationBuffer {
           : event.type === 'execution_item_completed' ||
               event.type === 'search_item_completed' ||
               event.type === 'hosted_tool_item_completed'
-            ? JSON.stringify(event.item).length
+            ? JSON.stringify(searchSummary?.item ?? event.item).length
             : event.type === 'hosted_tool_call_progress'
               ? JSON.stringify(
                   partial === undefined
@@ -370,6 +391,17 @@ export class ObservationBuffer {
                 ).length
               : 0,
     );
+    let retainedEvent: RetainedObservation = event;
+    let detailsMissing = false;
+    if (
+      this.options.retention !== 'all' &&
+      searchSummary &&
+      payloadSize > 16 * 1024 * 1024
+    ) {
+      retainedEvent = searchSummary;
+      payloadSize = 0;
+      detailsMissing = true;
+    }
     if (
       this.options.retention !== 'all' &&
       (size > 65_536 || payloadSize > 16 * 1024 * 1024)
@@ -378,7 +410,12 @@ export class ObservationBuffer {
       this.characters = 0;
       this.payloadCharacters = 0;
     } else {
-      this.records.push({ event, size, payloadSize });
+      this.records.push({
+        event: retainedEvent,
+        size,
+        payloadSize,
+        detailsMissing,
+      });
       this.characters += size;
       this.payloadCharacters += payloadSize;
       while (
@@ -387,6 +424,24 @@ export class ObservationBuffer {
           this.characters > 65_536 ||
           this.payloadCharacters > 32 * 1024 * 1024)
       ) {
+        if (this.records.length <= 256 && this.characters <= 65_536) {
+          const detailedSearch = this.records.find(
+            (record) =>
+              record.payloadSize > 0 &&
+              record.event.type === 'search_item_completed' &&
+              record.event.item.type === 'web_search_call',
+          );
+          if (detailedSearch?.event.type === 'search_item_completed') {
+            detailedSearch.event = Object.freeze({
+              ...detailedSearch.event,
+              item: withoutSearchResults(detailedSearch.event.item),
+            });
+            this.payloadCharacters -= detailedSearch.payloadSize;
+            detailedSearch.payloadSize = 0;
+            detailedSearch.detailsMissing = true;
+            continue;
+          }
+        }
         const removed = this.records.shift()!;
         this.characters -= removed.size;
         this.payloadCharacters -= removed.payloadSize;
@@ -474,13 +529,21 @@ export class ObservationBuffer {
             }
             if (this.options.retention !== 'all') index = 0;
             while (index < this.records.length) {
-              const { event } = this.records[index++];
+              const { event, detailsMissing } = this.records[index++];
               if (event.sequence <= after) continue;
               after = event.sequence;
               if (event.type === 'gap' || !scope || scope.includes(event))
                 return {
                   done: false,
-                  value: projectObservation(event, includeExecutionDetails),
+                  value:
+                    includeExecutionDetails && detailsMissing
+                      ? Object.freeze({
+                          type: 'gap',
+                          sessionId: event.sessionId,
+                          sequence: event.sequence,
+                          firstSequence: event.sequence,
+                        })
+                      : projectObservation(event, includeExecutionDetails),
                 };
             }
             const phase = scope?.phase();
