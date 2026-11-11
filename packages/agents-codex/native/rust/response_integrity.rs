@@ -194,9 +194,7 @@ mod tests {
             incomplete_reason: None,
             usage: None,
         };
-        assert!(!output.rejects(&ResponseEvent::ResponseObserved(
-            codex_api::ProviderResponseObservation { observation, raw_usage: None },
-        )));
+        assert!(!output.rejects(&ResponseEvent::ResponseObserved(observation)));
         assert!(output.rejects(&completed(None)));
     }
 
