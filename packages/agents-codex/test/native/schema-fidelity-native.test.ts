@@ -135,8 +135,10 @@ async function fixture(
     response.end();
   });
   servers.push(server);
-  if (websocket) {
-    const ws = new WebSocketServer({ server, perMessageDeflate: false });
+  const ws = websocket
+    ? new WebSocketServer({ server, perMessageDeflate: false })
+    : undefined;
+  if (ws) {
     sockets.push(ws);
     ws.on('connection', (socket) =>
       socket.on('message', (bytes) => {
@@ -160,7 +162,7 @@ async function fixture(
     supportsWebsockets: websocket,
   });
   providers.push(provider);
-  return { provider, received, frames };
+  return { provider, received, frames, ws };
 }
 
 async function answer(session: Session, text: string) {
@@ -435,3 +437,35 @@ it('does not replay a WebSocket request accepted before a disconnect', async () 
   );
   expect(peer.received.length).toBe(0);
 }, 30_000);
+
+it('reconnects a retained WebSocket after an idle peer close', async () => {
+  const peer = await fixture(true);
+  const session = await new Agent({
+    instructions: 'Answer briefly.',
+    model: 'gpt-5.5',
+    provider: peer.provider,
+  }).session();
+  sessions.push(session);
+  await answer(session, 'Before idle close');
+
+  assert(peer.ws);
+  const [connection] = peer.ws.clients;
+  assert(connection);
+  const closed = once(connection, 'close', {
+    signal: AbortSignal.timeout(5_000),
+  });
+  connection.close(1000, 'idle');
+  expect((await closed)[0]).toBe(1000);
+  expect(peer.ws.clients.size).toBe(0);
+
+  await answer(session, 'After idle close');
+  expect(peer.ws.clients.size).toBe(1);
+  const generations = peer.frames.filter((frame) => frame.generate !== false);
+  expect(generations).toHaveLength(2);
+  const replacement = generations[1];
+  expect(replacement.previous_response_id ?? null).toBeNull();
+  const history = JSON.stringify(replacement.input);
+  expect(history).toContain('Before idle close');
+  expect(history).toContain('After idle close');
+  expect(peer.received).toHaveLength(0);
+}, 15_000);
