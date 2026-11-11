@@ -58,10 +58,9 @@ nativeIt.each([false, true])(
     const compact = vi.fn(async (_body) => window());
     const predicate = vi.fn(() => false);
     await using provider = await providerFor(server);
-    const agent = new Agent({
+    const options = {
       provider,
       model: 'gpt-5.5',
-      instructions: 'ORIGINAL_APPLICATION',
       handoffs: profiled
         ? [
             new Agent<unknown>({
@@ -77,6 +76,10 @@ nativeIt.each([false, true])(
         model: 'separate-compactor',
         shouldCompact: predicate,
       }),
+    };
+    const agent = new Agent({
+      ...options,
+      instructions: 'ORIGINAL_APPLICATION',
     });
     let saved;
     {
@@ -90,8 +93,11 @@ nativeIt.each([false, true])(
       expect(text(saved)).toContain('OLD_USER_SENTINEL');
     }
     {
-      await using restored = await agent.session({
-        state: parseSessionState(JSON.parse(text(saved))),
+      const currentAgent = profiled
+        ? agent
+        : new Agent({ ...options, instructions: 'CURRENT_APPLICATION' });
+      await using restored = await currentAgent.session({
+        state: parseSessionState(text(saved)),
       });
       await (await restored.submit('followup')).wait();
     }
@@ -356,3 +362,57 @@ nativeIt('runs configured compaction for tool-free Agent.run', async () => {
   expect(compact).toHaveBeenCalledTimes(1);
   server.assertExhausted();
 });
+
+nativeIt.each(
+  [false, true].flatMap((automatic) =>
+    [false, true].map((structured) => [automatic, structured] as const),
+  ),
+)(
+  'transforms compaction input before borrowed-client effects (automatic=%s, structured=%s)',
+  async (automatic, structured) => {
+    const secret = 'COMPACTION_TOOL_SECRET_SENTINEL';
+    const server = new ModelServer([
+      [call('secret', {}, { callId: 'secret-call' })],
+      [message('answer')],
+    ]);
+    const compact = vi.fn(async (_body) => window());
+    const transforms: { purpose: string; model: string }[] = [];
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [
+        tool({
+          name: 'secret',
+          parameters: z.object({}),
+          execute: () => (structured ? { secret } : secret),
+        }),
+      ],
+      transformContext(context) {
+        transforms.push({ purpose: context.purpose, model: context.model });
+        return context.items.map((item) =>
+          JSON.parse(text(item).replaceAll(secret, '[redacted]')),
+        );
+      },
+      compaction: responsesCompaction({
+        client: clientFor(compact),
+        model: 'separate-compactor',
+        mode: automatic ? 'auto' : 'input',
+        shouldCompact: () => automatic,
+      }),
+    });
+    await using session = await agent.session();
+    expect((await (await session.submit('go')).wait()).finalOutput).toBe(
+      'answer',
+    );
+    if (!automatic) await session.compact();
+    expect(compact).toHaveBeenCalledTimes(1);
+    expect(text(compact.mock.calls[0]![0].input)).not.toContain(secret);
+    expect(text(compact.mock.calls[0]![0].input)).toContain('[redacted]');
+    expect(
+      transforms.filter((context) => context.purpose === 'compaction'),
+    ).toEqual([{ purpose: 'compaction', model: 'separate-compactor' }]);
+    server.assertExhausted();
+  },
+);

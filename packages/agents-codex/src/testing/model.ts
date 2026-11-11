@@ -18,15 +18,12 @@ export type ModelError = {
 /**
  * A finite native-model script; Core owns attempts and retries.
  * Responses and static advice are captured; configured errors retain exact identity.
- * Unrequested advice records retain synthetic request/error state for this fixture's
+ * Unrequested advice records retain synthetic error/advice state for this fixture's
  * lifetime, bounded by the original finite script. Use NativeModel for dynamic behavior.
  */
 export class ScriptedModel implements NativeModel {
   readonly #steps: (ModelResponse | ModelError)[];
-  readonly #advice = new Map<
-    string,
-    { request: ModelRequest; step: ModelError }
-  >();
+  readonly #advice = new Map<string, ModelError>();
 
   constructor(steps: Iterable<ModelResponse | ModelError>) {
     this.#steps = Array.from(steps, (step) => {
@@ -53,7 +50,7 @@ export class ScriptedModel implements NativeModel {
       if (step.retryAdvice !== undefined) {
         if (!request.attemptId || this.#advice.has(request.attemptId))
           throw new Error('Scripted advice requires a distinct native attempt');
-        this.#advice.set(request.attemptId, { request, step });
+        this.#advice.set(request.attemptId, step);
       }
       throw step.error;
     }
@@ -66,11 +63,11 @@ export class ScriptedModel implements NativeModel {
     const occurrence = this.#advice.get(request.attemptId);
     if (
       !occurrence ||
-      occurrence.request !== request.request ||
-      !Object.is(occurrence.step.error, request.error)
+      request.request.attemptId !== request.attemptId ||
+      !Object.is(occurrence.error, request.error)
     )
       return undefined;
     this.#advice.delete(request.attemptId);
-    return structuredClone(occurrence.step.retryAdvice);
+    return structuredClone(occurrence.retryAdvice);
   }
 }

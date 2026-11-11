@@ -8502,8 +8502,30 @@ export class Session<OutputT = string, Context = unknown> {
                     check();
                     reply({ admitted });
                   } else {
+                    let requestContext = prepared;
+                    if (prepared.mode === 'input' && transformContext) {
+                      const replacement = await transformContext(
+                        Object.freeze({
+                          ...base,
+                          model: prepared.model,
+                          items: prepared.items,
+                          requestId: prepared.requestId,
+                          purpose: 'compaction' as const,
+                        }),
+                      );
+                      check();
+                      if (replacement !== undefined)
+                        requestContext = Object.freeze({
+                          ...prepared,
+                          items: Object.freeze(
+                            z
+                              .array(losslessJsonObjectSchema)
+                              .parse(replacement),
+                          ),
+                        });
+                    }
                     const window = await compaction.requestWindow(
-                      prepared,
+                      requestContext,
                       providerResponse,
                       (usage) => {
                         const report = captureUsageReport(usage);

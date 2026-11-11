@@ -38,13 +38,27 @@ test('same error keeps exact static occurrence advice without an error-only fall
     );
   model.assertComplete();
   assert.equal(
-    model.getRetryAdvice(adviceRequest(request('second'), error)),
+    model.getRetryAdvice(adviceRequest(request('missing'), error)),
     undefined,
   );
   assert.equal(model.getRetryAdvice(adviceRequest(third, error)), undefined);
-  assert.deepEqual(model.getRetryAdvice(adviceRequest(second, error)), {
-    reason: 'second',
-  });
+  assert.equal(
+    model.getRetryAdvice({
+      ...adviceRequest(second, error),
+      attemptId: 'first',
+    }),
+    undefined,
+  );
+  assert.equal(
+    model.getRetryAdvice(adviceRequest(second, new Error('shared'))),
+    undefined,
+  );
+  assert.deepEqual(
+    model.getRetryAdvice(adviceRequest({ ...second, body: {} }, error)),
+    {
+      reason: 'second',
+    },
+  );
   assert.deepEqual(model.getRetryAdvice(adviceRequest(first, error)), {
     reason: 'first',
   });
