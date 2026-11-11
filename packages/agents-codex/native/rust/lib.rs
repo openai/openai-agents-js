@@ -5562,6 +5562,28 @@ pub fn retain_trace_context(handle: String) -> napi::Result<String> {
     codex_otel::sdk_trace::retain_trace_context(&handle).map_err(native_error)
 }
 
+#[napi(js_name = "_retain_callback_dispatch_context")]
+pub fn retain_callback_dispatch_context(
+    handle: String,
+    key: String,
+    #[napi(ts_arg_type = "() => void")] release: napi::threadsafe_function::ThreadsafeFunction<
+        (),
+        (),
+        (),
+        napi::Status,
+        false,
+        true,
+    >,
+) -> napi::Result<String> {
+    codex_otel::sdk_trace::retain_callback_dispatch_context(&handle, key, move || {
+        let _ = release.call(
+            (),
+            napi::threadsafe_function::ThreadsafeFunctionCallMode::NonBlocking,
+        );
+    })
+    .map_err(native_error)
+}
+
 #[napi(js_name = "trace_span_context")]
 pub fn trace_span_context(handle: String) -> napi::Result<String> {
     codex_otel::sdk_trace::trace_span_context(&handle).map_err(native_error)

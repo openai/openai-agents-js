@@ -3207,9 +3207,9 @@ impl ToolContributor for PythonContributor {
                 .unwrap_or_default();
             let tracing = if tools.instance.is_some() {
                 turn.get::<codex_otel::sdk_trace::CapturedContext>()
-                    .and_then(|captured| captured.context.clone())
+                    .and_then(|captured| captured.context.as_ref().map(|lease| lease.retain()))
             } else {
-                codex_otel::sdk_trace::ContextLease::capture().map(Arc::new)
+                codex_otel::sdk_trace::ContextLease::capture()
             };
             let mut request = json!({"id": turn.level_id(), "msg": {
                 "type": "_sdk_select_step", "turn_id": turn.level_id(),
