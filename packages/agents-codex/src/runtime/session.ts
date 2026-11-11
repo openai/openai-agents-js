@@ -73,11 +73,11 @@ import {
 } from './prepared-request';
 import {
   captureTracing,
+  captureTraceValidation,
   getCurrentSpan,
   workflowForTrace,
   withoutTracing,
   TraceCapture,
-  type TraceSpan,
   withNativeCallbackContext,
 } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -2462,7 +2462,7 @@ export class Session<OutputT = string, Context = unknown> {
       event: NativeEvent;
       tool: ManualTool;
       grant: ReturnType<typeof createManualRequest>;
-      tracing?: TraceSpan;
+      tracing?: ReturnType<typeof captureTraceValidation>;
       ready: boolean;
       identity: ToolIdentity;
     }
@@ -9431,7 +9431,7 @@ export class Session<OutputT = string, Context = unknown> {
           event,
           tool,
           grant,
-          tracing: getCurrentSpan(),
+          tracing: captureTraceValidation(),
           identity,
           ready: false,
         });

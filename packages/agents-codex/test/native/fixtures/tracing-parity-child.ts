@@ -888,6 +888,101 @@ async function customOnlyCase() {
   }
 }
 
+async function manualReplyContextStorageCase() {
+  const admission = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
+  const caller = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
+  const select = (storage: typeof admission) =>
+    telemetry.setTraceContextStorage({
+      getStore: () => storage.getStore(),
+      run: (span, callback) => storage.run(span, callback),
+    });
+  let requestSpan: telemetry.TraceSpan | undefined;
+  let requestStorageSpan: telemetry.TraceSpan | undefined;
+  const validations: {
+    span: telemetry.TraceSpan | undefined;
+    admissionSpan: telemetry.TraceSpan | undefined;
+  }[] = [];
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Return a synthetic record.',
+    parameters: z.object({}).superRefine(() => {
+      requestSpan = telemetry.getCurrentSpan();
+      requestStorageSpan = admission.getStore();
+    }),
+    result: z.string().superRefine((value, context) => {
+      validations.push({
+        span: telemetry.getCurrentSpan(),
+        admissionSpan: admission.getStore(),
+      });
+      if (value === 'invalid')
+        context.addIssue({ code: 'custom', message: 'invalid' });
+    }),
+  });
+  await telemetry.configure();
+  try {
+    await withScriptedResponses(
+      [[toolCall('lookup', {}, { callId: 'manual-lookup' })], [text('done')]],
+      async (peer) => {
+        const agent = new Agent({
+          instructions: 'Use lookup then answer.',
+          model: 'gpt-5',
+          provider: peer.provider,
+          tools: [lookup],
+        });
+        select(admission);
+        await using session = await agent.session();
+        const { turn, request } = await telemetry.withTrace(
+          { name: 'storage.request' },
+          async (trace) => {
+            const turn = await session.submit('lookup');
+            const result = await turn.wait({ until: 'manual_tool' });
+            assert('requests' in result && result.requests.length === 1);
+            const request = lookup.match(result.requests[0]);
+            assert(request);
+            assert.equal(requestSpan?.context.traceId, trace.context.traceId);
+            assert.equal(requestStorageSpan, requestSpan);
+            return { turn, request };
+          },
+        );
+        select(caller);
+        await telemetry.withTrace({ name: 'storage.reply' }, async (trace) => {
+          assert.equal(caller.getStore(), trace);
+          await assert.rejects(
+            session.respond(request.reply('invalid')),
+            /Manual tool result failed validation/,
+          );
+          assert.equal(peer.requests.length, 1);
+          assert.equal(caller.getStore(), trace);
+          const reply = request.reply('valid');
+          await session.respond(reply);
+          await assert.rejects(
+            session.respond(reply),
+            /Manual reply must identify one pending call/,
+          );
+          assert.equal(telemetry.getCurrentSpan(), trace);
+          assert.equal(caller.getStore(), trace);
+        });
+        assert.equal((await turn.wait()).finalOutput, 'done');
+        peer.assertExhausted();
+        assert.equal(validations.length, 2);
+        for (const { span, admissionSpan } of validations) {
+          assert(span);
+          assert.equal(span.kind, 'validation');
+          assert.equal(span.context.traceId, requestSpan?.context.traceId);
+          assert.equal(span.context.parentSpanId, requestSpan?.context.spanId);
+          assert(
+            admissionSpan === span,
+            'Saved request adapter did not own validation',
+          );
+        }
+      },
+    );
+  } finally {
+    telemetry.setTraceContextStorage();
+    await telemetry.shutdown();
+  }
+}
+
 async function restoreCase(batches: unknown[]) {
   let directValidationTrace: string | undefined;
   const lookup = manualTool({
@@ -1422,6 +1517,11 @@ async function customContextStorageCase() {
 
 async function main() {
   const mode = process.argv[2];
+  if (mode === 'manual-reply-context-storage') {
+    await manualReplyContextStorageCase();
+    console.log('PASS manual-reply-context-storage');
+    return;
+  }
   if (mode === 'custom-context-storage') {
     await customContextStorageCase();
     console.log('PASS custom-context-storage');
