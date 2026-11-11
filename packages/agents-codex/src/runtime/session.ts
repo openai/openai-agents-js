@@ -9490,10 +9490,7 @@ export class Session<OutputT = string, Context = unknown> {
           )
             return;
           if (decision.denial === undefined)
-            grant.setValidatedEffectiveArguments(
-              decision.validated,
-              effectiveInput,
-            );
+            grant.setValidatedEffectiveArguments(decision.validated);
           const action = grant.request();
           if (!isFunctionApprovalRequest(action))
             throw new NativeError('Managed approval capability was not issued');

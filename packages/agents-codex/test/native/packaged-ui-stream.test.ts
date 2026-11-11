@@ -400,6 +400,136 @@ it.each([
   },
 );
 
+it('projects parsed defaults and normalized values that approval executes', async () => {
+  const server = new ModelServer([
+    [call('write', { path: '  /target  ' }, { callId: 'normalized' })],
+    [message('Done.')],
+  ]);
+  cleanups.push(ModelServer.closeAll);
+  await using provider = new NativeProvider({
+    baseUrl: `http://127.0.0.1:${await server.port()}/v1`,
+    apiKey: 'synthetic',
+    supportsWebsockets: false,
+  });
+  const effects: unknown[] = [];
+  await using session = await new Agent({
+    instructions: 'Write the record.',
+    provider,
+    tools: [
+      tool({
+        name: 'write',
+        parameters: z
+          .object({
+            path: z.string().trim(),
+            overwrite: z.boolean().default(true),
+          })
+          .transform((input) =>
+            Object.defineProperty(input, '__proto__', {
+              value: { reviewed: true },
+              enumerable: true,
+            }),
+          ),
+        needsApproval: true,
+        execute: (input) => {
+          effects.push(input);
+          return 'Written.';
+        },
+      }),
+    ],
+  }).session();
+  const turn = await session.submit('Write.');
+  const values = await frames(
+    vercelResponse(turn, session, { includeToolApprovals: true }),
+  );
+  const input = values.find((value) => value.type === 'tool-input-available');
+  expect(input?.input).toEqual(
+    Object.fromEntries([
+      ['path', '/target'],
+      ['overwrite', true],
+      ['__proto__', { reviewed: true }],
+    ]),
+  );
+  expect(Object.getPrototypeOf(input.input)).toBe(Object.prototype);
+  expect(Object.hasOwn(input.input, '__proto__')).toBe(true);
+  expect(effects).toEqual([]);
+  const request = (await session.pendingInteractions()).find(
+    isFunctionApprovalRequest,
+  )!;
+  expect(input.input).toEqual(request.effectiveArguments);
+  await session.respond(request.approve());
+  expect((await turn.wait()).finalOutput).toBe('Done.');
+  expect(effects).toEqual([input.input]);
+});
+
+it.each([
+  { name: 'opaque date', value: () => new Date('2026-11-01T12:00:00Z') },
+  {
+    name: 'nested hidden member',
+    value: () => ({
+      nested: Object.defineProperty({ visible: true }, 'overwrite', {
+        value: true,
+      }),
+    }),
+  },
+  {
+    name: 'extra array member',
+    value: () => Object.assign(['visible'], { overwrite: true }),
+  },
+  { name: 'lossy negative zero', value: () => -0 },
+])(
+  'withholds an unfaithful approval prompt without executing ($name)',
+  async ({ value }) => {
+    const server = new ModelServer([
+      [call('write', { value: 'raw' }, { callId: 'opaque' })],
+      [message('Declined.')],
+    ]);
+    cleanups.push(ModelServer.closeAll);
+    await using provider = new NativeProvider({
+      baseUrl: `http://127.0.0.1:${await server.port()}/v1`,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    let effects = 0;
+    await using session = await new Agent({
+      instructions: 'Write the record.',
+      provider,
+      tools: [
+        tool({
+          name: 'write',
+          parameters: z.object({ value: z.string().transform(() => value()) }),
+          needsApproval: true,
+          execute: () => {
+            effects++;
+            return 'Written.';
+          },
+        }),
+      ],
+    }).session();
+    const turn = await session.submit('Write.');
+    const values = await frames(
+      vercelResponse(turn, session, { includeToolApprovals: true }),
+    );
+    expect(values).toContainEqual({
+      type: 'error',
+      errorText: 'resync_required',
+    });
+    expect(values.some((value) => value.type === 'tool-approval-request')).toBe(
+      false,
+    );
+    expect(values.some((value) => value.type === 'tool-input-available')).toBe(
+      false,
+    );
+    expect(effects).toBe(0);
+    expect(server.requests).toHaveLength(1);
+    const request = (await session.pendingInteractions()).find(
+      isFunctionApprovalRequest,
+    )!;
+    await session.respond(request.reject('Input cannot be represented.'));
+    expect((await turn.wait()).finalOutput).toBe('Declined.');
+    expect(effects).toBe(0);
+  },
+);
+
 it('binds approval frames to distinct native grants with the same provider call ID', async () => {
   const server = new ModelServer([
     [
