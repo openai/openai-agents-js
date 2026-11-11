@@ -244,7 +244,11 @@ async function main() {
     ) as { handle: string };
     native.end_trace_span(retiredParent, JSON.stringify({ status: 'ok' }));
     assert.equal((await telemetry.forceFlush()).status, 'success');
-    const live = await native.create_engine('{}', '{}', null);
+    const live = await native.create_engine(
+      '{"web_search":"disabled"}',
+      '{"ephemeral":true}',
+      'synthetic-key',
+    );
     await telemetry.shutdown();
     await assert.rejects(
       telemetry.configure({ restartAfterShutdown: true }),
