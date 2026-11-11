@@ -825,6 +825,19 @@ it('retains approved live custody through supplied compaction', async () => {
     snapshot,
     retain: [request, response],
   });
+  const retained = await session.modelContext();
+  expect(
+    retained.items.filter(
+      (item) =>
+        item.type === 'mcp_approval_request' ||
+        item.type === 'mcp_approval_response',
+    ),
+  ).toEqual([snapshot.items[request], snapshot.items[response]]);
+  await session.compact({
+    summary: 'Lookup has been approved and completed.',
+    snapshot: retained,
+    retain: [],
+  });
   expect((await (await session.submit('continue')).wait()).finalOutput).toBe(
     'continued',
   );
