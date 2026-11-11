@@ -2,7 +2,11 @@ import { expect, it } from 'vitest';
 import { z } from 'zod';
 import { manualTool, ToolOutput } from '../src';
 import { prepareManualResult } from '../src/runtime/manual';
-import { outputOf, toolApplicationData } from '../src/runtime/tools';
+import {
+  outputOf,
+  toolApplicationData,
+  withToolApplicationData,
+} from '../src/runtime/tools';
 
 it('detaches application data and excludes it from native responses', () => {
   const data = { privateValue: { count: 1 } };
@@ -29,6 +33,9 @@ it('keeps omitted, null and empty application data absent', () => {
     const output = new ToolOutput([], true, data);
     expect(output).not.toHaveProperty('applicationData');
     expect(toolApplicationData(outputOf(output))).toBeUndefined();
+    expect(
+      toolApplicationData(withToolApplicationData({}, data)),
+    ).toBeUndefined();
   }
 });
 
