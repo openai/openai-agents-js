@@ -2,6 +2,7 @@ import { parseNative } from './binding';
 import {
   bindManagedWorkspaceSource,
   capturedWorkspaceJson,
+  ManagedWorkspaceCheckpoint,
   type ManagedWorkspaceBinding,
   type ManagedWorkspaceAuthorization,
 } from './managed-workspace';
@@ -56,6 +57,13 @@ export interface SandboxEnvironmentOptions<
   );
   concurrencyLimits?: SandboxConcurrencyLimits;
   archiveLimits?: SandboxArchiveLimits | null;
+  /**
+   * A trusted expected whole pair has been authorizing deserialized managed
+   * checkpoints. Applications have been needing to authenticate external bytes
+   * before supplying this grant; echoing an untrusted pair has been defeating
+   * the boundary. SDK-retired in-memory pairs have been retaining provenance.
+   */
+  authorizedResumeCheckpoint?: ManagedWorkspaceCheckpoint;
   /** Connect an authenticated native executor to this exact sandbox. */
   connect(
     sandbox: SandboxSessionLike<State>,
@@ -142,6 +150,22 @@ function createSandboxEnvironment<
   if (options.managedWorkspace && !serialize)
     throw new TypeError('Managed retirement requires provider serialization');
   const granted = options.authorizedResumeState;
+  const expectedCheckpoint = options.authorizedResumeCheckpoint;
+  if (expectedCheckpoint !== undefined) {
+    if (!(expectedCheckpoint instanceof ManagedWorkspaceCheckpoint))
+      throw new TypeError(
+        'authorizedResumeCheckpoint must be a ManagedWorkspaceCheckpoint',
+      );
+    if (!options.managedWorkspace || !granted)
+      throw new TypeError(
+        'Trusted checkpoint authorization requires managed provider resume',
+      );
+  }
+  const authorizedAssociation =
+    expectedCheckpoint === undefined
+      ? undefined
+      : ManagedWorkspaceCheckpoint.fromJSON(expectedCheckpoint.toJSON())
+          .association;
   if (granted?.serializedState !== undefined) {
     if (granted.state !== undefined || options.session || options.snapshot)
       throw new TypeError(
@@ -160,6 +184,7 @@ function createSandboxEnvironment<
     const serialized = capturedWorkspaceJson(granted.serializedState);
     const currentOptions = captureOptions({
       ...options,
+      authorizedResumeCheckpoint: undefined,
       manifest: cloneManifest(requireManifest(options.manifest, Manifest)),
       connect,
     });
@@ -171,6 +196,7 @@ function createSandboxEnvironment<
               backendId: grantedBackendId,
               providerState: parseNative(serialized),
             }),
+            authorizedAssociation,
           }
         : undefined);
     let consumed = false;

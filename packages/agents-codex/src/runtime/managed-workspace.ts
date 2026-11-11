@@ -30,6 +30,10 @@ export function capturedWorkspaceJson(value: unknown): string {
 }
 
 function association(conversation: string, workspace: string): string {
+  if (!conversation.isWellFormed() || !workspace.isWellFormed())
+    throw new TypeError(
+      'Managed checkpoint JSON must contain well-formed Unicode',
+    );
   return createHash('sha256')
     .update(conversation)
     .update('\0')
@@ -37,11 +41,32 @@ function association(conversation: string, workspace: string): string {
     .digest('hex');
 }
 
-/** Detached native conversation/workspace pair. Provider data never grants authority. */
+let publishRetiredCheckpoint: (
+  conversation: SessionState,
+  workspace: string,
+) => ManagedWorkspaceCheckpoint;
+
+/** The checksum has been checking consistency, never authorizing external bytes. */
 export class ManagedWorkspaceCheckpoint {
   readonly conversationJson: string;
   readonly workspaceJson: string;
   readonly association: string;
+  #captureProvenance?: readonly [string, string, string];
+
+  static {
+    publishRetiredCheckpoint = (conversation, workspace) => {
+      const checkpoint = ManagedWorkspaceCheckpoint._capture(
+        conversation,
+        workspace,
+      );
+      checkpoint.#captureProvenance = Object.freeze([
+        checkpoint.conversationJson,
+        checkpoint.workspaceJson,
+        checkpoint.association,
+      ]);
+      return checkpoint;
+    };
+  }
 
   constructor(conversationJson: string, workspaceJson: string, digest: string) {
     if (
@@ -116,7 +141,7 @@ export class ManagedWorkspaceCheckpoint {
       data.association,
     );
   }
-  /** @internal Capture only after the existing retirement owner completes. */
+  /** @internal Construct data without granting managed resume authority. */
   static _capture(
     conversation: SessionState,
     workspace: string,
@@ -128,10 +153,26 @@ export class ManagedWorkspaceCheckpoint {
       association(encoded, workspace),
     );
   }
+
+  /** @internal A generic constructor or decoder never supplies this provenance. */
+  static _captureProvenance(
+    original: ManagedWorkspaceCheckpoint,
+  ): readonly [string, string, string] | undefined {
+    return original.#captureProvenance;
+  }
+}
+
+/** @internal Only the successful Session retirement owner publishes provenance. */
+export function captureRetiredWorkspace(
+  conversation: SessionState,
+  workspace: string,
+): ManagedWorkspaceCheckpoint {
+  return publishRetiredCheckpoint(conversation, workspace);
 }
 
 export interface ManagedWorkspaceAuthorization {
   readonly authorizedReceipt?: string;
+  readonly authorizedAssociation?: string;
 }
 export interface ManagedWorkspaceBinding extends ManagedWorkspaceAuthorization {
   captureRequested: boolean;
@@ -162,6 +203,7 @@ export function validateManagedWorkspaceOpening(
   checkpoint: ManagedWorkspaceCheckpoint,
   source: unknown,
 ): { state: SessionState } {
+  const provenance = ManagedWorkspaceCheckpoint._captureProvenance(checkpoint);
   const captured = ManagedWorkspaceCheckpoint.fromJSON(checkpoint.toJSON());
   const binding = managedWorkspaceSource(source);
   if (
@@ -170,6 +212,16 @@ export function validateManagedWorkspaceOpening(
   )
     throw new TypeError(
       'Managed resume requires matching current authorized serialized provider state',
+    );
+  const authorized =
+    binding.authorizedAssociation !== undefined
+      ? binding.authorizedAssociation === captured.association
+      : provenance?.[0] === captured.conversationJson &&
+        provenance[1] === captured.workspaceJson &&
+        provenance[2] === captured.association;
+  if (!authorized)
+    throw new TypeError(
+      'Managed resume requires trusted authorization of the whole checkpoint',
     );
   return { state: captured.conversation };
 }

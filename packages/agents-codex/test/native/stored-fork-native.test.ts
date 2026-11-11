@@ -78,9 +78,36 @@ it('retains full original records through a cold referenced branch and source de
   }
   {
     await using branch = await agent.session({ storage, resume: forkId });
-    expect(
-      (await branch.historySnapshot()).items.slice(0, originals.length),
-    ).toEqual(originals);
+    // A limited cold read must share the complete referenced catalog revision.
+    const tail = await branch.historySnapshot({ limit: 1 });
+    const complete = await branch.historySnapshot();
+    expect(complete.items.slice(0, originals.length)).toEqual(originals);
+    expect(tail).toEqual({
+      revision: complete.revision,
+      total: complete.total,
+      items: complete.items.slice(-1),
+    });
+    expect(await branch.historySnapshot({ limit: 0 })).toEqual({
+      revision: complete.revision,
+      total: complete.total,
+      items: [],
+    });
+    const audit = { type: 'application-branch-audit', value: 'branch-only' };
+    await branch.transactHistory({
+      expectedRevision: complete.revision,
+      keep: complete.total,
+      items: [audit],
+    });
+    const updated = await branch.historySnapshot();
+    expect(updated.items).toEqual([...complete.items, audit]);
+    await expect(
+      branch.transactHistory({
+        expectedRevision: complete.revision,
+        keep: complete.total,
+        items: [],
+      }),
+    ).rejects.toThrow(/revision/i);
+    expect(await branch.historySnapshot()).toEqual(updated);
   }
   {
     await using original = await agent.session({ storage, resume: identity });

@@ -398,12 +398,17 @@ nativeIt.each(['session', 'operation'] as const)(
   async (activation) => {
     const original = await peer(['find-record', 'find_record']);
     const replacement = await peer(['find-record', 'find_record']);
+    const callable = new HttpMCP({
+      name: 'records',
+      url: replacement.url,
+      tools: ['find-record', 'find_record'],
+    }).tool('find-record');
     const model = new ModelServer([
       [
         call(
-          'find_record',
+          callable.name,
           {},
-          { callId: 'raw-name-call', namespace: 'mcp__records' },
+          { callId: 'raw-name-call', namespace: callable.namespace! },
         ),
       ],
       [message('completed')],

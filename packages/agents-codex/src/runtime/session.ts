@@ -1,6 +1,7 @@
 import { audioInputByteLimit } from './media';
 import {
   ManagedWorkspaceCheckpoint,
+  captureRetiredWorkspace,
   managedWorkspaceRestore,
   type ManagedWorkspaceBinding,
 } from './managed-workspace';
@@ -4487,7 +4488,7 @@ export class Session<OutputT = string, Context = unknown> {
     signal?.throwIfAborted();
     this.idle('start Realtime tools');
     const output = prepareOutput(undefined);
-    const selection = this.captureSelection(undefined, output);
+    const selection = this.captureSelection(undefined, output, undefined, true);
     const run = this.allocateRun(output, true);
     submissions.get(run)!.realtimeTools = { generation };
     run.parentTrace = parentTrace;
@@ -4610,6 +4611,7 @@ export class Session<OutputT = string, Context = unknown> {
     options?: OperationOptions<Context>,
     output = this.defaultOutput,
     budget = RunBudgetTracker.capture(options?.budget),
+    required = false,
   ): OperationSelection | undefined {
     if (!this.options.openCorrection) assertOutputRepairSupported(output);
     if (
@@ -4620,6 +4622,7 @@ export class Session<OutputT = string, Context = unknown> {
         'Sign in with ChatGPT does not support output repair or prepareRequest',
       );
     if (
+      !required &&
       !this.options.agentGraph &&
       !this.options.inputGuardrails?.length &&
       !this.options.agentInputGuardrails?.length &&
@@ -8377,11 +8380,12 @@ export class Session<OutputT = string, Context = unknown> {
             msg,
             msg.generation as string,
           );
+          const sourceProfile = this.messageProfile(msg);
           if (
             !selection ||
             !this.current(run) ||
             msg.turn_id !== run.id ||
-            (!this.options.agentGraph &&
+            (!sourceProfile &&
               selection.generation !== sourceCatalog.generation)
           )
             throw new NativeError('Expired step selection');
@@ -8483,9 +8487,7 @@ export class Session<OutputT = string, Context = unknown> {
           selection.budget?.check(assertActive);
           signal.throwIfAborted();
           {
-            const source = this.options.agentGraph
-              ? this.messageProfile(msg)!
-              : undefined;
+            const source = sourceProfile;
             const servers = source
               ? this.profileStepMcp.get(
                   this.profileKey(source.profile_id, sourceCatalog.generation),
@@ -8779,9 +8781,8 @@ export class Session<OutputT = string, Context = unknown> {
     event: NativeEvent,
     sourceCatalog: ToolCatalog,
   ): OperationSelection['names'] {
-    if (!this.options.agentGraph || selection.names === undefined)
-      return selection.names;
-    const source = this.messageProfile(event.msg)!;
+    const source = this.messageProfile(event.msg);
+    if (!source || selection.names === undefined) return selection.names;
     const sourceMcp = this.profileStepMcp.get(
       this.profileKey(source.profile_id, sourceCatalog.generation),
     );
@@ -8862,9 +8863,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : normalize(toolNames.parse(event.msg.defaults));
     const projection = this.stepMcpProjection(event);
-    const source = this.options.agentGraph
-      ? this.messageProfile(event.msg)!
-      : undefined;
+    const source = this.messageProfile(event.msg);
     const servers = source
       ? (this.profileStepMcp.get(
           this.profileKey(source.profile_id, sourceCatalog!.generation),
@@ -8902,7 +8901,7 @@ export class Session<OutputT = string, Context = unknown> {
             declared,
           ).map((name, index) => resolve(name, selected[index]));
     const ceiling =
-      resolvedDefaults && this.options.agentGraph
+      resolvedDefaults && source
         ? new Set(
             resolvedDefaults.map((tool) =>
               JSON.stringify([tool.namespace, tool.name]),
@@ -13071,7 +13070,7 @@ export class Session<OutputT = string, Context = unknown> {
           throw new NativeError(
             'Managed retirement omitted its workspace receipt',
           );
-        return ManagedWorkspaceCheckpoint._capture(state, managed.receipt);
+        return captureRetiredWorkspace(state, managed.receipt);
       },
       async (error) => {
         try {

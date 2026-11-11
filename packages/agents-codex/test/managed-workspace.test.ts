@@ -1,5 +1,6 @@
 import { Agent } from '../src';
 import { expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   Manifest,
   type SandboxClient,
@@ -14,6 +15,8 @@ import {
   ManagedWorkspaceCheckpoint,
   capturedWorkspaceJson,
   validateManagedWorkspaceOpening,
+  bindManagedWorkspaceSource,
+  captureRetiredWorkspace,
 } from '../src/runtime/managed-workspace';
 
 const state = () =>
@@ -43,6 +46,217 @@ it('captures detached pairs and rejects mixed/corrupted receipts', () => {
       workspace: pair.workspaceJson.replace('A', 'B'),
     }),
   ).toThrow(/association/);
+});
+
+it('rejects a recomputed pair with only workspace authorization before acquisition', () => {
+  const workspace = capturedWorkspaceJson({
+    backendId: 'fixture',
+    providerState: { id: 'B' },
+  });
+  const original = ManagedWorkspaceCheckpoint._capture(state(), workspace);
+  const conversation = JSON.stringify({
+    ...original.conversation,
+    source_session_id: 'other-conversation',
+  });
+  const forged = ManagedWorkspaceCheckpoint.fromJSON({
+    ...original.toJSON(),
+    conversation,
+    association: createHash('sha256')
+      .update(conversation)
+      .update('\0')
+      .update(workspace)
+      .digest('hex'),
+  });
+  const acquire = vi.fn(async () => {
+    throw new Error('must not acquire');
+  });
+  const source = bindManagedWorkspaceSource(acquire, {
+    authorizedReceipt: workspace,
+  });
+  expect(() => validateManagedWorkspaceOpening(forged, source)).toThrow(
+    /trusted.*checkpoint/,
+  );
+  expect(acquire).not.toHaveBeenCalled();
+});
+
+it('rejects raw surrogate collisions while retaining valid and escaped Unicode wire text', () => {
+  const workspace = capturedWorkspaceJson({
+    backendId: 'fixture',
+    providerState: { id: 'B' },
+  });
+  const trustedText = JSON.stringify({
+    ...state(),
+    source_session_id: 'saved' + String.fromCharCode(0xfffd),
+  });
+  const digest = (text: string) =>
+    createHash('sha256')
+      .update(text)
+      .update('\0')
+      .update(workspace)
+      .digest('hex');
+  const trusted = new ManagedWorkspaceCheckpoint(
+    trustedText,
+    workspace,
+    digest(trustedText),
+  );
+  const source = bindManagedWorkspaceSource(
+    async () => {
+      throw new Error('unused');
+    },
+    {
+      authorizedReceipt: workspace,
+      authorizedAssociation: trusted.association,
+    },
+  );
+  expect(validateManagedWorkspaceOpening(trusted, source).state).toEqual(
+    trusted.conversation,
+  );
+  for (const code of [0xd800, 0xdc00]) {
+    const malformed = trustedText.replace(
+      String.fromCharCode(0xfffd),
+      String.fromCharCode(code),
+    );
+    expect(malformed).not.toBe(trustedText);
+    expect(digest(malformed)).toBe(trusted.association);
+    expect(
+      () =>
+        new ManagedWorkspaceCheckpoint(
+          malformed,
+          workspace,
+          trusted.association,
+        ),
+    ).toThrow(/well-formed Unicode/);
+  }
+  const escaped = JSON.stringify({
+    ...state(),
+    source_session_id: 'saved' + String.fromCharCode(0xd800),
+  });
+  expect(escaped.isWellFormed()).toBe(true);
+  expect(
+    () => new ManagedWorkspaceCheckpoint(escaped, workspace, digest(escaped)),
+  ).not.toThrow();
+  const paired = JSON.stringify({
+    ...state(),
+    source_session_id: 'saved' + String.fromCodePoint(0x1f989),
+  });
+  expect(
+    () => new ManagedWorkspaceCheckpoint(paired, workspace, digest(paired)),
+  ).not.toThrow();
+});
+
+it('distinguishes retiring capture provenance from ordinary data and trusted full-pair grants', () => {
+  const workspace = capturedWorkspaceJson({
+    backendId: 'fixture',
+    providerState: { id: 'B' },
+  });
+  const captured = captureRetiredWorkspace(state(), workspace);
+  const imported = ManagedWorkspaceCheckpoint.fromJSON(captured.toJSON());
+  const acquire = vi.fn(async () => {
+    throw new Error('must not acquire');
+  });
+  const source = bindManagedWorkspaceSource(acquire, {
+    authorizedReceipt: workspace,
+  });
+  expect(validateManagedWorkspaceOpening(captured, source).state).toEqual(
+    imported.conversation,
+  );
+  for (const ordinary of [
+    imported,
+    ManagedWorkspaceCheckpoint._capture(state(), workspace),
+  ]) {
+    expect(() => validateManagedWorkspaceOpening(ordinary, source)).toThrow(
+      /trusted.*checkpoint/,
+    );
+  }
+  const trusted = bindManagedWorkspaceSource(
+    async () => {
+      throw new Error('unused');
+    },
+    {
+      authorizedReceipt: workspace,
+      authorizedAssociation: imported.association,
+    },
+  );
+  expect(validateManagedWorkspaceOpening(imported, trusted).state).toEqual(
+    imported.conversation,
+  );
+  const otherConversation = parseSessionState(
+    JSON.stringify({ ...state(), source_session_id: 'other' }),
+  );
+  expect(() =>
+    validateManagedWorkspaceOpening(
+      captureRetiredWorkspace(otherConversation, workspace),
+      trusted,
+    ),
+  ).toThrow(/trusted.*checkpoint/);
+  expect(() =>
+    validateManagedWorkspaceOpening(
+      ManagedWorkspaceCheckpoint._capture(otherConversation, workspace),
+      trusted,
+    ),
+  ).toThrow(/trusted.*checkpoint/);
+  const wrongWorkspace = bindManagedWorkspaceSource(
+    async () => {
+      throw new Error('unused');
+    },
+    {
+      authorizedReceipt: capturedWorkspaceJson({
+        backendId: 'fixture',
+        providerState: { id: 'other' },
+      }),
+      authorizedAssociation: imported.association,
+    },
+  );
+  expect(() =>
+    validateManagedWorkspaceOpening(captured, wrongWorkspace),
+  ).toThrow(/current authorized/);
+  expect(Object.keys(captured.toJSON()).sort()).toEqual([
+    'association',
+    'conversation',
+    'format',
+    'workspace',
+  ]);
+  expect(JSON.stringify(captured)).not.toContain('captureProvenance');
+  expect(acquire).not.toHaveBeenCalled();
+});
+
+it('denies an untrusted matching-workspace pair through public opening before provider effects', async () => {
+  const deserialize = vi.fn();
+  const resume = vi.fn();
+  const connect = vi.fn();
+  const source = sandboxEnvironment({
+    client: {
+      backendId: 'fixture',
+      deserializeSessionState: deserialize,
+      resume,
+      serializeSessionState: vi.fn(),
+    },
+    manifest: new Manifest(),
+    managedWorkspace: true,
+    authorizedResumeState: {
+      backendId: 'fixture',
+      serializedState: { id: 'B' },
+    },
+    connect,
+  });
+  const pair = ManagedWorkspaceCheckpoint.fromJSON(
+    ManagedWorkspaceCheckpoint._capture(
+      state(),
+      capturedWorkspaceJson({
+        backendId: 'fixture',
+        providerState: { id: 'B' },
+      }),
+    ).toJSON(),
+  );
+  await expect(
+    new Agent({ instructions: '' }).session({
+      state: pair,
+      environment: source,
+    }),
+  ).rejects.toThrow(/trusted.*checkpoint/);
+  expect(deserialize).not.toHaveBeenCalled();
+  expect(resume).not.toHaveBeenCalled();
+  expect(connect).not.toHaveBeenCalled();
 });
 
 it.each([undefined, null, false, 0, ''])(
@@ -128,11 +342,16 @@ it('captures explicit serialized authorization before deserialization and never 
       events.push('delete');
     },
   };
+  const pair = ManagedWorkspaceCheckpoint._capture(
+    state(),
+    capturedWorkspaceJson({ backendId: 'fixture', providerState: { id: 'A' } }),
+  );
   const source = sandboxEnvironment({
     client,
     manifest: new Manifest(),
     managedWorkspace: true,
     authorizedResumeState: { backendId: 'fixture', serializedState: payload },
+    authorizedResumeCheckpoint: pair,
     connect: async () =>
       Environment.lease(
         new Environment({ url: 'wss://fixture.invalid', cwd: '/workspace' }),
@@ -142,10 +361,6 @@ it('captures explicit serialized authorization before deserialization and never 
       ),
   });
   payload.id = 'mutated';
-  const pair = ManagedWorkspaceCheckpoint._capture(
-    state(),
-    capturedWorkspaceJson({ backendId: 'fixture', providerState: { id: 'A' } }),
-  );
   validateManagedWorkspaceOpening(pair, source);
   expect(events).toEqual([]);
   expect(() =>

@@ -8,7 +8,7 @@ import {
   ManagedWorkspaceCheckpoint,
 } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
-import { Agent, Environment, NativeProvider } from '../../src';
+import { Agent, Environment, NativeProvider } from '@openai/agents';
 import { ModelServer, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -36,6 +36,7 @@ it('retains paired A while native continuation publishes B and then resumes orig
     policy: {
       readOnly?: boolean;
       network?: { allowAllUnixSockets: boolean };
+      trustedExpected?: ManagedWorkspaceCheckpoint;
     } = {},
   ) => {
     const payload = pair?.workspace.providerState;
@@ -70,6 +71,9 @@ it('retains paired A while native continuation publishes B and then resumes orig
               backendId: client.backendId,
               serializedState: payload,
             },
+            ...(policy.trustedExpected
+              ? { authorizedResumeCheckpoint: policy.trustedExpected }
+              : {}),
           }
         : {}),
       connect: async (sandbox, { signal }) => {
@@ -83,7 +87,12 @@ it('retains paired A while native continuation publishes B and then resumes orig
               headers: peer.headers,
               cwd: workspace,
               tools: [],
-              ...policy,
+              ...(policy.readOnly === undefined
+                ? {}
+                : { readOnly: policy.readOnly }),
+              ...(policy.network === undefined
+                ? {}
+                : { network: policy.network }),
             }),
             peer.close,
           );
@@ -122,7 +131,16 @@ it('retains paired A while native continuation publishes B and then resumes orig
       }),
     ).rejects.toThrow(/network policy/i);
 
-    const second = await agent.session({ state: a, environment: source(a) });
+    // This trusted expected value has been coming directly from SDK capture,
+    // independently of the imported bytes under test.
+    const importedA = ManagedWorkspaceCheckpoint.fromJSON(JSON.stringify(a));
+    await expect(
+      agent.session({ state: importedA, environment: source(a) }),
+    ).rejects.toThrow(/trusted.*checkpoint/);
+    const second = await agent.session({
+      state: importedA,
+      environment: source(a, { trustedExpected: a }),
+    });
     let b: ManagedWorkspaceCheckpoint;
     try {
       expect(await readFile(join(workspace, 'value'), 'utf8')).toBe('A');
