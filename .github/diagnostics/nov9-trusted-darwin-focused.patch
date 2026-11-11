@@ -1,0 +1,74 @@
+diff --git a/packages/agents-codex/test/native/local-executor-policy-native.test.ts b/packages/agents-codex/test/native/local-executor-policy-native.test.ts
+--- a/packages/agents-codex/test/native/local-executor-policy-native.test.ts
++++ b/packages/agents-codex/test/native/local-executor-policy-native.test.ts
+@@ -2760,7 +2760,7 @@
+ );
+
+ it.skipIf(process.platform !== 'darwin')(
+-  'blocks delegation from a local command to launchd',
++  'blocks delegation from a trusted local command to launchd',
+   async () => {
+     const launchctl = (...args: string[]) => {
+       const result = spawnSync('/bin/launchctl', args, {
+@@ -2846,7 +2846,12 @@
+       expect(existsSync(marker)).toBe(false);
+       {
+         await using session = await agent.session({
+-          environment: Environment.local({ cwd, tools: ['exec_command'] }),
++          environment: Environment.local({
++            cwd,
++            writePolicy: 'trusted_workspace_write',
++            tools: ['exec_command'],
++            network: { allowAllUnixSockets: true },
++          }),
+         });
+         const tryDelegation = async (operation: 'bootstrap' | 'kickstart') => {
+           const turn = await session.submit(`Try launchctl ${operation}.`);
+diff --git a/packages/agents-codex/test/native/saved-codex-login-native.test.ts b/packages/agents-codex/test/native/saved-codex-login-native.test.ts
+--- a/packages/agents-codex/test/native/saved-codex-login-native.test.ts
++++ b/packages/agents-codex/test/native/saved-codex-login-native.test.ts
+@@ -64,12 +64,6 @@
+   response.end(JSON.stringify(body));
+ }
+
+-// On Linux native proxy resolution uses the child environment. System proxy
+-// settings can take precedence on macOS and Windows.
+-const savedLoginTest = it.runIf(
+-  process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
+-    process.platform === 'linux',
+-);
+ for (const testScenario of [
+   {
+     title:
+@@ -107,6 +101,14 @@
+ ] as const) {
+   const { title } = testScenario;
+   const timeout = 'timeout' in testScenario ? testScenario.timeout : 110_000;
++  // Run just the selected credential fixture in the pinned Darwin diagnostic.
++  const savedLoginTest = it.runIf(
++    process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' &&
++      (process.platform === 'linux' ||
++        (process.platform === 'darwin' &&
++          'trustedCredentials' in testScenario &&
++          process.env.OPENAI_AGENTS_TEST_DARWIN_TRUSTED_CREDENTIALS === '1')),
++  );
+   savedLoginTest(title, { timeout }, async ({ skip }) => {
+     const { closeFailure } = testScenario;
+     const usage = 'usage' in testScenario;
+@@ -607,7 +609,7 @@
+         failures,
+         onRequest,
+         allowAuth: !usage && !trustedCredentials,
+-        onUpgrade: usage ? undefined : onUpgrade,
++        onUpgrade: usage || trustedCredentials ? undefined : onUpgrade,
+       });
+       const { tunnels } = loopback;
+       const child = fileURLToPath(
+@@ -693,5 +695,7 @@
+         }
+         expect(executionRequests).toBe(2);
+         expect(grantCount).toBe(0);
++        expect(tunnels.length).toBeGreaterThan(0);
++        expect([...new Set(tunnels)]).toEqual([`${modelHost}:443`]);
+         return;
+       }
