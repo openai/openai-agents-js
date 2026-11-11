@@ -473,3 +473,127 @@ describe('resource-only checkpoint selection authority', () => {
       ).toThrow('current ordinary declarations');
   });
 });
+
+describe('stored hosted prompt authority', () => {
+  const reference = {
+    id: 'pmpt_untrusted_saved_reference',
+    variables: { value: 'saved-secret' },
+  };
+  const controls = {
+    hosted_prompt: {
+      reference,
+      omit_model: true,
+      omit_instructions: true,
+      omit_tools: true,
+    },
+  };
+  const row = {
+    type: 'response_item',
+    payload: { type: 'message', role: 'assistant', content: [] },
+    metadata: {
+      sdk_agent_profile: {
+        profile_id: 'agent_0',
+        epoch: 1,
+        model: { model: 'gpt-5', request_controls: controls },
+      },
+    },
+  };
+  const checkpoint = (history: object[], descendants: object[] = []) => ({
+    format_version: 2,
+    codex_revision: CODEX_REVISION,
+    source_session_id: 'root',
+    root_metadata: {},
+    history,
+    descendants,
+  });
+  it.each(['root', 'active child', 'closed child', 'thread settings'] as const)(
+    'rejects a hosted prompt reference in %s checkpoint controls before native restore',
+    (where) => {
+      const state =
+        where === 'root'
+          ? checkpoint([row])
+          : where === 'thread settings'
+            ? checkpoint([
+                {
+                  type: 'event_msg',
+                  payload: {
+                    type: 'thread_settings_applied',
+                    thread_settings: {
+                      model: 'gpt-5',
+                      request_controls: controls,
+                    },
+                  },
+                },
+              ])
+            : checkpoint(
+                [],
+                [
+                  {
+                    status: where === 'active child' ? 'active' : 'closed',
+                    thread_id: 'child',
+                    parent_thread_id: 'root',
+                    metadata: {},
+                    history: [row],
+                    ...(where === 'closed child' ? { closed_at: 1 } : {}),
+                  },
+                ],
+              );
+      expect(() => parseSessionState(JSON.stringify(state))).toThrow();
+      expect(() => parseNativeCheckpoint(state)).toThrow();
+    },
+  );
+  it('keeps declaration presence and ordinary payload data without restoring a reference', () => {
+    const safe = structuredClone(row);
+    delete (
+      safe.metadata.sdk_agent_profile.model.request_controls.hosted_prompt as {
+        reference?: unknown;
+      }
+    ).reference;
+    const state = checkpoint([
+      safe,
+      {
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          call_id: 'data',
+          output: JSON.stringify(row),
+        },
+      },
+    ]);
+    expect(parseSessionState(JSON.stringify(state)).history).toHaveLength(2);
+  });
+});
+
+it('rejects saved prompt authority in compacted metadata before native restore', () => {
+  const checkpoint = {
+    format_version: 2,
+    codex_revision: CODEX_REVISION,
+    source_session_id: 'root',
+    root_metadata: {},
+    history: [
+      {
+        type: 'compacted',
+        payload: {
+          message: 'summary',
+          replacement_history: [],
+          replacement_history_metadata: [
+            {
+              sdk_agent_profile: {
+                profile_id: 'agent_0',
+                epoch: 1,
+                model: {
+                  model: 'gpt-5',
+                  request_controls: {
+                    hosted_prompt: { reference: { id: 'pmpt_saved' } },
+                  },
+                },
+              },
+            },
+          ],
+        },
+      },
+    ],
+  };
+  expect(() => parseSessionState(JSON.stringify(checkpoint))).toThrow();
+  expect(() => parseNativeCheckpoint(checkpoint)).toThrow();
+});

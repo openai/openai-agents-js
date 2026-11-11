@@ -1008,6 +1008,16 @@ pub(super) struct ModelReply {
     output: Vec<Value>,
     #[serde(default)]
     usage: Option<codex_protocol::protocol::TokenUsage>,
+    #[serde(default)]
+    original_usage: Option<OriginalResponsesUsage>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OriginalResponsesUsage {
+    response_id: String,
+    #[serde(default)]
+    upstream_request_id: Option<String>,
+    usage: serde_json::Map<String, Value>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1041,8 +1051,13 @@ impl PythonTools {
                     .and_then(|stop| stop.callback_cancellation())
             })
             .context("Expired native model producer")?;
+        let capture_raw_usage = self
+            .context_control
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|control| control.raw_usage_active());
         let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
-            "root_turn_id": admission.root_turn_id()});
+            "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage});
         if let Some(attempt) = &attempt {
             message["attempt_id"] = json!(attempt.id());
             message["attempt"] = json!(attempt.attempt());
@@ -1067,14 +1082,53 @@ impl PythonTools {
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
                 );
-                Ok(
-                    futures_util::stream::iter(codex_extension_api::completed_model_response(
-                        reply.response_id,
-                        reply.output,
-                        reply.usage,
-                    ))
-                    .boxed(),
-                )
+                let mut events = codex_extension_api::completed_model_response(
+                    reply.response_id,
+                    reply.output,
+                    reply.usage,
+                );
+                if let Some(original) = reply.original_usage {
+                    if let Some(Ok(codex_api::ResponseEvent::Completed {
+                        response_id,
+                        usage_metadata,
+                        ..
+                    })) = events.last_mut()
+                    {
+                        ensure!(
+                            original.response_id == *response_id,
+                            "Original Responses usage does not match model response"
+                        );
+                        let raw_usage = Value::Object(original.usage);
+                        let count = |value: &Value| value.as_i64().filter(|count| *count >= 0);
+                        let received_usage = codex_protocol::protocol::ReceivedResponseUsage {
+                            input_tokens: raw_usage.get("input_tokens").and_then(count),
+                            cached_input_tokens: raw_usage
+                                .pointer("/input_tokens_details/cached_tokens")
+                                .and_then(count),
+                            cache_write_input_tokens: raw_usage
+                                .pointer("/input_tokens_details/cache_write_tokens")
+                                .and_then(count),
+                            output_tokens: raw_usage.get("output_tokens").and_then(count),
+                            reasoning_output_tokens: raw_usage
+                                .pointer("/output_tokens_details/reasoning_tokens")
+                                .and_then(count),
+                            total_tokens: raw_usage.get("total_tokens").and_then(count),
+                        };
+                        let observation = codex_protocol::protocol::ResponseObservation {
+                            response_id: Some(original.response_id),
+                            upstream_request_id: original.upstream_request_id,
+                            status: codex_protocol::protocol::ResponseObservationStatus::Completed,
+                            incomplete_reason: None,
+                            usage: Some(received_usage),
+                        };
+                        usage_metadata.get_or_insert_default().metadata = Some(raw_usage);
+                        events.insert(
+                            events.len() - 1,
+                            Ok(codex_api::ResponseEvent::ResponseObserved(observation)),
+                        );
+                    }
+                }
+                Ok(futures_util::stream::iter(events).boxed())
             }
             ProducedResponse::Stream { events, finish } => {
                 let cursor = ModelStreamCursor {

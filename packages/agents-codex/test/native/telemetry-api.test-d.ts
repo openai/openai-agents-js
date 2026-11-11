@@ -13,6 +13,15 @@ const options: TelemetryOptions = {
 };
 const configured: Promise<void> = telemetry.configure(options);
 const closed: Promise<void> = telemetry.shutdown();
+const retainedContext = async (
+  context: telemetry.TraceSpan,
+): Promise<number> => {
+  const result: Promise<number> = telemetry.withTraceContext(context, () => 42);
+  // @ts-expect-error Portable IDs have no process-local context authority.
+  telemetry.withTraceContext({ traceId: context.context.traceId }, () => 42);
+  return result;
+};
+void retainedContext;
 void [configured, closed];
 // @ts-expect-error Public options are readonly.
 options.logUserPrompt = true;

@@ -14,10 +14,12 @@ import { binding } from './binding';
 import type { TraceSpan } from './tracing-context';
 export {
   TraceSpan,
+  generateGroupId,
   startTrace,
   startSpan,
   withTrace,
   withSpan,
+  withTraceContext,
   getCurrentTrace,
   getCurrentSpan,
   setTraceContextStorage,
