@@ -11,7 +11,6 @@ import {
 } from './realtime-agent-config';
 import { resolveRealtimePolicy } from './realtime-policy';
 import type { ChildBeforeStepContext } from './native-agents';
-import type { Agent } from './public-agent';
 import {
   GuardrailTripwire,
   captureGuardrailResult,
@@ -7794,11 +7793,12 @@ export class Session<OutputT = string, Context = unknown> {
   private async checkInputGuardrails(
     run: NativeTurn | ChildCallbackOwner,
     message: Record<string, unknown>,
-    agent: Agent<any, any>,
     guards: readonly InputGuardrail<any>[],
     childContext?: ChildBeforeStepContext<Context>,
   ): Promise<void> {
     if (!guards.length) return;
+    const agent = this.sourceApplicationAgent(message);
+    if (!agent) throw new NativeError('Guardrail has no source Agent');
     const signal = run.controller.signal;
     const check = () => {
       signal.throwIfAborted();
@@ -7873,14 +7873,15 @@ export class Session<OutputT = string, Context = unknown> {
     check: () => void,
   ): Promise<void> {
     const source = this.messageProfile(message);
-    const agent = source
+    const declaration = source
       ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
-      : this.options.applicationAgent;
+      : undefined;
+    const agent = this.sourceApplicationAgent(message);
     if (!agent) throw new NativeError('Guardrail has no source Agent');
     const guards = [
       ...(this.options.outputGuardrails ?? []),
       ...(source
-        ? agent.outputGuardrails
+        ? declaration!.outputGuardrails
         : (this.options.agentOutputGuardrails ?? [])),
     ];
     if (!guards.length) return;
@@ -8440,7 +8441,6 @@ export class Session<OutputT = string, Context = unknown> {
               await this.checkInputGuardrails(
                 run,
                 msg,
-                agent,
                 guards.filter((guard) => guard.runInParallel === false),
               );
               const parallel = guards.filter(
@@ -8448,7 +8448,7 @@ export class Session<OutputT = string, Context = unknown> {
               );
               if (parallel.length) {
                 run.inputGuardrailsTask = this.invokeCallback(run, () =>
-                  this.checkInputGuardrails(run, msg, agent, parallel),
+                  this.checkInputGuardrails(run, msg, parallel),
                 ).finally(() => {
                   run.guardrailInput = undefined;
                 });
@@ -8693,7 +8693,6 @@ export class Session<OutputT = string, Context = unknown> {
             await this.checkInputGuardrails(
               owner,
               event.msg,
-              agent,
               guards.filter((guard) => guard.runInParallel === false),
               context,
             );
@@ -8708,7 +8707,6 @@ export class Session<OutputT = string, Context = unknown> {
                     await this.checkInputGuardrails(
                       owner,
                       event.msg,
-                      agent,
                       parallel,
                       context,
                     );
@@ -8866,6 +8864,11 @@ export class Session<OutputT = string, Context = unknown> {
         : normalize(toolNames.parse(event.msg.defaults));
     const projection = this.stepMcpProjection(event);
     const source = this.messageProfile(event.msg);
+    if (source && !sourceCatalog)
+      sourceCatalog = this.sourceCatalog(
+        event.msg,
+        z.string().parse(event.msg.generation),
+      );
     const servers = source
       ? (this.profileStepMcp.get(
           this.profileKey(source.profile_id, sourceCatalog!.generation),
