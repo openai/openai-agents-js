@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -166,11 +173,11 @@ it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
             );
           }
           {
-            await mkdir(join(cwd, '.git'));
-            await writeFile(
-              join(cwd, '.git', 'HEAD'),
-              'ref: refs/heads/main\n',
-            );
+            const stagedGit = join(directory, 'nested-git');
+            await mkdir(stagedGit);
+            await writeFile(join(stagedGit, 'HEAD'), 'ref: refs/heads/main\n');
+            // Publish the populated marker over an empty sandbox mount target.
+            await rename(stagedGit, join(cwd, '.git'));
             await using session = await agent.session({
               environment,
               discoverAgentsMd: true,
