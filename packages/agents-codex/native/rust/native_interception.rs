@@ -7861,6 +7861,7 @@ mod tests {
                     thread_id: &control.id,
                     client_metadata,
                     model: "test-model",
+                    model_omitted: false,
                 })
                 .unwrap()
         };
@@ -9553,7 +9554,10 @@ impl ModelRequestContributor for ModelProducerBoundary {
         if !tools.produces_model_response() {
             return None;
         }
-        Some(Box::new(ModelProducerRequest(tools, input.model.to_owned())))
+        Some(Box::new(ModelProducerRequest(
+            tools,
+            input.model.to_owned(),
+        )))
     }
 }
 struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>, String);
