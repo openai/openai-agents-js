@@ -72,6 +72,7 @@ import { hostedToolSpecs } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
+import type { ToolErrorFormatter } from './tools';
 
 import { Environment } from './environment';
 import {
@@ -165,6 +166,10 @@ export type AgentOptions<Context = undefined, Output = string> = {
   : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Format original function argument/body failures; omission preserves propagation.
+   * Per-tool handlers take precedence; errorFunction:null suppresses this fallback.
+   * Callback failure or undefined uses safe default text. Not persisted in state. */
+  toolErrorFormatter?: ToolErrorFormatter<Context>;
   /** Retain all emitted observations in memory for this Session lifetime.
    * Memory grows with emitted payloads until Session references are released.
    * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
@@ -259,6 +264,9 @@ export interface RunOptions<Context = undefined> extends Omit<
   /** Select tools for each model step of a new run. */
   beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
   returnState?: boolean;
+  /** Capture conversation records for replay through another Session's transactHistory.
+   * History above 4,096 original records or 8 MiB causes a size error after completion. */
+  returnHistory?: boolean;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -284,6 +292,7 @@ interface CapturedOpening {
   readonly apiKey: string | undefined;
   readonly context: unknown;
   readonly onInteraction?: InteractionHandler;
+  readonly toolErrorFormatter?: ToolErrorFormatter<any>;
   readonly profiles?: readonly CapturedAgentProfile<any, any>[];
   readonly decisions?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
@@ -746,6 +755,7 @@ export class Agent<Context = undefined, Output = string> {
       observationRetention: options.observationRetention,
       context: options.context,
       onInteraction: options.onInteraction,
+      toolErrorFormatter: options.toolErrorFormatter,
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
@@ -778,6 +788,7 @@ export class Agent<Context = undefined, Output = string> {
       maxModelSteps === undefined &&
       budget === undefined &&
       options.returnState !== true &&
+      options.returnHistory !== true &&
       options.prepareRequest === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
@@ -805,6 +816,7 @@ export class Agent<Context = undefined, Output = string> {
       maxModelSteps,
       budget,
       returnState: options.returnState,
+      returnHistory: options.returnHistory,
       signal: options.signal,
     });
   }
@@ -828,6 +840,14 @@ export class Agent<Context = undefined, Output = string> {
       opening?.discoverAgentsMd ?? options.discoverAgentsMd;
     if (discoverAgentsMd !== undefined && typeof discoverAgentsMd !== 'boolean')
       throw new TypeError('discoverAgentsMd must be a boolean');
+    const toolErrorFormatter = opening
+      ? opening.toolErrorFormatter
+      : options.toolErrorFormatter;
+    if (
+      toolErrorFormatter !== undefined &&
+      typeof toolErrorFormatter !== 'function'
+    )
+      throw new TypeError('toolErrorFormatter must be a function');
     const owned = (options as OwnedSessionOptions<Context>)[ownedRun];
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
@@ -1613,6 +1633,7 @@ export class Agent<Context = undefined, Output = string> {
         environment,
         context,
         onInteraction: options.onInteraction,
+        toolErrorFormatter,
         applicationAgent: this,
         realtimeDeclaration:
           profiles?.[0].declaration ??
@@ -1717,6 +1738,7 @@ export class Agent<Context = undefined, Output = string> {
             apiKey: lease.realtimeApiKey,
             context,
             onInteraction: options.onInteraction,
+            toolErrorFormatter,
             maxFunctionConcurrency,
             observationRetention,
             contextTransformPurpose,
@@ -1737,6 +1759,7 @@ export class Agent<Context = undefined, Output = string> {
               parentTrace,
               context: captured.context,
               onInteraction: captured.onInteraction,
+              toolErrorFormatter: captured.toolErrorFormatter,
               state,
               [deferredOpening]: {
                 opening: captured,

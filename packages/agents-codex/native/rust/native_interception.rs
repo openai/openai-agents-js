@@ -934,7 +934,9 @@ impl Control {
         if self.native_ancestor.is_some() {
             // A child created without tracing keeps that choice on later turns.
             codex_otel::sdk_trace::CapturedContext {
-                context: self.creation_tracing(),
+                context: self
+                    .creation_tracing()
+                    .map(|lease| Arc::new(lease.retain())),
             }
         } else {
             codex_otel::sdk_trace::CapturedContext::capture()
@@ -3027,6 +3029,9 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     .expect("interception boundary poisoned")
                     .retain(|_, owner| !Arc::ptr_eq(&owner.control, &control));
                 let _ = self.close_pending_code_import(&control, None).await;
+                if let Some(tracing) = control.creation_tracing() {
+                    tracing.release_callback_ownership();
+                }
             }
         })
     }
@@ -3492,8 +3497,9 @@ impl ModelResponseInterceptor for SentinelRequest {
             _ => upstream,
         };
         Box::pin(futures_util::stream::unfold(
-            (self, stream, Some(Vec::new())),
-            |(guard, mut stream, mut output)| async {
+            Some((self, stream, Some(Vec::new()))),
+            |state| async {
+                let (guard, mut stream, mut output) = state?;
                 let next = stream.next().await;
                 // A WebSocket opens its response stream before it receives
                 // the provider's terminal. The issued ticket may fail while
@@ -3509,6 +3515,14 @@ impl ModelResponseInterceptor for SentinelRequest {
                         {
                             output.push(item.clone());
                         }
+                    }
+                    Ok(ResponseEvent::Completed { .. })
+                        if guard.ticket.kind == ModelRequestKind::Warmup =>
+                    {
+                        // Core can start generation as soon as it reads this event.
+                        drop(stream);
+                        drop(guard);
+                        return Some((next, None));
                     }
                     Ok(ResponseEvent::Completed { response_id, .. }) => {
                         let state = guard
@@ -3549,7 +3563,7 @@ impl ModelResponseInterceptor for SentinelRequest {
                     Err(_) => output = None,
                     _ => {}
                 }
-                Some((next, (guard, stream, output)))
+                Some((next, Some((guard, stream, output))))
             },
         ))
     }
@@ -4040,7 +4054,9 @@ impl DirectRequest {
         // Model output can arrive on another task. Keep the turn that issued
         // the request, including an expired or untraced owner's empty context.
         let tracing = match &self.owner.settlement {
-            Some(receipt) => receipt.upgrade().and_then(|turn| turn.tracing.clone()),
+            Some(receipt) => receipt
+                .upgrade()
+                .and_then(|turn| turn.tracing.as_ref().map(|lease| Arc::new(lease.retain()))),
             None => self.control.tracing_context().context,
         };
         let request = Request {
@@ -7743,6 +7759,62 @@ mod tests {
         }));
         assert!(request.before(item).await.is_err());
         assert!(control.channel.state.lock().unwrap().pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn completed_warmup_releases_ticket_before_the_stream_is_dropped() {
+        let boundary = import_cleanup_boundary();
+        let control = Arc::new(Control::new("root".into(), true));
+        control
+            .sentinel_provider
+            .set(("fixture".into(), false))
+            .unwrap();
+        boundary
+            .threads
+            .lock()
+            .unwrap()
+            .insert(control.id.clone(), Arc::downgrade(&control));
+        let issue = |kind, client_metadata: &mut Option<_>| {
+            boundary
+                .request(ModelRequestInput {
+                    kind,
+                    thread_id: &control.id,
+                    client_metadata,
+                    model: "test-model",
+                })
+                .unwrap()
+        };
+
+        let mut warmup_metadata = None;
+        let warmup = issue(ModelRequestKind::Warmup, &mut warmup_metadata);
+        let mut stream = warmup.intercept(Box::pin(stream::iter([Ok(ResponseEvent::Completed {
+            response_id: "fixture-warmup".into(),
+            token_usage: None,
+            usage_metadata: None,
+            end_turn: None,
+        })])));
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(ResponseEvent::Completed { .. }))
+        ));
+
+        // Core may resume generation while the mapper still owns the completed stream.
+        let mut generation_metadata = None;
+        let generation = issue(ModelRequestKind::Generation, &mut generation_metadata);
+        let generation_nonce = &generation_metadata
+            .as_ref()
+            .expect("generation must receive a carrier ticket before the warmup stream drops")["sdk_sentinel_nonce"];
+        assert_ne!(
+            generation_nonce,
+            &warmup_metadata.unwrap()["sdk_sentinel_nonce"]
+        );
+
+        assert!(stream.next().await.is_none());
+        drop(stream);
+        let current = control.sentinel_request.lock().unwrap();
+        assert_eq!(current.request.as_ref().unwrap().nonce, *generation_nonce);
+        drop(current);
+        drop(generation);
     }
 
     #[tokio::test]

@@ -73,11 +73,11 @@ import {
 } from './prepared-request';
 import {
   captureTracing,
+  captureTraceValidation,
   getCurrentSpan,
   workflowForTrace,
   withoutTracing,
   TraceCapture,
-  type TraceSpan,
   withNativeCallbackContext,
 } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -322,6 +322,8 @@ import {
   toolDeclarationIdentity,
   type ToolSelector,
   invokeFunctionTool,
+  toolErrorFormatterBinding,
+  type ToolErrorFormatter,
   registerToolSessionOwner,
   outputOf,
   type ToolResponse,
@@ -392,6 +394,7 @@ export interface SessionOptions {
   initialMessages?: readonly import('./initial-messages').InitialMessage[];
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
+  toolErrorFormatter?: ToolErrorFormatter<any>;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
@@ -603,6 +606,8 @@ export interface Completed<OutputT = string> {
   readonly threadUsage: TokenUsageInfo | null;
   readonly runUsage: RunUsage;
   readonly state?: SessionState;
+  /** Conversation records from returnHistory, for replay with the destination Session's instructions. */
+  readonly history?: CanonicalHistorySnapshot['items'];
   readonly repairAttempts: readonly RecordedTurn[];
   readonly guardrailResults?: readonly GuardrailRecord[];
 }
@@ -1872,6 +1877,12 @@ export class Session<OutputT = string, Context = unknown> {
     };
   }
 
+  /** @internal Preserve absent application identity on a bare native Session. */
+  _realtimeEventSource(receipt: unknown) {
+    if (receipt == null && !this.options.applicationAgent) return undefined;
+    return this._realtimeConfigurationSource(receipt ?? null);
+  }
+
   /** @internal Capture the actual native catalog before resolving app callbacks. */
   async _realtimeSourceSnapshot(
     generation?: string,
@@ -2462,7 +2473,7 @@ export class Session<OutputT = string, Context = unknown> {
       event: NativeEvent;
       tool: ManualTool;
       grant: ReturnType<typeof createManualRequest>;
-      tracing?: TraceSpan;
+      tracing?: ReturnType<typeof captureTraceValidation>;
       ready: boolean;
       identity: ToolIdentity;
     }
@@ -2502,6 +2513,7 @@ export class Session<OutputT = string, Context = unknown> {
   private childObservationProducer: ChildObservationProducer = {
     ended: false,
     eventReaderEnded: false,
+    callbackTraceStorages: new Map(),
   };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
@@ -2895,7 +2907,11 @@ export class Session<OutputT = string, Context = unknown> {
     const executorPolicy =
       this.environment !== null && hasExecutorPolicy(this.environment);
     this.readers = [];
-    this.childObservationProducer = { ended: false, eventReaderEnded: false };
+    this.childObservationProducer = {
+      ended: false,
+      eventReaderEnded: false,
+      callbackTraceStorages: new Map(),
+    };
     this.ownReader(withoutTracing(() => this.readEvents()));
     this.mcpReaderStarted = this.hasMcpPolicyReaders;
     if (this.mcpReaderStarted)
@@ -2913,7 +2929,7 @@ export class Session<OutputT = string, Context = unknown> {
   private watchChildObservationProducer(): void {
     const producer = this.childObservationProducer;
     // Auxiliary readers can still publish child observations after the main
-    // event reader ends. All readers have been registered before this snapshot.
+    // event reader ends.
     void Promise.allSettled(this.readers).then(() => {
       producer.ended = true;
       this.retireChildObservations(producer);
@@ -3310,6 +3326,9 @@ export class Session<OutputT = string, Context = unknown> {
           },
           run.controller.signal,
           workflowForTrace,
+          run instanceof NativeTurn
+            ? undefined
+            : run.observationProducer.callbackTraceStorages,
         );
       } catch (error) {
         if (!entered && !(await pending())) return;
@@ -5355,17 +5374,35 @@ export class Session<OutputT = string, Context = unknown> {
     this.manualCheckpointRun = run;
     this.dispatchRun(
       run,
-      () => {
-        if (!run.tracing) return this.#native._submit(wire!);
-        return this.tracingContext(run).then((context) => {
+      async () => {
+        const tracing = run.tracing;
+        if (!tracing) return this.#native._submit(wire!);
+        let submission: string;
+        try {
+          const span = await tracing.ready;
+          const native = this.options.nativeAgents
+            ? await binding()
+            : undefined;
           if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
             throw new TurnAborted(
               'Tracing admission stopped before native submission',
             );
-          return this.#native._submit(
-            encodeReceipt({ ...receipt, tracing_context: context }, byteLimit),
+          const context = tracing.dispatchContext(
+            span,
+            native && {
+              native,
+              storages: this.childObservationProducer.callbackTraceStorages,
+            },
           );
-        });
+          submission = encodeReceipt(
+            { ...receipt, tracing_context: context },
+            byteLimit,
+          );
+        } catch (error) {
+          submissions.get(run)!.tracingAdmissionFailed = true;
+          throw error;
+        }
+        return this.#native._submit(submission);
       },
       this.hasOperationMcp,
     );
@@ -6189,11 +6226,19 @@ export class Session<OutputT = string, Context = unknown> {
     );
     const declaration = this.profileRuntimes.get(receipt.profile_id)!.profile
       .declaration;
+    const previous =
+      typeof msg.previous_profile_id === 'string'
+        ? this.profileRuntimes.get(msg.previous_profile_id)?.profile
+        : undefined;
     this.observations.append({
       type: 'agent_profile_changed',
       profileId: receipt.profile_id,
       profileEpoch: receipt.epoch,
       agentName: declaration.name ?? null,
+      ...(previous && {
+        previousProfileId: previous.id,
+        previousAgentName: previous.declaration.name ?? null,
+      }),
       turnId: typeof msg.turn_id === 'string' ? msg.turn_id : null,
       submissionId,
     });
@@ -8672,6 +8717,8 @@ export class Session<OutputT = string, Context = unknown> {
       }
     };
     const abort = () => reply(null);
+    const treeStopping = () =>
+      [...this.graphStops].some((stop) => stop.options.scope === 'thread_tree');
     signal.addEventListener('abort', abort, { once: true });
     try {
       signal.throwIfAborted();
@@ -8679,9 +8726,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (
         !this.current(owner) ||
         native !== this.#native ||
-        [...this.graphStops].some(
-          (stop) => stop.options.scope === 'thread_tree',
-        ) ||
+        treeStopping() ||
         !original ||
         original.incarnation !== owner.incarnation ||
         original.turn_id !== owner.turnId ||
@@ -8712,128 +8757,136 @@ export class Session<OutputT = string, Context = unknown> {
         stepIndex: capturedSelection.stepIndex,
         signal,
       });
-      // Read-only admission must be adjacent to entry, after every await.
-      try {
-        if (!native._check_step(encode(receipt))) {
+      const stepReceipt = encode(receipt);
+      const isAdmitted = (diagnose = false) => {
+        if (signal.aborted) return false;
+        if (
+          !this.current(owner) ||
+          native !== this.#native ||
+          treeStopping() ||
+          capturedSelection.generation !== this.catalog.generation
+        ) {
+          if (diagnose) reply(null);
+          return false;
+        }
+        try {
+          if (native._check_step(stepReceipt)) return true;
           if (
+            diagnose &&
             delivery &&
             delivery.native._python_callback_cancelled(delivery.wire)
           )
-            this.callbackAuthorityFailed(
-              delivery,
-              new NativeError('Child step selection is no longer active'),
-            );
-          return;
+            throw new NativeError('Child step selection is no longer active');
+          return false;
+        } catch (error) {
+          this.callbackAuthorityFailed(delivery, error);
         }
-      } catch (error) {
-        this.callbackAuthorityFailed(delivery, error);
-      }
+      };
       signal.throwIfAborted();
+      if (!isAdmitted(true)) return;
       if (owner.failure !== undefined) throw owner.failure;
-      if (!owner.inputGuardrailsStarted) {
-        const source = this.messageProfile(event.msg);
-        const agent = source
-          ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
-          : this.options.applicationAgent;
-        const guards = [
-          ...(this.options.inputGuardrails ?? []),
-          ...(source
-            ? agent!.inputGuardrails
-            : (this.options.agentInputGuardrails ?? [])),
-        ].filter((guard) => guard.childCallback !== undefined);
-        if (guards.length) {
-          if (!agent)
-            throw new NativeError('Child guardrail has no source Agent');
-          const initial = event.msg.initial_input;
-          if (
-            !Array.isArray(initial) ||
-            !initial.every(
-              (item) =>
-                item !== null &&
-                typeof item === 'object' &&
-                !Array.isArray(item),
-            )
-          )
-            throw new NativeError(
-              'Child guardrail lacks admitted initial input',
-            );
-          owner.guardrailInput = structuredClone(initial) as JsonObject[];
-          owner.inputGuardrailsStarted = true;
-          try {
-            await this.checkInputGuardrails(
-              owner,
-              event.msg,
-              guards.filter((guard) => guard.runInParallel === false),
-              context,
-            );
-            const parallel = guards.filter(
-              (guard) => guard.runInParallel !== false,
-            );
-            if (parallel.length) {
-              owner.inputGuardrailsTask = this.trackOwnedCallback(
-                owner,
-                async () => {
-                  try {
-                    await this.checkInputGuardrails(
-                      owner,
-                      event.msg,
-                      parallel,
-                      context,
-                    );
-                  } finally {
-                    owner.guardrailInput = undefined;
-                  }
-                },
-              );
-            }
-          } finally {
-            if (!owner.inputGuardrailsTask) owner.guardrailInput = undefined;
-          }
-        }
-      }
-      capturedSelection.stepIndex++;
+      const skipped = Symbol();
+      let selected: StepDecision<Context> | typeof skipped;
       let names: ReturnType<typeof this.selectedStepNames> = [];
       let stopped = false;
       try {
-        const selected = await withNativeCallbackContext(
+        selected = await withNativeCallbackContext<
+          StepDecision<Context> | typeof skipped
+        >(
           typeof event.msg.tracing_context === 'string'
             ? event.msg.tracing_context
             : undefined,
-          () => beforeStep?.(context),
+          async (retainStorage) => {
+            if (!owner.inputGuardrailsStarted) {
+              const source = this.messageProfile(event.msg);
+              const agent = source
+                ? this.profileRuntimes.get(source.profile_id)!.profile
+                    .declaration
+                : this.options.applicationAgent;
+              const guards = [
+                ...(this.options.inputGuardrails ?? []),
+                ...(source
+                  ? agent!.inputGuardrails
+                  : (this.options.agentInputGuardrails ?? [])),
+              ].filter((guard) => guard.childCallback !== undefined);
+              if (guards.length) {
+                if (!isAdmitted()) return skipped;
+                if (!agent)
+                  throw new NativeError('Child guardrail has no source Agent');
+                const initial = event.msg.initial_input;
+                if (
+                  !Array.isArray(initial) ||
+                  !initial.every(
+                    (item) =>
+                      item !== null &&
+                      typeof item === 'object' &&
+                      !Array.isArray(item),
+                  )
+                )
+                  throw new NativeError(
+                    'Child guardrail lacks admitted initial input',
+                  );
+                owner.guardrailInput = structuredClone(initial) as JsonObject[];
+                owner.inputGuardrailsStarted = true;
+                let releaseParallelStorage: (() => void) | undefined;
+                try {
+                  await this.checkInputGuardrails(
+                    owner,
+                    event.msg,
+                    guards.filter((guard) => guard.runInParallel === false),
+                    context,
+                  );
+                  if (!isAdmitted()) return skipped;
+                  const parallel = guards.filter(
+                    (guard) => guard.runInParallel !== false,
+                  );
+                  if (parallel.length) {
+                    releaseParallelStorage = retainStorage?.();
+                    owner.inputGuardrailsTask = this.trackOwnedCallback(
+                      owner,
+                      async () => {
+                        try {
+                          if (!isAdmitted()) return;
+                          await this.checkInputGuardrails(
+                            owner,
+                            event.msg,
+                            parallel,
+                            context,
+                          );
+                        } finally {
+                          owner.guardrailInput = undefined;
+                          releaseParallelStorage?.();
+                        }
+                      },
+                    );
+                  }
+                } finally {
+                  if (!owner.inputGuardrailsTask) {
+                    owner.guardrailInput = undefined;
+                    releaseParallelStorage?.();
+                  }
+                }
+              }
+            }
+            if (beforeStep && !isAdmitted()) return skipped;
+            capturedSelection.stepIndex++;
+            return beforeStep?.(context);
+          },
           signal,
           workflowForTrace,
+          owner.observationProducer.callbackTraceStorages,
         );
-        if (isStepStop(selected)) stopped = true;
-        else names = this.selectedStepNames(event, selected);
+        if (selected !== skipped) {
+          if (isStepStop(selected)) stopped = true;
+          else names = this.selectedStepNames(event, selected);
+        }
       } finally {
         await scope.close();
       }
       signal.throwIfAborted();
-      if (
-        !this.current(owner) ||
-        native !== this.#native ||
-        capturedSelection.generation !== this.catalog.generation
-      ) {
-        reply(null);
-        return;
-      }
-      try {
-        if (!native._check_step(encode(receipt))) {
-          if (
-            delivery &&
-            delivery.native._python_callback_cancelled(delivery.wire)
-          )
-            this.callbackAuthorityFailed(
-              delivery,
-              new NativeError('Child step selection is no longer active'),
-            );
-          return;
-        }
-      } catch (error) {
-        this.callbackAuthorityFailed(delivery, error);
-      }
+      if (!isAdmitted(true) || selected === skipped) return;
       if (stopped) {
-        if (native._stop_step(encode(receipt))) replied = true;
+        if (native._stop_step(stepReceipt)) replied = true;
         else reply(null);
         return;
       }
@@ -9062,17 +9115,21 @@ export class Session<OutputT = string, Context = unknown> {
       parent: toolInvocation.getStore(),
     };
     const tracing = run.tracing ?? run.issuedTracing;
+    const invokeNative = () =>
+      withNativeCallbackContext(
+        tracingContext,
+        callback,
+        signal,
+        workflowForTrace,
+      );
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
       .then(() =>
         toolInvocation.run(scope, () =>
           tracingContext !== undefined
-            ? withNativeCallbackContext(
-                tracingContext,
-                callback,
-                signal,
-                workflowForTrace,
-              )
+            ? tracing
+              ? tracing.runWithStorage(invokeNative)
+              : invokeNative()
             : tracing
               ? tracing.run('host.callback', 'callback', callback)
               : callback(),
@@ -9330,6 +9387,7 @@ export class Session<OutputT = string, Context = unknown> {
           const context = {
             decide: scope.decide,
             [decisionBinding]: scope[decisionBinding],
+            [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
             realtimeUsage: this.realtimeUsage,
             ...(this.realtimeOwner?._realtimeToolContext(
               msg._sdk_realtime_tool_call,
@@ -9427,7 +9485,7 @@ export class Session<OutputT = string, Context = unknown> {
           event,
           tool,
           grant,
-          tracing: getCurrentSpan(),
+          tracing: captureTraceValidation(),
           identity,
           ready: false,
         });
@@ -10491,6 +10549,7 @@ export class Session<OutputT = string, Context = unknown> {
       const scope = this.decisionScope(event.msg, signal);
       const context = {
         [usageReportBinding]: this.toolUsageReporter(owner, check),
+        [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
         decide: scope.decide,
         [decisionBinding]: scope[decisionBinding],
         traceContext: nativeTraceContext(
@@ -10596,6 +10655,12 @@ export class Session<OutputT = string, Context = unknown> {
           approved,
           () =>
             this.realtimeFunctionEnabled(owner, msg, tool.name, signal, true),
+          () =>
+            this.realtimeOwner?._toolBodyStarted(
+              msg._sdk_realtime_tool_call,
+              msg._sdk_realtime_tool_name as string,
+              toolDeclarationIdentity(tool) as FunctionTool<any>,
+            ),
         );
         if (!this.current(owner) || signal.aborted) {
           status = 'cancelled';
@@ -10706,6 +10771,7 @@ export class Session<OutputT = string, Context = unknown> {
           execute,
           signal,
           workflowForTrace,
+          owner.observationProducer.callbackTraceStorages,
         );
     } catch (error) {
       if (
@@ -12566,6 +12632,18 @@ export class Session<OutputT = string, Context = unknown> {
   async historySnapshot(
     options: { limit?: number } = {},
   ): Promise<CanonicalHistorySnapshot> {
+    return this.#captureCanonicalHistory(options);
+  }
+
+  /** @internal One-shot replay capture with native size limits. */
+  _historyForReplay(): Promise<CanonicalHistorySnapshot> {
+    return this.#captureCanonicalHistory({}, true);
+  }
+
+  async #captureCanonicalHistory(
+    options: { limit?: number },
+    forReplay = false,
+  ): Promise<CanonicalHistorySnapshot> {
     this.checkCallbackOperation('read canonical history from');
     this.idle('historySnapshot');
     const { limit } = options;
@@ -12576,7 +12654,9 @@ export class Session<OutputT = string, Context = unknown> {
       throw new RangeError('limit must be a nonnegative 32-bit integer');
     return this.mutate(async () => {
       const snapshot: { revision: string; total: number; items: string[] } =
-        JSON.parse(await this.#native._canonical_history(limit ?? null));
+        JSON.parse(
+          await this.#native._canonical_history(limit ?? null, forReplay),
+        );
       return {
         ...snapshot,
         items: snapshot.items.map(
@@ -13844,6 +13924,9 @@ export class Session<OutputT = string, Context = unknown> {
               transform,
               owner.controller.signal,
               workflowForTrace,
+              owner instanceof NativeTurn
+                ? undefined
+                : producer.callbackTraceStorages,
             );
           }
           if (!requestExpired && this.current(owner)) {
@@ -13969,6 +14052,7 @@ export class Session<OutputT = string, Context = unknown> {
                 callback,
                 owner.controller.signal,
                 workflowForTrace,
+                owner.observationProducer.callbackTraceStorages,
               ),
             );
             pending.resolve();

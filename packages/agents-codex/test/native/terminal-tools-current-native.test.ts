@@ -1,5 +1,15 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { z } from 'zod';
+import type { ToolContext, telemetry as Telemetry } from '../../src';
 import type { NativeThread } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
 
@@ -22,6 +32,16 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'current-base terminal ownership',
   () => {
+    beforeAll(async () => {
+      const { telemetry } = await import('../../src');
+      await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+    });
+
+    afterAll(async () => {
+      const { telemetry } = await import('../../src');
+      await telemetry.shutdown();
+    });
+
     it('T02 binds equal short names and repeated call IDs to the current captured generation', async () => {
       const { Agent, tool } = await import('../../src');
       const { server, provider: resource } = await fixture([
@@ -562,7 +582,7 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
     );
 
     it('T02/T10/T12/T14 isolates failed and saved child proposals from current owners', async () => {
-      const { Agent, NativeAgents, Environment, ToolOutput, tool } =
+      const { Agent, NativeAgents, Environment, ToolOutput, telemetry, tool } =
         await import('../../src');
       const { OutputValidationError } =
         await import('../../src/runtime/output');
@@ -608,16 +628,36 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const calls: unknown[] = [];
         const firstEntered = Promise.withResolvers<void>();
         const firstRelease = Promise.withResolvers<void>();
+        const reopenedRelease = Promise.withResolvers<void>();
+        const openingStorage = new AsyncLocalStorage<Telemetry.TraceSpan>();
+        const sourceStorage = new AsyncLocalStorage<Telemetry.TraceSpan>();
+        const reopenedStorage = new AsyncLocalStorage<Telemetry.TraceSpan>();
+        const snapshot = (context: ToolContext<unknown>) => ({
+          span: telemetry.getCurrentSpan(),
+          nativeParent: context.traceContext?.toHeaders().traceparent,
+          opening: openingStorage.getStore(),
+          source: sourceStorage.getStore(),
+          reopened: reopenedStorage.getStore(),
+        });
+        const observations: ReturnType<typeof snapshot>[] = [];
+        let sourceSpan: Telemetry.TraceSpan | undefined;
+        let reopenedSpan: Telemetry.TraceSpan | undefined;
         const effect = vi.fn(
-          async (_args: unknown, context: { call?: unknown }) => {
+          async (_args: unknown, context: ToolContext<unknown>) => {
             calls.push(context.call);
             if (calls.length === 1) {
+              observations.push(snapshot(context));
               firstEntered.resolve();
               await firstRelease.promise;
               return new ToolOutput([
                 { type: 'inputText', text: 'one' },
                 { type: 'inputText', text: 'two' },
               ]);
+            }
+            if (restoring) {
+              observations.push(snapshot(context));
+              await reopenedRelease.promise;
+              observations.push(snapshot(context));
             }
             return 'replacement child result';
           },
@@ -642,8 +682,17 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           headers: executor.headers,
           tools: ['exec_command', 'write_stdin', 'apply_patch'],
         });
+        telemetry.setTraceContextStorage(openingStorage);
         await using session = await agent.session({ environment });
-        const rootResult = (await session.submit('Delegate.')).wait();
+        telemetry.setTraceContextStorage(sourceStorage);
+        const root = await telemetry.withSpan(
+          { name: 'source admission' },
+          (span) => {
+            sourceSpan = span;
+            return session.submit('Delegate.');
+          },
+        );
+        const rootResult = root.wait();
         const children = await (async () => {
           try {
             await firstEntered.promise;
@@ -701,41 +750,92 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         expect(server.requests).toHaveLength(4);
         const state = await session.saveState();
         await session.close();
-        await expect(child.submit('Stale captured owner.')).rejects.toThrow();
         expect(server.requests).toHaveLength(4);
         restoring = true;
         rootId = undefined;
         rootRequests = 0;
+        telemetry.setTraceContextStorage(openingStorage);
         await using restored = await agent.session({ environment, state });
-        expect(restored.restoredTurn).toBeNull();
-        expect(effect).toHaveBeenCalledTimes(2);
-        expect(
-          (await (await restored.submit('Resume the child.')).wait())
-            .finalOutput,
-        ).toBe('root done');
-        const current = await vi.waitUntil(async () => {
-          const members = await Array.fromAsync(restored.subagents());
-          const member = members.find((item) => item.id === childId);
-          return member?.turn && member.turn.turnId !== second.turnId
-            ? member
-            : false;
-        });
-        const resumed = await current.turn!.wait();
-        expect(resumed.finalOutput).toBe('replacement child result');
-        expect(resumed.toolCall).toMatchObject({
-          callId: 'repeated-child-call',
-          childId: current.id,
-          turnId: current.turn!.turnId,
-        });
-        expect(resumed.toolCall?.childIncarnation).toBeTruthy();
-        expect(resumed.toolCall?.childIncarnation).not.toBe(
-          result.toolCall?.childIncarnation,
-        );
-        expect(effect).toHaveBeenCalledTimes(3);
-        expect(rootRequests).toBe(2);
-        expect(childRequests).toBe(3);
-        expect(server.requests).toHaveLength(7);
+        try {
+          expect(restored.id).toBe(session.id);
+          expect(restored.restoredTurn).toBeNull();
+          expect(effect).toHaveBeenCalledTimes(2);
+          const cold = await Array.fromAsync(restored.subagents());
+          expect(cold).toMatchObject([
+            { id: childId, isLive: false, turn: null },
+          ]);
+          telemetry.setTraceContextStorage(reopenedStorage);
+          const followup = await telemetry.withSpan(
+            { name: 'reopened admission' },
+            (span) => {
+              reopenedSpan = span;
+              return restored.submit('Resume the child.');
+            },
+          );
+          expect((await followup.wait()).finalOutput).toBe('root done');
+          const current = await vi.waitUntil(async () => {
+            const members = await Array.fromAsync(restored.subagents());
+            const member = members.find((item) => item.id === childId);
+            return member?.turn && member.turn.turnId !== second.turnId
+              ? member
+              : false;
+          });
+          await vi.waitFor(() => expect(observations).toHaveLength(2), {
+            timeout: 3000,
+          });
+          await expect(child.submit('Stale captured owner.')).rejects.toThrow(
+            'Child is not live',
+          );
+          await expect(current.tryCancel(second)).rejects.toThrow(
+            'Turn does not belong to this captured child instance',
+          );
+          reopenedRelease.resolve();
+          const resumed = await current.turn!.wait();
+          expect(resumed.finalOutput).toBe('replacement child result');
+          expect(resumed.toolCall).toMatchObject({
+            callId: 'repeated-child-call',
+            childId: current.id,
+            turnId: current.turn!.turnId,
+          });
+          expect(resumed.toolCall?.childIncarnation).toBeTruthy();
+          expect(resumed.toolCall?.childIncarnation).not.toBe(
+            result.toolCall?.childIncarnation,
+          );
+          expect(calls[2]).toMatchObject({
+            sessionId: restored.id,
+            childId,
+            turnId: current.turn!.turnId,
+            childIncarnation: resumed.toolCall?.childIncarnation,
+          });
+          expect(effect).toHaveBeenCalledTimes(3);
+          expect(rootRequests).toBe(2);
+          expect(childRequests).toBe(3);
+          expect(server.requests).toHaveLength(7);
+
+          expect(observations).toHaveLength(3);
+          const [previous, before, after] = observations;
+          expect(previous.source).toBe(previous.span);
+          expect(previous.span?.context.traceId).toBe(
+            sourceSpan!.context.traceId,
+          );
+          expect(before.nativeParent?.slice(3, 35)).toBe(
+            reopenedSpan!.context.traceId,
+          );
+          expect(before.span?.context).toMatchObject({
+            traceId: reopenedSpan!.context.traceId,
+            parentSpanId: before.nativeParent!.slice(36, 52),
+          });
+          for (const observation of [before, after]) {
+            expect(observation.span).toBe(before.span);
+            expect(observation.reopened).toBe(before.span);
+            expect(observation.opening).toBeUndefined();
+            expect(observation.source).toBeUndefined();
+          }
+        } finally {
+          reopenedRelease.resolve();
+        }
       } finally {
+        telemetry.setTraceContextStorage();
         await executor.close();
       }
     }, 30_000);

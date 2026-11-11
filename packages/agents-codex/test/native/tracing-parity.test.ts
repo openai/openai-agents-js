@@ -21,6 +21,8 @@ for (const mode of [
   'parent-policy',
   'no-export',
   'custom-only',
+  'custom-context-storage',
+  'manual-reply-context-storage',
 ]) {
   it(`qualifies real native tracing ${mode} (REQ423-429)`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'agents-tracing-'));

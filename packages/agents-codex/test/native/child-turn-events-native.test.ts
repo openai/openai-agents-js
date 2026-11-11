@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { NativeEventBatch } from '../fixtures/native-event-batches';
 import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { createHash } from 'node:crypto';
@@ -23,6 +24,7 @@ import {
   tool,
   type Observation,
   type Session,
+  type ToolContext,
 } from '../../src';
 import {
   binding,
@@ -618,17 +620,39 @@ describe('exact native child cancellation', () => {
       string,
       ReturnType<typeof Promise.withResolvers<void>>
     >();
-    const respond: ChildResponse = async (request) => {
+    let cleaningUp = false;
+    let selectedId: string | undefined;
+    let selectedAborted = false;
+    const releaseSelected = Promise.withResolvers<void>();
+    const storage = new AsyncLocalStorage<telemetry.TraceSpan>();
+    let admissionSpan: telemetry.TraceSpan | undefined;
+    const snapshot = (context: ToolContext<unknown>) => ({
+      call: context.call,
+      nativeParent: context.traceContext?.toHeaders().traceparent,
+      span: telemetry.getCurrentSpan(),
+      stored: storage.getStore(),
+    });
+    const observe = vi.fn(snapshot);
+    const selectedSnapshots: ReturnType<typeof snapshot>[] = [];
+    const threadId = (request: JsonObject) => {
       const metadata = request.client_metadata as Record<string, string>;
-      const id = String(
-        JSON.parse(metadata['x-codex-turn-metadata']).thread_id,
-      );
+      return String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    };
+    const respond: ChildResponse = async (request) => {
+      const id = threadId(request);
       const release = Promise.withResolvers<void>();
       children.set(id, release);
-      await release.promise;
-      return [message(`completed ${id}`)];
+      if (!cleaningUp) await release.promise;
+      return [call('observe', {}, { callId: `surviving-${id}` })];
     };
-    const server = childServer([respond, respond], ['alpha', 'beta']);
+    const server = childServer(
+      [
+        respond,
+        respond,
+        (request) => [message(`completed ${threadId(request)}`)],
+      ],
+      ['alpha', 'beta'],
+    );
     const executor = await startPublicExecutor();
     try {
       await using provider = await providerFor(server);
@@ -636,7 +660,29 @@ describe('exact native child cancellation', () => {
         instructions: 'Delegate.',
         model: 'gpt-5.5',
         provider,
-        tools: [new NativeAgents()],
+        tools: [
+          new NativeAgents(),
+          tool({
+            name: 'observe',
+            parameters: z.object({}),
+            execute: async (_args, context) => {
+              if (
+                selectedId !== undefined &&
+                context.call?.childId === selectedId
+              ) {
+                selectedSnapshots.push(snapshot(context));
+                context.signal.addEventListener(
+                  'abort',
+                  () => (selectedAborted = true),
+                  { once: true },
+                );
+                await releaseSelected.promise;
+                selectedSnapshots.push(snapshot(context));
+              } else observe(context);
+              return 'observed';
+            },
+          }),
+        ],
       }).session({
         environment: new Environment({
           url: executor.url,
@@ -646,7 +692,16 @@ describe('exact native child cancellation', () => {
         }),
       });
       try {
-        await (await session.submit('Start both children.')).wait();
+        telemetry.setTraceContextStorage(storage);
+        const root = await telemetry.withSpan(
+          { name: 'admit siblings' },
+          (span) => {
+            admissionSpan = span;
+            return session.submit('Start both children.');
+          },
+        );
+        telemetry.setTraceContextStorage();
+        await root.wait();
         await vi.waitFor(() => expect(children.size).toBe(2));
         const expectedChildIds = [...children.keys()].sort();
         const { selected, sibling, selectedTurn, siblingTurn } =
@@ -690,7 +745,27 @@ describe('exact native child cancellation', () => {
         );
         const attention = selectedTurn.waitForAttention();
         void attention.catch(() => {});
-        await expect(selected.tryCancel(selectedTurn)).resolves.toBe(true);
+        selectedId = selected.id;
+        children.get(selectedId)!.resolve();
+        await vi.waitFor(() => expect(selectedSnapshots).toHaveLength(1), {
+          timeout: 3000,
+        });
+        let joined = false;
+        const cancellation = selected
+          .tryCancel(selectedTurn)
+          .finally(() => (joined = true));
+        void cancellation.catch(() => {});
+        await vi.waitFor(() => expect(selectedAborted).toBe(true));
+        expect(joined).toBe(false);
+        releaseSelected.resolve();
+        await expect(cancellation).resolves.toBe(true);
+        expect(selectedSnapshots).toHaveLength(2);
+        const [before, after] = selectedSnapshots;
+        expect(before?.span?.context.traceId).toBe(
+          admissionSpan!.context.traceId,
+        );
+        expect(before?.stored).toBe(before?.span);
+        expect(after?.stored).toBe(before?.span);
         const error: unknown = await selectedTurn
           .wait()
           .catch((cause: unknown) => cause);
@@ -711,8 +786,28 @@ describe('exact native child cancellation', () => {
         expect(siblingFinished).toBe(false);
         children.get(sibling.id)!.resolve();
         expect((await surviving).finalOutput).toBe(`completed ${sibling.id}`);
+        expect(observe).toHaveBeenCalledTimes(1);
+        const observed = observe.mock.results[0]!.value;
+        expect(observed.call).toMatchObject({
+          sessionId: session.id,
+          childId: sibling.id,
+          turnId: siblingTurn.turnId,
+          childIncarnation: siblingTurn.submissionId.split(':').at(-2),
+          callId: `surviving-${sibling.id}`,
+        });
+        expect(observed.nativeParent?.slice(3, 35)).toBe(
+          admissionSpan!.context.traceId,
+        );
+        expect(observed.span?.context).toMatchObject({
+          traceId: admissionSpan!.context.traceId,
+          parentSpanId: observed.nativeParent?.slice(36, 52),
+        });
+        expect(observed.stored).toBe(observed.span);
         server.assertExhausted();
       } finally {
+        cleaningUp = true;
+        releaseSelected.resolve();
+        telemetry.setTraceContextStorage();
         for (const child of children.values()) child.resolve();
       }
     } finally {

@@ -92,6 +92,37 @@ export class ToolTimeoutError extends Error {
 
 export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
 
+class FunctionBodyError extends Error {
+  constructor(readonly original: unknown) {
+    super('Function callback failed');
+  }
+}
+
+/** Admitted callback-body exception formatting into a failed model-visible result. */
+export type ToolErrorFunction<Context = unknown> = (
+  context: ToolContext<Context>,
+  error: unknown,
+) => string | Promise<string>;
+
+/** Context for a live Session's function argument or body failure. */
+export interface ToolErrorContext<Context = unknown> {
+  readonly context: Context;
+  readonly call: ToolCallInfo;
+  /** Cancellation of the owning invocation; formatting joins its cleanup. */
+  readonly signal: AbortSignal;
+  readonly phase: 'arguments' | 'execution';
+  readonly defaultMessage: string;
+  readonly error: unknown;
+}
+
+/** Undefined or a failed formatter uses the safe default; empty text is valid. */
+export type ToolErrorFormatter<Context = unknown> = (
+  context: ToolErrorContext<Context>,
+) => string | undefined | Promise<string | undefined>;
+
+/** @internal Live Session callback; never persisted or supplied by tool declarations. */
+export const toolErrorFormatterBinding = Symbol('toolErrorFormatter');
+
 export type ToolTimeoutErrorFunction<Context = unknown> = (
   context: ToolContext<Context>,
   error: ToolTimeoutError,
@@ -109,6 +140,8 @@ export interface ToolCallContext<Context = unknown> {
   readonly traceContext?: import('./trace-context').TraceContext;
   /** SDK-issued contexts include frozen observed metadata. */
   readonly call?: ToolCallInfo;
+  /** @internal Captured Session formatter. */
+  readonly [toolErrorFormatterBinding]?: ToolErrorFormatter<any>;
   readonly context: Context;
   readonly submission: Turn<unknown> | ChildInvocation;
   readonly threadId: string;
@@ -201,6 +234,7 @@ type Invocation<Context> = (
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
   beforeExecute?: () => Promise<boolean>,
+  onBodyEntry?: () => void,
 ) => Promise<ToolResponse>;
 
 /** A tool-local decision made before its execution callback runs. */
@@ -215,7 +249,7 @@ interface ManagedApproval<Context = unknown> {
     args: JsonValue,
     context: ToolCallContext<Context>,
     admit: () => void,
-  ) => Promise<{ value: unknown } | { failure: string }>;
+  ) => Promise<{ value: unknown } | { failure: string } | undefined>;
   readonly function: FunctionTool<Context>;
   readonly resultSchema: JsonValue;
   parseInput(args: JsonValue): unknown;
@@ -249,6 +283,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly callbackTimeout?: number;
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
   readonly [computerDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
@@ -379,6 +414,8 @@ export function tool<
   timeoutBehavior?: FunctionToolTimeoutBehavior;
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
+  /** Callback-body failures only; cancellation, policy and validation handling unchanged. */
+  errorFunction?: ToolErrorFunction<Context> | null;
   /**
    * Initial Zod validation failure text, before policy, approval, or execution.
    * Detached original JSON and an unvalidated call context. Default turn failure.
@@ -473,19 +510,61 @@ export function tool<
     timeoutBehavior = 'raise_exception',
     timeoutErrorFunction,
     inputErrorFunction,
+    errorFunction,
   } = options;
   if (
     inputErrorFunction !== undefined &&
     typeof inputErrorFunction !== 'function'
   )
     throw new TypeError('inputErrorFunction must be a function');
+  if (errorFunction != null && typeof errorFunction !== 'function')
+    throw new TypeError('errorFunction must be a function');
+  const recoverRunError = async (
+    phase: ToolErrorContext['phase'],
+    error: unknown,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+  ): Promise<string> => {
+    const formatter = context[toolErrorFormatterBinding];
+    if (errorFunction === null || !formatter || !context.call) throw error;
+    const defaultMessage =
+      phase === 'arguments'
+        ? `Invalid arguments for function '${name}'.`
+        : `Function '${name}' failed.`;
+    admit();
+    let formatted: unknown;
+    try {
+      formatted = await formatter(
+        Object.freeze({
+          context: context.context,
+          call: context.call,
+          signal: context.signal,
+          phase,
+          defaultMessage,
+          error,
+        }),
+      );
+    } catch (failure) {
+      // Cancellation cleanup keeps its original exception and existing owner.
+      try {
+        admit();
+      } catch {
+        throw failure;
+      }
+      return defaultMessage;
+    }
+    admit();
+    return typeof formatted === 'string' ? formatted : defaultMessage;
+  };
   const recoverOriginalInput = async (
     error: unknown,
     original: JsonValue,
     context: ToolCallContext<Context>,
     admit: () => void,
   ): Promise<string> => {
-    if (!inputErrorFunction || !(error instanceof z.ZodError)) throw error;
+    if (!(error instanceof z.ZodError)) throw error;
+    if (!inputErrorFunction)
+      return recoverRunError('arguments', error, context, admit);
     admit();
     const text = await inputErrorFunction(
       context,
@@ -508,6 +587,7 @@ export function tool<
     callbackTimeout,
     timeoutBehavior,
     timeoutErrorFunction,
+    errorFunction,
     deferLoading: options.deferLoading ?? false,
     parameters: decode(
       losslessJsonValueSchema,
@@ -521,6 +601,7 @@ export function tool<
       effectiveArgs?: JsonValue,
       approved?: ApprovedArguments,
       beforeExecute?: () => Promise<boolean>,
+      onBodyEntry?: () => void,
     ) {
       admit();
       const originalArguments = Object.freeze(
@@ -636,24 +717,56 @@ export function tool<
           ? undefined
           : new ToolTimeoutError(name, callbackTimeout);
       let value: z.input<Result> | BackgroundResult<z.input<Result>>;
+      const invoke = (signal: AbortSignal) =>
+        execute(
+          parsed,
+          inheritToolSessionOwner(
+            withDecisionSignal(callContext, signal),
+            context,
+          ),
+        );
       try {
         value = await invokeWithTimeout(
-          (signal) =>
-            execute(
-              parsed,
-              inheritToolSessionOwner(
-                withDecisionSignal(callContext, signal),
-                context,
-              ),
-            ),
+          invoke,
           context.signal,
           callbackTimeout,
           name,
           timeoutBehavior === 'raise_exception' ? onTimeout : () => {},
           timeoutError,
           timeoutBehavior,
+          errorFunction ||
+            (errorFunction !== null && context[toolErrorFormatterBinding])
+            ? (error) => new FunctionBodyError(error)
+            : undefined,
+          (signal) => {
+            signal.throwIfAborted();
+            admit();
+            onBodyEntry?.();
+          },
         );
       } catch (error) {
+        if (error instanceof FunctionBodyError) {
+          try {
+            admit();
+          } catch {
+            throw error.original;
+          }
+          const text = errorFunction
+            ? await errorFunction(callContext, error.original)
+            : await recoverRunError(
+                'execution',
+                error.original,
+                callContext,
+                admit,
+              );
+          admit();
+          if (typeof text !== 'string')
+            throw new TypeError('errorFunction must return a string');
+          return {
+            success: false,
+            contentItems: [{ type: 'inputText' as const, text }],
+          };
+        }
         if (
           timeoutBehavior !== 'error_as_result' ||
           !timeoutError ||
@@ -709,13 +822,15 @@ export function tool<
   });
   if (!needsApproval) return declaration;
   const approval: ManagedApproval<Context> = {
-    ...(inputErrorFunction
+    ...(errorFunction !== null || inputErrorFunction
       ? {
           async prepareOriginalInput(
             args: JsonValue,
             context: ToolCallContext<Context>,
             admit: () => void,
           ) {
+            if (!inputErrorFunction && !context[toolErrorFormatterBinding])
+              return undefined;
             admit();
             try {
               return { value: parameters.parse(structuredClone(args)) };
@@ -943,6 +1058,7 @@ export async function invokeFunctionTool(
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
   beforeExecute?: () => Promise<boolean>,
+  onBodyEntry?: () => void,
 ): Promise<ToolResponse> {
   const admit = () => {
     context.signal.throwIfAborted();
@@ -956,6 +1072,7 @@ export async function invokeFunctionTool(
     effectiveArgs,
     approved,
     beforeExecute,
+    onBodyEntry,
   );
 }
 
@@ -968,8 +1085,18 @@ export async function invokeWithTimeout<T>(
   onTimeout: (error: Error) => void,
   timeoutError?: Error,
   timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
+  wrapBodyError?: (error: unknown) => unknown,
+  enterBody?: (signal: AbortSignal) => void,
 ): Promise<T> {
-  if (timeoutSeconds === undefined) return invoke(parentSignal);
+  if (timeoutSeconds === undefined) {
+    enterBody?.(parentSignal);
+    if (!wrapBodyError) return invoke(parentSignal);
+    try {
+      return await invoke(parentSignal);
+    } catch (error) {
+      throw wrapBodyError(error);
+    }
+  }
   const controller = new AbortController();
   const signal = AbortSignal.any([parentSignal, controller.signal]);
   const timeout =
@@ -983,6 +1110,7 @@ export async function invokeWithTimeout<T>(
   };
   const timer = setTimeout(expire, timeoutSeconds * 1000);
   try {
+    enterBody?.(signal);
     let value: T;
     try {
       const result = invoke(signal);
@@ -997,7 +1125,7 @@ export async function invokeWithTimeout<T>(
         if (timeoutBehavior !== 'error_as_result' || !parentSignal.aborted)
           controller.signal.throwIfAborted();
       }
-      throw error;
+      throw wrapBodyError ? wrapBodyError(error) : error;
     }
     if (performance.now() >= deadline) expire();
     signal.throwIfAborted();
