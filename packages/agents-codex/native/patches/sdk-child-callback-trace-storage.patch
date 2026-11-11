@@ -1,0 +1,191 @@
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 6546b41863a35e11243d052209bbb54a7ecb3283..4f05d66e79118ae80a3eea71ea3cab681ede4a3b 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -22,6 +22,48 @@ pub struct ScopePolicy {
+     pub(crate) credential: Option<crate::sdk_trace_routes::TraceCredentialLease>,
+     pub(crate) root_descriptor: Arc<RootDescriptor>,
+     pub workflow_span_id: Option<SpanId>,
++    // The SDK uses this process-local key only to select JavaScript storage.
++    callback_storage_key: Option<CallbackStorageKey>,
++    callback_release: Option<CallbackRelease>,
++}
++
++impl ScopePolicy {
++    fn without_callback_release(&self) -> Self {
++        Self {
++            disabled: self.disabled,
++            include_sensitive_data: self.include_sensitive_data,
++            credential: self.credential.clone(),
++            root_descriptor: self.root_descriptor.clone(),
++            workflow_span_id: self.workflow_span_id,
++            callback_storage_key: self.callback_storage_key.clone(),
++            callback_release: None,
++        }
++    }
++}
++
++struct CallbackRelease(Option<Box<dyn FnOnce() + Send + Sync>>);
++
++impl std::fmt::Debug for CallbackRelease {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("CallbackRelease")
++    }
++}
++
++impl Drop for CallbackRelease {
++    fn drop(&mut self) {
++        if let Some(release) = self.0.take() {
++            release();
++        }
++    }
++}
++
++#[derive(Clone)]
++struct CallbackStorageKey(String);
++
++impl std::fmt::Debug for CallbackStorageKey {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("CallbackStorageKey")
++    }
+ }
+ 
+ #[derive(Default)]
+@@ -298,8 +340,14 @@ struct Readback<'a> {
+     disabled: bool,
+     include_sensitive_data: bool,
+     root_metadata: Option<&'a str>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    callback_storage_key: Option<&'a str>,
+ }
+-fn readback(key: &str, handle: &Handle) -> Result<String, String> {
++fn readback(
++    key: &str,
++    handle: &Handle,
++    callback_storage_key: Option<&CallbackStorageKey>,
++) -> Result<String, String> {
+     let span = handle.context.span();
+     let span = span.span_context();
+     let policy = policy_for_context(&handle.context).ok_or("Native tracing policy unavailable")?;
+@@ -312,6 +360,7 @@ fn readback(key: &str, handle: &Handle) -> Result<String, String> {
+         disabled: policy.disabled,
+         include_sensitive_data: policy.include_sensitive_data,
+         root_metadata: policy.root_descriptor.metadata.get().map(String::as_str),
++        callback_storage_key: callback_storage_key.map(|key| key.0.as_str()),
+     })
+     .map_err(|_| "Native tracing context could not serialize".into())
+ }
+@@ -473,7 +522,14 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+             .as_ref()
+             .and_then(|policy| policy.workflow_span_id)
+     };
++    // Host span handles and their public aliases carry ancestry and privacy only.
++    let callback_storage_key = inherited
++        .as_ref()
++        .filter(|_| options.kind == "callback" && !options.detached)
++        .and_then(|policy| policy.callback_storage_key.as_ref());
+     let policy = Arc::new(ScopePolicy {
++        callback_storage_key: None,
++        callback_release: None,
+         workflow_span_id,
+         disabled,
+         include_sensitive_data: capture,
+@@ -549,7 +605,7 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+         ended: Mutex::new(false),
+     });
+     let key = token("s");
+-    let result = readback(&key, &handle)?;
++    let result = readback(&key, &handle, callback_storage_key)?;
+     handles()
+         .lock()
+         .unwrap_or_else(|e| e.into_inner())
+@@ -557,8 +613,34 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     Ok(result)
+ }
+ pub fn trace_span_context(key: &str) -> Result<String, String> {
+-    readback(key, resolve(key)?.as_ref())
++    readback(key, resolve(key)?.as_ref(), None)
+ }
++/// The private dispatch context owns callback storage independently of the public span.
++pub fn retain_callback_dispatch_context(
++    key: &str,
++    callback_storage_key: String,
++    release: impl FnOnce() + Send + Sync + 'static,
++) -> Result<String, String> {
++    let handle = resolve(key)?;
++    let policy = policy_for_context(&handle.context).ok_or("Native tracing policy unavailable")?;
++    let policy = Arc::new(ScopePolicy {
++        callback_storage_key: Some(CallbackStorageKey(callback_storage_key)),
++        callback_release: Some(CallbackRelease(Some(Box::new(release)))),
++        ..policy.without_callback_release()
++    });
++    let key = token("c");
++    handles().lock().unwrap_or_else(|e| e.into_inner()).insert(
++        key.clone(),
++        Arc::new(Handle {
++            context: handle.context.with_value(policy),
++            _registration: None,
++            parent_span_id: handle.parent_span_id.clone(),
++            ended: Mutex::new(true),
++        }),
++    );
++    Ok(key)
++}
++
+ pub fn retain_trace_context(key: &str) -> Result<String, String> {
+     let handle = resolve(key)?;
+     let key = token("c");
+@@ -828,6 +910,8 @@ mod tests {
+             credential: None,
+             root_descriptor: Default::default(),
+             workflow_span_id: None,
++            callback_storage_key: None,
++            callback_release: None,
+         });
+         let context = Context::new().with_value(policy);
+         let sample = ScopeSampler::default().should_sample(
+@@ -866,6 +950,44 @@ impl ContextLease {
+     pub fn token(&self) -> &str {
+         &self.token
+     }
++
++    /// Give an active callback or a new turn an independently retirable handle.
++    pub fn retain(&self) -> Self {
++        Self {
++            token: retain_trace_context(&self.token).expect("live native tracing lease"),
++        }
++    }
++
++    /// Receipts keep their exact ancestry after losing callback ownership.
++    pub fn release_callback_ownership(&self) {
++        let previous = {
++            let mut handles = handles().lock().unwrap_or_else(|e| e.into_inner());
++            let Some(handle) = handles.get_mut(&self.token) else {
++                return;
++            };
++            let Some(policy) = policy_for_context(&handle.context) else {
++                return;
++            };
++            if policy.callback_release.is_none() {
++                return;
++            }
++            let span = handle.context.span().span_context().clone();
++            // Drop the owning OTel span and registry registration as well as
++            // the typed policy. Keep the original SpanContext, including flags.
++            let context = handle
++                .context
++                .with_remote_span_context(span)
++                .with_value(Arc::new(policy.without_callback_release()));
++            let replacement = Arc::new(Handle {
++                context,
++                _registration: None,
++                parent_span_id: handle.parent_span_id.clone(),
++                ended: Mutex::new(true),
++            });
++            std::mem::replace(handle, replacement)
++        };
++        drop(previous);
++    }
+ }
+ impl Drop for ContextLease {
+     fn drop(&mut self) {

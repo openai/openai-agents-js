@@ -693,9 +693,13 @@
       "sha256": "7f196f5620569ac083361eb55e6f85834bc27a42bd47650b8de75bd8bee3966b"
     },
     {
+      "path": "sdk-child-callback-trace-storage.patch",
+      "sha256": "9e655c5c429f03e58cee41a7818b31daf89ef9b429d2d31575a13c5ed6e99408"
+    },
+    {
       "path": "sdk-realtime-connection-options.patch",
       "sha256": "781bc8c13dcef506f9ec8c30efb41cb7bc8112d4a5e447a19855032f653533e8"
     }
   ],
-  "result_tree": "c14179e5093ed9b080d8ee5ffaeaf1ff908bf7c8"
+  "result_tree": "b3c30492011ac62deacc82b0e9a42fcbc44eb994"
 }
