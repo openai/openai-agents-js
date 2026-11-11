@@ -1208,7 +1208,7 @@ mod provider_error_tests {
         let original = {
             let store = ExtensionData::new("original");
             let receipt = start(&thread, &store, "original").await;
-            terminal(&thread, &store, false, true);
+            terminal(&thread, &store, true, true);
             receipt
         };
         let replacement_store = ExtensionData::new("replacement");

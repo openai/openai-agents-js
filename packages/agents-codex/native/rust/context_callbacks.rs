@@ -668,7 +668,7 @@ mod tests {
             tools
                 .reply_model_context(
                     serde_json::from_value(
-                        json!({"owner":owner(),"items":[{"type":"item_reference","id":"lossy"}]})
+                        json!({"owner":owner(),"items":[{"type":"item_reference","id":17}]})
                     )
                     .unwrap()
                 )
