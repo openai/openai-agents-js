@@ -249,6 +249,10 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
     return this.activeMountPaths.keys();
   }
 
+  protected override activeWorkspaceInContainerMountPaths(): Iterable<string> {
+    return this.activeMountPaths.keys();
+  }
+
   constructor(args: {
     state: E2BSandboxSessionState;
     sandbox: E2BSandboxInstance;

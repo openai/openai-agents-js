@@ -1,5 +1,5 @@
 ---
-'@openai/agents-extensions': patch
+'@openai/agents-extensions': minor
 ---
 
-fix: protect mounted storage during workspace tar export and hydration, and reject sparse metadata.
+fix: reject workspace tar operations with active in-container cloud mounts, preserve provider-managed storage, and reject sparse metadata.

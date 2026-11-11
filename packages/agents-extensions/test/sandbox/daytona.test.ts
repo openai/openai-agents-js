@@ -157,6 +157,38 @@ describe('DaytonaSandboxClient', () => {
   );
 
   afterEach(() => vi.unstubAllGlobals());
+  test.each(['mounted', 'nested/mounted'])(
+    'rejects tar IO with an in-container cloud bucket mount at %s',
+    async (mountPath) => {
+      const session = await new DaytonaSandboxClient().create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'synthetic-bucket',
+              mountPath,
+              ephemeral: false,
+              mountStrategy: new DaytonaCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      );
+      uploadFileMock.mockClear();
+      executeCommandMock.mockClear();
+
+      await expect(session.persistWorkspace()).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+      await expect(
+        session.hydrateWorkspace(makeTarArchive([])),
+      ).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+
+      expect(uploadFileMock).not.toHaveBeenCalled();
+      expect(executeCommandMock).not.toHaveBeenCalled();
+    },
+  );
   test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
     const client = new DaytonaSandboxClient();
     const manifest = new Manifest({

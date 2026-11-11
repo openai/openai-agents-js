@@ -1372,35 +1372,48 @@ describe('E2BSandboxClient', () => {
     });
   });
 
-  test('hydrates a fresh mounted session and rejects resuming its mount state', async () => {
-    const client = new E2BSandboxClient();
-    const session = await client.create(
-      new Manifest({
-        entries: {
-          data: {
-            type: 's3_mount',
-            bucket: 'synthetic-bucket',
-            accessKeyId: 'synthetic-access',
-            secretAccessKey: 'synthetic-secret',
-            mountPath: 'alias/mounted',
-            mountStrategy: new E2BCloudBucketMountStrategy(),
+  test.each(['alias/mounted', 'nested/mounted'])(
+    'rejects tar persistence, hydration and resume for in-container mount state at %s',
+    async (mountPath) => {
+      const client = new E2BSandboxClient();
+      const session = await client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'synthetic-bucket',
+              accessKeyId: 'synthetic-access',
+              secretAccessKey: 'synthetic-secret',
+              mountPath,
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
           },
-        },
-      }).withInContainerMountCredentialExposureAcknowledged('alias/mounted'),
-    );
-    // A fresh session retains its actual attachment paths and can hydrate safely.
-    await session.hydrateWorkspace(makeTarArchive([]));
-    runMock.mockClear();
-    writeMock.mockClear();
-    connectMock.mockClear();
+        }).withInContainerMountCredentialExposureAcknowledged(mountPath),
+      );
+      writeMock.mockClear();
+      runMock.mockClear();
+      await expect(session.persistWorkspace()).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+      await expect(
+        session.hydrateWorkspace(makeTarArchive([])),
+      ).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+      expect(writeMock).not.toHaveBeenCalled();
+      expect(runMock).not.toHaveBeenCalled();
+      runMock.mockClear();
+      writeMock.mockClear();
+      connectMock.mockClear();
 
-    await expect(client.resume(session.state)).rejects.toThrow(
-      'in-container mounts cannot be resumed safely',
-    );
-    expect(connectMock).not.toHaveBeenCalled();
-    expect(runMock).not.toHaveBeenCalled();
-    expect(writeMock).not.toHaveBeenCalled();
-  });
+      await expect(client.resume(session.state)).rejects.toThrow(
+        'in-container mounts cannot be resumed safely',
+      );
+      expect(connectMock).not.toHaveBeenCalled();
+      expect(runMock).not.toHaveBeenCalled();
+      expect(writeMock).not.toHaveBeenCalled();
+    },
+  );
 
   test('recreates sandboxes when reconnect reports missing sandbox', async () => {
     const client = new E2BSandboxClient({
@@ -1718,6 +1731,81 @@ describe('E2BSandboxClient', () => {
 
     await expect(session.persistWorkspace()).resolves.toEqual(archive);
     expect(createSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  test.each(['ephemeral mount', 'missing native snapshot API'])(
+    'rejects native-to-tar fallback with in-container mounts: %s',
+    async (reason) => {
+      const mountPath = 'mounted';
+      const client = new E2BSandboxClient({
+        workspacePersistence: 'snapshot',
+      });
+      const session = await client.create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'synthetic-bucket',
+              accessKeyId: 'synthetic-access',
+              secretAccessKey: 'synthetic-secret',
+              mountPath,
+              ephemeral: reason === 'ephemeral mount',
+              mountStrategy: new E2BCloudBucketMountStrategy(),
+            },
+          },
+        }).withInContainerMountCredentialExposureAcknowledged(mountPath),
+      );
+      if (reason === 'missing native snapshot API') {
+        const sandbox = await createMock.mock.results.at(-1)!.value;
+        sandbox.createSnapshot = undefined;
+      }
+      runMock.mockClear();
+      writeMock.mockClear();
+
+      await expect(session.persistWorkspace()).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+      await expect(
+        session.hydrateWorkspace(makeTarArchive([])),
+      ).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+
+      expect(createSnapshotMock).not.toHaveBeenCalled();
+      expect(runMock).not.toHaveBeenCalled();
+      expect(writeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('keeps native snapshot persistence and hydration with non-ephemeral in-container mounts', async () => {
+    const mountPath = 'mounted';
+    const client = new E2BSandboxClient({ workspacePersistence: 'snapshot' });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'synthetic-bucket',
+            accessKeyId: 'synthetic-access',
+            secretAccessKey: 'synthetic-secret',
+            mountPath,
+            ephemeral: false,
+            mountStrategy: new E2BCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged(mountPath),
+    );
+
+    const snapshot = await session.persistWorkspace();
+
+    expect(decodeNativeSnapshotRef(snapshot)).toMatchObject({
+      provider: 'e2b',
+      snapshotId: 'snap_test',
+    });
+    expect(createSnapshotMock).toHaveBeenCalledOnce();
+    await session.hydrateWorkspace(snapshot);
+    expect(createMock).toHaveBeenLastCalledWith('snap_test', {});
+    expect(killMock).toHaveBeenCalledOnce();
   });
 
   test('persists an empty tar when the workspace root is ephemeral', async () => {

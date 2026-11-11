@@ -230,6 +230,10 @@ export class BlaxelSandboxSession extends RemoteSandboxSessionBase<BlaxelSandbox
     return [...this.activeFuseMountPaths.keys(), ...this.activeDriveMountPaths];
   }
 
+  protected override activeWorkspaceInContainerMountPaths(): Iterable<string> {
+    return this.activeFuseMountPaths.keys();
+  }
+
   constructor(args: {
     state: BlaxelSandboxSessionState;
     sandbox: BlaxelSandboxLike;

@@ -15,6 +15,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -203,12 +204,17 @@ class LocalArchiveSession extends LocalImageReadSession {
   constructor(
     root: string,
     private readonly mountPaths: string[],
+    private readonly inContainerMountPaths: string[] = [],
   ) {
     super(root);
   }
 
   protected override activeWorkspaceMountPaths(): Iterable<string> {
     return this.mountPaths;
+  }
+
+  protected override activeWorkspaceInContainerMountPaths(): Iterable<string> {
+    return this.inContainerMountPaths;
   }
 
   protected override async mkdirRemote(path: string): Promise<void> {
@@ -470,6 +476,190 @@ describe('shared sandbox session helpers', () => {
           'ordinary workspace data',
         );
         expect(await readFile(join(attached, 'remote.txt'), 'utf8')).toBe(
+          'remote object',
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test
+    .skipIf(process.platform === 'win32')
+    .each(['retained', 'removed', 'replaced'])(
+    'rejects tar IO for intersecting in-container mount state: %s',
+    async (state) => {
+      const directory = await mkdtemp(join(tmpdir(), 'agents-live-mount-'));
+      try {
+        const root = join(directory, 'workspace');
+        const mounted = join(root, 'mounted');
+        const detached = join(directory, 'detached-storage');
+        await mkdir(mounted, { recursive: true });
+        await writeFile(join(mounted, 'remote.txt'), 'remote object');
+        await writeFile(join(root, 'ordinary.txt'), 'unchanged workspace');
+        const session = new LocalArchiveSession(root, [mounted], [mounted]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: 'mounted',
+              ephemeral: false,
+              readOnly: false,
+            }),
+          },
+        });
+        if (state !== 'retained') {
+          await rename(mounted, detached);
+        }
+        if (state === 'replaced') {
+          await mkdir(mounted);
+          await writeFile(join(mounted, 'planted.txt'), 'ordinary replacement');
+        }
+
+        await expect(session.persistWorkspace()).rejects.toThrow(
+          'is unavailable while SDK-managed in-container cloud mounts are active',
+        );
+        await expect(
+          session.hydrateWorkspace(
+            makeTarArchive([
+              { name: 'ordinary.txt', content: 'saved workspace' },
+            ]),
+          ),
+        ).rejects.toThrow(
+          'is unavailable while SDK-managed in-container cloud mounts are active',
+        );
+
+        expect(session.writes).toHaveLength(0);
+        expect(session.commands).toHaveLength(0);
+        expect(
+          session.commands.some(
+            ({ command }) =>
+              command.includes('tar ') || command.includes('find '),
+          ),
+        ).toBe(false);
+        expect(await readFile(join(root, 'ordinary.txt'), 'utf8')).toBe(
+          'unchanged workspace',
+        );
+        expect(
+          await readFile(
+            join(state === 'retained' ? mounted : detached, 'remote.txt'),
+            'utf8',
+          ),
+        ).toBe('remote object');
+        if (state === 'replaced') {
+          expect(await readFile(join(mounted, 'planted.txt'), 'utf8')).toBe(
+            'ordinary replacement',
+          );
+        }
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test.skipIf(process.platform === 'win32').each(['root', 'ancestor'])(
+    'rejects empty tar export for an in-container mount covering the workspace %s',
+    async (location) => {
+      const directory = await mkdtemp(join(tmpdir(), 'agents-covering-mount-'));
+      try {
+        const root = join(directory, 'workspace');
+        await mkdir(root);
+        const mounted = location === 'root' ? root : directory;
+        const session = new LocalArchiveSession(root, [mounted], [mounted]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: mounted,
+              ephemeral: false,
+              readOnly: false,
+            }),
+          },
+        });
+
+        await expect(session.persistWorkspace()).rejects.toThrow(
+          'is unavailable while SDK-managed in-container cloud mounts are active',
+        );
+        await expect(
+          session.hydrateWorkspace(makeTarArchive([])),
+        ).rejects.toThrow(
+          'is unavailable while SDK-managed in-container cloud mounts are active',
+        );
+
+        expect(session.writes).toHaveLength(0);
+        expect(session.commands).toHaveLength(0);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test
+    .skipIf(process.platform === 'win32')
+    .each(['outside', 'prefix sibling', 'moved external parent'])(
+    'rejects tar IO with retained in-container mount state at an %s path',
+    async (location) => {
+      const directory = await mkdtemp(join(tmpdir(), 'agents-outside-mount-'));
+      try {
+        const root = join(directory, 'workspace');
+        const mounted =
+          location === 'prefix sibling'
+            ? `${root}-mounted`
+            : join(directory, 'outside-parent', 'mounted');
+        await mkdir(root);
+        await mkdir(mounted, { recursive: true });
+        await writeFile(join(mounted, 'remote.txt'), 'remote object');
+        await writeFile(join(root, 'ordinary.txt'), 'saved workspace');
+        const session = new LocalArchiveSession(root, [mounted], [mounted]);
+        session.state.manifest = new Manifest({
+          root,
+          entries: {
+            data: s3Mount({
+              bucket: 'synthetic-bucket',
+              mountPath: mounted,
+              ephemeral: false,
+              readOnly: false,
+            }),
+          },
+        });
+        if (location === 'moved external parent') {
+          await rename(
+            join(directory, 'outside-parent'),
+            join(root, 'moved-parent'),
+          );
+        }
+        await writeFile(join(root, 'ordinary.txt'), 'changed workspace');
+        await writeFile(join(root, 'stale.txt'), 'stale workspace data');
+
+        await expect(session.persistWorkspace()).rejects.toThrow(
+          SandboxUnsupportedFeatureError,
+        );
+        await expect(
+          session.hydrateWorkspace(
+            makeTarArchive([
+              { name: 'ordinary.txt', content: 'saved workspace' },
+            ]),
+          ),
+        ).rejects.toThrow(
+          'is unavailable while SDK-managed in-container cloud mounts are active',
+        );
+
+        expect(session.commands).toHaveLength(0);
+        expect(session.writes).toHaveLength(0);
+        expect(session.commands).toHaveLength(0);
+        expect(await readFile(join(root, 'ordinary.txt'), 'utf8')).toBe(
+          'changed workspace',
+        );
+        expect(await readFile(join(root, 'stale.txt'), 'utf8')).toBe(
+          'stale workspace data',
+        );
+        const physicalMount =
+          location === 'moved external parent'
+            ? join(root, 'moved-parent', 'mounted')
+            : mounted;
+        expect(await readFile(join(physicalMount, 'remote.txt'), 'utf8')).toBe(
           'remote object',
         );
       } finally {

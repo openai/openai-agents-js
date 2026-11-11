@@ -122,6 +122,38 @@ const actualBlaxel =
   await vi.importActual<typeof import('@blaxel/core')>('@blaxel/core');
 
 describe('BlaxelSandboxClient', () => {
+  test.each(['mounted', 'nested/mounted'])(
+    'rejects tar IO with an in-container cloud bucket mount at %s',
+    async (mountPath) => {
+      const session = await new BlaxelSandboxClient().create(
+        new Manifest({
+          entries: {
+            data: {
+              type: 's3_mount',
+              bucket: 'synthetic-bucket',
+              mountPath,
+              ephemeral: false,
+              mountStrategy: new BlaxelCloudBucketMountStrategy(),
+            },
+          },
+        }),
+      );
+      writeBinaryMock.mockClear();
+      processExecMock.mockClear();
+
+      await expect(session.persistWorkspace()).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+      await expect(
+        session.hydrateWorkspace(makeTarArchive([])),
+      ).rejects.toThrow(
+        'tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active',
+      );
+
+      expect(writeBinaryMock).not.toHaveBeenCalled();
+      expect(processExecMock).not.toHaveBeenCalled();
+    },
+  );
   test('rejects unsupported credentialless strategy before provider creation or helpers', async () => {
     const client = new BlaxelSandboxClient();
     const manifest = new Manifest({
@@ -3334,6 +3366,26 @@ describe('BlaxelSandboxClient', () => {
       ),
     ).rejects.toThrow('Blaxel drive mounts require the sandbox drives API.');
     expect(driveMountMock).not.toHaveBeenCalled();
+  });
+
+  test('keeps tar workspace persistence available with a provider-managed drive', async () => {
+    const session = await new BlaxelSandboxClient().create(
+      new Manifest({
+        entries: {
+          drive: new BlaxelDriveMount({
+            driveName: 'agent-drive',
+            drivePath: '/projects',
+            mountPath: 'mounted/drive',
+            mountStrategy: new BlaxelDriveMountStrategy(),
+          }),
+        },
+      }),
+    );
+    const archive = makeTarArchive([]);
+    readBinaryMock.mockResolvedValue(archive);
+
+    await expect(session.persistWorkspace()).resolves.toEqual(archive);
+    await expect(session.hydrateWorkspace(archive)).resolves.toBeUndefined();
   });
 
   test('mounts and unmounts Blaxel drives through the drives API', async () => {

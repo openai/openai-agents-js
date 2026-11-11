@@ -671,6 +671,7 @@ export abstract class RemoteSandboxSessionBase<
         manifest: this.state.manifest,
         io: this.archiveIo(),
         activeMountPaths: this.activeWorkspaceMountPaths(),
+        inContainerMountPaths: this.activeWorkspaceInContainerMountPaths(),
       });
     });
   }
@@ -686,6 +687,7 @@ export abstract class RemoteSandboxSessionBase<
         io: this.archiveIo(),
         data,
         activeMountPaths: this.activeWorkspaceMountPaths(),
+        inContainerMountPaths: this.activeWorkspaceInContainerMountPaths(),
         archiveLimits:
           options.archiveLimits === undefined
             ? this.archiveLimits
@@ -695,6 +697,10 @@ export abstract class RemoteSandboxSessionBase<
   }
 
   protected activeWorkspaceMountPaths(): Iterable<string> {
+    return [];
+  }
+
+  protected activeWorkspaceInContainerMountPaths(): Iterable<string> {
     return [];
   }
 

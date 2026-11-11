@@ -71,7 +71,13 @@ export async function persistRemoteWorkspaceTar(args: {
   /** Optional staging prefix; export uses a private directory beside this path. */
   archivePath?: string;
   activeMountPaths?: Iterable<string>;
+  inContainerMountPaths?: Iterable<string>;
 }): Promise<Uint8Array> {
+  assertWorkspaceTarInContainerMountsSupported(
+    args.providerName,
+    args.manifest.root,
+    args.inContainerMountPaths ?? [],
+  );
   const root = args.manifest.root;
   const archiveDirectory = `${args.archivePath ?? remoteArchivePath(args.providerName)}.d`;
   const archivePath = `${archiveDirectory}/archive.tar`;
@@ -99,7 +105,6 @@ export async function persistRemoteWorkspaceTar(args: {
     archivePath,
     'persist',
   );
-
   const effectiveProtectedPaths = await effectiveWorkspaceTarProtectedPaths(
     args,
     effectiveRoot,
@@ -204,7 +209,13 @@ export async function hydrateRemoteWorkspaceTar(args: {
   archivePath?: string;
   archiveLimits?: SandboxArchiveLimits | null;
   activeMountPaths?: Iterable<string>;
+  inContainerMountPaths?: Iterable<string>;
 }): Promise<void> {
+  assertWorkspaceTarInContainerMountsSupported(
+    args.providerName,
+    args.manifest.root,
+    args.inContainerMountPaths ?? [],
+  );
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
   const protectedPaths = workspaceTarPreservedPaths(args.manifest);
@@ -290,6 +301,27 @@ export async function hydrateRemoteWorkspaceTar(args: {
       .runCommand(`rm -f -- ${shellQuote(archivePath)}`)
       .catch(() => {});
   }
+}
+
+function assertWorkspaceTarInContainerMountsSupported(
+  providerName: string,
+  root: string,
+  mountPaths: Iterable<string>,
+): void {
+  const [mountPath] = mountPaths;
+  if (mountPath === undefined) {
+    return;
+  }
+  throw new SandboxUnsupportedFeatureError(
+    `${providerName} tar workspace persistence is unavailable while SDK-managed in-container cloud mounts are active.`,
+    {
+      provider: providerName,
+      feature: 'workspacePersistence',
+      workspacePersistence: 'tar',
+      root,
+      mountPath,
+    },
+  );
 }
 
 async function effectiveWorkspaceTarProtectedPaths(
