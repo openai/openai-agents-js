@@ -332,13 +332,22 @@ These live callbacks do not create a durable approval to resume after a restart.
 
 Add `webSearch()` to `Agent.tools` to allow cached standalone search. Omission disables both standalone and hosted search. Choose `mode: 'live'` to allow external web access, or `route: 'hosted'` to use the provider-hosted Responses tool. The current provider must support the chosen route.
 
+[Matching development builds](building.md) have been supporting the context size and image controls shown below.
+
 ```ts
 import { Agent, webSearch } from '@openai/agents';
 
 const researcher = new Agent({
   instructions: 'Research the question with the admitted search tool.',
   model: 'gpt-5.5',
-  tools: [webSearch({ mode: 'cached', route: 'standalone' })],
+  tools: [
+    webSearch({
+      route: 'hosted',
+      searchContextSize: 'high',
+      searchContentTypes: ['text', 'image'],
+      imageSettings: { maxResults: 3, caption: true },
+    }),
+  ],
 });
 ```
 
@@ -347,6 +356,10 @@ A Session captures the search declaration at opening. An explicit `update({ tool
 Hosted search rejects models whose native Responses Lite protocol would select standalone search. Admission checks the effective restored model and declared child models before connecting an executor. A refused model update leaves the original Session usable. Saved search history grants no search access and never replays a completed search. A destination must declare search again and supplies its own provider credentials, including on LocalStorage reopen.
 
 With `route: 'hosted'`, pass `allowedDomains` or `blockedDomains` to filter by domain and its subdomains. Use domain names such as `nodejs.org` without a URL scheme. Pass `location` to give the provider an approximate user location. The optional fields are `country`, `region`, `city`, and `timezone`. Use a two-letter ISO country code and an IANA time zone such as `America/Chicago`. These controls require a provider and model that support the Responses `web_search` tool. The SDK rejects the controls on the standalone route. The provider determines the results and their freshness.
+
+`searchContextSize` has been accepting `'low'`, `'medium'`, or `'high'` on either route. On the hosted route, `searchContentTypes` has been selecting text, images, or both, while `imageSettings` has been carrying optional `maxResults` and `caption` controls. Omitting these fields has been preserving the existing model defaults.
+
+Image selection has also been requesting raw results from the provider. Search-call history has been retaining optional `results` JSON, including after saved-state restore. Completion observations with execution details have been exposing the same results when supplied by the provider.
 
 Set `modelSettings.toolChoice` on the Agent, when opening a Session, or in an idle `session.update()`. The default, `'auto'`, lets the model answer directly. Use `'none'` to ask the model to skip tools or `'required'` to require a tool call. With several admitted tools, the model can choose any of them.
 

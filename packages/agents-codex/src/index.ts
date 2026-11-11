@@ -280,6 +280,7 @@ export type {
 export { webSearch } from './runtime/web-search';
 export type {
   WebSearch,
+  WebSearchImageSettings,
   WebSearchLocation,
   WebSearchOptions,
 } from './runtime/web-search';

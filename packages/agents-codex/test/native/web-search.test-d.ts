@@ -12,6 +12,7 @@ import {
   type WebSearch,
   type WebSearchAction,
   type WebSearchLocation,
+  type WebSearchImageSettings,
   type WebSearchSource,
 } from '@openai/agents-codex';
 import {
@@ -25,8 +26,12 @@ expectTypeOf<ConvenienceSearchItem>().toEqualTypeOf<SearchItem>();
 const tools: Tool[] = [search];
 new Agent({ instructions: 'Research', tools });
 const location: WebSearchLocation = { timezone: 'America/Chicago' };
+const imageSettings: WebSearchImageSettings = { maxResults: 3, caption: false };
 const hosted = webSearch({
   route: 'hosted',
+  searchContextSize: 'medium',
+  searchContentTypes: ['text', 'image'],
+  imageSettings,
   allowedDomains: ['example.test'],
   location,
 });
@@ -61,9 +66,16 @@ expectTypeOf<
 webSearch({ mode: 'disabled' });
 // @ts-expect-error No automatic fallback route is admitted.
 webSearch({ route: 'auto' });
+// @ts-expect-error Unsupported context budget.
+webSearch({ searchContextSize: 'unbounded' });
 // @ts-expect-error Captured declarations are readonly.
 search.mode = 'live';
 // @ts-expect-error Captured domain lists are readonly.
 hosted.allowedDomains?.push('example.test');
 // @ts-expect-error The native public Agent accepts only the three outer choice strings.
 settings.toolChoice = { type: 'web_search' };
+
+// @ts-expect-error Unsupported search content type.
+webSearch({ route: 'hosted', searchContentTypes: ['video'] });
+// @ts-expect-error Captured image settings are readonly.
+hosted.imageSettings!.caption = true;
