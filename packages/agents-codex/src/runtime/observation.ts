@@ -1,6 +1,6 @@
 import { summarizeResponseFactRecord } from './response-facts';
 import { ToolOutput } from './tools';
-import type { ExecutionItem, SearchItem } from './history';
+import type { ExecutionItem, ModelOutputItem, SearchItem } from './history';
 import type { JsonObject } from './binding';
 import type { HostedToolItem } from './hosted-tools';
 import type { ManualToolRequest } from './manual';
@@ -107,7 +107,11 @@ export type AgentProfileChanged = Event &
     parentSubmissionId?: string;
   }>;
 
+export type ModelOutputItemCompleted = SubmissionEvent &
+  Readonly<{ type: 'model_output_item_completed'; item: ModelOutputItem }>;
+
 export type Observation =
+  | ModelOutputItemCompleted
   | AgentProfileChanged
   | HostedToolProgress
   | (HostedToolItemObservation &
@@ -210,6 +214,8 @@ function projectObservation(
         ? structuredClone(event.record)
         : summarizeResponseFactRecord(event.record),
     });
+  if (event.type === 'model_output_item_completed')
+    return Object.freeze({ ...event, item: structuredClone(event.item) });
   if (event.type === 'search_item_completed') {
     const item = includeExecutionDetails
       ? event.item
@@ -384,6 +390,7 @@ export class ObservationBuffer {
           ? JSON.stringify(event.record).length
           : event.type === 'execution_item_completed' ||
               event.type === 'search_item_completed' ||
+              event.type === 'model_output_item_completed' ||
               event.type === 'hosted_tool_item_completed'
             ? JSON.stringify(searchSummary?.item ?? event.item).length
             : event.type === 'hosted_tool_call_progress'

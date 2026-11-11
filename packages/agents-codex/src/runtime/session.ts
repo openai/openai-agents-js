@@ -266,6 +266,7 @@ import {
 import {
   projectHistory,
   projectExecutionItem,
+  projectModelOutputItem,
   projectSearchItem,
   projectNativeHostedToolItem,
   threadHistorySchema,
@@ -380,6 +381,7 @@ export interface SessionOptions {
   realtimeApiKey?: string;
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
+  includeModelOutputItems?: boolean;
   beforeComplete?: BeforeComplete<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
   outputGuardrails?: readonly OutputGuardrail<any>[];
@@ -6560,7 +6562,12 @@ export class Session<OutputT = string, Context = unknown> {
           id,
         );
     }
-    if (msg.type === 'item_completed' && msg.thread_id === id) {
+    const completedItem = msg.type === 'item_completed' && msg.thread_id === id;
+    const modelItem =
+      completedItem && this.options.includeModelOutputItems
+        ? projectModelOutputItem(msg.item, turnId, id)
+        : undefined;
+    if (completedItem) {
       const item = projectExecutionItem(msg.item, turnId, id);
       const searchItem = item
         ? undefined
@@ -6594,6 +6601,13 @@ export class Session<OutputT = string, Context = unknown> {
               turnId,
               submissionId,
               item: searchItem,
+            });
+          if (modelItem)
+            this.observations.append({
+              type: 'model_output_item_completed',
+              turnId,
+              submissionId,
+              item: modelItem,
             });
         } else {
           this.observations.gap();
@@ -6653,6 +6667,17 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
+    if (
+      modelItem &&
+      owner.observationPhase !== 'ended' &&
+      owner.instanceId === event.subagent_instance_id
+    )
+      this.observations.append({
+        type: 'model_output_item_completed',
+        turnId,
+        submissionId,
+        item: modelItem,
+      });
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
     if (
@@ -7075,7 +7100,10 @@ export class Session<OutputT = string, Context = unknown> {
       ? undefined
       : projectSearchItem(msg.item, msg.turn_id, this.id);
     const hostedItem = projectNativeHostedToolItem(msg.item, msg.turn_id);
-    if (!item && !searchItem && !hostedItem) return;
+    const modelItem = this.options.includeModelOutputItems
+      ? projectModelOutputItem(msg.item, msg.turn_id, this.id)
+      : undefined;
+    if (!item && !searchItem && !hostedItem && !modelItem) return;
     const owner = this.lastRun;
     if (
       owner?.id === msg.turn_id &&
@@ -7103,7 +7131,14 @@ export class Session<OutputT = string, Context = unknown> {
           submissionId,
           item: searchItem,
         });
-    } else this.observations.gap();
+      if (modelItem)
+        this.observations.append({
+          type: 'model_output_item_completed',
+          turnId: msg.turn_id,
+          submissionId,
+          item: modelItem,
+        });
+    } else if (item || searchItem || hostedItem) this.observations.gap();
   }
 
   private observeRequestMetadata(run: NativeTurn, event: NativeEvent): void {

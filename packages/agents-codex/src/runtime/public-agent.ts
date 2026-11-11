@@ -174,6 +174,8 @@ export interface SessionBaseOptions<Context = undefined> {
    * Memory grows with emitted payloads until Session references are released.
    * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
   observationRetention?: 'bounded' | 'all';
+  /** Record completed assistant messages and provider reasoning summaries. */
+  includeModelOutputItems?: boolean;
   /**
    * Seed settled user messages and assistant text without starting a model turn.
    * Requires a fresh opening without state or resume, including for []. Core
@@ -249,7 +251,7 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
-  'tools'
+  'tools' | 'includeModelOutputItems'
 > {
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
@@ -294,6 +296,7 @@ interface CapturedOpening {
   readonly decisions?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
   readonly observationRetention?: 'bounded' | 'all';
+  readonly includeModelOutputItems?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
@@ -584,6 +587,11 @@ export class Agent<Context = undefined, Output = string> {
       options.observationRetention !== 'all'
     )
       throw new TypeError('observationRetention must be "bounded" or "all"');
+    if (
+      options.includeModelOutputItems !== undefined &&
+      typeof options.includeModelOutputItems !== 'boolean'
+    )
+      throw new TypeError('includeModelOutputItems must be a boolean');
     options.initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
@@ -880,6 +888,9 @@ export class Agent<Context = undefined, Output = string> {
     const observationRetention = opening
       ? opening.observationRetention
       : options.observationRetention;
+    const includeModelOutputItems = opening
+      ? opening.includeModelOutputItems
+      : options.includeModelOutputItems;
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -1617,6 +1628,7 @@ export class Agent<Context = undefined, Output = string> {
         chatGPTPlan: plan !== undefined,
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
+        includeModelOutputItems,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         decisions,
@@ -1736,6 +1748,7 @@ export class Agent<Context = undefined, Output = string> {
             toolErrorFormatter,
             maxFunctionConcurrency,
             observationRetention,
+            includeModelOutputItems,
             contextTransformPurpose,
             beforeCompact,
             transformContext,

@@ -49,6 +49,7 @@ async function peer(summary?: string) {
           item: {
             id: current ? 'current-reasoning' : 'earlier-reasoning',
             type: 'reasoning',
+            encrypted_content: 'private-reasoning-fixture',
             summary: [
               {
                 type: 'summary_text',
@@ -183,6 +184,54 @@ it.each([false, true])(
       expect(output.toolCallId).toBe('current-call');
       expect(JSON.stringify(output.output)).toContain('result:current-secret');
     } else expect(JSON.stringify(values)).not.toContain('current-secret');
+  },
+);
+
+it.each([false, true])(
+  'observes detached assistant output for the selected native turn (%s)',
+  async (includeModelOutputItems) => {
+    await using provider = await peer('Provider summary.');
+    await using session = await new Agent({
+      instructions: 'Read.',
+      provider,
+      tools: [lookup()],
+    }).session({ includeModelOutputItems });
+    await (await session.submit('earlier')).wait();
+    const turn = await session.submit('current');
+    const events = await Array.fromAsync(turn.events());
+    const output = events.filter(
+      (event) => event.type === 'model_output_item_completed',
+    );
+    if (!includeModelOutputItems) {
+      expect(output).toEqual([]);
+      return;
+    }
+    expect(output.map((event) => event.item.type)).toEqual([
+      'reasoning',
+      'message',
+    ]);
+    expect(output.every((event) => event.turnId === turn.turnId)).toBe(true);
+    const reasoning = output[0]!.item;
+    expect(reasoning).toMatchObject({
+      type: 'reasoning',
+      summary: [{ type: 'summary_text', text: 'Provider summary.' }],
+    });
+    expect(output[1]!.item).toMatchObject({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Found it.' }],
+    });
+    expect(JSON.stringify(output)).not.toContain('Earlier reasoning secret.');
+    expect(JSON.stringify(output)).not.toContain('private-reasoning-fixture');
+    if (reasoning.type !== 'reasoning')
+      throw new Error('Expected reasoning summary');
+    (reasoning.summary as unknown[]).splice(0);
+    const replay = await Array.fromAsync(turn.events());
+    expect(
+      replay.find((event) => event.type === 'model_output_item_completed'),
+    ).toMatchObject({
+      item: { summary: [{ type: 'summary_text', text: 'Provider summary.' }] },
+    });
   },
 );
 
