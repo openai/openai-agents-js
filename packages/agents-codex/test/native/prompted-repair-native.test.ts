@@ -140,6 +140,71 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       server.assertExhausted();
     }, 25000);
 
+    it.each([false, true])(
+      'observes completed items from the owned repair with opt-in %s',
+      async (includeModelOutputItems) => {
+        const invalid = '{"label":"x"}';
+        const corrected = '{"label":"corrected"}';
+        const summary = [
+          { type: 'summary_text', text: 'Corrected the label.' },
+        ];
+        const server = new ModelServer([
+          [message(invalid)],
+          [
+            { type: 'reasoning', id: 'repair_reasoning', summary },
+            message(corrected),
+          ],
+        ]);
+        await using provider = await providerFor(server);
+        await using session = await new Agent({
+          instructions: 'Answer.',
+          model: 'gpt-5',
+          provider,
+          outputType: { mode: 'prompted', schema: report, maxRetries: 1 },
+        }).session({ includeModelOutputItems });
+        const turn = await session.submit('Produce a report.');
+        const output = (await collect(turn.events())).filter(
+          (event) => event.type === 'model_output_item_completed',
+        );
+        const result = await turn.wait();
+        expect(result.finalOutput).toEqual({ label: 'corrected' });
+        server.assertExhausted();
+        if (!includeModelOutputItems) {
+          expect(output).toEqual([]);
+          return;
+        }
+        const original = output[0];
+        const attempt = result.repairAttempts[0];
+        const repairOwner = {
+          sessionId: attempt.sessionId,
+          turnId: attempt.id,
+          parentSubmissionId: original.submissionId,
+        };
+        expect(output).toEqual([
+          expect.objectContaining({
+            sessionId: session.id,
+            turnId: turn.turnId,
+            item: expect.objectContaining({
+              type: 'message',
+              content: [expect.objectContaining({ text: invalid })],
+            }),
+          }),
+          expect.objectContaining({
+            ...repairOwner,
+            item: expect.objectContaining({ type: 'reasoning', summary }),
+          }),
+          expect.objectContaining({
+            ...repairOwner,
+            item: expect.objectContaining({
+              type: 'message',
+              content: [expect.objectContaining({ text: corrected })],
+            }),
+          }),
+        ]);
+      },
+      25000,
+    );
+
     it.each([0, 1, 2])(
       'limits exhaustion to %i extra attempts and never replays on wait',
       async (maxRetries) => {
