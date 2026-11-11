@@ -695,7 +695,11 @@
     {
       "path": "sdk-child-callback-trace-storage.patch",
       "sha256": "9e655c5c429f03e58cee41a7818b31daf89ef9b429d2d31575a13c5ed6e99408"
+    },
+    {
+      "path": "sdk-bounded-one-shot-history.patch",
+      "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
     }
   ],
-  "result_tree": "8879ecf99c9ed972b98122f00853999f6d0412be"
+  "result_tree": "356ac51e5a7dead1ac68c980ef7b5eb2af74950e"
 }
