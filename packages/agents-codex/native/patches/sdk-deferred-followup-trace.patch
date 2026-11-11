@@ -1,0 +1,1849 @@
+diff --git a/codex-rs/core/src/realtime_conversation.rs b/codex-rs/core/src/realtime_conversation.rs
+index 2db8d2f..fd2810a 100644
+--- a/codex-rs/core/src/realtime_conversation.rs
++++ b/codex-rs/core/src/realtime_conversation.rs
+@@ -3170,6 +3170,11 @@ impl RealtimeConversationManager {
+         Ok(())
+     }
+ 
++    #[cfg(test)]
++    pub(crate) async fn hold_state_for_shutdown_test(&self) -> impl Sized + '_ {
++        self.state.lock().await
++    }
++
+     pub(crate) async fn shutdown(&self) -> CodexResult<()> {
+         let generation = {
+             let guard = self.state.lock().await;
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index 9befb60..136c3b6 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -1,4 +1,5 @@
+ use super::Submission;
++use super::input_queue::MailboxTrace;
+ use crate::WithTurnExtensionData;
+ use crate::realtime_conversation::handle_audio as handle_realtime_conversation_audio;
+ use crate::realtime_conversation::handle_close as handle_realtime_conversation_close;
+@@ -78,16 +79,28 @@ pub async fn realtime_conversation_list_voices(sess: &Session, sub_id: String) {
+ 
+ /// Queues an inter-agent message, then lets the shared pending-work scheduler
+ /// decide whether an idle session should start a regular turn.
+-pub async fn inter_agent_communication(
++pub(super) async fn inter_agent_communication(
+     sess: &Arc<Session>,
+     sub_id: String,
+     communication: InterAgentCommunication,
+     start_options: codex_protocol::turn_input::TurnStartOptions,
++    trace: Option<MailboxTrace>,
+ ) {
+     let trigger_turn = communication.trigger_turn;
+-    sess.input_queue
+-        .enqueue_mailbox_communication(communication, start_options)
+-        .await;
++    let trace = if sess.is_shutting_down().await {
++        None
++    } else {
++        trace
++    };
++    {
++        let active = sess.active_turn.lock().await;
++        let requires_wake = active
++            .as_ref()
++            .is_some_and(|turn| turn.mailbox_start_sealed && turn.task.is_none());
++        sess.input_queue
++            .enqueue_mailbox_submission(communication, start_options, trace, requires_wake)
++            .await;
++    }
+     crate::agent_communication::emit_agent_communication_receive(&sub_id);
+     if trigger_turn || sess.has_outstanding_durable_sleep() {
+         sess.maybe_start_turn_for_pending_work_with_sub_id(sub_id)
+@@ -287,16 +300,29 @@ pub async fn set_thread_memory_mode(sess: &Arc<Session>, sub_id: String, mode: T
+     }
+ }
+ 
++#[expect(
++    clippy::await_holding_invalid_type,
++    reason = "close admission and detach the taskless reservation atomically"
++)]
+ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+     let startup_prewarm = {
++        let mut active = sess.active_turn.lock().await;
+         let mut state = sess.state.lock().await;
+-        // Stop admission and take the current warmup together so resume cannot replace it.
++        // Close admission and invalidate an unregistered mailbox wake before
++        // awaiting other shutdown work. Registered tasks keep their teardown path.
+         state.shutting_down = true;
++        if active
++            .as_ref()
++            .is_some_and(|turn| turn.mailbox_start_sealed && turn.task.is_none())
++        {
++            *active = None;
++        }
+         state.take_session_startup_prewarm()
+     };
+     if let Some(startup_prewarm) = startup_prewarm {
+         startup_prewarm.abort().await;
+     }
++    sess.input_queue.release_mailbox_traces().await;
+     let _ = sess.conversation.shutdown().await;
+     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
+     {
+@@ -468,7 +494,7 @@ pub(super) async fn submission_loop(
+             } => {
+                 match update {
+                     Ok(true) => {
+-                        sess.input_queue.notify_mailbox();
++                        sess.input_queue.notify_mailbox().await;
+                         if sess.has_outstanding_durable_sleep() {
+                             sess.maybe_start_turn_for_pending_work().await;
+                         }
+@@ -999,7 +1025,13 @@ pub(super) async fn submission_loop(
+                     communication,
+                     start_options,
+                 } => {
+-                    inter_agent_communication(&sess, sub.id.clone(), communication, start_options)
++                    let trace = MailboxTrace::from_submission(
++                        &sub.id,
++                        sub.trace,
++                        sub.trace_policy,
++                        communication.trigger_turn,
++                    );
++                    inter_agent_communication(&sess, sub.id, communication, start_options, trace)
+                         .await;
+                     false
+                 }
+diff --git a/codex-rs/core/src/session/input_queue.rs b/codex-rs/core/src/session/input_queue.rs
+index cb24780..d204b09 100644
+--- a/codex-rs/core/src/session/input_queue.rs
++++ b/codex-rs/core/src/session/input_queue.rs
+@@ -5,19 +5,27 @@ use crate::state::MailboxDeliveryPhase;
+ use crate::state::TurnState;
+ use codex_diagnostics::GaugeGuard;
+ use codex_history::ResponseItemEnvelope;
++use codex_otel::context_from_w3c_trace_context;
++use codex_otel::sdk_trace;
++use codex_otel::set_parent_from_context;
++use codex_protocol::AgentPath;
+ use codex_protocol::ThreadId;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::InterAgentCommunication;
++use codex_protocol::protocol::W3cTraceContext;
+ use codex_protocol::turn_input::TurnStartOptions;
+ use codex_protocol::user_input::UserInput;
+ use serde::Deserialize;
+ use serde::Serialize;
+ use std::collections::VecDeque;
+ use std::sync::Arc;
++use std::sync::Weak;
+ use tokio::sync::Mutex;
+ use tokio::sync::watch;
+ use tokio_util::sync::CancellationToken;
+ use tokio_util::task::AbortOnDropHandle;
++use tracing::Span;
++use tracing::info_span;
+ 
+ /// Host capture metadata belonging to one input, including steers within another turn.
+ #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+@@ -101,9 +109,98 @@ pub(crate) struct InputQueue {
+ pub(crate) struct PendingMailboxCommunication {
+     pub(crate) communication: InterAgentCommunication,
+     start_options: TurnStartOptions,
++    trace: Option<MailboxTrace>,
++    // Mail received during a sealed startup stays queued for a separate wake.
++    requires_wake: bool,
++    // Preserve the sealed triggering prefix if its taskless reservation is interrupted.
++    ends_startup_batch: bool,
+     _diagnostics_guard: GaugeGuard,
+ }
+ 
++#[derive(Clone)]
++pub(super) struct MailboxTrace {
++    submission_id: String,
++    carrier: W3cTraceContext,
++    policy: MailboxTracePolicy,
++}
++
++#[derive(Clone)]
++enum MailboxTracePolicy {
++    Trigger(Arc<sdk_trace::ScopePolicy>),
++    Queued(Weak<sdk_trace::ScopePolicy>),
++}
++
++impl MailboxTracePolicy {
++    fn as_ptr(&self) -> *const sdk_trace::ScopePolicy {
++        match self {
++            Self::Trigger(policy) => Arc::as_ptr(policy),
++            Self::Queued(policy) => policy.as_ptr(),
++        }
++    }
++}
++
++impl MailboxTrace {
++    pub(super) fn from_submission(
++        submission_id: &str,
++        carrier: Option<W3cTraceContext>,
++        policy: Option<Arc<sdk_trace::ScopePolicy>>,
++        trigger_turn: bool,
++    ) -> Option<Self> {
++        let (carrier, policy) = carrier.zip(policy)?;
++        let policy = if trigger_turn {
++            MailboxTracePolicy::Trigger(policy)
++        } else {
++            // Queue-only mail can veto another owner's trace without retaining its own lease.
++            MailboxTracePolicy::Queued(Arc::downgrade(&policy))
++        };
++        Some(Self {
++            submission_id: submission_id.to_owned(),
++            carrier,
++            policy,
++        })
++    }
++
++    fn same_owner(&self, other: &Self) -> bool {
++        self.carrier == other.carrier && std::ptr::eq(self.policy.as_ptr(), other.policy.as_ptr())
++    }
++}
++
++pub(crate) struct MailboxWakeBatch {
++    pub(crate) len: usize,
++    pub(crate) start_options: TurnStartOptions,
++    pub(crate) initiating_agent_path: Option<AgentPath>,
++    trace: Option<MailboxTrace>,
++}
++
++impl MailboxWakeBatch {
++    pub(crate) fn wake_span(&self, sub_id: &str) -> Span {
++        if self.initiating_agent_path.is_none() {
++            // Queue-only durable wake has no triggering caller.
++            return Span::current();
++        }
++        let parent = self.trace.as_ref().and_then(|trace| {
++            let MailboxTracePolicy::Trigger(policy) = &trace.policy else {
++                return None;
++            };
++            context_from_w3c_trace_context(&trace.carrier)
++                .map(|context| (trace, context.with_value(Arc::clone(policy))))
++        });
++        let parent = match parent {
++            Some((trace, _)) if trace.submission_id == sub_id => return Span::current(),
++            Some((_, parent)) => parent,
++            // A mixed or unknown owner has no shared parent, storage, or capture consent.
++            None => sdk_trace::suppressed_context(),
++        };
++        let span = info_span!(parent: None, "mailbox_turn_wake");
++        set_parent_from_context(&span, parent);
++        span
++    }
++}
++
++fn mailbox_ready(pending: &VecDeque<PendingMailboxCommunication>) -> bool {
++    pending.front().is_some_and(|mail| !mail.requires_wake)
++}
++
+ impl InputQueue {
+     /// Linearize validated terminal selection against input acceptance. Locks are
+     /// released before any persistence I/O. The live task remains the finishing owner.
+@@ -141,7 +238,7 @@ impl InputQueue {
+         let state = turn.turn_state.lock().await;
+         if !state.pending_input.is_empty()
+             || state.has_pending_waiters()
+-            || (state.accepts_mailbox_delivery_for_current_turn() && !mailbox.is_empty())
++            || (state.accepts_mailbox_delivery_for_current_turn() && mailbox_ready(&mailbox))
+         {
+             return false;
+         }
+@@ -183,8 +280,10 @@ impl InputQueue {
+             .map(|(_, _, updates)| updates.clone())
+     }
+ 
+-    pub(crate) fn notify_mailbox(&self) {
+-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++    pub(crate) async fn notify_mailbox(&self) {
++        if self.has_pending_mailbox_items().await {
++            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++        }
+     }
+ 
+     fn read_mailbox(&self, pending: &mut VecDeque<PendingMailboxCommunication>) {
+@@ -196,6 +295,9 @@ impl InputQueue {
+                     .map(|communication| PendingMailboxCommunication {
+                         communication,
+                         start_options: TurnStartOptions::default(),
++                        trace: None,
++                        requires_wake: false,
++                        ends_startup_batch: false,
+                         _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+                     }),
+             );
+@@ -260,10 +362,22 @@ impl InputQueue {
+         true
+     }
+ 
++    #[cfg(test)]
+     pub(crate) async fn enqueue_mailbox_communication(
+         &self,
+         communication: InterAgentCommunication,
+         start_options: TurnStartOptions,
++    ) {
++        self.enqueue_mailbox_submission(communication, start_options, None, false)
++            .await;
++    }
++
++    pub(super) async fn enqueue_mailbox_submission(
++        &self,
++        communication: InterAgentCommunication,
++        start_options: TurnStartOptions,
++        trace: Option<MailboxTrace>,
++        requires_wake: bool,
+     ) {
+         let mut pending = self.mailbox_pending_mails.lock().await;
+         // Mail retained while unloaded precedes new submissions to the loaded session.
+@@ -271,17 +385,25 @@ impl InputQueue {
+         pending.push_back(PendingMailboxCommunication {
+             communication,
+             start_options,
++            trace,
++            requires_wake,
++            ends_startup_batch: false,
+             _diagnostics_guard: PENDING_MAILBOX_MESSAGES.track(),
+         });
+-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++        if mailbox_ready(&pending) {
++            self.activity_tx.send_replace(InputQueueActivity::Mailbox);
++        }
+     }
+ 
+     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
+-        !self.mailbox_pending_mails.lock().await.is_empty()
+-            || self
+-                .controller
++        let pending = self.mailbox_pending_mails.lock().await;
++        if pending.is_empty() {
++            self.controller
+                 .as_ref()
+                 .is_some_and(|(_, _, updates)| *updates.borrow())
++        } else {
++            mailbox_ready(&pending)
++        }
+     }
+ 
+     pub(crate) async fn has_trigger_turn_mailbox_items(&self) -> bool {
+@@ -298,8 +420,97 @@ impl InputQueue {
+         pending.drain(..).collect()
+     }
+ 
++    pub(super) async fn release_mailbox_traces(&self) {
++        let traces = self
++            .mailbox_pending_mails
++            .lock()
++            .await
++            .iter_mut()
++            .filter_map(|mail| mail.trace.take())
++            .collect::<Vec<_>>();
++        drop(traces);
++    }
++
++    pub(crate) async fn mailbox_wake_batch(
++        &self,
++        wake_durable_sleep: bool,
++    ) -> Option<MailboxWakeBatch> {
++        let mut pending = self.mailbox_pending_mails.lock().await;
++        self.read_mailbox(&mut pending);
++        let mails = pending.make_contiguous();
++        let len = mails
++            .iter()
++            .position(|mail| mail.ends_startup_batch)
++            .map_or(mails.len(), |end| end + 1);
++        let (mails, later) = mails.split_at_mut(len);
++        if let Some(mail) = later.first_mut() {
++            // Mail admitted between reservations still follows the original sealed prefix.
++            mail.requires_wake = true;
++        }
++        let first = mails.iter().find(|mail| mail.communication.trigger_turn);
++        if mails.is_empty() || (first.is_none() && !wake_durable_sleep) {
++            return None;
++        }
++        let trace = first
++            .and_then(|mail| mail.trace.as_ref())
++            .filter(|owner| {
++                // The startup commits the whole prefix, including queued messages.
++                mails.iter().all(|mail| {
++                    mail.trace
++                        .as_ref()
++                        .is_some_and(|trace| owner.same_owner(trace))
++                })
++            })
++            .cloned();
++        let batch = MailboxWakeBatch {
++            len,
++            start_options: Self::mailbox_start_options(mails),
++            initiating_agent_path: first.map(|mail| mail.communication.author.clone()),
++            trace,
++        };
++        if batch.initiating_agent_path.is_some() {
++            // Even if this reservation is replaced, its prefix still belongs to a wake.
++            mails[0].requires_wake = true;
++            mails[len - 1].ends_startup_batch = true;
++        }
++        Some(batch)
++    }
++
++    /// Commit the sealed prefix under the exact active reservation. Keep the original
++    /// entries alive until the caller has released its locks, including trace leases.
++    pub(crate) async fn commit_mailbox_wake(
++        &self,
++        len: usize,
++        turn_state: &Mutex<TurnState>,
++    ) -> Vec<PendingMailboxCommunication> {
++        let mut pending = self.mailbox_pending_mails.lock().await;
++        let mut turn_state = turn_state.lock().await;
++        let mails: Vec<_> = pending.drain(..len).collect();
++        turn_state.pending_input.items.extend(
++            mails
++                .iter()
++                .map(|mail| TurnInput::InterAgentCommunication(mail.communication.clone())),
++        );
++        mails
++    }
++
++    pub(crate) async fn drain_ready_mailbox(&self) -> Vec<PendingMailboxCommunication> {
++        let mut pending = self.mailbox_pending_mails.lock().await;
++        self.read_mailbox(&mut pending);
++        // The first deferred envelope fences its suffix as well, preserving FIFO.
++        let ready = pending
++            .iter()
++            .take_while(|mail| !mail.requires_wake)
++            .count();
++        pending.drain(..ready).collect()
++    }
++
++    #[cfg(test)]
+     pub(crate) async fn drain_mailbox_input_items(&self) -> (Vec<TurnInput>, TurnStartOptions) {
+-        let pending_mails = self.drain_mailbox().await;
++        Self::mailbox_input_items(self.drain_ready_mailbox().await)
++    }
++
++    fn mailbox_start_options(pending_mails: &[PendingMailboxCommunication]) -> TurnStartOptions {
+         // A later follow-up supersedes the earlier choice, including an omitted choice.
+         let mut start_options = pending_mails
+             .iter()
+@@ -325,6 +536,13 @@ impl InputQueue {
+                     .filter(|id| !id.trim().is_empty())
+             })
+             .map(str::to_string);
++        start_options
++    }
++
++    fn mailbox_input_items(
++        pending_mails: Vec<PendingMailboxCommunication>,
++    ) -> (Vec<TurnInput>, TurnStartOptions) {
++        let start_options = Self::mailbox_start_options(&pending_mails);
+         let items = pending_mails
+             .into_iter()
+             .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
+@@ -459,27 +677,21 @@ impl InputQueue {
+         &self,
+         active_turn: &Mutex<Option<ActiveTurn>>,
+     ) -> (Vec<TurnInput>, TurnStartOptions) {
+-        let (pending_input, accepts_mailbox_delivery) = {
+-            let mut active = active_turn.lock().await;
+-            match active.as_mut() {
+-                Some(active_turn) => {
+-                    let mut turn_state = active_turn.turn_state.lock().await;
+-                    let accepts_mailbox_delivery =
+-                        turn_state.accepts_mailbox_delivery_for_current_turn();
+-                    let pending_input = if accepts_mailbox_delivery {
+-                        turn_state.pending_input.items.split_off(0)
+-                    } else {
+-                        Vec::new()
+-                    };
+-                    (pending_input, accepts_mailbox_delivery)
++        let (pending_input, mails) = {
++            let active = active_turn.lock().await;
++            let pending_input = if let Some(turn) = active.as_ref() {
++                let mut state = turn.turn_state.lock().await;
++                if turn.mailbox_start_sealed || !state.accepts_mailbox_delivery_for_current_turn() {
++                    return (Vec::new(), TurnStartOptions::default());
+                 }
+-                None => (Vec::new(), true),
+-            }
++                state.pending_input.items.split_off(0)
++            } else {
++                Vec::new()
++            };
++            // Serialize draining with the exact reservation that seals a wake prefix.
++            (pending_input, self.drain_ready_mailbox().await)
+         };
+-        if !accepts_mailbox_delivery {
+-            return (pending_input, TurnStartOptions::default());
+-        }
+-        let (mailbox_items, start_options) = self.drain_mailbox_input_items().await;
++        let (mailbox_items, start_options) = Self::mailbox_input_items(mails);
+         if pending_input.is_empty() {
+             (mailbox_items, start_options)
+         } else {
+@@ -498,7 +710,9 @@ impl InputQueue {
+             let active = active_turn.lock().await;
+             match active.as_ref() {
+                 Some(active_turn) => {
+-                    if active_turn.tool_completion_reserved.is_some() {
++                    if active_turn.tool_completion_reserved.is_some()
++                        || active_turn.mailbox_start_sealed
++                    {
+                         return false;
+                     }
+                     let turn_state = active_turn.turn_state.lock().await;
+@@ -773,6 +987,56 @@ mod tests {
+         assert!(!input_queue.has_pending_mailbox_items().await);
+     }
+ 
++    #[tokio::test]
++    async fn retry_mailbox_wake_fences_mail_admitted_without_a_reservation() {
++        let queue = InputQueue::new();
++        let first = make_mail(AgentPath::root(), AgentPath::root(), "first", true);
++        let queued = make_mail(AgentPath::root(), AgentPath::root(), "queued", false);
++        let later = make_mail(AgentPath::root(), AgentPath::root(), "later", true);
++
++        queue
++            .enqueue_mailbox_communication(first.clone(), Default::default())
++            .await;
++        let original = queue
++            .mailbox_wake_batch(false)
++            .await
++            .expect("original wake");
++        assert_eq!(original.len, 1);
++
++        // Interruption leaves the first batch in the queue. No active seal marks these enqueues.
++        queue
++            .enqueue_mailbox_communication(queued.clone(), Default::default())
++            .await;
++        queue
++            .enqueue_mailbox_communication(later.clone(), Default::default())
++            .await;
++        let retry = queue.mailbox_wake_batch(false).await.expect("retry");
++        assert_eq!(retry.len, original.len);
++        let state = Mutex::new(TurnState::default());
++        queue.commit_mailbox_wake(retry.len, &state).await;
++        assert_eq!(
++            state.lock().await.pending_input.items,
++            vec![TurnInput::InterAgentCommunication(first)]
++        );
++        assert!(!queue.has_pending_mailbox_items().await);
++        assert!(queue.drain_ready_mailbox().await.is_empty());
++
++        let next = queue
++            .mailbox_wake_batch(false)
++            .await
++            .expect("separate later wake");
++        let state = Mutex::new(TurnState::default());
++        queue.commit_mailbox_wake(next.len, &state).await;
++        assert_eq!(
++            state.lock().await.pending_input.items,
++            vec![
++                TurnInput::InterAgentCommunication(queued),
++                TurnInput::InterAgentCommunication(later)
++            ]
++        );
++        assert!(!queue.has_trigger_turn_mailbox_items().await);
++    }
++
+     #[tokio::test]
+     async fn input_queue_uses_unambiguous_trigger_parent_and_first_root() {
+         let (parent, peer, root, root2) = (Some("a"), Some("b"), Some("r"), Some("s"));
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 5439465..5e472c7 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -287,6 +287,7 @@ pub(crate) use self::environment::ThreadEnvironmentDefaults;
+ use self::handlers::submission_dispatch_span;
+ use self::handlers::submission_loop;
+ pub(crate) use self::input_queue::InputQueueActivity;
++pub(crate) use self::input_queue::MailboxWakeBatch;
+ pub(crate) use self::input_queue::TurnInput;
+ pub(crate) use self::input_queue::TurnInputQueue;
+ pub(crate) use self::input_queue::UserInputMetadata;
+@@ -1624,6 +1625,10 @@ impl Session {
+         state.get_connector_selection()
+     }
+ 
++    pub(crate) async fn is_shutting_down(&self) -> bool {
++        self.state.lock().await.shutting_down
++    }
++
+     // Clears connector IDs that were accumulated for explicit selection.
+     pub(crate) async fn clear_connector_selection(&self) {
+         let mut state = self.state.lock().await;
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index f435a1a..e64deef 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -13253,6 +13253,786 @@ async fn trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary() {
+     assert!(sess.input_queue.has_trigger_turn_mailbox_items().await);
+ }
+ 
++#[test_case(false, false; "idle")]
++#[test_case(true, false; "deferred")]
++#[test_case(false, true; "idle with disabled tracing")]
++#[test_case(true, true; "deferred with disabled tracing")]
++#[tokio::test]
++async fn trigger_mailbox_turn_inherits_dispatch_trace(deferred: bool, disabled: bool) {
++    use codex_otel::sdk_trace;
++
++    struct TurnStart {
++        id: String,
++        trace: Option<W3cTraceContext>,
++        policy: Option<Arc<sdk_trace::ScopePolicy>>,
++    }
++
++    struct CaptureRegularStart(async_channel::Sender<TurnStart>);
++
++    impl codex_extension_api::TurnLifecycleContributor for CaptureRegularStart {
++        fn turn_start_phase(
++            &self,
++            _thread_store: &codex_extension_api::ExtensionData,
++        ) -> codex_extension_api::TurnStartPhase {
++            codex_extension_api::TurnStartPhase::RegularTaskStart
++        }
++
++        fn on_turn_start<'a>(
++            &'a self,
++            input: codex_extension_api::TurnStartInput<'a>,
++        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++            Box::pin(async move {
++                self.0
++                    .try_send(TurnStart {
++                        id: input.turn_id.to_owned(),
++                        trace: current_span_w3c_trace_context(),
++                        policy: sdk_trace::current_scope_policy(),
++                    })
++                    .expect("record regular task startup");
++                // The test interrupts the registered task before it can reach inference.
++                std::future::pending::<()>().await;
++            })
++        }
++    }
++
++    const TRACE_ID: &str = "00000000000000000000000000000055";
++    let _tracing = install_test_tracing("codex-core-tests");
++    let options = json!({
++        "name": "mail sender",
++        "kind": "workflow",
++        "trace_id": TRACE_ID,
++        "disabled": disabled,
++        "include_sensitive_data": false,
++    });
++    let readback = sdk_trace::start_trace_span(&options.to_string()).expect("start caller scope");
++    let root: serde_json::Value = serde_json::from_str(&readback).expect("caller scope readback");
++    let handle = root["handle"].as_str().expect("caller scope handle");
++    let caller_policy =
++        sdk_trace::policy_for_context(&sdk_trace::context(handle).expect("caller context"))
++            .expect("caller policy");
++    sdk_trace::release_trace_span(handle);
++
++    let (mut session, turn) = make_session_and_context().await;
++    let (starts_tx, starts) = async_channel::unbounded();
++    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
++    builder.turn_lifecycle_contributor(Arc::new(CaptureRegularStart(starts_tx)));
++    session.services.extensions = Arc::new(builder.build());
++    let (tx_event, events) = async_channel::unbounded();
++    session.tx_event = tx_event;
++    let session = Arc::new(session);
++    let turn = Arc::new(turn);
++    let finish = Arc::new(Notify::new());
++    if deferred {
++        session
++            .spawn_task(
++                Arc::clone(&turn),
++                Vec::new(),
++                HeldStepTask {
++                    kind: TaskKind::Regular,
++                    finish: Arc::clone(&finish),
++                },
++            )
++            .await;
++        session
++            .input_queue
++            .defer_mailbox_delivery_to_next_turn(&session.active_turn, &turn.sub_id)
++            .await;
++    }
++
++    let mail = InterAgentCommunication::new(
++        AgentPath::try_from("/root/worker").expect("worker path"),
++        AgentPath::root(),
++        Vec::new(),
++        "trigger a turn".to_string(),
++        /*trigger_turn*/ true,
++    );
++    let submission = Submission {
++        id: "mail-submission".to_string(),
++        op: Op::InterAgentCommunication {
++            communication: mail.clone(),
++            start_options: Default::default(),
++        },
++        trace: Some(W3cTraceContext {
++            traceparent: Some(format!("00-{TRACE_ID}-0000000000000066-01")),
++            tracestate: None,
++        }),
++        trace_policy: Some(Arc::clone(&caller_policy)),
++        turn_extension_init: None,
++        parent_turn_id: None,
++        root_turn_id: None,
++        residency_guard: None,
++    };
++    let span = submission_dispatch_span(&submission);
++    let Op::InterAgentCommunication {
++        communication,
++        start_options,
++    } = submission.op
++    else {
++        unreachable!()
++    };
++    let trace = super::input_queue::MailboxTrace::from_submission(
++        &submission.id,
++        submission.trace,
++        submission.trace_policy,
++        communication.trigger_turn,
++    );
++    handlers::inter_agent_communication(
++        &session,
++        submission.id,
++        communication,
++        start_options,
++        trace,
++    )
++    .instrument(span)
++    .await;
++
++    if deferred {
++        assert!(
++            !session
++                .input_queue
++                .has_pending_input(&session.active_turn)
++                .await
++        );
++        assert!(starts.is_empty());
++        finish.notify_one();
++        let complete = recv_terminal_event(&events, TerminalEventKind::TurnComplete).await;
++        assert_eq!(complete.id, turn.sub_id);
++    }
++    let start = timeout(Duration::from_secs(5), starts.recv())
++        .await
++        .expect("mailbox task should start")
++        .expect("regular task startup");
++    let state = session
++        .input_queue
++        .turn_state_for_sub_id(&session.active_turn, &start.id)
++        .await
++        .expect("registered mailbox task");
++    let input = state.lock().await.pending_input.snapshot();
++    session.abort_all_tasks(TurnAbortReason::Replaced).await;
++
++    assert_ne!(start.id, turn.sub_id);
++    assert_eq!(input, vec![TurnInput::InterAgentCommunication(mail)]);
++    assert!(starts.is_empty());
++    let trace_id = start
++        .trace
++        .as_ref()
++        .and_then(codex_otel::context_from_w3c_trace_context)
++        .map(|ctx| ctx.span().span_context().trace_id());
++    let policy = start
++        .policy
++        .as_ref()
++        .map(|p| (p.disabled, p.include_sensitive_data));
++    assert_eq!(
++        (trace_id, policy),
++        (
++            Some(TraceId::from_hex(TRACE_ID).expect("trace ID")),
++            Some((disabled, false))
++        ),
++        "mailbox task should inherit the sender's trace and sensitive-data policy"
++    );
++    assert!(Arc::ptr_eq(&start.policy.unwrap(), &caller_policy));
++}
++
++#[derive(Clone, Copy, Eq, PartialEq)]
++enum MailboxStartupMail {
++    LateTrigger,
++    MixedTriggers,
++    QueuedPrefix,
++    QueuedDuringSeal,
++    QueuedDuringTurn,
++}
++
++#[test_case(false, MailboxStartupMail::LateTrigger; "late trigger")]
++#[test_case(true, MailboxStartupMail::LateTrigger; "interrupt and retry the sealed prefix")]
++#[test_case(false, MailboxStartupMail::MixedTriggers; "coalesced owners share carrier but not policy")]
++#[test_case(false, MailboxStartupMail::QueuedPrefix; "disabled queue-only mail before enabled trigger")]
++#[test_case(false, MailboxStartupMail::QueuedDuringSeal; "queue-only mail during seal waits for a later trigger")]
++#[test_case(false, MailboxStartupMail::QueuedDuringTurn; "queue-only mail after registration can join the active turn")]
++#[tokio::test]
++async fn mailbox_trace_startup_seal_keeps_late_trigger_out_of_first_sampling(
++    interrupt: bool,
++    mail: MailboxStartupMail,
++) {
++    use codex_extension_api::TurnStartPhase;
++    use codex_otel::sdk_trace;
++
++    struct StartGate {
++        phase: TurnStartPhase,
++        started: async_channel::Sender<(String, Option<Arc<sdk_trace::ScopePolicy>>)>,
++        release: Option<Arc<tokio::sync::Semaphore>>,
++    }
++
++    impl codex_extension_api::TurnLifecycleContributor for StartGate {
++        fn turn_start_phase(&self, _: &codex_extension_api::ExtensionData) -> TurnStartPhase {
++            self.phase
++        }
++
++        fn on_turn_start<'a>(
++            &'a self,
++            input: codex_extension_api::TurnStartInput<'a>,
++        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++            Box::pin(async move {
++                if input.turn_id == "old-turn" {
++                    return;
++                }
++                self.started
++                    .try_send((input.turn_id.to_owned(), sdk_trace::current_scope_policy()))
++                    .expect("record turn start");
++                if let Some(release) = &self.release {
++                    release.acquire().await.expect("registration gate").forget();
++                }
++            })
++        }
++    }
++
++    async fn submit(
++        session: &Arc<Session>,
++        id: &str,
++        message: &str,
++        trace_byte: &str,
++        disabled: bool,
++        trigger_turn: bool,
++    ) -> Arc<sdk_trace::ScopePolicy> {
++        let trace_id = trace_byte.repeat(16);
++        let options = json!({
++            "name": "mail sender",
++            "kind": "workflow",
++            "trace_id": trace_id,
++            "disabled": disabled,
++            "include_sensitive_data": !disabled,
++        });
++        let readback = sdk_trace::start_trace_span(&options.to_string()).expect("start caller");
++        let root: serde_json::Value = serde_json::from_str(&readback).expect("caller readback");
++        let handle = root["handle"].as_str().expect("caller handle");
++        let policy = sdk_trace::policy_for_context(&sdk_trace::context(handle).expect("context"))
++            .expect("policy");
++        sdk_trace::release_trace_span(handle);
++        let trace = W3cTraceContext {
++            traceparent: Some(format!("00-{trace_id}-0000000000000066-01")),
++            tracestate: None,
++        };
++        let communication = InterAgentCommunication::new(
++            AgentPath::try_from("/root/sender").expect("sender path"),
++            AgentPath::root(),
++            Vec::new(),
++            message.to_owned(),
++            trigger_turn,
++        );
++        let start_options = codex_protocol::turn_input::TurnStartOptions {
++            parent_turn_id: trigger_turn.then(|| "caller-turn".to_string()),
++            ..Default::default()
++        };
++        let submission = Submission {
++            id: id.to_owned(),
++            op: Op::InterAgentCommunication {
++                communication: communication.clone(),
++                start_options: start_options.clone(),
++            },
++            trace: Some(trace.clone()),
++            trace_policy: Some(Arc::clone(&policy)),
++            turn_extension_init: None,
++            parent_turn_id: None,
++            root_turn_id: None,
++            residency_guard: None,
++        };
++        let dispatch = submission_dispatch_span(&submission);
++        let trace = super::input_queue::MailboxTrace::from_submission(
++            id,
++            Some(trace),
++            Some(Arc::clone(&policy)),
++            trigger_turn,
++        );
++        handlers::inter_agent_communication(
++            session,
++            submission.id,
++            communication,
++            start_options,
++            trace,
++        )
++        .instrument(dispatch)
++        .await;
++        policy
++    }
++
++    async fn receive<T>(rx: &async_channel::Receiver<T>) -> T {
++        timeout(Duration::from_secs(10), rx.recv())
++            .await
++            .expect("start gate deadline")
++            .expect("start gate event")
++    }
++
++    let queue_only_prefix = mail == MailboxStartupMail::QueuedPrefix;
++    let mixed = queue_only_prefix || mail == MailboxStartupMail::MixedTriggers;
++    let queued_during_seal = mail == MailboxStartupMail::QueuedDuringSeal;
++    let queued_during_turn = mail == MailboxStartupMail::QueuedDuringTurn;
++    const SUFFIX: &str = "synthetic later queue-only suffix";
++    const NEXT_TRIGGER: &str = "synthetic follow-up after the first turn";
++    const FIRST: &str = "synthetic mail accepted before the startup seal";
++    const LATE: &str = "synthetic mail from the disabled late sender";
++    let _tracing = install_test_tracing("codex-core-tests");
++    let server = start_mock_server().await;
++    let first_request = mount_sse_once(
++        &server,
++        sse(vec![
++            ev_response_created("first-response"),
++            ev_assistant_message("first-message", "first result"),
++            ev_completed("first-response"),
++        ]),
++    )
++    .await;
++    let second_request = mount_sse_once(
++        &server,
++        sse(vec![
++            ev_response_created("second-response"),
++            ev_assistant_message("second-message", "second result"),
++            ev_completed("second-response"),
++        ]),
++    )
++    .await;
++    let (before_tx, before_rx) = async_channel::unbounded();
++    let (regular_tx, regular_rx) = async_channel::unbounded();
++    let release_registration = Arc::new(tokio::sync::Semaphore::new(0));
++    let release_sampling = Arc::new(tokio::sync::Semaphore::new(0));
++    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
++    builder.turn_lifecycle_contributor(Arc::new(StartGate {
++        phase: TurnStartPhase::BeforeTaskRegistration,
++        started: before_tx,
++        release: Some(Arc::clone(&release_registration)),
++    }));
++    builder.turn_lifecycle_contributor(Arc::new(StartGate {
++        phase: TurnStartPhase::RegularTaskStart,
++        started: regular_tx,
++        release: (queued_during_seal || queued_during_turn).then(|| Arc::clone(&release_sampling)),
++    }));
++    let home = tempfile::tempdir().expect("synthetic Codex home");
++    let (mut session, _, events) = make_session_and_context_with_auth_config_home_and_rx(
++        CodexAuth::from_api_key("test-key"),
++        Vec::new(),
++        home.path(),
++        |config| {
++            config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
++            config.model_provider.supports_websockets = false;
++        },
++    )
++    .await;
++    Arc::get_mut(&mut session)
++        .expect("unique session before startup")
++        .services
++        .extensions = Arc::new(builder.build());
++    let old = session
++        .new_turn_with_default_settings("old-turn".to_string(), Default::default())
++        .await;
++    let finish_old = Arc::new(Notify::new());
++    session
++        .spawn_task(
++            old.clone(),
++            Vec::new(),
++            HeldStepTask {
++                kind: TaskKind::Regular,
++                finish: Arc::clone(&finish_old),
++            },
++        )
++        .await;
++    session
++        .input_queue
++        .defer_mailbox_delivery_to_next_turn(&session.active_turn, &old.sub_id)
++        .await;
++    let owner_a = submit(
++        &session,
++        "admit-a",
++        FIRST,
++        "11",
++        queue_only_prefix,
++        !queue_only_prefix,
++    )
++    .await;
++    if queue_only_prefix {
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(before_rx.is_empty());
++    }
++    let mixed_owner = if mixed {
++        // The same carrier does not establish common ownership of policy or storage.
++        Some(submit(&session, "admit-b", LATE, "11", !queue_only_prefix, true).await)
++    } else {
++        None
++    };
++    finish_old.notify_one();
++    let (reserved, _) = receive(&before_rx).await;
++    let owner_b = if let Some(owner) = mixed_owner {
++        Some(owner)
++    } else if queued_during_turn {
++        None
++    } else {
++        Some(submit(&session, "admit-b", LATE, "22", true, !queued_during_seal).await)
++    };
++    assert!(first_request.requests().is_empty());
++    assert!(regular_rx.is_empty());
++    assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
++
++    let expected_first_turn = if interrupt {
++        let reservation = Arc::clone(
++            &session
++                .active_turn
++                .lock()
++                .await
++                .as_ref()
++                .expect("A reserved")
++                .turn_state,
++        );
++        timeout(Duration::from_secs(10), session.interrupt_task())
++            .await
++            .expect("interrupt should return while the original start hook is held");
++        assert!(
++            session
++                .active_turn
++                .lock()
++                .await
++                .as_ref()
++                .is_none_or(|active| !Arc::ptr_eq(&active.turn_state, &reservation))
++        );
++        assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
++        release_registration.add_permits(1);
++        let (retried, policy) = receive(&before_rx).await;
++        assert_ne!(retried, reserved);
++        assert!(Arc::ptr_eq(&policy.expect("retried policy"), &owner_a));
++        let direct = timeout(
++            Duration::from_secs(10),
++            super::turn_input::handle(
++                &session,
++                TurnInputRequest::user_input(vec![UserInput::Text {
++                    text: "synthetic later direct input".to_string(),
++                    text_elements: Vec::new(),
++                }]),
++                TurnInputMode::StartIfIdle,
++                "later-direct".to_string(),
++            ),
++        )
++        .await
++        .expect("mailbox priority decision while the retried start hook is held")
++        .expect("direct admission result");
++        assert_eq!(
++            direct,
++            TurnInputSubmission::NotSubmitted {
++                reason: codex_protocol::turn_input::NotSubmittedReason::PendingTriggerTurn,
++            }
++        );
++        retried
++    } else {
++        reserved
++    };
++    release_registration.add_permits(1);
++    let (first_turn, first_policy) = receive(&regular_rx).await;
++    let first_policy = first_policy.expect("first sampling scope");
++    assert_eq!(first_turn, expected_first_turn);
++    if mixed {
++        assert!(first_policy.disabled);
++        assert!(!first_policy.include_sensitive_data);
++        assert!(!Arc::ptr_eq(&first_policy, &owner_a));
++        assert!(!Arc::ptr_eq(
++            &first_policy,
++            owner_b.as_ref().expect("mixed caller policy")
++        ));
++    } else {
++        assert!(Arc::ptr_eq(&first_policy, &owner_a));
++    }
++    if queued_during_seal {
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(first_request.requests().is_empty());
++        submit(&session, "admit-suffix", SUFFIX, "33", true, false).await;
++        release_sampling.add_permits(1);
++    } else if queued_during_turn {
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        assert!(first_request.requests().is_empty());
++        submit(&session, "admit-current", LATE, "22", true, false).await;
++        release_sampling.add_permits(1);
++    }
++    let completion = async |turn_id: &str| {
++        timeout(Duration::from_secs(10), async {
++            loop {
++                let event = events.recv().await.expect("turn event");
++                if event.id == turn_id && matches!(event.msg, EventMsg::TurnComplete(_)) {
++                    break;
++                }
++            }
++        })
++        .await
++        .expect("turn completion deadline");
++    };
++    completion(&first_turn).await;
++    let input = first_request.single_request().input();
++    let first_position = input
++        .iter()
++        .position(|item| item.to_string().contains(FIRST));
++    let late_position = input
++        .iter()
++        .position(|item| item.to_string().contains(LATE));
++    assert!(first_position.is_some());
++    assert_eq!(
++        input
++            .iter()
++            .filter(|item| item.to_string().contains(FIRST))
++            .count(),
++        1
++    );
++    if mixed || queued_during_turn {
++        assert!(late_position.is_some());
++        assert!(first_position < late_position);
++        assert_eq!(
++            input
++                .iter()
++                .filter(|item| item.to_string().contains(LATE))
++                .count(),
++            1
++        );
++        assert!(second_request.requests().is_empty());
++        assert!(regular_rx.is_empty());
++    } else if queued_during_seal {
++        assert_eq!(late_position, None);
++        assert!(input.iter().all(|item| !item.to_string().contains(SUFFIX)));
++        assert!(second_request.requests().is_empty());
++        assert!(before_rx.is_empty());
++        assert!(regular_rx.is_empty());
++        assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++        let next = tokio::spawn({
++            let session = Arc::clone(&session);
++            async move { submit(&session, "admit-next", NEXT_TRIGGER, "44", false, true).await }
++        });
++        let (next_reservation, _) = receive(&before_rx).await;
++        release_registration.add_permits(1);
++        let (next_turn, next_policy) = receive(&regular_rx).await;
++        assert_eq!(next_turn, next_reservation);
++        assert_ne!(next_turn, first_turn);
++        let next_policy = next_policy.expect("mixed successor policy");
++        assert!(next_policy.disabled);
++        assert!(!next_policy.include_sensitive_data);
++        release_sampling.add_permits(1);
++        completion(&next_turn).await;
++        next.await.expect("later follow-up submitted");
++        let input = second_request.single_request().input();
++        let positions = [LATE, SUFFIX, NEXT_TRIGGER].map(|text| {
++            let matching = input
++                .iter()
++                .enumerate()
++                .filter_map(|(index, item)| item.to_string().contains(text).then_some(index))
++                .collect::<Vec<_>>();
++            let [position] = matching.as_slice() else {
++                panic!("expected exactly one delivery for {text}, got {matching:?}");
++            };
++            *position
++        });
++        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
++    } else {
++        assert_eq!(late_position, None);
++        let (late_reservation, _) = receive(&before_rx).await;
++        release_registration.add_permits(1);
++        let (second_turn, second_policy) = receive(&regular_rx).await;
++        assert_ne!(first_turn, second_turn);
++        assert_eq!(late_reservation, second_turn);
++        assert!(Arc::ptr_eq(
++            &second_policy.expect("late policy"),
++            &owner_b.expect("late caller policy")
++        ));
++        completion(&second_turn).await;
++        let late_matches = second_request
++            .single_request()
++            .input()
++            .iter()
++            .filter(|item| item.to_string().contains(LATE))
++            .count();
++        assert_eq!(late_matches, 1);
++    }
++    assert!(!session.input_queue.has_trigger_turn_mailbox_items().await);
++}
++
++#[tokio::test]
++async fn stale_task_start_does_not_change_active_plugin_selection() {
++    use crate::session::owned_turn_stop::TaskAdmission;
++
++    let (session, mut turn, _) = make_session_and_context_with_rx().await;
++    Arc::get_mut(&mut turn)
++        .expect("unshared turn settings")
++        .disabled_plugin_ids = vec!["stale@test".into()];
++    let surviving_selection = vec!["survivor@test".to_string()];
++    session.state.lock().await.active_disabled_plugin_ids = surviving_selection.clone();
++
++    let reserved = ActiveTurn::default();
++    let reservation = Arc::clone(&reserved.turn_state);
++    session.active_turn.lock().await.replace(reserved);
++    let admission = session
++        .services
++        .thread_extension_data
++        .get_or_init(TaskAdmission::default);
++    let permit = admission.0.lock().await;
++    let start = session.start_reserved_task(
++        turn,
++        Vec::new(),
++        crate::tasks::RegularTask::new(),
++        &reservation,
++    );
++    tokio::pin!(start);
++    assert!(futures::poll!(start.as_mut()).is_pending());
++
++    let surviving = ActiveTurn::default();
++    let surviving_state = Arc::clone(&surviving.turn_state);
++    session.active_turn.lock().await.replace(surviving);
++    drop(permit);
++
++    assert!(!start.await);
++    assert_eq!(
++        session.state.lock().await.active_disabled_plugin_ids,
++        surviving_selection
++    );
++    let active = session.active_turn.lock().await;
++    assert!(Arc::ptr_eq(
++        &active.as_ref().expect("surviving reservation").turn_state,
++        &surviving_state
++    ));
++}
++
++#[tokio::test]
++async fn shutdown_invalidates_a_held_mailbox_start_before_conversation_cleanup() {
++    use codex_extension_api::TurnStartPhase;
++    use codex_otel::sdk_trace;
++
++    #[derive(Default)]
++    struct StartGate {
++        entered: Notify,
++        release: Notify,
++    }
++
++    impl codex_extension_api::TurnLifecycleContributor for StartGate {
++        fn turn_start_phase(&self, _: &codex_extension_api::ExtensionData) -> TurnStartPhase {
++            TurnStartPhase::BeforeTaskRegistration
++        }
++
++        fn on_turn_start<'a>(
++            &'a self,
++            _: codex_extension_api::TurnStartInput<'a>,
++        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++            Box::pin(async move {
++                self.entered.notify_one();
++                self.release.notified().await;
++            })
++        }
++    }
++
++    let server = start_mock_server().await;
++    let home = tempfile::tempdir().expect("synthetic Codex home");
++    let (mut session, _, _events) = make_session_and_context_with_auth_config_home_and_rx(
++        CodexAuth::from_api_key("test-key"),
++        Vec::new(),
++        home.path(),
++        |config| {
++            config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
++            config.model_provider.supports_websockets = false;
++        },
++    )
++    .await;
++    let gate = Arc::new(StartGate::default());
++    let mut builder = codex_extension_api::ExtensionRegistryBuilder::new();
++    builder.turn_lifecycle_contributor(gate.clone());
++    Arc::get_mut(&mut session)
++        .expect("unshared session before startup")
++        .services
++        .extensions = Arc::new(builder.build());
++    let policy =
++        sdk_trace::policy_for_context(&sdk_trace::suppressed_context()).expect("synthetic policy");
++    let lease = Arc::downgrade(&policy);
++    let trace = super::input_queue::MailboxTrace::from_submission(
++        "held",
++        Some(W3cTraceContext {
++            traceparent: Some("00-11111111111111111111111111111111-0000000000000066-01".into()),
++            tracestate: None,
++        }),
++        Some(policy),
++        /*trigger_turn*/ true,
++    );
++    session
++        .input_queue
++        .enqueue_mailbox_submission(
++            InterAgentCommunication::new(
++                AgentPath::try_from("/root/sender").expect("sender path"),
++                AgentPath::root(),
++                Vec::new(),
++                "synthetic held input".into(),
++                /*trigger_turn*/ true,
++            ),
++            Default::default(),
++            trace,
++            false,
++        )
++        .await;
++    let wake = tokio::spawn(session.maybe_start_turn_for_pending_work());
++    timeout(Duration::from_secs(5), gate.entered.notified())
++        .await
++        .expect("wake before registration");
++    assert!(lease.upgrade().is_some());
++    assert!(!session.services.local_agent_runtime.shutdown.is_cancelled());
++
++    let conversation = session.conversation.hold_state_for_shutdown_test().await;
++    let shutdown = handlers::shutdown_session_runtime(&session);
++    tokio::pin!(shutdown);
++    assert!(futures::poll!(shutdown.as_mut()).is_pending());
++    assert!(session.is_shutting_down().await);
++    gate.release.notify_one();
++    timeout(Duration::from_secs(5), wake)
++        .await
++        .expect("the stale wake can exit during shutdown")
++        .expect("mailbox wake joined");
++    assert!(session.active_turn.lock().await.is_none());
++    assert!(lease.upgrade().is_none());
++    assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
++    assert!(
++        server
++            .received_requests()
++            .await
++            .expect("request log")
++            .iter()
++            .all(|request| !request.url.path().ends_with("/responses"))
++    );
++
++    drop(conversation);
++    shutdown.await;
++}
++
++#[tokio::test]
++async fn shutdown_releases_queued_mailbox_trace_without_consuming_input() {
++    use codex_otel::sdk_trace;
++
++    let (session, _, _) = make_session_and_context_with_rx().await;
++    let policy =
++        sdk_trace::policy_for_context(&sdk_trace::suppressed_context()).expect("synthetic policy");
++    let lease = Arc::downgrade(&policy);
++    let trace = super::input_queue::MailboxTrace::from_submission(
++        "queued",
++        Some(W3cTraceContext {
++            traceparent: Some("00-11111111111111111111111111111111-0000000000000066-01".into()),
++            tracestate: None,
++        }),
++        Some(policy),
++        /*trigger_turn*/ true,
++    );
++    session
++        .input_queue
++        .enqueue_mailbox_submission(
++            InterAgentCommunication::new(
++                AgentPath::try_from("/root/sender").expect("sender path"),
++                AgentPath::root(),
++                Vec::new(),
++                "synthetic queued input".into(),
++                /*trigger_turn*/ true,
++            ),
++            Default::default(),
++            trace,
++            true,
++        )
++        .await;
++    assert!(lease.upgrade().is_some());
++    handlers::shutdown_session_runtime(&session).await;
++    assert!(lease.upgrade().is_none());
++    assert!(session.input_queue.has_trigger_turn_mailbox_items().await);
++}
++
+ #[test_case(None; "independent root")]
+ #[test_case(Some("root-a"); "inherited root")]
+ #[tokio::test]
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index cdd51a9..88cacd8 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -529,6 +529,7 @@ async fn start_if_idle_inner(
+     } = request;
+     let origin = UserInputOrigin::from_turn_trigger(start.turn_trigger.as_deref());
+     if session.input_queue.has_trigger_turn_mailbox_items().await {
++        tokio::spawn(session.maybe_start_turn_for_pending_work());
+         return Ok(TurnInputSubmission::NotSubmitted {
+             reason: NotSubmittedReason::PendingTriggerTurn,
+         });
+@@ -624,8 +625,12 @@ async fn start_if_idle_inner(
+                 session.clear_reserved_idle_turn(&turn_state).await;
+                 return Err(error);
+             }
+-            let starting =
+-                session.start_task(context, Vec::new(), realtime_tool.expect("source task"));
++            let starting = session.start_reserved_task(
++                context,
++                Vec::new(),
++                realtime_tool.expect("source task"),
++                &turn_state,
++            );
+             let started = tokio::select! {biased;_=cancellation.cancelled()=>false,_=session.services.local_agent_runtime.shutdown.cancelled()=>false,started=starting=>started};
+             if !started {
+                 // Registration may have won the final synchronous poll before cancellation.
+@@ -686,7 +691,10 @@ async fn start_if_idle_inner(
+         .await;
+ 
+     if let Some(task) = realtime_tool {
+-        if !session.start_task(turn_context, Vec::new(), task).await {
++        if !session
++            .start_reserved_task(turn_context, Vec::new(), task, &turn_state)
++            .await
++        {
+             session.clear_reserved_idle_turn(&turn_state).await;
+             return Err(CodexErr::InternalAgentDied);
+         }
+@@ -718,9 +726,13 @@ async fn start_if_idle_inner(
+             }
+         }
+     }
+-    session
+-        .start_task(turn_context, task_input, RegularTask::new())
+-        .await;
++    if !session
++        .start_reserved_task(turn_context, task_input, RegularTask::new(), &turn_state)
++        .await
++    {
++        session.clear_reserved_idle_turn(&turn_state).await;
++        return Err(CodexErr::TurnAborted);
++    }
+     Ok(TurnInputSubmission::Started {
+         turn_id: submission_id,
+     })
+@@ -833,7 +845,10 @@ impl Session {
+         Ok(())
+     }
+ 
+-    async fn clear_reserved_idle_turn(&self, turn_state: &Arc<tokio::sync::Mutex<TurnState>>) {
++    pub(crate) async fn clear_reserved_idle_turn(
++        &self,
++        turn_state: &Arc<tokio::sync::Mutex<TurnState>>,
++    ) {
+         let mut active_turn_guard = self.active_turn.lock().await;
+         if let Some(active_turn) = active_turn_guard.as_ref()
+             && active_turn.task.is_none()
+diff --git a/codex-rs/core/src/state/turn.rs b/codex-rs/core/src/state/turn.rs
+index 9231f00..a0300fd 100644
+--- a/codex-rs/core/src/state/turn.rs
++++ b/codex-rs/core/src/state/turn.rs
+@@ -29,6 +29,8 @@ use codex_protocol::protocol::TokenUsage;
+ /// Metadata about the currently running turn.
+ pub(crate) struct ActiveTurn {
+     pub(crate) task: Option<RunningTask>,
++    /// The queued wake prefix is fixed until this reservation registers a task.
++    pub(crate) mailbox_start_sealed: bool,
+     /// A sealed tool-origin completion retains its existing task owner through
+     /// terminal persistence. Cancellation joins that owner instead of aborting it.
+     pub(crate) tool_completion_reserved: Option<Arc<Notify>>,
+@@ -60,6 +62,7 @@ impl Default for ActiveTurn {
+     fn default() -> Self {
+         Self {
+             task: None,
++            mailbox_start_sealed: false,
+             tool_completion_reserved: None,
+             turn_state: Arc::new(Mutex::new(TurnState::default())),
+         }
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 87e9b8f..5a38089 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -31,6 +31,7 @@ use crate::codex_thread::ManagedLocalExecCancelFailure;
+ use crate::config::Config;
+ use crate::context::ContextualUserFragment;
+ use crate::hook_runtime::run_turn_interrupt_hooks;
++use crate::session::MailboxWakeBatch;
+ use crate::session::TurnInput;
+ use crate::session::session::Session;
+ use crate::session::turn::run_hooks_and_record_inputs;
+@@ -94,6 +95,38 @@ impl PendingCompactionFatal {
+     }
+ }
+ 
++#[derive(Clone, Copy)]
++enum TaskStartup<'a> {
++    Direct {
++        reservation: &'a Arc<Mutex<TurnState>>,
++    },
++    Replace,
++    Mailbox {
++        reservation: &'a Arc<Mutex<TurnState>>,
++        len: usize,
++    },
++}
++
++impl TaskStartup<'_> {
++    fn matches(self, active: Option<&ActiveTurn>) -> bool {
++        match self {
++            Self::Mailbox { reservation, .. } => active.is_some_and(|turn| {
++                turn.mailbox_start_sealed
++                    && turn.task.is_none()
++                    && Arc::ptr_eq(reservation, &turn.turn_state)
++            }),
++            Self::Direct { reservation } => active.is_some_and(|turn| {
++                !turn.mailbox_start_sealed
++                    && turn.task.is_none()
++                    && Arc::ptr_eq(reservation, &turn.turn_state)
++            }),
++            Self::Replace => {
++                active.is_none_or(|turn| !turn.mailbox_start_sealed && turn.task.is_none())
++            }
++        }
++    }
++}
++
+ fn persistence_completion_fatal() -> CodexErr {
+     CodexErr::Fatal("Canonical thread persistence failed; turn completion stopped".to_string())
+ }
+@@ -336,30 +369,84 @@ impl Session {
+     ) {
+         self.abort_all_tasks(TurnAbortReason::Replaced).await;
+         self.clear_connector_selection().await;
+-        self.start_task(turn_context, input, task).await;
++        self.start_task_inner(turn_context, input, task, TaskStartup::Replace)
++            .await;
++    }
++
++    pub(crate) async fn start_task<T: SessionTask>(
++        self: &Arc<Self>,
++        turn_context: Arc<TurnContext>,
++        input: Vec<TurnInput>,
++        task: T,
++    ) -> bool {
++        // Review has already requested replacement before announcing its mode.
++        // Honor that replacement if a mailbox wake has won the slot in the meantime.
++        self.start_task_inner(turn_context, input, task, TaskStartup::Replace)
++            .await
++    }
++
++    pub(crate) async fn start_reserved_task<T: SessionTask>(
++        self: &Arc<Self>,
++        turn_context: Arc<TurnContext>,
++        input: Vec<TurnInput>,
++        task: T,
++        reservation: &Arc<Mutex<TurnState>>,
++    ) -> bool {
++        self.start_task_inner(
++            turn_context,
++            input,
++            task,
++            TaskStartup::Direct { reservation },
++        )
++        .await
+     }
+ 
+     #[expect(
+         clippy::await_holding_invalid_type,
+         reason = "record the started turn atomically with its active reservation"
+     )]
+-    pub(crate) async fn start_task<T: SessionTask>(
++    async fn start_task_inner<T: SessionTask>(
+         self: &Arc<Self>,
+         turn_context: Arc<TurnContext>,
+         input: Vec<TurnInput>,
+         task: T,
++        startup: TaskStartup<'_>,
+     ) -> bool {
+-        let Some(tree_task) = self.services.local_agent_runtime.admit_task() else {
+-            return false;
+-        };
+-
+         // Stop retirement holds this gate through input recording and physical
+         // task cleanup. Never enter a successor while those are still pending.
+         let admission = self
+             .services
+             .thread_extension_data
+             .get_or_init(TaskAdmission::default);
+-        let _admission = admission.0.lock().await;
++        let _admission = loop {
++            let permit = admission.0.lock().await;
++            if !matches!(startup, TaskStartup::Replace)
++                || self
++                    .active_turn
++                    .lock()
++                    .await
++                    .as_ref()
++                    .is_none_or(|turn| turn.task.is_none())
++            {
++                break permit;
++            }
++            // A wake registered during replacement. Retire it through the normal
++            // path before claiming the slot, without holding the admission permit.
++            drop(permit);
++            self.abort_all_tasks(TurnAbortReason::Replaced).await;
++            self.clear_connector_selection().await;
++        };
++        let Some(tree_task) = self.services.local_agent_runtime.admit_task() else {
++            return false;
++        };
++        // TaskAdmission serializes activation with the next start. A reserved
++        // start must still own its turn before changing the shared selection.
++        if self.is_shutting_down().await
++            || (!matches!(startup, TaskStartup::Replace)
++                && !startup.matches(self.active_turn.lock().await.as_ref()))
++        {
++            return false;
++        }
+         self.activate_plugin_selection(&turn_context).await;
+         // Inherited or recovered roots are applied before task start. Otherwise this
+         // task owns its turn, including background work. Later mail cannot change it.
+@@ -382,18 +469,40 @@ impl Session {
+         let cancellation_token = CancellationToken::new();
+         let done = Arc::new(Notify::new());
+ 
+-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
+-        let turn_state = {
++        let (turn_state, pending_mail) = {
+             let mut active = self.active_turn.lock().await;
+-            if self.services.local_agent_runtime.shutdown.is_cancelled() {
++            if self.services.local_agent_runtime.shutdown.is_cancelled()
++                || self.is_shutting_down().await
++            {
+                 return false;
+             }
+-            self.record_started_turn(&turn_context.sub_id).await;
++            if matches!(startup, TaskStartup::Replace)
++                && active
++                    .as_ref()
++                    .is_some_and(|turn| turn.mailbox_start_sealed)
++            {
++                // A wake can reserve the empty slot during the explicit replacement.
++                // Its input remains fenced in the mailbox for the next wake.
++                *active = None;
++            }
++            if !startup.matches(active.as_ref()) {
++                return false;
++            }
++            let pending_mail = if !matches!(startup, TaskStartup::Mailbox { .. }) {
++                self.record_started_turn(&turn_context.sub_id).await;
++                self.input_queue.drain_ready_mailbox().await
++            } else {
++                Vec::new()
++            };
+             let turn = active.get_or_insert_with(ActiveTurn::default);
+             debug_assert!(turn.task.is_none());
+-            Arc::clone(&turn.turn_state)
++            (Arc::clone(&turn.turn_state), pending_mail)
+         };
+         turn_state.lock().await.token_usage_at_turn_start = token_usage_at_turn_start.clone();
++        let pending_items = pending_mail
++            .into_iter()
++            .map(|mail| TurnInput::InterAgentCommunication(mail.communication))
++            .collect();
+         self.input_queue
+             .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
+             .await;
+@@ -413,11 +522,26 @@ impl Session {
+         .await;
+ 
+         let mut active = self.active_turn.lock().await;
+-        if self.services.local_agent_runtime.shutdown.is_cancelled() {
++        if self.services.local_agent_runtime.shutdown.is_cancelled()
++            || self.is_shutting_down().await
++            || !startup.matches(active.as_ref())
++        {
+             return false;
+         }
+         let turn = active.get_or_insert_with(ActiveTurn::default);
+         debug_assert!(turn.task.is_none());
++        let committed_mail = if let TaskStartup::Mailbox { len, .. } = startup {
++            // Leave the prefix in the queue if stop replaced this reservation before registration.
++            let committed_mail = self
++                .input_queue
++                .commit_mailbox_wake(len, &turn.turn_state)
++                .await;
++            self.record_started_turn(&turn_context.sub_id).await;
++            turn.mailbox_start_sealed = false;
++            committed_mail
++        } else {
++            Vec::new()
++        };
+         let agent_execution_guard = self.services.agent_control.admit_turn(
+             turn_context.multi_agent_version,
+             &turn_context.session_source,
+@@ -523,6 +647,9 @@ impl Session {
+             _timer: timer,
+         };
+         turn.task = Some(running_task);
++        drop(active);
++        drop(_admission);
++        drop(committed_mail);
+         true
+     }
+ 
+@@ -559,41 +686,62 @@ impl Session {
+         self: &Arc<Self>,
+         sub_id: String,
+     ) {
+-        if !self.input_queue.has_pending_mailbox_items().await
+-            || (!self.input_queue.has_trigger_turn_mailbox_items().await
+-                && !self.has_outstanding_durable_sleep())
++        if !self.input_queue.has_trigger_turn_mailbox_items().await
++            && (!self.has_outstanding_durable_sleep()
++                || !self.input_queue.has_pending_mailbox_items().await)
+         {
+             return;
+         }
+ 
+-        let turn_state = {
+-            let mut active_turn = self.active_turn.lock().await;
+-            if active_turn.is_some() {
++        let (turn_state, batch) = {
++            let mut active = self.active_turn.lock().await;
++            if active.is_some() || self.is_shutting_down().await {
+                 return;
+             }
+-            let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
+-            Arc::clone(&active_turn.turn_state)
++            let Some(batch) = self
++                .input_queue
++                .mailbox_wake_batch(self.has_outstanding_durable_sleep())
++                .await
++            else {
++                return;
++            };
++            let turn = active.insert(ActiveTurn {
++                mailbox_start_sealed: true,
++                ..ActiveTurn::default()
++            });
++            (Arc::clone(&turn.turn_state), batch)
+         };
+ 
+         self.services
+             .models_manager
+             .refresh_after_auth_change(self.get_config().await.http_client_factory())
+             .await;
+-        // A completion-triggered wakeup can be interrupted while discovery waits.
+-        if self
+-            .active_turn
+-            .lock()
++        // Model discovery can outlive the reservation.
++        let startup = TaskStartup::Mailbox {
++            reservation: &turn_state,
++            len: batch.len,
++        };
++        if !startup.matches(self.active_turn.lock().await.as_ref()) {
++            return;
++        }
++        let span = batch.wake_span(&sub_id);
++        if !self
++            .start_mailbox_turn(sub_id, batch, startup)
++            .instrument(span)
+             .await
+-            .as_ref()
+-            .is_none_or(|turn| !Arc::ptr_eq(&turn.turn_state, &turn_state))
+         {
+-            return;
++            self.clear_reserved_idle_turn(&turn_state).await;
+         }
+-        let (input, mut start_options) =
+-            self.input_queue.get_pending_input(&self.active_turn).await;
+-        if !input.iter().any(
+-            |item| matches!(item, TurnInput::InterAgentCommunication(mail) if mail.trigger_turn),
+-        ) {
++    }
++
++    async fn start_mailbox_turn(
++        self: &Arc<Self>,
++        sub_id: String,
++        batch: MailboxWakeBatch,
++        startup: TaskStartup<'_>,
++    ) -> bool {
++        let mut start_options = batch.start_options;
++        if batch.initiating_agent_path.is_none() {
+             // Queue-only mail wakes durable sleep without selecting a new task's settings.
+             start_options.cyber_access_program = self
+                 .reference_context_item()
+@@ -613,14 +761,7 @@ impl Session {
+             turn_context.turn_metadata_state.set_turn_trigger(trigger);
+         }
+         if let Some(id) = start_options.parent_turn_id {
+-            if let Some(initiating_agent_path) = input.iter().find_map(|item| {
+-                let TurnInput::InterAgentCommunication(communication) = item else {
+-                    return None;
+-                };
+-                communication
+-                    .trigger_turn
+-                    .then(|| communication.author.clone())
+-            }) {
++            if let Some(initiating_agent_path) = batch.initiating_agent_path {
+                 turn_context
+                     .turn_metadata_state
+                     .set_initiating_agent_path(initiating_agent_path);
+@@ -632,18 +773,16 @@ impl Session {
+         }
+         self.maybe_emit_model_warnings_for_turn(turn_context.as_ref())
+             .await;
+-        // Task completion must still save this mail if pre-turn compaction fails.
+-        self.input_queue
+-            .extend_pending_input_for_turn_state(turn_state.as_ref(), input)
+-            .await;
+-        self.start_task(turn_context, Vec::new(), RegularTask::new())
+-            .await;
++        self.start_task_inner(turn_context, Vec::new(), RegularTask::new(), startup)
++            .await
+     }
+ 
+     pub async fn abort_all_tasks(self: &Arc<Self>, reason: TurnAbortReason) {
+         let mut aborted_turn = false;
++        let mut interrupted_mailbox_start = false;
+         let mut active_turn_to_clear = None;
+         if let Some(mut active_turn) = self.take_active_turn(&reason).await {
++            interrupted_mailbox_start = active_turn.mailbox_start_sealed;
+             let task = active_turn.task.take();
+             aborted_turn = task.is_some();
+             if let Some(task) = task {
+@@ -667,8 +806,14 @@ impl Session {
+             // in-flight approval wait can surface as a model-visible rejection before TurnAborted.
+             self.input_queue.clear_pending(&active_turn).await;
+         }
+-        if reason == TurnAbortReason::Interrupted && aborted_turn {
+-            self.maybe_start_turn_for_pending_work().await;
++        if reason == TurnAbortReason::Interrupted {
++            if aborted_turn {
++                self.maybe_start_turn_for_pending_work().await;
++            } else if interrupted_mailbox_start {
++                // The superseded startup may still be finishing its before-registration hook.
++                // Let the interrupt return before the new wake waits for task admission.
++                tokio::spawn(self.maybe_start_turn_for_pending_work());
++            }
+         }
+     }
+ 
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 4f05d66..685f779 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -15,7 +15,7 @@ use opentelemetry_sdk::trace::ShouldSample;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+ 
+-#[derive(Debug)]
++#[derive(Debug, Default)]
+ pub struct ScopePolicy {
+     pub disabled: bool,
+     pub include_sensitive_data: bool,
+@@ -168,6 +168,14 @@ pub fn policy_for_context(context: &Context) -> Option<Arc<ScopePolicy>> {
+         .cloned()
+         .or_else(|| policy_for_span(context.span().span_context()))
+ }
++/// Start a process-local scope without an inherited parent, exporter, or capture policy.
++pub fn suppressed_context() -> Context {
++    Context::new().with_value(Arc::new(ScopePolicy {
++        disabled: true,
++        ..ScopePolicy::default()
++    }))
++}
++
+ pub fn scoped_capture_allowed() -> bool {
+     policy_for_context(&Context::current())
+         .is_none_or(|policy| !policy.disabled && policy.include_sensitive_data)
