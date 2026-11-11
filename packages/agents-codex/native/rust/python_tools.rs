@@ -3278,24 +3278,6 @@ impl ToolContributor for PythonContributor {
                 && step.get::<ProfileCatalog>().is_some_and(|catalog| {
                     catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
                 });
-            if let Some(active) = &active {
-                if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
-                    return Err("Expired step selection owner or generation".into());
-                }
-            } else if !source_owned && profile.is_none() {
-                return Ok(None);
-            }
-            let catalog = step.get::<StepCatalog>().ok_or("Missing step catalog")?;
-            if !Arc::ptr_eq(&catalog.generation, &generation) {
-                return Err("Expired step catalog generation".into());
-            }
-            let admitted_mcp = catalog
-                .slots
-                .iter()
-                .filter_map(|slot| generation.entries.get(*slot))
-                .filter(|entry| matches!(entry.spec, ToolSpec::Mcp(_)))
-                .map(|entry| entry.name.clone().with_default_namespace())
-                .collect::<HashSet<_>>();
             let captured_mcp = thread
                 .get::<codex_extension_api::HostedModelTools>()
                 .map(|hosted| {
@@ -3312,6 +3294,24 @@ impl ToolContributor for PythonContributor {
                         .collect::<HashSet<_>>()
                 })
                 .unwrap_or_default();
+            if let Some(active) = &active {
+                if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
+                    return Err("Expired step selection owner or generation".into());
+                }
+            } else if !source_owned && profile.is_none() && captured_mcp.is_empty() {
+                return Ok(None);
+            }
+            let catalog = step.get::<StepCatalog>().ok_or("Missing step catalog")?;
+            if !Arc::ptr_eq(&catalog.generation, &generation) {
+                return Err("Expired step catalog generation".into());
+            }
+            let admitted_mcp = catalog
+                .slots
+                .iter()
+                .filter_map(|slot| generation.entries.get(*slot))
+                .filter(|entry| matches!(entry.spec, ToolSpec::Mcp(_)))
+                .map(|entry| entry.name.clone().with_default_namespace())
+                .collect::<HashSet<_>>();
             let mut seen = HashSet::new();
             let retained_candidates = candidates
                 .iter()

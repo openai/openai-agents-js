@@ -91,6 +91,53 @@ Native tool selections and policies have also been overriding inherited prompt t
 
 After restoration, the current Agent declaration has been supplying the prompt reference or factory. Before dispatch, the SDK has been rejecting new explicit settings for fields previously inherited from the prompt.
 
+## Hosted MCP approvals
+
+`hostedMcp` has been declaring a remote Model Context Protocol (MCP) server for the Responses provider. The provider has been executing its tools, and the application has been deciding approval requests through `onApprovalRequest`.
+
+Prerequisites: the matching native v1 build, `OPENAI_API_KEY`, a Responses-capable model selected through `OPENAI_MODEL`, and a remote MCP endpoint in `MCP_SERVER_URL`. Optional `MCP_AUTHORIZATION` has been supplying the server authorization value.
+
+```ts
+import { Agent, NativeProvider, hostedMcp } from '@openai/agents';
+
+async function main() {
+  const model = process.env.OPENAI_MODEL;
+  const serverUrl = process.env.MCP_SERVER_URL;
+  if (!model || !serverUrl)
+    throw new Error('OPENAI_MODEL and MCP_SERVER_URL are required');
+  const authorization = process.env.MCP_AUTHORIZATION;
+  await using provider = new NativeProvider();
+  const docs = hostedMcp({
+    serverLabel: 'docs',
+    serverUrl,
+    ...(authorization ? { authorization } : {}),
+    requireApproval: 'always',
+    allowedTools: ['lookup'],
+    onApprovalRequest: ({ name }) => ({ approve: name === 'lookup' }),
+  });
+  const agent = new Agent({
+    model,
+    provider,
+    instructions: 'Use docs for the requested lookup.',
+    tools: [docs],
+  });
+  console.log((await agent.run('Look up MCP approval behavior.')).finalOutput);
+}
+
+main().catch((error: unknown) => {
+  console.error(error);
+  process.exitCode = 1;
+});
+```
+
+The example's application policy has been approving `lookup`, and the Agent has been printing its final answer. An omitted `requireApproval` has been retaining the Classic default, `'never'`. Explicit `allowedTools` and `allowedCallers` have been narrowing the server's admitted calls before the application callback.
+
+Without `onApprovalRequest`, a declaration requiring approval has been exposing the existing live manual request through `turn.wait({ until: 'manual_tool' })`, `docs.match(request)`, and `session.respond(request.reply({ approve, reason }))`. `Agent.run()` without an interaction handler has been raising `InteractionRequired`.
+
+Server configuration and credentials have been remaining fixed for each Session. Same-configuration callback replacements have been working through `Session.update`; configuration changes have been requiring a new Session. Explicit tool selections, including `tools: []`, have been narrowing which servers reach the provider.
+
+Pending approvals have been requiring live replies: `Session.suspend()` has been rejecting them without consuming the pending request. External restoration has also been rejecting positive MCP approval receipts because portable state has not been carrying live approval authority.
+
 ## SDK guides
 
 - [Architecture](../../examples/codex/guides/architecture.md). Understand the native runtime, how it differs from v0, and which adoption route fits your application.

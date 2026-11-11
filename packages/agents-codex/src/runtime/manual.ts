@@ -444,7 +444,7 @@ export function createManualRequest<Input, Result>(
         submissionId: identity.submissionId,
         subagentId: identity.subagentId,
         name: tool.name,
-        namespace: null,
+        namespace: identity.call?.tool.namespace ?? null,
         turnId: identity.turnId,
         callId: identity.callId,
         call: identity.call,

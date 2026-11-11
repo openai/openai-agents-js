@@ -9784,7 +9784,7 @@ export class Session<OutputT = string, Context = unknown> {
         !tool ||
         tool.kind !== 'manual' ||
         msg.tool !== tool.name ||
-        msg.namespace != null
+        (msg.namespace ?? null) !== toolNamespace(tool)
       )
         throw new NativeError('Invalid managed tool identity');
       const approval = managedApproval(tool);
@@ -9799,7 +9799,7 @@ export class Session<OutputT = string, Context = unknown> {
       const identity = {
         callId,
         toolName: tool.name,
-        namespace: null,
+        namespace: toolNamespace(tool),
         family: 'function' as const,
       };
       this.observeToolStart(run, identity);

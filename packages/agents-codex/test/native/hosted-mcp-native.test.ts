@@ -173,7 +173,7 @@ it('leaves a live manual grant usable after unsupported suspension', async () =>
 });
 
 it('fails promptly without an interaction handler', async () => {
-  const server = new ModelServer([[approval()]]);
+  const server = new ModelServer([]);
   await using provider = await providerFor(server);
   const docs = hostedMcp({ serverLabel: 'docs', requireApproval: 'always' });
   await expect(
@@ -184,7 +184,7 @@ it('fails promptly without an interaction handler', async () => {
       tools: [docs],
     }).run('lookup'),
   ).rejects.toBeInstanceOf(InteractionRequired);
-  expect(server.requests).toHaveLength(1);
+  expect(server.requests).toHaveLength(0);
   server.assertExhausted();
 });
 
@@ -399,34 +399,27 @@ it('rejects a caller outside the captured server policy before application appro
     ...approval(),
     caller: { type: 'code_interpreter', tool_id: 'ci_fixture' },
   };
-  const server = new ModelServer([[request], [message('denied')]]);
+  const server = new ModelServer([[request]]);
   await using provider = await providerFor(server);
   const callback = vi.fn(() => ({ approve: true }));
-  const result = await new Agent({
-    model: responsesModel,
-    provider,
-    instructions: 'Use docs.',
-    tools: [
-      hostedMcp({
-        serverLabel: 'docs',
-        serverUrl: 'https://docs.invalid/mcp',
-        requireApproval: 'always',
-        allowedCallers: ['direct'],
-        onApprovalRequest: callback,
-      }),
-    ],
-  }).run('lookup');
-  expect(result.finalOutput).toBe('denied');
+  await expect(
+    new Agent({
+      model: responsesModel,
+      provider,
+      instructions: 'Use docs.',
+      tools: [
+        hostedMcp({
+          serverLabel: 'docs',
+          serverUrl: 'https://docs.invalid/mcp',
+          requireApproval: 'always',
+          allowedCallers: ['direct'],
+          onApprovalRequest: callback,
+        }),
+      ],
+    }).run('lookup'),
+  ).rejects.toThrow('Unadmitted Hosted MCP request');
   expect(callback).not.toHaveBeenCalled();
-  expect(
-    (server.requests[1].input as JsonObject[]).find(
-      (item) => item.type === 'mcp_approval_response',
-    ),
-  ).toMatchObject({
-    approval_request_id: 'mcpr_fixture',
-    approve: false,
-    caller: request.caller,
-  });
+  expect(server.requests).toHaveLength(1);
   server.assertExhausted();
 });
 
