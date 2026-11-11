@@ -269,11 +269,15 @@ export interface ToolDeclaration {
 
 const prepareInvocation = Symbol('function tool binding');
 const computerDeclaration = Symbol('native computer declaration');
+const shellDeclaration = Symbol('native shell declaration');
 
 /** @internal The plan route admits only direct local function declarations. */
 export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
-    tool.kind !== 'manual' && !tool.deferLoading && !tool[computerDeclaration]
+    tool.kind !== 'manual' &&
+    !tool.deferLoading &&
+    !tool[computerDeclaration] &&
+    !tool[shellDeclaration]
   );
 }
 type Invocation<Context> = (
@@ -336,6 +340,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
   readonly [computerDeclaration]?: JsonObject;
+  readonly [shellDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
@@ -655,7 +660,11 @@ export function tool<
   };
   const needsApproval = options.needsApproval;
   const runBeforeApproval = options.runBeforeApproval ?? false;
+  const shell = (
+    options as typeof options & { [shellDeclaration]?: JsonObject }
+  )[shellDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
+    ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
     finishTurn: options.finishTurn ?? false,
     name: options.name,
     namespace: options.namespace,
@@ -743,6 +752,10 @@ export function tool<
           };
         }
         if (decision?.action === 'replaceArguments') {
+          if (shell)
+            throw new TypeError(
+              'Shell before policies only allow or deny execution',
+            );
           parsed = parseInput(decision.arguments);
           callContext = {
             ...callContext,
@@ -981,6 +994,10 @@ export function tool<
           return { required: false, denial: decision.reason };
         }
         if (decision.action === 'replaceArguments') {
+          if (shell)
+            throw new TypeError(
+              'Shell before policies only allow or deny execution',
+            );
           effective = losslessJsonValueSchema.parse(decision.arguments);
           parsed = parseInput(structuredClone(effective));
           callContext = {
@@ -1024,6 +1041,22 @@ export function outputOf(value: unknown): ToolResponse {
   };
 }
 
+/** @internal Preserve the ordinary tool callback and approval owners for local shell. */
+export function createShellTool<
+  T extends z.ZodType,
+  Context,
+  Result extends z.ZodType,
+>(
+  declaration: JsonObject,
+  options: Parameters<typeof tool<T, Context, Result>>[0],
+): FunctionTool<Context> {
+  const captured = {
+    ...options,
+    [shellDeclaration]: structuredClone(declaration),
+  };
+  return tool(captured);
+}
+
 export interface ToolCatalog<T extends SessionTool = SessionTool> {
   readonly generation: bigint;
   readonly tools: readonly T[];
@@ -1056,6 +1089,22 @@ export function captureTools(
       typeof tool.finishTurn !== 'boolean'
     )
       throw new TypeError('finishTurn must be a boolean');
+    const shell = (
+      tool as SessionTool & { readonly [shellDeclaration]?: JsonObject }
+    )[shellDeclaration];
+    if (
+      tool.kind !== 'manual' &&
+      shell &&
+      (tool.name !== 'shell' ||
+        tool.namespace !== undefined ||
+        tool.deferLoading ||
+        tool.finishTurn ||
+        tool.strict ||
+        tool.outputSchema !== undefined)
+    )
+      throw new TypeError(
+        'Shell declarations retain their native identity and policies',
+      );
     const approval = managedApproval(tool);
     const source = approval
       ? Object.freeze({
@@ -1071,6 +1120,7 @@ export function captureTools(
       : tool;
     const binding = Object.freeze({
       ...source,
+      ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
@@ -1090,6 +1140,8 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
+    if (tool[shellDeclaration])
+      return losslessJsonObjectSchema.parse(tool[shellDeclaration]);
     if (tool.kind !== 'manual' && tool[computerDeclaration]) {
       if (
         tool.name !== 'computer' ||

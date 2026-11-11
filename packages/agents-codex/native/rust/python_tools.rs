@@ -189,7 +189,7 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
 
 struct PendingCall {
     // Captured by native enqueue, never reconstructed from a host reply.
-    computer_arguments: Option<String>,
+    original_payload: Option<ToolPayload>,
     media: Option<NativeMediaContext>,
     deadline: Option<Arc<codex_extension_api::ModelInvocationDeadlineState>>,
     invocation: u64,
@@ -317,6 +317,9 @@ fn functions(
             DynamicToolSpec::Computer(tool) => {
                 functions.push((None, Cow::Owned(tool.callback_spec())))
             }
+            DynamicToolSpec::Shell(tool) => {
+                functions.push((None, Cow::Owned(tool.callback_spec())))
+            }
             DynamicToolSpec::Namespace(namespace) => {
                 for DynamicToolNamespaceTool::Function(tool) in &namespace.tools {
                     functions.push((Some(namespace), Cow::Borrowed(tool)));
@@ -327,10 +330,26 @@ fn functions(
     functions
 }
 
+fn original_tool_payload(spec: &ToolSpec, arguments: &Value) -> Option<ToolPayload> {
+    match spec {
+        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {
+            Some(ToolPayload::Computer {
+                arguments: arguments.to_string(),
+            })
+        }
+        ToolSpec::ApplicationShell { .. } => Some(ToolPayload::Shell {
+            arguments: arguments.to_string(),
+        }),
+        _ => None,
+    }
+}
+
 fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
-            DynamicToolSpec::Function(_) | DynamicToolSpec::Computer(_) => true,
+            DynamicToolSpec::Function(_)
+            | DynamicToolSpec::Computer(_)
+            | DynamicToolSpec::Shell(_) => true,
             DynamicToolSpec::Namespace(ns) => ns.tools.len() == 1,
         }),
         "invalid JavaScript tool slot projection"
@@ -1356,17 +1375,28 @@ impl PythonTools {
             let Some(call) = pending.get(key) else {
                 return Ok(None);
             };
-            call.computer_arguments.clone()
+            call.original_payload.clone()
         };
-        let Some(arguments) = arguments else {
+        let Some(payload) = arguments else {
             return Ok(Some(PythonOutput(response).receipt(key)));
         };
-        let output = codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
-            .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?;
-        let mut item: ResponseItem = output
-            .to_response_item(&key.call, &ToolPayload::Computer { arguments })
-            .into();
+        let output: Box<dyn ToolOutput> = match &payload {
+            ToolPayload::Computer { arguments } => Box::new(
+                codex_tools::ComputerToolOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?,
+            ),
+            ToolPayload::Shell { arguments } => Box::new(
+                codex_tools::ApplicationShellOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native shell response"))?,
+            ),
+            _ => unreachable!("only typed local tools retain their original payload"),
+        };
+        let mut item: ResponseItem = output.to_response_item(&key.call, &payload).into();
         if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        }
+        | ResponseItem::ShellCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
         } = &mut item
@@ -1415,6 +1445,8 @@ impl PythonTools {
             }
             let spec = if let DynamicToolSpec::Computer(computer) = declaration {
                 codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?
+            } else if let DynamicToolSpec::Shell(shell) = declaration {
+                codex_tools::application_shell_spec(shell)
             } else {
                 match namespace.filter(|_| !key.is_default_namespace()) {
                     None => ToolSpec::Function(function),
@@ -1432,7 +1464,10 @@ impl PythonTools {
             entries.push(Entry {
                 name,
                 spec,
-                exposure: if matches!(declaration, DynamicToolSpec::Computer(_)) {
+                exposure: if matches!(
+                    declaration,
+                    DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_)
+                ) {
                     ToolExposure::DirectModelOnly
                 } else if tool.defer_loading {
                     ToolExposure::Deferred
@@ -1922,11 +1957,10 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
-                    computer_arguments: matches!(
-                        entry.spec,
-                        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. }
-                    )
-                    .then(|| request["msg"]["arguments"].to_string()),
+                    original_payload: original_tool_payload(
+                        &entry.spec,
+                        &request["msg"]["arguments"],
+                    ),
                     media,
                     invocation,
                     retired: false,
@@ -3456,9 +3490,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     reply_guard.completed = true;
                     response
                 }
-                Err(_) if matches!(call.payload, ToolPayload::Computer { .. }) => {
+                Err(_)
+                    if matches!(
+                        call.payload,
+                        ToolPayload::Computer { .. } | ToolPayload::Shell { .. }
+                    ) =>
+                {
                     return Err(FunctionCallError::Fatal(
-                        "Computer call cancelled before reply".into(),
+                        "Native local tool call cancelled before reply".into(),
                     ));
                 }
                 Err(_) if self.tools.local_store.is_some() || self.tools.custom_store.is_some() => {
@@ -3493,6 +3532,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     start_response: response.start_response,
                     acceptance: response.acceptance,
                 }) as Box<dyn ToolOutput>);
+            }
+            if let ToolPayload::Shell { arguments } = &call.payload {
+                return Ok(
+                    Box::new(codex_tools::ApplicationShellOutput::from_dynamic_response(
+                        arguments,
+                        response.response,
+                    )?) as Box<dyn ToolOutput>,
+                );
             }
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
