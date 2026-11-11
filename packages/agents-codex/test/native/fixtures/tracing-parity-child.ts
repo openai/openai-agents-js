@@ -7,11 +7,14 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { once } from 'node:events';
 import { z } from 'zod';
 import {
   Agent,
+  Environment,
+  NativeAgents,
   NativeProvider,
   TraceContext,
   telemetry,
@@ -20,8 +23,13 @@ import {
 } from '../../../src';
 import { text, toolCall, withScriptedResponses } from '../../../src/testing';
 import { call, message, ModelServer } from './model-server';
-import { binding, type NativeThread } from '../../../src/runtime/binding';
+import {
+  binding,
+  type JsonObject,
+  type NativeThread,
+} from '../../../src/runtime/binding';
 import type { TraceEvent, Exporter } from '../../../src/runtime/telemetry';
+import { startPublicExecutor } from './public-executor';
 
 type Span = {
   name: string;
@@ -507,6 +515,168 @@ async function controlCase(batches: unknown[]) {
   );
   const metadata = spans.find((span) => span.name === 'metadata.operation');
   assert(metadata);
+
+  const cases = [
+    { label: 'disabled', disabled: true, includeSensitiveData: true },
+    { label: 'metadata-only', disabled: false, includeSensitiveData: false },
+    { label: 'sensitive', disabled: false, includeSensitiveData: true },
+  ];
+  type LogRecord = {
+    attributes?: { key: string; value: { stringValue?: string } }[];
+  };
+  type LogBatch = {
+    resourceLogs?: { scopeLogs?: { logRecords?: LogRecord[] }[] }[];
+  };
+
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let rootId: string;
+  let childModelId: string | undefined;
+  let childRequests = 0;
+  let nextCall: JsonObject | undefined = call(
+    'spawn_agent',
+    { task_name: 'child', message: 'Complete the assigned work.' },
+    { namespace: 'collaboration', callId: 'spawn-queue-receiver' },
+  );
+  const respond = async (request: JsonObject) => {
+    const metadata = request.client_metadata as Record<string, string>;
+    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    if (id === rootId) {
+      const selected = nextCall;
+      nextCall = undefined;
+      return selected ? [selected] : [message('root finished')];
+    }
+    assert.equal(++childRequests, 1, 'Unexpected child model request');
+    childModelId = id;
+    // Hold the first child response through every sender flush.
+    entered.resolve();
+    await release.promise;
+    return [message('first child final')];
+  };
+  const executor = await startPublicExecutor();
+  try {
+    // Spawn and each send take two root requests. The child uses one request.
+    const server = new ModelServer(
+      Array.from({ length: 3 + 2 * cases.length }, () => respond),
+    );
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-queue-tracing',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      instructions: 'Delegate.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [new NativeAgents()],
+    }).session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+    });
+    try {
+      rootId = session.id;
+      await (await session.submit('Start the child.')).wait();
+      const children = await Array.fromAsync(session.subagents());
+      assert.equal(children.length, 1, 'Expected one real queue receiver');
+      const child = children[0]!;
+      await Promise.race([
+        entered.promise,
+        delay(10_000, undefined, { ref: false }).then(() => {
+          throw new Error(
+            'Timed out waiting for the initial child model request',
+          );
+        }),
+      ]);
+      assert.equal(child.id, childModelId, 'Queue receiver model thread ID');
+      await flush();
+
+      for (const { label, ...policy } of cases) {
+        const callId = `queue-only-${label}`;
+        const marker = `QUEUE_ONLY_CANARY_${label}`;
+        nextCall = call(
+          'send_message',
+          { target: child.id, message: marker },
+          { namespace: 'collaboration', callId },
+        );
+        const start = batches.length;
+        const turn = await session.submit('Queue more child work.', {
+          tracing: { parent: null, ...policy },
+        });
+        assert.equal(
+          (await turn.wait()).finalOutput,
+          'root finished',
+          `${label} sender turn output`,
+        );
+        const postTool = server.requests.at(-1)?.input as
+          JsonObject[] | undefined;
+        const output = postTool?.find(
+          (item) =>
+            item.type === 'function_call_output' && item.call_id === callId,
+        );
+        assert.equal(
+          output?.output,
+          '',
+          `${label} send_message success output`,
+        );
+        await flush();
+        assert.equal(childRequests, 1, `${label} child model request count`);
+
+        const senderLogs = (batches.slice(start) as LogBatch[])
+          .flatMap((batch) => batch.resourceLogs ?? [])
+          .flatMap((resource) => resource.scopeLogs ?? [])
+          .flatMap((scope) => scope.logRecords ?? [])
+          .map((record) =>
+            Object.fromEntries(
+              (record.attributes ?? []).map(({ key, value }) => [
+                key,
+                value.stringValue,
+              ]),
+            ),
+          )
+          .filter(
+            (record) =>
+              record['event.name'] === 'codex.agent_communication' &&
+              record.state === 'send' &&
+              record.kind === 'message',
+          );
+        assert.equal(
+          senderLogs.length,
+          policy.disabled ? 0 : 1,
+          `${label} sender log count`,
+        );
+        if (policy.disabled) continue;
+        const record = senderLogs[0]!;
+        assert.equal(
+          record.sender_thread_id,
+          session.id,
+          `${label} sender thread ID`,
+        );
+        assert.equal(
+          record.receiver_thread_id,
+          child.id,
+          `${label} receiver thread ID`,
+        );
+        if (policy.includeSensitiveData)
+          assert.equal(record.content, marker, `${label} sender log content`);
+        else
+          assert(
+            !Object.hasOwn(record, 'content'),
+            `${label} sender log must omit content`,
+          );
+      }
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+    }
+  } finally {
+    await executor.close();
+  }
 }
 async function processorCase(batches: unknown[]) {
   const first: TraceEvent[] = [];
@@ -1604,6 +1774,15 @@ async function main() {
           ? { headers: { authorization: 'Bearer synthetic-default' } }
           : {}),
       },
+      ...(mode === 'control'
+        ? {
+            logs: {
+              kind: 'otlp-http',
+              endpoint: new URL('/v1/logs', collector.endpoint).href,
+              protocol: 'json',
+            },
+          }
+        : {}),
       logUserPrompt: true,
       logAgentResponses: true,
       toolResultMaxBytes: 4096,

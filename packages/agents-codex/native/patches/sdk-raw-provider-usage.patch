@@ -1,8 +1,8 @@
 diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
-index a8232d2a..860f2ce1 100644
+index a5a65a33..49f32371 100644
 --- a/codex-rs/codex-api/src/common.rs
 +++ b/codex-rs/codex-api/src/common.rs
-@@ -78,10 +78,25 @@ pub struct MemorySummarizeOutput {
+@@ -79,11 +79,26 @@ pub struct MemorySummarizeOutput {
  #[derive(Clone, Debug)]
  pub struct ResponseId(pub String);
  
@@ -23,6 +23,7 @@ index a8232d2a..860f2ce1 100644
 +
  #[derive(Debug)]
  pub enum ResponseEvent {
+     RawProvider(SdkRawProviderEvent),
      ResponseFact(codex_protocol::response_facts::ReceivedResponseFact),
 -    ResponseObserved(codex_protocol::protocol::ResponseObservation),
 +    ResponseObserved(ProviderResponseObservation),
@@ -43,10 +44,10 @@ index acf03a3a..e5e9dcaa 100644
      assert!(
          matches!(&events[2], Ok(ResponseEvent::ResponseFact(received)) if matches!(&received.fact,
 diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-index 1bb56f37..a136fc2a 100644
+index 0e6cce4a..04dee820 100644
 --- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
 +++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-@@ -1096,6 +1096,7 @@ mod tests {
+@@ -1121,6 +1121,7 @@ mod tests {
          else {
              panic!("missing websocket terminal observation");
          };
@@ -67,10 +68,10 @@ index 3f51e655..3938e78c 100644
  pub use crate::common::OpenAiVerbosity;
  pub use crate::common::PromptCacheOptions;
 diff --git a/codex-rs/codex-api/src/sse/responses.rs b/codex-rs/codex-api/src/sse/responses.rs
-index bc9da7d9..570d8639 100644
+index 82913072..7e48230a 100644
 --- a/codex-rs/codex-api/src/sse/responses.rs
 +++ b/codex-rs/codex-api/src/sse/responses.rs
-@@ -306,10 +306,8 @@ impl ResponsesStreamEvent {
+@@ -314,10 +314,8 @@ impl ResponsesStreamEvent {
          })
      }
  
@@ -83,7 +84,7 @@ index bc9da7d9..570d8639 100644
          use codex_protocol::protocol::{
              ReceivedResponseUsage, ResponseIncompleteReason, ResponseObservation,
              ResponseObservationStatus,
-@@ -322,23 +320,21 @@ impl ResponsesStreamEvent {
+@@ -330,23 +328,21 @@ impl ResponsesStreamEvent {
          };
          let response = self.response.as_ref();
          let count = |value: &Value| value.as_i64().filter(|count| *count >= 0);
@@ -122,7 +123,7 @@ index bc9da7d9..570d8639 100644
          let incomplete_reason = (status == ResponseObservationStatus::Incomplete).then(|| {
              match response
                  .and_then(|r| r.pointer("/incomplete_details/reason"))
-@@ -350,15 +346,22 @@ impl ResponsesStreamEvent {
+@@ -358,15 +354,22 @@ impl ResponsesStreamEvent {
                  _ => ResponseIncompleteReason::Unknown,
              }
          });
@@ -154,7 +155,7 @@ index bc9da7d9..570d8639 100644
          })
      }
  
-@@ -1107,6 +1110,7 @@ mod tests {
+@@ -1131,6 +1134,7 @@ mod tests {
              let Ok(ResponseEvent::ResponseObserved(observation)) = &events[0] else {
                  panic!("missing observation: {events:?}")
              };
@@ -162,7 +163,7 @@ index bc9da7d9..570d8639 100644
              assert_eq!(observation.response_id.as_deref(), Some("reused-response"));
              assert_eq!(observation.status, status);
              let usage = observation.usage.as_ref().unwrap();
-@@ -1166,7 +1170,7 @@ mod tests {
+@@ -1190,7 +1194,7 @@ mod tests {
                      "type": "response.incomplete", "response": {"usage": raw}
                  }))
                  .unwrap();
@@ -171,7 +172,7 @@ index bc9da7d9..570d8639 100644
                  let mut expected = expected.clone();
                  expected.as_object_mut().unwrap().remove(field);
                  assert_eq!(
-@@ -1189,7 +1193,7 @@ mod tests {
+@@ -1213,7 +1217,7 @@ mod tests {
                  "type": "response.incomplete", "response": {"usage": usage}
              }))
              .unwrap();
@@ -180,7 +181,7 @@ index bc9da7d9..570d8639 100644
              assert_eq!(observation.response_id, None);
              assert_eq!(
                  observation.incomplete_reason,
-@@ -1210,7 +1214,7 @@ mod tests {
+@@ -1234,7 +1238,7 @@ mod tests {
          assert!(event.response_observation().is_none());
          let failed: ResponsesStreamEvent =
              serde_json::from_value(json!({"type": "response.failed"})).unwrap();
@@ -214,10 +215,10 @@ index aba43ce9..11b6cf91 100644
              assert_eq!(
                  observation.status,
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 928e8181..bbef7a66 100644
+index 24102faa..df733a41 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -3083,12 +3083,14 @@ where
+@@ -3087,12 +3087,14 @@ where
                  }
                  Ok(mut event) => {
                      if let ResponseEvent::ResponseObserved(observation) = &mut event {
@@ -372,7 +373,7 @@ index 6116813e..547864f7 100644
                      output,
                  });
 diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
-index ddc2c119..d93775cc 100644
+index 6e23d57b..d768abdd 100644
 --- a/codex-rs/core/src/compact_remote_v2.rs
 +++ b/codex-rs/core/src/compact_remote_v2.rs
 @@ -26,6 +26,8 @@ use crate::responses_retry::ResponsesStreamRequest;
@@ -423,7 +424,7 @@ index ddc2c119..d93775cc 100644
          compaction_output,
          response_id,
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
-index af26ec42..ba7d75b0 100644
+index 8d8e18f9..7fdac3f1 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
 @@ -69,6 +69,7 @@ pub use codex_thread::GuardianRootMessage;
@@ -435,7 +436,7 @@ index af26ec42..ba7d75b0 100644
  pub use thread_startup_metadata::ThreadStartupMetadata;
  mod agent;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 5439465e..65dc0187 100644
+index 5e472c7d..546fdc46 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -266,6 +266,7 @@ mod retained_context;
@@ -641,10 +642,22 @@ index 00000000..54e997da
 +    }
 +}
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 3b42c3db..55e31b1c 100644
+index 856e1189..ac04bab1 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -3484,6 +3484,11 @@ async fn try_run_sampling_request(
+@@ -2712,7 +2712,10 @@ async fn propose_tool_completion(
+                     return Ok(None);
+                 }
+                 Some(codex_extension_api::ToolCompletionDecision::Accept { .. })
+-                    if !tools.all_succeeded => continue,
++                    if !tools.all_succeeded =>
++                {
++                    continue;
++                }
+                 Some(codex_extension_api::ToolCompletionDecision::Accept { final_output }) => {
+                     return Ok(Some(codex_protocol::protocol::ToolTurnCompletion {
+                         call_id: call_id.clone(),
+@@ -3491,6 +3494,11 @@ async fn try_run_sampling_request(
      let mut should_emit_turn_diff = false;
      let mut should_emit_token_count = false;
      let mut response_observation_id = None;
@@ -656,9 +669,9 @@ index 3b42c3db..55e31b1c 100644
      const MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE: usize = 256;
      let mut analytics_tool_call_ids = Vec::new();
      let reasoning_effort = step_context
-@@ -3948,7 +3953,17 @@ async fn try_run_sampling_request(
-                         .refresh_if_new_etag(etag, turn_context.config.http_client_factory())
-                         .await;
+@@ -3962,7 +3970,17 @@ async fn try_run_sampling_request(
+                     })
+                     .await;
                  }
 -                ResponseEvent::ResponseObserved(observation) => {
 +                ResponseEvent::ResponseObserved(received) => {
@@ -675,7 +688,7 @@ index 3b42c3db..55e31b1c 100644
                      let result = sess
                          .record_response_observation(&turn_context, observation)
                          .await;
-@@ -4015,6 +4030,18 @@ async fn try_run_sampling_request(
+@@ -4029,6 +4047,18 @@ async fn try_run_sampling_request(
                      if let Err(err) = budget_result {
                          break Err(err);
                      }

@@ -175,6 +175,11 @@ export interface SessionBaseOptions<Context = undefined> {
    * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
   observationRetention?: 'bounded' | 'all';
   /**
+   * Capture Responses provider JSON in the Session's observation buffer.
+   * Use includeExecutionDetails on an observation reader to receive it.
+   */
+  includeRawProviderEvents?: boolean;
+  /**
    * Seed settled user messages and assistant text without starting a model turn.
    * Requires a fresh opening without state or resume, including for []. Core
    * prepares media using the current route. Publication waits for native flush;
@@ -249,7 +254,7 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
-  'tools'
+  'tools' | 'includeRawProviderEvents'
 > {
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
@@ -301,6 +306,7 @@ interface CapturedOpening {
   readonly decisions?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
   readonly observationRetention?: 'bounded' | 'all';
+  readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
@@ -591,6 +597,11 @@ export class Agent<Context = undefined, Output = string> {
       options.observationRetention !== 'all'
     )
       throw new TypeError('observationRetention must be "bounded" or "all"');
+    if (
+      options.includeRawProviderEvents !== undefined &&
+      typeof options.includeRawProviderEvents !== 'boolean'
+    )
+      throw new TypeError('includeRawProviderEvents must be a boolean');
     options.initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
@@ -892,6 +903,8 @@ export class Agent<Context = undefined, Output = string> {
     const observationRetention = opening
       ? opening.observationRetention
       : options.observationRetention;
+    const includeRawProviderEvents =
+      options.includeRawProviderEvents ?? opening?.includeRawProviderEvents;
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -1629,6 +1642,7 @@ export class Agent<Context = undefined, Output = string> {
         chatGPTPlan: plan !== undefined,
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
+        includeRawProviderEvents,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         decisions,
@@ -1709,6 +1723,7 @@ export class Agent<Context = undefined, Output = string> {
               });
               const correctionOptions: OwnedSessionOptions<undefined> = {
                 parentTrace,
+                includeRawProviderEvents,
                 [correctionOpening]: {
                   apiKey: lease.realtimeApiKey,
                   retainOpening,
@@ -1720,7 +1735,7 @@ export class Agent<Context = undefined, Output = string> {
             },
       };
       const captured: CapturedOpening = opening
-        ? Object.freeze({ ...opening, decisions })
+        ? Object.freeze({ ...opening, decisions, includeRawProviderEvents })
         : Object.freeze({
             agent: this,
             profiles,
@@ -1748,6 +1763,7 @@ export class Agent<Context = undefined, Output = string> {
             toolErrorFormatter,
             maxFunctionConcurrency,
             observationRetention,
+            includeRawProviderEvents,
             contextTransformPurpose,
             beforeCompact,
             transformContext,

@@ -345,7 +345,10 @@ export type {
   ProbabilityToken,
   ProbabilityAlternative,
 } from './runtime/response-facts';
-export type { ResponseFactReceived } from './runtime/observation';
+export type {
+  RawProviderEvent,
+  ResponseFactReceived,
+} from './runtime/observation';
 
 export type {
   RecordedResponseFactSummary,

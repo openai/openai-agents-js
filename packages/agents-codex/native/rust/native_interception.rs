@@ -874,6 +874,7 @@ pub struct Control {
 // One bounded callback owner per explicit root. Native ThreadSpawn ancestry
 // may share it, but never the parent's turn or thread-stop lifetime.
 struct Channel {
+    observe_raw_provider_events: AtomicBool,
     state: Mutex<State>,
     raw_usage: Mutex<Option<Arc<codex_core::SdkRawUsageLink>>>,
     graph: crate::graph_stop::Graph,
@@ -1058,6 +1059,7 @@ impl Control {
             sentinel_request: Mutex::new(SentinelState::default()),
             channel: Arc::new(Channel {
                 raw_usage: Mutex::new(None),
+                observe_raw_provider_events: AtomicBool::new(false),
                 graph: crate::graph_stop::Graph::default(),
                 state: Mutex::new(State {
                     timeout: None,
@@ -1074,6 +1076,12 @@ impl Control {
                 bytes: Arc::new(Semaphore::new(bytes)),
             }),
         }
+    }
+
+    pub(crate) fn enable_raw_provider_events(&self) {
+        self.channel
+            .observe_raw_provider_events
+            .store(true, Ordering::Release);
     }
 
     fn descendant(id: String, parent: &Arc<Control>) -> Self {
@@ -3061,6 +3069,16 @@ impl TurnLifecycleContributor for Boundary {
                     {
                         link.attach(input.thread_store);
                     }
+                }
+                if !control.stopped.is_cancelled()
+                    && control
+                        .channel
+                        .observe_raw_provider_events
+                        .load(Ordering::Acquire)
+                {
+                    input
+                        .thread_store
+                        .insert(codex_core::ObserveRawProviderEvents);
                 }
                 let settlement = input
                     .turn_store
