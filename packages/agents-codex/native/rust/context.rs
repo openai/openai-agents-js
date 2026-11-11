@@ -533,7 +533,9 @@ pub(crate) fn check_pairs(
                     .and_then(serde_json::Value::as_str),
                 false,
             ),
-            ResponseItem::ApplyPatchCall { call_id, .. } => ("apply_patch", Some(call_id), true),
+            ResponseItem::ApplyPatchCall { call_id, .. } => {
+                ("apply_patch", Some(call_id.as_str()), true)
+            }
             ResponseItem::ApplyPatchCallOutput { call_id, .. } => {
                 ("apply_patch", Some(call_id), false)
             }

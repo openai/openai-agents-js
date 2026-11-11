@@ -259,6 +259,32 @@ export function encode(value: unknown, byteLimit?: number): string {
   return JSON.stringify(captured);
 }
 
+const nativeIntegerKeys = new Set([
+  'generation',
+  'nonce',
+  'cancel',
+  'old_nonce',
+  'delivery',
+  'subagent_instance_id',
+  'admitted',
+  'limit',
+  'next_cell_id',
+  'profile_epoch',
+  'epoch',
+]);
+const nativeIntegerToken = new RegExp(
+  String.raw`"(?:${[...nativeIntegerKeys].join('|')})"[ \t\r\n]*:[ \t\r\n]*[-0-9]`,
+);
+
+/** @internal Unicode escapes can hide an authority field name. */
+export function mayNeedNativeReviver(source: string): boolean {
+  return (
+    typeof source !== 'string' ||
+    source.includes('\\u') ||
+    nativeIntegerToken.test(source)
+  );
+}
+
 // Convert only an authority's exact integer token; never return a rounded JS number.
 export function parseNative(source: string): unknown {
   const tokens = new WeakMap<object, Map<string, string>>();
@@ -270,20 +296,7 @@ export function parseNative(source: string): unknown {
       value: unknown,
       context?: { source?: string },
     ) {
-      if (
-        (key === 'generation' ||
-          key === 'nonce' ||
-          key === 'cancel' ||
-          key === 'old_nonce' ||
-          key === 'delivery' ||
-          key === 'subagent_instance_id' ||
-          key === 'admitted' ||
-          key === 'limit' ||
-          key === 'next_cell_id' ||
-          key === 'profile_epoch' ||
-          key === 'epoch') &&
-        typeof value === 'number'
-      ) {
+      if (nativeIntegerKeys.has(key) && typeof value === 'number') {
         const original = context?.source;
         const fields = tokens.get(this) ?? new Map<string, string>();
         fields.set(key, original ?? '');
