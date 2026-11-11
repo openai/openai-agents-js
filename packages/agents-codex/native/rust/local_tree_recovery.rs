@@ -142,6 +142,7 @@ async fn descendant_start(
                 ResponseItem::FunctionCall { .. }
                     | ResponseItem::CustomToolCall { .. }
                     | ResponseItem::ComputerCall { .. }
+                    | ResponseItem::ApplyPatchCall { .. }
             )
         {
             ensure!(

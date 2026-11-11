@@ -1185,6 +1185,7 @@ impl PythonTools {
                 key.clone(),
                 PendingCall {
                     computer_arguments: None,
+                    apply_patch_arguments: None,
                     media: None,
                     deadline: None,
                     invocation,

@@ -75,14 +75,16 @@ fn identities(
             RolloutItem::ResponseItem(row) => match &row.item {
                 ResponseItem::FunctionCall { call_id, .. }
                 | ResponseItem::CustomToolCall { call_id, .. }
-                | ResponseItem::ComputerCall { call_id, .. } => {
+                | ResponseItem::ComputerCall { call_id, .. }
+                | ResponseItem::ApplyPatchCall { call_id, .. } => {
+                    if matches!(row.item, ResponseItem::ApplyPatchCall { .. }) && !crate::local_reconciliation::owns_application_patch(row) { continue; }
                     let identity = (
                         row.item.turn_id().unwrap_or(&turn).to_owned(),
                         call_id.clone(),
                     );
                     if let Some(previous) = calls.get(&identity)
-                        && (matches!(previous, ResponseItem::ComputerCall { .. })
-                            || matches!(row.item, ResponseItem::ComputerCall { .. }))
+                        && (matches!(previous, ResponseItem::ComputerCall { .. } | ResponseItem::ApplyPatchCall { .. })
+                            || matches!(row.item, ResponseItem::ComputerCall { .. } | ResponseItem::ApplyPatchCall { .. }))
                     {
                         return Err(error("ambiguous original computer call identity"));
                     }
@@ -593,6 +595,11 @@ impl CustomThreadStore {
             return Err(error(
                 "canonical reconciliation requires an unresolved call",
             ));
+        }
+        if matches!(original, ResponseItem::ApplyPatchCall { .. }) {
+            let item = crate::local_reconciliation::application_patch_receipt(original,result,&turn)
+                .map_err(|_| error("Application patch reconciliation requires a typed result"))?;
+            return self.receipt(id,item).await;
         }
         if matches!(original, ResponseItem::ComputerCall { .. }) {
             let item = crate::local_reconciliation::computer_receipt(original, result, &turn)

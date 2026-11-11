@@ -225,12 +225,14 @@ export interface ToolDeclaration {
 }
 
 const prepareInvocation = Symbol('function tool binding');
-const computerDeclaration = Symbol('native computer declaration');
+const nativeCallbackDeclaration = Symbol('native computer declaration');
 
 /** @internal The plan route admits only direct local function declarations. */
 export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
-    tool.kind !== 'manual' && !tool.deferLoading && !tool[computerDeclaration]
+    tool.kind !== 'manual' &&
+    !tool.deferLoading &&
+    !tool[nativeCallbackDeclaration]
   );
 }
 type Invocation<Context> = (
@@ -292,7 +294,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
-  readonly [computerDeclaration]?: JsonObject;
+  readonly [nativeCallbackDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
@@ -318,19 +320,50 @@ export function createComputerTool<Context>(
     reportFailure: (error: Error) => void,
   ) => Promise<ToolResponse>,
 ): FunctionTool<Context> {
+  return createNativeCallbackTool(
+    'computer',
+    "Operate the application's computer",
+    declaration,
+    execute,
+  );
+}
+
+/** @internal Bind a typed native declaration to the existing callback owner. */
+export function createNativeCallbackTool<Context>(
+  name: 'computer' | 'apply_patch',
+  description: string,
+  declaration: JsonObject,
+  execute: (
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+    reportFailure: (error: Error) => void,
+    enterBody: () => void,
+  ) => Promise<ToolResponse>,
+): FunctionTool<Context> {
   return Object.freeze({
-    name: 'computer',
-    description: "Operate the application's computer",
+    name,
+    description,
     parameters: {},
-    [computerDeclaration]: declaration,
+    [nativeCallbackDeclaration]: declaration,
     async [prepareInvocation](
       args: JsonValue,
       context: ToolCallContext<Context>,
       reportFailure: (error: Error) => void,
       admit: () => void,
+      _effectiveArgs?: JsonValue,
+      _approved?: ApprovedArguments,
+      _beforeExecute?: () => Promise<boolean>,
+      onBodyEntry?: () => void,
     ) {
       admit();
-      return execute(args, context, admit, reportFailure);
+      return execute(
+        args,
+        context,
+        admit,
+        reportFailure,
+        onBodyEntry ?? (() => {}),
+      );
     },
   });
 }
@@ -1046,9 +1079,19 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
-    if (tool.kind !== 'manual' && tool[computerDeclaration]) {
+    if (tool.kind !== 'manual' && tool[nativeCallbackDeclaration]) {
+      const declaration = losslessJsonObjectSchema.parse(
+        tool[nativeCallbackDeclaration],
+      );
+      const expectedName =
+        declaration.type === 'computer'
+          ? 'computer'
+          : declaration.type === 'applyPatch'
+            ? 'apply_patch'
+            : undefined;
       if (
-        tool.name !== 'computer' ||
+        expectedName === undefined ||
+        tool.name !== expectedName ||
         tool.namespace !== undefined ||
         tool.deferLoading ||
         tool.finishTurn ||
@@ -1057,7 +1100,7 @@ export function captureTools(
         throw new TypeError(
           'Computer declarations retain their native identity and policies',
         );
-      return losslessJsonObjectSchema.parse(tool[computerDeclaration]);
+      return declaration;
     }
     const spec = {
       type: 'function',

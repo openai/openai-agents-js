@@ -470,3 +470,10 @@ export type {
 } from './runtime/guardrails';
 
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
+
+export { applyPatchTool } from './runtime/apply-patch';
+export type {
+  ApplyPatchEditor,
+  ApplyPatchOperation,
+  ApplyPatchResult,
+} from './runtime/apply-patch';

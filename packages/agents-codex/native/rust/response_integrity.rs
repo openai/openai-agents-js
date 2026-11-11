@@ -67,7 +67,8 @@ impl SupportedOutput {
                         call_id: Some(_),
                         ..
                     } | ResponseItem::CustomToolCallOutput { .. }
-                        | ResponseItem::ComputerCallOutput { .. }
+                        | ResponseItem::ApplyPatchCallOutput { .. }
+                | ResponseItem::ComputerCallOutput { .. }
                 ) || matches!(
                     item,
                     ResponseItem::ToolSearchOutput { call_id: Some(_), execution, .. }
@@ -98,7 +99,8 @@ impl SupportedOutput {
                         });
                     }
                     ResponseItem::FunctionCall { .. }
-                    | ResponseItem::ComputerCall { .. }
+                    | ResponseItem::ApplyPatchCall { .. }
+                | ResponseItem::ComputerCall { .. }
                     | ResponseItem::CustomToolCall { .. }
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::FileSearchCall { .. }
