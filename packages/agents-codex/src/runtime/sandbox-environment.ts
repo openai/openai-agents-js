@@ -630,6 +630,7 @@ function renderWorkspaceInstructions(
     }
   }
   const filesystemPrefix = 'Filesystem layout:\n[';
+  const filesystem: { path: string; description?: string }[] = [];
   const filesystemRows: string[] = [];
   const mountEntries = new Set(
     captured.mountTargets().map(({ logicalPath }) => logicalPath),
@@ -642,28 +643,35 @@ function renderWorkspaceInstructions(
     depth,
   } of captured.iterEntries()) {
     if (depth > 3 || mountEntries.has(logicalPath)) continue;
-    const path = JSON.stringify(
+    const path =
       entry.type === 'dir' && absolutePath !== '/'
         ? absolutePath + '/'
-        : absolutePath,
-    );
+        : absolutePath;
+    const row = JSON.stringify({ path });
     const addedBytes =
-      Buffer.byteLength(path, 'utf8') +
+      Buffer.byteLength(row, 'utf8') +
       (filesystemRows.length
         ? 1
         : Buffer.byteLength(`\n\n${filesystemPrefix}]`, 'utf8'));
     if (bytes + addedBytes > maxBytes) continue;
-    filesystemRows.push(path);
+    filesystem.push({ path, description: entry.description });
+    filesystemRows.push(row);
     bytes += addedBytes;
   }
-  for (let index = 0; index < included.length; index++) {
-    if (included[index].description === undefined) continue;
-    const row = JSON.stringify(included[index]);
-    const addedBytes =
-      Buffer.byteLength(row, 'utf8') - Buffer.byteLength(rows[index], 'utf8');
-    if (bytes + addedBytes > maxBytes) continue;
-    rows[index] = row;
-    bytes += addedBytes;
+  for (const [entries, renderedRows] of [
+    [included, rows],
+    [filesystem, filesystemRows],
+  ] as const) {
+    for (const [index, entry] of entries.entries()) {
+      if (entry.description === undefined) continue;
+      const row = JSON.stringify(entry);
+      const addedBytes =
+        Buffer.byteLength(row, 'utf8') -
+        Buffer.byteLength(renderedRows[index], 'utf8');
+      if (bytes + addedBytes > maxBytes) continue;
+      renderedRows[index] = row;
+      bytes += addedBytes;
+    }
   }
   compactSections.push(mountCommands, layoutPrefix + rows.join(',') + ']');
   if (filesystemRows.length > 0) {

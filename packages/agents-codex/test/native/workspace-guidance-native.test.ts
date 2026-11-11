@@ -171,6 +171,8 @@ it.each([
   ['create', ['fixture-mount', 'fixture-unmount']],
   ['borrow', []],
   ['read-only boundary', undefined],
+  ['description near budget', ['fixture-mount']],
+  ['path priority near budget', ['fixture-mount']],
   [
     'oversized command allowlist',
     Array.from({ length: 2500 }, (_, index) => `fixture-mount-${index}`),
@@ -179,6 +181,9 @@ it.each([
   'opens with oversized mount guidance and discovery off (%s)',
   async (opening, commands) => {
     const readOnly = opening === 'read-only boundary';
+    const descriptionOnly = opening === 'description near budget';
+    const pathPriority = opening === 'path priority near budget';
+    const nearBudget = descriptionOnly || pathPriority;
     const base = await mkdtemp(join(tmpdir(), 'bounded-workspace-guidance-'));
     const home = join(base, 'codex-home');
     const workspace = join(base, 'workspace');
@@ -199,9 +204,16 @@ it.each([
       });
       // This path and description filled the previous compact rendering to
       // exactly 40,000 UTF-8 bytes, leaving no room for the executor warning.
-      const mountRoot = readOnly
-        ? '/workspace/fixtures/workspace-guidance-boundary'
-        : workspace;
+      const mountRoot =
+        readOnly || nearBudget
+          ? '/workspace/fixtures/workspace-guidance-boundary'
+          : workspace;
+      // The long description fits with only src/ declared. Adding the file
+      // path consumes the remaining space, so its complete row takes priority.
+      const sourceDescription = nearBudget
+        ? 'x'.repeat(38_950)
+        : 'Source "code" 📚\nKeep this directory description.';
+      const fileDescription = 'Entrée "test" 🧪\nKeep this file description.';
       const manifest = new Manifest({
         root: mountRoot,
         remoteMountCommandAllowlist:
@@ -225,9 +237,16 @@ it.each([
           ...(!readOnly && {
             src: {
               type: 'dir',
-              children: {
-                'café.ts': { type: 'file', content: 'export {};\n' },
-              },
+              description: sourceDescription,
+              ...(!descriptionOnly && {
+                children: {
+                  'café.ts': {
+                    type: 'file',
+                    content: 'export {};\n',
+                    description: fileDescription,
+                  },
+                },
+              }),
             },
           }),
         },
@@ -279,13 +298,24 @@ it.each([
       expect(text).toContain('# Current SDK workspace snapshot');
       expect(text.includes(`Executor read-only: ${readOnly}`)).toBe(true);
       if (!readOnly) {
-        const layout = text.split('Filesystem layout:\n')[1]?.split('\n\n')[0];
-        expect(layout).toBe(
-          JSON.stringify([
-            `${join(mountRoot, 'src')}/`,
-            join(mountRoot, 'src/café.ts'),
-          ]),
+        const layout = text.split('Filesystem layout:\n')[1]?.split('\n')[0];
+        expect(layout?.includes(JSON.stringify(sourceDescription))).toBe(
+          !pathPriority,
         );
+        expect(JSON.parse(layout ?? 'null')).toEqual([
+          {
+            path: `${join(mountRoot, 'src')}/`,
+            ...(!pathPriority && { description: sourceDescription }),
+          },
+          ...(!descriptionOnly
+            ? [
+                {
+                  path: join(mountRoot, 'src/café.ts'),
+                  description: fileDescription,
+                },
+              ]
+            : []),
+        ]);
       }
       if (opening === 'borrow' || opening === 'oversized command allowlist') {
         expect(
