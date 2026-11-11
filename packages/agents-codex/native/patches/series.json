@@ -683,7 +683,11 @@
     {
       "path": "sdk-trace-credential-destination.patch",
       "sha256": "9179fc33da3c5f1f7bba84de3da43f7a5257bd9a81ebbc108373a851c7288170"
+    },
+    {
+      "path": "sdk-trace-delivery-controls.patch",
+      "sha256": "2eee67cd8141831466a0c35a6c9ccb3a1dbecefeb763369504b4a25640ad49ca"
     }
   ],
-  "result_tree": "ce23418d8f278e388fe87c8371c90167c52e8001"
+  "result_tree": "63f300c5c938b37abb84f6e0d4250ac159edf5c4"
 }
