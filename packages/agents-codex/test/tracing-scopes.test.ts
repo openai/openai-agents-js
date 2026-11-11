@@ -81,6 +81,30 @@ const harness = vi.hoisted(() => {
       return JSON.stringify(context);
     }),
     end_trace_span: vi.fn(),
+    borrow_trace_context: vi.fn(
+      (
+        parent: string,
+        restriction: string | null,
+        disabled: boolean,
+        sensitive: boolean,
+      ) => {
+        const source = contexts.get(parent);
+        if (!source || released.has(parent))
+          throw new Error('Unknown native tracing context');
+        const ambient = restriction ? contexts.get(restriction) : undefined;
+        const handle = `borrowed-${++id}`;
+        contexts.set(handle, {
+          ...source,
+          handle,
+          disabled: disabled || source.disabled || ambient?.disabled || false,
+          include_sensitive_data:
+            sensitive &&
+            source.include_sensitive_data === true &&
+            ambient?.include_sensitive_data !== false,
+        });
+        return handle;
+      },
+    ),
     release_trace_span: vi.fn((handle: string) => {
       released.add(handle);
     }),
@@ -146,6 +170,7 @@ import {
   TraceExportCredentials,
   withSpan,
   withTrace,
+  withTraceContext,
 } from '../src/runtime/telemetry';
 
 import {
@@ -181,6 +206,113 @@ afterEach(() => {
 });
 
 describe('native tracing host ownership (REQ423-425)', () => {
+  it('rebinds retained context without lifecycle events or workflow replacement', async () => {
+    const source = await startTrace({
+      name: 'retained-source',
+      includeSensitiveData: true,
+    });
+    source.close();
+    const starts = harness.native.start_trace_span.mock.calls.length;
+    const ends = harness.native.end_trace_span.mock.calls.length;
+    expect(
+      await withTraceContext(source, () => {
+        expect(getCurrentSpan()?.context).toEqual(source.context);
+        expect(getCurrentTrace()).toBe(source);
+        expect(
+          workflowForTrace(source.context.traceId, source.context.spanId),
+        ).toBe(source);
+        return 42;
+      }),
+    ).toBe(42);
+    expect(harness.native.start_trace_span).toHaveBeenCalledTimes(starts);
+    expect(harness.native.end_trace_span).toHaveBeenCalledTimes(ends);
+    await withTraceContext(source, async () => {
+      await withSpan({ name: 'borrowed-child' }, (child) => {
+        expect(child.context.traceId).toBe(source.context.traceId);
+        expect(child.context.parentSpanId).toBe(source.context.spanId);
+      });
+    });
+  });
+
+  it('restores nested and concurrent borrowed contexts after callback failure', async () => {
+    const first = await startTrace({ name: 'first' });
+    const second = await startTrace({ name: 'second' });
+    first.close();
+    second.close();
+    const failure = new Error('callback failure');
+    await withTrace({ name: 'ambient' }, async (outer) => {
+      await withTraceContext(first, async () => {
+        await expect(
+          withTraceContext(second, async () => {
+            throw failure;
+          }),
+        ).rejects.toBe(failure);
+        expect(getCurrentSpan()?.context.spanId).toBe(first.context.spanId);
+      });
+      expect(getCurrentSpan()).toBe(outer);
+      const entered = Promise.withResolvers<void>();
+      const other = Promise.withResolvers<void>();
+      await Promise.all([
+        withTraceContext(first, async () => {
+          entered.resolve();
+          await other.promise;
+          expect(getCurrentSpan()?.context.spanId).toBe(first.context.spanId);
+        }),
+        withTraceContext(second, async () => {
+          await entered.promise;
+          expect(getCurrentSpan()?.context.spanId).toBe(second.context.spanId);
+          other.resolve();
+        }),
+      ]);
+      expect(getCurrentSpan()).toBe(outer);
+    });
+  });
+
+  it('intersects borrowed context with ambient privacy ceilings without changing its source', async () => {
+    const source = await startTrace({
+      name: 'sensitive-source',
+      includeSensitiveData: true,
+    });
+    source.close();
+    await withTrace(
+      { name: 'metadata-only', includeSensitiveData: false },
+      () =>
+        withTraceContext(source, async () => {
+          expect(getCurrentSpan()?.context.includeSensitiveData).toBe(false);
+          await withSpan(
+            { name: 'restricted-child', includeSensitiveData: true },
+            (child) => {
+              expect(child.context.includeSensitiveData).toBe(false);
+            },
+          );
+        }),
+    );
+    await withTrace({ name: 'disabled', disabled: true }, () =>
+      withTraceContext(source, () => {
+        expect(getCurrentSpan()?.context.disabled).toBe(true);
+      }),
+    );
+    expect(source.context.includeSensitiveData).toBe(true);
+    expect(source.context.disabled).toBe(false);
+  });
+
+  it('retains borrowed ancestry for copied asynchronous work after the binding callback returns', async () => {
+    const source = await startTrace({ name: 'copied-source' });
+    source.close();
+    const continueWork = Promise.withResolvers<void>();
+    let copied: Promise<void> | undefined;
+    await withTraceContext(source, () => {
+      copied = (async () => {
+        await continueWork.promise;
+        await withSpan({ name: 'copied-child' }, (child) => {
+          expect(child.context.parentSpanId).toBe(source.context.spanId);
+        });
+      })();
+    });
+    continueWork.resolve();
+    await copied;
+  });
+
   it('restores nested scopes after rejection and keeps concurrent promises isolated', async () => {
     await Promise.all(
       ['first', 'second'].map((name) =>

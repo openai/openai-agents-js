@@ -478,6 +478,12 @@ export function shutdown_telemetry(timeout_ms?: number): Promise<void>;
 export function start_trace_span(options_json: string): string;
 export function end_trace_span(handle: string, outcome_json: string): void;
 export function retain_trace_context(handle: string): string;
+export function borrow_trace_context(
+  parent: string,
+  restrictions_parent: string | null,
+  disabled: boolean,
+  include_sensitive_data: boolean,
+): string;
 export function _retain_callback_dispatch_context(
   handle: string,
   key: string,
@@ -532,6 +538,7 @@ declare const binding: {
   start_trace_span: typeof start_trace_span;
   end_trace_span: typeof end_trace_span;
   retain_trace_context: typeof retain_trace_context;
+  borrow_trace_context: typeof borrow_trace_context;
   _retain_callback_dispatch_context: typeof _retain_callback_dispatch_context;
   release_trace_context: typeof release_trace_context;
   trace_span_context: typeof trace_span_context;
