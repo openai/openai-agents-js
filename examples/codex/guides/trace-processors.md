@@ -175,27 +175,13 @@ Native root ownership and original JSON types; no credential readback or saved l
 
 With the current [source build](building.md), use `telemetry.setTraceContextStorage(storage)` to supply your application's asynchronous context storage. The adapter supplies `getStore()` and `run(span, callback)`. It must accept an `undefined` span so the SDK can clear ambient context. The example uses Node.js `AsyncLocalStorage` without model or export credentials.
 
-```ts
-import { AsyncLocalStorage } from 'node:async_hooks';
-import { telemetry } from '@openai/agents';
+The [trace context storage example](../../classic/docs/native/trace-context-storage.mts) preserves the current span across an asynchronous callback. It requires Node.js 24 and [matching built packages and native runtime](building.md). Run it from the repository root in a fresh process:
 
-const storage = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
-telemetry.setTraceContextStorage({
-  getStore: () => storage.getStore(),
-  run: (span, callback) => storage.run(span, callback),
-});
-await telemetry.configure();
-try {
-  await telemetry.withTrace({ name: 'Application context' }, async (root) => {
-    await Promise.resolve();
-    console.log(storage.getStore() === root); // true
-    console.log(telemetry.getCurrentSpan() === root); // true
-  });
-} finally {
-  telemetry.setTraceContextStorage();
-  await telemetry.shutdown();
-}
+```sh
+pnpm exec tsx examples/classic/docs/native/trace-context-storage.mts
 ```
+
+The command prints `true` twice, resets custom storage, and shuts down telemetry.
 
 Call `setTraceContextStorage()` without an argument to restore built-in storage for new scopes. Existing scopes and admitted operations keep their adapter across asynchronous callbacks, queued work, and native child callbacks. Manual reply validation uses the adapter captured by the request, even when the reply caller uses another scope.
 

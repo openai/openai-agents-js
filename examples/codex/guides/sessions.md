@@ -61,23 +61,13 @@ Opening validates and records the entire batch without requesting a model respon
 
 With the current [source build](building.md), pass `returnHistory: true` to `agent.run()` or `Runner.run()` to capture original conversation records. Replay the returned `history` through another Session's `transactHistory()`. Use `returnState: true` to capture a portable checkpoint. You can request both independently.
 
-This fragment assumes a configured `agent` and a trusted earlier conversation. The destination uses its own current instructions and declarations.
+The [one-shot history replay example](../../classic/docs/native/history-replay.mts) captures a scripted answer and replays its original records into a new Session. It requires Node.js 24, [matching built packages and native runtime](building.md), and direct loopback routing for the scripted provider. It needs no model credentials or external service. Run it from the repository root:
 
-```ts
-const result = await agent.run('Load the record.', { returnHistory: true });
-if (!result.history) throw new Error('Requested history is unavailable');
-await using session = await agent.session();
-const before = await session.historySnapshot();
-await session.transactHistory({
-  expectedRevision: before.revision,
-  keep: 0,
-  items: result.history,
-});
-const continued = await (
-  await session.submit('Continue with that record.')
-).wait();
-console.log(continued.finalOutput);
+```sh
+pnpm exec tsx examples/classic/docs/native/history-replay.mts
 ```
+
+The command prints `continued record` and checks both final answers, exactly two model requests, and the earlier input and answer in the replay request. The new Session uses the application's current Agent instructions and declarations.
 
 The capture excludes system and developer messages. Replay uses the destination Session's provider credentials and tool grants. Retained tool calls and results provide context without executing those calls again. See [original history reads and edits](state.md#original-history-reads-and-edits) for replay validation and replacement.
 
