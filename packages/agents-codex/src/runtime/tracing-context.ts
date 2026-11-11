@@ -125,7 +125,10 @@ export function setTracingIdGenerator(
       throw new TypeError(
         'Tracing ID generators must be synchronous functions',
       );
-  tracingIdGenerator = Object.freeze({ generateTraceId, generateSpanId });
+  tracingIdGenerator = Object.freeze({
+    generateTraceId: generateTraceId?.bind(generator),
+    generateSpanId: generateSpanId?.bind(generator),
+  });
 }
 
 function generatedId(callback: () => string, digits: number): string {
@@ -627,8 +630,7 @@ export async function withNativeCallbackContext<T>(
           generator,
           {},
           true,
-          signal?.aborted === true ||
-            JSON.parse(native.trace_span_context(context)).disabled,
+          JSON.parse(native.trace_span_context(context)).disabled,
         ),
       }),
     ),

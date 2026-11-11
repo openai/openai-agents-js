@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Agent, telemetry, tool } from '../../../src';
 import { text, toolCall, withScriptedResponses } from '../../../src/testing';
 import type { TraceEvent } from '../../../src/runtime/telemetry';
+import { withNativeCallbackContext } from '../../../src/runtime/tracing-context';
 
 async function main() {
   const mode = process.argv[2];
@@ -203,6 +204,67 @@ async function main() {
       } finally {
         credential.close();
       }
+    } else if (mode === 'receiver') {
+      class StatefulIds {
+        traces = 0;
+        spans = 0;
+        generateTraceId() {
+          this.traces++;
+          return '6'.repeat(32);
+        }
+        generateSpanId() {
+          return (++this.spans).toString(16).padStart(16, '0');
+        }
+      }
+      const generator = new StatefulIds();
+      telemetry.setTracingIdGenerator(generator);
+      await telemetry.withTrace({ name: 'receiver-root' }, async (root) => {
+        assert.equal(root.context.traceId, '6'.repeat(32));
+        assert.equal(root.context.spanId, '0000000000000001');
+        await telemetry.withSpan({ name: 'receiver-child' }, (child) => {
+          assert.equal(child.context.spanId, '0000000000000002');
+        });
+      });
+      assert.equal(generator.traces, 1);
+      assert.equal(generator.spans, 2);
+    } else if (mode === 'cancelled-callback') {
+      let calls = 0;
+      telemetry.setTracingIdGenerator({
+        generateSpanId() {
+          calls++;
+          return '5'.repeat(16);
+        },
+      });
+      await telemetry.withTrace(
+        {
+          name: 'cancelled-root',
+          traceId: '4'.repeat(32),
+          spanId: '4'.repeat(16),
+        },
+        async (root) => {
+          const context = root.retain();
+          const controller = new AbortController();
+          try {
+            const queued = Promise.resolve().then(() =>
+              withNativeCallbackContext(
+                context,
+                () => {
+                  assert.equal(
+                    telemetry.getCurrentSpan()?.context.spanId,
+                    '5'.repeat(16),
+                  );
+                },
+                controller.signal,
+              ),
+            );
+            controller.abort();
+            await queued;
+          } finally {
+            root.releaseContext(context);
+          }
+        },
+      );
+      assert.equal(calls, 1);
     } else if (mode === 'annotations') {
       const payload = {
         large: 'é'.repeat(16000),
@@ -212,6 +274,13 @@ async function main() {
         { name: 'large-allowed', includeSensitiveData: true },
         (span) => {
           span.end({ status: 'ok', data: payload });
+        },
+      );
+      const escapedPayload = { escaped: '\\'.repeat(16_375) };
+      await telemetry.withTrace(
+        { name: 'escaped-annotation', includeSensitiveData: true },
+        (span) => {
+          span.end({ status: 'ok', data: escapedPayload });
         },
       );
       await telemetry.withTrace({ name: 'large-hidden' }, (span) => {
@@ -257,10 +326,18 @@ async function main() {
       const hidden = events.find(
         (event) => event.name === 'large-hidden' && event.lifecycle === 'end',
       );
-      assert(allowed && hidden);
+      const escaped = events.find(
+        (event) =>
+          event.name === 'escaped-annotation' && event.lifecycle === 'end',
+      );
+      assert(allowed && hidden && escaped);
       assert.deepEqual(
         JSON.parse(String(allowed.attributes['sdk.outcome.data'])),
         payload,
+      );
+      assert.deepEqual(
+        JSON.parse(String(escaped.attributes['sdk.outcome.data'])),
+        escapedPayload,
       );
       assert.equal(hidden.attributes['sdk.outcome.data'], undefined);
       assert(JSON.stringify(received).includes(payload.large));
@@ -314,6 +391,14 @@ async function main() {
       assert(!events.some((event) => event.name === 'identity-intruder'));
     if (mode === 'ids')
       assert(events.some((event) => event.span_id === '00000000000000b1'));
+    if (mode === 'cancelled-callback') {
+      const callback = events.find(
+        (event) => event.lifecycle === 'end' && event.kind === 'callback',
+      );
+      assert(callback);
+      assert.equal(callback.span_id, '5'.repeat(16));
+      assert.equal(callback.attributes['sdk.outcome.status'], 'cancelled');
+    }
     if (mode === 'restrictions') assert.equal(generatedCalls, 1);
   } finally {
     telemetry.setTracingIdGenerator();

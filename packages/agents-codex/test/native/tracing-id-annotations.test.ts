@@ -14,6 +14,8 @@ const child = join(
 );
 for (const mode of [
   'ids',
+  'receiver',
+  'cancelled-callback',
   'automatic',
   'collision',
   'annotations',
