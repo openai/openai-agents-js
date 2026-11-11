@@ -2087,6 +2087,58 @@ impl NativeThread {
             .admit_callback(&key.reply.thread, &key)
             .map_err(native_error)
     }
+    #[napi(js_name = "_load_client_tool_search")]
+    pub fn _load_client_tool_search(
+        &self,
+        request_json: String,
+        paths_json: Option<String>,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Client tool search owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Client tool search owner has expired"))?;
+        let paths = paths_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(native_error)?;
+        serde_json::to_string(
+            &owner
+                .load_client_search(&key.reply.thread, &key, paths)
+                .map_err(native_error)?,
+        )
+        .map_err(native_error)
+    }
+    #[napi(js_name = "_capture_client_tool_search")]
+    pub fn _capture_client_tool_search(
+        &self,
+        request_json: String,
+        specs_json: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Client tool search owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Client tool search owner has expired"))?;
+        owner
+            .capture_client_search(&key.reply.thread, &key, &specs_json)
+            .map(|id| id.to_string())
+            .map_err(native_error)
+    }
     #[napi(js_name = "_native_question_pending")]
     pub async fn _native_question_pending(&self, question_id: String) -> napi::Result<bool> {
         let inner = self.current()?;

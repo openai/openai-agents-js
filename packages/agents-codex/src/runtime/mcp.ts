@@ -10,12 +10,19 @@ import {
   invokeWithTimeout,
   withToolApplicationData,
   toolIdentity,
+  createClientToolSearchTool,
+  isClientToolSearchTool,
   toolRef,
   type ToolDecision,
   type ToolRef,
 } from './tools';
 import { webSearch, type WebSearch } from './web-search';
-import { captureHostedTool, type HostedTool } from './hosted-tools';
+import {
+  captureHostedTool,
+  getClientToolSearchExecutor,
+  hostedToolSpecs,
+  type HostedTool,
+} from './hosted-tools';
 import type { Environment } from './environment';
 import type { ToolCallContext, Tool, SessionTool } from './tools';
 import { NativeAgents } from './native-agents';
@@ -913,12 +920,21 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
       'kind' in tool &&
       (tool.kind === 'file_search' ||
         tool.kind === 'code_interpreter' ||
+        tool.kind === 'image_generation' ||
         tool.kind === 'shell' ||
-        tool.kind === 'image_generation')
+        tool.kind === 'tool_search')
     ) {
       if (hostedTools.some((prior) => prior.kind === tool.kind))
         throw new TypeError(`Declare ${tool.kind} only once`);
-      hostedTools.push(captureHostedTool(tool));
+      const captured = captureHostedTool(tool);
+      hostedTools.push(captured);
+      if (captured.kind === 'tool_search' && captured.execution === 'client')
+        functions.push(
+          createClientToolSearchTool(
+            hostedToolSpecs([captured])[0]!,
+            getClientToolSearchExecutor(captured),
+          ),
+        );
     } else if ('kind' in tool && tool.kind === 'native_goals')
       nativeGoals = true;
     else if ('kind' in tool && tool.kind === 'checklist') {
@@ -966,6 +982,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
   for (const hosted of hostedTools)
     if (
       functions.some((tool) => {
+        if (isClientToolSearchTool(tool)) return false;
         const identity = toolIdentity(tool);
         return (
           identity.namespace === 'functions' && identity.name === hosted.kind
