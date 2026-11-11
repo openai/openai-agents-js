@@ -1,1 +1,1 @@
-export { vercelResponse } from '@openai/agents-codex/ui';
+export { textStream, vercelResponse } from '@openai/agents-codex/ui';

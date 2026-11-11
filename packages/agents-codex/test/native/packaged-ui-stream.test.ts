@@ -9,7 +9,7 @@ import {
   type Observation,
   type SessionItem,
 } from '@openai/agents';
-import { vercelResponse } from '@openai/agents/ui';
+import { textStream, vercelResponse } from '@openai/agents/ui';
 import { call } from './fixtures/model-server';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -130,7 +130,11 @@ it.each([false, true])(
     const turn = await session.submit('current');
     const response = vercelResponse(turn, session, { includeToolData });
     expect(response.headers.get('x-vercel-ai-ui-message-stream')).toBe('v1');
-    const values = await frames(response);
+    const plain = new Response(
+      textStream(turn).pipeThrough(new TextEncoderStream()),
+    );
+    const [values, text] = await Promise.all([frames(response), plain.text()]);
+    expect(text).toBe('Found it.');
     expect(values.slice(-2)).toEqual([{ type: 'finish' }, '[DONE]']);
     expect(
       values
