@@ -1,4 +1,5 @@
 {
+  "result_tree": "35080fa44caa3f49e77e8ad8a36a41b8dd01c82f",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -701,9 +702,12 @@
       "sha256": "02da72f8e5bcfab13b3be4680356a62156eb429dcb7497ecc0b9644625c05f98"
     },
     {
+      "path": "sdk-deferred-followup-trace.patch",
+      "sha256": "bb5bfe944f0278638fd9eb50a913cf89341c19815382af5a1c47e3dded0ada46"
+    },
+    {
       "path": "sdk-function-call-wire.patch",
       "sha256": "9d7f6a164c86be95591bcfeaf8098e76113e17da4a6af92047e70769d7017adf"
     }
-  ],
-  "result_tree": "609c1d70c2fb607348691da60fa63983892912d0"
+  ]
 }
