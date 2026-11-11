@@ -1185,7 +1185,13 @@ impl PythonTools {
                 key.clone(),
                 PendingCall {
                     client_search: None,
-                    computer_arguments: None,
+                    original_payload: self.resolve_generation(key.reply.generation).and_then(
+                        |generation| {
+                            generation.entries.get(key.reply.slot).and_then(|entry| {
+                                original_tool_payload(&entry.spec, &request["msg"]["arguments"])
+                            })
+                        },
+                    ),
                     media: None,
                     deadline: None,
                     invocation,

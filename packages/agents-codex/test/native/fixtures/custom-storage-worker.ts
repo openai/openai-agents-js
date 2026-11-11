@@ -8,6 +8,7 @@ import {
   fileSessionStore,
   localStorage,
   tool,
+  shellTool,
 } from '../../../src';
 
 const config = JSON.parse(process.argv[2]) as {
@@ -17,6 +18,7 @@ const config = JSON.parse(process.argv[2]) as {
   url: string;
   resume?: string;
   mode:
+    | 'hold-shell'
     | 'hold-open'
     | 'hold-effect'
     | 'hold-intent'
@@ -48,43 +50,57 @@ const agent = new Agent({
   instructions: 'Use record when requested.',
   model: config.plan ? undefined : 'gpt-5',
   provider,
-  tools: [
-    tool({
-      name: 'record',
-      description: 'Record one application effect.',
-      parameters: z.object({}),
-      execute: async (_args, { signal, threadId, turnId, callId }) => {
-        if (config.intentPath)
-          await recordRecoveryIntent(config.intentPath, {
-            sessionId: threadId,
-            turnId,
-            callId,
-            businessKey: 'synthetic-order',
-          });
-        await appendFile(config.effects, (config.label ?? 'effect') + '\n');
-        process.send?.({ type: 'effect', threadId, turnId, callId });
-        if (config.mode === 'hold-effect') await new Promise(() => {});
-        if (config.mode === 'hold-abort')
-          await new Promise<void>((_resolve, reject) => {
-            if (signal.aborted)
-              reject(new Error('callback canceled after effect'));
-            else
-              signal.addEventListener(
-                'abort',
-                () => reject(new Error('callback canceled after effect')),
-                { once: true },
+  tools:
+    config.mode === 'hold-shell'
+      ? [
+          shellTool({
+            execute: async (_call, { threadId, turnId, callId }) => {
+              await appendFile(config.effects, 'shell\n');
+              process.send?.({ type: 'effect', threadId, turnId, callId });
+              return await new Promise<never>(() => {});
+            },
+          }),
+        ]
+      : [
+          tool({
+            name: 'record',
+            description: 'Record one application effect.',
+            parameters: z.object({}),
+            execute: async (_args, { signal, threadId, turnId, callId }) => {
+              if (config.intentPath)
+                await recordRecoveryIntent(config.intentPath, {
+                  sessionId: threadId,
+                  turnId,
+                  callId,
+                  businessKey: 'synthetic-order',
+                });
+              await appendFile(
+                config.effects,
+                (config.label ?? 'effect') + '\n',
               );
-          });
-        if (config.mode === 'local-result-fail')
-          execFileSync('/usr/bin/prlimit', [
-            '--pid',
-            String(process.pid),
-            '--fsize=0:unlimited',
-          ]);
-        return 'recorded';
-      },
-    }),
-  ],
+              process.send?.({ type: 'effect', threadId, turnId, callId });
+              if (config.mode === 'hold-effect') await new Promise(() => {});
+              if (config.mode === 'hold-abort')
+                await new Promise<void>((_resolve, reject) => {
+                  if (signal.aborted)
+                    reject(new Error('callback canceled after effect'));
+                  else
+                    signal.addEventListener(
+                      'abort',
+                      () => reject(new Error('callback canceled after effect')),
+                      { once: true },
+                    );
+                });
+              if (config.mode === 'local-result-fail')
+                execFileSync('/usr/bin/prlimit', [
+                  '--pid',
+                  String(process.pid),
+                  '--fsize=0:unlimited',
+                ]);
+              return 'recorded';
+            },
+          }),
+        ],
 });
 async function main() {
   try {

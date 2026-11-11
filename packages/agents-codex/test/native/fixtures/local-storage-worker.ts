@@ -8,6 +8,7 @@ import {
   NativeProvider,
   localStorage,
   selectMcpTools,
+  shellTool,
   tool,
   type ReconciledCall,
   type ToolContext,
@@ -23,6 +24,7 @@ const config = JSON.parse(process.argv[2]) as {
   resume?: string;
   apiKey?: string;
   selectedMcp?: boolean;
+  applicationShell?: boolean;
 };
 const provider = new NativeProvider({
   baseUrl: config.url,
@@ -42,6 +44,20 @@ async function record(label: string) {
 }
 
 async function recordTools() {
+  if (config.applicationShell) {
+    return [
+      shellTool<{ label: string }>({
+        async execute(_call, { context }) {
+          const stdout = await record(context.label);
+          return {
+            output: [
+              { stdout, stderr: '', outcome: { type: 'exit', exit_code: 0 } },
+            ],
+          };
+        },
+      }),
+    ];
+  }
   if (config.selectedMcp) {
     const server: MCPServer = {
       name: 'worker-peer',
