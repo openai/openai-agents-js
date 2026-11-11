@@ -57,7 +57,7 @@ it('loads default client paths and executes the captured deferred tool', async (
   const effects: string[] = [];
   await using session = await new Agent({
     provider,
-    model: 'fixture-client-tool-search',
+    model: 'gpt-5.5',
     instructions: 'Find account tools.',
     tools: [
       toolSearch({ execution: 'client' }),
@@ -81,7 +81,11 @@ it('loads default client paths and executes the captured deferred tool', async (
     execution: 'client',
   });
   expect(outputFor(model, 1, 'search_default').tools).toContainEqual(
-    expect.objectContaining({ type: 'function', name: 'lookup' }),
+    expect.objectContaining({
+      type: 'namespace',
+      name: 'functions',
+      tools: [expect.objectContaining({ type: 'function', name: 'lookup' })],
+    }),
   );
   expect(model.requests[2].input).toContainEqual(
     expect.objectContaining({
@@ -170,12 +174,13 @@ it('preserves raw client arguments and original identities while admitting callb
 }, 30_000);
 
 it.each(['unknown reference', 'same-key replacement'] as const)(
-  'rejects %s through a same-ID typed search output without executing a tool',
+  'rejects %s without executing a tool',
   async (kind) => {
-    const model = new ModelServer([
-      [search('search_rejected', { department: 'support' })],
-      [message('Selection rejected.')],
-    ]);
+    const call = [search('search_rejected', { department: 'support' })];
+    const recover = kind === 'unknown reference';
+    const model = new ModelServer(
+      recover ? [call, [message('Selection rejected.')]] : [call],
+    );
     await using provider = await providerFor(model);
     const effects: string[] = [];
     const original = tool({
@@ -208,10 +213,16 @@ it.each(['unknown reference', 'same-key replacement'] as const)(
         }),
       ],
     }).session();
-    expect(
-      (await (await session.submit('Select a tool.')).wait()).finalOutput,
-    ).toBe('Selection rejected.');
-    expect(outputFor(model, 1, 'search_rejected').tools).toEqual([]);
+    const result = (await session.submit('Select a tool.')).wait();
+    if (recover) {
+      expect((await result).finalOutput).toBe('Selection rejected.');
+      expect(outputFor(model, 1, 'search_rejected').tools).toEqual([]);
+    } else {
+      await expect(result).rejects.toThrow(
+        'Client tool search cannot replace a captured tool',
+      );
+      expect(model.requests).toHaveLength(1);
+    }
     expect(effects).toEqual([]);
     model.assertExhausted();
   },
