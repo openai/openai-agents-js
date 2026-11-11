@@ -55,13 +55,13 @@ async function providerFor(server: ModelServer) {
   });
 }
 
-const trustedSupported = process.platform === 'linux';
-const supported = trustedSupported || process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
+const supported = isLinux || process.platform === 'darwin';
 const packageRoot = join(import.meta.dirname, '..', '..');
 
 const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
-it.skipIf(!trustedSupported)(
+it.skipIf(!supported)(
   'scopes trusted local workspace writes, private authentication and command temp',
   async (context) => {
     const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-local-'));
@@ -183,7 +183,7 @@ it.skipIf(!trustedSupported)(
           network: {
             allowedDomains: ['sdk-fixture.invalid'],
             deniedDomains: ['denied.invalid'],
-            allowAllUnixSockets: true,
+            allowAllUnixSockets: isLinux,
           },
         });
       const opened = await agent
@@ -274,7 +274,7 @@ it.skipIf(!trustedSupported)(
   45_000,
 );
 
-it.skipIf(!trustedSupported)(
+it.skipIf(!supported)(
   'scopes Git and SSH settings for local commands',
   async () => {
     const temporary = await mkdtemp(join(tmpdir(), 'sdk-git-'));
@@ -390,17 +390,19 @@ it.skipIf(!trustedSupported)(
         model: 'gpt-5',
         instructions: 'Work.',
       });
-      await expect(
-        agent.session({
-          environment: Environment.local({
-            cwd,
-            writePolicy: 'trusted_workspace_write',
-            tools: ['exec_command'],
-            network: { allowedDomains: ['sdk-fixture.invalid'] },
+      if (isLinux) {
+        await expect(
+          agent.session({
+            environment: Environment.local({
+              cwd,
+              writePolicy: 'trusted_workspace_write',
+              tools: ['exec_command'],
+              network: { allowedDomains: ['sdk-fixture.invalid'] },
+            }),
           }),
-        }),
-      ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
-      expect(server.requests).toHaveLength(0);
+        ).rejects.toThrow('Linux requires explicit access to all Unix sockets');
+        expect(server.requests).toHaveLength(0);
+      }
       for (const { name, trusted, allowSockets } of modes) {
         await using session = await agent.session({
           environment: Environment.local({
@@ -442,15 +444,8 @@ it.skipIf(!trustedSupported)(
 );
 
 it.skipIf(process.platform !== 'darwin')(
-  'rejects trusted workspace writes on macOS',
+  'keeps telemetry configurable after rejecting trusted writes for a remote environment',
   () => {
-    expect(() =>
-      Environment.local({
-        cwd: process.cwd(),
-        writePolicy: 'trusted_workspace_write',
-      }),
-    ).toThrow('Trusted workspace writes require Linux');
-
     const env = { ...process.env };
     delete env.CODEX_HOME;
     delete env.OPENAI_API_KEY;
@@ -480,7 +475,7 @@ it.skipIf(process.platform !== 'darwin')(
 it
   .skipIf(!supported)
   .for(
-    trustedSupported
+    isLinux
       ? (['strict', 'trusted_workspace_write'] as const)
       : (['strict'] as const),
   )(
@@ -2200,7 +2195,7 @@ it.skipIf(!supported)(
 it
   .skipIf(!supported)
   .for(
-    trustedSupported
+    isLinux
       ? (['portable', 'local', 'trusted portable'] as const)
       : (['portable', 'local'] as const),
   )(
@@ -2696,9 +2691,12 @@ it.skipIf(process.platform !== 'darwin')(
   45_000,
 );
 
-it.skipIf(process.platform !== 'darwin')(
-  'blocks delegation from a local command to launchd',
-  async () => {
+it
+  .skipIf(process.platform !== 'darwin')
+  .for(['strict', 'trusted_workspace_write'] as const)(
+  'blocks delegation from a local command to launchd with %s',
+  { timeout: 45_000 },
+  async (writePolicy) => {
     const launchctl = (...args: string[]) => {
       const result = spawnSync('/bin/launchctl', args, {
         encoding: 'utf8',
@@ -2783,7 +2781,11 @@ it.skipIf(process.platform !== 'darwin')(
       expect(existsSync(marker)).toBe(false);
       {
         await using session = await agent.session({
-          environment: Environment.local({ cwd, tools: ['exec_command'] }),
+          environment: Environment.local({
+            cwd,
+            tools: ['exec_command'],
+            writePolicy,
+          }),
         });
         const tryDelegation = async (operation: 'bootstrap' | 'kickstart') => {
           const turn = await session.submit(`Try launchctl ${operation}.`);
@@ -2828,7 +2830,6 @@ it.skipIf(process.platform !== 'darwin')(
       }
     }
   },
-  45_000,
 );
 
 // Honor the host restriction unless native sandbox execution is required.
@@ -2840,7 +2841,7 @@ it
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
   )
   .for(
-    trustedSupported
+    isLinux
       ? (['portable', 'local', 'trusted local'] as const)
       : (['portable', 'local'] as const),
   )(

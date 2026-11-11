@@ -496,8 +496,8 @@ impl EnvironmentOptions {
                 "Read-only execution requires strict write policy"
             );
             ensure!(
-                cfg!(target_os = "linux"),
-                "Trusted workspace writes require Linux"
+                cfg!(any(target_os = "linux", target_os = "macos")),
+                "Trusted workspace writes require Linux or macOS"
             );
         }
         Ok(())
