@@ -164,6 +164,7 @@ export class NativeThread {
   _read_plan_usage(request: _ModelHttpRequest): Promise<string | null>;
   _canonical_history(limit?: number | null): Promise<string>;
   _stored_history(query_json: string): Promise<string>;
+  _set_stored_name(name_json: string): Promise<string>;
   _stored_history_close_action(action_json: string): _StoredHistoryClose;
   _transact_history(
     expectedRevision: string,

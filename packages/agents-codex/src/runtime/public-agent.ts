@@ -360,6 +360,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'turns'
   | 'forkStored'
   | 'storedSessions'
+  | 'setStoredName'
   | 'storedTurns'
   | 'storedItems'
   | 'searchHistory'

@@ -4280,6 +4280,16 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_set_stored_name")]
+    pub async fn set_stored_name(&self, name_json: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let name = serde_json::from_str(&name_json).map_err(input_error)?;
+        let name = stored_history::set_name(&inner, name)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&name).map_err(native_error)
+    }
+
     #[napi(js_name = "_stored_history_close_action")]
     pub fn stored_history_close_action(
         &self,
