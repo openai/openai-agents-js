@@ -1,5 +1,5 @@
 {
-  "result_tree": "0029e323b08461778cd45c57de89754ffe2e5913",
+  "result_tree": "1bed5c17b4979d3daf59e37b6b17ac842ff0097b",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -728,6 +728,14 @@
     {
       "path": "sdk-realtime-connection-options.patch",
       "sha256": "b5f011895428540651c529d0e70a1f657d0df2159f386fb6c7689b4a2d953fbf"
+    },
+    {
+      "path": "sdk-mailbox-carrier-only-trace.patch",
+      "sha256": "fff9add082337fcec9ad2290be767de0ec5b05a104a0dc559ddf4069545a06fc"
+    },
+    {
+      "path": "sdk-mailbox-receiver-trace-privacy.patch",
+      "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
     }
   ]
 }

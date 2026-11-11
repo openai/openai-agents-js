@@ -14,6 +14,11 @@ const child = join(fixtures, 'tracing-parity-child.ts');
 for (const mode of [
   'context',
   'control',
+  ...['scoped', 'bare'].flatMap((wake) =>
+    ['disabled', 'metadata-only', 'permissive'].map(
+      (origin) => `mailbox-receiver-${wake}-${origin}`,
+    ),
+  ),
   'processors',
   'restore',
   'retained',
