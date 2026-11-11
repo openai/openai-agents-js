@@ -734,12 +734,12 @@
     },
     {
       "path": "sdk-borrowed-responses-compaction.patch",
-      "sha256": "8a2680e8cf971d9d658084de6fa4f3122782810017bdce9d52ad5598ddd19ae1"
+      "sha256": "d229b00207f28530f8b66cd221137d25cc301e88bdb8e4302a1a705e9f8f2ff1"
     },
     {
       "path": "sdk-realtime-provider-error-observation.patch",
       "sha256": "69a74476497a8189f717036a231c5f48a3e391dc06191693dc7507851c81e7dc"
     }
   ],
-  "result_tree": "d48bd59fbf2269e741512c777535370db5906661"
+  "result_tree": "8ccf77641c065208c4014a2aa6597813efd3819f"
 }

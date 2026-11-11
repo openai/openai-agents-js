@@ -340,7 +340,8 @@ const manualUsageSchema = z.object({
   reasoningOutputTokens: nonnegativeTokenCountWireSchema,
   totalTokens: nonnegativeTokenCountWireSchema,
 });
-const guardrailCheckpointSchema = z.object({
+/** @internal Validate the durable diagnostic snapshot before native sealing. */
+export const guardrailCheckpointSchema = z.object({
   kind: z.enum(['input', 'output']),
   name: z.string(),
   agent_profile: z.string().nullable(),

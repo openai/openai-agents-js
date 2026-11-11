@@ -152,3 +152,25 @@ it('reports no completion for a failed compact invocation', async () => {
   ).rejects.toThrow();
   expect(observe).not.toHaveBeenCalled();
 });
+
+it.each([7, false, '', ' '])(
+  'rejects malformed response ID %s before native reply',
+  async (id) => {
+    const client = new OpenAI({
+      apiKey: 'synthetic',
+      maxRetries: 0,
+      fetch: async () =>
+        new Response(JSON.stringify({ ...result(), id }), {
+          headers: { 'content-type': 'application/json' },
+        }),
+    });
+    const factory = responsesCompaction({ client });
+    const prepared = factory.prepareContext(context(), [], undefined, false);
+    const observe = vi.fn();
+    await expect(
+      factory.requestWindow(prepared, undefined, observe),
+    ).rejects.toThrow('response ID');
+    expect(observe).toHaveBeenCalledTimes(1);
+    expect(observe.mock.calls[0][0].totalTokens).toBe(6);
+  },
+);

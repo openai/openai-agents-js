@@ -146,7 +146,7 @@ index 5f663d96..a0d3a269 100644
 +        model: &step_context.settings.model_info.slug,
 +        model_omitted: step_context
 +            .settings
-+            .request_controls
++            .request_controls()
 +            .hosted_prompt
 +            .as_ref()
 +            .and_then(Option::as_ref)
@@ -250,7 +250,7 @@ index 5f663d96..a0d3a269 100644
                  model: &source_step_context.settings.model_info.slug,
 +                model_omitted: source_step_context
 +                    .settings
-+                    .request_controls
++                    .request_controls()
 +                    .hosted_prompt
 +                    .as_ref()
 +                    .and_then(Option::as_ref)

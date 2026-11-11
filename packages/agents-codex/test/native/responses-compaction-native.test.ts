@@ -48,9 +48,9 @@ async function providerFor(server: ModelServer) {
   });
 }
 
-nativeIt(
-  'keeps the entire returned window and current instructions through cold restore',
-  async () => {
+nativeIt.each([false, true])(
+  'keeps the entire returned window and current instructions through cold restore (profiles=%s)',
+  async (profiled) => {
     const server = new ModelServer([
       [message('OLD_ASSISTANT')],
       [message('continued')],
@@ -62,6 +62,16 @@ nativeIt(
       provider,
       model: 'gpt-5.5',
       instructions: 'ORIGINAL_APPLICATION',
+      handoffs: profiled
+        ? [
+            new Agent<unknown>({
+              name: 'Unused',
+              instructions: 'Unused.',
+              provider,
+              model: 'gpt-5.5',
+            }),
+          ]
+        : [],
       compaction: responsesCompaction({
         client: clientFor(compact),
         model: 'separate-compactor',
@@ -177,11 +187,17 @@ nativeIt(
   30_000,
 );
 
-nativeIt.each(['predicate', 'client', 'missing_anchor'] as const)(
+nativeIt.each([
+  'predicate',
+  'client',
+  'missing_anchor',
+  'malformed_id',
+] as const)(
   'preserves the completed answer on optional %s failure',
   async (failure) => {
     const server = new ModelServer([[message('completed answer')]]);
     const compact = vi.fn(async (_body) => {
+      if (failure === 'malformed_id') return { ...window(), id: 7 };
       throw new Error('compact unavailable');
     });
     const predicate = vi.fn(async (context) => {
@@ -215,7 +231,9 @@ nativeIt.each(['predicate', 'client', 'missing_anchor'] as const)(
     expect(predicate).toHaveBeenCalledTimes(
       failure === 'missing_anchor' ? 0 : 1,
     );
-    expect(compact).toHaveBeenCalledTimes(failure === 'client' ? 1 : 0);
+    expect(compact).toHaveBeenCalledTimes(
+      failure === 'client' || failure === 'malformed_id' ? 1 : 0,
+    );
     if (failure === 'client')
       expect(text(compact.mock.calls[0]![0])).not.toContain(
         'MUTATED_DETACHED_CONTEXT',

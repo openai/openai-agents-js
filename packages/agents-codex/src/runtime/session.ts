@@ -135,7 +135,7 @@ import {
   checkpointResourceServers,
   type CheckpointSelections,
 } from './selection-state';
-import { readCheckpointSelections } from './state';
+import { guardrailCheckpointSchema, readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import {
@@ -8124,6 +8124,7 @@ export class Session<OutputT = string, Context = unknown> {
     return {
       beforeComplete: captured.declaration.beforeComplete,
       beforeCompact: captured.declaration.beforeCompact,
+      compaction: captured.declaration.compaction,
       transformContext: captured.declaration.transformContext,
       hostedPrompt: captured.declaration.hostedPrompt,
       hostedPromptControls: captured.hostedPromptControls,
@@ -10521,6 +10522,9 @@ export class Session<OutputT = string, Context = unknown> {
               : losslessJsonValueSchema.parse(call.event.msg.arguments),
         })),
       );
+      const guardrailRecords = z
+        .array(guardrailCheckpointSchema)
+        .parse(this.checkpointGuardrailRecords(run));
       signal?.throwIfAborted();
       if (
         this.manualProgress !== progress ||
@@ -10586,7 +10590,7 @@ export class Session<OutputT = string, Context = unknown> {
           {
             manual_continuation: result.manual_continuation,
             manual_context: {
-              guardrail_results: this.checkpointGuardrailRecords(run),
+              guardrail_results: guardrailRecords,
               ...(run.selection?.maxModelSteps === undefined
                 ? {}
                 : {
@@ -10665,6 +10669,9 @@ export class Session<OutputT = string, Context = unknown> {
     return [...this.rootSteps(run)]
       .flatMap((step) => step.guardrailResults)
       .map((record) => {
+        const outputInfo = losslessJsonValueSchema.safeParse(
+          record.result.outputInfo,
+        );
         const profile =
           record.agent === this.options.applicationAgent
             ? null
@@ -10684,13 +10691,7 @@ export class Session<OutputT = string, Context = unknown> {
             : { subagent_id: record.subagentId }),
           result: {
             tripwireTriggered: record.result.tripwireTriggered,
-            ...(record.result.outputInfo === undefined
-              ? {}
-              : {
-                  outputInfo: losslessJsonValueSchema.parse(
-                    record.result.outputInfo,
-                  ),
-                }),
+            ...(outputInfo.success ? { outputInfo: outputInfo.data } : {}),
           },
           ...(record.toolCall === undefined
             ? {}

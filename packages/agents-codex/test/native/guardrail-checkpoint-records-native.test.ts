@@ -141,3 +141,68 @@ it.each([
   },
   30_000,
 );
+
+it.each([
+  new Date('2026-01-01T00:00:00Z'),
+  new Error('local-only'),
+  { nested: undefined },
+])(
+  'preserves live host diagnostics while omitting unsupported checkpoint payloads (%s)',
+  async (info) => {
+    const server = new ModelServer([
+      [call('lookup', {}, { callId: 'local-diagnostics' })],
+      [message('resumed')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-guard-checkpoint',
+    });
+    const agent = new Agent({
+      instructions: 'Use lookup.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        manualTool({
+          name: 'lookup',
+          description: 'Ask.',
+          parameters: z.object({}),
+          result: z.string(),
+        }),
+      ],
+      inputGuardrails: [
+        {
+          name: 'local-only',
+          runInParallel: false,
+          callback: () => ({ tripwireTriggered: false, outputInfo: info }),
+        },
+      ],
+    });
+    await using original = await agent.session();
+    const first = await original.submit('begin');
+    const interrupted = first.wait().catch((error: unknown) => error);
+    for await (const event of original.events())
+      if (event.type === 'action_requested') break;
+    expect(first.guardrailResults[0].result.outputInfo).toBe(info);
+    const saved = await original.suspend();
+    expect(await interrupted).toBeInstanceOf(InteractionRequired);
+    expect(first.guardrailResults[0].result.outputInfo).toBe(info);
+    const json = JSON.parse(JSON.stringify(saved));
+    expect(json.manual_context.guardrail_results[0].result).toEqual({
+      tripwireTriggered: false,
+    });
+    await original.close();
+    await using restored = await agent.session({ state: json });
+    for await (const event of restored.events()) {
+      if (event.type !== 'action_requested') continue;
+      await restored.respond(event.reply('accepted'));
+      break;
+    }
+    const completed = await restored.restoredTurn!.wait();
+    expect(completed.finalOutput).toBe('resumed');
+    expect(completed.guardrailResults).toHaveLength(1);
+    expect(completed.guardrailResults![0].result.outputInfo).toBeUndefined();
+  },
+  25_000,
+);
