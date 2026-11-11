@@ -1,5 +1,6 @@
 /** Native scope ownership shared by public telemetry and Session admission. */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { binding, copyJsonValue } from './binding';
 import type { SpanContext, TraceOptions } from './telemetry';
 type Native = Awaited<ReturnType<typeof binding>>;
@@ -10,6 +11,42 @@ export interface TraceContextStorage {
   run<T>(span: TraceSpan | undefined, callback: () => T): T;
 }
 
+interface CallbackTraceStorage {
+  readonly storage: TraceContextStorage | undefined;
+  entered: number;
+  nativeReleased: boolean;
+}
+
+/** Storage for the native producer's admitted child callbacks. */
+export type CallbackTraceStorages = Map<string, CallbackTraceStorage>;
+
+function forgetReleasedStorage(
+  storages: CallbackTraceStorages,
+  key: string,
+  entry: CallbackTraceStorage,
+): void {
+  if (
+    entry.nativeReleased &&
+    entry.entered === 0 &&
+    storages.get(key) === entry
+  )
+    storages.delete(key);
+}
+
+function notifyCallbackRelease(
+  registry: WeakRef<CallbackTraceStorages>,
+  key: string,
+): () => void {
+  return () => {
+    const storages = registry.deref();
+    const entry = storages?.get(key);
+    if (storages && entry) {
+      entry.nativeReleased = true;
+      forgetReleasedStorage(storages, key, entry);
+    }
+  };
+}
+
 type HostTraceScope =
   | { storage: TraceContextStorage }
   | { storage?: undefined; span: TraceSpan | undefined };
@@ -17,11 +54,9 @@ type HostTraceScope =
 const hostTraceScope = new AsyncLocalStorage<HostTraceScope>();
 let configuredStorage: TraceContextStorage | undefined;
 
-function captureTraceStorage() {
+function currentTraceStorage(): TraceContextStorage | undefined {
   const scope = hostTraceScope.getStore();
-  const storage = scope ? scope.storage : configuredStorage;
-  return <T>(callback: () => T): T =>
-    hostTraceScope.run({ storage, span: undefined }, callback);
+  return scope ? scope.storage : configuredStorage;
 }
 
 const ambient: TraceContextStorage = {
@@ -31,14 +66,20 @@ const ambient: TraceContextStorage = {
     return scope.storage ? scope.storage.getStore() : scope.span;
   },
   run(span, callback) {
-    const scope = hostTraceScope.getStore();
-    const storage = scope ? scope.storage : configuredStorage;
+    const storage = currentTraceStorage();
     if (storage) {
       return hostTraceScope.run({ storage }, () => storage.run(span, callback));
     }
     return hostTraceScope.run({ span }, callback);
   },
 };
+
+function runWithStorage<T>(
+  storage: TraceContextStorage | undefined,
+  callback: () => T,
+): T {
+  return hostTraceScope.run({ storage, span: undefined }, callback);
+}
 
 /** Set storage for new trace scopes. Pass undefined to restore the built-in storage. */
 export function setTraceContextStorage(storage?: TraceContextStorage): void {
@@ -232,9 +273,10 @@ export function captureTraceValidation():
   Pick<TraceSpan, 'validate'> | undefined {
   const span = ambient.getStore();
   if (!span) return undefined;
-  const runWithStorage = captureTraceStorage();
+  const storage = currentTraceStorage();
   return {
-    validate: (callback) => runWithStorage(() => span.validate(callback)),
+    validate: (callback) =>
+      runWithStorage(storage, () => span.validate(callback)),
   };
 }
 
@@ -250,16 +292,18 @@ export function captureTracing(
     Object.keys(admissionPolicy()).length === 0
   )
     return undefined;
-  return new TraceCapture(start(options ?? {}, 'operation', opening));
+  const storage = currentTraceStorage();
+  return new TraceCapture(start(options ?? {}, 'operation', opening), storage);
 }
 /** @internal One captured native operation; settlement releases every host lease. */
 export class TraceCapture {
   private span?: TraceSpan;
   private contextToken?: string;
   private finished = false;
-  /** @internal Restore the admitted backend without replacing native callback ancestry. */
-  readonly runWithStorage = captureTraceStorage();
-  constructor(readonly ready: Promise<TraceSpan>) {
+  constructor(
+    readonly ready: Promise<TraceSpan>,
+    private readonly storage: TraceContextStorage | undefined,
+  ) {
     void ready.then(
       (span) => {
         this.span = span;
@@ -280,6 +324,34 @@ export class TraceCapture {
   async context(): Promise<string> {
     const span = await this.ready;
     return (this.contextToken ??= span.retain());
+  }
+  /** @internal Create the private dispatch lease immediately before native admission. */
+  dispatchContext(
+    span: TraceSpan,
+    child?: { native: Native; storages: CallbackTraceStorages },
+  ): string {
+    if (!child) return (this.contextToken ??= span.retain());
+    const key = randomUUID();
+    const token = child.native._retain_callback_dispatch_context(
+      span.handle,
+      key,
+      notifyCallbackRelease(new WeakRef(child.storages), key),
+    );
+    try {
+      child.storages.set(key, {
+        storage: this.storage,
+        entered: 0,
+        nativeReleased: false,
+      });
+      return (this.contextToken = token);
+    } catch (error) {
+      span.releaseContext(token);
+      throw error;
+    }
+  }
+  /** @internal Restore the admitted backend without replacing native callback ancestry. */
+  runWithStorage<T>(callback: () => T): T {
+    return runWithStorage(this.storage, callback);
   }
   async run<T>(
     name: string,
@@ -303,20 +375,23 @@ export class TraceCapture {
     this.finished = true;
     void this.ready
       .then((span) => {
-        span.end({
-          status: cancelled
-            ? 'cancelled'
-            : error === undefined
-              ? 'ok'
-              : 'error',
-          category: cancelled
-            ? 'cancelled'
-            : error === undefined
-              ? undefined
-              : category,
-        });
-        if (this.contextToken) span.releaseContext(this.contextToken);
-        span.close();
+        try {
+          span.end({
+            status: cancelled
+              ? 'cancelled'
+              : error === undefined
+                ? 'ok'
+                : 'error',
+            category: cancelled
+              ? 'cancelled'
+              : error === undefined
+                ? undefined
+                : category,
+          });
+        } finally {
+          if (this.contextToken) span.releaseContext(this.contextToken);
+          span.close();
+        }
       })
       .catch(() => {});
   }
@@ -330,6 +405,7 @@ interface WireSpanContext {
   workflow_span_id: string | null;
   disabled: boolean;
   include_sensitive_data: boolean;
+  callback_storage_key?: string;
 }
 function spanFromWire(
   native: Native,
@@ -451,16 +527,17 @@ export function withSpan<T>(
 /** @internal Native callback owners lend this context through joined cleanup. */
 export async function withNativeCallbackContext<T>(
   context: string | undefined,
-  callback: () => T | Promise<T>,
+  callback: (retainStorage?: () => () => void) => T | Promise<T>,
   signal?: AbortSignal,
   workflowForTrace?: (
     traceId: string,
     workflowSpanId: string,
   ) => TraceSpan | undefined,
+  callbackStorages?: CallbackTraceStorages,
 ): Promise<T> {
   if (context === undefined) return callback();
   const native = await binding();
-  const wire = JSON.parse(
+  const wire: WireSpanContext = JSON.parse(
     native.start_trace_span(
       JSON.stringify({
         name: 'host.callback',
@@ -469,24 +546,47 @@ export async function withNativeCallbackContext<T>(
       }),
     ),
   );
-  const parent = workflowForTrace
-    ? wire.workflow_span_id
-      ? workflowForTrace(wire.trace_id, wire.workflow_span_id)
-      : undefined
-    : ambient.getStore();
-  const span = spanFromWire(native, wire, 'callback', parent);
+  const key = wire.callback_storage_key;
+  const entry = key === undefined ? undefined : callbackStorages?.get(key);
+  if (callbackStorages && key !== undefined && !entry) {
+    native.release_trace_span(wire.handle);
+    throw new Error('Native child callback trace ownership unavailable');
+  }
+  const retainStorage = entry
+    ? () => {
+        entry.entered++;
+        return () => {
+          entry.entered--;
+          forgetReleasedStorage(callbackStorages!, key!, entry);
+        };
+      }
+    : undefined;
+  const releaseStorage = retainStorage?.();
   try {
-    const result = await ambient.run(span, () => callback());
-    if (signal?.aborted)
-      span.end({ status: 'cancelled', category: 'cancelled' });
-    return result;
-  } catch (error) {
-    span.end({
-      status: signal?.aborted ? 'cancelled' : 'error',
-      category: signal?.aborted ? 'cancelled' : 'callback_error',
-    });
-    throw error;
+    const parent = workflowForTrace
+      ? wire.workflow_span_id
+        ? workflowForTrace(wire.trace_id, wire.workflow_span_id)
+        : undefined
+      : ambient.getStore();
+    const span = spanFromWire(native, wire, 'callback', parent);
+    const invoke = () => ambient.run(span, () => callback(retainStorage));
+    try {
+      const result = await (entry
+        ? runWithStorage(entry.storage, invoke)
+        : invoke());
+      if (signal?.aborted)
+        span.end({ status: 'cancelled', category: 'cancelled' });
+      return result;
+    } catch (error) {
+      span.end({
+        status: signal?.aborted ? 'cancelled' : 'error',
+        category: signal?.aborted ? 'cancelled' : 'callback_error',
+      });
+      throw error;
+    } finally {
+      span.close();
+    }
   } finally {
-    span.close();
+    releaseStorage?.();
   }
 }

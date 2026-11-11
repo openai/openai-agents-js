@@ -2,12 +2,14 @@ import type { JsonObject } from './binding';
 import type { GuardrailRecord } from './guardrails';
 import type { TokenUsage, TokenCount } from './run-events';
 import type { ObservationPhase } from './observation';
+import type { CallbackTraceStorages } from './tracing-context';
 
 /** Shared by a native owner's readers and their observed child turns. */
 export interface ChildObservationProducer {
   ended: boolean;
   /** The ordered event reader ended; auxiliary callback readers may still drain. */
   eventReaderEnded: boolean;
+  readonly callbackTraceStorages: CallbackTraceStorages;
 }
 
 /** Internal callback ownership for independently running native child turns. */

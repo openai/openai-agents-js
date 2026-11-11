@@ -78,10 +78,17 @@ impl Turn {
         self.rejected.store(true, Ordering::Release);
         self.terminal.store(true, Ordering::Release);
         self.delivered.store(true, Ordering::Release);
+        self.release_callback_ownership();
         *self
             .tool_proposal
             .lock()
             .expect("terminal proposal poisoned") = None;
+    }
+
+    fn release_callback_ownership(&self) {
+        if let Some(tracing) = &self.tracing {
+            tracing.release_callback_ownership();
+        }
     }
 
     pub(crate) fn permits_integrity_reason(&self) -> bool {
@@ -246,7 +253,11 @@ impl Turn {
 
     /// A response or an explicit cancellation revoked this exact turn.
     pub(crate) fn reject_model(&self) {
-        self.rejected.store(true, Ordering::Release);
+        // Rejection can race terminal after an unsampled steering tail.
+        self.rejected.store(true, Ordering::SeqCst);
+        if self.terminal.load(Ordering::SeqCst) {
+            self.release_callback_ownership();
+        }
     }
 
     pub(crate) fn begin_generation(&self) {
@@ -566,11 +577,12 @@ impl Settlement {
         if let Some(turn) = &current.turn
             && id == Some(turn.id.as_str())
         {
-            turn.successful.store(
-                matches!(event, EventMsg::TurnComplete(done) if done.error.is_none()),
-                Ordering::Release,
-            );
+            let successful = matches!(event, EventMsg::TurnComplete(done) if done.error.is_none());
+            turn.successful.store(successful, Ordering::Release);
             turn.delivered.store(true, Ordering::Release);
+            if !successful {
+                turn.release_callback_ownership();
+            }
         }
     }
 
@@ -579,6 +591,7 @@ impl Settlement {
         current.retired = true;
         if let Some(turn) = &current.turn {
             turn.admission.send_replace(Admission::Closed);
+            turn.release_callback_ownership();
         }
         self.changed.send_replace(());
     }
@@ -738,6 +751,8 @@ impl TurnLifecycleContributor for Contributor {
                 .replace(turn)
             {
                 previous.settle_pending(Admission::Closed);
+                // A same-ID successor has already captured its own lease.
+                previous.release_callback_ownership();
             }
             drop(graph);
             settlement.changed.send_replace(());
@@ -785,7 +800,7 @@ impl TurnLifecycleContributor for Contributor {
         })
     }
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
-        Box::pin(async move { terminal(input.thread_store, input.turn_store, false) })
+        Box::pin(async move { terminal(input.thread_store, input.turn_store, false, false) })
     }
     fn on_turn_abort<'a>(&'a self, input: TurnAbortInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
@@ -808,6 +823,7 @@ impl TurnLifecycleContributor for Contributor {
             terminal(
                 input.thread_store,
                 input.turn_store,
+                true,
                 local_exec_cancel_failed,
             );
         })
@@ -817,13 +833,21 @@ impl TurnLifecycleContributor for Contributor {
 fn terminal(
     thread_store: &ExtensionData,
     turn_store: &ExtensionData,
+    aborted: bool,
     local_exec_cancel_failed: bool,
 ) {
     if let Some(turn) = turn_store.get::<Turn>() {
         if local_exec_cancel_failed {
             turn.local_exec_cancel_failed.store(true, Ordering::Release);
         }
-        turn.terminal.store(true, Ordering::Release);
+        turn.terminal.store(true, Ordering::SeqCst);
+        // Only an unrejected unsampled tail can carry an exact continuation.
+        if aborted
+            || turn.rejected.load(Ordering::SeqCst)
+            || turn.unsampled_steering() != Some(true)
+        {
+            turn.release_callback_ownership();
+        }
         if let Some(owner) = thread_store.get::<crate::native_interception::Control>() {
             owner.graph().changed.send_replace(());
         }
