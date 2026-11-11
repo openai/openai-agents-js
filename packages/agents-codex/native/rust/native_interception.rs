@@ -7884,6 +7884,7 @@ mod tests {
                     thread_id: &control.id,
                     client_metadata,
                     model: "test-model",
+                    model_omitted: false,
                 })
                 .unwrap()
         };
