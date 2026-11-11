@@ -2766,17 +2766,25 @@ export class Session<OutputT = string, Context = unknown> {
           throw new NativeError('Native model settings were not acknowledged');
       }
       if (this.restored && !this.options.agentGraph) {
-        const acknowledged = await this.#native._update_model_settings(
-          encode({
-            request_controls: {
-              retry: { has_policy: this.capturedRetryPolicy() !== undefined },
-            },
+        const settings = this.options.initialModelSettings;
+        // Native merges retry patches field by field. Clear the checkpoint's
+        // retry settings before applying the current declaration.
+        const patches = [
+          modelOverrides(undefined, {
+            attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
+            retry: null,
           }),
-        );
-        if (acknowledged !== true)
-          throw new NativeError(
-            'Restored retry declaration was not acknowledged',
-          );
+        ];
+        if (settings?.retry != null)
+          patches.push(modelOverrides(undefined, { retry: settings.retry }));
+        for (const patch of patches) {
+          if (
+            (await this.#native._update_model_settings(encode(patch))) !== true
+          )
+            throw new NativeError(
+              'Restored retry declaration was not acknowledged',
+            );
+        }
       }
       this.configureNative(this.#native);
       if (

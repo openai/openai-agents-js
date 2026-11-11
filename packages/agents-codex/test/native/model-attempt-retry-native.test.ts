@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { it, expect, vi } from 'vitest';
 import { APIUserAbortError } from 'openai';
 import { z } from 'zod';
@@ -24,6 +25,74 @@ function message(text = 'ok', input = 1): ModelResponse {
 function failure(label: string) {
   return Object.assign(new Error(label), { status: 503, code: 'server_error' });
 }
+it.each([0, 1])(
+  'uses only current retry bounds after restore (maxRetries=%s)',
+  async (maxRetries) => {
+    let stage: 'seed' | 'success' | 'failure' = 'seed';
+    const complete = vi.fn(
+      async (request: ModelRequest): Promise<ModelResponse> => {
+        if (stage !== 'seed') {
+          await delay(250, undefined, { signal: request.signal });
+          if (stage === 'failure') throw failure('restored provider failure');
+        }
+        return message('ok');
+      },
+    );
+    const currentPolicy = vi.fn(() => ({ retry: true, delayMs: 0 }));
+    await using provider = new NativeProvider({
+      modelBackend: { complete, getRetryAdvice: () => ({ suggested: true }) },
+    });
+    const declaration = {
+      model: 'custom-model',
+      instructions: 'Answer.',
+      provider,
+    };
+    let state;
+    {
+      await using original = await new Agent({
+        ...declaration,
+        modelSettings: {
+          attemptTimeoutMs: 100,
+          retry: {
+            maxRetries: 3,
+            backoff: { initialDelayMs: 0, jitter: false },
+          },
+        },
+      }).session();
+      expect((await (await original.submit('seed')).wait()).finalOutput).toBe(
+        'ok',
+      );
+      state = await original.saveState();
+    }
+    const current = new Agent({
+      ...declaration,
+      modelSettings: maxRetries
+        ? {
+            retry: {
+              maxRetries,
+              policy: currentPolicy,
+            },
+          }
+        : undefined,
+    });
+    await using restored = await current.session({ state });
+    stage = 'success';
+    complete.mockClear();
+    expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
+      'ok',
+    );
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    stage = 'failure';
+    complete.mockClear();
+    await expect((await restored.submit('fail')).wait()).rejects.toThrow(
+      'restored provider failure',
+    );
+    expect(complete).toHaveBeenCalledTimes(maxRetries + 1);
+    expect(currentPolicy).toHaveBeenCalledTimes(maxRetries);
+  },
+  20_000,
+);
 it('uses Core retries with captured callback identity, new logical advice signal and exact cumulative usage', async () => {
   const error = failure('first');
   const requests: ModelRequest[] = [];
