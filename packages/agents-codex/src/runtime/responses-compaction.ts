@@ -16,9 +16,9 @@ export interface ResponsesCompactionOptions<Context = unknown> {
   client: OpenAI;
   /** Defaults to the captured native compaction source model. */
   model?: string;
-  /** Current native sessions have been supplying input windows. Auto has been
-   * selecting input; previous-response mode has been requiring a native
-   * acknowledged-window receipt before client effects. */
+  /** Auto has been selecting previous-response mode for an acknowledged,
+   * unchanged native provider window and otherwise supplying input. Explicit
+   * previous-response mode has been requiring that receipt before client effects. */
   mode?: 'auto' | 'input' | 'previous_response_id';
   /** Controls optional post-turn compaction, excluding manual/required work. */
   shouldCompact?: (
