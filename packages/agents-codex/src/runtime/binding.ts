@@ -300,7 +300,11 @@ export function parseNative(source: string): unknown {
       return value;
     },
   );
-  function restore(receipt: unknown, key: string): void {
+  function restore(
+    receipt: unknown,
+    key: string,
+    keepSafeNumber = false,
+  ): void {
     if (typeof receipt !== 'object' || receipt === null) return;
     const original = tokens.get(receipt)?.get(key);
     if (original !== undefined) {
@@ -309,14 +313,15 @@ export function parseNative(source: string): unknown {
           'Invalid native receipt integer or missing Node.js JSON source access',
         );
       }
-      Reflect.set(receipt, key, original);
+      if (!keepSafeNumber || !Number.isSafeInteger(Reflect.get(receipt, key)))
+        Reflect.set(receipt, key, original);
     }
   }
-  function restoreModelAttempt(value: unknown): void {
+  function restoreModelAttempt(value: unknown, keepSafeNumbers = false): void {
     if (!value || typeof value !== 'object' || !('usage' in value)) return;
     const usage = value.usage;
-    restore(usage, 'requests');
-    restore(usage, 'requests_without_token_usage');
+    restore(usage, 'requests', keepSafeNumbers);
+    restore(usage, 'requests_without_token_usage', keepSafeNumbers);
     if (usage && typeof usage === 'object' && 'token_usage' in usage)
       for (const field of [
         'input_tokens',
@@ -326,7 +331,7 @@ export function parseNative(source: string): unknown {
         'reasoning_output_tokens',
         'total_tokens',
       ])
-        restore(usage.token_usage, field);
+        restore(usage.token_usage, field, keepSafeNumbers);
   }
   // These are native envelope fields. Data inside arguments/output is application JSON.
   restore(parsed, 'nonce');
@@ -357,7 +362,9 @@ export function parseNative(source: string): unknown {
     ) {
       const context = candidate.manual_context;
       if (context && typeof context === 'object' && 'model_attempt' in context)
-        restoreModelAttempt(context.model_attempt);
+        // Portable checkpoints already retain large counts as decimal strings.
+        // Keep safe numeric counts stable for deferred checkpoint digests.
+        restoreModelAttempt(context.model_attempt, true);
     }
   if (typeof parsed === 'object' && parsed !== null && 'msg' in parsed) {
     const msg = parsed.msg;

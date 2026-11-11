@@ -3150,7 +3150,7 @@ fn native_event(
     source: Option<(ThreadId, u64)>,
     event: &Event,
 ) -> anyhow::Result<serde_json::Value> {
-    let mut value = serde_json::to_value(event)?;
+    let mut value = event.sdk_json()?;
     crate::usage::event_to_wire(&mut value["msg"])?;
     if let EventMsg::RealtimeConversationRealtime(realtime) = &event.msg
         && let codex_protocol::protocol::RealtimeEvent::HandoffRequested(handoff) =

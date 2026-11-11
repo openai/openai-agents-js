@@ -235,7 +235,7 @@ async fn failed_cleanup_is_retained_until_exact_retirement_even_after_early_rele
         let tools = super::super::pending_tests::tools();
         let original = Attempt::new("original");
         let frame: Arc<dyn ModelAttemptAdmission> = original.clone();
-        let mut produce = Box::pin(tools.produce_model_response("fixture", 
+        let mut produce = Box::pin(tools.produce_model_response("fixture",
             json!({"model":"fixture","input":[]}),
             admission(frame.clone()),
         ));
@@ -263,7 +263,7 @@ async fn failed_cleanup_is_retained_until_exact_retirement_even_after_early_rele
 async fn provider_failure_wrapper_reports_the_original_frame() {
     let tools = super::super::pending_tests::tools();
     let original = Attempt::new("original");
-    let mut produce = Box::pin(tools.produce_model_response("fixture", 
+    let mut produce = Box::pin(tools.produce_model_response("fixture",
         json!({"model":"fixture","input":[]}),
         admission(original.clone()),
     ));
