@@ -1481,6 +1481,7 @@ export class Session<OutputT = string, Context = unknown> {
           'guardrailTextThreshold',
           'automaticallyTriggerResponseForMcpToolCalls',
           'apiKey',
+          'url',
           'adapter',
           'historyStoreAudio',
           'includeRawProviderEvents',
@@ -1526,6 +1527,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       this.options.modelBackend !== undefined &&
       options.adapter === undefined &&
+      options.url === undefined &&
       options.apiKey === undefined
     ) {
       const apiKey = this.options.realtimeApiKey;
