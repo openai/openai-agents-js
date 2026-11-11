@@ -2,4 +2,4 @@
 '@openai/agents-extensions': patch
 ---
 
-fix: reject GNU sparse PAX metadata before restoring workspace archives.
+fix: protect mounted storage and reject sparse metadata during workspace tar hydration.

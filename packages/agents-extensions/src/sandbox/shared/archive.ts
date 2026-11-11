@@ -182,30 +182,72 @@ export async function hydrateRemoteWorkspaceTar(args: {
   data: WorkspaceArchiveData;
   archivePath?: string;
   archiveLimits?: SandboxArchiveLimits | null;
+  activeMountPaths?: Iterable<string>;
 }): Promise<void> {
   const root = args.manifest.root;
   const archive = toWorkspaceArchiveBytes(args.data);
+  const protectedPaths = workspaceTarHydrationProtectedPaths(args.manifest);
   validateWorkspaceTarArchive(archive, {
     allowSymlinks: false,
-    rejectRelPaths: workspaceTarProtectedPaths(args.manifest),
+    rejectRelPaths: protectedPaths,
     archiveLimits: args.archiveLimits,
   });
 
   const archivePath = args.archivePath ?? remoteArchivePath(args.providerName);
   assertRemoteWorkspaceTarRoot(args.providerName, root, archivePath, 'hydrate');
-  await validateRemoteSandboxPathForManifest({
+  const effectiveRoot = await validateRemoteSandboxPathForManifest({
     manifest: args.manifest,
     path: root,
     options: { forWrite: true },
     runCommand: args.io.runCommand,
   });
+  const effectiveProtectedPaths = new Set(protectedPaths);
+  for (const mountPath of args.activeMountPaths ?? []) {
+    addEffectiveMountPath(effectiveProtectedPaths, effectiveRoot, mountPath);
+  }
+  const pathsToResolve = new Set([
+    ...args.manifest.mountTargets().map(({ mountPath }) => mountPath),
+    ...protectedPaths.map((path) => `${root}/${path}`),
+  ]);
+  for (const mountPath of pathsToResolve) {
+    const relativeMountPath = relativePosixPathWithinRoot(root, mountPath);
+    if (relativeMountPath) {
+      const parts = relativeMountPath.split('/');
+      for (let index = 1; index < parts.length; index += 1) {
+        const ancestor = parts.slice(0, index).join('/');
+        const effectiveAncestor = await resolveRemoteSandboxEffectivePath({
+          path: `${root}/${ancestor}`,
+          runCommand: args.io.runCommand,
+        });
+        if (effectiveAncestor !== `${effectiveRoot}/${ancestor}`) {
+          effectiveProtectedPaths.add(ancestor);
+        }
+      }
+    }
+    const effectiveMountPath = await resolveRemoteSandboxEffectivePath({
+      path: mountPath,
+      runCommand: args.io.runCommand,
+    });
+    addEffectiveMountPath(
+      effectiveProtectedPaths,
+      effectiveRoot,
+      effectiveMountPath,
+    );
+  }
+  if (effectiveProtectedPaths.size !== protectedPaths.length) {
+    validateWorkspaceTarArchive(archive, {
+      allowSymlinks: false,
+      rejectRelPaths: effectiveProtectedPaths,
+      archiveLimits: args.archiveLimits,
+    });
+  }
 
   try {
     await args.io.writeFile(archivePath, archive);
     const result = await args.io.runCommand(
       [
         `mkdir -p -- ${shellQuote(root)}`,
-        `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`,
+        workspaceTarCleanupCommand(root, [...effectiveProtectedPaths]),
         `tar -C ${shellQuote(root)} -xf ${shellQuote(archivePath)}`,
       ].join(' && '),
     );
@@ -238,6 +280,19 @@ export async function hydrateRemoteWorkspaceTar(args: {
     await args.io
       .runCommand(`rm -f -- ${shellQuote(archivePath)}`)
       .catch(() => {});
+  }
+}
+
+function addEffectiveMountPath(
+  protectedPaths: Set<string>,
+  effectiveRoot: string,
+  mountPath: string,
+): void {
+  const relativePath = relativePosixPathWithinRoot(effectiveRoot, mountPath);
+  if (relativePath !== null) {
+    protectedPaths.add(relativePath);
+  } else if (relativePosixPathWithinRoot(mountPath, effectiveRoot) !== null) {
+    protectedPaths.add('');
   }
 }
 
@@ -450,6 +505,50 @@ export function workspaceTarProtectedPaths(manifest: Manifest): string[] {
   return [...manifest.ephemeralPersistencePaths()].sort((left, right) =>
     left.localeCompare(right),
   );
+}
+
+function workspaceTarHydrationProtectedPaths(manifest: Manifest): string[] {
+  const paths = new Set(workspaceTarProtectedPaths(manifest));
+  for (const { mountPath } of manifest.mountTargets()) {
+    const relativePath = relativePosixPathWithinRoot(manifest.root, mountPath);
+    if (relativePath !== null) {
+      paths.add(relativePath);
+    } else if (relativePosixPathWithinRoot(mountPath, manifest.root) !== null) {
+      paths.add('');
+    }
+  }
+  return [...paths].sort((left, right) => left.localeCompare(right));
+}
+
+function workspaceTarCleanupCommand(
+  root: string,
+  protectedPaths: string[],
+): string {
+  if (protectedPaths.includes('')) {
+    return ':';
+  }
+  if (protectedPaths.length === 0) {
+    return `find ${shellQuote(root)} -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +`;
+  }
+
+  const ancestors = new Set<string>();
+  for (const path of protectedPaths) {
+    const parts = path.split('/');
+    for (let index = 1; index < parts.length; index += 1) {
+      ancestors.add(parts.slice(0, index).join('/'));
+    }
+  }
+  const findPath = (path: string) =>
+    shellQuote(`${root}/${path}`.replace(/([*?[\]\\])/gu, '\\$1'));
+  const protectedTests = protectedPaths.map(
+    (path) => `-path ${findPath(path)}`,
+  );
+  const ancestorTests = [...ancestors].map((path) => `-path ${findPath(path)}`);
+  return [
+    `find ${shellQuote(root)} -mindepth 1`,
+    `\\( ${protectedTests.join(' -o ')} \\) -prune -o`,
+    `\\( ${ancestorTests.length > 0 ? `${ancestorTests.join(' -o ')} -o ` : ''}-exec rm -rf -- {} + -prune \\)`,
+  ].join(' ');
 }
 
 export function createEmptyWorkspaceTarArchive(): Uint8Array {

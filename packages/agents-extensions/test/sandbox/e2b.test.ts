@@ -1372,6 +1372,36 @@ describe('E2BSandboxClient', () => {
     });
   });
 
+  test('hydrates a fresh mounted session and rejects resuming its mount state', async () => {
+    const client = new E2BSandboxClient();
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'synthetic-bucket',
+            accessKeyId: 'synthetic-access',
+            secretAccessKey: 'synthetic-secret',
+            mountPath: 'alias/mounted',
+            mountStrategy: new E2BCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('alias/mounted'),
+    );
+    // A fresh session retains its actual attachment paths and can hydrate safely.
+    await session.hydrateWorkspace(makeTarArchive([]));
+    runMock.mockClear();
+    writeMock.mockClear();
+    connectMock.mockClear();
+
+    await expect(client.resume(session.state)).rejects.toThrow(
+      'in-container mounts cannot be resumed safely',
+    );
+    expect(connectMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
   test('recreates sandboxes when reconnect reports missing sandbox', async () => {
     const client = new E2BSandboxClient({
       pauseOnExit: true,

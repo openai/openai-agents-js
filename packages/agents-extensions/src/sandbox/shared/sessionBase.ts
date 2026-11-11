@@ -6,6 +6,7 @@ import {
   manifestHasInContainerMounts,
   validateMountCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
+  withExclusiveSandboxStateInspection,
 } from '@openai/agents-core/sandbox/internal';
 import {
   cloneManifest,
@@ -675,16 +676,23 @@ export abstract class RemoteSandboxSessionBase<
     data: WorkspaceArchiveData,
     options: WorkspaceArchiveOptions = {},
   ): Promise<void> {
-    await hydrateRemoteWorkspaceTar({
-      providerName: this.providerName,
-      manifest: this.state.manifest,
-      io: this.archiveIo(),
-      data,
-      archiveLimits:
-        options.archiveLimits === undefined
-          ? this.archiveLimits
-          : options.archiveLimits,
+    await withExclusiveSandboxStateInspection(this.state, async () => {
+      await hydrateRemoteWorkspaceTar({
+        providerName: this.providerName,
+        manifest: this.state.manifest,
+        io: this.archiveIo(),
+        data,
+        activeMountPaths: this.activeWorkspaceMountPaths(),
+        archiveLimits:
+          options.archiveLimits === undefined
+            ? this.archiveLimits
+            : options.archiveLimits,
+      });
     });
+  }
+
+  protected activeWorkspaceMountPaths(): Iterable<string> {
+    return [];
   }
 
   protected manifestWriter(): RemoteManifestWriter {

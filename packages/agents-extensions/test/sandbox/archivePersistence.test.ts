@@ -12,8 +12,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, test } from 'vitest';
-import { Manifest, SandboxArchiveError } from '@openai/agents-core/sandbox';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  Manifest,
+  SandboxArchiveError,
+  mount,
+} from '@openai/agents-core/sandbox';
 import {
   hydrateRemoteWorkspaceTar,
   persistRemoteWorkspaceTar,
@@ -238,6 +242,333 @@ describe.skipIf(process.platform === 'win32')(
         io,
       });
       expect(await readFile(join(root, 'small.txt'), 'utf8')).toBe('ok');
+    });
+
+    test.each([true, false])(
+      'preserves a nested mounted subtree during hydration (ephemeral: %s)',
+      async (ephemeral) => {
+        const { root, archivePath } = await fixture();
+        const mountPath = join(root, 'cache', 'mounted[1]*?');
+        await mkdir(mountPath, { recursive: true });
+        await writeFile(join(mountPath, 'remote.txt'), 'remote object');
+        await writeFile(join(root, 'ephemeral.txt'), 'local runtime data');
+        await writeFile(join(root, 'cache', 'stale.txt'), 'stale');
+        await writeFile(join(root, 'stale.txt'), 'stale');
+        const manifest = new Manifest({
+          root,
+          entries: {
+            'ephemeral.txt': {
+              type: 'file',
+              content: 'local runtime data',
+              ephemeral: true,
+            },
+            remote: mount({
+              source: 's3://bucket/data',
+              mountPath: 'cache/mounted[1]*?',
+              ephemeral,
+              mountStrategy: { type: 'in_container' },
+            }),
+          },
+        });
+
+        await hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest,
+          archivePath,
+          data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
+          io: { mkdir, writeFile, readFile, runCommand },
+        });
+
+        expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
+          'remote object',
+        );
+        expect(await readFile(join(root, 'ephemeral.txt'), 'utf8')).toBe(
+          'local runtime data',
+        );
+        expect(await readFile(join(root, 'fresh.txt'), 'utf8')).toBe('fresh');
+        await expect(stat(join(root, 'stale.txt'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        await expect(
+          stat(join(root, 'cache', 'stale.txt')),
+        ).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      },
+    );
+
+    test('preserves ephemeral data reached through an alias', async () => {
+      const { root, archivePath } = await fixture();
+      await mkdir(join(root, 'physical'));
+      await symlink(join(root, 'physical'), join(root, 'alias'));
+      await writeFile(join(root, 'physical', 'runtime.txt'), 'runtime data');
+      await writeFile(join(root, 'physical', 'stale.txt'), 'stale');
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest: new Manifest({
+          root,
+          entries: {
+            'alias/runtime.txt': {
+              type: 'file',
+              content: 'runtime data',
+              ephemeral: true,
+            },
+          },
+        }),
+        archivePath,
+        data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
+        io: { mkdir, writeFile, readFile, runCommand },
+      });
+      expect(await readFile(join(root, 'alias', 'runtime.txt'), 'utf8')).toBe(
+        'runtime data',
+      );
+      await expect(
+        stat(join(root, 'physical', 'stale.txt')),
+      ).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      expect(await readFile(join(root, 'fresh.txt'), 'utf8')).toBe('fresh');
+    });
+
+    test('rejects archive writes into a non-ephemeral mount before cleanup', async () => {
+      const { root, archivePath } = await fixture();
+      const mountPath = join(root, 'cache', 'mounted');
+      await mkdir(mountPath, { recursive: true });
+      await writeFile(join(mountPath, 'remote.txt'), 'remote object');
+      await writeFile(join(root, 'stale.txt'), 'keep on rejection');
+      const manifest = new Manifest({
+        root,
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'cache/mounted',
+            ephemeral: false,
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      });
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest,
+          archivePath,
+          data: makeTarArchive([
+            { name: 'cache/mounted/remote.txt', content: 'untrusted' },
+          ]),
+          io: { mkdir, writeFile, readFile, runCommand },
+        }),
+      ).rejects.toThrow('archive member overlaps protected path');
+      expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      expect(await readFile(join(root, 'stale.txt'), 'utf8')).toBe(
+        'keep on rejection',
+      );
+      await expect(stat(archivePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    test('preserves a mount reached through a symlinked ancestor', async () => {
+      const { root, archivePath } = await fixture();
+      const mountPath = join(root, 'physical', 'mounted');
+      await mkdir(mountPath, { recursive: true });
+      await writeFile(join(mountPath, 'remote.txt'), 'remote object');
+      await writeFile(join(root, 'stale.txt'), 'stale');
+      await symlink(join(root, 'physical'), join(root, 'alias'));
+      const manifest = new Manifest({
+        root,
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'alias/mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      });
+
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest,
+        archivePath,
+        data: makeTarArchive([]),
+        io: { mkdir, writeFile, readFile, runCommand },
+      });
+      expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      await expect(stat(join(root, 'stale.txt'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      await writeFile(join(root, 'later.txt'), 'keep on rejection');
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest,
+          archivePath,
+          data: makeTarArchive([
+            { name: 'physical/mounted/remote.txt', content: 'untrusted' },
+          ]),
+          io: { mkdir, writeFile, readFile, runCommand },
+        }),
+      ).rejects.toThrow('archive member overlaps protected path');
+      expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      expect(await readFile(join(root, 'later.txt'), 'utf8')).toBe(
+        'keep on rejection',
+      );
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest,
+          archivePath,
+          data: makeTarArchive([{ name: 'alias/', type: '5', mode: 0o755 }]),
+          io: { mkdir, writeFile, readFile, runCommand },
+        }),
+      ).rejects.toThrow('archive member overlaps protected path');
+      expect((await lstat(join(root, 'alias'))).isSymbolicLink()).toBe(true);
+      expect(
+        await readFile(join(root, 'alias', 'mounted', 'remote.txt'), 'utf8'),
+      ).toBe('remote object');
+    });
+
+    test('preserves the attached mount after its declared alias changes', async () => {
+      const { root, archivePath } = await fixture();
+      const mountPath = join(root, 'physical', 'mounted');
+      await mkdir(mountPath, { recursive: true });
+      await mkdir(join(root, 'other', 'mounted'), { recursive: true });
+      await symlink(join(root, 'physical'), join(root, 'alias'));
+      await writeFile(join(mountPath, 'remote.txt'), 'remote object');
+      const manifest = new Manifest({
+        root,
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'alias/mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      });
+      await rm(join(root, 'alias'));
+      await symlink(join(root, 'other'), join(root, 'alias'));
+
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest,
+        archivePath,
+        activeMountPaths: [mountPath],
+        data: makeTarArchive([{ name: 'fresh.txt', content: 'fresh' }]),
+        io: { mkdir, writeFile, readFile, runCommand },
+      });
+
+      expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      expect(await readFile(join(root, 'fresh.txt'), 'utf8')).toBe('fresh');
+    });
+
+    test('does not extract through another alias into a mounted subtree', async () => {
+      const { root, archivePath } = await fixture();
+      const mountPath = join(root, 'physical', 'mounted');
+      await mkdir(mountPath, { recursive: true });
+      await symlink(join(root, 'physical'), join(root, 'otheralias'));
+      await writeFile(join(mountPath, 'remote.txt'), 'remote object');
+      const manifest = new Manifest({
+        root,
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'physical/mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      });
+
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest,
+        archivePath,
+        activeMountPaths: [mountPath],
+        data: makeTarArchive([
+          { name: 'otheralias/mounted/remote.txt', content: 'local copy' },
+        ]),
+        io: { mkdir, writeFile, readFile, runCommand },
+      });
+      expect(await readFile(join(mountPath, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+      expect(
+        await readFile(
+          join(root, 'otheralias', 'mounted', 'remote.txt'),
+          'utf8',
+        ),
+      ).toBe('local copy');
+    });
+
+    test('preserves a workspace rooted inside a mount', async () => {
+      const { root, archivePath } = await fixture();
+      await writeFile(join(root, 'remote.txt'), 'remote object');
+      const manifest = new Manifest({
+        root,
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: join(root, '..'),
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      });
+
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'LocalTest',
+        manifest,
+        archivePath,
+        data: makeTarArchive([]),
+        io: { mkdir, writeFile, readFile, runCommand },
+      });
+      expect(await readFile(join(root, 'remote.txt'), 'utf8')).toBe(
+        'remote object',
+      );
+    });
+
+    test('fails before cleanup when a mount path cannot be resolved', async () => {
+      const { root, archivePath } = await fixture();
+      await writeFile(join(root, 'stale.txt'), 'keep on failure');
+      const manifest = new Manifest({
+        root,
+        entries: {
+          remote: mount({
+            source: 's3://bucket/data',
+            mountPath: 'cache/mounted',
+            mountStrategy: { type: 'in_container' },
+          }),
+        },
+      });
+      const upload = vi.fn(writeFile);
+
+      await expect(
+        hydrateRemoteWorkspaceTar({
+          providerName: 'LocalTest',
+          manifest,
+          archivePath,
+          data: makeTarArchive([]),
+          io: {
+            mkdir,
+            writeFile: upload,
+            readFile,
+            runCommand: async (command) =>
+              command.includes('/usr/bin/realpath -m')
+                ? { status: 1, stderr: 'path resolution failed' }
+                : runCommand(command),
+          },
+        }),
+      ).rejects.toThrow('path resolution failed');
+      expect(upload).not.toHaveBeenCalled();
+      expect(await readFile(join(root, 'stale.txt'), 'utf8')).toBe(
+        'keep on failure',
+      );
     });
 
     test.each(['file', 'symlink', 'fifo', 'directory'])(

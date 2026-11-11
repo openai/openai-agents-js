@@ -245,6 +245,10 @@ export class E2BSandboxSession extends RemoteSandboxSessionBase<E2BSandboxSessio
   private readonly ptyProcesses = new PtyProcessRegistry();
   private readonly activeMountPaths = new Map<string, RcloneMountHandle>();
 
+  protected override activeWorkspaceMountPaths(): Iterable<string> {
+    return this.activeMountPaths.keys();
+  }
+
   constructor(args: {
     state: E2BSandboxSessionState;
     sandbox: E2BSandboxInstance;

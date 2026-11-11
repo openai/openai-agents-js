@@ -42,6 +42,7 @@ import {
   manifestHasInContainerMounts,
   validateMountCredentialBoundaries,
   withExclusiveSandboxManifestMutation,
+  withExclusiveSandboxStateInspection,
 } from '@openai/agents-core/sandbox/internal';
 import {
   appendPtyOutput,
@@ -881,15 +882,18 @@ export class DaytonaSandboxSession implements SandboxSession<DaytonaSandboxSessi
   ): Promise<void> {
     this.assertSessionUsable();
     assertTarWorkspacePersistence('DaytonaSandboxClient', 'tar');
-    await hydrateRemoteWorkspaceTar({
-      providerName: 'DaytonaSandboxClient',
-      manifest: this.state.manifest,
-      io: this.archiveIo(),
-      data,
-      archiveLimits:
-        options.archiveLimits === undefined
-          ? this.archiveLimits
-          : options.archiveLimits,
+    await withExclusiveSandboxStateInspection(this.state, async () => {
+      await hydrateRemoteWorkspaceTar({
+        providerName: 'DaytonaSandboxClient',
+        manifest: this.state.manifest,
+        io: this.archiveIo(),
+        data,
+        activeMountPaths: this.activeMountPaths.keys(),
+        archiveLimits:
+          options.archiveLimits === undefined
+            ? this.archiveLimits
+            : options.archiveLimits,
+      });
     });
   }
 

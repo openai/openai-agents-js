@@ -36,6 +36,7 @@ import {
   rcloneMountEnvironmentAuthorityMatches,
   validateRcloneMountEnvironmentCredentialExposure,
 } from '../../src/sandbox/shared/inContainerMounts';
+import { makeTarArchive } from './tarFixture';
 
 type FakeRemoteSessionState = SandboxSessionState & {
   configuredExposedPorts?: number[];
@@ -504,6 +505,55 @@ describe('shared sandbox session helpers', () => {
 
     releaseMutation();
     await mutation;
+  });
+
+  test('holds manifest mutations until workspace hydration finishes', async () => {
+    let signalCleanup!: () => void;
+    let releaseCleanup!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => {
+      signalCleanup = resolve;
+    });
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    class BlockingHydrationSession extends FakeRemoteSession {
+      protected override async runRemoteCommand(
+        command: string,
+        options: RemoteSandboxCommandOptions,
+      ): Promise<RemoteSandboxCommandResult> {
+        if (command.includes('OPENAI_AGENTS_RESOLVE_PATH')) {
+          return { status: 0, stdout: '/workspace\n' };
+        }
+        if (command.includes('find ') && command.includes('tar -C ')) {
+          signalCleanup();
+          await cleanupGate;
+          return { status: 0 };
+        }
+        return await super.runRemoteCommand(command, options);
+      }
+    }
+    const session = new BlockingHydrationSession();
+    const hydrating = session.hydrateWorkspace(makeTarArchive([]));
+    await cleanupStarted;
+
+    let mutationApplied = false;
+    const mutation = withExclusiveSandboxManifestMutation(
+      session.state,
+      async () => {
+        session.state.manifest = new Manifest({
+          root: '/workspace',
+          entries: { later: file({ content: 'later' }) },
+        });
+        mutationApplied = true;
+      },
+    );
+    await Promise.resolve();
+    expect(mutationApplied).toBe(false);
+    releaseCleanup();
+    await hydrating;
+    await mutation;
+    expect(mutationApplied).toBe(true);
+    expect(session.state.manifest.entries).toHaveProperty('later');
   });
 
   test('retains actual mount authority for environment-only updates', async () => {

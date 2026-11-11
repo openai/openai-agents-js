@@ -90,6 +90,7 @@ import {
   unmountRcloneMount,
 } from '../../src/sandbox/shared/inContainerMounts';
 import { makePaxRecord, makeTarArchive } from './tarFixture';
+import { resolvedRemoteEffectivePathFromCommand } from './remotePathValidation';
 import {
   ONE_BY_ONE_GIF,
   ONE_BY_ONE_JPEG,
@@ -3272,8 +3273,8 @@ describe('remote sandbox path helpers', () => {
       status: 0,
       stdout: command.includes('resolve-workspace-path.sh')
         ? '/custom/workspace\n'
-        : '',
-      stderr: '',
+        : `${resolvedRemoteEffectivePathFromCommand(command) ?? ''}\n`,
+      stderr: `${resolvedRemoteEffectivePathFromCommand(command) ?? ''}\n`,
     }));
 
     await hydrateRemoteWorkspaceTar({
@@ -3574,8 +3575,8 @@ describe('remote sandbox path helpers', () => {
       status: 0,
       stdout: command.includes('resolve-workspace-path.sh')
         ? '/custom/workspace\n'
-        : '',
-      stderr: '',
+        : `${resolvedRemoteEffectivePathFromCommand(command) ?? ''}\n`,
+      stderr: `${resolvedRemoteEffectivePathFromCommand(command) ?? ''}\n`,
     }));
     const persistReadFile = vi.fn(async () => persistedContent);
 
@@ -3599,8 +3600,8 @@ describe('remote sandbox path helpers', () => {
       status: 0,
       stdout: command.includes('resolve-workspace-path.sh')
         ? '/custom/workspace\n'
-        : '',
-      stderr: '',
+        : `${resolvedRemoteEffectivePathFromCommand(command) ?? ''}\n`,
+      stderr: `${resolvedRemoteEffectivePathFromCommand(command) ?? ''}\n`,
     }));
 
     await hydrateRemoteWorkspaceTar({
