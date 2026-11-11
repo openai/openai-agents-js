@@ -27,6 +27,36 @@ afterEach(() => {
 });
 
 describe('native addon loading', () => {
+  it('preserves a missing system library reason in the diagnostic message', () => {
+    const original = Object.assign(
+      new Error(
+        'libssl.so.3: cannot open shared object file: No such file or directory',
+      ),
+      { code: 'ERR_DLOPEN_FAILED' },
+    );
+    expect(() =>
+      runInNewContext(
+        readFileSync(
+          resolve(import.meta.dirname, '../native/index.js'),
+          'utf8',
+        ),
+        {
+          require: (id: string) => {
+            if (id === './codex.node') throw original;
+            return { join };
+          },
+          process,
+        },
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: 'ERR_DLOPEN_FAILED',
+        cause: original,
+        message: expect.stringContaining(original.message),
+      }),
+    );
+  });
+
   it.each([
     { addon: 'missing', code: 'MODULE_NOT_FOUND' },
     { addon: 'incompatible', code: 'ERR_DLOPEN_FAILED' },

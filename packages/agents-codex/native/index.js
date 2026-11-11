@@ -12,7 +12,7 @@ try {
   }
   throw Object.assign(
     new Error(
-      `Could not load the OpenAI Agents SDK native addon on ${process.platform}/${process.arch}. Install the native bundle for this platform and architecture, or build the SDK from source on a supported target.`,
+      `Could not load the OpenAI Agents SDK native addon on ${process.platform}/${process.arch}. Install the native bundle for this platform and architecture, or build the SDK from source on a supported target. Original loader error: ${error.message}`,
       { cause: error },
     ),
     { code },
