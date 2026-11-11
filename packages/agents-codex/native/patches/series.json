@@ -1,5 +1,5 @@
 {
-  "result_tree": "ea649388376bc1f26d47a7c6a0177cd73d00bd28",
+  "result_tree": "46e09220506e2b975a79593eeee3fbbc436fa3b6",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -760,6 +760,10 @@
     {
       "path": "sdk-function-provider-schemas.patch",
       "sha256": "ab9d85801742d4b5d27226ce26f25ad1909e743f84b4c2822b7afbb0b7b4d60f"
+    },
+    {
+      "path": "sdk-produced-run-items.patch",
+      "sha256": "5662fc947935ad7b28aa70878275fdb8ca93beb9d4259818baabd653793359e3"
     },
     {
       "path": "sdk-application-tool-output-acceptance.patch",
