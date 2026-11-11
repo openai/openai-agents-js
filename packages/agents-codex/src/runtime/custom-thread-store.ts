@@ -4,6 +4,7 @@ import {
   type SignInWithChatGPT,
 } from './sign-in-with-chatgpt';
 import { outputOf, toolApplicationData, ToolOutput } from './tools';
+import { shellOutputSchema, type ShellOutput } from './shell';
 
 /**
  * Preview canonical native storage. Snapshots are opaque, versioned SDK data.
@@ -115,7 +116,7 @@ export interface ReconciledToolResult {
   turnId: string;
   callId: string;
   /** Private applicationData is unsupported by store reconciliation. */
-  result: string | ToolOutput;
+  result: string | ToolOutput | ShellOutput;
 }
 /**
  * Record authoritative external reconciliation while no Session owns this thread.
@@ -132,12 +133,16 @@ export async function reconcileSessionStore(
       throw new TypeError(
         'Reconciliation requires original session, turn, and call identities',
       );
-  if (
-    typeof result.result !== 'string' &&
-    !(result.result instanceof ToolOutput)
-  )
-    throw new TypeError('Reconciled result must be a string or ToolOutput');
-  const output = outputOf(result.result);
+  let value = result.result;
+  if (typeof value !== 'string' && !(value instanceof ToolOutput)) {
+    const parsed = shellOutputSchema.safeParse(value);
+    if (!parsed.success)
+      throw new TypeError(
+        'Reconciled result must be a string, ToolOutput, or valid ShellOutput',
+      );
+    value = parsed.data;
+  }
+  const output = outputOf(value);
   if (toolApplicationData(output) !== undefined)
     throw new TypeError(
       'Store reconciliation does not support applicationData',
