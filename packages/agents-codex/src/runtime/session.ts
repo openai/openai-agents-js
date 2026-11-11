@@ -103,11 +103,11 @@ import {
 } from './prepared-request';
 import {
   captureTracing,
+  captureTraceValidation,
   getCurrentSpan,
   workflowForTrace,
   withoutTracing,
   TraceCapture,
-  type TraceSpan,
   withNativeCallbackContext,
 } from './tracing-context';
 import type { TraceOptions } from './telemetry';
@@ -2493,7 +2493,7 @@ export class Session<OutputT = string, Context = unknown> {
       event: NativeEvent;
       tool: ManualTool;
       grant: ReturnType<typeof createManualRequest>;
-      tracing?: TraceSpan;
+      tracing?: ReturnType<typeof captureTraceValidation>;
       ready: boolean;
       identity: ToolIdentity;
     }
@@ -9408,17 +9408,21 @@ export class Session<OutputT = string, Context = unknown> {
       parent: toolInvocation.getStore(),
     };
     const tracing = run.tracing ?? run.issuedTracing;
+    const invokeNative = () =>
+      withNativeCallbackContext(
+        tracingContext,
+        callback,
+        signal,
+        workflowForTrace,
+      );
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
       .then(() =>
         toolInvocation.run(scope, () =>
           tracingContext !== undefined
-            ? withNativeCallbackContext(
-                tracingContext,
-                callback,
-                signal,
-                workflowForTrace,
-              )
+            ? tracing
+              ? tracing.runWithStorage(invokeNative)
+              : invokeNative()
             : tracing
               ? tracing.run('host.callback', 'callback', callback)
               : callback(),
@@ -9781,7 +9785,7 @@ export class Session<OutputT = string, Context = unknown> {
           event,
           tool,
           grant,
-          tracing: getCurrentSpan(),
+          tracing: captureTraceValidation(),
           identity,
           ready: false,
         });
