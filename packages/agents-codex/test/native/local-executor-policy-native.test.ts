@@ -85,6 +85,7 @@ it.skipIf(!supported)(
       const authAlias = join(cwd, 'private-alias');
       const oauth = join(login, '.credentials.json');
       const fakeHelper = join(base, 'fake-bwrap-ran');
+      const nativeAuthPath = join(cwd, 'native-auth-path');
       await Promise.all([
         writeFile(outside, 'outside'),
         writeFile(auth, 'synthetic-login'),
@@ -123,7 +124,9 @@ it.skipIf(!supported)(
           (file) =>
             `if ( : < ${shellQuote(file)} ) 2>/dev/null; then exit 12; fi`,
         ),
-        `for home in ${shellQuote(homes)}/agents-session-*; do if ( : < "$home/auth.json" ) 2>/dev/null; then exit 16; fi; done`,
+        `native_auth="$(cat ${shellQuote(nativeAuthPath)})"`,
+        'test -n "$native_auth"',
+        'if ( : < "$native_auth" ) 2>/dev/null; then exit 16; fi',
         `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 13; fi`,
         `if (printf denied > ${shellQuote(join(homes, 'ambient-write'))}) 2>/dev/null; then exit 14; fi`,
         'printf scoped > "$TMPDIR/fixture"',
@@ -204,10 +207,10 @@ it.skipIf(!supported)(
         name.startsWith('agents-session-'),
       );
       expect(runtimeHome).toBeDefined();
-      await writeFile(
-        join(homes, runtimeHome!, 'auth.json'),
-        'synthetic-native-auth',
-      );
+      const seededAuth = join(homes, runtimeHome!, 'auth.json');
+      await writeFile(seededAuth, 'synthetic-native-auth');
+      expect(await readFile(seededAuth, 'utf8')).toBe('synthetic-native-auth');
+      await writeFile(nativeAuthPath, seededAuth);
       await using other = await agent.session({
         environment: environment(sibling),
       });
