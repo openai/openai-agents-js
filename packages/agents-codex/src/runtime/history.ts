@@ -1422,6 +1422,9 @@ export function projectHistory(
     const key = JSON.stringify([item.turnId, item.type, recordedId, item.id]);
     const callKey = JSON.stringify([
       item.turnId,
+      item.type === 'tool_search_call' || item.type === 'tool_search_output'
+        ? 'tool_search'
+        : 'function',
       ('callId' in item ? item.callId : undefined) ?? item.id,
     ]);
     const call = latestCalls.get(callKey);
@@ -1545,7 +1548,7 @@ export function projectHistory(
           'computer_call_output',
         ].includes(String(payload.type)) &&
         metadata?.turn_id === aborted &&
-        latestCalls.has(JSON.stringify([aborted, payload.call_id]))
+        latestCalls.has(JSON.stringify([aborted, 'function', payload.call_id]))
       )
         turn = aborted;
       if (turn) {

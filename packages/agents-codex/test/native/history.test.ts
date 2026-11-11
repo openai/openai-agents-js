@@ -849,3 +849,42 @@ it('keeps a computer effect uncertain until its canonical screenshot receipt', (
     arguments: original,
   });
 });
+
+it('pairs interleaved function and server-search outputs with the same call ID', () => {
+  const calls: JsonObject[] = [
+    {
+      type: 'function_call',
+      call_id: 'shared',
+      name: 'lookup',
+      arguments: '{}',
+    },
+    {
+      type: 'tool_search_call',
+      call_id: 'shared',
+      execution: 'server',
+      arguments: {},
+    },
+    {
+      type: 'tool_search_output',
+      call_id: 'shared',
+      execution: 'server',
+      status: 'completed',
+      tools: [],
+    },
+    { type: 'function_call_output', call_id: 'shared', output: 'looked up' },
+  ];
+  const { items } = projectHistory(
+    [
+      { type: 'turn_context', payload: { turn_id: 'turn' } },
+      ...calls.map((payload) => ({ type: 'response_item', payload })),
+    ],
+    'root',
+  );
+  expect(items.map((item) => [item.type, item.status])).toEqual([
+    ['function_call', 'completed'],
+    ['tool_search_call', 'completed'],
+    ['tool_search_output', 'completed'],
+    ['function_call_output', 'completed'],
+  ]);
+  expect(items.map((item) => item.data)).toEqual(calls);
+});

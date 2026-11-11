@@ -266,3 +266,60 @@ it('retains accepted discovery calls and outputs in the produced sequence', asyn
   expect(server.requests).toHaveLength(3);
   server.assertExhausted();
 });
+
+it('keeps function and server-search identities separate when their call IDs match', async () => {
+  let effects = 0;
+  const lookup = tool({
+    name: 'lookup',
+    parameters: z.object({}),
+    execute() {
+      effects++;
+      return 'looked up';
+    },
+  });
+  const server = new ModelServer([
+    [
+      call('lookup', {}, { callId: 'shared' }),
+      {
+        type: 'tool_search_call',
+        call_id: 'shared',
+        execution: 'server',
+        arguments: {},
+      },
+      {
+        type: 'tool_search_output',
+        call_id: 'shared',
+        execution: 'server',
+        status: 'completed',
+        tools: [],
+      },
+    ],
+    [message('settled')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-search-family',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    model: 'fixture-produced-call-family',
+    provider,
+    tools: [lookup],
+    programmaticToolCalling: false,
+    instructions: 'Use lookup.',
+  });
+  const completed = await agent.run('lookup', { returnItems: true });
+  expect(completed.items?.map(({ item }) => [item.type, item.status])).toEqual([
+    ['function_call', 'completed'],
+    ['tool_search_call', 'completed'],
+    ['tool_search_output', 'completed'],
+    ['function_call_output', 'completed'],
+    ['message', 'completed'],
+  ]);
+  expect(effects).toBe(1);
+  expect(completed.finalOutput).toBe('settled');
+  expect(server.requests).toHaveLength(2);
+  server.assertExhausted();
+});
