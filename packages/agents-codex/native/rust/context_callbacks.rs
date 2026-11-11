@@ -879,7 +879,7 @@ impl PythonTools {
                     reply.usage,
                 );
                 if let Some(original) = reply.original_usage {
-                    if let Some(Ok(ResponseEvent::Completed {
+                    if let Some(Ok(codex_api::ResponseEvent::Completed {
                         response_id,
                         usage_metadata,
                         ..
@@ -915,7 +915,7 @@ impl PythonTools {
                         usage_metadata.get_or_insert_default().metadata = Some(raw_usage);
                         events.insert(
                             events.len() - 1,
-                            Ok(ResponseEvent::ResponseObserved(observation)),
+                            Ok(codex_api::ResponseEvent::ResponseObserved(observation)),
                         );
                     }
                 }
