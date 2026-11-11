@@ -299,6 +299,7 @@ export type HostedToolItem = HostedItemIdentity &
     | {
         type: 'mcp_call';
         serverLabel: string;
+        callId: null;
         name: string;
         arguments: string;
         output: import('./binding').JsonValue;

@@ -2082,6 +2082,7 @@ export function projectHostedToolItem(
         ...common,
         type: raw.type,
         serverLabel: text(raw.server_label) ?? '',
+        callId: null,
         name: text(raw.name) ?? '',
         arguments: text(raw.arguments) ?? '',
         output: raw.output ?? null,

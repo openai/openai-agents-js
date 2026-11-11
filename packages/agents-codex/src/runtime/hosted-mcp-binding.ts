@@ -51,7 +51,7 @@ export class HostedMcpBinding {
           : undefined;
     return (
       (kind === 'direct' || kind === 'code_interpreter') &&
-      (!Array.isArray(allowed) || allowed.includes(kind))
+      (Array.isArray(allowed) ? allowed.includes(kind) : kind === 'direct')
     );
   }
 }

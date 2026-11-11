@@ -8,6 +8,7 @@ use codex_agent_graph_store::ThreadSpawnEdgeStatus;
 use codex_core_api::{AbsolutePathBuf, InitialHistory, ThreadId};
 use codex_history::{ResumedHistory, RolloutItem};
 use codex_protocol::dynamic_tools::DynamicToolSpec;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::{
     AgentStatus, EventMsg, SessionMeta, ThreadMemoryMode, TurnAbortReason, TurnAbortedEvent,
 };
@@ -1387,6 +1388,44 @@ pub(crate) fn validate_imported_history(history: &[RolloutItem]) -> anyhow::Resu
     Ok(())
 }
 
+pub(crate) fn validate_external_response_item(item: &ResponseItem) -> anyhow::Result<()> {
+    ensure!(
+        !matches!(
+            item,
+            ResponseItem::McpApprovalResponse { approve: true, .. }
+        ),
+        "Imported hosted MCP approvals require live SDK approval authority"
+    );
+    Ok(())
+}
+
+pub(crate) fn validate_external_mcp_approvals(history: &[RolloutItem]) -> anyhow::Result<()> {
+    use codex_history::sdk_originals::SdkOriginalHistoryCheckpoint;
+    for record in history {
+        match record {
+            RolloutItem::ResponseItem(envelope) => validate_external_response_item(&envelope.item)?,
+            RolloutItem::Compacted(compacted) => {
+                if let Some(items) = &compacted.replacement_history {
+                    for envelope in items {
+                        validate_external_response_item(&envelope.item)?;
+                    }
+                }
+                if let Some(SdkOriginalHistoryCheckpoint::Replace(originals)) =
+                    &compacted.sdk_originals
+                {
+                    for item in &originals.items {
+                        if let Some(envelope) = &item.projection {
+                            validate_external_response_item(&envelope.item)?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub async fn restore(
     engine: &Arc<EngineState>,
     mut checkpoint: Checkpoint,
@@ -1395,6 +1434,10 @@ pub async fn restore(
     fresh_manual: bool,
 ) -> anyhow::Result<NativeThread> {
     let _lifecycle = engine.lifecycle.lock().await;
+    validate_external_mcp_approvals(&checkpoint.history)?;
+    for child in &checkpoint.descendants {
+        validate_external_mcp_approvals(&child.history)?;
+    }
     checkpoint.validate_plan_binding(Some(&engine.service_config.model_provider_id))?;
     ensure!(
         engine.local_checklist_store.is_none(),

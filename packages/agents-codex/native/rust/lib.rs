@@ -2248,6 +2248,23 @@ impl NativeThread {
     #[napi(js_name = "call")]
     pub async fn call(&self, operation: String, params_json: String) -> napi::Result<String> {
         let params: Value = serde_json::from_str(&params_json).map_err(native_error)?;
+        match operation.as_str() {
+            "append_rollout_items" => {
+                let items: Vec<codex_history::RolloutItem> =
+                    serde_json::from_value(params.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(native_error)?;
+                checkpoint::validate_external_mcp_approvals(&items).map_err(native_error)?;
+            }
+            "inject_response_items" | "inject_if_running" => {
+                let items: Vec<codex_protocol::models::ResponseItem> =
+                    serde_json::from_value(params.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(native_error)?;
+                for item in &items {
+                    checkpoint::validate_external_response_item(item).map_err(native_error)?;
+                }
+            }
+            _ => {}
+        }
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         // Preparation reserves the immutable config/declaration source while

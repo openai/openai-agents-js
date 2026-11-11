@@ -842,6 +842,22 @@ index 15596277..496f55ef 100644
              | ResponseItem::FileSearchCall { .. }
              | ResponseItem::CodeInterpreterCall { .. }
              | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/history/src/sdk_originals.rs b/codex-rs/history/src/sdk_originals.rs
+index d77c9401..c45ea3c7 100644
+--- a/codex-rs/history/src/sdk_originals.rs
++++ b/codex-rs/history/src/sdk_originals.rs
+@@ -73,6 +73,11 @@ pub fn input_projection(value: &str) -> Result<Option<ResponseItem>, String> {
+     let item: ResponseItem =
+         serde_json::from_str(value).map_err(|_| "Invalid canonical history item".to_string())?;
+     Ok(match item {
++        ResponseItem::McpApprovalResponse { approve: true, .. } => {
++            return Err(
++                "Imported hosted MCP approvals require live SDK approval authority".to_string(),
++            );
++        }
+         ResponseItem::Other
+         | ResponseItem::ConfigurationUpdate { .. }
+         | ResponseItem::CompactionTrigger { .. } => None,
 diff --git a/codex-rs/otel/src/events/session_telemetry.rs b/codex-rs/otel/src/events/session_telemetry.rs
 index 85546fdb..e24bfc7a 100644
 --- a/codex-rs/otel/src/events/session_telemetry.rs
