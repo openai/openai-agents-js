@@ -201,7 +201,6 @@ jobs:
           node-version: '24'
           cache: pnpm
       - name: Build the current SDK
-        id: build_sdk
         run: |
           pnpm install --frozen-lockfile
           pnpm build
@@ -263,13 +262,13 @@ jobs:
             --reporter=verbose
           pnpm test:native --mode full --maxWorkers=4 --reporter=verbose
       - name: Qualify local executor grants on macOS
-        if: ${{ !cancelled() && runner.os == 'macOS' && steps.build_sdk.outcome == 'success' }}
+        if: runner.os == 'macOS'
         env:
           CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
         run: >-
           pnpm test:native packages/agents-codex/test/native/local-executor-policy-native.test.ts
-          -t 'blocks delegation from a local command to launchd|keeps telemetry configurable after rejecting trusted writes for a remote environment|allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants|scopes trusted local workspace writes, private authentication and command temp|scopes Git and SSH settings for local commands|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
+          -t 'blocks delegation from a local command to launchd|scopes trusted local workspace writes, private authentication and command temp|scopes Git and SSH settings for local commands|keeps telemetry configurable after rejecting trusted writes for a remote environment|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
           --reporter=verbose
       - name: Qualify completed child history on macOS
         if: runner.os == 'macOS'

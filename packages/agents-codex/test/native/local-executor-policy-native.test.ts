@@ -16,8 +16,8 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createUnixServer } from 'node:net';
-import { homedir, tmpdir, userInfo } from 'node:os';
-import { basename, delimiter, dirname, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { basename, delimiter, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -55,7 +55,8 @@ async function providerFor(server: ModelServer) {
   });
 }
 
-const supported = process.platform === 'linux' || process.platform === 'darwin';
+const isLinux = process.platform === 'linux';
+const supported = isLinux || process.platform === 'darwin';
 const packageRoot = join(import.meta.dirname, '..', '..');
 
 const shellQuote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
@@ -84,6 +85,7 @@ it.skipIf(!supported)(
       const authAlias = join(cwd, 'private-alias');
       const oauth = join(login, '.credentials.json');
       const fakeHelper = join(base, 'fake-bwrap-ran');
+      const nativeAuthPath = join(cwd, 'native-auth-path');
       await Promise.all([
         writeFile(outside, 'outside'),
         writeFile(auth, 'synthetic-login'),
@@ -122,7 +124,9 @@ it.skipIf(!supported)(
           (file) =>
             `if ( : < ${shellQuote(file)} ) 2>/dev/null; then exit 12; fi`,
         ),
-        `for home in ${shellQuote(homes)}/agents-session-*; do if ( : < "$home/auth.json" ) 2>/dev/null; then exit 16; fi; done`,
+        `native_auth="$(cat ${shellQuote(nativeAuthPath)})"`,
+        'test -n "$native_auth"',
+        'if ( : < "$native_auth" ) 2>/dev/null; then exit 16; fi',
         `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 13; fi`,
         `if (printf denied > ${shellQuote(join(homes, 'ambient-write'))}) 2>/dev/null; then exit 14; fi`,
         'printf scoped > "$TMPDIR/fixture"',
@@ -182,7 +186,7 @@ it.skipIf(!supported)(
           network: {
             allowedDomains: ['sdk-fixture.invalid'],
             deniedDomains: ['denied.invalid'],
-            allowAllUnixSockets: process.platform === 'linux',
+            allowAllUnixSockets: isLinux,
           },
         });
       const opened = await agent
@@ -203,10 +207,10 @@ it.skipIf(!supported)(
         name.startsWith('agents-session-'),
       );
       expect(runtimeHome).toBeDefined();
-      await writeFile(
-        join(homes, runtimeHome!, 'auth.json'),
-        'synthetic-native-auth',
-      );
+      const seededAuth = join(homes, runtimeHome!, 'auth.json');
+      await writeFile(seededAuth, 'synthetic-native-auth');
+      expect(await readFile(seededAuth, 'utf8')).toBe('synthetic-native-auth');
+      await writeFile(nativeAuthPath, seededAuth);
       await using other = await agent.session({
         environment: environment(sibling),
       });
@@ -389,7 +393,7 @@ it.skipIf(!supported)(
         model: 'gpt-5',
         instructions: 'Work.',
       });
-      if (process.platform === 'linux') {
+      if (isLinux) {
         await expect(
           agent.session({
             environment: Environment.local({
@@ -471,88 +475,13 @@ it.skipIf(process.platform !== 'darwin')(
   150_000,
 );
 
-it.skipIf(process.platform !== 'darwin')(
-  'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants',
-  async () => {
-    const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-darwin-'));
-    try {
-      const base = await realpath(temporary);
-      const cwd = join(base, 'workspace');
-      const extra = join(base, 'granted');
-      const outside = join(base, 'outside');
-      await Promise.all([
-        mkdir(cwd),
-        mkdir(extra),
-        writeFile(outside, 'outside'),
-      ]);
-      vi.stubEnv(
-        'PATH',
-        [dirname(process.execPath), process.env.PATH].join(delimiter),
-      );
-      const host = userInfo();
-      const command = [
-        'set -eu',
-        `test "$(/usr/bin/id -u)" = ${host.uid} || exit 11`,
-        `test "$(/usr/bin/id -un)" = ${shellQuote(host.username)} || exit 12`,
-        '/usr/bin/ssh -G -F /dev/null sdk-fixture.invalid > "$TMPDIR/ssh-config"',
-        '/usr/bin/grep -qx "hostname sdk-fixture.invalid" "$TMPDIR/ssh-config"',
-        `test "$(node --version)" = ${shellQuote(process.version)} || exit 13`,
-        'verify=$(/usr/bin/curl --disable --fail --silent --show-error --max-time 20 --proto "=https" --write-out "%{ssl_verify_result}" https://github.com/robots.txt -o "$TMPDIR/robots.txt")',
-        'test "$verify" = 0 || exit 14',
-        'test -s "$TMPDIR/robots.txt"',
-        `test "$(cat ${shellQuote(outside)})" = outside`,
-        `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 15; fi`,
-        'printf workspace > result',
-        `printf grant > ${shellQuote(join(extra, 'result'))}`,
-      ].join('; ');
-      const server = new ModelServer([
-        [
-          call(
-            'exec_command',
-            { cmd: command, yield_time_ms: 25_000 },
-            { callId: 'trusted-macos' },
-          ),
-        ],
-        [message('done')],
-      ]);
-      await using provider = await providerFor(server);
-      const agent = new Agent({
-        provider,
-        model: 'gpt-5',
-        instructions: 'Work.',
-      });
-      await using session = await agent.session({
-        environment: Environment.local({
-          cwd,
-          writableRoots: [extra],
-          writePolicy: 'trusted_workspace_write',
-          tools: ['exec_command'],
-          network: { allowedDomains: ['github.com'] },
-        }),
-      });
-      expect(
-        (await (await session.submit('Run the fixture.')).wait()).finalOutput,
-      ).toBe('done');
-      expect(await Array.fromAsync(session.items())).toContainEqual(
-        expect.objectContaining({
-          type: 'command_execution',
-          callId: 'trusted-macos',
-          exitCode: 0,
-          status: 'completed',
-        }),
-      );
-      expect(await readFile(join(cwd, 'result'), 'utf8')).toBe('workspace');
-      expect(await readFile(join(extra, 'result'), 'utf8')).toBe('grant');
-      expect(await readFile(outside, 'utf8')).toBe('outside');
-      server.assertExhausted();
-    } finally {
-      await rm(temporary, { recursive: true, force: true });
-    }
-  },
-  45_000,
-);
-
-it.skipIf(!supported).for(['strict', 'trusted_workspace_write'] as const)(
+it
+  .skipIf(!supported)
+  .for(
+    isLinux
+      ? (['strict', 'trusted_workspace_write'] as const)
+      : (['strict'] as const),
+  )(
   'records the selected local proxy in child and grandchild receipts with %s',
   { timeout: 75_000 },
   async (writePolicy, context) => {
@@ -2266,7 +2195,13 @@ it.skipIf(!supported)(
   30_000,
 );
 
-it.skipIf(!supported).for(['portable', 'local', 'trusted portable'] as const)(
+it
+  .skipIf(!supported)
+  .for(
+    isLinux
+      ? (['portable', 'local', 'trusted portable'] as const)
+      : (['portable', 'local'] as const),
+  )(
   'applies a per-turn write policy and requires the current policy on %s restore',
   { timeout: 45_000 },
   async (kind, context) => {
@@ -2759,9 +2694,12 @@ it.skipIf(process.platform !== 'darwin')(
   45_000,
 );
 
-it.skipIf(process.platform !== 'darwin')(
-  'blocks delegation from a local command to launchd',
-  async () => {
+it
+  .skipIf(process.platform !== 'darwin')
+  .for(['strict', 'trusted_workspace_write'] as const)(
+  'blocks delegation from a local command to launchd with %s',
+  { timeout: 45_000 },
+  async (writePolicy) => {
     const launchctl = (...args: string[]) => {
       const result = spawnSync('/bin/launchctl', args, {
         encoding: 'utf8',
@@ -2846,7 +2784,11 @@ it.skipIf(process.platform !== 'darwin')(
       expect(existsSync(marker)).toBe(false);
       {
         await using session = await agent.session({
-          environment: Environment.local({ cwd, tools: ['exec_command'] }),
+          environment: Environment.local({
+            cwd,
+            tools: ['exec_command'],
+            writePolicy,
+          }),
         });
         const tryDelegation = async (operation: 'bootstrap' | 'kickstart') => {
           const turn = await session.submit(`Try launchctl ${operation}.`);
@@ -2891,7 +2833,6 @@ it.skipIf(process.platform !== 'darwin')(
       }
     }
   },
-  45_000,
 );
 
 // Honor the host restriction unless native sandbox execution is required.
@@ -2902,7 +2843,11 @@ it
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
   )
-  .for(['portable', 'local', 'trusted local'] as const)(
+  .for(
+    isLinux
+      ? (['portable', 'local', 'trusted local'] as const)
+      : (['portable', 'local'] as const),
+  )(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {
@@ -3224,17 +3169,24 @@ it.skipIf(process.platform !== 'darwin')(
       const skillBody =
         '---\nname: nov9_read_only_probe\ndescription: NAMED_SKILL_CATALOG\n---\nRead marker.txt when this skill is requested.\n';
       const marker = join(granted, 'marker.txt');
+      const linkedMarker = join(granted, 'linked-marker');
+      const linkedAlias = join(granted, 'linked-marker-alias');
+      const workspaceAlias = join(cwd, 'read-only-hard-link');
       const outside = join(other, 'ungranted.txt');
       const metadata = '[core]\n\trepositoryformatversion = 0\n';
       await Promise.all([
         writeFile(join(granted, 'SKILL.md'), skillBody),
         writeFile(marker, 'GRANTED_SKILL_MARKER\n'),
+        writeFile(linkedMarker, 'GRANTED_HARD_LINK_MARKER\n'),
         writeFile(outside, 'UNGRANTED_PRIVATE_SENTINEL\n'),
         writeFile(join(cwd, '.git', 'config'), metadata),
         symlink(granted, skill),
         symlink(outside, join(cwd, 'ungranted-link')),
         symlink(outside, join(granted, 'ungranted-link')),
       ]);
+      await link(linkedMarker, linkedAlias);
+      await link(marker, workspaceAlias);
+      await rm(workspaceAlias);
       vi.stubEnv('TMPDIR', homes);
       let privateMarker = '';
       const denyRead = (path: string) =>
@@ -3249,6 +3201,10 @@ it.skipIf(process.platform !== 'darwin')(
                 `cat ${quote(join(skill, 'SKILL.md'))}`,
                 `cat ${quote(join(skill, 'marker.txt'))}`,
                 `cat ${quote(marker)}`,
+                `cat ${quote(linkedMarker)} ${quote(linkedAlias)}`,
+                denyWrite(linkedAlias),
+                `if link_error=$(LC_ALL=C /bin/ln ${quote(marker)} ${quote(workspaceAlias)} 2>&1); then printf READ_ONLY_LINK_CREATED; exit 13; fi`,
+                'case "$link_error" in *"Operation not permitted"|*"Permission denied") printf READ_ONLY_LINK_DENIED;; *) printf "%s" "$link_error" >&2; exit 14;; esac',
               ]
             : [denyRead(marker), denyRead(join(skill, 'marker.txt'))]),
           denyRead(outside),
@@ -3392,8 +3348,13 @@ it.skipIf(process.platform !== 'darwin')(
             expect(output).toContain('POLICY_OK');
             expect(output).not.toContain('UNGRANTED_PRIVATE_SENTINEL');
             expect(output).not.toContain('NATIVE_PRIVATE_SENTINEL');
-            if (phase !== 'strict-default')
+            if (phase !== 'strict-default') {
               expect(output).toContain('GRANTED_SKILL_MARKER');
+              expect(output).toContain('READ_ONLY_LINK_DENIED');
+              expect(output).toContain(
+                'GRANTED_HARD_LINK_MARKER\nGRANTED_HARD_LINK_MARKER',
+              );
+            }
           }
         },
       );
@@ -3408,6 +3369,7 @@ it.skipIf(process.platform !== 'darwin')(
         metadata,
       );
       expect(existsSync(join(granted, 'new.txt'))).toBe(false);
+      expect(existsSync(workspaceAlias)).toBe(false);
     } finally {
       vi.unstubAllEnvs();
       await rm(temporary, { recursive: true, force: true });

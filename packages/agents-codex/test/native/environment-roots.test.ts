@@ -17,7 +17,7 @@ it('keeps the omitted local write policy identical to explicit strict', () => {
   expect(environmentConfig(strict)).not.toHaveProperty('write_policy');
 });
 
-it('accepts an immutable trusted workspace write policy only on supported local platforms', () => {
+it('accepts an immutable trusted workspace write policy on local Linux and macOS', () => {
   const options = {
     cwd: process.cwd(),
     writePolicy: 'trusted_workspace_write' as const,
