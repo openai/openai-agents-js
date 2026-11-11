@@ -36,6 +36,22 @@ export interface CodeInterpreter extends CodeInterpreterOptions {
   readonly kind: 'code_interpreter';
 }
 
+export type HostedShellEnvironment = Extract<
+  NonNullable<OpenAI.Responses.FunctionShellTool['environment']>,
+  { type: 'container_auto' | 'container_reference' }
+>;
+
+export interface HostedShellOptions extends HostedToolOptions {
+  /** Auto-provision a managed container or use an existing provider container. */
+  environment: HostedShellEnvironment;
+  allowedCallers?: OpenAI.Responses.FunctionShellTool['allowed_callers'];
+}
+
+/** Provider-owned shell execution inside a managed container. */
+export interface HostedShell extends HostedShellOptions {
+  readonly kind: 'shell';
+}
+
 export interface ImageGenerationOptions extends HostedToolOptions {
   action?: OpenAI.Responses.Tool.ImageGeneration['action'];
   background?: OpenAI.Responses.Tool.ImageGeneration['background'];
@@ -111,7 +127,7 @@ export interface ToolSearch<Context = any> extends Omit<
 }
 
 export type HostedTool =
-  FileSearch | CodeInterpreter | ImageGeneration | ToolSearch;
+  FileSearch | CodeInterpreter | HostedShell | ImageGeneration | ToolSearch;
 
 /** Capture nested provider configuration without retaining application objects. */
 function capture<T>(value: T): T {
@@ -145,6 +161,10 @@ export function codeInterpreter(
   return capture({ ...options, kind: 'code_interpreter' as const });
 }
 
+export function hostedShell(options: HostedShellOptions): HostedShell {
+  return captureHostedTool({ ...options, kind: 'shell' });
+}
+
 export function imageGeneration(
   options: ImageGenerationOptions = {},
 ): ImageGeneration {
@@ -176,10 +196,21 @@ export function getClientToolSearchExecutor<Context>(
 }
 
 /** @internal Re-capture structural declarations at the session opening boundary. */
-export function captureHostedTool(tool: HostedTool): HostedTool {
-  return tool.kind === 'tool_search'
-    ? captureToolSearch(tool, getClientToolSearchExecutor(tool))
-    : capture(tool);
+export function captureHostedTool<T extends HostedTool>(tool: T): T {
+  if (
+    tool.kind === 'shell' &&
+    tool.environment?.type !== 'container_auto' &&
+    tool.environment?.type !== 'container_reference'
+  ) {
+    throw new TypeError(
+      'Hosted shell requires a managed container environment',
+    );
+  }
+  return (
+    tool.kind === 'tool_search'
+      ? captureToolSearch(tool, getClientToolSearchExecutor(tool))
+      : capture(tool)
+  ) as T;
 }
 
 /** @internal The bridge removes SDK include controls before provider serialization. */
@@ -202,6 +233,7 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
       ],
       code_interpreter: ['container', 'allowed_callers', 'include_outputs'],
       tool_search: ['execution', 'description', 'parameters'],
+      shell: ['environment', 'allowed_callers'],
       image_generation: [
         'action',
         'complexity',
@@ -274,6 +306,15 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
           ? {}
           : { parameters: tool.parameters }),
       };
+    if (tool.kind === 'shell')
+      return {
+        ...providerData,
+        type: tool.kind,
+        environment: tool.environment as unknown as JsonObject,
+        ...(tool.allowedCallers === undefined
+          ? {}
+          : { allowed_callers: tool.allowedCallers }),
+      };
     const fields = {
       action: tool.action,
       complexity: tool.complexity,
@@ -336,5 +377,15 @@ export type HostedToolItem = HostedItemIdentity &
         type: 'image_generation_call';
         result: string | null;
         revised_prompt: string | null;
+      }
+    | {
+        type: 'shell_call';
+        call_id: string;
+        action: import('./binding').JsonValue;
+      }
+    | {
+        type: 'shell_call_output';
+        call_id: string;
+        output: import('./binding').JsonValue;
       }
   );

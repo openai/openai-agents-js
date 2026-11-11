@@ -282,6 +282,11 @@ export class NativeThread {
     tracing_context?: string,
   ): Promise<string>;
   _reply_model_producer(response_json: string): void;
+  _start_model_producer(owner_json: string): void;
+  _push_model_producer(
+    owner_json: string,
+    event_json: string,
+  ): Promise<boolean>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _reply_compaction(response_json: string): void;
@@ -342,6 +347,8 @@ export class NativeThread {
     tracing_context?: string,
     observationSubmissionId?: string,
   ): Promise<string>;
+  _start_produced_items(): void;
+  _take_produced_items(turn_id: string): string;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;
   _interrupt_session(): Promise<void>;

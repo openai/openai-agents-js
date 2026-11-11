@@ -103,6 +103,8 @@ impl SupportedOutput {
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::FileSearchCall { .. }
                     | ResponseItem::CodeInterpreterCall { .. }
+                    | ResponseItem::ShellCall { .. }
+                    | ResponseItem::ShellCallOutput { .. }
                     | ResponseItem::ImageGenerationCall { .. } => {
                         self.pending_assistant = false;
                         self.completed_native_item = true;

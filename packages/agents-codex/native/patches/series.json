@@ -1,5 +1,5 @@
 {
-  "result_tree": "4fea7e86080992f49fff9f8ab040e20b3e3a4fc6",
+  "result_tree": "8e5caea35aa69a9b50635c2d2487f9bb45dfcfe6",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -762,12 +762,36 @@
       "sha256": "ab9d85801742d4b5d27226ce26f25ad1909e743f84b4c2822b7afbb0b7b4d60f"
     },
     {
+      "path": "sdk-produced-run-items.patch",
+      "sha256": "5662fc947935ad7b28aa70878275fdb8ca93beb9d4259818baabd653793359e3"
+    },
+    {
+      "path": "sdk-provider-hosted-shell.patch",
+      "sha256": "f2bdb3888ab4893bcdec6de7a544f3bb4d5ece98b1efc0e80b4e6c10676d8885"
+    },
+    {
+      "path": "sdk-raw-provider-event-fixtures.patch",
+      "sha256": "1d030d1488ae51cbbb7c75c6814a8a3eedb7454573480e32d44ade99a4d31afc"
+    },
+    {
+      "path": "sdk-native-model-response-stream.patch",
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-produced-items.patch",
+      "sha256": "9d8d9946b04186bb9c8efda78d56f83f764ec3ccce3885217e12493ca9b9f084"
+    },
+    {
       "path": "sdk-provider-tool-search.patch",
-      "sha256": "f42d6c53ca9acd0e5275e3f531c6f822433a48874fcd2d0e4f554064052639e7"
+      "sha256": "3992f9324f36f1a9cfc5c4c694c740b3b9dd7797ab96791ea27fe392253eb97f"
     },
     {
       "path": "sdk-native-client-tool-search.patch",
-      "sha256": "d9ec6f305d65848a7417e8f13735b88725e8ebcf77847e7352e73f4a9cc39574"
+      "sha256": "4b0634d1d023aa4f40a13b98d88efe45f8e3a1ff5d2d37161e5bddb316e971c7"
     }
   ]
 }

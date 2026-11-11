@@ -59,6 +59,10 @@ export interface ModelResponse {
 /** Application-owned producer. Cancellation joins admitted work and discards late output. */
 export interface NativeModel {
   complete(request: ModelRequest): ModelResponse | Promise<ModelResponse>;
+  /** Responses wire events; native execution admits tool calls only after a single terminal and iterator completion. */
+  stream?(
+    request: ModelRequest,
+  ): AsyncIterable<JsonObject> | Promise<AsyncIterable<JsonObject>>;
 }
 /** Resolve a native model for each effective request model name. */
 export interface ModelProvider {

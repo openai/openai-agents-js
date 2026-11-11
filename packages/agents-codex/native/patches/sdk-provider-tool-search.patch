@@ -1,44 +1,56 @@
 diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
-index 8bb98c3..dcce985 100644
+index f2e3b686..eb693e85 100644
 --- a/codex-rs/core/src/tools/handlers/extension_tools.rs
 +++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
-@@ -140,6 +140,7 @@ impl CoreToolRuntime for ExtensionToolAdapter {
-                 | ToolSpec::FileSearch(_)
+@@ -141,6 +141,7 @@ impl CoreToolRuntime for ExtensionToolAdapter {
                  | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
 +                | ToolSpec::ProviderToolSearch(_)
                  | ToolSpec::Computer { .. }
                  | ToolSpec::ComputerUsePreview { .. }
                  | ToolSpec::WebSearch { .. } => false,
 diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
-index 84bc7ca..5810a10 100644
+index 2465d3ed..8b4985f5 100644
 --- a/codex-rs/core/src/tools/registry.rs
 +++ b/codex-rs/core/src/tools/registry.rs
-@@ -518,6 +518,7 @@ impl ToolRegistry {
-                 | ToolSpec::FileSearch(_)
+@@ -519,6 +519,7 @@ impl ToolRegistry {
                  | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
 +                | ToolSpec::ProviderToolSearch(_)
                  | ToolSpec::Computer { .. }
                  | ToolSpec::ComputerUsePreview { .. }
                  | ToolSpec::WebSearch { .. } => "",
 diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
-index 35ce3a4..fad6db6 100644
+index 8115fe4a..d0ea9077 100644
 --- a/codex-rs/core/src/tools/router.rs
 +++ b/codex-rs/core/src/tools/router.rs
-@@ -210,6 +210,7 @@ impl ToolRouter {
-                 | ToolSpec::FileSearch(_)
+@@ -211,6 +211,7 @@ impl ToolRouter {
                  | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::Shell(_)
                  | ToolSpec::ImageGeneration(_)
 +                | ToolSpec::ProviderToolSearch(_)
                  | ToolSpec::WebSearch { .. } => false,
              })
          {
+diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
+index b518485e..198a5089 100644
+--- a/codex-rs/core/src/tools/router_tests.rs
++++ b/codex-rs/core/src/tools/router_tests.rs
+@@ -656,6 +656,7 @@ fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<Str
+             | ToolSpec::Function(_)
+             | ToolSpec::Freeform(_)
+             | ToolSpec::ToolSearch { .. }
++            | ToolSpec::ProviderToolSearch(_)
+             | ToolSpec::FileSearch(_)
+             | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::ImageGeneration(_)
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index e23a405..8ec53c0 100644
+index 220f3518..ebb23dc9 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -596,14 +596,18 @@ fn finalize_selected_tool_router(
+@@ -574,14 +574,18 @@ fn finalize_selected_tool_router(
          }
      }
      let tool_search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
@@ -60,7 +72,7 @@ index e23a405..8ec53c0 100644
          if registry.remove(&tool_search_name).is_some() {
              registry.record_collision(tool_search_name.clone());
          }
-@@ -630,7 +634,9 @@ fn finalize_selected_tool_router(
+@@ -608,7 +612,9 @@ fn finalize_selected_tool_router(
                  registry.record_collision(tool_name);
              }
          }
@@ -71,15 +83,15 @@ index e23a405..8ec53c0 100644
      }
  
      let model_messages = ResolvedModelMessages::from_model(model_info);
-@@ -681,6 +687,7 @@ fn finalize_selected_tool_router(
-                     ToolSpec::FileSearch(_)
+@@ -660,6 +666,7 @@ fn finalize_selected_tool_router(
                      | ToolSpec::CodeInterpreter(_)
+                     | ToolSpec::Shell(_)
                      | ToolSpec::ImageGeneration(_)
 +                    | ToolSpec::ProviderToolSearch(_)
                      | ToolSpec::Computer { .. }
                      | ToolSpec::ComputerUsePreview { .. }
                      | ToolSpec::WebSearch { .. } => continue,
-@@ -827,10 +834,17 @@ fn build_model_visible_specs(
+@@ -806,10 +813,17 @@ fn build_model_visible_specs(
      code_mode_tool_names: &BTreeMap<String, ToolName>,
      hosted_specs: Vec<ToolSpec>,
  ) -> Vec<ToolSpec> {
@@ -98,7 +110,7 @@ index e23a405..8ec53c0 100644
              continue;
          }
  
-@@ -839,7 +853,13 @@ fn build_model_visible_specs(
+@@ -818,7 +832,13 @@ fn build_model_visible_specs(
              continue;
          }
  
@@ -113,53 +125,65 @@ index e23a405..8ec53c0 100644
          specs.push(spec_for_model_request(
              turn_context,
              model_info,
-@@ -1120,6 +1140,7 @@ fn register_code_mode_executors(
-             | ToolSpec::FileSearch(_)
+@@ -1100,6 +1120,7 @@ fn register_code_mode_executors(
              | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::Shell(_)
              | ToolSpec::ImageGeneration(_)
 +            | ToolSpec::ProviderToolSearch(_)
              | ToolSpec::Computer { .. }
              | ToolSpec::ComputerUsePreview { .. }
              | ToolSpec::WebSearch { .. } => {
+diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
+index 2b019ca5..c0e7252f 100644
+--- a/codex-rs/core/src/tools/spec_plan_tests.rs
++++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -112,6 +112,7 @@ impl ToolPlanProbe {
+                 | ToolSpec::ComputerUsePreview { .. }
+                 | ToolSpec::Function(_)
+                 | ToolSpec::ToolSearch { .. }
++                | ToolSpec::ProviderToolSearch(_)
+                 | ToolSpec::FileSearch(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::ImageGeneration(_)
 diff --git a/codex-rs/core/src/tools/tool_namespaces_info.rs b/codex-rs/core/src/tools/tool_namespaces_info.rs
-index c31bd4d..8114c59 100644
+index 9b656221..32a3a4b9 100644
 --- a/codex-rs/core/src/tools/tool_namespaces_info.rs
 +++ b/codex-rs/core/src/tools/tool_namespaces_info.rs
-@@ -43,6 +43,7 @@ pub(super) fn collect_tool_namespaces_info(
-             ToolSpec::FileSearch(_)
+@@ -44,6 +44,7 @@ pub(super) fn collect_tool_namespaces_info(
              | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::Shell(_)
              | ToolSpec::ImageGeneration(_)
 +            | ToolSpec::ProviderToolSearch(_)
              | ToolSpec::Computer { .. }
              | ToolSpec::ComputerUsePreview { .. }
              | ToolSpec::WebSearch { .. } => {}
 diff --git a/codex-rs/tools/src/code_mode.rs b/codex-rs/tools/src/code_mode.rs
-index 15bdbbc..73581e7 100644
+index 179f5cf6..7aff25ff 100644
 --- a/codex-rs/tools/src/code_mode.rs
 +++ b/codex-rs/tools/src/code_mode.rs
-@@ -227,6 +227,7 @@ fn code_mode_tool_definitions_for_spec(
-         | ToolSpec::FileSearch(_)
+@@ -228,6 +228,7 @@ fn code_mode_tool_definitions_for_spec(
          | ToolSpec::CodeInterpreter(_)
+         | ToolSpec::Shell(_)
          | ToolSpec::ImageGeneration(_)
 +        | ToolSpec::ProviderToolSearch(_)
          | ToolSpec::Computer { .. }
          | ToolSpec::ComputerUsePreview { .. }
          | ToolSpec::WebSearch { .. } => Vec::new(),
 diff --git a/codex-rs/tools/src/hosted_tools.rs b/codex-rs/tools/src/hosted_tools.rs
-index 0c9bf80..bb03451 100644
+index 822a1bea..b26316de 100644
 --- a/codex-rs/tools/src/hosted_tools.rs
 +++ b/codex-rs/tools/src/hosted_tools.rs
-@@ -13,6 +13,7 @@ pub enum HostedToolSpec {
-     FileSearch(FileSearchTool),
+@@ -14,6 +14,7 @@ pub enum HostedToolSpec {
      CodeInterpreter(CodeInterpreterTool),
+     Shell(HostedShellTool),
      ImageGeneration(ImageGenerationTool),
 +    ToolSearch(ProviderToolSearch),
  }
  
  impl From<HostedToolSpec> for crate::ToolSpec {
-@@ -21,10 +22,37 @@ impl From<HostedToolSpec> for crate::ToolSpec {
-             HostedToolSpec::FileSearch(config) => Self::FileSearch(config),
+@@ -23,10 +24,37 @@ impl From<HostedToolSpec> for crate::ToolSpec {
              HostedToolSpec::CodeInterpreter(config) => Self::CodeInterpreter(config),
+             HostedToolSpec::Shell(config) => Self::Shell(config),
              HostedToolSpec::ImageGeneration(config) => Self::ImageGeneration(config),
 +            HostedToolSpec::ToolSearch(config) => Self::ProviderToolSearch(config),
          }
@@ -195,7 +219,7 @@ index 0c9bf80..bb03451 100644
  #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
  #[serde(untagged)]
  pub enum CodeInterpreterContainer {
-@@ -171,6 +199,42 @@ pub enum AutoCodeInterpreterContainerKind {
+@@ -197,6 +225,42 @@ pub enum AutoCodeInterpreterContainerKind {
  
  #[cfg(test)]
  mod tests {
@@ -239,31 +263,42 @@ index 0c9bf80..bb03451 100644
      use serde_json::json;
  
 diff --git a/codex-rs/tools/src/tool_search.rs b/codex-rs/tools/src/tool_search.rs
-index 75b8380..a3bee3e 100644
+index 9c93c2ee..02e722ff 100644
 --- a/codex-rs/tools/src/tool_search.rs
 +++ b/codex-rs/tools/src/tool_search.rs
-@@ -47,6 +47,7 @@ impl ToolSearchInfo {
-             | ToolSpec::FileSearch(_)
+@@ -48,6 +48,7 @@ impl ToolSearchInfo {
              | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::Shell(_)
              | ToolSpec::ImageGeneration(_)
 +            | ToolSpec::ProviderToolSearch(_)
              | ToolSpec::Computer { .. }
              | ToolSpec::ComputerUsePreview { .. }
              | ToolSpec::WebSearch { .. } => None,
-@@ -96,6 +97,7 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
-         | ToolSpec::FileSearch(_)
+@@ -98,6 +99,7 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
          | ToolSpec::CodeInterpreter(_)
+         | ToolSpec::Shell(_)
          | ToolSpec::ImageGeneration(_)
 +        | ToolSpec::ProviderToolSearch(_)
          | ToolSpec::Computer { .. }
          | ToolSpec::ComputerUsePreview { .. }
          | ToolSpec::WebSearch { .. } => {
+@@ -153,7 +155,9 @@ fn default_tool_search_text(spec: &ToolSpec) -> String {
+         | ToolSpec::ImageGeneration(_) => {
+             push_search_part(&mut parts, spec.name().to_string());
+         }
+-        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {}
++        ToolSpec::Computer { .. }
++        | ToolSpec::ComputerUsePreview { .. }
++        | ToolSpec::ProviderToolSearch(_) => {}
+         ToolSpec::WebSearch { .. } => {
+             push_search_part(&mut parts, "web search".to_string());
+         }
 diff --git a/codex-rs/tools/src/tool_spec.rs b/codex-rs/tools/src/tool_spec.rs
-index 3eb02d9..ad608dd 100644
+index 0cc7557f..61b75620 100644
 --- a/codex-rs/tools/src/tool_spec.rs
 +++ b/codex-rs/tools/src/tool_spec.rs
-@@ -68,6 +68,8 @@ pub enum ToolSpec {
-     CodeInterpreter(crate::CodeInterpreterTool),
+@@ -70,6 +70,8 @@ pub enum ToolSpec {
+     Shell(crate::HostedShellTool),
      #[serde(rename = "image_generation")]
      ImageGeneration(crate::ImageGenerationTool),
 +    #[serde(rename = "tool_search")]
@@ -271,7 +306,7 @@ index 3eb02d9..ad608dd 100644
      #[serde(rename = "custom")]
      Freeform(FreeformTool),
  }
-@@ -111,8 +113,28 @@ impl ToolSpec {
+@@ -114,8 +116,28 @@ impl ToolSpec {
              | Self::ImageGeneration(_) => {
                  target.is_default_namespace() && self.name() == target.name
              }
@@ -301,7 +336,7 @@ index 3eb02d9..ad608dd 100644
      }
  
      pub fn name(&self) -> &str {
-@@ -120,7 +142,7 @@ impl ToolSpec {
+@@ -123,7 +145,7 @@ impl ToolSpec {
              ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => "computer",
              ToolSpec::Function(tool) => tool.name.as_str(),
              ToolSpec::Namespace(namespace) => namespace.name.as_str(),
@@ -310,39 +345,3 @@ index 3eb02d9..ad608dd 100644
              ToolSpec::WebSearch { .. } => "web_search",
              ToolSpec::FileSearch(_) => "file_search",
              ToolSpec::CodeInterpreter(_) => "code_interpreter",
-diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
---- a/codex-rs/core/src/tools/router_tests.rs
-+++ b/codex-rs/core/src/tools/router_tests.rs
-@@ -656,6 +656,7 @@
-             | ToolSpec::Function(_)
-             | ToolSpec::Freeform(_)
-             | ToolSpec::ToolSearch { .. }
-+            | ToolSpec::ProviderToolSearch(_)
-             | ToolSpec::FileSearch(_)
-             | ToolSpec::CodeInterpreter(_)
-             | ToolSpec::ImageGeneration(_)
-diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
---- a/codex-rs/core/src/tools/spec_plan_tests.rs
-+++ b/codex-rs/core/src/tools/spec_plan_tests.rs
-@@ -112,6 +112,7 @@
-                 | ToolSpec::ComputerUsePreview { .. }
-                 | ToolSpec::Function(_)
-                 | ToolSpec::ToolSearch { .. }
-+                | ToolSpec::ProviderToolSearch(_)
-                 | ToolSpec::FileSearch(_)
-                 | ToolSpec::CodeInterpreter(_)
-                 | ToolSpec::ImageGeneration(_)
-diff --git a/codex-rs/tools/src/tool_search.rs b/codex-rs/tools/src/tool_search.rs
---- a/codex-rs/tools/src/tool_search.rs
-+++ b/codex-rs/tools/src/tool_search.rs
-@@ -150,7 +150,9 @@
-         ToolSpec::FileSearch(_) | ToolSpec::CodeInterpreter(_) | ToolSpec::ImageGeneration(_) => {
-             push_search_part(&mut parts, spec.name().to_string());
-         }
--        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {}
-+        ToolSpec::Computer { .. }
-+        | ToolSpec::ComputerUsePreview { .. }
-+        | ToolSpec::ProviderToolSearch(_) => {}
-         ToolSpec::WebSearch { .. } => {
-             push_search_part(&mut parts, "web search".to_string());
-         }

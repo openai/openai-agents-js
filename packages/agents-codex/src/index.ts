@@ -51,6 +51,7 @@ export type {
   SessionUpdate,
   SessionInterruptOptions,
   Completed,
+  ProducedItem,
   PendingRequests,
   SteeringReceipt,
   TurnNeedsAttention,
@@ -311,6 +312,7 @@ export type {
 export {
   fileSearch,
   codeInterpreter,
+  hostedShell,
   imageGeneration,
   toolSearch,
 } from './runtime/hosted-tools';
@@ -319,6 +321,9 @@ export type {
   FileSearchOptions,
   CodeInterpreter,
   CodeInterpreterOptions,
+  HostedShell,
+  HostedShellEnvironment,
+  HostedShellOptions,
   ImageGeneration,
   ImageGenerationOptions,
   ToolSearch,
