@@ -1,3 +1,4 @@
+import { abortable } from './abortable';
 import { boundedVoiceJSON } from './bounded-voice-json';
 import { VoiceConversationHistory } from './conversation-history';
 import {
@@ -664,17 +665,26 @@ export class PortableVoiceSession {
       if (this.#closed) throw new Error('Portable voice session is closed.');
       const instructions =
         typeof profile.options.instructions === 'function'
-          ? await profile.options.instructions(this.#context(profile))
+          ? await abortable(
+              Promise.resolve(
+                profile.options.instructions(this.#context(profile)),
+              ),
+              this.#abort.signal,
+            )
           : profile.options.instructions;
       const tools = [];
       for (const tool of profile.tools.values()) {
         if (this.#closed) throw new Error('Portable voice session is closed.');
         const enabled =
           typeof tool.isEnabled === 'function'
-            ? await tool.isEnabled(this.#context(profile))
+            ? await abortable(
+                Promise.resolve(tool.isEnabled(this.#context(profile))),
+                this.#abort.signal,
+              )
             : (tool.isEnabled ?? true);
         if (enabled) tools.push(tool);
       }
+      this.#abort.signal.throwIfAborted();
       return {
         profile_id: profile.id,
         model: profile.options.model,

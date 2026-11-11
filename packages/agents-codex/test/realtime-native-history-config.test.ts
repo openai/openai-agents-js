@@ -8,6 +8,7 @@ import {
   Agent,
   HttpMCP,
   NativeProvider,
+  realtimeHandoff,
   tool,
   type NativeRealtimeEvent,
 } from '../src';
@@ -403,6 +404,114 @@ nativeIt.each([
     }
   },
   35_000,
+);
+
+nativeIt.each([
+  'instructions',
+  'tool',
+  'handoff',
+  'connection instructions',
+  'connection tool',
+] as const)(
+  'closes while an Agent %s configuration callback remains pending',
+  async (callback) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<string | boolean>();
+    const pending = () => {
+      entered.resolve();
+      return release.promise;
+    };
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Opening',
+      }).session();
+      let stalling = false;
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        instructions:
+          callback === 'connection instructions'
+            ? () =>
+                stalling ? (pending() as Promise<string>) : 'Opening voice'
+            : undefined,
+        isToolEnabled:
+          callback === 'connection tool'
+            ? (pending as () => Promise<boolean>)
+            : undefined,
+      });
+      stalling = true;
+      const target = new Agent({
+        provider,
+        instructions: 'Target',
+        tools: [
+          tool({
+            name: 'lookup',
+            parameters: z.object({}),
+            execute: () => 'unused',
+          }),
+        ],
+        realtime:
+          callback === 'instructions'
+            ? { instructions: pending as () => Promise<string> }
+            : callback === 'tool'
+              ? { toolEnabled: pending as () => Promise<boolean> }
+              : undefined,
+        handoffs:
+          callback === 'handoff'
+            ? [
+                realtimeHandoff(
+                  new Agent({
+                    provider,
+                    name: 'Support',
+                    instructions: 'Support',
+                  }),
+                  {
+                    name: 'support',
+                    isEnabled: pending as () => Promise<boolean>,
+                  },
+                ),
+              ]
+            : [],
+      });
+      const updating = voice.updateAgent(target);
+      void updating.catch(() => {});
+      await entered.promise;
+      const before = peer.frames.filter(
+        (frame) => frame.type === 'session.update',
+      ).length;
+      let closed = false;
+      const closing = voice.close().then(() => {
+        closed = true;
+      });
+      try {
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2000 });
+        await expect(updating).rejects.toThrow();
+        if (callback === 'handoff')
+          release.reject(new Error('late configuration failure'));
+        else
+          release.resolve(
+            callback === 'instructions' ? 'late instructions' : true,
+          );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(
+          peer.frames.filter((frame) => frame.type === 'session.update'),
+        ).toHaveLength(before);
+        await closing;
+      } finally {
+        release.resolve(true);
+        await closing.catch(() => {});
+        await updating.catch(() => {});
+      }
+    } finally {
+      release.resolve(true);
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
 );
 
 nativeIt(
