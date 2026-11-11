@@ -466,6 +466,20 @@ export type SessionItem = ItemIdentity &
         error: string | null;
       }
     | {
+        type: 'tool_search_call';
+        callId: string | null;
+        execution: string;
+        arguments: JsonValue;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_output';
+        callId: string | null;
+        execution: string;
+        tools: JsonValue[];
+        status: ItemStatus;
+      }
+    | {
         type: 'mcp_call';
         threadId?: string;
         callId?: string;
@@ -960,11 +974,13 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
-    raw.type === 'computer_call_output';
+    raw.type === 'computer_call_output' ||
+    raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
-    raw.type === 'computer_call';
+    raw.type === 'computer_call' ||
+    raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
     ((call || output) && typeof raw.call_id === 'string'
@@ -995,6 +1011,24 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       )[],
     };
   }
+  if (raw.type === 'tool_search_call' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_call',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      arguments: raw.arguments ?? null,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_output' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_output',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      tools: Array.isArray(raw.tools) ? raw.tools : [],
+      status: status(raw.status, true),
+    };
   if (raw.type === 'reasoning')
     return {
       ...common,
@@ -1382,11 +1416,13 @@ export function projectHistory(
   let pendingUser: HistoryOccurrence | undefined;
   const userAliases = new Set<HistoryOccurrence>();
   function remember(item: HistoryItem, native: boolean, recordedId = true) {
-    const output = item.type === 'function_call_output';
+    const output =
+      item.type === 'function_call_output' ||
+      item.type === 'tool_search_output';
     const key = JSON.stringify([item.turnId, item.type, recordedId, item.id]);
     const callKey = JSON.stringify([
       item.turnId,
-      'callId' in item ? item.callId : item.id,
+      ('callId' in item ? item.callId : undefined) ?? item.id,
     ]);
     const call = latestCalls.get(callKey);
     let occurrence = identities.get(key);
@@ -1410,8 +1446,16 @@ export function projectHistory(
       occurrence.item.data = item.data;
     }
     identities.set(key, occurrence);
-    if (item.type === 'function_call') latestCalls.set(callKey, occurrence);
-    else if (output && call) call.output = occurrence;
+    if (item.type === 'function_call' || item.type === 'tool_search_call')
+      latestCalls.set(callKey, occurrence);
+    else if (output && call) {
+      call.output = occurrence;
+      if (
+        call.item.type === 'tool_search_call' &&
+        item.type === 'tool_search_output'
+      )
+        call.item.status = item.status;
+    }
     return occurrence;
   }
   const receipts = new Map<string, TurnReceipt>();

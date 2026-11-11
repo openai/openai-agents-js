@@ -453,6 +453,7 @@ export interface ManualCheckpointEntry {
 
 /** Options used by an owned Agent.run Session to drive manual replies. */
 export type OneShotOptions = {
+  returnItems?: boolean;
   input: string | JsonValue[] | null;
   prepareRequest?: OperationOptions<any>['prepareRequest'];
   beforeStep?: OperationOptions<any>['beforeStep'];
@@ -2546,6 +2547,7 @@ export class Session<OutputT = string, Context = unknown> {
   // Only one-shot manual handlers report child cleanup to the owning run.
   private readonly oneShotChildCleanupErrors: unknown[] = [];
   #native: NativeThread;
+  #producedItemsStarted = false;
   private storedHistoryClose?: ReturnType<
     NativeThread['_stored_history_close_action']
   >;
@@ -12629,7 +12631,9 @@ export class Session<OutputT = string, Context = unknown> {
 
   /** @internal Begin before submitting the owned turn. */
   _startProducedItems(): void {
+    if (this.#producedItemsStarted) return;
     this.#native._start_produced_items();
+    this.#producedItemsStarted = true;
   }
 
   /** @internal Read the exact owned turn before closing its Session. */

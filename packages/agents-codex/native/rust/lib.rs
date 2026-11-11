@@ -4179,7 +4179,7 @@ impl NativeThread {
                 // writer append alone would let prompt normalization invent "aborted".
                 inner
                     .thread
-                    .inject_response_item_envelopes(items)
+                    .inject_sdk_response_item_envelopes(items, Some(&frame.turn_id))
                     .await
                     .map_err(native_error)?;
             }

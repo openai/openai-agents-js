@@ -1,7 +1,8 @@
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index f66f57e1..2adca4ea 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
-@@ -333,6 +333,22 @@
+@@ -333,6 +333,22 @@ impl CodexThread {
              .is_elicitation_pending(server, token)
      }
  
@@ -24,10 +25,62 @@ diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.
      /// Returns extension-owned data attached to this thread runtime.
      pub fn thread_extension_data(&self) -> &codex_extension_api::ExtensionData {
          &self.session.services.thread_extension_data
+@@ -1041,7 +1057,7 @@ impl CodexThread {
+             .into_iter()
+             .map(|item| self.session.annotate_client_response_item(item))
+             .collect();
+-        self.inject_annotated_response_items_for_turn(envelopes)
++        self.inject_annotated_response_items_for_turn(envelopes, None)
+             .await
+     }
+ 
+@@ -1055,7 +1071,18 @@ impl CodexThread {
+         &self,
+         items: Vec<ResponseItemEnvelope>,
+     ) -> CodexResult<()> {
+-        self.inject_annotated_response_items_for_turn(items).await?;
++        self.inject_sdk_response_item_envelopes(items, None).await
++    }
++
++    /// Record accepted manual replies under their restored SDK turn.
++    #[doc(hidden)]
++    pub async fn inject_sdk_response_item_envelopes(
++        &self,
++        items: Vec<ResponseItemEnvelope>,
++        restored_turn_id: Option<&str>,
++    ) -> CodexResult<()> {
++        self.inject_annotated_response_items_for_turn(items, restored_turn_id)
++            .await?;
+         self.checkpoint_preparation().await?;
+         Ok(())
+     }
+@@ -1063,6 +1090,7 @@ impl CodexThread {
+     async fn inject_annotated_response_items_for_turn(
+         &self,
+         items: Vec<ResponseItemEnvelope>,
++        restored_turn_id: Option<&str>,
+     ) -> CodexResult<()> {
+         if items.is_empty() {
+             return Err(CodexErr::InvalidRequest(
+@@ -1071,6 +1099,13 @@ impl CodexThread {
+         }
+ 
+         let turn_context = self.response_item_injection_context().await?;
++        if let Some(turn_id) = restored_turn_id {
++            turn_context
++                .extension_data
++                .insert(crate::session::sdk_produced_items::RestoredSdkTurn(
++                    turn_id.to_owned(),
++                ));
++        }
+         self.session
+             .inject_annotated_response_items(items, turn_context.as_ref())
+             .await;
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 5439465e..756842ae 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -263,6 +263,7 @@
+@@ -263,6 +263,7 @@ pub(crate) mod multi_agents;
  mod plugin_selection;
  mod realtime_history;
  mod retained_context;
@@ -35,7 +88,7 @@ diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
  mod review;
  mod rollout_budget;
  mod rollout_reconstruction;
-@@ -2329,6 +2330,17 @@
+@@ -2329,6 +2330,17 @@ impl Session {
              .trusted_guardian_reviewer
      }
  
@@ -53,7 +106,7 @@ diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
      pub(crate) async fn emit_turn_started(&self, turn_context: &TurnContext) {
          let event = TurnStartedEvent {
              turn_id: turn_context.sub_id.clone(),
-@@ -3714,6 +3726,11 @@
+@@ -3714,6 +3726,11 @@ impl Session {
              .iter()
              .map(|envelope| envelope.item.clone())
              .collect::<Vec<_>>();
@@ -65,7 +118,7 @@ diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
          {
              let mut state = self.state.lock().await;
              state
-@@ -3757,6 +3774,23 @@
+@@ -3757,6 +3774,28 @@ impl Session {
              if let Some(pending_exec) = pending_exec {
                  pending_exec.mark_delivered();
              }
@@ -75,21 +128,26 @@ diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
 +                .collect::<Vec<_>>();
 +            if let Some(capture) = capture {
 +                let root_turn_id = turn_context.turn_metadata_state.root_turn_id();
++                let restored = turn_context
++                    .extension_data
++                    .get::<sdk_produced_items::RestoredSdkTurn>();
++                let capture_turn_id = if let Some(restored) = &restored {
++                    capture.start(&restored.0);
++                    restored.0.as_str()
++                } else {
++                    root_turn_id.as_deref().unwrap_or(&turn_context.sub_id)
++                };
 +                let profile = state
 +                    .session_configuration
 +                    .agent_profile
 +                    .as_ref()
 +                    .map(|profile| &profile.receipt);
-+                capture.record(
-+                    root_turn_id.as_deref().unwrap_or(&turn_context.sub_id),
-+                    profile,
-+                    &rollout_items,
-+                );
++                capture.record(capture_turn_id, profile, &rollout_items);
 +            }
          }
          for image in image_preparations {
              self.services
-@@ -3766,8 +3800,6 @@
+@@ -3766,8 +3805,6 @@ impl Session {
                      metadata: image,
                  });
          }
@@ -98,22 +156,12 @@ diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
          if self.persist_rollout_items(&rollout_items).await
              && let Some(revision) = mcp_revision
          {
-diff --git a/codex-rs/core/src/tasks/regular.rs b/codex-rs/core/src/tasks/regular.rs
---- a/codex-rs/core/src/tasks/regular.rs
-+++ b/codex-rs/core/src/tasks/regular.rs
-@@ -91,6 +91,7 @@
-         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
-         // not wait on startup prewarm resolution.
-         let prewarmed_client_session = async {
-+            sess.start_sdk_produced_items_turn(&ctx);
-             sess.emit_turn_started(&ctx).await;
-             // Regular-start contributors run once, after the task is visible and interruptible.
-             let prepares_mcp = sess
 diff --git a/codex-rs/core/src/session/sdk_produced_items.rs b/codex-rs/core/src/session/sdk_produced_items.rs
 new file mode 100644
+index 00000000..ee7071e2
 --- /dev/null
 +++ b/codex-rs/core/src/session/sdk_produced_items.rs
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,161 @@
 +use std::io;
 +use std::io::Write;
 +use std::sync::Mutex;
@@ -131,6 +179,9 @@ new file mode 100644
 +/// Opt-in capture of accepted items for a single SDK invocation.
 +#[derive(Default)]
 +pub(crate) struct SdkProducedItems(Mutex<Capture>);
++
++/// Logical turn owning an accepted manual reply injected before recovery.
++pub(crate) struct RestoredSdkTurn(pub String);
 +
 +#[derive(Default)]
 +struct Capture {
@@ -272,3 +323,15 @@ new file mode 100644
 +        Ok(())
 +    }
 +}
+diff --git a/codex-rs/core/src/tasks/regular.rs b/codex-rs/core/src/tasks/regular.rs
+index ac056719..f80cf8f7 100644
+--- a/codex-rs/core/src/tasks/regular.rs
++++ b/codex-rs/core/src/tasks/regular.rs
+@@ -91,6 +91,7 @@ impl SessionTask for RegularTask {
+         // Regular turns emit `TurnStarted` inline so first-turn lifecycle does
+         // not wait on startup prewarm resolution.
+         let prewarmed_client_session = async {
++            sess.start_sdk_produced_items_turn(&ctx);
+             sess.emit_turn_started(&ctx).await;
+             // Regular-start contributors run once, after the task is visible and interruptible.
+             let prepares_mcp = sess

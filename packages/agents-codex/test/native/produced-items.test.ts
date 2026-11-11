@@ -1,6 +1,12 @@
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeProvider, tool } from '../../src';
+import {
+  Agent,
+  InteractionRequired,
+  NativeProvider,
+  manualTool,
+  tool,
+} from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -118,4 +124,145 @@ it('bounds the original tool output after the turn completes', async () => {
   });
   expect(effects).toEqual(['executed']);
   expect(server.requests).toHaveLength(2);
+});
+
+it('captures resumed manual outputs before restored interaction handlers finish', async () => {
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Ask lookup.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const server = new ModelServer([
+    [call('lookup', {}, { callId: 'resumed-lookup' })],
+    [message('resumed answer')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-restored-produced-items',
+    supportsWebsockets: false,
+  });
+  // A public factory override has been holding opening until the restored turn
+  // finishes, making early callback completion deterministic.
+  class RestoringAgent extends Agent {
+    override async session(...args: Parameters<Agent['session']>) {
+      const session = await super.session(...args);
+      if (args[0]?.state) await session.wait();
+      return session;
+    }
+  }
+  const agent = new RestoringAgent({
+    provider,
+    instructions: 'Ask lookup, then answer.',
+    tools: [lookup],
+  });
+  await using original = await agent.session();
+  const turn = await original.submit('lookup');
+  const completion = turn.wait().catch((error: unknown) => error);
+  for await (const event of original.events()) {
+    if (event.type === 'action_requested') break;
+  }
+  const state = await original.suspend();
+  expect(await completion).toBeInstanceOf(InteractionRequired);
+  await original.close();
+  let replies = 0;
+  const completed = await agent.run(null, {
+    state,
+    returnItems: true,
+    async onInteraction(event) {
+      if (event.type !== 'action_requested')
+        throw new Error('Expected manual request');
+      replies++;
+      return event.reply('restored value');
+    },
+  });
+  expect(replies).toBe(1);
+  expect(completed.finalOutput).toBe('resumed answer');
+  expect(completed.items?.map(({ item }) => item.type)).toEqual([
+    'function_call_output',
+    'message',
+  ]);
+  expect(completed.items?.[0].item).toMatchObject({
+    callId: 'resumed-lookup',
+    output: 'restored value',
+  });
+  for (const entry of completed.items ?? []) expect(entry.agent).toBe(agent);
+  expect(server.requests).toHaveLength(2);
+  server.assertExhausted();
+});
+
+it('retains accepted discovery calls and outputs in the produced sequence', async () => {
+  const selected = tool({
+    name: 'invoice',
+    description: 'Find the invoice',
+    deferLoading: true,
+    parameters: z.object({ key: z.string() }),
+    execute: ({ key }) => `paid:${key}`,
+  });
+  const server = new ModelServer([
+    [
+      {
+        type: 'tool_search_call',
+        call_id: 'find-invoice',
+        execution: 'client',
+        arguments: { query: 'invoice', limit: 5 },
+      },
+    ],
+    [call('invoice', { key: 'A1' }, { callId: 'use-invoice' })],
+    [message('settled')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-discovery-produced-items',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Find and use the invoice.',
+    programmaticToolCalling: false,
+    tools: [selected],
+  });
+  const completed = await agent.run('Find invoice A1.', { returnItems: true });
+  expect(
+    completed.items?.map(({ item }) => [
+      item.type,
+      'callId' in item ? item.callId : undefined,
+    ]),
+  ).toEqual([
+    ['tool_search_call', 'find-invoice'],
+    ['tool_search_output', 'find-invoice'],
+    ['function_call', 'use-invoice'],
+    ['function_call_output', 'use-invoice'],
+    ['message', undefined],
+  ]);
+  expect(completed.items?.[0].item).toMatchObject({ status: 'completed' });
+  expect(completed.items?.[0].item.data).toMatchObject({
+    arguments: { query: 'invoice', limit: 5 },
+  });
+  expect(completed.items?.[1].item.data.tools).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: 'namespace',
+        name: 'functions',
+        tools: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'function',
+            name: 'invoice',
+            parameters: expect.objectContaining({
+              properties: { key: { type: 'string' } },
+            }),
+          }),
+        ]),
+      }),
+    ]),
+  );
+  for (const entry of completed.items ?? []) expect(entry.agent).toBe(agent);
+  expect(completed.finalOutput).toBe('settled');
+  expect(server.requests).toHaveLength(3);
+  server.assertExhausted();
 });

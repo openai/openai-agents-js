@@ -473,6 +473,7 @@ export async function openSession(
   );
   options.environmentOwner?.attachSession(session);
   options.environmentOwner?.signal.throwIfAborted();
+  if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
   if (isManualSessionState(saved))
     await session._restoreManualContinuation(saved);

@@ -775,6 +775,7 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
+        returnItems: options.returnItems,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         input: preparedInput,
