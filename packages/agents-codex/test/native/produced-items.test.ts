@@ -11,6 +11,47 @@ import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
 
+it('retains accepted local shell calls in produced item order', async () => {
+  const action = { type: 'exec', command: ['true'] };
+  const server = new ModelServer([
+    [
+      {
+        type: 'local_shell_call',
+        id: 'local-shell-item',
+        call_id: 'local-shell-call',
+        status: 'completed',
+        action,
+      },
+      message('finished'),
+    ],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-local-shell-items',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({ instructions: 'Return the answer.', provider });
+  const completed = await agent.run('finish', { returnItems: true });
+  expect(completed.finalOutput).toBe('finished');
+  expect(completed.items?.map(({ item }) => item.type)).toEqual([
+    'local_shell_call',
+    'message',
+  ]);
+  expect(completed.items?.[0]).toMatchObject({
+    agent,
+    item: {
+      id: 'local-shell-item',
+      type: 'local_shell_call',
+      callId: 'local-shell-call',
+      action,
+      status: 'completed',
+    },
+  });
+  expect(server.requests).toHaveLength(1);
+});
+
 it('returns only the owned tool sequence and its handoff Agents', async () => {
   const effects: string[] = [];
   const lookup = tool({

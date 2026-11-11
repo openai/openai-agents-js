@@ -466,6 +466,12 @@ export type SessionItem = ItemIdentity &
         error: string | null;
       }
     | {
+        type: 'local_shell_call';
+        callId: string | null;
+        action: JsonObject;
+        status: ItemStatus;
+      }
+    | {
         type: 'tool_search_call';
         callId: string | null;
         execution: string;
@@ -980,6 +986,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
     raw.type === 'computer_call' ||
+    raw.type === 'local_shell_call' ||
     raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
@@ -1011,6 +1018,14 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       )[],
     };
   }
+  if (raw.type === 'local_shell_call' && object(raw.action))
+    return {
+      ...common,
+      type: 'local_shell_call',
+      callId: text(raw.call_id),
+      action: object(raw.action)!,
+      status: status(raw.status, false),
+    };
   if (raw.type === 'tool_search_call' && typeof raw.execution === 'string')
     return {
       ...common,
