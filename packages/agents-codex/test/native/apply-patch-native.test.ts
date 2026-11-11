@@ -229,11 +229,19 @@ it('retains an unresolved accepted LocalStorage edit after process loss', async 
       failure = error;
     }
     expect(failure).toBeInstanceOf(LocalRecoveryRequired);
-    expect(
-      (failure as InstanceType<typeof LocalRecoveryRequired>).calls,
-    ).toMatchObject([
-      { name: 'apply_patch', arguments: { type: 'apply_patch_call' } },
-    ]);
+    const uncertain = (failure as InstanceType<typeof LocalRecoveryRequired>)
+      .calls;
+    expect(uncertain).toHaveLength(1);
+    expect(uncertain[0]).toMatchObject({
+      name: 'apply_patch',
+      callId: 'patch-1',
+    });
+    expect(JSON.parse(uncertain[0].arguments)).toMatchObject({
+      type: 'apply_patch_call',
+      call_id: 'patch-1',
+      operation: { type: 'create_file', path: 'application-owned', diff: 'd' },
+      future_provider_field: 'preserved',
+    });
     expect(effects).toBe(0);
     expect(await readFile(join(root, 'effects'), 'utf8')).toBe(
       'one editor effect\n',
