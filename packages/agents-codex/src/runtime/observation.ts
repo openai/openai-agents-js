@@ -34,7 +34,7 @@ export type HostedToolItemSummary = Readonly<
 
 export type ObservationOptions = {
   after?: number;
-  /** Include tool payloads and received response-fact content for a trusted consumer. */
+  /** Include tool payloads, response-fact content and opted-in raw provider events. */
   includeExecutionDetails?: boolean;
 };
 
@@ -115,6 +115,7 @@ export type Observation =
   | ModelRequestDispatching
   | ModelResponseLinked
   | ResponseFactReceived
+  | RawProviderEvent
   | (Event & Readonly<{ type: 'warning'; message: string }>)
   | (SubmissionEvent & Readonly<{ type: 'turn_started' }>)
   | (SubmissionEvent &
@@ -172,6 +173,15 @@ export type ResponseFactReceived = SubmissionEvent &
       | import('./response-facts').RecordedResponseFactSummary;
   }>;
 
+/** Responses provider JSON captured before native event decoding. */
+export type RawProviderEvent = SubmissionEvent &
+  Readonly<{
+    type: 'raw_provider_event';
+    source: 'responses';
+    transport: 'sse' | 'websocket' | 'json';
+    payload: JsonObject;
+  }>;
+
 type RetainedObservation =
   | Exclude<Observation, ExecutionObservation | HostedToolItemObservation>
   | (ExecutionObservation & Readonly<{ item: ExecutionItem }>)
@@ -211,6 +221,8 @@ function projectObservation(
             )
           : null,
     });
+  if (event.type === 'raw_provider_event')
+    return Object.freeze({ ...event, payload: structuredClone(event.payload) });
   if (event.type === 'response_fact')
     return Object.freeze({
       ...event,
@@ -382,8 +394,12 @@ export class ObservationBuffer {
           })
         : undefined;
     let payloadSize =
-      partial?.length ??
-      (searchResults === undefined ? 0 : JSON.stringify(searchResults).length);
+      event.type === 'raw_provider_event'
+        ? JSON.stringify(event.payload).length
+        : (partial?.length ??
+          (searchResults === undefined
+            ? 0
+            : JSON.stringify(searchResults).length));
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
       event.type === 'tool_finished' && event.output
@@ -543,6 +559,11 @@ export class ObservationBuffer {
               const { event, detailsMissing } = this.records[index++];
               if (event.sequence <= after) continue;
               after = event.sequence;
+              if (
+                event.type === 'raw_provider_event' &&
+                !includeExecutionDetails
+              )
+                continue;
               if (event.type === 'gap' || !scope || scope.includes(event))
                 return {
                   done: false,
