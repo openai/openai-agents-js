@@ -8,7 +8,18 @@ on:
       - '**/*.mdx'
   pull_request:
     branches: [feat/codex-harness]
+  workflow_dispatch:
+    inputs:
+      native_pgo:
+        description: Derive a Linux x64 PGO addon before alpha qualification
+        type: boolean
+        default: false
   workflow_call:
+    inputs:
+      native_pgo:
+        description: Derive a Linux x64 PGO addon before alpha qualification
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -120,7 +131,14 @@ jobs:
   package:
     name: Package and test (${{ matrix.platform }})
     # No SDK code starts until every platform has published its native transfer.
-    needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]
+    needs:
+      [
+        select,
+        produce-linux,
+        produce-linux-arm64,
+        produce-macos,
+        produce-windows,
+      ]
     if: >-
       !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
@@ -204,6 +222,24 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
+      # Ordinary native publications remain prior to all SDK execution. This
+      # derived image is qualified and shipped only by this package job.
+      - name: Prepare Linux x64 PGO toolchain
+        if: matrix.platform == 'linux-x64' && inputs.native_pgo == true
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component llvm-tools-preview
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends clang cmake pkg-config protobuf-compiler libssl-dev
+      - name: Derive the Linux x64 PGO addon
+        if: matrix.platform == 'linux-x64' && inputs.native_pgo == true
+        env:
+          RUSTUP_TOOLCHAIN: '1.95.0'
+          CARGO_HOME: ${{ runner.temp }}/agents-pgo-cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/agents-pgo-target
+          CARGO_INCREMENTAL: '0'
+          CARGO_BUILD_JOBS: '16'
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node packages/agents-codex/scripts/native.mjs package --pgo
       - name: Qualify native browser interactions, audio, and MCP Apps
         if: runner.os == 'macOS'
         env:

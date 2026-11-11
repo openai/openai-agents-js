@@ -609,8 +609,8 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     workflow.indexOf('  produce-linux:'),
   );
   const qualify = workflow.slice(workflow.indexOf('  package:'));
-  expect(qualify).toContain(
-    'needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]',
+  expect(qualify).toMatch(
+    /needs:\s*\[\s*select,\s*produce-linux,\s*produce-linux-arm64,\s*produce-macos,\s*produce-windows,?\s*\]/,
   );
   expect(qualify).toContain("!cancelled() && needs.select.result == 'success'");
   for (const [key, platform] of Object.entries(nativePlatforms)) {

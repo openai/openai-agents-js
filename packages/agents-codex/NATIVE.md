@@ -82,3 +82,23 @@ These guides describe the current source branch, including changes after `0.22.0
 - <a name="request-ownership-and-expiry"></a>[Request ownership and expiry](../../examples/codex/guides/interactions.md#request-ownership-and-expiry) · <a name="read-pending-interactions"></a>[Read pending interactions](../../examples/codex/guides/interactions.md#read-pending-interactions) · <a name="when-requests-are-available"></a>[When requests are available](../../examples/codex/guides/interactions.md#when-requests-are-available)
 - <a name="explicit-url-consent-and-completion"></a>[Explicit URL consent and completion](../../examples/codex/guides/interactions.md#explicit-url-consent-and-completion)
 - <a name="explicit-verification-and-personal-apps"></a>[Verify a user and configure personal Apps](../../examples/codex/guides/interactions.md#explicit-verification-and-personal-apps) · <a name="personal-apps-credentials"></a>[Personal Apps credentials](../../examples/codex/guides/interactions.md#personal-apps-credentials) · <a name="reply-to-a-verification-challenge"></a>[Reply to a verification challenge](../../examples/codex/guides/interactions.md#reply-to-a-verification-challenge)
+
+## Opt-in Linux x64 PGO alpha artifacts
+
+The alpha workflow has been exposing `native_pgo`, with a default of `false`. With that option, Linux x64 packaging has been deriving a PGO addon after the ordinary native restore and normal SDK build. The workflow has been placing native qualification and extracted-package checks after derivation.
+
+Local PGO builds have been using the [local bundle prerequisites](../../examples/codex/guides/building.md#build-a-local-bundle-for-an-application) and the following commands from the repository root.
+
+```sh
+rustup toolchain install 1.95.0 --profile minimal --component llvm-tools-preview
+pnpm install --frozen-lockfile
+RUSTUP_TOOLCHAIN=1.95.0 node packages/agents-codex/scripts/native.mjs package
+pnpm build
+RUSTUP_TOOLCHAIN=1.95.0 node packages/agents-codex/scripts/native.mjs package --pgo
+```
+
+This entry has been requiring clean tracked source, a normal SDK build and an existing ordinary same-source release receipt with all products. It has been using Rust 1.95.0 and its bundled LLVM profile tool. Generate and Use have been compiling only the addon and its Rust dependencies in separate targets. Companion binaries have been retaining their ordinary bytes.
+
+Seven synthetic local HTTP families have been covering fresh and retained lifetimes, structured output, tools, cancellation, streaming and a Worker. The receipt has been recording source, compiler, training and merged-profile hashes, with optimization scope per product. Generated profiles and logs have been staying in the ignored native cache. No profile has been entering the package payload or Git.
+
+The final alpha package has been carrying the PGO addon and its receipt. Ordinary native-bundle selection and reuse have not been accepting these derived images into their cache. This opt-in has not been enabling stable npm release automation or establishing current-head performance gains.

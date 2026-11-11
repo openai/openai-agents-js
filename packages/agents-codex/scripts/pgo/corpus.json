@@ -1,0 +1,263 @@
+{
+  "schema": "sdk-native-pgo-training-v1",
+  "cases": [
+    {
+      "family": "cold-fresh",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_fresh0:11:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_fresh0:11.........................................................................................................................................................",
+          "sessionMarker": "pgo_fresh0",
+          "turnMarker": 11,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_fresh1:14:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_fresh1:14.........................................................................................................................................................",
+          "sessionMarker": "pgo_fresh1",
+          "turnMarker": 14,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_fresh2:19:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_fresh2:19.........................................................................................................................................................",
+          "sessionMarker": "pgo_fresh2",
+          "turnMarker": 19,
+          "toolCount": 0
+        }
+      ],
+      "providers": 2,
+      "calls": 3,
+      "requests": 3,
+      "successes": 3,
+      "controlledRejections": 0,
+      "workerProcesses": 1,
+      "mergeWeight": 1,
+      "explicitRuntimes": 1
+    },
+    {
+      "family": "retained-history",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_history:11:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:11........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 11,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_history:12:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:12........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 12,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_history:13:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:13........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 13,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_history:14:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:14........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 14,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_history:15:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:15........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 15,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_history:16:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:16........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 16,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_history:17:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_history:17........................................................................................................................................................",
+          "sessionMarker": "pgo_history",
+          "turnMarker": 17,
+          "toolCount": 0
+        }
+      ],
+      "providers": 1,
+      "calls": 7,
+      "requests": 7,
+      "successes": 7,
+      "controlledRejections": 0,
+      "workerProcesses": 1,
+      "mergeWeight": 1
+    },
+    {
+      "family": "structured-output",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_shape:47:0 inspect amber cargo manifest.",
+          "expectedOutput": {
+            "manifest": {
+              "label": "cargo-47",
+              "codes": [13, 29]
+            },
+            "ready": true
+          },
+          "sessionMarker": "pgo_shape",
+          "turnMarker": 47,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_shape:48:0 inspect amber cargo manifest.",
+          "expectedOutput": {
+            "manifest": {
+              "label": "cargo-48",
+              "codes": [13, 29]
+            },
+            "ready": true
+          },
+          "sessionMarker": "pgo_shape",
+          "turnMarker": 48,
+          "toolCount": 0
+        }
+      ],
+      "providers": 1,
+      "calls": 2,
+      "requests": 2,
+      "successes": 2,
+      "controlledRejections": 0,
+      "workerProcesses": 1,
+      "mergeWeight": 1
+    },
+    {
+      "family": "tools-errors",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_chain:23:3 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_chain:23..........................................................................................................................................................",
+          "sessionMarker": "pgo_chain",
+          "turnMarker": 23,
+          "toolCount": 3
+        },
+        {
+          "input": "PGOTRAIN:pgo_tool_error:29:1 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_tool_error:29.....................................................................................................................................................",
+          "sessionMarker": "pgo_tool_error",
+          "turnMarker": 29,
+          "toolCount": 1
+        }
+      ],
+      "providers": 1,
+      "calls": 2,
+      "requests": 5,
+      "successes": 1,
+      "controlledRejections": 1,
+      "workerProcesses": 1,
+      "mergeWeight": 1
+    },
+    {
+      "family": "cancellation",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_cancel:31:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_cancel:31.........................................................................................................................................................",
+          "sessionMarker": "pgo_cancel",
+          "turnMarker": 31,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_recovered:37:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_recovered:37......................................................................................................................................................",
+          "sessionMarker": "pgo_recovered",
+          "turnMarker": 37,
+          "toolCount": 0
+        }
+      ],
+      "providers": 1,
+      "calls": 2,
+      "requests": 2,
+      "successes": 1,
+      "controlledRejections": 1,
+      "workerProcesses": 1,
+      "mergeWeight": 1
+    },
+    {
+      "family": "streaming",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_stream:53:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_stream:53.........................................................................................................................................................",
+          "sessionMarker": "pgo_stream",
+          "turnMarker": 53,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_stream:59:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_stream:59.........................................................................................................................................................",
+          "sessionMarker": "pgo_stream",
+          "turnMarker": 59,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_stream:61:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_stream:61.........................................................................................................................................................",
+          "sessionMarker": "pgo_stream",
+          "turnMarker": 61,
+          "toolCount": 0
+        }
+      ],
+      "providers": 1,
+      "calls": 3,
+      "requests": 3,
+      "successes": 3,
+      "controlledRejections": 0,
+      "workerProcesses": 1,
+      "mergeWeight": 1
+    },
+    {
+      "family": "concurrency",
+      "turns": [
+        {
+          "input": "PGOTRAIN:pgo_lane0:67:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_lane0:67..........................................................................................................................................................",
+          "sessionMarker": "pgo_lane0",
+          "turnMarker": 67,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_lane1:67:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_lane1:67..........................................................................................................................................................",
+          "sessionMarker": "pgo_lane1",
+          "turnMarker": 67,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_lane2:67:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_lane2:67..........................................................................................................................................................",
+          "sessionMarker": "pgo_lane2",
+          "turnMarker": 67,
+          "toolCount": 0
+        },
+        {
+          "input": "PGOTRAIN:pgo_lane3:67:0 inspect amber cargo manifest.",
+          "expectedOutput": "PGOOUT:pgo_lane3:67..........................................................................................................................................................",
+          "sessionMarker": "pgo_lane3",
+          "turnMarker": 67,
+          "toolCount": 0
+        }
+      ],
+      "providers": 1,
+      "calls": 4,
+      "requests": 4,
+      "successes": 4,
+      "controlledRejections": 0,
+      "workerProcesses": 1,
+      "mergeWeight": 1
+    }
+  ]
+}

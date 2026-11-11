@@ -38,6 +38,7 @@ const { values, positionals } = parseArgs({
     'rmcp-source': { type: 'string' },
     release: { type: 'boolean', default: false },
     'test-fixture': { type: 'boolean', default: false },
+    pgo: { type: 'boolean', default: false },
   },
   allowPositionals: true,
 });
@@ -45,13 +46,14 @@ const [command] = positionals;
 if (
   positionals.length !== 1 ||
   !['prepare', 'audit', 'build', 'package'].includes(command) ||
-  ((values.release || values['test-fixture']) && command !== 'build')
+  ((values.release || values['test-fixture']) && command !== 'build') ||
+  (values.pgo && command !== 'package')
 ) {
   throw new Error(
-    'Usage: node scripts/native.mjs prepare|audit|build|package [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture]',
+    'Usage: node scripts/native.mjs prepare|audit|build|package [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture] [--pgo]',
   );
 }
-if (command === 'build' || command === 'package')
+if ((command === 'build' || command === 'package') && !values.pgo)
   rmSync(join(root, 'build-receipt.json'), { force: true });
 const revision = readFileSync(join(root, 'CODEX_REVISION'), 'utf8').trim();
 const v8Release = JSON.parse(
@@ -262,7 +264,12 @@ async function verifiedV8(filename, override) {
   return destination;
 }
 
-async function build() {
+async function build({
+  addonOnly = false,
+  companions,
+  environmentOverrides = {},
+  optimization,
+} = {}) {
   const receiptPath = join(root, 'build-receipt.json');
   rmSync(receiptPath, { force: true });
   const sourceIdentity = audit();
@@ -279,6 +286,7 @@ async function build() {
           CARGO_HOME: resolve(root, process.env.CARGO_HOME || '.cache/cargo'),
         }),
     CARGO_TARGET_DIR: resolve(root, process.env.CARGO_TARGET_DIR || 'target'),
+    ...environmentOverrides,
   };
   const host = run('rustc', ['-vV'], { env: environment })
     .toString('utf8')
@@ -372,13 +380,13 @@ async function build() {
       'build',
       '--locked',
       '--lib',
-      ...(windows ? [] : helpers),
+      ...(windows || addonOnly ? [] : helpers),
       ...profile,
       ...timings,
     ],
     { env: environment, stdio: 'inherit' },
   );
-  if (windows) {
+  if (windows && !addonOnly) {
     // V8 executables need Codex's MSVC settings. Keep them off the Node addon:
     // its cdylib must retain the DLL-compatible CRT. Dependency Cargo configs
     // are not inherited, so select the unchanged upstream config explicitly.
@@ -422,43 +430,66 @@ async function build() {
   mkdirSync(bin, { recursive: true });
   const runtime = join(helperOutput, `codex-sdk-runtime${suffix}`);
   const payload = [[join(root, 'codex.node'), join(output, library)]];
-  const runtimeNames = [
-    'codex-sdk-runtime',
-    ...(host.includes('-linux-') ? ['codex-linux-sandbox'] : []),
-    ...(!windows ? ['codex-execve-wrapper'] : []),
-  ];
-  // Remove obsolete aliases from builds made before helper selection was
-  // restricted by host. Only remove paths that this build script has owned.
-  for (const name of [
-    'apply_patch',
-    'applypatch',
-    'codex-linux-sandbox',
-    'codex-execve-wrapper',
-  ]) {
-    if (!runtimeNames.includes(name)) {
-      rmSync(join(bin, `${name}${suffix}`), { force: true });
-    }
-  }
-  for (const name of runtimeNames) {
-    const helper = join(bin, `${name}${suffix}`);
-    copyFileSync(runtime, helper);
-    payload.push([helper, runtime]);
-  }
-  const codeMode = join(helperOutput, `codex-code-mode-host${suffix}`);
-  const codeModeDestination = join(bin, `codex-code-mode-host${suffix}`);
-  copyFileSync(codeMode, codeModeDestination);
-  payload.push([codeModeDestination, codeMode]);
-  if (values['test-fixture']) {
-    const testBin = join(root, 'test-bin');
-    mkdirSync(testBin, { recursive: true });
-    const fixture = join(
-      helperOutput,
-      'examples',
-      `exec-server-fixture${suffix}`,
+  if (addonOnly) {
+    equalSnapshot(
+      companions.sources,
+      sourceIdentity,
+      'Ordinary companion sources',
     );
-    const destination = join(testBin, `exec-server-fixture${suffix}`);
-    copyFileSync(fixture, destination);
-    payload.push([destination, fixture]);
+    equalSnapshot(companions.inputs, inputs, 'Ordinary companion inputs');
+    if (
+      companions.format !== 'reviewed-native-v1' ||
+      !companions.release ||
+      companions.host !== host ||
+      companions.optimization
+    )
+      throw new Error('PGO requires ordinary same-source release companions');
+    for (const [relative, expected] of Object.entries(companions.products)) {
+      if (relative === 'native/codex.node') continue;
+      const destination = join(packageRoot, relative);
+      if ((await sha256(destination)) !== expected)
+        throw new Error(`Ordinary companion changed: ${relative}`);
+      payload.push([destination, destination]);
+    }
+  } else {
+    const runtimeNames = [
+      'codex-sdk-runtime',
+      ...(host.includes('-linux-') ? ['codex-linux-sandbox'] : []),
+      ...(!windows ? ['codex-execve-wrapper'] : []),
+    ];
+    // Remove obsolete aliases from builds made before helper selection was
+    // restricted by host. Only remove paths that this build script has owned.
+    for (const name of [
+      'apply_patch',
+      'applypatch',
+      'codex-linux-sandbox',
+      'codex-execve-wrapper',
+    ]) {
+      if (!runtimeNames.includes(name)) {
+        rmSync(join(bin, `${name}${suffix}`), { force: true });
+      }
+    }
+    for (const name of runtimeNames) {
+      const helper = join(bin, `${name}${suffix}`);
+      copyFileSync(runtime, helper);
+      payload.push([helper, runtime]);
+    }
+    const codeMode = join(helperOutput, `codex-code-mode-host${suffix}`);
+    const codeModeDestination = join(bin, `codex-code-mode-host${suffix}`);
+    copyFileSync(codeMode, codeModeDestination);
+    payload.push([codeModeDestination, codeMode]);
+    if (values['test-fixture']) {
+      const testBin = join(root, 'test-bin');
+      mkdirSync(testBin, { recursive: true });
+      const fixture = join(
+        helperOutput,
+        'examples',
+        `exec-server-fixture${suffix}`,
+      );
+      const destination = join(testBin, `exec-server-fixture${suffix}`);
+      copyFileSync(fixture, destination);
+      payload.push([destination, fixture]);
+    }
   }
   console.log(`Built native/codex.node and matching helpers in ${bin}`);
   let receipt;
@@ -493,6 +524,7 @@ async function build() {
       host,
       release,
       products,
+      ...(optimization ? { optimization } : {}),
     };
   }
   if (command === 'package') {
@@ -523,11 +555,15 @@ async function build() {
     );
   }
   writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
+  return receipt;
 }
 
 if (command === 'prepare') audit(true);
 else if (command === 'audit') audit();
-else if (command === 'package') {
+else if (command === 'package' && values.pgo) {
+  const { packagePgo } = await import('./native-pgo.mjs');
+  await packagePgo({ packageRoot, prepare: () => audit(true), build });
+} else if (command === 'package') {
   // Never leave a previous receipt qualifying an interrupted packaging attempt.
   rmSync(join(root, 'build-receipt.json'), { force: true });
   audit(true);
