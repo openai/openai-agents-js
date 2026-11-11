@@ -6265,7 +6265,21 @@ export class Session<OutputT = string, Context = unknown> {
         let event: NativeEvent;
         try {
           if (batchIndex === batch.length) {
-            batch = await native._next_session_events();
+            try {
+              batch = await native._next_session_events();
+            } catch (error) {
+              // Failed startup closes the engine before joining this reader.
+              if (
+                this.lifecycle.kind === 'closing' &&
+                this.starting?.cause &&
+                error instanceof Error &&
+                error.message === 'Codex thread is closed' &&
+                'code' in error &&
+                error.code === 'GenericFailure'
+              )
+                return;
+              throw error;
+            }
             batchIndex = 0;
             if (batch.length === 0)
               throw new NativeError('Native event batch was empty');
