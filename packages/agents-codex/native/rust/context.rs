@@ -561,6 +561,11 @@ pub(crate) fn check_pairs(
                     .and_then(serde_json::Value::as_str),
                 false,
             ),
+            ResponseItem::McpApprovalRequest { id, .. } => ("mcp-approval", id.as_deref(), true),
+            ResponseItem::McpApprovalResponse {
+                approval_request_id,
+                ..
+            } => ("mcp-approval", Some(approval_request_id.as_str()), false),
             ResponseItem::ToolSearchCall {
                 call_id, execution, ..
             } if execution != "server" => ("search", call_id.as_deref(), true),

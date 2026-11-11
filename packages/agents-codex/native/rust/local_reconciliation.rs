@@ -481,8 +481,13 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
         };
         let item = &envelope.item;
         let owner = item.turn_id().map(str::to_owned).or_else(|| turn.clone());
-        match invocation_id(item) {
-            Some(call_id) => {
+        match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::CustomToolCall { call_id, .. }
+            | ResponseItem::ComputerCall { call_id, .. }
+            | ResponseItem::McpApprovalRequest {
+                id: Some(call_id), ..
+            } => {
                 ensure!(
                     calls
                         .insert(
@@ -702,6 +707,10 @@ pub(crate) fn plan(
             plan.protected_ids.insert(call_id.clone());
         }
         if call.output.is_none() {
+            ensure!(
+                !matches!(call.invocation, ResponseItem::McpApprovalRequest { .. }),
+                "Unresolved Hosted MCP approval requires a live provider decision"
+            );
             missing.push((
                 key,
                 turn.as_deref()

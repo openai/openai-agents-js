@@ -67,6 +67,52 @@ describe('native receipt identity', () => {
   });
 });
 
+describe('ordinary native event decoding', () => {
+  const canonical = (source: string) =>
+    nativeEventSchema.parse(parseNative(source));
+
+  it('preserves schema field order and nested values on an ordinary root event', () => {
+    const source =
+      '{"msg":{"item":{"value":[1,null,{"name":"雪"}]},"items":["done"],"type":"raw_response_item","arguments":{"count":2},"data":true,"tool_completion":null},"id":"turn"}';
+    const actual = parseEvent(source);
+    const expected = canonical(source);
+    assert.deepStrictEqual(actual, expected);
+    expect(JSON.stringify(actual)).toBe(JSON.stringify(expected));
+    expect(Object.keys(actual.msg)).toEqual([
+      'type',
+      'data',
+      'arguments',
+      'tool_completion',
+      'items',
+      'item',
+    ]);
+  });
+
+  it('restores an escaped numeric authority on an otherwise ordinary event', () => {
+    const source =
+      '{"id":"turn","msg":{"type":"warning","profile_\\u0065poch":18446744073709551615,"message":"watch"}}';
+    expect(parseEvent(source).msg.profile_epoch).toBe('18446744073709551615');
+    assert.deepStrictEqual(parseEvent(source), canonical(source));
+  });
+
+  it.each(['-0', '1e0'])(
+    'retains the authority-token error for %s',
+    (token) => {
+      const source = `{"id":"turn","msg":{"type":"warning","profile_epoch":${token}}}`;
+      expect(() => parseEvent(source)).toThrow(TypeError);
+    },
+  );
+
+  it('keeps the canonical distinction between lossless and catchall keys', () => {
+    const source =
+      '{"id":"turn","msg":{"type":"raw_response_item","data":{"__proto__":{"safe":true}},"item":{"__proto__":{"safe":true},"limit":-2}}}';
+    const actual = parseEvent(source);
+    assert.deepStrictEqual(actual, canonical(source));
+    expect(JSON.stringify(actual.msg.data)).toBe('{"__proto__":{"safe":true}}');
+    expect(actual.msg.item).toEqual({ limit: -2 });
+  });
+});
+
 describe('exact root text event decoding', () => {
   const text = {
     id: 'turn',

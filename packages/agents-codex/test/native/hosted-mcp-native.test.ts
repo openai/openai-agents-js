@@ -805,7 +805,26 @@ it('retains approved live custody through supplied compaction', async () => {
   expect((await (await session.submit('lookup')).wait()).finalOutput).toBe(
     'accepted',
   );
-  await session.compact({ summary: 'Lookup has been approved and completed.' });
+  const snapshot = await session.modelContext();
+  const request = snapshot.items.findIndex(
+    (item) => item.type === 'mcp_approval_request',
+  );
+  const response = snapshot.items.findIndex(
+    (item) => item.type === 'mcp_approval_response',
+  );
+  expect(request).toBeGreaterThanOrEqual(0);
+  expect(response).toBeGreaterThan(request);
+  for (const retain of [[request], [response]]) {
+    await expect(
+      session.compact({ summary: 'Do not publish.', snapshot, retain }),
+    ).rejects.toThrow(/retain both original tool call and result/);
+    expect(await session.modelContext()).toEqual(snapshot);
+  }
+  await session.compact({
+    summary: 'Lookup has been approved and completed.',
+    snapshot,
+    retain: [request, response],
+  });
   expect((await (await session.submit('continue')).wait()).finalOutput).toBe(
     'continued',
   );

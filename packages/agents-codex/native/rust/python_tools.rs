@@ -3796,6 +3796,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                 return Ok(Box::new(RealtimeToolOutput {
                     output: hosted_mcp_output(response.response)?,
                     start_response: response.start_response,
+                    acceptance: response.acceptance,
                 }) as Box<dyn ToolOutput>);
             }
             Ok(Box::new(RealtimeToolOutput {
