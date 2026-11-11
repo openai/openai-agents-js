@@ -1081,9 +1081,15 @@ nativeIt.each([true, false])(
   },
 );
 
-nativeIt(
-  'continues after a correlated provider request rejection',
-  async () => {
+nativeIt.each(
+  (['invalid_request_error', 'server_error'] as const).flatMap((errorType) =>
+    [undefined, 'unrelated-event'].map(
+      (eventId) => [errorType, eventId] as const,
+    ),
+  ),
+)(
+  'releases only the matching response create after provider rejection (%s, %s)',
+  async (errorType, unrelatedId) => {
     const model = new ModelServer([]);
     const peer = new HistoryPeer(model);
     try {
@@ -1094,19 +1100,45 @@ nativeIt(
       }).session();
       await using voice = await session.realtime({ model: 'fixture-realtime' });
       const seen: NativeRealtimeEvent[] = [];
+      let failure: unknown;
       const reading = (async () => {
         for await (const event of voice.events()) seen.push(event);
-      })();
+      })().catch((error: unknown) => {
+        failure = error;
+      });
       try {
         await voice.requestResponse();
         const first = await peer.frame('response.create');
         expect(first.event_id).toEqual(expect.any(String));
-        await voice.requestResponse();
         const secondIndex = peer.frames.indexOf(first) + 1;
         peer.send({
           type: 'error',
           error: {
-            type: 'invalid_request_error',
+            type: errorType,
+            code: 'small_provider_error',
+            ...(unrelatedId === undefined ? {} : { event_id: unrelatedId }),
+          },
+        });
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual({
+            type: 'provider_request_error',
+            code: 'small_provider_error',
+            ...(unrelatedId === undefined ? {} : { eventId: unrelatedId }),
+          }),
+        );
+        await voice.requestResponse();
+        // The peer observes this writer barrier after the queued create command.
+        await voice.sendEvent({ type: 'fixture.barrier' });
+        await peer.frame('fixture.barrier', secondIndex);
+        expect(
+          peer.frames
+            .slice(secondIndex)
+            .some((frame) => frame.type === 'response.create'),
+        ).toBe(false);
+        peer.send({
+          type: 'error',
+          error: {
+            type: errorType,
             code: 'invalid_value',
             event_id: first.event_id,
           },
@@ -1134,6 +1166,7 @@ nativeIt(
             }),
           );
         });
+        expect(failure).toBeUndefined();
         expect(peer.models).toEqual(['fixture-realtime']);
       } finally {
         await voice.close();
