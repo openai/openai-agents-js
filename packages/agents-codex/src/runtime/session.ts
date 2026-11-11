@@ -2443,7 +2443,10 @@ export class Session<OutputT = string, Context = unknown> {
       identity: ToolIdentity;
     }
   >();
-  private readonly manualAdmissions = new Map<string, Promise<void>>();
+  private readonly manualAdmissions = new Map<
+    string,
+    { promise: Promise<void>; publishOnAdmission: boolean }
+  >();
   private readonly approvalDecisions = new WeakMap<
     object,
     Map<string, ApprovalDecision>
@@ -2975,47 +2978,38 @@ export class Session<OutputT = string, Context = unknown> {
   /** Current issued interactions; this snapshot reserves no response. */
   async pendingInteractions(): Promise<readonly Interaction[]> {
     this.checkCallbackOperation('read interactions');
-    for (;;) {
-      if (!this.isOpen) throw new NativeError('Session is closed');
-      await this.refreshNativeQuestions();
-      if (!this.isOpen) throw new NativeError('Session is closed');
-      const owners: (NativeTurn | ChildCallbackOwner)[] =
-        this.childCallbacks.entered();
-      if (this.lifecycle.kind === 'turn') owners.unshift(this.lifecycle.run);
-      const snapshots = owners
-        .filter((owner) => this.canReturnRequests(owner))
-        .map((owner) => ({ owner, events: this.pendingManual(owner) }));
-      const admissions = snapshots.flatMap(({ owner, events }) =>
-        events.flatMap((event) => {
-          const pending = this.admitManualCall(owner, event);
-          return pending ? [pending] : [];
-        }),
-      );
-      if (admissions.length) {
-        await Promise.allSettled(admissions);
-        continue;
+    if (!this.isOpen) throw new NativeError('Session is closed');
+    await this.refreshNativeQuestions();
+    if (!this.isOpen) throw new NativeError('Session is closed');
+    const owners: (NativeTurn | ChildCallbackOwner)[] =
+      this.childCallbacks.entered();
+    if (this.lifecycle.kind === 'turn') owners.unshift(this.lifecycle.run);
+    const requests: Interaction[] = [];
+    for (const owner of owners) {
+      if (!this.canReturnRequests(owner)) continue;
+      for (const event of this.pendingManual(owner)) {
+        const admission = this.admitManualCall(owner, event, true);
+        const key = this.manualCallKey(event);
+        const call = key === undefined ? undefined : this.manualCalls.get(key);
+        // Admission can register the grant before its approval policy finishes.
+        if (
+          !call ||
+          call.run !== owner ||
+          (!call.ready && admission) ||
+          !this.manualCurrent(event)
+        )
+          continue;
+        this.publishManualRequest(owner, event);
+        const request = call.grant.request();
+        if (request) requests.push(request);
       }
-      const requests: Interaction[] = [];
-      for (const { owner, events } of snapshots) {
-        if (!this.canReturnRequests(owner)) continue;
-        for (const event of events) {
-          const key = this.manualCallKey(event);
-          const call =
-            key === undefined ? undefined : this.manualCalls.get(key);
-          if (!call || call.run !== owner || !this.manualCurrent(event))
-            continue;
-          this.publishManualRequest(owner, event);
-          const request = call.grant.request();
-          if (request) requests.push(request);
-        }
-      }
-      for (const owner of owners) {
-        if (!this.canReturnRequests(owner))
-          requests.push(...this.pendingEnteredManual(owner));
-        requests.push(...this.pendingNativeQuestions(owner));
-      }
-      return Object.freeze(requests);
     }
+    for (const owner of owners) {
+      if (!this.canReturnRequests(owner))
+        requests.push(...this.pendingEnteredManual(owner));
+      requests.push(...this.pendingNativeQuestions(owner));
+    }
+    return Object.freeze(requests);
   }
 
   /** Live wrappers once per reader, independent of observation retention. */
@@ -9130,6 +9124,7 @@ export class Session<OutputT = string, Context = unknown> {
   private admitManualCall(
     run: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
+    publishOnAdmission = false,
   ): Promise<void> | undefined {
     const msg = event.msg;
     const key = this.manualCallKey(event);
@@ -9140,13 +9135,19 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     const pending = this.manualAdmissions.get(key);
-    if (pending) return pending;
+    if (pending) {
+      pending.publishOnAdmission ||= publishOnAdmission;
+      return pending.promise;
+    }
     const calls = run instanceof NativeTurn ? run.toolCallIds : run.calls;
     if (calls.has(key)) return;
     // Reserve the full native grant key before deferred callback admission.
     // The inbox and every external waiter join this same operation.
-    const reservation = Promise.withResolvers<void>();
-    this.manualAdmissions.set(key, reservation.promise);
+    const reservation = {
+      ...Promise.withResolvers<void>(),
+      publishOnAdmission,
+    };
+    this.manualAdmissions.set(key, reservation);
     reservation.promise.catch(() => {});
     const callId = msg.callId;
     const turnId = msg.turnId;
@@ -9454,11 +9455,26 @@ export class Session<OutputT = string, Context = unknown> {
       invoke,
       typeof msg.tracing_context === 'string' ? msg.tracing_context : undefined,
     );
-    void admission.then(reservation.resolve, reservation.reject).finally(() => {
-      if (this.manualAdmissions.get(key) === reservation.promise)
+    const retire = () => {
+      if (this.manualAdmissions.get(key) === reservation)
         this.manualAdmissions.delete(key);
-      this.observations.notify();
-    });
+    };
+    void admission
+      .then(
+        () => {
+          // Retire before reading the flag so a later snapshot can publish directly.
+          retire();
+          reservation.resolve();
+          if (reservation.publishOnAdmission)
+            this.publishManualRequest(run, event);
+        },
+        (error) => {
+          retire();
+          reservation.reject(error);
+        },
+      )
+      .finally(() => this.observations.notify())
+      .catch((error) => this.readerFailed(error));
     return reservation.promise;
   }
 
@@ -9466,6 +9482,7 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
   ): void {
+    if (run.failure !== undefined) return;
     const key = this.manualCallKey(event);
     if (key === undefined) return;
     const call = this.manualCalls.get(key);
@@ -9487,6 +9504,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.oneShot && !root) return;
       const answer = async () => {
         if (
+          run.failure !== undefined ||
           (this.oneShot && root && !this.current(root)) ||
           !this.current(run) ||
           !call.grant.request()
