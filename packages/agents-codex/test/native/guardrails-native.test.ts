@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { ModelServer, call, message } from './fixtures/model-server';
 import {
@@ -687,18 +687,32 @@ it.each([false, true])(
       expect((await root.wait()).finalOutput).toBe('root complete');
       const children = await Array.fromAsync(session.subagents());
       expect(children).toHaveLength(2);
-      if (rejectOne) await blocked.promise;
-      for (const child of children) {
-        if (child.id === blockedId)
-          await expect(child.turn!.wait()).rejects.toBeInstanceOf(
-            GuardrailTripwire,
-          );
-        else
-          expect((await child.turn!.wait()).finalOutput).toBe(
-            `child-output:${child.id}`,
-          );
+      const [firstId, secondId] = children.map((child) => child.id);
+      if (rejectOne) {
+        await blocked.promise;
+        expect([firstId, secondId]).toContain(blockedId);
+      }
+      // Child records can appear before their native Turns are available.
+      const readyChildren = await vi.waitUntil(
+        async () => {
+          const snapshot = await Array.fromAsync(session.subagents());
+          const first = snapshot.find((child) => child.id === firstId);
+          const second = snapshot.find((child) => child.id === secondId);
+          if (!first?.turn || !second?.turn) return false;
+          return [
+            { id: first.id, turn: first.turn },
+            { id: second.id, turn: second.turn },
+          ];
+        },
+        { timeout: 3000 },
+      );
+      for (const { id, turn } of readyChildren) {
+        expect(turn.childId).toBe(id);
+        if (id === blockedId)
+          await expect(turn.wait()).rejects.toBeInstanceOf(GuardrailTripwire);
+        else expect((await turn.wait()).finalOutput).toBe(`child-output:${id}`);
         const events = await Array.fromAsync(
-          child.turn!.events({ includeExecutionDetails: true }),
+          turn.events({ includeExecutionDetails: true }),
         );
         const finished = events.filter(
           (event) =>
@@ -706,16 +720,11 @@ it.each([false, true])(
             event.callId === 'same-child-terminal-call',
         );
         expect(finished).toHaveLength(1);
-        if (child.id === blockedId)
-          expect(JSON.stringify(events)).not.toContain(
-            `child-output:${child.id}`,
-          );
-        else
-          expect(JSON.stringify(finished)).toContain(
-            `child-output:${child.id}`,
-          );
+        if (id === blockedId)
+          expect(JSON.stringify(events)).not.toContain(`child-output:${id}`);
+        else expect(JSON.stringify(finished)).toContain(`child-output:${id}`);
         expect(JSON.stringify(finished)).not.toContain(
-          `child-output:${children.find((other) => other.id !== child.id)!.id}`,
+          `child-output:${children.find((other) => other.id !== id)!.id}`,
         );
       }
     } finally {
