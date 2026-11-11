@@ -94,8 +94,9 @@ nativeIt(
 
 nativeIt(
   'keeps idle changes unowned and preserves the unnamed root',
-  async () => {
+  async ({ onTestFinished }) => {
     const model = new ModelServer([]);
+    const cleanedUp = Promise.withResolvers<void>();
     try {
       const config = await model.config();
       await using provider = new NativeProvider({
@@ -124,10 +125,17 @@ nativeIt(
       ).rejects.toThrow();
       await session.update({ agent: root });
       expect(await session.getActiveAgent()).toBe(root);
-      await session.close();
-      const notices = (await Array.fromAsync(reader)).filter(
-        (e) => e.type === 'agent_profile_changed',
-      );
+      onTestFinished(async () => {
+        await reader.return?.();
+        await cleanedUp.promise;
+      });
+      const notices: AgentProfileChanged[] = [];
+      while (notices.length < 2) {
+        const next = await reader.next();
+        expect(next.done).toBe(false);
+        if (next.value.type === 'agent_profile_changed')
+          notices.push(next.value);
+      }
       expect(
         notices.map((e) => [e.agentName, e.profileId, e.profileEpoch]),
       ).toEqual([
@@ -139,8 +147,18 @@ nativeIt(
         expect(event.turnId).toBeNull();
         expect(event.submissionId).toBeNull();
       }
+      await session.close();
+      const remaining = await Array.fromAsync(reader);
+      expect(
+        remaining.filter((e) => e.type === 'agent_profile_changed'),
+      ).toEqual([]);
+      model.assertExhausted();
     } finally {
-      await ModelServer.closeAll();
+      try {
+        await ModelServer.closeAll();
+      } finally {
+        cleanedUp.resolve();
+      }
     }
   },
   30000,

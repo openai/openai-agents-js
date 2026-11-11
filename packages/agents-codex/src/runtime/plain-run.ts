@@ -3,9 +3,8 @@ import type { SessionSetup } from './agent';
 import { apiRateLimits, type ApiRateLimits } from './api-rate-limits';
 import {
   binding,
-  decode,
+  decodePlainRunObject,
   encode,
-  jsonObject,
   type Engine,
   type JsonObject,
 } from './binding';
@@ -83,7 +82,7 @@ async function completedPlainRun(
       ].includes(String(row.kind))
     )
       continue;
-    const value = decode(jsonObject, row.payload);
+    const value = decodePlainRunObject(row.payload);
     switch (row.kind) {
       case 'model_request_dispatching': {
         const event = decodeRequestMetadata(value, submissionId);
@@ -474,7 +473,7 @@ export async function tryOpenPlainRun(
       owned = await engine!._plain_run(payload);
       if (signal?.aborted) cancel();
       waiting = owned.wait();
-      const dto = decode(jsonObject, await waiting);
+      const dto = decodePlainRunObject(await waiting);
       signal?.throwIfAborted();
       if (dto.error != null) {
         const fault = dto.error;
