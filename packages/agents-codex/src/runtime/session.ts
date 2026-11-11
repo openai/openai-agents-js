@@ -9068,17 +9068,21 @@ export class Session<OutputT = string, Context = unknown> {
       parent: toolInvocation.getStore(),
     };
     const tracing = run.tracing ?? run.issuedTracing;
+    const invokeNative = () =>
+      withNativeCallbackContext(
+        tracingContext,
+        callback,
+        signal,
+        workflowForTrace,
+      );
     // Register before application code runs; remove before track handles errors.
     const invocation = Promise.resolve()
       .then(() =>
         toolInvocation.run(scope, () =>
           tracingContext !== undefined
-            ? withNativeCallbackContext(
-                tracingContext,
-                callback,
-                signal,
-                workflowForTrace,
-              )
+            ? tracing
+              ? tracing.runWithStorage(invokeNative)
+              : invokeNative()
             : tracing
               ? tracing.run('host.callback', 'callback', callback)
               : callback(),

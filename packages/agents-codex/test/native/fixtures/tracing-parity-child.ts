@@ -3,6 +3,7 @@ import {
   replaceSingletonNativeBatchEvent,
 } from '../../fixtures/native-event-batches';
 import assert from 'node:assert/strict';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -1206,8 +1207,226 @@ async function preparedRequestCase() {
   assert.equal(server.requests.length, 1);
 }
 
+async function sessionContextStorageCase() {
+  const storages = Array.from(
+    { length: 2 },
+    () => new AsyncLocalStorage<telemetry.TraceSpan | undefined>(),
+  );
+  const adapters = storages.map((storage): telemetry.TraceContextStorage => ({
+    getStore: () => storage.getStore(),
+    run: (span, callback) => storage.run(span, callback),
+  }));
+  const release = Promise.withResolvers<void>();
+  const pending: Promise<void>[] = [];
+  try {
+    for (const mode of ['default', 'before-open', 'late'] as const) {
+      const entered = Promise.withResolvers<void>();
+      const index =
+        mode === 'default' ? undefined : mode === 'before-open' ? 0 : 1;
+      const selected = index === undefined ? undefined : adapters[index];
+      const storage = index === undefined ? undefined : storages[index];
+      const rows: {
+        phase: string;
+        span: telemetry.TraceSpan | undefined;
+        trace: telemetry.TraceSpan | undefined;
+        stores: (telemetry.TraceSpan | undefined)[];
+      }[] = [];
+      let root: telemetry.TraceSpan;
+      const record = (phase: string) =>
+        rows.push({
+          phase,
+          span: telemetry.getCurrentSpan(),
+          trace: telemetry.getCurrentTrace(),
+          stores: storages.map((store) => store.getStore()),
+        });
+      const run = withScriptedResponses(
+        [
+          [toolCall('lookup', {}, { callId: `storage-${mode}` })],
+          [text('recovered')],
+        ],
+        async (peer) => {
+          // Exercise both directions: the reader and submission use different backends.
+          telemetry.setTraceContextStorage(
+            mode === 'late' ? undefined : adapters[0],
+          );
+          const lookup = tool({
+            name: 'lookup',
+            parameters: z.object({}),
+            async execute() {
+              record('execute');
+              entered.resolve();
+              await release.promise;
+              record('execute.after-reset');
+              await telemetry.withSpan(
+                { name: `storage.${mode}.nested` },
+                async () => {
+                  await Promise.resolve();
+                  record('nested');
+                },
+              );
+              record('execute.after-nested');
+              throw new Error('synthetic function body failure');
+            },
+            async errorFunction() {
+              await Promise.resolve();
+              record('errorFunction');
+              return 'synthetic mapped failure';
+            },
+          });
+          await using session = await new Agent({
+            instructions: 'Use lookup.',
+            model: 'gpt-5',
+            provider: peer.provider,
+            tools: [lookup],
+          }).session();
+          telemetry.setTraceContextStorage(selected);
+          const result = await telemetry.withTrace(
+            { name: `storage.session.${mode}` },
+            async (workflow) => {
+              root = workflow;
+              assert.equal(storage?.getStore(), storage ? root : undefined);
+              return (await session.submit('begin')).wait();
+            },
+          );
+          assert.equal(result.finalOutput, 'recovered');
+          assert.deepEqual(
+            rows.map((row) => row.phase),
+            [
+              'execute',
+              'execute.after-reset',
+              'nested',
+              'execute.after-nested',
+              'errorFunction',
+            ],
+          );
+          for (const row of rows) {
+            assert(row.span, `${mode}: ${row.phase} has no current span`);
+            assert.equal(row.span.context.traceId, root.context.traceId);
+            assert.equal(row.trace, root);
+            assert.notEqual(row.span, root);
+            for (const [storeIndex, value] of row.stores.entries())
+              assert.equal(
+                value === (storeIndex === index ? row.span : undefined),
+                true,
+                `${mode}: ${row.phase} uses the wrong context storage`,
+              );
+          }
+          const callback = rows[0]!.span!;
+          assert.equal(
+            rows[2]!.span!.context.parentSpanId,
+            callback.context.spanId,
+          );
+          for (const row of [rows[1]!, rows[3]!, rows[4]!])
+            assert.equal(row.span, callback);
+          peer.assertExhausted();
+        },
+      );
+      pending.push(run);
+      await Promise.race([entered.promise, run]);
+    }
+    telemetry.setTraceContextStorage();
+    release.resolve();
+    const settled = await Promise.allSettled(pending);
+    assert.deepEqual(
+      settled.flatMap((result) =>
+        result.status === 'rejected' ? [String(result.reason)] : [],
+      ),
+      [],
+    );
+    assert(storages.every((storage) => storage.getStore() === undefined));
+    assert.equal(telemetry.getCurrentSpan(), undefined);
+  } finally {
+    release.resolve();
+    await Promise.allSettled(pending);
+    telemetry.setTraceContextStorage();
+  }
+}
+
+async function customContextStorageCase() {
+  const storage = new AsyncLocalStorage<telemetry.TraceSpan | undefined>();
+  const customScopes: string[] = [];
+  const adapter: telemetry.TraceContextStorage = {
+    getStore: () => storage.getStore(),
+    run(span, callback) {
+      if (span) customScopes.push(span.context.spanId);
+      return storage.run(span, callback);
+    },
+  };
+  await telemetry.configure();
+  const enteredDefault = Promise.withResolvers<void>();
+  const enteredCustom = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let defaultRun: Promise<void> | undefined;
+  let customRun: Promise<void> | undefined;
+  try {
+    telemetry.setTraceContextStorage(adapter);
+    telemetry.setTraceContextStorage();
+    defaultRun = telemetry.withTrace(
+      { name: 'storage.default' },
+      async (root) => {
+        enteredDefault.resolve();
+        await release.promise;
+        assert.equal(telemetry.getCurrentTrace(), root);
+        await telemetry.withSpan({ name: 'storage.default.child' }, (child) => {
+          assert.equal(child.context.traceId, root.context.traceId);
+          assert.equal(child.context.parentSpanId, root.context.spanId);
+          assert.equal(storage.getStore(), undefined);
+        });
+      },
+    );
+    await Promise.race([enteredDefault.promise, defaultRun]);
+    telemetry.setTraceContextStorage(adapter);
+    customRun = telemetry.withTrace(
+      { name: 'storage.custom' },
+      async (root) => {
+        assert.equal(storage.getStore(), root);
+        enteredCustom.resolve();
+        await release.promise;
+        assert.equal(telemetry.getCurrentTrace(), root);
+        const failure = new Error('custom span failed');
+        await assert.rejects(
+          telemetry.withSpan(
+            { name: 'storage.custom.child' },
+            async (child) => {
+              await Promise.resolve();
+              assert.equal(storage.getStore(), child);
+              assert.equal(telemetry.getCurrentSpan(), child);
+              assert.equal(child.context.traceId, root.context.traceId);
+              assert.equal(child.context.parentSpanId, root.context.spanId);
+              throw failure;
+            },
+          ),
+          (error) => error === failure,
+        );
+        assert.equal(telemetry.getCurrentSpan(), root);
+      },
+    );
+    await Promise.race([enteredCustom.promise, customRun]);
+    telemetry.setTraceContextStorage();
+    assert.equal(telemetry.getCurrentSpan(), undefined);
+    release.resolve();
+    await Promise.all([defaultRun, customRun]);
+    assert.equal(customScopes.length, 2);
+    assert.equal(storage.getStore(), undefined);
+    await telemetry.withTrace({ name: 'storage.reset' }, (root) => {
+      assert.equal(telemetry.getCurrentTrace(), root);
+      assert.equal(storage.getStore(), undefined);
+    });
+    await sessionContextStorageCase();
+  } finally {
+    release.resolve();
+    await Promise.allSettled([defaultRun, customRun]);
+    await telemetry.shutdown();
+  }
+}
+
 async function main() {
   const mode = process.argv[2];
+  if (mode === 'custom-context-storage') {
+    await customContextStorageCase();
+    console.log('PASS custom-context-storage');
+    return;
+  }
   if (mode === 'custom-only') {
     await customOnlyCase();
     console.log('PASS custom-only');
