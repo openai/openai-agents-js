@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -78,6 +79,8 @@ export interface FunctionApprovalRequest<
   Input = unknown,
 > extends ManualToolRequest<Input, never> {
   readonly approvalRequired: true;
+  /** Opaque identifier for matching an approval event to this live request. */
+  readonly approvalId: string;
   /** Validated arguments after the pre-approval input policy.
    * Plain objects, arrays and dates are detached; opaque values retain application identity.
    */
@@ -123,8 +126,71 @@ export interface ManualTool<
 interface RequestAuthority {
   definition: Definition;
   current(): boolean;
+  approvalInput?: unknown;
 }
 const requests = new WeakMap<object, RequestAuthority>();
+
+function copyApprovalJson(
+  value: unknown,
+  parents = new Set<object>(),
+): JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean')
+    return value;
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    !Object.is(value, -0)
+  )
+    return value;
+  if (typeof value !== 'object' || value === null)
+    throw new TypeError('Approval input must be faithful JSON');
+  const array = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    (array
+      ? prototype !== Array.prototype
+      : prototype !== Object.prototype && prototype !== null) ||
+    parents.has(value)
+  )
+    throw new TypeError('Approval input must be faithful JSON');
+  const property = (key: PropertyKey): JsonValue => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      typeof key !== 'string' ||
+      !descriptor?.enumerable ||
+      !('value' in descriptor)
+    )
+      throw new TypeError('Approval input must be faithful JSON');
+    return copyApprovalJson(descriptor.value, parents);
+  };
+  parents.add(value);
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (array) {
+      const length = Object.getOwnPropertyDescriptor(value, 'length')!.value;
+      if (keys.length !== length + 1)
+        throw new TypeError('Approval input must be faithful JSON');
+      return Array.from({ length }, (_, index) => property(String(index)));
+    }
+    return Object.fromEntries(keys.map((key) => [key, property(key)]));
+  } finally {
+    parents.delete(value);
+  }
+}
+
+/** @internal Display only faithful JSON of the captured execution value. */
+export function functionApprovalInput(
+  request: FunctionApprovalRequest,
+): JsonValue | undefined {
+  const authority = requests.get(request);
+  if (authority?.current() && authority.approvalInput !== undefined) {
+    try {
+      return copyApprovalJson(authority.approvalInput);
+    } catch {
+      // Opaque values retain native approval, without a browser projection.
+    }
+  }
+}
 const replies = new WeakMap<
   object,
   {
@@ -332,6 +398,7 @@ export function createManualRequest<Input, Result>(
     setValidatedEffectiveArguments(value: unknown): void {
       checkCurrent();
       effectiveArguments = copyInput(value);
+      authority.approvalInput = effectiveArguments;
     },
     executionArguments(): ApprovedArguments | undefined {
       const approved = approvedArguments;
@@ -362,6 +429,7 @@ export function createManualRequest<Input, Result>(
         ...(managedApproval
           ? {
               approvalRequired: true as const,
+              approvalId: randomUUID(),
               approve: (options: { always?: boolean } = {}) =>
                 approvalReply(
                   true,

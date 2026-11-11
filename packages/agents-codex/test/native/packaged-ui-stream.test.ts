@@ -1,9 +1,10 @@
 import { createServer } from 'node:http';
 import { afterEach, expect, it } from 'vitest';
-import { DefaultChatTransport, readUIMessageStream } from 'ai';
+import { DefaultChatTransport, readUIMessageStream, type UIMessage } from 'ai';
 import { z } from 'zod';
 import {
   Agent,
+  isFunctionApprovalRequest,
   NativeProvider,
   tool,
   type Observation,
@@ -14,7 +15,7 @@ import {
   vercelMessageStream,
   vercelResponse,
 } from '@openai/agents/ui';
-import { call } from './fixtures/model-server';
+import { call, message, ModelServer } from './fixtures/model-server';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -22,12 +23,19 @@ afterEach(async () => {
 });
 
 /** Actual Responses text deltas and function calls through the native engine. */
-async function peer(summary?: string) {
+async function peer(
+  summary?: string,
+  approvalPrefix?: string,
+  secondApproval = false,
+) {
   let requests = 0;
   const scripts = [
     call('lookup', { key: 'earlier-secret' }, { callId: 'old-call' }),
     'old answer',
     call('lookup', { key: 'current-secret' }, { callId: 'current-call' }),
+    ...(secondApproval
+      ? [call('lookup', { key: 'second-input' }, { callId: 'second-call' })]
+      : []),
     'Found it.',
   ];
   const server = createServer(async (request, response) => {
@@ -39,9 +47,15 @@ async function peer(summary?: string) {
     const send = (value: unknown) =>
       response.write(`data: ${JSON.stringify(value)}\n\n`);
     send({ type: 'response.created', response: { id: `r${requests}` } });
-    if (typeof selected === 'string') {
-      let outputIndex = 0;
-      if (summary !== undefined) {
+    let outputIndex = 0;
+    const text =
+      typeof selected === 'string'
+        ? selected
+        : selected?.call_id === 'current-call'
+          ? approvalPrefix
+          : undefined;
+    if (text !== undefined) {
+      if (summary !== undefined && typeof selected === 'string') {
         const current = selected === 'Found it.';
         send({
           type: 'response.output_item.done',
@@ -62,9 +76,9 @@ async function peer(summary?: string) {
         id: `message-${requests}`,
         type: 'message',
         role: 'assistant',
-        phase: 'final_answer',
+        phase: typeof selected === 'string' ? 'final_answer' : 'commentary',
         status: 'completed',
-        content: [{ type: 'output_text', text: selected }],
+        content: [{ type: 'output_text', text }],
       };
       send({
         type: 'response.output_item.added',
@@ -83,24 +97,26 @@ async function peer(summary?: string) {
         output_index: outputIndex,
         content_index: 0,
         item_id: item.id,
-        delta: selected,
+        delta: text,
       });
       send({
         type: 'response.output_text.done',
         output_index: outputIndex,
         content_index: 0,
         item_id: item.id,
-        text: selected,
+        text,
       });
       send({
         type: 'response.output_item.done',
         output_index: outputIndex,
         item,
       });
-    } else {
+      outputIndex++;
+    }
+    if (typeof selected !== 'string') {
       send({
         type: 'response.output_item.done',
-        output_index: 0,
+        output_index: outputIndex,
         item: selected,
       });
     }
@@ -226,6 +242,390 @@ it('official AI SDK client consumes native text/tool/terminal frames', async () 
   expect((await turn.wait()).finalOutput).toBe('Found it.');
 });
 
+it.each(
+  [
+    { name: 'approve', decisions: [true] },
+    { name: 'reject', decisions: [false] },
+    { name: 'approve then reject', decisions: [true, false] },
+  ].flatMap((test) =>
+    [undefined, false, true].map((includeToolData) => ({
+      ...test,
+      name: `${test.name}, tool data ${String(includeToolData)}`,
+      includeToolData,
+    })),
+  ),
+)(
+  'projects live approvals and resumes the same native turn ($name)',
+  async ({ decisions, includeToolData }) => {
+    const effects: string[] = [];
+    const prefix = 'Checking the record.';
+    await using provider = await peer(undefined, prefix, decisions.length > 1);
+    await using session = await new Agent({
+      instructions: 'Read.',
+      provider,
+      tools: [
+        tool({
+          name: 'lookup',
+          parameters: z.object({ key: z.string() }),
+          needsApproval: ({ effectiveArguments }) =>
+            effectiveArguments.key !== 'earlier-secret',
+          runBeforeApproval: true,
+          before: ({ effectiveArguments }) =>
+            effectiveArguments.key === 'current-secret'
+              ? {
+                  action: 'replaceArguments',
+                  arguments: { key: 'reviewed-input' },
+                }
+              : { action: 'allow' },
+          execute: ({ key }) => {
+            effects.push(key);
+            return 'result:' + key;
+          },
+        }),
+      ],
+    }).session();
+    await (await session.submit('earlier')).wait();
+    const turn = await session.submit('current');
+    const privateView = frames(vercelResponse(turn, session));
+    const afterApprovals: string[] = [];
+    const transport = new DefaultChatTransport({
+      fetch: async () =>
+        vercelResponse(turn, session, {
+          includeToolApprovals: true,
+          afterApprovals,
+          ...(includeToolData === undefined ? {} : { includeToolData }),
+        }),
+    });
+    const read = async (message?: UIMessage): Promise<UIMessage> => {
+      const stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'native-approval',
+        messageId: undefined,
+        messages: message ? [message] : [],
+        abortSignal: undefined,
+      });
+      return (
+        await Array.fromAsync(
+          readUIMessageStream({ message, stream, terminateOnError: true }),
+        )
+      ).at(-1)!;
+    };
+    const ids = ['current-call', 'second-call'];
+    const inputKeys = ['reviewed-input', 'second-input'];
+    const expectedEffects = ['earlier-secret'];
+    let decided: UIMessage | undefined;
+    for (const [index, approve] of decisions.entries()) {
+      const input = { key: inputKeys[index] };
+      const displayed = await read(decided);
+      const part = displayed.parts.find(
+        (part) =>
+          part.type === 'dynamic-tool' && part.state === 'approval-requested',
+      );
+      if (part?.type !== 'dynamic-tool' || part.state !== 'approval-requested')
+        throw new Error('Expected a live approval part');
+      const toolCallId = part.toolCallId;
+      const approvalId = part.approval.id;
+      expect(toolCallId).toBe(approvalId);
+      expect(displayed.parts).toContainEqual(
+        expect.objectContaining({
+          type: 'dynamic-tool',
+          toolCallId,
+          state: 'approval-requested',
+          input,
+          approval: { id: approvalId },
+        }),
+      );
+      expect(JSON.stringify(displayed)).not.toContain('current-secret');
+      expect(JSON.stringify(displayed)).not.toContain('earlier-secret');
+      expect(effects).toEqual(expectedEffects);
+      const request = (await session.pendingInteractions())
+        .filter(isFunctionApprovalRequest)
+        .find(
+          (candidate) =>
+            candidate.submissionId === turn.submissionId &&
+            candidate.approvalId === approvalId,
+        );
+      expect(request?.callId).toBe(ids[index]);
+      if (index === 0) {
+        for (const prematureId of [approvalId, 'wrong-approval']) {
+          const premature = await frames(
+            vercelResponse(turn, session, {
+              includeToolApprovals: true,
+              afterApprovals: [prematureId],
+            }),
+          );
+          expect(premature).toContainEqual({
+            type: 'error',
+            errorText: 'resync_required',
+          });
+        }
+      }
+      await session.respond(
+        approve ? request!.approve() : request!.reject('Declined.'),
+      );
+      afterApprovals.push(approvalId);
+      if (approve) expectedEffects.push(input.key);
+      decided = {
+        ...displayed,
+        parts: displayed.parts.map((part) =>
+          part.type === 'dynamic-tool' && part.state === 'approval-requested'
+            ? {
+                ...part,
+                state: 'approval-responded' as const,
+                approval: { ...part.approval, approved: approve },
+              }
+            : part,
+        ),
+      };
+    }
+
+    const final = await read(decided);
+    expect(
+      final.parts.filter((part) => part.type === 'dynamic-tool'),
+    ).toHaveLength(decisions.length);
+    for (const [index, approve] of decisions.entries()) {
+      expect(final.parts).toContainEqual(
+        expect.objectContaining({
+          type: 'dynamic-tool',
+          toolCallId: afterApprovals[index],
+          state: 'output-available',
+          input: { key: inputKeys[index] },
+          approval: { id: afterApprovals[index], approved: approve },
+          output: includeToolData
+            ? approve
+              ? 'result:' + inputKeys[index]
+              : 'Declined.'
+            : null,
+        }),
+      );
+    }
+    expect(
+      final.parts.flatMap((part) => (part.type === 'text' ? [part.text] : [])),
+    ).toEqual([prefix, 'Found it.']);
+    expect(effects).toEqual(expectedEffects);
+    const hidden = await privateView;
+    expect(JSON.stringify(hidden)).not.toContain('reviewed-input');
+    expect(JSON.stringify(hidden)).not.toContain('second-input');
+    expect(hidden).not.toContainEqual(
+      expect.objectContaining({ type: 'tool-approval-request' }),
+    );
+    expect((await turn.wait()).finalOutput).toBe('Found it.');
+  },
+);
+
+it('projects parsed defaults and normalized values that approval executes', async () => {
+  const server = new ModelServer([
+    [call('write', { path: '  /target  ' }, { callId: 'normalized' })],
+    [message('Done.')],
+  ]);
+  cleanups.push(ModelServer.closeAll);
+  await using provider = new NativeProvider({
+    baseUrl: `http://127.0.0.1:${await server.port()}/v1`,
+    apiKey: 'synthetic',
+    supportsWebsockets: false,
+  });
+  const effects: unknown[] = [];
+  await using session = await new Agent({
+    instructions: 'Write the record.',
+    provider,
+    tools: [
+      tool({
+        name: 'write',
+        parameters: z
+          .object({
+            path: z.string().trim(),
+            overwrite: z.boolean().default(true),
+          })
+          .transform((input) =>
+            Object.defineProperty(input, '__proto__', {
+              value: { reviewed: true },
+              enumerable: true,
+            }),
+          ),
+        needsApproval: true,
+        execute: (input) => {
+          effects.push(input);
+          return 'Written.';
+        },
+      }),
+    ],
+  }).session();
+  const turn = await session.submit('Write.');
+  const values = await frames(
+    vercelResponse(turn, session, { includeToolApprovals: true }),
+  );
+  const input = values.find((value) => value.type === 'tool-input-available');
+  expect(input?.input).toEqual(
+    Object.fromEntries([
+      ['path', '/target'],
+      ['overwrite', true],
+      ['__proto__', { reviewed: true }],
+    ]),
+  );
+  expect(Object.getPrototypeOf(input.input)).toBe(Object.prototype);
+  expect(Object.hasOwn(input.input, '__proto__')).toBe(true);
+  expect(effects).toEqual([]);
+  const request = (await session.pendingInteractions()).find(
+    isFunctionApprovalRequest,
+  )!;
+  expect(input.input).toEqual(request.effectiveArguments);
+  await session.respond(request.approve());
+  expect((await turn.wait()).finalOutput).toBe('Done.');
+  expect(effects).toEqual([input.input]);
+});
+
+it.each([
+  { name: 'opaque date', value: () => new Date('2026-11-01T12:00:00Z') },
+  {
+    name: 'nested hidden member',
+    value: () => ({
+      nested: Object.defineProperty({ visible: true }, 'overwrite', {
+        value: true,
+      }),
+    }),
+  },
+  {
+    name: 'extra array member',
+    value: () => Object.assign(['visible'], { overwrite: true }),
+  },
+  { name: 'lossy negative zero', value: () => -0 },
+])(
+  'withholds an unfaithful approval prompt without executing ($name)',
+  async ({ value }) => {
+    const server = new ModelServer([
+      [call('write', { value: 'raw' }, { callId: 'opaque' })],
+      [message('Declined.')],
+    ]);
+    cleanups.push(ModelServer.closeAll);
+    await using provider = new NativeProvider({
+      baseUrl: `http://127.0.0.1:${await server.port()}/v1`,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    let effects = 0;
+    await using session = await new Agent({
+      instructions: 'Write the record.',
+      provider,
+      tools: [
+        tool({
+          name: 'write',
+          parameters: z.object({ value: z.string().transform(() => value()) }),
+          needsApproval: true,
+          execute: () => {
+            effects++;
+            return 'Written.';
+          },
+        }),
+      ],
+    }).session();
+    const turn = await session.submit('Write.');
+    const values = await frames(
+      vercelResponse(turn, session, { includeToolApprovals: true }),
+    );
+    expect(values).toContainEqual({
+      type: 'error',
+      errorText: 'resync_required',
+    });
+    expect(values.some((value) => value.type === 'tool-approval-request')).toBe(
+      false,
+    );
+    expect(values.some((value) => value.type === 'tool-input-available')).toBe(
+      false,
+    );
+    expect(effects).toBe(0);
+    expect(server.requests).toHaveLength(1);
+    const request = (await session.pendingInteractions()).find(
+      isFunctionApprovalRequest,
+    )!;
+    await session.respond(request.reject('Input cannot be represented.'));
+    expect((await turn.wait()).finalOutput).toBe('Declined.');
+    expect(effects).toBe(0);
+  },
+);
+
+it('binds approval frames to distinct native grants with the same provider call ID', async () => {
+  const server = new ModelServer([
+    [
+      call('read_a', { key: 'value-a' }, { callId: 'reused' }),
+      call('read_b', { key: 'value-b' }, { callId: 'reused' }),
+    ],
+    [message('Done.')],
+  ]);
+  cleanups.push(ModelServer.closeAll);
+  await using provider = new NativeProvider({
+    baseUrl: `http://127.0.0.1:${await server.port()}/v1`,
+    apiKey: 'synthetic',
+    supportsWebsockets: false,
+  });
+  const effects: string[] = [];
+  const guarded = (name: string) =>
+    tool({
+      name,
+      parameters: z.object({ key: z.string() }),
+      needsApproval: true,
+      execute: ({ key }) => {
+        effects.push(key);
+        return key;
+      },
+    });
+  await using session = await new Agent({
+    instructions: 'Read two records.',
+    provider,
+    tools: [guarded('read_a'), guarded('read_b')],
+  }).session();
+  const turn = await session.submit('Read both.');
+  const live = async () =>
+    (await session.pendingInteractions()).filter(isFunctionApprovalRequest);
+  await expect.poll(async () => (await live()).length).toBe(2);
+  const afterApprovals: string[] = [];
+  const presentedInputs: string[] = [];
+  for (const approve of [true, false]) {
+    const values = await frames(
+      vercelResponse(turn, session, {
+        includeToolApprovals: true,
+        afterApprovals,
+      }),
+    );
+    const input = values.find((value) => value.type === 'tool-input-available');
+    const approval = values.find(
+      (value) => value.type === 'tool-approval-request',
+    );
+    expect(input).toBeDefined();
+    expect(approval).toMatchObject({ toolCallId: input.toolCallId });
+    const request = (await live()).find(
+      (candidate) => candidate.name === input.toolName,
+    );
+    expect(request).toBeDefined();
+    expect(request!.callId).toBe('reused');
+    expect(request!.approvalId).toBe(approval.approvalId);
+    expect(input.toolCallId).toBe(request!.approvalId);
+    expect(input.input).toEqual(request!.effectiveArguments);
+    presentedInputs.push(input.input.key);
+    afterApprovals.push(approval.approvalId);
+    await session.respond(
+      approve ? request!.approve() : request!.reject('Declined.'),
+    );
+  }
+  expect(new Set(afterApprovals).size).toBe(2);
+  expect(new Set(presentedInputs)).toEqual(new Set(['value-a', 'value-b']));
+  expect((await turn.wait()).finalOutput).toBe('Done.');
+  expect(effects).toEqual([presentedInputs[0]]);
+  const result = await frames(
+    vercelResponse(turn, session, {
+      includeToolApprovals: true,
+      afterApprovals,
+    }),
+  );
+  expect(result).toContainEqual({
+    type: 'error',
+    errorText: 'resync_required',
+  });
+  expect(result.some((value) => value.type === 'tool-output-available')).toBe(
+    false,
+  );
+  server.assertExhausted();
+});
+
 it('streams typed native AI SDK chunks with opt-in provider summaries', async () => {
   const summary = 'Checked the current record.';
   await using provider = await peer(summary);
@@ -316,6 +716,79 @@ function fixture(
     },
   };
 }
+
+it.each([undefined, false, true])(
+  'keeps approval completion and error data behind the tool-data opt-in (%s)',
+  async (includeToolData) => {
+    const ids = ['success', 'failure'];
+    const { turn, session } = fixture(
+      [
+        start,
+        ...ids.map((id, index) => ({
+          ...start,
+          type: 'function_approval_requested' as const,
+          sequence: index + 2,
+          callId: id,
+          approvalId: `approval-${id}`,
+          name: 'lookup',
+        })),
+      ],
+      ids.flatMap((id): SessionItem[] => [
+        {
+          id,
+          turnId: 't',
+          type: 'function_call',
+          callId: id,
+          name: 'lookup',
+          arguments: { reviewed: true },
+          status: 'completed',
+        },
+        {
+          id: `${id}:output`,
+          turnId: 't',
+          type: 'function_call_output',
+          callId: id,
+          status: id === 'success' ? 'completed' : 'failed',
+          output: id === 'success' ? 'synthetic-confidential-result' : null,
+          error: id === 'failure' ? 'synthetic-confidential-error' : null,
+        },
+      ]),
+    );
+    const values = await frames(
+      vercelResponse(
+        turn,
+        {
+          ...session,
+          async pendingInteractions() {
+            return [];
+          },
+        },
+        {
+          includeToolApprovals: true,
+          afterApprovals: ids.map((id) => `approval-${id}`),
+          ...(includeToolData === undefined ? {} : { includeToolData }),
+        },
+      ),
+    );
+    expect(values).toContainEqual({
+      type: 'tool-output-available',
+      toolCallId: 'approval-success',
+      output: includeToolData ? 'synthetic-confidential-result' : null,
+      dynamic: true,
+    });
+    expect(values).toContainEqual({
+      type: 'tool-output-error',
+      toolCallId: 'approval-failure',
+      errorText: includeToolData
+        ? 'synthetic-confidential-error'
+        : 'Tool did not complete',
+      dynamic: true,
+    });
+    expect(values.slice(-2)).toEqual([{ type: 'finish' }, '[DONE]']);
+    if (!includeToolData)
+      expect(JSON.stringify(values)).not.toContain('synthetic-confidential');
+  },
+);
 
 it.each(['chunks', 'response'] as const)(
   '%s cancellation waits for its observation reader to close',
