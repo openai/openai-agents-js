@@ -723,7 +723,11 @@
     {
       "path": "sdk-model-deadline-admission-type.patch",
       "sha256": "e17072825b736731573a60583c4ee557d39d7ef0b8ef06e49de89ec90a05a038"
+    },
+    {
+      "path": "sdk-trace-delivery-controls.patch",
+      "sha256": "2eee67cd8141831466a0c35a6c9ccb3a1dbecefeb763369504b4a25640ad49ca"
     }
   ],
-  "result_tree": "04e2099bcb215d4808a64415d060139851ba7d1d"
+  "result_tree": "3d93477bd9e1bba6193baa77d7a972a3e729015e"
 }

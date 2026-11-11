@@ -46,6 +46,54 @@ try {
 
 OpenAI export has been requiring a known native root descriptor. An externally supplied ingress `parentTrace` has been propagating span context without supplying that root descriptor. Such workflows have been completing while OpenAI delivery has been failing in the flush receipt. OTLP or an application processor accepting externally parented spans has been providing the route for those workflows; the [external-parent guidance](telemetry.md#carry-a-w3c-parent-across-services) has been describing context propagation. A successful agent result has not been establishing successful export.
 
+## Batching and retry controls
+
+Current source builds: `traceDelivery` on the one process-wide `telemetry.configure()` call. A complete local example with the same [source-build prerequisites](building.md), without model or export credentials:
+
+```ts
+import { telemetry } from '@openai/agents';
+
+await telemetry.configure({
+  traceProcessors: [new telemetry.ConsoleTraceProcessor()],
+  traceDelivery: {
+    maxQueueSize: 4096,
+    maxBatchSize: 256,
+    scheduleDelayMs: 100,
+    exportTriggerRatio: 0.7,
+  },
+});
+try {
+  await telemetry.withTrace({ name: 'Synthetic batch' }, async () => {});
+  const receipt = await telemetry.forceFlush({ timeoutMs: 5000 });
+  console.log(receipt.status, receipt.droppedRecords, receipt.failedDeliveries);
+} finally {
+  await telemetry.shutdown({ timeoutMs: 5000 });
+}
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `maxQueueSize` | `2048` | Pending events, including drained events awaiting acknowledgement. |
+| `maxQueueBytes` | `4194304` | Serialized event bytes still in the native queue. |
+| `maxBatchSize` | `128` | Maximum events in one drain and its `onEvents` callback. |
+| `scheduleDelayMs` | `0` | Delay from the first queued event; zero for immediate delivery. |
+| `exportTriggerRatio` | `0.7` | Immediate delivery at this fraction of `maxQueueSize`, rounded down to at least one event. |
+
+Queue counts, bytes, and batch sizes: integers from 1 through 4294967295. Scheduling delay: integer milliseconds from 0 through 4294967295. Trigger ratio: a finite number from 0 through 1.
+
+The native queue has been draining after the delay or trigger, and during a pending flush. Queue overflow has been contributing to `droppedRecords` in the flush receipt. Callbacks have been remaining serialized on the host event loop; flush and shutdown have been retaining their separate total budgets.
+
+For `new telemetry.OpenAITraceExporter(...)`, retry controls on the existing constructor:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `timeoutMs` | `750` | Total delivery budget, including HTTP attempts and retry delays; 1 through 60000 milliseconds. |
+| `maxRetries` | `0` | Non-negative safe-integer retry count after the first attempt. |
+| `retryDelayMs` | `0` | Initial exponential backoff, with up to 10% jitter. |
+| `maxRetryDelayMs` | `30000` | Delay cap, including server `Retry-After` and `retry-after-ms` guidance. |
+
+Both delay options: integer milliseconds from 0 through 60000, with the maximum at least the initial delay. Retries have been covering network failures and HTTP 408, 409, 429, and 5xx responses, with `x-should-retry: false` suppressing retries. Export credentials and the local workflow root from the [OpenAI export example](#export-to-openai-or-inspect-locally) have been remaining required.
+
 ## Export credential lifetime
 
 Current source builds: explicit `TraceExportCredentials` for one workflow, independent of model credentials and the exporter's fallback API key. Private headers, excluded from span records and portable Session state.
