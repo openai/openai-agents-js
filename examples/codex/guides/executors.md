@@ -96,7 +96,7 @@ Session usage: `agent.session({ environment })`. One-shot usage: `agent.run(inpu
 | Setting | Behavior |
 | --- | --- |
 | Explicit values | An immutable copy at construction, overriding the selected executor policy's values for new commands. Empty string values: supported. |
-| `undefined` or `{}` | Existing execution defaults: a fresh local environment with a system `PATH`, or the remote executor's existing environment policy. |
+| `undefined` or `{}` | Existing execution defaults: a fresh strict local environment with a system `PATH`, selected host values for [trusted local execution](local-execution.md#run-trusted-code-with-host-file-reads), or the remote executor's existing environment policy. |
 | A replacement or restored Session | Current destination values. No saved copy of the earlier map. |
 | Private declaration data | The map excluded from the Environment's default JSON, saved configuration, and passive observations. Values printed by commands: ordinary tool output. |
 

@@ -36,4 +36,6 @@ The Python examples also include tax prep assets and tutorial/workflow scaffolds
 
 ## Runtime requirements
 
+Unix-local session preparation has been requiring trusted host Python 3 with descriptor-relative filesystem support for SDK file operations, including sessions without a PTY. The host `OPENAI_AGENTS_PYTHON` environment variable has been selecting an absolute path to a trusted executable when discovery in `/usr/bin`, `/usr/local/bin`, and `/opt/homebrew/bin` has been failing. Missing protection and `fileIOProtection: 'off'` have been causing preparation to fail before workspace setup.
+
 Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start:basic`, `start:handoffs`, `start:coding-task`, `start:resume`, `start:memory`, `start:unix-local-pty`, `start:unix-local-runner`, `start:docker-runner`, `start:memory-generation`, `start:memory-multi-agent-multiturn`, `start:shared-session-workdirs`, `start:sandbox-agent-capabilities`, `start:sandbox-agent-with-tools`, `start:sandbox-agents-as-tools`.

@@ -89,11 +89,11 @@ If a provider has active or opening Sessions, the helper refuses to close the pr
 
 Keep direct or bypassed loopback proxy routing stable for the whole scope, including later Sessions. This helper does not change proxy environment variables or isolate network access. Exhaustion can detect an unused local script after a proxy has already served a response or an external effect has occurred. The helper does not configure process telemetry.
 
-## Native realtime scenarios
+## Script a native Realtime session
 
-`ScriptedRealtimeAdapter` has been supplying incoming Realtime frames and recording outgoing frames while the native runtime has been handling session behavior. `runScenario` has been coordinating an asynchronous fixture with the application exercise.
+Use `ScriptedRealtimeAdapter` and `runScenario` with the current [source build](../../examples/codex/guides/building.md). The adapter supplies incoming Realtime frames and records outgoing frames while the native runtime handles session behavior. The scenario and the application exercise run together.
 
-Example file: `scripted-realtime.mts`, with the same Node.js and installed native-runtime prerequisites as above.
+Save this example as `scripted-realtime.mts` in an application with Node.js 24 and the source-built SDK packages and native runtime.
 
 ```ts
 import assert from 'node:assert/strict';
@@ -154,20 +154,22 @@ adapter.assertComplete();
 adapter.assertClosed();
 ```
 
-Command: `npx tsx scripted-realtime.mts`. Expected result: a silent exit after the answer and closure assertions.
+Run `npx tsx scripted-realtime.mts`. The script exits silently when the answer and closure assertions pass.
 
 | Scenario operation | Contract |
 | --- | --- |
-| `expectSend(expected)` | Ordered matching by frame type, exact JSON object, or synchronous predicate; a promise for a copied frame. Already recorded frames first. |
-| `emit(...frames)` | Incoming canonical provider frames, in argument order. |
-| `failNextSend(error)` | One injected error on the next outgoing send; that frame still available to `expectSend`. |
-| `disconnect(error?)` | Incoming-stream termination after queued frames, with an optional injected error. |
+| `expectSend(expected)` | Match the next outgoing frame by type, exact JSON object, or synchronous predicate. Returns a promise for a copy of the frame. Checks recorded frames first. |
+| `emit(...frames)` | Deliver incoming provider frames in argument order. |
+| `failNextSend(error)` | Fail the next outgoing send. `expectSend` can still match that frame. |
+| `disconnect(error?)` | End the incoming stream after queued frames, with an optional error. |
 
-`runScenario` has been rejecting mismatches, unconsumed sends or failure injections, and unsatisfied expectations after exercise completion. Callback errors and an optional `signal`'s cancellation reason have been propagating unchanged. The helper has been returning the exercise's value after both callbacks and the completeness checks.
+`runScenario` returns the exercise's value after both callbacks finish and the completeness checks pass. It rejects mismatched or unconsumed sends, unused failure injections, and unsatisfied expectations. The helper propagates callback errors and the cancellation reason from an optional `signal` unchanged.
 
-Each adapter has been allowing one connection and one scenario. Constructor `RealtimeStep[]` entries have been supporting fixed exchanges separately; mixed static steps and `runScenario` have been triggering rejection before either callback. All scenario operations have been rejecting use after scope completion.
+Create one adapter per connection and scenario. Use constructor `RealtimeStep[]` entries for a fixed exchange or use `runScenario` for an interactive exchange. Passing static steps and calling `runScenario` on the same adapter fails before either callback starts. Scenario operations reject use after the scenario ends.
 
-The helper has been releasing its own waiters and abort listener. The exercise has been retaining responsibility for session cleanup and caller-created background work, including after cancellation. `assertComplete()` and `assertClosed()` have been providing explicit completeness and terminal-state checks. `sentEvents` has been retaining full synthetic frame snapshots. `connectCalls` has been retaining the model, a redacted endpoint, and header-presence flags. The `apiKeyProvided` flag has been recording Authorization header-name presence, including an empty value. Endpoint snapshots have been excluding userinfo, queries, and fragments; invalid, relative, or opaque URLs have been leaving `url` absent. Header values and signals have been remaining outside snapshots.
+The helper releases its own waiters and abort listener. Close the session and join application-owned background work in the exercise, including after cancellation. Use `assertComplete()` and `assertClosed()` to check script completion and adapter closure.
+
+`sentEvents` captures full outgoing frames. Use synthetic data. `connectCalls` captures the model, a redacted endpoint, and header-presence flags. `apiKeyProvided` records the presence of an Authorization header, even with an empty value. Endpoint snapshots omit user info, queries, and fragments. For invalid, relative, or opaque URLs, the snapshot omits `url`. Snapshots omit header values and signals.
 
 ## Use classic test doubles separately
 

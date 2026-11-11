@@ -182,7 +182,7 @@ Register processors through the SDK instance that successfully configured teleme
 
 ## Consume and flush records
 
-The runtime calls `onEvent(event)` serially with immutable snapshots. Read `lifecycle` (`start` or `end`), `trace_id`, `span_id`, and `parent_span_id` for identity. This is a lifecycle-record API, not the OTLP payload format received by a collector. Do not mutate snapshots or assume undocumented extra attributes always exist.
+The runtime has been calling `onEvent(event)` serially with immutable snapshots. Matching source builds have also been accepting batch-only processors with `onEvents(events)`. For a processor with both methods, delivery has been preferring `onEvents` and passing a frozen array of immutable snapshots. Each lifecycle record has been exposing `lifecycle` (`start` or `end`), `trace_id`, `span_id`, and `parent_span_id` for identity. This is a lifecycle-record API, not the OTLP payload format received by a collector. Do not mutate snapshots or assume undocumented extra attributes always exist.
 
 A callback can return a Promise. Keep it bounded: a slow callback delays the shared delivery path, and the SDK cannot preempt synchronous application code. A callback exception counts as a failed delivery rather than failing the agent operation. Processor callbacks and their asynchronous descendants suppress SDK tracing to avoid tracing the export work recursively.
 
