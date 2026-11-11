@@ -23,9 +23,14 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-it.each([false, true])(
-  'signals a gap for an unowned completed model item with opt-in %s',
-  async (includeModelOutputItems) => {
+it.each([
+  [false, false, 'Reasoning'],
+  [true, false, 'Reasoning'],
+  [true, true, 'Reasoning'],
+  [true, true, 'AgentMessage'],
+] as const)(
+  'signals a gap for an unowned model item (opt-in=%s, child=%s, type=%s)',
+  async (includeModelOutputItems, child, itemType) => {
     const { NativeThread } = await binding();
     const nextEvents = NativeThread.prototype._next_session_events;
     const drained = Promise.withResolvers<void>();
@@ -36,15 +41,29 @@ it.each([false, true])(
         return [
           JSON.stringify({
             id: 'retired-turn',
+            ...(child
+              ? {
+                  subagent_id: 'child-session',
+                  subagent_incarnation: 'child-incarnation',
+                  subagent_instance_id: '1',
+                }
+              : {}),
             msg: {
               type: 'item_completed',
-              thread_id: this.id,
+              thread_id: child ? 'child-session' : this.id,
               turn_id: 'retired-turn',
-              item: {
-                type: 'Reasoning',
-                id: 'late',
-                summary_text: ['Late reasoning.'],
-              },
+              item:
+                itemType === 'Reasoning'
+                  ? {
+                      type: 'Reasoning',
+                      id: 'late',
+                      summary_text: ['Late reasoning.'],
+                    }
+                  : {
+                      type: 'AgentMessage',
+                      id: 'late',
+                      content: [{ type: 'Text', text: 'Late assistant.' }],
+                    },
             },
           }),
         ];
@@ -67,6 +86,7 @@ it.each([false, true])(
     expect(
       events.some((event) => event.type === 'model_output_item_completed'),
     ).toBe(false);
+    expect(events.some((event) => event.type === 'turn_started')).toBe(false);
   },
 );
 

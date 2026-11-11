@@ -6573,7 +6573,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : projectSearchItem(msg.item, turnId, id);
       const hostedItem = projectNativeHostedToolItem(msg.item, turnId);
-      if (item || searchItem || hostedItem) {
+      if (item || searchItem || hostedItem || modelItem) {
         const owner = this.childCallbacks.find(id, incarnation, turnId);
         if (
           owner &&
@@ -6667,17 +6667,6 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
     const submissionId = `child:${id}:${incarnation}:${turnId}`;
-    if (
-      modelItem &&
-      owner.observationPhase !== 'ended' &&
-      owner.instanceId === event.subagent_instance_id
-    )
-      this.observations.append({
-        type: 'model_output_item_completed',
-        turnId,
-        submissionId,
-        item: modelItem,
-      });
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
     if (
