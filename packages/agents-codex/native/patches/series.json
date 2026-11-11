@@ -670,8 +670,8 @@
     },
     {
       "path": "sdk-stored-session-discovery-and-compaction-restore.patch",
-      "sha256": "e8e74a84d0c578ea555aa29199c9a5372cd2f82dfe15ed96c44503c3c7cb500b"
+      "sha256": "437fd62f8654c5c83b6a78fde663e15386bf8f1e11d3401e40ca47f9591ac1ea"
     }
   ],
-  "result_tree": "dd17a3b76321a548aec98b7a49d0f940e741748b"
+  "result_tree": "de61a29831b279963a4bcfdf30ced661dd21bf6f"
 }

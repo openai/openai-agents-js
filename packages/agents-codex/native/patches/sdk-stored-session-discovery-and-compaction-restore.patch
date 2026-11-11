@@ -946,3 +946,14 @@ index 924dc479..6b6c3632 100644
 +        list_threads::list_threads_including_empty_preview(self, params).await
 +    }
 +}
+diff --git a/codex-rs/state/src/extract.rs b/codex-rs/state/src/extract.rs
+--- a/codex-rs/state/src/extract.rs
++++ b/codex-rs/state/src/extract.rs
+@@ -758,6 +758,7 @@
+             ThreadSettingsAppliedEvent {
+                 thread_id: None,
+                 thread_settings: ThreadSettingsSnapshot {
++                    invocation_timeout_ms: None,
+                     request_controls: Default::default(),
+                     tool_choice: None,
+                     disabled_plugin_ids: Vec::new(),
