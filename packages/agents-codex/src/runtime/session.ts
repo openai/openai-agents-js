@@ -13079,14 +13079,22 @@ export class Session<OutputT = string, Context = unknown> {
     } catch {
       incomplete = true;
     }
-    return Object.freeze({
+    const details: RunErrorDetails = {
       input,
       lastAgent,
       items,
       rawResponses: Object.freeze(rawResponses),
       guardrailResults,
       incomplete,
+    };
+    Object.defineProperties(details, {
+      input: { enumerable: false },
+      lastAgent: { enumerable: false },
+      items: { enumerable: false },
+      rawResponses: { enumerable: false },
+      guardrailResults: { enumerable: false },
     });
+    return Object.freeze(details);
   }
 
   /** @internal Read the exact owned turn before closing its Session. */

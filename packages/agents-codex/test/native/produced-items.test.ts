@@ -1,3 +1,4 @@
+import { inspect } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -492,6 +493,8 @@ it.each([false, true])(
     );
     expect(JSON.stringify(details?.items)).toContain('accepted-call');
     expect(JSON.stringify(details?.items)).toContain('accepted data');
+    expect(inspect(details)).not.toContain('accepted data');
+    expect(JSON.stringify(details)).not.toContain('accepted data');
     expect(details?.guardrailResults).toHaveLength(1);
     expect(details?.incomplete).toBe(false);
   },
