@@ -3766,7 +3766,7 @@ impl NativeThread {
         {
             return Err(native_error("Configured child callback owner has changed"));
         }
-        let policy = environment::configured_child_policy(&thread, &key.turn)
+        let policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
             .await
             .map_err(native_error)?;
         owner

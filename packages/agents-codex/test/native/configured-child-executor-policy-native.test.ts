@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -202,6 +203,112 @@ it
       childModel.assertExhausted();
     } finally {
       await executor.close();
+    }
+  },
+  15000,
+);
+
+it.skipIf(!native || process.platform !== 'linux')(
+  'keeps trusted local runtime temp grants out of a configured child checkpoint',
+  async () => {
+    const temporary = await mkdtemp(
+      join(tmpdir(), 'agents-configured-policy-'),
+    );
+    try {
+      const directory = await realpath(temporary);
+      const cwd = join(directory, 'work');
+      const extra = join(directory, 'extra');
+      await Promise.all([mkdir(cwd), mkdir(extra)]);
+      const rootModel = new ModelServer([
+        [
+          call(
+            'configured_child',
+            { input: 'run child' },
+            { callId: 'trusted-child' },
+          ),
+        ],
+        [message('root complete')],
+      ]);
+      const childModel = new ModelServer([
+        [message('child complete')],
+        [message('restored child complete')],
+      ]);
+      const provider = async (server: ModelServer) => {
+        const config = await server.config();
+        return new NativeProvider({
+          baseUrl: (config['model_providers.fixture'] as { base_url: string })
+            .base_url,
+          apiKey: 'local-fixture',
+          supportsWebsockets: false,
+        });
+      };
+      await using rootProvider = await provider(rootModel);
+      await using childProvider = await provider(childModel);
+      const child = new Agent({
+        instructions: 'Report.',
+        model: 'gpt-5.5',
+        provider: childProvider,
+      });
+      let childSession: Session | undefined;
+      let childEnvironment: Environment | undefined;
+      let saved: Awaited<ReturnType<Session['saveState']>> | undefined;
+      const open = child.session.bind(child);
+      child.session = async (...args) => {
+        childEnvironment = (
+          args[0] as { environment?: Environment } | undefined
+        )?.environment;
+        childSession = await open(...args);
+        return childSession;
+      };
+      const parent = new Agent({
+        instructions: 'Run the child.',
+        model: 'gpt-5.5',
+        provider: rootProvider,
+        tools: [
+          child.asTool({
+            toolName: 'configured_child',
+            async customOutputExtractor(result) {
+              saved = await childSession!.saveState();
+              return String(result.finalOutput);
+            },
+          }),
+        ],
+      });
+      const environment = Environment.local({
+        cwd,
+        writableRoots: [extra],
+        writePolicy: 'trusted_workspace_write',
+      });
+      {
+        await using root = await parent.session({ environment });
+        expect(
+          (await (await root.submit('Run child.')).wait()).finalOutput,
+        ).toBe('root complete');
+        const records = await Array.fromAsync(root.turns());
+        const declared = new Set([
+          pathToFileURL(cwd).href,
+          pathToFileURL(extra).href,
+        ]);
+        const privateRoots =
+          records[0].receipt!.executors![0].writableRoots.filter(
+            (root) => !declared.has(root),
+          );
+        expect(privateRoots).toHaveLength(1);
+        expect(new Set(childEnvironment!.writableRoots)).toEqual(declared);
+        expect(childEnvironment!.writableRoots).not.toContain(privateRoots[0]);
+      }
+      expect(saved).toBeDefined();
+      await using restored = await child.session({
+        state: saved!,
+        environment,
+      });
+      expect(
+        (await (await restored.submit('Continue.')).wait()).finalOutput,
+      ).toBe('restored child complete');
+      rootModel.assertExhausted();
+      childModel.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
     }
   },
   15000,
