@@ -913,9 +913,17 @@
       "sha256": "224a45ca3ef842c473c57e4b3112311b2430ba178956ac066549b9bed6d21d65"
     },
     {
+      "path": "sdk-application-model-raw-events.patch",
+      "sha256": "fc99d550ba9948829fc1fad79d8eb907da293d2aa78a79152d37a0d166091a7e"
+    },
+    {
+      "path": "sdk-trace-flush-worker-completion.patch",
+      "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
+    },
+    {
       "path": "sdk-run-model-override.patch",
       "sha256": "3c902abc5f5cc738441217e53fec59914ea63058576d578d1f7d09abd201c13b"
     }
   ],
-  "result_tree": "04503ffc1ccabd141883a678d4993094dff875d0"
+  "result_tree": "8f8de37501449c74edc237a5ab7a76159c70b233"
 }
