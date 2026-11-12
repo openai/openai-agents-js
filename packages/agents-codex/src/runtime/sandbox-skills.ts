@@ -38,7 +38,7 @@ function capturedTreeUsage(
   maxMembers: number = treeLimits.maxMembers,
   maxBytes: number = treeLimits.maxBytes,
   path = '',
-  known?: ReadonlyMap<string, SkillTreeUsage>,
+  known?: ReadonlySet<string>,
 ): SkillTreeUsage {
   const usage = { members: 0, bytes: 0 };
   const pending = [{ entry, path }];
@@ -76,7 +76,7 @@ function capturedTreeUsage(
 }
 
 type SandboxSkillBudget = {
-  readonly retained: Map<string, SkillTreeUsage>;
+  readonly retained: Set<string>;
   bytes: number;
   members: number;
   tail: Promise<void>;
@@ -90,7 +90,7 @@ function sandboxSkillBudget(sandbox: SandboxSessionLike): SandboxSkillBudget {
   let budget = sandboxSkillBudgets.get(owner);
   if (!budget) {
     budget = {
-      retained: new Map(),
+      retained: new Set(),
       bytes: 0,
       members: 0,
       tail: Promise.resolve(),
@@ -110,7 +110,7 @@ function seedRestoredSkillBudget(
   manifest: Manifest,
 ): void {
   if (!budget.needsRecount) return;
-  const additions = new Map<string, SkillTreeUsage>();
+  const additions = new Set<string>();
   let members = budget.members,
     bytes = budget.bytes;
   for (const path in manifest.entries) {
@@ -130,9 +130,9 @@ function seedRestoredSkillBudget(
     );
     members += usage.members;
     bytes += usage.bytes;
-    additions.set(path, usage);
+    additions.add(path);
   }
-  for (const [path, usage] of additions) budget.retained.set(path, usage);
+  for (const path of additions) budget.retained.add(path);
   budget.members = members;
   budget.bytes = bytes;
   budget.needsRecount = false;
@@ -398,31 +398,47 @@ export class SandboxSkillLease {
       const relative = configuration.skillsPath
         ? destination.slice(configuration.skillsPath.length + 1)
         : destination;
-      const previous = this.#budget.retained.get(destination) ?? {
-        members: 0,
-        bytes: 0,
-      };
+      // Provider directory writes overlay existing contents. Never credit an old
+      // capture while its physical assets could survive a replacement.
+      const occupied =
+        this.#budget.retained.has(destination) ||
+        (await sandbox.pathExists(destination));
+      this.admit();
+      signal.throwIfAborted();
+      if (occupied)
+        throw new Error(
+          'Skill destination cannot be reloaded in this workspace; restore SKILL.md or use a fresh workspace',
+        );
       const entry = await resolveLazySkillEntry(
         configuration.lazyFrom!.source,
         relative,
         {
           limits: {
-            maxMembers:
-              treeLimits.maxMembers - this.#budget.members + previous.members,
+            maxMembers: treeLimits.maxMembers - this.#budget.members,
             maxDepth: treeLimits.maxDepth,
-            maxBytes: treeLimits.maxBytes - this.#budget.bytes + previous.bytes,
+            maxBytes: treeLimits.maxBytes - this.#budget.bytes,
           },
           sourceGrants: sandbox.state.manifest.extraPathGrants,
         },
       );
       this.admit();
       signal.throwIfAborted();
+      if (
+        entry.type !== 'dir' ||
+        !Object.prototype.hasOwnProperty.call(
+          entry.children ?? {},
+          'SKILL.md',
+        ) ||
+        entry.children?.['SKILL.md']?.type !== 'file'
+      ) {
+        throw new Error('Captured skill requires a regular SKILL.md');
+      }
       const usage = capturedTreeUsage(entry);
       await sandbox.materializeEntry({ path: destination, entry });
       // Successful writes retain these bytes even if the caller then observes cancellation.
-      this.#budget.members += usage.members - previous.members;
-      this.#budget.bytes += usage.bytes - previous.bytes;
-      this.#budget.retained.set(destination, usage);
+      this.#budget.members += usage.members;
+      this.#budget.bytes += usage.bytes;
+      this.#budget.retained.add(destination);
       this.admit();
       signal.throwIfAborted();
     }

@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, rm, truncate, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  rename,
+  rm,
+  stat,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -135,7 +143,7 @@ unixIt(
 );
 
 unixIt(
-  'coalesces concurrent duplicate skill loads and charges their destination once',
+  'serializes concurrent duplicate loads and charges their destination once',
   async () => {
     const f = await fixture(30);
     let release!: () => void;
@@ -147,13 +155,7 @@ unixIt(
       entered = resolve;
     });
     const materialize = f.sandbox.materializeEntry.bind(f.sandbox);
-    const exists = f.sandbox.pathExists.bind(f.sandbox);
     let writes = 0;
-    let checks = 0;
-    f.sandbox.pathExists = async (path) => {
-      checks++;
-      return exists(path);
-    };
     f.sandbox.materializeEntry = async (args) => {
       if (++writes === 1) {
         entered();
@@ -165,10 +167,8 @@ unixIt(
       const first = f.load('alpha');
       await started;
       const duplicate = f.load('alpha');
-      const checksWhileBlocked = checks;
       release();
       const results = await Promise.all([first, duplicate]);
-      expect(checksWhileBlocked).toBe(1);
       expect(results.map((result) => result.status)).toEqual([
         'loaded',
         'already_loaded',
@@ -188,7 +188,6 @@ unixIt(
   'isolates cancellation of the first caller from a live queued duplicate',
   async () => {
     const f = await fixture();
-    const exists = f.sandbox.pathExists.bind(f.sandbox);
     let release!: () => void;
     let entered!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -436,6 +435,79 @@ unixIt(
       ).rejects.toThrow(/skill tree byte limit/i);
     } finally {
       await resumed?.close();
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'refuses rotating assets after the indexed skill sentinel disappears',
+  async () => {
+    const f = await fixture();
+    try {
+      const root = f.sandbox.state.manifest.extraPathGrants[0].path;
+      await rm(join(root, 'alpha', 'SKILL.md'));
+      const outcomes: string[] = [];
+      let previous = 'asset';
+      for (const name of ['asset-one', 'asset-two']) {
+        await rename(join(root, 'alpha', previous), join(root, 'alpha', name));
+        previous = name;
+        outcomes.push(
+          await f.load('alpha').then(
+            (result) => result.status,
+            (error) => error.message,
+          ),
+        );
+      }
+      let retainedBytes = 0;
+      for (const name of ['asset-one', 'asset-two']) {
+        try {
+          retainedBytes += (
+            await stat(
+              join(f.sandbox.state.workspaceRootPath, '.agents', 'alpha', name),
+            )
+          ).size;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
+      }
+      expect(retainedBytes).toBe(0);
+      expect(outcomes).toEqual([
+        'Captured skill requires a regular SKILL.md',
+        'Captured skill requires a regular SKILL.md',
+      ]);
+      expect(await f.sandbox.pathExists('.agents/alpha/asset-one')).toBe(false);
+      expect(await f.sandbox.pathExists('.agents/alpha/asset-two')).toBe(false);
+    } finally {
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'refuses overlay reload after a materialized sentinel is removed',
+  async () => {
+    const f = await fixture();
+    try {
+      await f.load('alpha');
+      const root = f.sandbox.state.manifest.extraPathGrants[0].path;
+      await rm(
+        join(f.sandbox.state.workspaceRootPath, '.agents', 'alpha', 'SKILL.md'),
+      );
+      await rename(
+        join(root, 'alpha', 'asset'),
+        join(root, 'alpha', 'replacement'),
+      );
+      await expect(f.load('alpha')).rejects.toThrow(
+        /Skill destination cannot be reloaded/,
+      );
+      expect(await f.sandbox.pathExists('.agents/alpha/asset')).toBe(true);
+      expect(await f.sandbox.pathExists('.agents/alpha/replacement')).toBe(
+        false,
+      );
+    } finally {
       await f.close();
     }
   },
