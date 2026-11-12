@@ -1,3 +1,9 @@
+import {
+  SandboxSkillBinding,
+  SandboxSkillLease,
+  type Skills,
+} from './sandbox-skills';
+import type { FunctionTool } from './tools';
 import { parseNative } from './binding';
 import {
   bindManagedWorkspaceSource,
@@ -27,6 +33,22 @@ import {
   type EnvironmentSource,
 } from './environment-source';
 
+export type SandboxEnvironmentSource<Context = any> =
+  EnvironmentSource<Context> & {
+    readonly skillTools: readonly FunctionTool<Context>[];
+  };
+
+function exposeSkillTools<Context>(
+  source: EnvironmentSource<Context>,
+  binding?: SandboxSkillBinding<Context>,
+): SandboxEnvironmentSource<Context> {
+  Object.defineProperty(source, 'skillTools', {
+    value: binding?.tools ?? Object.freeze([]),
+    enumerable: true,
+  });
+  return source as SandboxEnvironmentSource<Context>;
+}
+
 export interface SandboxEnvironmentOptions<
   Context = any,
   Options extends SandboxClientOptions = SandboxClientOptions,
@@ -36,6 +58,8 @@ export interface SandboxEnvironmentOptions<
   client: SandboxClient<Options, State>;
   /** Application-authorized manifest; validate untrusted data before constructing it. */
   manifest: Manifest;
+  /** Resource declarations; select source.skillTools in each intended Agent catalog. */
+  skills?: Skills;
   /** Trusted provider options: plain data is captured; opaque handles/functions remain caller-owned. */
   options?: Options;
   /** Workspace snapshot used only for resource creation. */
@@ -85,7 +109,7 @@ export function sandboxEnvironment<
   State extends SandboxSessionState = SandboxSessionState,
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
-): EnvironmentSource<Context> {
+): SandboxEnvironmentSource<Context> {
   return sandboxEnvironmentWithRuntime(options, sandboxRuntime);
 }
 
@@ -98,7 +122,7 @@ export function sandboxEnvironmentWithRuntime<
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
-): EnvironmentSource<Context> {
+): SandboxEnvironmentSource<Context> {
   return createSandboxEnvironment(options, runtime);
 }
 
@@ -110,7 +134,13 @@ function createSandboxEnvironment<
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
   inheritedManaged?: ManagedWorkspaceAuthorization,
-): EnvironmentSource<Context> {
+  inheritedSkills?: SandboxSkillBinding<Context>,
+): SandboxEnvironmentSource<Context> {
+  const skillBinding =
+    inheritedSkills ??
+    (options.skills
+      ? new SandboxSkillBinding<Context>(options.skills)
+      : undefined);
   const {
     cloneManifest,
     copySandboxStateRuntimeAuthority,
@@ -216,9 +246,13 @@ function createSandboxEnvironment<
         },
         runtime,
         binding,
+        skillBinding,
       )(acquisition);
     };
-    return binding ? bindManagedWorkspaceSource(source, binding) : source;
+    return exposeSkillTools(
+      binding ? bindManagedWorkspaceSource(source, binding) : source,
+      skillBinding,
+    );
   }
   if (options.managedWorkspace && granted && !inheritedManaged)
     throw new TypeError(
@@ -257,6 +291,8 @@ function createSandboxEnvironment<
   const capturedManifest = cloneManifest(
     requireManifest(options.manifest, Manifest),
   );
+  if (skillBinding)
+    runtime.processSkillManifest(skillBinding.configuration, capturedManifest);
   const manifest =
     (borrowed || resume) && client.resolveTrustedManifestForResume
       ? client.resolveTrustedManifestForResume(
@@ -318,11 +354,13 @@ function createSandboxEnvironment<
     }
     let sandbox: SandboxSessionLike<State> | undefined;
     let gateway: EnvironmentAcquisition | undefined;
+    let skillLease: SandboxSkillLease | undefined;
     let disposal: Promise<void> | undefined;
     const dispose = (guard?: DisposeGuard) =>
       (disposal ??= Promise.resolve().then(async () => {
         const errors: unknown[] = [];
         for (const release of [
+          () => skillLease?.retire(),
           // The gateway restores its own scope before reinstalling this guard.
           () => gateway?.dispose(guard),
           () =>
@@ -484,6 +522,10 @@ function createSandboxEnvironment<
           ({ signal }) => connect(created, { signal }),
           signal,
         );
+        skillLease = skillBinding
+          ? new SandboxSkillLease(skillBinding, sandbox, gateway.environment!)
+          : undefined;
+        const skillInstructions = await skillLease?.activate();
         gateway.opened();
         signal.throwIfAborted();
         return createEnvironmentLease(
@@ -491,11 +533,17 @@ function createSandboxEnvironment<
           dispose,
           gateway.signal,
           managed,
-          renderWorkspaceInstructions(
-            sandbox.state.manifest,
-            gateway.environment! as Environment<Context>,
-            runtime,
-          ),
+          [
+            renderWorkspaceInstructions(
+              sandbox.state.manifest,
+              gateway.environment! as Environment<Context>,
+              runtime,
+            ),
+            skillInstructions,
+          ]
+            .filter(Boolean)
+            .join('\n\n') || undefined,
+          skillLease,
         );
       };
       const inspectedState = borrowed?.state ?? originalResumeState;
@@ -515,9 +563,12 @@ function createSandboxEnvironment<
       throw error;
     }
   };
-  return managedAuthorization
-    ? bindManagedWorkspaceSource(source, managedAuthorization)
-    : source;
+  return exposeSkillTools(
+    managedAuthorization
+      ? bindManagedWorkspaceSource(source, managedAuthorization)
+      : source,
+    skillBinding,
+  );
 }
 
 /** Render only paths, access and caller descriptions, never provider config or environment values. */

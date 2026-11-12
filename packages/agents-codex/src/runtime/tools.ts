@@ -1,3 +1,4 @@
+import type { SandboxSkillLease } from './sandbox-skills';
 import { isZodObject } from '@openai/agents-core/utils';
 import {
   getSchemaAndParserFromInputType,
@@ -209,6 +210,7 @@ const toolSessionOwners = new WeakMap<
   {
     owner: object;
     clientToolSearch?: ClientToolSearchInvocation;
+    skillLease?: SandboxSkillLease;
   }
 >();
 
@@ -217,8 +219,9 @@ export function registerToolSessionOwner(
   context: ToolCallContext,
   owner: object,
   clientToolSearch?: ClientToolSearchInvocation,
+  skillLease?: SandboxSkillLease,
 ): void {
-  toolSessionOwners.set(context, { owner, clientToolSearch });
+  toolSessionOwners.set(context, { owner, clientToolSearch, skillLease });
 }
 
 // Private extension hook; retained in declarations for the sibling package.
@@ -226,6 +229,15 @@ export function _nativeToolSessionOwner(context: ToolCallContext): object {
   const owner = toolSessionOwners.get(context);
   if (!owner) throw new TypeError('Tool context has no native Session owner');
   return owner.owner;
+}
+
+/** @internal Current resource authority on an SDK-issued callback context. */
+export function _nativeSandboxSkillLease(
+  context: ToolCallContext,
+): SandboxSkillLease | undefined {
+  const owner = toolSessionOwners.get(context);
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
+  return owner.skillLease;
 }
 
 function inheritToolSessionOwner<T extends ToolCallContext>(
@@ -884,6 +896,7 @@ export function tool<
           ...(parsed as Record<string, unknown>),
         }),
       };
+      inheritToolSessionOwner(callContext, context);
       admit();
       if (before) {
         const decision = await before(callContext);
@@ -910,6 +923,7 @@ export function tool<
               ...(parsed as Record<string, unknown>),
             }),
           };
+          inheritToolSessionOwner(callContext, context);
         } else if (decision?.action !== 'allow') {
           throw new TypeError(
             'Tool before must allow, deny, or replace arguments',
@@ -1138,6 +1152,7 @@ export function tool<
           ...(parsed as Record<string, unknown>),
         }),
       };
+      inheritToolSessionOwner(callContext, context);
       admit();
       if (
         runBeforeApproval &&
@@ -1164,6 +1179,7 @@ export function tool<
               ...(parsed as Record<string, unknown>),
             }),
           };
+          inheritToolSessionOwner(callContext, context);
         } else if (decision.action !== 'allow')
           throw new TypeError(
             'Tool before must allow, deny, or replace arguments',

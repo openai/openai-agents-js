@@ -147,3 +147,24 @@ export {
 export { retainManagedWorkspaceSnapshot } from './sandboxes/shared/localSnapshots';
 
 export { renderRemoteMountPolicyInstructions } from './runtime/prompts';
+
+// Resource-only skill operations; no Classic capability or agent runtime.
+export {
+  createSkillConfiguration,
+  processSkillManifest,
+  resolveSkillRuntimeMetadata,
+  resolveSkillsMetadata,
+  renderSkillsDiscoveryInstructions,
+  renderSkillsInstructions,
+  resolveLazySkillEntry,
+  joinRelativePaths,
+} from './skillResources';
+export type {
+  SkillConfiguration,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+} from './skillResources';
+
+export { modelWorkspaceResourcePath } from './workspacePaths';

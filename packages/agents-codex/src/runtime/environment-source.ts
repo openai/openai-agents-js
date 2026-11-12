@@ -1,3 +1,4 @@
+import type { SandboxSkillLease } from './sandbox-skills';
 import type { ManagedWorkspaceBinding } from './managed-workspace';
 import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
 import { Environment } from './environment';
@@ -28,6 +29,7 @@ interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
+  readonly skillLease?: SandboxSkillLease;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -45,6 +47,7 @@ export function createEnvironmentLease<Context>(
   sourceSignal?: AbortSignal,
   managedWorkspace?: ManagedWorkspaceBinding,
   workspaceInstructions?: string,
+  skillLease?: SandboxSkillLease,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -55,6 +58,7 @@ export function createEnvironmentLease<Context>(
     signal: sourceSignal,
     managedWorkspace,
     workspaceInstructions,
+    skillLease,
   };
   const close = () => {
     if (state.claimed)
@@ -110,6 +114,11 @@ export class EnvironmentAcquisition {
   /** @internal Immutable current resource text from this exact acquisition. */
   get workspaceInstructions(): string | undefined {
     return this.state?.workspaceInstructions;
+  }
+
+  /** @internal Current resource authority, carried by this exact acquisition. */
+  get skillLease(): SandboxSkillLease | undefined {
+    return this.state?.skillLease;
   }
 
   attachSession(session: { close(): Promise<void> }): void {
