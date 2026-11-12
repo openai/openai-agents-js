@@ -216,7 +216,7 @@ it.each([
         schema: z.object({ label: z.string() }),
         maxRetries,
       },
-    }).session();
+    }).session({ includeRequestAttempts: true });
     const turn = await session.submit('first');
     if (
       (refused && predecessor === 'invalid') ||
@@ -239,6 +239,10 @@ it.each([
       expect(result.repairAttempts).toHaveLength(repair ? 1 : 0);
     }
     expect(continuations).toBe(1);
+    expect(turn.requestAttempts?.counts[0]?.count).toBe(1);
+    expect(turn.submissionRequestAttempts?.counts[0]?.count).toBe(
+      refused ? 1 : repair ? 3 : 2,
+    );
     expect((await (await session.submit('later')).wait()).finalOutput).toEqual({
       label: 'later',
     });
