@@ -1,9 +1,11 @@
+import { inspect } from 'node:util';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
   InteractionRequired,
   NativeProvider,
+  RunDiagnosticError,
   hostedShell,
   manualTool,
   tool,
@@ -428,4 +430,116 @@ it('keeps function and server-search identities separate when their call IDs mat
   expect(completed.finalOutput).toBe('settled');
   expect(server.requests).toHaveLength(2);
   server.assertExhausted();
+});
+
+it.each([false, true])(
+  'retains evidence after an owned run fails only when requested (capture=%s)',
+  async (capture) => {
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'accepted data',
+    });
+    const server = new ModelServer([
+      [call('lookup', {}, { callId: 'accepted-call' })],
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          error: { message: 'synthetic terminal failure' },
+        }),
+      },
+    ]);
+    const settings = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (settings['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-error-diagnostics',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Call lookup.',
+      provider,
+      tools: [lookup],
+      inputGuardrails: [
+        {
+          name: 'allow-lookup',
+          callback: () => ({ tripwireTriggered: false }),
+        },
+      ],
+    });
+
+    const failure = await agent
+      .run('original request', {
+        captureErrorDetails: capture,
+      })
+      .catch((error: unknown) => error);
+    if (!capture) {
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(RunDiagnosticError);
+      expect((failure as Error).message).toContain(
+        'synthetic terminal failure',
+      );
+      return;
+    }
+    expect(failure).toBeInstanceOf(RunDiagnosticError);
+    const { details, cause } = failure as RunDiagnosticError;
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as Error).message).toContain('synthetic terminal failure');
+    expect(details?.input).toBe('original request');
+    expect(details?.lastAgent).toBe(agent);
+    expect(details?.rawResponses.map((response) => response.id)).toContain(
+      'response-1',
+    );
+    expect(JSON.stringify(details?.items)).toContain('accepted-call');
+    expect(JSON.stringify(details?.items)).toContain('accepted data');
+    expect(inspect(details)).not.toContain('accepted data');
+    expect(JSON.stringify(details)).not.toContain('accepted data');
+    expect(details?.guardrailResults).toHaveLength(1);
+    expect(details?.incomplete).toBe(false);
+  },
+);
+
+it('keeps diagnostic snapshots separate when runs share a thrown error', async () => {
+  const shared = new Error('synthetic shared guardrail failure');
+  const server = new ModelServer([
+    [message('first answer')],
+    [message('second answer')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-shared-error-diagnostics',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'Answer the request.',
+    provider,
+    outputGuardrails: [
+      {
+        name: 'fail',
+        callback() {
+          throw shared;
+        },
+      },
+    ],
+  });
+
+  const first = agent.run('first request', { captureErrorDetails: true });
+  const second = agent.run('second request', { captureErrorDetails: true });
+  const failures = await Promise.allSettled([first, second]);
+
+  const wrappers = failures.map((result) => {
+    expect(result.status).toBe('rejected');
+    const error = (result as PromiseRejectedResult).reason;
+    expect(error).toBeInstanceOf(RunDiagnosticError);
+    expect(error.cause).toBe(shared);
+    return error as RunDiagnosticError;
+  });
+  expect(wrappers[0]).not.toBe(wrappers[1]);
+  expect(wrappers.map((error) => error.details.input)).toEqual([
+    'first request',
+    'second request',
+  ]);
 });

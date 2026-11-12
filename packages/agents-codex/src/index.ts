@@ -21,7 +21,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
-export { RunCleanupError } from './runtime/native-error';
+export { RunCleanupError, RunDiagnosticError } from './runtime/native-error';
 export { DecisionError } from './runtime/decisions';
 export type {
   DecisionInput,
@@ -48,6 +48,7 @@ export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
+  RunErrorDetails,
   ResponseIntegrityReason,
 } from './runtime/native-error';
 export {
@@ -332,6 +333,7 @@ export {
   codeInterpreter,
   hostedShell,
   imageGeneration,
+  toolSearch,
 } from './runtime/hosted-tools';
 export type {
   FileSearch,
@@ -343,6 +345,11 @@ export type {
   HostedShellOptions,
   ImageGeneration,
   ImageGenerationOptions,
+  ToolSearch,
+  ToolSearchOptions,
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
 export type {
