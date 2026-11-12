@@ -14295,7 +14295,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /**
-   * Generate sandbox memory explicitly from a successful, settled text conversation.
+   * Generate sandbox memory explicitly from successful text and function tool history.
    * Requires memory on this resource acquisition. Concurrent calls share one flush.
    * Native checkpoint restore, non-text history and automatic close generation are unsupported.
    */
