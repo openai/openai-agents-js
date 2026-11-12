@@ -252,7 +252,7 @@ export async function openSession(
   const manualTools = catalog.tools.filter((tool) => tool.kind === 'manual');
   if (isManualSessionState(saved)) {
     if (
-      saved.format_version === 3 &&
+      !isOutputAwareState(saved) &&
       (options.restoredOutput?.output ?? options.output)?.schema != null
     )
       throw new TypeError(

@@ -3900,6 +3900,17 @@ impl ToolContributor for PythonContributor {
             if let Some(callback) = &callback {
                 request["msg"]["_sdk_callback"] = callback.receipt.clone();
             }
+            if step
+                .get::<codex_extension_api::StagedInputPreparation>()
+                .is_some_and(|preparation| preparation.is_for(turn.level_id()))
+            {
+                request["msg"]["staged_input_preparation"] = json!(true);
+            }
+            if let Some(staged) = turn.get::<codex_extension_api::SelectedStagedInput>() {
+                if let Some(records) = staged.0.items_for(turn.level_id()) {
+                    request["msg"]["staged_input"] = json!(records);
+                }
+            }
             if let Some(initial) = turn.get::<codex_extension_api::InitialTurnInput>() {
                 if let Some(records) = &initial.0 {
                     request["msg"]["initial_input"] = json!(records);

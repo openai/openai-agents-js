@@ -1517,6 +1517,10 @@ impl EngineState {
         let mut metadata = if boundary.is_none() {
             let captured = crate::checkpoint::export(source, None).await?;
             ensure!(
+                crate::python_tools::PythonTools::staged_retry(source, &captured).is_none(),
+                "fork requires settled staged input"
+            );
+            ensure!(
                 captured["descendants"]
                     .as_array()
                     .is_some_and(Vec::is_empty),

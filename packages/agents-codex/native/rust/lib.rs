@@ -2075,6 +2075,11 @@ impl NativeThread {
             let mut state = checkpoint::export(&inner, request.as_ref())
                 .await
                 .map_err(native_error)?;
+            if request.is_none()
+                && let Some(retry) = python_tools::PythonTools::staged_retry(&inner, &state)
+            {
+                state["_staged_manual_retry"] = retry;
+            }
             if let Some(guard) = inner
                 .thread
                 .thread_extension_data()
@@ -4521,6 +4526,7 @@ impl NativeThread {
             let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
+            let staged_input = frame.staged_items().map_err(native_error)?;
             if let Some(selection) = &selection {
                 if selection.model_override != frame.model_override
                     || selection.model_settings_override != frame.model_settings_override
@@ -4551,6 +4557,16 @@ impl NativeThread {
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
+            let staged_input =
+                codex_extension_api::StagedInputBatch::new(frame.turn_id.clone(), staged_input);
+            if staged_input.is_pending() {
+                python_tools::PythonTools::retain_staged_retry(
+                    &inner,
+                    &frame,
+                    staged_input.clone(),
+                )
+                .map_err(native_error)?;
+            }
             let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
@@ -4563,6 +4579,7 @@ impl NativeThread {
                 trace,
                 observation_submission_id,
                 terminal,
+                staged_input,
             )
             .await
             .map_err(native_error)?;
