@@ -14,6 +14,8 @@ import {
   Agent,
   Environment,
   NativeProvider,
+  TurnAborted,
+  GuardrailTripwire,
   ToolOutput,
   tool,
   type Session,
@@ -743,3 +745,321 @@ it('requires resource file access before starting native memory generation', asy
     await peer.close();
   }
 }, 30000);
+
+it.each([
+  'cancelled',
+  'failed',
+  'guardrail',
+  'step-limit',
+  'phase-failure',
+  'graceful-abort',
+  'graceful-complete',
+  'non-error',
+  'input-guardrail',
+  'input-throw',
+  'input-invalid',
+  'guarded-cancel',
+] as const)(
+  'records a settled source outcome (%s)',
+  async (mode) => {
+    const cancelledSource =
+      mode === 'cancelled' ||
+      mode === 'phase-failure' ||
+      mode === 'graceful-abort' ||
+      mode === 'guarded-cancel';
+    const toolSource = cancelledSource || mode === 'step-limit';
+    const sourceFailure =
+      mode === 'non-error'
+        ? 'provider unavailable'
+        : new Error('original source completion failure');
+    const phaseFailure = new Error('unrelated memory phase failure');
+    const inputFailure = new Error('raw input guard callback failure');
+    const peer = await startPublicExecutor();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let effects = 0;
+    const server = new ModelServer([
+      ...(mode.startsWith('input-')
+        ? []
+        : [
+            mode === 'graceful-complete'
+              ? async () => {
+                  entered.resolve();
+                  await release.promise;
+                  return [message('natural source completion')];
+                }
+              : [
+                  toolSource
+                    ? call(
+                        'held_source',
+                        {},
+                        { callId: 'cancelled-source-call' },
+                      )
+                    : message('source completion candidate'),
+                ],
+          ]),
+      [
+        message(
+          JSON.stringify({
+            rollout_summary: 'Stopped project lookup',
+            rollout_slug: 'stopped-lookup',
+            raw_memory: 'The project lookup did not finish.',
+          }),
+        ),
+      ],
+      ...(mode === 'phase-failure'
+        ? []
+        : [
+            [
+              message(
+                JSON.stringify({
+                  summary: 'Project lookup stopped.',
+                  memory: 'The lookup did not finish.',
+                }),
+              ),
+            ],
+          ]),
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-provider',
+      supportsWebsockets: false,
+    });
+    let workspace = '';
+    let session: Session | undefined;
+    try {
+      session = await new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Run the lookup.',
+        ...(mode === 'failed' || mode === 'non-error'
+          ? {
+              beforeComplete: () => {
+                throw sourceFailure;
+              },
+            }
+          : {}),
+        ...(mode.startsWith('input-') || mode === 'guarded-cancel'
+          ? {
+              inputGuardrails: [
+                {
+                  name: 'blocked-input',
+                  runInParallel: false,
+                  callback: () => {
+                    if (mode === 'guarded-cancel')
+                      return { tripwireTriggered: false };
+                    if (mode === 'input-throw') throw inputFailure;
+                    if (mode === 'input-invalid') return {} as never;
+                    return {
+                      tripwireTriggered: true,
+                      outputInfo: 'private-rejected-input',
+                    };
+                  },
+                },
+              ],
+            }
+          : {}),
+        ...(mode === 'guardrail'
+          ? {
+              outputGuardrails: [
+                {
+                  name: 'source-guard',
+                  callback: () => ({
+                    tripwireTriggered: true,
+                    outputInfo: 'private-guard-result',
+                  }),
+                },
+              ],
+            }
+          : {}),
+        tools: [
+          tool({
+            name: 'held_source',
+            parameters: z.object({}),
+            async execute(_args, context) {
+              effects++;
+              entered.resolve();
+              if (mode === 'graceful-abort') {
+                await release.promise;
+                return 'drained source tool';
+              }
+              if (mode === 'step-limit') return 'completed source tool step';
+              await new Promise<never>((_resolve, reject) => {
+                if (context.signal.aborted) reject(context.signal.reason);
+                else
+                  context.signal.addEventListener(
+                    'abort',
+                    () => reject(context.signal.reason),
+                    { once: true },
+                  );
+              });
+              return 'unreachable';
+            },
+          }),
+        ],
+      }).session({
+        environment: sandboxEnvironment({
+          client: new UnixLocalSandboxClient(),
+          manifest: new Manifest(),
+          memory: {
+            phaseOne: new Agent({
+              provider,
+              model: 'gpt-5',
+              instructions: 'Extract memory.',
+              ...(mode === 'phase-failure'
+                ? {
+                    beforeComplete: () => {
+                      throw phaseFailure;
+                    },
+                  }
+                : {}),
+            }),
+            phaseTwo: new Agent({
+              provider,
+              model: 'gpt-5',
+              instructions: 'Consolidate memory.',
+            }),
+          },
+          connect: async (resource) => {
+            workspace = resource.state.workspaceRootPath;
+            return Environment.lease(
+              new Environment({
+                url: peer.url,
+                headers: peer.headers,
+                cwd: workspace,
+                tools: [],
+              }),
+              async () => {},
+            );
+          },
+        }),
+      });
+      const turn = await session.submit(
+        mode.startsWith('input-')
+          ? 'synthetic rejected sensitive input'
+          : 'Start the project lookup.',
+        mode === 'step-limit' ? { maxModelSteps: 1 } : undefined,
+      );
+      const original = turn.wait().catch((error: unknown) => error);
+      if (cancelledSource || mode === 'graceful-complete') {
+        await entered.promise;
+        const stopping = turn.cancel(
+          mode.startsWith('graceful') ? { mode: 'graceful' } : undefined,
+        );
+        release.resolve();
+        await expect(stopping).resolves.toBeUndefined();
+      }
+      const cancelled = await original;
+      if (mode.startsWith('input-')) {
+        expect(turn.turnId).toEqual(expect.any(String));
+        if (mode === 'input-throw') expect(cancelled).toBe(inputFailure);
+        else if (mode === 'input-invalid')
+          expect(cancelled).toBeInstanceOf(TypeError);
+        else expect(cancelled).toBeInstanceOf(GuardrailTripwire);
+        await expect(session.flushMemory()).rejects.toBe(cancelled);
+        expect(server.requests).toHaveLength(0);
+        await expect(
+          readFile(join(workspace, 'sessions', `${session.id}.jsonl`)),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        return;
+      }
+      if (mode === 'graceful-complete')
+        expect(cancelled).toMatchObject({
+          finalOutput: 'natural source completion',
+        });
+      else if (cancelledSource) expect(cancelled).toBeInstanceOf(TurnAborted);
+      else if (mode === 'guardrail')
+        expect(cancelled).toBeInstanceOf(GuardrailTripwire);
+      else if (mode === 'step-limit')
+        expect(cancelled).toMatchObject({ code: 'max_model_steps_exceeded' });
+      else expect(cancelled).toBe(sourceFailure);
+      expect(effects).toBe(toolSource ? 1 : 0);
+      expect(server.requests).toHaveLength(1);
+      if (mode === 'phase-failure') {
+        await expect(session.flushMemory()).rejects.toBe(phaseFailure);
+      } else {
+        await Promise.all([session.flushMemory(), session.flushMemory()]);
+        await session.flushMemory();
+      }
+      const text = await readFile(
+        join(workspace, 'sessions', `${session.id}.jsonl`),
+        'utf8',
+      );
+      expect(text.trim().split('\n')).toHaveLength(1);
+      const terminalState =
+        mode === 'graceful-complete'
+          ? 'completed'
+          : cancelledSource
+            ? 'cancelled'
+            : mode === 'guardrail'
+              ? 'guardrail_tripped'
+              : mode === 'step-limit'
+                ? 'max_turns_exceeded'
+                : 'failed';
+      expect(JSON.parse(text).terminal_metadata).toMatchObject({
+        terminal_state:
+          mode === 'graceful-complete'
+            ? 'completed'
+            : cancelledSource
+              ? 'cancelled'
+              : mode === 'guardrail'
+                ? 'guardrail_tripped'
+                : mode === 'step-limit'
+                  ? 'max_turns_exceeded'
+                  : 'failed',
+        exception_type:
+          mode === 'graceful-complete'
+            ? null
+            : cancelledSource
+              ? 'TurnAborted'
+              : mode === 'guardrail'
+                ? 'GuardrailTripwire'
+                : mode === 'step-limit'
+                  ? 'NativeError'
+                  : 'Error',
+        exception_message:
+          mode === 'graceful-complete'
+            ? null
+            : cancelledSource
+              ? 'Turn interrupted'
+              : mode === 'guardrail'
+                ? 'Run blocked by guardrail'
+                : mode === 'step-limit'
+                  ? 'Root model step limit reached'
+                  : typeof sourceFailure === 'string'
+                    ? sourceFailure
+                    : sourceFailure.message,
+        has_final_output: mode === 'graceful-complete',
+      });
+      if (mode !== 'phase-failure') {
+        const raw = await readFile(
+          join(workspace, 'memories', 'raw_memories', `${session.id}.md`),
+          'utf8',
+        );
+        const summary = await readFile(
+          join(workspace, 'memories', 'rollout_summaries', `${session.id}.md`),
+          'utf8',
+        );
+        expect(raw).toContain(`terminal_state: ${terminalState}`);
+        expect(summary).toContain(`terminal_state: ${terminalState}`);
+        expect(JSON.stringify(server.requests.at(-1))).toContain(
+          `terminal_state: ${terminalState}`,
+        );
+      }
+      expect(text).not.toContain('private-guard-result');
+      expect(await turn.wait().catch((error: unknown) => error)).toBe(
+        cancelled,
+      );
+      expect(effects).toBe(toolSource ? 1 : 0);
+      expect(server.requests).toHaveLength(mode === 'phase-failure' ? 2 : 3);
+      server.assertExhausted();
+    } finally {
+      release.resolve();
+      await session?.close();
+      await peer.close();
+    }
+  },
+  30_000,
+);

@@ -134,11 +134,31 @@ export async function openSession(
     throw new TypeError(
       'Checkpoint and Environment must agree on read-only execution',
     );
+  let authenticatedHistory = options[managedWorkspaceRestore] === true;
   if (isOutputAwareState(saved) && saved.remembered_approvals?.length) {
     const verified = await verifyRememberedApprovals?.(structuredClone(saved));
+    authenticatedHistory ||= verified === true;
     options.environmentOwner?.signal.throwIfAborted();
     if (verified !== true) {
       delete saved.remembered_approvals;
+    }
+  }
+  if (saved && !authenticatedHistory) {
+    // Imported history has been remaining usable without granting memory admission.
+    for (const thread of [saved, ...saved.descendants]) {
+      for (const item of thread.history) {
+        const payload = item.payload;
+        if (
+          item.type !== 'turn_context' ||
+          !payload ||
+          typeof payload !== 'object' ||
+          Array.isArray(payload)
+        )
+          continue;
+        const receipt = payload.sdk_receipt;
+        if (receipt && typeof receipt === 'object' && !Array.isArray(receipt))
+          delete receipt.sandbox_memory_input_admitted;
+      }
     }
   }
   const native = await binding();

@@ -32,6 +32,7 @@ export class NativeTurn {
   readonly guardrailResults: GuardrailRecord[] = [];
   guardrailInput?: UserInput;
   inputGuardrailsStarted = false;
+  inputGuardrailsPassed?: boolean;
   inputGuardrailsTask?: Promise<void>;
   parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
