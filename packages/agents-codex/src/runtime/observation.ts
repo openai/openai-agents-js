@@ -177,7 +177,7 @@ export type ResponseFactReceived = SubmissionEvent &
       | import('./response-facts').RecordedResponseFactSummary;
   }>;
 
-/** Responses provider JSON captured before native event decoding. */
+/** Provider JSON on the exact native turn observation stream. */
 export type RawProviderEvent = SubmissionEvent &
   Readonly<{
     type: 'raw_provider_event';
