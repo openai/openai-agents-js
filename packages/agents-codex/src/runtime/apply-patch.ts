@@ -34,7 +34,7 @@ export interface ApplyPatchEditor<Context = unknown> {
   ): MaybePromise<ApplyPatchResult | void>;
 }
 
-const operationSchema = z.discriminatedUnion('type', [
+export const applyPatchOperationSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('create_file'),
     path: z.string(),
@@ -51,7 +51,7 @@ const operationSchema = z.discriminatedUnion('type', [
 const callSchema = z.object({
   type: z.literal('apply_patch_call'),
   call_id: z.string().min(1),
-  operation: operationSchema,
+  operation: applyPatchOperationSchema,
 });
 const resultSchema = z.object({
   status: z.enum(['completed', 'failed']).default('completed'),

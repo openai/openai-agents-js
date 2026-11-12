@@ -7,6 +7,8 @@ import {
 } from './model-retry';
 import { randomUUID } from 'node:crypto';
 import { APIUserAbortError } from 'openai';
+import { z } from 'zod';
+import { applyPatchOperationSchema } from './apply-patch';
 import { captureImage, inlineAudioSource } from './media';
 import { copyJsonValue, type JsonObject } from './binding';
 
@@ -338,49 +340,158 @@ function openAIRetryAdvice({
     return { suggested: true };
   return undefined;
 }
-function workspacePatchFunction() {
+type ApplyPatchWire = 'workspace' | 'editor';
+
+const editorPatchParameters = z.object({
+  operation: applyPatchOperationSchema,
+});
+
+function patchWireForTool(tool: JsonObject): ApplyPatchWire | undefined {
+  if (tool.type === 'apply_patch') return 'editor';
+  if (tool.type === 'custom' && tool.name === 'apply_patch') return 'workspace';
+}
+
+function workspacePatchFunction(wire: ApplyPatchWire) {
+  const editorParameters = z.toJSONSchema(editorPatchParameters, {
+    io: 'input',
+  });
+  if (wire === 'editor')
+    return {
+      name: 'apply_patch',
+      description:
+        "Apply an operation with the application's workspace editor.",
+      parameters: editorParameters,
+      strict: false,
+    };
   return {
     name: 'apply_patch',
-    description: 'Apply a patch to files in the workspace.',
+    description:
+      'Apply a freeform patch or one structured operation in the workspace.',
     parameters: {
-      type: 'object',
+      ...editorParameters,
       properties: {
+        ...editorParameters.properties,
         patch: {
           type: 'string',
-          description:
-            'A patch between *** Begin Patch and *** End Patch. ' +
-            'Use *** Add File:, *** Update File:, or *** Delete File: headers, ' +
-            'and *** Move to: within an update to rename a file.',
+          description: 'An apply_patch patch beginning with *** Begin Patch.',
         },
       },
-      required: ['patch'],
+      required: [],
+      oneOf: [{ required: ['patch'] }, { required: ['operation'] }],
       additionalProperties: false,
     },
-    strict: true,
+    strict: false,
   };
+}
+
+function isWorkspacePatchPath(path: string): boolean {
+  return (
+    path !== '' &&
+    !/\p{White_Space}$/u.test(path) &&
+    !['\r', '\n', '\0'].some((control) => path.includes(control))
+  );
+}
+
+function workspaceOperationPatch(value: unknown): string {
+  const parsed = applyPatchOperationSchema.safeParse(value);
+  if (!parsed.success) return '';
+  const operation = parsed.data;
+  if (!isWorkspacePatchPath(operation.path)) return '';
+
+  const begin = '*** Begin Patch';
+  const end = '*** End Patch';
+  if (operation.type === 'delete_file') {
+    return [begin, '*** Delete File: ' + operation.path, end].join('\n');
+  }
+
+  const lines = [begin];
+  const diff = operation.diff.replaceAll('\r\n', '\n').replace(/\n$/, '');
+  const changes = diff === '' ? [] : diff.split('\n');
+  if (operation.type === 'create_file') {
+    if (!changes.every((line) => line.startsWith('+'))) return '';
+    lines.push('*** Add File: ' + operation.path);
+  } else {
+    lines.push('*** Update File: ' + operation.path);
+    if (operation.move_to !== undefined) {
+      if (!isWorkspacePatchPath(operation.move_to)) return '';
+      lines.push('*** Move to: ' + operation.move_to);
+    }
+    // Keep raw hunk and environment directives out of this single operation.
+    if (
+      !changes.every(
+        (line) =>
+          line === '' ||
+          line === '@@' ||
+          line.startsWith('@@ ') ||
+          line === '*** End of File' ||
+          line.startsWith(' ') ||
+          line.startsWith('+') ||
+          line.startsWith('-'),
+      )
+    ) {
+      return '';
+    }
+  }
+  return lines.concat(changes, end).join('\n');
 }
 
 function workspacePatchInput(argumentsText: unknown): string {
   if (typeof argumentsText !== 'string') return '';
   try {
     const envelope = JSON.parse(argumentsText) as
-      { patch?: unknown } | string | null;
+      { patch?: unknown; operation?: unknown } | string | null;
     if (typeof envelope === 'string') return envelope;
-    return typeof envelope?.patch === 'string' ? envelope.patch : '';
+    return typeof envelope?.patch === 'string'
+      ? envelope.patch
+      : workspaceOperationPatch(envelope?.operation);
   } catch {
     return argumentsText;
   }
 }
 
-function aiSdkFunctionOutput(
+function patchCallReplay(item: JsonObject) {
+  if (item.type === 'apply_patch_call')
+    return { wire: 'editor' as const, args: { operation: item.operation } };
+  if (item.type === 'custom_tool_call' && item.name === 'apply_patch')
+    return { wire: 'workspace' as const, args: { patch: item.input } };
+}
+
+function matchesPatchOutput(
   item: JsonObject,
-  applyPatchOffered: boolean,
+  calls: ReadonlyMap<string, ApplyPatchWire>,
+): boolean {
+  const wire = calls.get(item.call_id as string);
+  return (
+    (wire === 'editor' && item.type === 'apply_patch_call_output') ||
+    (wire === 'workspace' && item.type === 'custom_tool_call_output')
+  );
+}
+
+function functionToolOutput(
+  item: JsonObject,
+  applyPatchWire: ApplyPatchWire | undefined,
 ): JsonObject {
-  if (!applyPatchOffered || item.name !== 'apply_patch') return item;
-  const { arguments: args, ...call } = item;
+  if (!applyPatchWire || item.name !== 'apply_patch') return item;
+  const { arguments: args, name, ...call } = item;
+  if (applyPatchWire === 'editor') {
+    try {
+      const { operation } = editorPatchParameters.parse(
+        JSON.parse(String(args)),
+      );
+      return {
+        ...call,
+        type: 'apply_patch_call',
+        status: call.status ?? 'completed',
+        operation,
+      };
+    } catch {
+      throw new TypeError('apply_patch requires a valid editor operation');
+    }
+  }
   return {
     ...call,
     type: 'custom_tool_call',
+    name,
     input: workspacePatchInput(args),
   };
 }
@@ -409,9 +520,10 @@ export class ChatCompletionsModel implements NativeModel {
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const messages: Record<string, unknown>[] = [];
     const nativeTools = [...((request.body.tools ?? []) as JsonObject[])];
-    const applyPatchCalls = new Set<string>();
-    let applyPatchOffered = false;
+    const applyPatchCalls = new Map<string, ApplyPatchWire>();
+    let applyPatchWire: ApplyPatchWire | undefined;
     for (const raw of request.body.input as JsonObject[]) {
+      const patchCall = patchCallReplay(raw);
       if (raw.type === 'additional_tools') {
         nativeTools.push(...(raw.tools as JsonObject[]));
         continue;
@@ -459,10 +571,7 @@ export class ChatCompletionsModel implements NativeModel {
             ...content,
           ];
         else messages.push({ role: raw.role, content });
-      } else if (
-        raw.type === 'function_call' ||
-        (raw.type === 'custom_tool_call' && raw.name === 'apply_patch')
-      ) {
+      } else if (raw.type === 'function_call' || patchCall) {
         if (raw.namespace != null && raw.namespace !== 'functions')
           throw new TypeError(
             'ChatCompletionsModel supports the default function namespace',
@@ -476,25 +585,26 @@ export class ChatCompletionsModel implements NativeModel {
           string,
           unknown
         >[];
-        if (raw.type === 'custom_tool_call')
-          applyPatchCalls.add(raw.call_id as string);
+        if (patchCall)
+          applyPatchCalls.set(raw.call_id as string, patchCall.wire);
         calls.push({
           id: raw.call_id,
           type: 'function',
           function: {
-            name: raw.name,
-            arguments:
-              raw.type === 'custom_tool_call'
-                ? JSON.stringify({ patch: raw.input })
-                : raw.arguments,
+            name: patchCall ? 'apply_patch' : raw.name,
+            arguments: patchCall
+              ? JSON.stringify(patchCall.args)
+              : raw.arguments,
           },
         });
       } else if (
         raw.type === 'function_call_output' ||
-        (raw.type === 'custom_tool_call_output' &&
-          applyPatchCalls.has(raw.call_id as string))
+        matchesPatchOutput(raw, applyPatchCalls)
       ) {
-        const output = raw.output as string | JsonObject[];
+        const output =
+          raw.type === 'apply_patch_call_output'
+            ? JSON.stringify({ status: raw.status, output: raw.output })
+            : (raw.output as string | JsonObject[]);
         if (
           typeof output !== 'string' &&
           (!Array.isArray(output) ||
@@ -531,14 +641,19 @@ export class ChatCompletionsModel implements NativeModel {
         declaration.type === 'namespace'
           ? (declaration.tools as JsonObject[])
           : [declaration];
-      return leaves.map(({ type, ...tool }) => {
+      return leaves.map((declaration) => {
+        const { type, ...tool } = declaration;
         if (tool.namespace != null && tool.namespace !== 'functions')
           throw new TypeError(
             'Chat adapters support the default function namespace',
           );
-        if (type === 'custom' && tool.name === 'apply_patch') {
-          applyPatchOffered = true;
-          return { type: 'function', function: workspacePatchFunction() };
+        const patchWire = patchWireForTool(declaration);
+        if (patchWire) {
+          applyPatchWire = patchWire;
+          return {
+            type: 'function',
+            function: workspacePatchFunction(patchWire),
+          };
         }
         if (type !== 'function')
           throw new TypeError(
@@ -652,7 +767,7 @@ export class ChatCompletionsModel implements NativeModel {
           name: selectedFunctionName(
             options.tool_choice,
             tools.map((tool: any) => tool.function.name),
-            applyPatchOffered,
+            applyPatchWire === 'workspace',
           ),
         },
       };
@@ -708,21 +823,17 @@ export class ChatCompletionsModel implements NativeModel {
         throw new TypeError(
           'ChatCompletionsModel received an unsupported tool call',
         );
-      if (applyPatchOffered && call.function.name === 'apply_patch') {
-        output.push({
-          type: 'custom_tool_call',
-          call_id: call.id,
-          name: 'apply_patch',
-          input: workspacePatchInput(call.function.arguments),
-        });
-        continue;
-      }
-      output.push({
-        type: 'function_call',
-        call_id: call.id,
-        name: call.function.name,
-        arguments: call.function.arguments,
-      });
+      output.push(
+        functionToolOutput(
+          {
+            type: 'function_call',
+            call_id: call.id,
+            name: call.function.name,
+            arguments: call.function.arguments,
+          },
+          applyPatchWire,
+        ),
+      );
     }
     const usage =
       value.usage == null
@@ -953,6 +1064,7 @@ export class AiSdkModel implements NativeModel {
     )
       throw new TypeError('AiSdkModel received unsupported request controls');
     const reasoning = (body.reasoning ?? {}) as JsonObject;
+    const text = (body.text ?? {}) as JsonObject;
     const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
     const thinking = (providerOptions.anthropic as JsonObject | undefined)
       ?.thinking as JsonObject | undefined;
@@ -972,6 +1084,7 @@ export class AiSdkModel implements NativeModel {
         ...(body.parallel_tool_calls != null
           ? { parallelToolCalls: body.parallel_tool_calls }
           : {}),
+        ...(text.verbosity != null ? { textVerbosity: text.verbosity } : {}),
         ...(reasoning.effort != null
           ? { reasoningEffort: reasoning.effort }
           : {}),
@@ -986,9 +1099,8 @@ export class AiSdkModel implements NativeModel {
     }
     if (reasoning.summary != null && reasoning.summary !== 'auto')
       throw new TypeError('AiSdkModel received unsupported reasoning controls');
-    const text = (body.text ?? {}) as JsonObject;
     if (
-      text.verbosity != null ||
+      (text.verbosity != null && !this.#openai) ||
       ((body.include ?? []) as string[]).some(
         (key) => key !== 'reasoning.encrypted_content',
       )
@@ -997,7 +1109,7 @@ export class AiSdkModel implements NativeModel {
     const prompt: any[] = [];
     const declarations = [...((body.tools ?? []) as JsonObject[])];
     const names = new Map<string, string>();
-    const patchCalls = new Set<string>();
+    const patchCalls = new Map<string, ApplyPatchWire>();
     for (const item of body.input as JsonObject[]) {
       if (item.type === 'additional_tools') {
         declarations.push(...(item.tools as JsonObject[]));
@@ -1058,25 +1170,26 @@ export class AiSdkModel implements NativeModel {
         } else prompt.push({ role: item.role, content });
       } else if (
         item.type === 'function_call' ||
+        item.type === 'apply_patch_call' ||
         (item.type === 'custom_tool_call' && item.name === 'apply_patch')
       ) {
+        const patchCall = patchCallReplay(item);
         if (item.namespace != null && item.namespace !== 'functions')
           throw new TypeError(
             'AiSdkModel supports the default function namespace',
           );
-        names.set(item.call_id as string, item.name as string);
-        if (item.type === 'custom_tool_call')
-          patchCalls.add(item.call_id as string);
+        const name = patchCall ? 'apply_patch' : (item.name as string);
+        names.set(item.call_id as string, name);
+        if (patchCall) patchCalls.set(item.call_id as string, patchCall.wire);
         const previous = prompt.at(-1);
         const content = previous?.role === 'assistant' ? previous.content : [];
         content.push({
           type: 'tool-call',
           toolCallId: item.call_id,
-          toolName: item.name,
-          input:
-            item.type === 'custom_tool_call'
-              ? { patch: item.input }
-              : JSON.parse(item.arguments as string),
+          toolName: name,
+          input: patchCall
+            ? patchCall.args
+            : JSON.parse(item.arguments as string),
         });
         if (previous?.role !== 'assistant')
           prompt.push({ role: 'assistant', content });
@@ -1115,10 +1228,12 @@ export class AiSdkModel implements NativeModel {
           prompt.push({ role: 'assistant', content });
       } else if (
         item.type === 'function_call_output' ||
-        (item.type === 'custom_tool_call_output' &&
-          patchCalls.has(item.call_id as string))
+        matchesPatchOutput(item, patchCalls)
       ) {
-        const value = item.output;
+        const value =
+          item.type === 'apply_patch_call_output'
+            ? JSON.stringify({ status: item.status, output: item.output })
+            : item.output;
         let output: any;
         if (typeof value !== 'string') {
           if (!Array.isArray(value))
@@ -1174,8 +1289,9 @@ export class AiSdkModel implements NativeModel {
         throw new TypeError('AiSdkModel received unsupported native input');
     }
     const tools: any[] = [];
-    let applyPatchOffered = false;
+    let applyPatchWire: ApplyPatchWire | undefined;
     const addTool = (item: JsonObject): void => {
+      const patchWire = patchWireForTool(item);
       if (item.namespace != null && item.namespace !== 'functions')
         throw new TypeError(
           'AiSdkModel supports the default function namespace',
@@ -1186,9 +1302,9 @@ export class AiSdkModel implements NativeModel {
             'AiSdkModel supports the default function namespace',
           );
         for (const tool of item.tools as JsonObject[]) addTool(tool);
-      } else if (item.type === 'custom' && item.name === 'apply_patch') {
-        applyPatchOffered = true;
-        const declaration = workspacePatchFunction();
+      } else if (patchWire) {
+        applyPatchWire = patchWire;
+        const declaration = workspacePatchFunction(patchWire);
         tools.push({
           type: 'function',
           name: declaration.name,
@@ -1220,7 +1336,7 @@ export class AiSdkModel implements NativeModel {
         toolName: selectedFunctionName(
           choice,
           tools.map((tool: any) => tool.name),
-          applyPatchOffered,
+          applyPatchWire === 'workspace',
         ),
       };
     }
@@ -1310,7 +1426,7 @@ export class AiSdkModel implements NativeModel {
         ...raw,
         output: raw.output?.map((item: any) =>
           item.type === 'function_call'
-            ? aiSdkFunctionOutput(
+            ? functionToolOutput(
                 {
                   ...item,
                   arguments: aiSdkToolArguments(
@@ -1318,7 +1434,7 @@ export class AiSdkModel implements NativeModel {
                     tools.find((tool) => tool.name === item.name)?.inputSchema,
                   ),
                 },
-                applyPatchOffered,
+                applyPatchWire,
               )
             : item,
         ),
@@ -1358,14 +1474,14 @@ export class AiSdkModel implements NativeModel {
           tools.find((tool) => tool.name === part.toolName)?.inputSchema,
         );
         output.push(
-          aiSdkFunctionOutput(
+          functionToolOutput(
             {
               type: 'function_call',
               call_id: part.toolCallId,
               name: part.toolName,
               ...(args === undefined ? {} : { arguments: args }),
             },
-            applyPatchOffered,
+            applyPatchWire,
           ),
         );
       } else
