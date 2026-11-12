@@ -36,6 +36,22 @@ test('installed v1 entrypoints share classes without loading the native addon', 
   );
 });
 
+test('installed Core shares classes and tracing across Node module formats', async () => {
+  const core = await import('@openai/agents-core');
+  const commonJS = require('@openai/agents-core');
+  assert.equal(core.Agent, commonJS.Agent);
+  assert.equal(
+    core.getGlobalTraceProvider(),
+    commonJS.getGlobalTraceProvider(),
+  );
+
+  const sandbox = await import('@openai/agents-core/sandbox');
+  assert.equal(
+    sandbox.Manifest,
+    require('@openai/agents-core/sandbox').Manifest,
+  );
+});
+
 for (const [producerName, producer] of Object.entries(modules)) {
   for (const [consumerName, consumer] of Object.entries(modules)) {
     test(`${producerName} objects compose with ${consumerName} and close cleanly`, async () => {
@@ -88,6 +104,7 @@ test('ESM imports work when require(esm) is disabled', () => {
        import * as facade from '@openai/agents';
        import * as owner from '@openai/agents-codex';
        assert.match(import.meta.resolve('@openai/agents-codex'), /\\.mjs$/);
+       assert.match(import.meta.resolve('@openai/agents-core'), /\\.mjs$/);
        assert.equal(facade.NativeRuntime, owner.NativeRuntime);
        const runtime = new owner.NativeRuntime();
        const provider = new facade.NativeProvider({ runtime, apiKey: 'synthetic' });
