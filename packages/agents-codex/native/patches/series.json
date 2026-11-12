@@ -1,5 +1,4 @@
 {
-  "result_tree": "989e4e5a98c6303e2e02b4e282d794f94a549d11",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -896,6 +895,11 @@
     {
       "path": "sdk-provider-hosted-mcp.patch",
       "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
+    },
+    {
+      "path": "sdk-acknowledged-provider-window.patch",
+      "sha256": "cbbbd43cfef7f8ae00f23ab6a2e87d6ccd98a1f2e3b32b7b8f470d529a17d4e1"
     }
-  ]
+  ],
+  "result_tree": "f5ce0897fb19170d064ad160454c3417b5fef3ab"
 }
