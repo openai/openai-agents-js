@@ -45,6 +45,7 @@ type FileRequest =
       operation:
         | 'read'
         | 'image'
+        | 'write'
         | 'list'
         | 'exists'
         | 'directoryExists'
@@ -139,7 +140,7 @@ export class UnixLocalFiles {
   async run(
     request: FileRequest,
     options: {
-      input?: string;
+      input?: string | Uint8Array;
       update?: (current: string) => string;
       identity?: {
         username: string;

@@ -31,6 +31,7 @@ interface LeaseState {
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
   readonly sandboxMemory?: SandboxMemoryOwner;
+  readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -48,6 +49,7 @@ export function createEnvironmentLease<Context>(
   sourceSignal?: AbortSignal,
   managedWorkspace?: ManagedWorkspaceBinding,
   workspaceInstructions?: string,
+  observeSandboxOperation?: SandboxOperationObserver,
   sandboxMemory?: SandboxMemoryOwner,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
@@ -60,6 +62,7 @@ export function createEnvironmentLease<Context>(
     managedWorkspace,
     workspaceInstructions,
     sandboxMemory,
+    observeSandboxOperation,
   };
   const close = () => {
     if (state.claimed)
@@ -115,6 +118,11 @@ export class EnvironmentAcquisition {
   /** @internal Immutable current resource text from this exact acquisition. */
   get workspaceInstructions(): string | undefined {
     return this.state?.workspaceInstructions;
+  }
+
+  /** @internal The exact provider lease supplies the sink namespace. */
+  get observeSandboxOperation(): SandboxOperationObserver | undefined {
+    return this.state?.observeSandboxOperation;
   }
 
   /** @internal Fresh declaration presence; never restored from checkpoint data. */

@@ -63,6 +63,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it('does not advertise host-only no-follow reads on the container backend', async () => {
       expect(session.readFileNoFollow).toBeUndefined();
+      expect(session.writeFileNoFollow).toBeUndefined();
       expect(
         Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
       ).toBe('before\n');

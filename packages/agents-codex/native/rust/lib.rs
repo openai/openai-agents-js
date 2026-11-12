@@ -4879,6 +4879,18 @@ impl NativeThread {
         })
     }
 
+    #[napi(js_name = "_enable_sandbox_operations")]
+    pub fn enable_sandbox_operations(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Sandbox observations require managed tools"))?;
+        tools.enable_sandbox_operations();
+        Ok(())
+    }
+
     #[napi(js_name = "_next_session_events")]
     pub async fn next_session_events(&self) -> napi::Result<Vec<String>> {
         self.current()?

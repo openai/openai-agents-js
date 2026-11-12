@@ -2049,7 +2049,11 @@ describe('Sandbox memory generation', () => {
         ].join('\n'),
       );
       vi.spyOn(session, 'listDir').mockResolvedValue([
-        { name: 'seed.md', type: 'other' },
+        {
+          name: 'seed.md',
+          path: 'memories/raw_memories/seed.md',
+          type: 'other',
+        },
       ]);
       const storage = new SandboxMemoryStorage({
         session,

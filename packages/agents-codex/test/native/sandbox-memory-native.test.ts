@@ -578,3 +578,52 @@ it('bounds the latest native rollout across successive large text snapshots', as
     await peer.close();
   }
 }, 60000);
+
+it('requires resource file access before starting native memory generation', async () => {
+  const peer = await startPublicExecutor();
+  const server = new ModelServer([]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-provider',
+    supportsWebsockets: false,
+  });
+  try {
+    const phase = new Agent({
+      provider,
+      model: 'gpt-5',
+      instructions: 'Use the declared memory task.',
+    });
+    const source = sandboxEnvironment({
+      client: new UnixLocalSandboxClient(),
+      manifest: new Manifest(),
+      memory: { phaseOne: phase, phaseTwo: phase },
+      connect: async (resource) => {
+        Object.defineProperty(resource, 'writeFileNoFollow', {
+          value: undefined,
+        });
+        return Environment.lease(
+          new Environment({
+            url: peer.url,
+            headers: peer.headers,
+            cwd: resource.state.workspaceRootPath,
+            tools: [],
+          }),
+          async () => {},
+        );
+      },
+    });
+    await expect(
+      new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Use the declared task.',
+      }).session({ environment: source }),
+    ).rejects.toThrow(/no-follow file access/);
+    expect(server.requests).toHaveLength(0);
+    server.assertExhausted();
+  } finally {
+    await peer.close();
+  }
+}, 30000);

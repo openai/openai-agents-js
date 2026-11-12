@@ -6938,7 +6938,10 @@ export class Session<OutputT = string, Context = unknown> {
     let batch: string[] = [];
     let batchIndex = 0;
     let delivery: NativeCallbackDelivery | undefined;
+    const observeSandboxOperation =
+      this.options.environmentOwner?.observeSandboxOperation;
     try {
+      if (observeSandboxOperation) native._enable_sandbox_operations();
       while (this.isOpen && this.#native === native) {
         if (delivery && !delivery.claimed && !delivery.buffered)
           this.releaseCallbackDelivery(delivery);
@@ -6995,6 +6998,10 @@ export class Session<OutputT = string, Context = unknown> {
           continue;
         }
         if (!this.isOpen) return;
+        if (event.msg.type === '_sdk_sandbox_operation') {
+          observeSandboxOperation?.(event.msg);
+          continue;
+        }
         if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
         if (msg.type === 'token_count') {

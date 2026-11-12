@@ -1,6 +1,7 @@
 import process from 'node:process';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   mkdtempSync,
   mkdirSync,
@@ -206,6 +207,130 @@ test('builds final conditional declaration graphs before dependents and propagat
         /recovered.*updated/,
       );
     }
+  } finally {
+    await watcher?.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('builds and refreshes the shared modern Node Core graph in watch mode', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agents-core-node-build-'));
+  const directory = join(root, 'packages/agents-core');
+  let watcher;
+  const json = (file, value) => writeFileSync(file, JSON.stringify(value));
+  try {
+    mkdirSync(join(directory, 'src'), { recursive: true });
+    mkdirSync(join(root, 'node_modules/@openai'), { recursive: true });
+    symlinkSync(directory, join(root, 'node_modules/@openai/agents-core'));
+    const exports = {};
+    for (const [key, name] of [
+      ['.', 'index'],
+      ['./sandbox', 'sandbox'],
+    ]) {
+      exports[key] = {
+        types: `./dist/${name}.d.ts`,
+        node: { 'module-sync': `./dist/node/${name}.cjs` },
+        require: `./dist/${name}.js`,
+        import: `./dist/${name}.mjs`,
+      };
+    }
+    json(join(directory, 'package.json'), {
+      name: '@openai/agents-core',
+      exports,
+    });
+    json(join(directory, 'tsconfig.json'), {
+      compilerOptions: {
+        target: 'ES2022',
+        module: 'ESNext',
+        moduleResolution: 'bundler',
+        declaration: true,
+        outDir: './dist',
+        rootDir: './src',
+        types: [],
+      },
+    });
+    json(join(root, 'tsc-multi.json'), {
+      compiler: '@typescript/typescript6',
+      projects: ['packages/agents-core/tsconfig.json'],
+      targets: [
+        { extname: '.mjs', module: 'esnext' },
+        { extname: '.js', module: 'commonjs', moduleResolution: 'bundler' },
+      ],
+    });
+    for (const name of ['index', 'sandbox']) {
+      writeFileSync(
+        join(directory, `src/${name}.ts`),
+        `export * from './manifest';`,
+      );
+    }
+    writeFileSync(
+      join(directory, 'src/index.ts'),
+      `export * from './manifest'; export const readLazy = () => import('./lazy');`,
+    );
+    const source = join(directory, 'src/manifest.ts');
+    const update = (value) => {
+      writeFileSync(
+        source,
+        `export class Manifest {} export const value = '${value}';`,
+      );
+      writeFileSync(
+        join(directory, 'src/lazy.ts'),
+        `export const value = '${value}';`,
+      );
+    };
+    update('initial');
+    const config = {
+      ...(await loadConfig({ cwd: root })),
+      stdout: 'ignore',
+      stderr: 'ignore',
+    };
+    function snapshot() {
+      return execFileSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `
+        import assert from 'node:assert/strict';
+        import { createRequire } from 'node:module';
+        import * as esm from '@openai/agents-core';
+        import * as sandbox from '@openai/agents-core/sandbox';
+        const require = createRequire(import.meta.url);
+        const common = require('@openai/agents-core');
+        assert.equal(esm.Manifest, common.Manifest);
+        assert.equal(sandbox.Manifest, common.Manifest);
+        assert.equal(esm.default, common);
+        assert.equal(esm.__esModule, true);
+        assert.deepEqual(Object.getOwnPropertySymbols(common), []);
+        assert.equal(Object.prototype.toString.call(common), '[object Object]');
+        process.stdout.write(esm.value);
+      `,
+        ],
+        { cwd: root, encoding: 'utf8' },
+      );
+    }
+    assert.equal(await buildPackages(config), 0);
+    assert.equal(snapshot(), 'initial');
+    rmSync(join(directory, 'dist'), { recursive: true });
+    const statuses = [];
+    async function nextBuild() {
+      const deadline = Date.now() + 60_000;
+      while (!statuses.length) {
+        assert.ok(Date.now() < deadline, 'Core watch build did not finish');
+        await delay(50);
+      }
+      return statuses.shift();
+    }
+    watcher = watchPackages(config, (status) => statuses.push(status));
+    assert.equal(await nextBuild(), 0);
+    assert.equal(snapshot(), 'initial');
+    const held = createRequire(import.meta.url)(
+      join(directory, 'dist/node/index.cjs'),
+    );
+    update('updated');
+    assert.equal(await nextBuild(), 0);
+    assert.equal(snapshot(), 'updated');
+    assert.equal((await held.readLazy()).value, 'initial');
   } finally {
     await watcher?.close();
     rmSync(root, { recursive: true, force: true });

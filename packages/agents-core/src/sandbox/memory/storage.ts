@@ -72,6 +72,13 @@ export class SandboxMemoryStorage {
   private readonly appendQueues = new Map<string, Promise<void>>();
   private tracingParent?: Span<any> | Trace;
   private readonly readFileOverride: SandboxSessionLike['readFile'];
+  private readonly writeFileOverride: SandboxSessionLike['writeFileNoFollow'];
+  private get materializeFile() {
+    return (
+      this.writeFileOverride ??
+      this.session.materializeEntry?.bind(this.session)
+    );
+  }
   private get readFile(): SandboxSessionLike['readFile'] {
     return this.readFileOverride ?? this.session.readFile?.bind(this.session);
   }
@@ -87,11 +94,14 @@ export class SandboxMemoryStorage {
     tracingParent?: Span<any> | Trace;
     /** Optional no-follow, bounded complete reader for native memory owners. */
     readFile?: SandboxSessionLike['readFile'];
+    /** Optional resource-owned regular-file writer. */
+    writeFile?: SandboxSessionLike['writeFileNoFollow'];
     /** Optional detached, header-only operation delivery for native memory owners. */
     runOperation?: <T>(name: string, run: () => Promise<T>) => Promise<T>;
   }) {
     this.session = args.session;
     this.readFileOverride = args.readFile;
+    this.writeFileOverride = args.writeFile;
     this.runOperation = args.runOperation;
     this.runAs = args.runAs;
     this.store = args.store;
@@ -267,10 +277,8 @@ export class SandboxMemoryStorage {
   }
 
   async writeText(path: string, content: string): Promise<void> {
-    if (!this.session.materializeEntry) {
-      throw new UserError(
-        'Memory generation requires sandbox sessions to provide materializeEntry().',
-      );
+    if (!this.materializeFile) {
+      throw new UserError('Memory generation requires a resource file writer.');
     }
     // Memory lives in the sandbox workspace, not only in the side store, so agents
     // can inspect or edit it and workspace snapshots carry it across resumes.
@@ -283,7 +291,7 @@ export class SandboxMemoryStorage {
         run_as: this.runAs,
       },
       async () =>
-        await this.session.materializeEntry!({
+        await this.materializeFile!({
           path: normalizedPath,
           entry: file({ content }),
           runAs: this.runAs,
@@ -335,7 +343,7 @@ export class SandboxMemoryStorage {
   }
 
   async hydrateFromStore(prefix: string): Promise<void> {
-    if (!this.store?.list || !this.session.materializeEntry) {
+    if (!this.store?.list || !this.materializeFile) {
       return;
     }
     const files = await this.store.list(prefix);
@@ -351,7 +359,7 @@ export class SandboxMemoryStorage {
       if (!payload) {
         continue;
       }
-      await this.session.materializeEntry({
+      await this.materializeFile({
         path: normalizedPath,
         entry: file({ content: payload }),
         runAs: this.runAs,

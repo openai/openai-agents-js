@@ -410,6 +410,9 @@ def run(request):
     if operation == "create":
         write_new(path)
         return
+    if operation == "write":
+        write_destination(path)
+        return
     if operation == "delete":
         with parent(path) as (directory, name):
             os.unlink(name, dir_fd=directory)

@@ -1,3 +1,6 @@
+#[path = "sandbox_events.rs"]
+mod sandbox_events;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -9,7 +12,7 @@ use codex_extension_api::{
     ContextContributor, ExtensionData, ExtensionFuture, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStartInput, ThreadStopInput, ToolCallOutcome,
     ToolContributor, ToolFinishInput, ToolLifecycleContributor, ToolLifecycleFuture, ToolPolicy,
-    TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
+    ToolStartInput, TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
     WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_protocol::dynamic_tools::{
@@ -336,6 +339,7 @@ pub struct PythonTools {
 
 // The family inbox transports requests; reply authority stays with each issuer.
 enum FamilyRequest {
+    SandboxOperation(sandbox_events::Notice),
     Step(Weak<PythonTools>, u64, Value),
     Completion(Weak<PythonTools>, u64, Value),
     CompletionFailed(Weak<PythonTools>, Weak<crate::turn_settlement::Turn>, Value),
@@ -344,6 +348,7 @@ enum FamilyRequest {
     Retired { thread: String, instance: String },
 }
 struct Family {
+    sandbox_operations: OnceLock<Arc<tokio::sync::Semaphore>>,
     members: RwLock<HashMap<String, Weak<PythonTools>>>,
     requests: mpsc::UnboundedSender<FamilyRequest>,
     receiver: AsyncMutex<mpsc::UnboundedReceiver<FamilyRequest>>,
@@ -354,6 +359,7 @@ impl Default for Family {
     fn default() -> Self {
         let (requests, receiver) = mpsc::unbounded_channel();
         Self {
+            sandbox_operations: OnceLock::new(),
             members: RwLock::default(),
             requests,
             receiver: AsyncMutex::new(receiver),
@@ -2219,6 +2225,7 @@ impl PythonTools {
                     }
                 }
                 Some(FamilyRequest::Callback(request)) => return request,
+                Some(FamilyRequest::SandboxOperation(notice)) => return notice.payload,
                 Some(FamilyRequest::Step(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|tools| {
                         if tools.instance.is_some() {
@@ -4314,8 +4321,13 @@ impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
 }
 
 impl ToolLifecycleContributor for PythonContributor {
+    fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move { sandbox_events::on_start(&input) })
+    }
+
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
+            sandbox_events::on_finish(&input);
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 // A rejected duplicate shares a call ID, not the original invocation.
                 // PendingReply already retires and cancels its exact owner on drop.
@@ -4936,6 +4948,9 @@ mod pending_tests {
         ] {
             PythonContributor::default()
                 .on_tool_finish(ToolFinishInput {
+                    builtin_sandbox_operation: None,
+                    builtin_sandbox_duration: None,
+                    builtin_sandbox_exit_code: None,
                     session_store: &session,
                     thread_store: &thread,
                     turn_store: &turn,

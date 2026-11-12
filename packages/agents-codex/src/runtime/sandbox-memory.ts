@@ -139,13 +139,17 @@ export class SandboxMemoryOwner {
       typeof resource.state.sessionId === 'string'
         ? resource.state.sessionId
         : undefined;
-    if (typeof resource.readFileNoFollow !== 'function')
+    if (
+      typeof resource.readFileNoFollow !== 'function' ||
+      typeof resource.writeFileNoFollow !== 'function'
+    )
       throw new TypeError(
-        'Native sandbox memory requires readFileNoFollow support',
+        'Native sandbox memory requires no-follow file access',
       );
     this.storage = new runtime.SandboxMemoryStorage({
       session: resource,
       store: config.store,
+      writeFile: resource.writeFileNoFollow.bind(resource),
       readFile: (args) =>
         resource.readFileNoFollow!({
           ...args,
