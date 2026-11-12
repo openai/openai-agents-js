@@ -340,7 +340,37 @@ const manualUsageSchema = z.object({
   reasoningOutputTokens: nonnegativeTokenCountWireSchema,
   totalTokens: nonnegativeTokenCountWireSchema,
 });
+/** @internal Validate the durable diagnostic snapshot before native sealing. */
+export const guardrailCheckpointSchema = z.object({
+  kind: z.enum(['input', 'output']),
+  name: z.string(),
+  agent_profile: z.string().nullable(),
+  session_id: z.string(),
+  turn_id: z.string(),
+  subagent_id: z.string().optional(),
+  result: z.object({
+    tripwireTriggered: z.boolean(),
+    outputInfo: jsonValue.optional(),
+  }),
+  tool_call: z
+    .object({
+      tool: z.object({ name: z.string(), namespace: z.string().nullable() }),
+      sessionId: z.string(),
+      turnId: z.string(),
+      callId: z.string().nullable(),
+      childId: z.string().nullable(),
+      childIncarnation: z.string().nullable(),
+      role: z.string().nullable(),
+      model: z.string().nullable(),
+      route: z.enum(['direct', 'code']),
+      outerCallId: z.string().nullable(),
+      cellId: z.string().nullable(),
+      nestedCallId: z.string().nullable(),
+    })
+    .optional(),
+});
 const manualContextSchema = z.object({
+  guardrail_results: z.array(guardrailCheckpointSchema).optional(),
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: z.string().nullable(),
   result_schemas: z.array(
