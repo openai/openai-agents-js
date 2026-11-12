@@ -87,6 +87,9 @@ test('ESM imports work when require(esm) is disabled', () => {
       `import assert from 'node:assert/strict';
        import * as facade from '@openai/agents';
        import * as owner from '@openai/agents-codex';
+       import { Manifest } from '@openai/agents/sandbox';
+       import { scriptedSandboxSession } from '@openai/agents/testing';
+       assert.ok(scriptedSandboxSession().state.manifest instanceof Manifest);
        assert.match(import.meta.resolve('@openai/agents-codex'), /\\.mjs$/);
        assert.equal(facade.NativeRuntime, owner.NativeRuntime);
        const runtime = new owner.NativeRuntime();
@@ -115,7 +118,8 @@ for (const [format, load] of [
     const sandbox = await load('@openai/agents/sandbox');
     const directSandbox = await load('@openai/agents-core/sandbox');
     assert.equal(sandbox.Manifest, directSandbox.Manifest);
-    const manifest = new sandbox.Manifest({ root: '/workspace' });
+    const { scriptedSandboxSession } = await load('@openai/agents/testing');
+    const manifest = scriptedSandboxSession().state.manifest;
     assert.equal(
       JSON.parse(sandbox.renderStorageLayout(manifest)).workspace,
       '/workspace',
