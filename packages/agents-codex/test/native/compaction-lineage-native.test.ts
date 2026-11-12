@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import OpenAICommonJSEntry from 'openai/index.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -11,7 +12,14 @@ import { ModelServer, message } from './fixtures/model-server';
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(() => ModelServer.closeAll());
 
-nativeIt.each([
+// Both exports have the same API, but their private fields have distinct types.
+const OpenAICommonJS = OpenAICommonJSEntry as unknown as typeof OpenAI;
+const clientEntrypoints = [
+  ['ESM', OpenAI],
+  ['CommonJS', OpenAICommonJS],
+] as const;
+
+const lineageCases = [
   ['auto', true, false, false],
   ['previous_response_id', true, false, false],
   ['auto', false, false, false],
@@ -19,9 +27,29 @@ nativeIt.each([
   ['auto', true, true, false],
   ['auto', true, false, true],
   ['previous_response_id', true, false, true],
+] as const;
+
+nativeIt.each([
+  ...lineageCases.flatMap((testCase) => {
+    const [, store, , transformed] = testCase;
+    const entrypoints =
+      store && !transformed ? clientEntrypoints : clientEntrypoints.slice(0, 1);
+    return entrypoints.map(
+      ([format, Client]) => [...testCase, format, Client] as const,
+    );
+  }),
+  ['auto', true, false, false, 'overridden CommonJS', OpenAICommonJS],
+  [
+    'previous_response_id',
+    true,
+    false,
+    false,
+    'overridden CommonJS',
+    OpenAICommonJS,
+  ],
 ] as const)(
-  'uses only a stored acknowledged native window: mode=%s store=%s automatic=%s transformed=%s',
-  async (mode, store, automatic, transformed) => {
+  'uses only a stored acknowledged native window: mode=%s store=%s automatic=%s transformed=%s client=%s',
+  async (mode, store, automatic, transformed, format, Client) => {
     const compact = vi.fn(async (_body: unknown) => ({
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -38,11 +66,13 @@ nativeIt.each([
       apiKey: 'synthetic-lineage',
       supportsWebsockets: false,
     });
-    const client = new OpenAI({
+    const client = new Client({
       baseURL,
       apiKey: 'synthetic-lineage',
       maxRetries: 0,
     });
+    const overriddenRequest =
+      format === 'overridden CommonJS' ? vi.spyOn(client, 'post') : undefined;
     const agent = new Agent({
       provider,
       model: 'gpt-5.5',
@@ -61,15 +91,20 @@ nativeIt.each([
     await using session = await agent.session();
     await (await session.submit('EXACT_NATIVE_INPUT')).wait();
     expect(server.requests[0]?.store).toBe(store);
-    if ((!store || transformed) && mode === 'previous_response_id') {
+    const eligible = store && !transformed && overriddenRequest === undefined;
+    if (!eligible && mode === 'previous_response_id') {
       await expect(session.compact()).rejects.toThrow('acknowledged');
+      if (overriddenRequest !== undefined)
+        expect(overriddenRequest).not.toHaveBeenCalled();
       expect(compact).not.toHaveBeenCalled();
       return;
     }
     if (!automatic) await session.compact();
+    if (overriddenRequest !== undefined)
+      expect(overriddenRequest).toHaveBeenCalledOnce();
     expect(compact).toHaveBeenCalledOnce();
     const body = compact.mock.calls[0]![0] as Record<string, unknown>;
-    if (store && !transformed) {
+    if (eligible) {
       const completed = JSON.parse(server.completedFrames[0]!);
       expect(body.previous_response_id).toBe(completed.response.id);
       expect(body).not.toHaveProperty('input');
@@ -525,9 +560,9 @@ nativeIt.each(['auto', 'previous_response_id'] as const)(
   },
 );
 
-nativeIt(
-  'matches the native organization and project for explicit lineage',
-  async () => {
+nativeIt.each(clientEntrypoints)(
+  'matches the native organization and project for explicit lineage with %s',
+  async (_format, Client) => {
     const compact = vi.fn(async (_body: unknown) => ({
       status: 200,
       headers: { 'content-type': 'application/json' },
@@ -549,7 +584,7 @@ nativeIt(
       project: 'native-project',
       supportsWebsockets: false,
     });
-    const client = new OpenAI({
+    const client = new Client({
       baseURL,
       apiKey: 'synthetic-lineage',
       organization: 'native-org',

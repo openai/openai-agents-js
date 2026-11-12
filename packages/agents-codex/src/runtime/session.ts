@@ -9069,22 +9069,32 @@ export class Session<OutputT = string, Context = unknown> {
                     ? owner.selection?.budget
                     : undefined;
                 try {
-                  const providerResponse =
-                    transformContext !== undefined ||
-                    msg.provider_response == null ||
-                    compaction.mode === 'input' ||
-                    !compaction.matchesProvider(
-                      this.#modelApiKey,
-                      this.threadOptions.config,
+                  let providerResponse:
+                    { response_id: string; model?: string } | undefined;
+                  if (
+                    transformContext === undefined &&
+                    msg.provider_response != null &&
+                    compaction.mode !== 'input'
+                  ) {
+                    const loading = compaction.loadClientEntrypoint();
+                    if (loading !== undefined) {
+                      await loading;
+                      check();
+                    }
+                    if (
+                      compaction.matchesProvider(
+                        this.#modelApiKey,
+                        this.threadOptions.config,
+                      )
                     )
-                      ? undefined
-                      : z
-                          .object({
-                            response_id: z.string().trim().min(1),
-                            model: z.string().trim().min(1).optional(),
-                          })
-                          .strict()
-                          .parse(msg.provider_response);
+                      providerResponse = z
+                        .object({
+                          response_id: z.string().trim().min(1),
+                          model: z.string().trim().min(1).optional(),
+                        })
+                        .strict()
+                        .parse(msg.provider_response);
+                  }
                   const prepared = compaction.prepareContext(
                     context,
                     z

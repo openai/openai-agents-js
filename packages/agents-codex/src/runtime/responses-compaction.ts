@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import OpenAI from 'openai';
+import OpenAICommonJS from 'openai/index.js';
+import { loadOpenAIEntrypoint } from '../../node/openai-entrypoint.js';
 import { losslessJsonObjectSchema } from './binding';
 import type { TokenUsage } from './run-events';
 import type { CompactionContext } from './model-callbacks';
@@ -58,8 +60,28 @@ export class ResponsesCompaction<Context = unknown> {
     this.shouldCompact = shouldCompact;
     this.#compact = compact.bind(responses);
     this.#client = client;
-    this.#clientScope = responsesClientScope(client);
+    const scope = responsesClientScope(client);
+    this.#clientScope =
+      scope?.responses === responses && scope.compact === compact
+        ? scope
+        : undefined;
     Object.freeze(this);
+  }
+
+  /** @internal Resolve an alternate built-in client before checking its scope. */
+  loadClientEntrypoint(): Promise<void> | undefined {
+    const scope = this.#clientScope;
+    if (
+      scope === undefined ||
+      openAIEntrypoints.some((entry) => entry.prototype === scope.prototype)
+    )
+      return;
+    return (alternateEntrypoint ??= loadOpenAIEntrypoint().then(
+      ({ default: OpenAIESM }) => {
+        openAIEntrypoints.push(OpenAIESM);
+      },
+      () => {},
+    ));
   }
 
   /** @internal Borrowed-client matching against the captured native response store. */
@@ -69,7 +91,23 @@ export class ResponsesCompaction<Context = unknown> {
   ): boolean {
     const scope = this.#clientScope;
     if (scope === undefined) return false;
-    if (!isDeepStrictEqual(responsesClientScope(this.#client), scope))
+    const sdk = openAIEntrypoints.find(
+      (entry) => entry.prototype === scope.prototype,
+    );
+    if (
+      sdk === undefined ||
+      scope.responsesPrototype !== sdk.Responses.prototype ||
+      scope.compact !== sdk.Responses.prototype.compact
+    )
+      return false;
+    const current = responsesClientScope(this.#client);
+    if (
+      current?.prototype !== scope.prototype ||
+      current.responses !== scope.responses ||
+      current.responsesPrototype !== scope.responsesPrototype ||
+      current.compact !== scope.compact ||
+      !isDeepStrictEqual(current.account, scope.account)
+    )
       throw new TypeError(
         'Compaction client provider scope changed after capture',
       );
@@ -92,7 +130,7 @@ export class ResponsesCompaction<Context = unknown> {
       )
     )
       return false;
-    return isDeepStrictEqual(scope, [
+    return isDeepStrictEqual(scope.account, [
       String(value.base_url ?? '').replace(/\/+$/, ''),
       apiKey,
       headers['openai-organization'] ?? null,
@@ -192,16 +230,30 @@ export function responsesCompaction<Context = unknown>(
   return new ResponsesCompaction(options);
 }
 
-type ClientScope = readonly [string, string, string | null, string | null];
+interface ClientScope {
+  readonly prototype: object;
+  readonly responses: OpenAI['responses'];
+  readonly responsesPrototype: object;
+  readonly compact: OpenAI['responses']['compact'];
+  readonly account: readonly [string, string, string | null, string | null];
+}
+
+const openAIEntrypoints: {
+  readonly prototype: object;
+  readonly Responses: { readonly prototype: { readonly compact: unknown } };
+}[] = [OpenAI, OpenAICommonJS];
+let alternateEntrypoint: Promise<void> | undefined;
 
 function responsesClientScope(client: OpenAI): ClientScope | undefined {
   try {
-    // No response-store attestation for unknown clients or request rewriting.
+    const prototype: object = Object.getPrototypeOf(client);
+    const responses = client.responses;
+    // Capture the original identities before loading any alternate entrypoint.
     if (
-      Object.getPrototypeOf(client) !== OpenAI.prototype ||
-      Object.getPrototypeOf(client.responses) !== OpenAI.Responses.prototype ||
-      Reflect.get(client.responses, '_client') !== client ||
-      client.responses.compact !== OpenAI.Responses.prototype.compact
+      Object.getOwnPropertyNames(prototype).some((name) =>
+        Object.hasOwn(client, name),
+      ) ||
+      Reflect.get(responses, '_client') !== client
     )
       return;
     const options = Reflect.get(client, '_options') as Record<string, unknown>;
@@ -216,12 +268,18 @@ function responsesClientScope(client: OpenAI): ClientScope | undefined {
       !client.apiKey
     )
       return;
-    return Object.freeze([
-      client.baseURL.replace(/\/+$/, ''),
-      client.apiKey,
-      client.organization ?? null,
-      client.project ?? null,
-    ]);
+    return {
+      prototype,
+      responses,
+      responsesPrototype: Object.getPrototypeOf(responses),
+      compact: responses.compact,
+      account: [
+        client.baseURL.replace(/\/+$/, ''),
+        client.apiKey,
+        client.organization ?? null,
+        client.project ?? null,
+      ],
+    };
   } catch {
     return undefined;
   }
