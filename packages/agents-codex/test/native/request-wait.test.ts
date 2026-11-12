@@ -1061,12 +1061,21 @@ describe('exact request waits with the native pending owner', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(admission.count()).toBe(1);
       expect(parse).not.toHaveBeenCalled();
+      expect(
+        await bounded(session.pendingInteractions(), 'pending admission snapshot'),
+      ).toEqual([]);
       admission.release();
       const [a, b] = await Promise.all([first, second]);
       if (!('requests' in a) || !('requests' in b))
         throw new Error('Expected shared manual admission');
       expect(a.requests).toHaveLength(1);
       expect(b.requests[0]).toBe(a.requests[0]);
+      const snapshot = await bounded(
+        session.pendingInteractions(),
+        'shared request snapshot',
+      );
+      expect(snapshot).toHaveLength(1);
+      expect(snapshot[0]).toBe(a.requests[0]);
       expect(parse).toHaveBeenCalledTimes(1);
       const request = decision.match(a.requests[0]);
       if (!request) throw new Error('Expected the captured grant');
