@@ -1228,7 +1228,11 @@ impl PythonTools {
             }
         }
     }
-    pub(crate) fn start_model_producer_stream(&self, response: &StepReply) -> Result<()> {
+    pub(crate) fn start_model_producer_stream(
+        &self,
+        response: &StepReply,
+        observe_raw: bool,
+    ) -> Result<()> {
         let active = self
             .selection
             .lock()
@@ -1258,7 +1262,7 @@ impl PythonTools {
             PreparationReply::Model(ModelDelivery::Streaming {
                 events,
                 finish,
-                projection: codex_api::ApplicationModelStream::default(),
+                projection: codex_api::ApplicationModelStream::new(observe_raw),
             }),
         ) else {
             unreachable!()
