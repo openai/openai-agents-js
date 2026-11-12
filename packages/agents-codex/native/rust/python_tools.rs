@@ -2021,7 +2021,7 @@ impl PythonTools {
                 &terminal_slots,
                 &input_error_slots,
                 None,
-                [false; 4],
+                Default::default(),
                 false,
             )?
             .generation;
