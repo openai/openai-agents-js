@@ -1,5 +1,4 @@
-import { validateHeaderValue } from 'node:http';
-import { AgentCard } from '@a2a-js/sdk';
+import type { AgentCard } from '@a2a-js/sdk';
 import {
   ClientFactory,
   DefaultAgentCardResolver,
@@ -183,7 +182,8 @@ export async function connectA2A(
           ...init,
           headers,
           signal,
-          redirect: 'error',
+          // Worker fetch uses manual mode. boundedResponse rejects redirect statuses.
+          redirect: 'manual',
           credentials: 'omit',
         }),
         maxBody,
@@ -263,9 +263,13 @@ export async function connectA2A(
           let token: string;
           try {
             token = await options.authorization(operation);
-            if (typeof token !== 'string' || !token || /[\r\n]/.test(token))
+            // Match the HTTP field-value byte range across runtimes.
+            if (
+              typeof token !== 'string' ||
+              !token ||
+              /[^\t\x20-\x7e\x80-\xff]/.test(token)
+            )
               throw new A2AError('authorization');
-            validateHeaderValue('Authorization', `Bearer ${token}`);
           } catch {
             options.signal?.throwIfAborted();
             init.signal?.throwIfAborted();
