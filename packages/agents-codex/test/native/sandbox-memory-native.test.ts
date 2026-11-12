@@ -14,6 +14,8 @@ import {
   Agent,
   Environment,
   NativeProvider,
+  TurnAborted,
+  GuardrailTripwire,
   ToolOutput,
   tool,
   type Session,
@@ -743,3 +745,207 @@ it('requires resource file access before starting native memory generation', asy
     await peer.close();
   }
 }, 30000);
+
+it.each([
+  'cancelled',
+  'failed',
+  'guardrail',
+  'step-limit',
+  'phase-failure',
+] as const)(
+  'records a settled source outcome (%s)',
+  async (mode) => {
+    const cancelledSource = mode === 'cancelled' || mode === 'phase-failure';
+    const toolSource = cancelledSource || mode === 'step-limit';
+    const sourceFailure = new Error('original source completion failure');
+    const phaseFailure = new Error('unrelated memory phase failure');
+    const peer = await startPublicExecutor();
+    const entered = Promise.withResolvers<void>();
+    let effects = 0;
+    const server = new ModelServer([
+      [
+        toolSource
+          ? call('held_source', {}, { callId: 'cancelled-source-call' })
+          : message('source completion candidate'),
+      ],
+      [
+        message(
+          JSON.stringify({
+            rollout_summary: 'Stopped project lookup',
+            rollout_slug: 'stopped-lookup',
+            raw_memory: 'The project lookup did not finish.',
+          }),
+        ),
+      ],
+      ...(mode === 'phase-failure'
+        ? []
+        : [
+            [
+              message(
+                JSON.stringify({
+                  summary: 'Project lookup stopped.',
+                  memory: 'The lookup did not finish.',
+                }),
+              ),
+            ],
+          ]),
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-provider',
+      supportsWebsockets: false,
+    });
+    let workspace = '';
+    let session: Session | undefined;
+    try {
+      session = await new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Run the lookup.',
+        ...(mode === 'failed'
+          ? {
+              beforeComplete: () => {
+                throw sourceFailure;
+              },
+            }
+          : {}),
+        ...(mode === 'guardrail'
+          ? {
+              outputGuardrails: [
+                {
+                  name: 'source-guard',
+                  callback: () => ({
+                    tripwireTriggered: true,
+                    outputInfo: 'private-guard-result',
+                  }),
+                },
+              ],
+            }
+          : {}),
+        tools: [
+          tool({
+            name: 'held_source',
+            parameters: z.object({}),
+            async execute(_args, context) {
+              effects++;
+              entered.resolve();
+              if (mode === 'step-limit') return 'completed source tool step';
+              await new Promise<never>((_resolve, reject) => {
+                if (context.signal.aborted) reject(context.signal.reason);
+                else
+                  context.signal.addEventListener(
+                    'abort',
+                    () => reject(context.signal.reason),
+                    { once: true },
+                  );
+              });
+              return 'unreachable';
+            },
+          }),
+        ],
+      }).session({
+        environment: sandboxEnvironment({
+          client: new UnixLocalSandboxClient(),
+          manifest: new Manifest(),
+          memory: {
+            phaseOne: new Agent({
+              provider,
+              model: 'gpt-5',
+              instructions: 'Extract memory.',
+              ...(mode === 'phase-failure'
+                ? {
+                    beforeComplete: () => {
+                      throw phaseFailure;
+                    },
+                  }
+                : {}),
+            }),
+            phaseTwo: new Agent({
+              provider,
+              model: 'gpt-5',
+              instructions: 'Consolidate memory.',
+            }),
+          },
+          connect: async (resource) => {
+            workspace = resource.state.workspaceRootPath;
+            return Environment.lease(
+              new Environment({
+                url: peer.url,
+                headers: peer.headers,
+                cwd: workspace,
+                tools: [],
+              }),
+              async () => {},
+            );
+          },
+        }),
+      });
+      const turn = await session.submit(
+        'Start the project lookup.',
+        mode === 'step-limit' ? { maxModelSteps: 1 } : undefined,
+      );
+      const original = turn.wait().catch((error: unknown) => error);
+      if (cancelledSource) {
+        await entered.promise;
+        await expect(turn.cancel()).resolves.toBeUndefined();
+      }
+      const cancelled = await original;
+      if (cancelledSource) expect(cancelled).toBeInstanceOf(TurnAborted);
+      else if (mode === 'guardrail')
+        expect(cancelled).toBeInstanceOf(GuardrailTripwire);
+      else if (mode === 'step-limit')
+        expect(cancelled).toMatchObject({ code: 'max_model_steps_exceeded' });
+      else expect(cancelled).toBe(sourceFailure);
+      expect(effects).toBe(toolSource ? 1 : 0);
+      expect(server.requests).toHaveLength(1);
+      if (mode === 'phase-failure') {
+        await expect(session.flushMemory()).rejects.toBe(phaseFailure);
+      } else {
+        await Promise.all([session.flushMemory(), session.flushMemory()]);
+        await session.flushMemory();
+      }
+      const text = await readFile(
+        join(workspace, 'sessions', `${session.id}.jsonl`),
+        'utf8',
+      );
+      expect(text.trim().split('\n')).toHaveLength(1);
+      expect(JSON.parse(text).terminal_metadata).toMatchObject({
+        terminal_state: cancelledSource
+          ? 'cancelled'
+          : mode === 'guardrail'
+            ? 'guardrail_tripped'
+            : mode === 'step-limit'
+              ? 'max_turns_exceeded'
+              : 'failed',
+        exception_type: cancelledSource
+          ? 'TurnAborted'
+          : mode === 'guardrail'
+            ? 'GuardrailTripwire'
+            : mode === 'step-limit'
+              ? 'NativeError'
+              : 'Error',
+        exception_message: cancelledSource
+          ? 'Turn interrupted'
+          : mode === 'guardrail'
+            ? 'Run blocked by guardrail'
+            : mode === 'step-limit'
+              ? 'Root model step limit reached'
+              : sourceFailure.message,
+        has_final_output: false,
+      });
+      expect(text).not.toContain('private-guard-result');
+      expect(await turn.wait().catch((error: unknown) => error)).toBe(
+        cancelled,
+      );
+      expect(effects).toBe(toolSource ? 1 : 0);
+      expect(server.requests).toHaveLength(mode === 'phase-failure' ? 2 : 3);
+      server.assertExhausted();
+    } finally {
+      await session?.close();
+      await peer.close();
+    }
+  },
+  30_000,
+);

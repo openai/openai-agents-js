@@ -211,6 +211,7 @@ import {
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { addAbortListener } from 'node:events';
 import type { EnvironmentAcquisition } from './environment-source';
+import type { SandboxMemoryTerminal } from './sandbox-memory';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { nativeInput, type UserInput, type FunctionCallOutput } from './input';
@@ -14295,9 +14296,9 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /**
-   * Generate sandbox memory explicitly from successful text and function tool history.
+   * Generate sandbox memory explicitly from settled text and function tool history.
    * Requires memory on this resource acquisition. Concurrent calls share one flush.
-   * Native checkpoint restore, non-text history and automatic close generation are unsupported.
+   * Outcomes from before restore, media content and automatic close generation are unsupported.
    */
   flushMemory(): Promise<void> {
     this.checkCallbackOperation('flush sandbox memory');
@@ -14319,17 +14320,47 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError(
         'Configure memory on sandboxEnvironment before flushing',
       );
-    if (this.options.state || this.options.localResume)
-      throw new NativeError(
-        'Native sandbox memory is unavailable on restored Sessions',
-      );
     const run = this.lastRun;
+    if (
+      (this.options.state || this.options.localResume) &&
+      (!run ||
+        (this.restoredRoot &&
+          this.turnHandles.get(this.rootRun(run)) === this.restoredRoot.turn))
+    )
+      throw new NativeError(
+        'Native sandbox memory requires a newly admitted source turn after restore',
+      );
     if (!run)
       throw new NativeError(
-        'Native sandbox memory requires a successful source turn',
+        'Native sandbox memory requires a settled source turn',
       );
 
-    await run.wait();
+    let terminal: SandboxMemoryTerminal = {
+      terminal_state: 'completed',
+      exception_type: null,
+      exception_message: null,
+      has_final_output: true,
+    };
+    try {
+      await run.wait();
+    } catch (error) {
+      // Only this owned turn's settled failure can become rollout data.
+      if (run.id === null || !Object.is(error, run.failure)) throw error;
+      terminal = {
+        terminal_state:
+          error instanceof GuardrailTripwire
+            ? 'guardrail_tripped'
+            : error instanceof NativeError &&
+                error.code === 'max_model_steps_exceeded'
+              ? 'max_turns_exceeded'
+              : error instanceof TurnAborted && submissions.get(run)?.cancelled
+                ? 'cancelled'
+                : 'failed',
+        exception_type: error instanceof Error ? error.name : 'Error',
+        exception_message: error instanceof Error ? error.message : null,
+        has_final_output: false,
+      };
+    }
     // Reuse native replay's predecode budget, then enforce the memory record bound.
     const snapshot: { revision: string; total: number; items: string[] } =
       JSON.parse(await this.#native._canonical_history(256, true));
@@ -14337,12 +14368,16 @@ export class Session<OutputT = string, Context = unknown> {
       throw new RangeError(
         'Native sandbox memory supports at most 256 original records',
       );
-    await owner.flushMemory(this.id, {
-      ...snapshot,
-      items: snapshot.items.map(
-        (item) => JSON.parse(item) as Record<string, unknown>,
-      ),
-    });
+    await owner.flushMemory(
+      this.id,
+      {
+        ...snapshot,
+        items: snapshot.items.map(
+          (item) => JSON.parse(item) as Record<string, unknown>,
+        ),
+      },
+      terminal,
+    );
   }
 
   /** Core has been retaining original JSON object records independently of model

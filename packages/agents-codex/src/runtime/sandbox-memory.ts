@@ -32,6 +32,19 @@ const consolidatedMemory = z.object({
 });
 const MAX_INPUT_BYTES = 1_000_000;
 
+/** @internal Terminal data from the current Session's settled source turn. */
+export interface SandboxMemoryTerminal {
+  terminal_state:
+    | 'completed'
+    | 'cancelled'
+    | 'failed'
+    | 'guardrail_tripped'
+    | 'max_turns_exceeded';
+  exception_type: string | null;
+  exception_message: string | null;
+  has_final_output: boolean;
+}
+
 interface MemoryInvocation {
   resource?: SandboxSessionLike;
   active: boolean;
@@ -237,6 +250,7 @@ export class SandboxMemoryOwner {
   async flush(
     thread: string,
     snapshot: CanonicalHistorySnapshot,
+    terminal: SandboxMemoryTerminal,
   ): Promise<void> {
     this.checkOperation('flush');
     this.active();
@@ -249,7 +263,7 @@ export class SandboxMemoryOwner {
           active: true,
         };
         try {
-          await this.flushCurrent(thread, snapshot, invocation);
+          await this.flushCurrent(thread, snapshot, terminal, invocation);
         } finally {
           invocation.active = false;
           invocation.resource = undefined;
@@ -261,6 +275,7 @@ export class SandboxMemoryOwner {
   private async flushCurrent(
     thread: string,
     snapshot: CanonicalHistorySnapshot,
+    terminal: SandboxMemoryTerminal,
     invocation: MemoryInvocation,
   ): Promise<void> {
     this.active();
@@ -269,6 +284,7 @@ export class SandboxMemoryOwner {
     const transcript = memoryTranscript(
       thread,
       snapshot,
+      terminal,
       this.resourceSessionId,
     );
     this.thread = thread;
@@ -360,6 +376,7 @@ function boundedJson(value: unknown): string {
 function memoryTranscript(
   thread: string,
   snapshot: CanonicalHistorySnapshot,
+  terminal: SandboxMemoryTerminal,
   resourceSessionId?: string,
 ) {
   if (snapshot.total > 256)
@@ -438,7 +455,10 @@ function memoryTranscript(
       : { sandbox_session_id: resourceSessionId }),
     updated_at: new Date().toISOString(),
     terminal_metadata: {
-      terminal_state: 'completed',
+      terminal_state: terminal.terminal_state,
+      exception_type: terminal.exception_type,
+      exception_message: terminal.exception_message,
+      has_final_output: terminal.has_final_output,
       native_history_revision: snapshot.revision,
     },
     items,
