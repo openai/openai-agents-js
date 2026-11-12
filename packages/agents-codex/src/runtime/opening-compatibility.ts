@@ -1,5 +1,5 @@
 import type { captureThreadStore } from './custom-thread-store';
-import type { splitToolDeclarations } from './mcp';
+import type { splitToolDeclarations } from './tool-declarations';
 import type { ToolCatalog } from './tools';
 
 /** @internal Opening compatibility for captured custom storage declarations. */
