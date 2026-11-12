@@ -2,8 +2,14 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Agent, Environment, NativeProvider, type Session } from '../../src';
-import { binding } from '../../src/runtime/binding';
+import {
+  Agent,
+  Environment,
+  NativeProvider,
+  TurnAborted,
+  type Session,
+} from '../../src';
+import { binding, type NativeThread } from '../../src/runtime/binding';
 import {
   Manifest,
   sandboxEnvironment,
@@ -17,10 +23,20 @@ afterEach(() => ModelServer.closeAll());
 
 it
   .skipIf(process.platform === 'win32')
-  .each(['live', 'restore', 'fork', 'failed-write', 'missing-write'] as const)(
+  .each([
+    'live',
+    'restore',
+    'fork',
+    'failed-write',
+    'missing-write',
+    'held-write-stop',
+  ] as const)(
   'keeps unproven source input out of memory across %s',
   async (route) => {
     const missingProof = route === 'failed-write' || route === 'missing-write';
+    const heldStop = route === 'held-write-stop';
+    const writeEntered = Promise.withResolvers<void>();
+    const releaseWrite = Promise.withResolvers<void>();
     const base = await mkdtemp(join(tmpdir(), 'memory-input-proof-'));
     const workspace = join(base, 'workspace');
     await mkdir(workspace);
@@ -36,7 +52,7 @@ it
     let rejected = false;
     const server = new ModelServer([
       [message(rejectedAnswer)],
-      [message('Fresh approved source answer.')],
+      ...(heldStop ? [] : [[message('Fresh approved source answer.')]]),
       [
         message(
           JSON.stringify({
@@ -69,30 +85,32 @@ it
       provider,
       model: 'gpt-5',
       instructions: 'Use approved input.',
-      ...(missingProof
-        ? {
-            beforeComplete: () => {
-              if (!rejected) {
-                rejected = true;
-                throw originalFailure;
-              }
-            },
-          }
-        : {
-            inputGuardrails: [
-              {
-                name: 'held-input-check',
-                runInParallel: true,
-                callback: async () => {
-                  if (rejected) return { tripwireTriggered: false };
-                  guardEntered.resolve();
-                  await releaseGuard.promise;
+      ...(heldStop
+        ? {}
+        : missingProof
+          ? {
+              beforeComplete: () => {
+                if (!rejected) {
                   rejected = true;
                   throw originalFailure;
-                },
+                }
               },
-            ],
-          }),
+            }
+          : {
+              inputGuardrails: [
+                {
+                  name: 'held-input-check',
+                  runInParallel: true,
+                  callback: async () => {
+                    if (rejected) return { tripwireTriggered: false };
+                    guardEntered.resolve();
+                    await releaseGuard.promise;
+                    rejected = true;
+                    throw originalFailure;
+                  },
+                },
+              ],
+            }),
     });
     const source = () => {
       const client = new UnixLocalSandboxClient({
@@ -139,13 +157,25 @@ it
     let current: Session | undefined;
     let restoreSpy: (() => void) | undefined;
     try {
-      if (missingProof) {
+      if (missingProof || heldStop) {
         const native = await binding();
+        const record =
+          native.NativeThread.prototype._record_memory_input_admission;
         const spy = vi.spyOn(
           native.NativeThread.prototype,
           '_record_memory_input_admission',
         );
-        if (route === 'failed-write') spy.mockRejectedValueOnce(writeFailure);
+        if (heldStop) {
+          spy.mockImplementationOnce(async function (
+            this: NativeThread,
+            turnId: string,
+          ) {
+            writeEntered.resolve();
+            await releaseWrite.promise;
+            return record.call(this, turnId);
+          });
+        } else if (route === 'failed-write')
+          spy.mockRejectedValueOnce(writeFailure);
         else spy.mockResolvedValueOnce(undefined);
         restoreSpy = () => spy.mockRestore();
       }
@@ -153,6 +183,27 @@ it
       const turn = await original.submit(rejectedInput);
       const result = turn.wait();
       void result.catch(() => {});
+      if (heldStop) {
+        await writeEntered.promise;
+        const stopping = turn.cancel();
+        releaseWrite.resolve();
+        await stopping;
+        const failure = await result.catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(TurnAborted);
+        await original.flushMemory();
+        const transcript = await readFile(
+          join(workspace, 'sessions', `${original.id}.jsonl`),
+          'utf8',
+        );
+        expect(JSON.parse(transcript).terminal_metadata).toMatchObject({
+          terminal_state: 'cancelled',
+          exception_type: 'TurnAborted',
+          has_final_output: false,
+        });
+        expect(server.requests).toHaveLength(3);
+        server.assertExhausted();
+        return;
+      }
       if (!missingProof) {
         await guardEntered.promise;
         await frameSent.promise;
@@ -208,6 +259,7 @@ it
       server.assertExhausted();
     } finally {
       releaseGuard.resolve();
+      releaseWrite.resolve();
       restoreSpy?.();
       await current?.close();
       await original?.close();

@@ -6594,7 +6594,7 @@ export class Session<OutputT = string, Context = unknown> {
       run.callbacks.add(persistence);
       void persistence.then(() => {
         run.callbacks.delete(persistence);
-        this.finish(run, error, output, unsampledSteering);
+        this.finish(run, run.failure ?? error, output, unsampledSteering);
       });
       return;
     }
