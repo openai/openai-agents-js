@@ -107,10 +107,19 @@ export type AgentProfileChanged = Event &
     parentSubmissionId?: string;
   }>;
 
+/** One successful logical root result, after typed validation and owned cleanup.
+ * Content remains on Turn.wait(); application approval and delivery stay separate.
+ * submissionId identifies the original root; turnId identifies its final native step.
+ * Passive retention can report gaps; this is not a durable delivery receipt.
+ */
+export type OutputAccepted = SubmissionEvent &
+  Readonly<{ type: 'output_accepted' }>;
+
 export type ModelOutputItemCompleted = SubmissionEvent &
   Readonly<{ type: 'model_output_item_completed'; item: ModelOutputItem }>;
 
 export type Observation =
+  | OutputAccepted
   | ModelOutputItemCompleted
   | AgentProfileChanged
   | HostedToolProgress
@@ -322,7 +331,12 @@ export class ObservationBuffer {
 
   append(value: ObservationInput): RetainedObservation | null {
     const event = this.record(value, this.sessionId);
-    if (event && this.repairParent && 'submissionId' in event) {
+    if (
+      event &&
+      this.repairParent &&
+      event.type !== 'output_accepted' &&
+      'submissionId' in event
+    ) {
       const linked = {
         ...event,
         parentSubmissionId: this.repairParent.submissionId,

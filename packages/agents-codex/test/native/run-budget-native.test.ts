@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  InteractionRequired,
   NativeProvider,
   fileSessionStore,
   isFunctionApprovalRequest,
@@ -55,13 +56,15 @@ it.each([1, 2])(
       tools: [record],
     });
     await using session = await agent.session();
-    const turn = await session.submit('begin', { budget: { maxRequests } });
+    const turn = await session.submit('begin', {
+      budget: { maxRequests, maxTokens: 1000, missingUsage: 'continue' },
+    });
     let approved = false;
     for await (const event of session.interactions()) {
       if (!isFunctionApprovalRequest(event)) continue;
       expect(effects).toEqual([]);
       await expect(session.suspend()).rejects.toThrow(
-        'Cannot capture an active run with a budget',
+        'Cannot capture an active run with token or cost budget limits',
       );
       await session.respond(event.approve());
       approved = true;
@@ -421,14 +424,15 @@ it('preserves the budget through a warm reply, refuses active capture, and reset
     provider,
     tools: [decision],
   });
-  const budget = { maxRequests: 1 };
+  const budget = { maxRequests: 1, maxTokens: 1000 };
   await using session = await agent.session();
   const turn = await session.submit('go', { budget });
   const batch = await turn.wait({ until: 'manual_tool' });
   if (!('requests' in batch)) throw new Error('Expected a manual request');
   const request = decision.match(batch.requests[0]);
   if (!request) throw new Error('Expected the decision request');
-  const reason = 'Cannot capture an active run with a budget';
+  const reason =
+    'Cannot capture an active run with token or cost budget limits';
   expect(await session.checkpointStatus({ kind: 'manualWait' })).toEqual({
     status: 'notReady',
     reasons: [reason],
@@ -471,11 +475,11 @@ it('refuses automatic active capture from a one-shot run without a handler', asy
     tools: [decision],
   });
   await expect(
-    agent.run('go', { budget: { maxRequests: 2 } }),
+    agent.run('go', { budget: { maxRequests: 2, maxTokens: 1000 } }),
   ).rejects.toMatchObject({
     name: 'InteractionRequired',
     cause: expect.objectContaining({
-      message: 'Cannot capture an active run with a budget',
+      message: 'Cannot capture an active run with token or cost budget limits',
     }),
   });
   server.assertExhausted();
@@ -540,3 +544,145 @@ it.each([1, 2])(
     server.assertExhausted();
   },
 );
+
+it.each(
+  [1, 2].flatMap((maxRequests) =>
+    [false, true].map((approval) => ({ maxRequests, approval })),
+  ),
+)(
+  'retains the same-turn request budget after portable restart ($maxRequests, approval=$approval)',
+  async ({ maxRequests, approval }) => {
+    const effects: string[] = [];
+    const accepted = tool({
+      name: 'accepted',
+      parameters: z.object({}),
+      execute: () => {
+        effects.push('sibling');
+        return 'recorded sibling';
+      },
+    });
+    const approved = tool({
+      name: 'approved',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: () => {
+        effects.push('approved');
+        return 'recorded approval';
+      },
+    });
+    const lookup = manualTool({
+      name: 'lookup',
+      description: 'Read a record.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const server = new ModelServer([
+      [
+        call('accepted', {}, { callId: 'sibling' }),
+        call(approval ? 'approved' : 'lookup', {}, { callId: 'pending' }),
+      ],
+      ...(maxRequests === 2 ? [[message('Done')]] : []),
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use tools and answer.',
+      provider,
+      tools: [accepted, approved, lookup],
+    });
+    const source = await agent.session();
+    let saved;
+    try {
+      await source.submit('begin', { budget: { maxRequests } });
+      for await (const event of source.interactions()) {
+        if (
+          approval
+            ? isFunctionApprovalRequest(event)
+            : lookup.match(event) !== undefined
+        )
+          break;
+      }
+      saved = await source.suspend();
+      expect(await source.suspend()).toEqual(saved);
+    } finally {
+      await source.close();
+    }
+    expect(saved.format_version).toBe(17);
+    expect(saved.run_budget).toEqual({
+      version: 1,
+      maxRequests,
+      admittedRequests: 1,
+    });
+    expect(effects).toEqual(['sibling']);
+    for (const resumeBudget of [
+      undefined,
+      { maxRequests: maxRequests + 1 },
+      { maxRequests, maxTokens: 1000 },
+    ])
+      await expect(
+        agent.session({ state: saved, resumeBudget }),
+      ).rejects.toThrow();
+    expect(server.requests).toHaveLength(1);
+    await using restored = await agent.session({
+      state: parseSessionState(JSON.stringify(saved)),
+      resumeBudget: { maxRequests },
+    });
+    for await (const event of restored.interactions()) {
+      if (approval && isFunctionApprovalRequest(event)) {
+        await restored.respond(event.approve());
+        break;
+      }
+      const request = lookup.match(event);
+      if (!approval && request) {
+        await restored.respond(request.reply('live result'));
+        break;
+      }
+    }
+    if (maxRequests === 1)
+      await expect(restored.restoredTurn!.wait()).rejects.toMatchObject(
+        exceeded,
+      );
+    else
+      await expect(restored.restoredTurn!.wait()).resolves.toMatchObject({
+        finalOutput: 'Done',
+      });
+    expect(effects).toEqual(approval ? ['sibling', 'approved'] : ['sibling']);
+    expect(server.requests).toHaveLength(maxRequests);
+    server.assertExhausted();
+  },
+);
+
+it('requires the original request ceiling for one-shot manual resume', async () => {
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Read.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const server = new ModelServer([
+    [call('lookup', {}, { callId: 'manual' })],
+    [message('Done')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use lookup.',
+    provider,
+    tools: [lookup],
+  });
+  let pending: unknown;
+  try {
+    await agent.run('begin', { budget: { maxRequests: 2 } });
+  } catch (error) {
+    pending = error;
+  }
+  expect(pending).toBeInstanceOf(InteractionRequired);
+  if (!(pending instanceof InteractionRequired) || !pending.state)
+    throw new Error('Expected a checkpoint');
+  await expect(
+    agent.run(null, {
+      state: pending.state,
+      budget: { maxRequests: 2 },
+      onInteraction: (event) => lookup.match(event)!.reply('result'),
+    }),
+  ).resolves.toMatchObject({ finalOutput: 'Done' });
+  server.assertExhausted();
+});

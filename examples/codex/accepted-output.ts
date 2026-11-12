@@ -199,12 +199,56 @@ export async function runAcceptedOutput(
   return { reports, supportResults };
 }
 
-if (typeof require !== 'undefined' && require.main === module) {
-  runAcceptedOutput(console.log).then(
-    (accepted) => console.log(JSON.stringify(accepted, null, 2)),
-    () => {
-      console.error('Accepted-output example failed.');
-      process.exitCode = 1;
+async function runAcceptedSections() {
+  // Later sections cannot change facts already checked for an earlier section.
+  const expected = [
+    ['inventory', '7 units available'],
+    ['dispatch', '2 orders packed'],
+    ['delivery', 'Delivery unconfirmed'],
+  ] as const;
+  const published: (typeof expected)[number][] = [];
+  await withScriptedResponses(
+    [
+      [text('7 units available')],
+      [text('2 orders packed')],
+      [text('All orders delivered')],
+    ],
+    async (peer) => {
+      const agent = new Agent({
+        instructions: 'Report one section at a time.',
+        provider: peer.provider,
+      });
+      await using session = await agent.session();
+      for (const [index, entry] of expected.entries()) {
+        assert.deepEqual(published, expected.slice(0, index));
+        assert.equal(peer.requests.length, index);
+        const [section, verifiedText] = entry;
+        const turn = await session.submit(
+          `Report the verified ${section} facts.`,
+        );
+        const result = await turn.wait();
+        if (result.finalOutput !== verifiedText) {
+          console.log(`Section withheld: ${section}.`);
+          break;
+        }
+        published.push(entry);
+        console.log(`Accepted ${section}: ${verifiedText}`);
+      }
+      assert.equal(peer.requests.length, expected.length);
     },
   );
+  assert.deepEqual(published, expected.slice(0, 2));
+}
+
+async function main() {
+  const accepted = await runAcceptedOutput(console.log);
+  await runAcceptedSections();
+  console.log(JSON.stringify(accepted, null, 2));
+}
+
+if (typeof require !== 'undefined' && require.main === module) {
+  main().catch(() => {
+    console.error('Accepted-output example failed.');
+    process.exitCode = 1;
+  });
 }

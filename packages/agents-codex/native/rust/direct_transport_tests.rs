@@ -89,6 +89,7 @@ impl Fixture {
             .engine
             .interception
             .request(ModelRequestInput {
+                attempts: None,
                 kind: ModelRequestKind::Generation,
                 thread_id: &self.control.id,
                 client_metadata: &mut metadata,

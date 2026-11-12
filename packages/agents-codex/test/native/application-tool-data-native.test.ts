@@ -486,31 +486,62 @@ nativeIt.each([false, true])(
     });
     const executor = await startPublicExecutor();
     const mcp = earlyMcpResult ? await startApplicationDataPeer() : undefined;
+    const nativeChildStarted = Promise.withResolvers<void>();
     const releaseStart = Promise.withResolvers<void>();
     let childStartHeld = false;
     let childOutputAssigned = false;
     const prototype = (await binding()).NativeThread.prototype;
     const nextBatch = prototype._next_session_events;
+    const nextMcpResult = prototype._next_native_mcp_result;
     const assignMcpResult =
       prototype._resolve_native_mcp_result_with_assignment;
     const readSpy = mcp
       ? vi
           .spyOn(prototype, '_next_session_events')
           .mockImplementation(async function (this: NativeThread) {
-            const batch = await nextBatch.call(this);
-            if (
-              batch.some((raw) => {
-                const event = JSON.parse(raw);
-                return (
-                  event.subagent_id &&
-                  ['task_started', 'turn_started'].includes(event.msg.type)
-                );
-              })
-            ) {
-              childStartHeld = true;
-              await releaseStart.promise;
+            if (childStartHeld) return nextBatch.call(this);
+            const held: string[] = [];
+            for (;;) {
+              const batch = await nextBatch.call(this);
+              if (!batch.length) return held;
+              const childMessages = batch
+                .map((raw) => JSON.parse(raw))
+                .filter((event) => event.subagent_id)
+                .map((event) => event.msg);
+              const startsChild = childMessages.some((msg) =>
+                ['task_started', 'turn_started'].includes(msg.type),
+              );
+              // A model-attempt receipt can establish the child's root before
+              // the start reaches this reader. Keep that attribution ordered
+              // with the held start while native delivery continues.
+              const attributesChild = childMessages.some(
+                (msg) =>
+                  msg.type === '_sdk_model_attempt' &&
+                  typeof msg.root_turn_id === 'string',
+              );
+              if (!held.length && !startsChild && !attributesChild)
+                return batch;
+              held.push(...batch);
+              if (startsChild) {
+                childStartHeld = true;
+                nativeChildStarted.resolve();
+                await releaseStart.promise;
+                return held;
+              }
             }
-            return batch;
+          })
+      : undefined;
+    const resultSpy = mcp
+      ? vi
+          .spyOn(prototype, '_next_native_mcp_result')
+          .mockImplementation(async function (this: NativeThread) {
+            const notice = await nextMcpResult.call(this);
+            // Rust installs the child Turn before returning its start batch.
+            // Deliver the result before the SDK sees that batch, with the
+            // exact native child Turn already available to the callback.
+            if (JSON.parse(notice)?.call_id === 'child-data')
+              await nativeChildStarted.promise;
+            return notice;
           })
       : undefined;
     const assignSpy = mcp
@@ -561,9 +592,10 @@ nativeIt.each([false, true])(
           tools: ['exec_command', 'write_stdin', 'apply_patch'],
         }),
       });
-      const root = await session.submit('Delegate');
-      if (mcp) {
-        try {
+      let root: Turn;
+      try {
+        root = await session.submit('Delegate');
+        if (mcp) {
           await vi.waitFor(
             () => {
               expect(childStartHeld).toBe(true);
@@ -573,9 +605,10 @@ nativeIt.each([false, true])(
           );
           await new Promise<void>((resolve) => setImmediate(resolve));
           expect(root.applicationToolOutputs).toEqual([]);
-        } finally {
-          releaseStart.resolve();
         }
+      } finally {
+        nativeChildStarted.resolve();
+        releaseStart.resolve();
       }
       const pending = await root.wait({ until: 'manual_tool' });
       if (!('requests' in pending)) throw new Error('Expected parent pause');
@@ -614,8 +647,10 @@ nativeIt.each([false, true])(
       model.assertExhausted();
       expect(mcp?.failures ?? []).toEqual([]);
     } finally {
+      nativeChildStarted.resolve();
       releaseStart.resolve();
       assignSpy?.mockRestore();
+      resultSpy?.mockRestore();
       readSpy?.mockRestore();
       mcp?.peer.closeAllConnections();
       mcp?.peer.close();

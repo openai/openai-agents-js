@@ -558,7 +558,8 @@ impl Engine {
         (async move {
             let _permit = inner.operation(false).map_err(native_error)?;
             let route = inner.sentinel_route(&provider_id, &headers)?;
-            model_websocket::sentinel_open(route, &headers).await
+            model_websocket::sentinel_open(route, &headers, Arc::downgrade(&inner), provider_id)
+                .await
         })
         .await
     }
@@ -840,6 +841,7 @@ struct NativeThreadOwner {
     mcp_result_reader: tokio_util::sync::CancellationToken,
     resources: ResourceRequests,
     plan_usage_reader: Option<plan_usage::PlanUsageReader>,
+    request_attempts: Option<codex_core::SdkRequestAttemptsLink>,
 }
 
 #[derive(Clone, Default)]
@@ -966,6 +968,7 @@ impl NativeThread {
             mcp_result_reader: tokio_util::sync::CancellationToken::new(),
             resources: ResourceRequests::default(),
             plan_usage_reader: None,
+            request_attempts: None,
         }));
         state.engine.register_native_thread(&inner);
         Self {
@@ -4144,13 +4147,18 @@ impl NativeThread {
             let first = keys
                 .first()
                 .ok_or_else(|| native_error("no pending manual requests"))?;
-            let usage_owner = inner
-                .thread
-                .thread_extension_data()
-                .get::<turn_settlement::Settlement>()
-                .ok_or_else(|| native_error("Manual turn owner missing"))?
-                .admission_ready(&first.turn)
-                .map_err(native_error)?;
+            // Restored grants can be sealed again before Core resumes sampling.
+            let usage_owner = if restored {
+                None
+            } else {
+                inner
+                    .thread
+                    .thread_extension_data()
+                    .get::<turn_settlement::Settlement>()
+                    .ok_or_else(|| native_error("Manual turn owner missing"))?
+                    .admission_ready(&first.turn)
+                    .map_err(native_error)?
+            };
             let usage_turn = first.turn.clone();
             let first = serde_json::to_value(first).map_err(native_error)?;
             let history = checkpoint::capture(&inner.engine, inner.id, &mut Vec::new())
@@ -4248,6 +4256,15 @@ impl NativeThread {
                         )) => Some(turn_id.as_str()),
                         _ => None,
                     };
+                    if let Some(turn_id) = suspended {
+                        if let Some(owner) = inner
+                            .thread
+                            .thread_extension_data()
+                            .get::<native_interception::Control>()
+                        {
+                            owner.seal_request_attempts(turn_id);
+                        }
+                    }
                     // Finish on every native outcome before inspecting success.
                     let committed = store.finish_manual_capture(inner.id, suspended).await;
                     let valid = committed.map_err(native_error)?;
@@ -4654,6 +4671,35 @@ impl NativeThread {
             .await
             .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_request_attempts")]
+    pub fn start_request_attempts(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = inner.thread.sdk_start_request_attempts();
+        self.inner.lock().map_err(native_error)?.request_attempts = Some(link.clone());
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_request_attempts(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_request_attempts")]
+    pub fn take_request_attempts(&self, turn_id: String) -> napi::Result<String> {
+        let mut owner = self.inner.lock().map_err(native_error)?;
+        let report = owner
+            .request_attempts
+            .as_ref()
+            .ok_or_else(|| native_error("Request attempt capture was not started"))?
+            .read(&turn_id)
+            .map_err(native_error)?;
+        owner.request_attempts.take();
+        Ok(report)
     }
 
     #[napi(js_name = "_start_raw_usage")]
@@ -5545,7 +5591,7 @@ async fn sentinel_stream_dispatch(
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
-    let turn = native_interception::sentinel_http_turn(inner, provider_id, ticket)
+    let (turn, attempts) = native_interception::sentinel_http_turn(inner, provider_id, ticket)
         .map_err(native_error)?;
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let mut request = provider
@@ -5591,6 +5637,9 @@ async fn sentinel_stream_dispatch(
                     {
                         // Keep the owning interrupt responsible for settlement.
                         std::future::pending::<()>().await;
+                    }
+                    if let Some(attempts) = &attempts {
+                        attempts.send_started(codex_extension_api::ModelRequestTransport::HttpSse);
                     }
                     route
                         .transport

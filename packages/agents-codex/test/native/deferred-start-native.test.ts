@@ -92,6 +92,7 @@ async function fixture(
     repair?: boolean;
     repairGate?: ReturnType<typeof gate>;
     changedSession?: 'tools' | 'instructions';
+    maxRequests?: number;
   } = {},
 ) {
   const tool = deferredTool({
@@ -379,7 +380,11 @@ async function fixture(
             ...(options.repair ? { maxRetries: 1 } : {}),
           },
         })
-      : await session.submit('ASK');
+      : await session.submit('ASK', {
+          ...(options.maxRequests === undefined
+            ? {}
+            : { budget: { maxRequests: options.maxRequests } }),
+        });
     const completion = turn.wait().catch((error: unknown) => error);
     const request = await nextAction(session);
     return {
@@ -425,6 +430,35 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private deferred start ownership',
   () => {
+    it.each([1, 2])(
+      'preserves a request budget of %i through the deferred reopening',
+      async (maxRequests) => {
+        await using f = await fixture({ maxRequests });
+        let callbacks = 0;
+        await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
+          callbacks++;
+          expect(outcome.status).toBe('continued');
+          if (outcome.status !== 'continued')
+            throw new Error('Expected continuation');
+          if (maxRequests === 1)
+            await expect(outcome.turn.wait()).rejects.toMatchObject({
+              code: 'run_budget_exceeded',
+              retryable: false,
+            });
+          else
+            await expect(outcome.turn.wait()).resolves.toMatchObject({
+              finalOutput: 'done',
+            });
+        });
+        expect(callbacks).toBe(1);
+        expect(f.backend.start).toHaveBeenCalledTimes(1);
+        expect(await f.completion).toBeInstanceOf(InteractionRequired);
+        expect(f.model.requests).toHaveLength(maxRequests);
+        if (maxRequests === 2) f.model.assertExhausted();
+      },
+      20_000,
+    );
+
     it('preserves complete observations and captured Decisions in a deferred borrowed opening', async () => {
       const getDecision = vi.fn(async () => ({ value: true }));
       const replacement = vi.fn(async () => ({ value: false }));

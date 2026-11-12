@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { WebSocketServer } from 'ws';
 import {
   Agent,
   NativeProvider,
@@ -15,6 +16,207 @@ import type { JsonObject } from '../../src/runtime/binding';
 import type { CodeInterpreterOptions } from '../../src';
 
 afterEach(() => ModelServer.closeAll());
+
+async function withHostedTransport(
+  transport: 'buffered' | 'websocket',
+  run: (
+    provider: NativeProvider,
+    requests: JsonObject[],
+    raw: JsonObject,
+  ) => Promise<void>,
+) {
+  const raw: JsonObject = {
+    type: 'file_search_call',
+    id: 'fs_transport',
+    status: 'completed',
+    queries: ['synthetic record'],
+    results: [],
+    future_field: { retained: true },
+  };
+  const response = {
+    id: 'resp_hosted_transport',
+    object: 'response',
+    status: 'completed',
+    output: [raw],
+  };
+  const server = new ModelServer([
+    {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(response),
+    },
+  ]);
+  const websocket = new WebSocketServer({ noServer: true });
+  const requests: JsonObject[] =
+    transport === 'buffered' ? server.requests : [];
+  if (transport === 'websocket')
+    server.onUpgrade((request, socket, head) => {
+      websocket.handleUpgrade(request, socket, head, (connection) => {
+        connection.on('message', (data) => {
+          const body = JSON.parse(data.toString()) as JsonObject;
+          if (body.generate === false) {
+            connection.send(
+              JSON.stringify({
+                type: 'response.completed',
+                response: { id: 'warmup' },
+              }),
+            );
+            return;
+          }
+          requests.push(body);
+          for (const event of [
+            { type: 'response.created', response: { id: response.id } },
+            { type: 'response.output_item.done', output_index: 0, item: raw },
+            { type: 'response.completed', response },
+          ])
+            connection.send(JSON.stringify(event));
+        });
+      });
+    });
+  const config = await server.config();
+  try {
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as JsonObject)
+        .base_url as string,
+      apiKey: 'synthetic-hosted-transport',
+      responseMode: transport === 'buffered' ? 'buffered' : 'streaming',
+      supportsWebsockets: transport === 'websocket',
+    });
+    await run(provider, requests, raw);
+    if (transport === 'websocket') expect(server.requests).toHaveLength(0);
+  } finally {
+    for (const socket of websocket.clients) socket.terminate();
+    await new Promise<void>((resolve) => websocket.close(() => resolve()));
+  }
+}
+
+it.each(['buffered', 'websocket'] as const)(
+  'retains hosted request configuration and completed provider data over %s',
+  async (transport) => {
+    await withHostedTransport(transport, async (provider, requests, raw) => {
+      await using session = await new Agent({
+        instructions: 'Search the synthetic store.',
+        model: 'fixture-hosted-responses',
+        provider,
+        tools: [fileSearch('vs_transport', { includeSearchResults: true })],
+      }).session();
+      await (await session.submit('Search.')).wait();
+      const items = [];
+      for await (const item of session.items()) items.push(item);
+      expect(items).toContainEqual(
+        expect.objectContaining({ type: raw.type, provider_data: raw }),
+      );
+      const saved = JSON.parse(JSON.stringify(await session.saveState()));
+      expect(JSON.stringify(saved.history)).toContain(raw.id);
+      expect(requests).toHaveLength(1);
+      expect(
+        (requests[0].tools as JsonObject[]).find(
+          (tool) => tool.type === 'file_search',
+        ),
+      ).toEqual({ type: 'file_search', vector_store_ids: ['vs_transport'] });
+      expect(requests[0].include).toContain('file_search_call.results');
+      if (transport === 'buffered') expect(requests[0].stream).toBe(false);
+    });
+  },
+  30_000,
+);
+
+it.each(['buffered', 'websocket'] as const)(
+  'rejects hosted tools on the default Lite model before a %s request',
+  async (transport) => {
+    await withHostedTransport(transport, async (provider, requests) => {
+      await expect(
+        (async () => {
+          await using session = await new Agent({
+            instructions: 'Search.',
+            provider,
+            tools: [fileSearch('vs_transport')],
+          }).session();
+          await (await session.submit('Search.')).wait();
+        })(),
+      ).rejects.toThrow(
+        'Provider-hosted tools require Responses; Responses Lite is unsupported',
+      );
+      expect(requests).toHaveLength(0);
+    });
+  },
+  30_000,
+);
+
+it('bounds only a later request when projecting an accepted hosted result', async () => {
+  const marker = 'synthetic-hosted-full-evidence-';
+  const raw = {
+    type: 'file_search_call',
+    id: 'fs_projection',
+    status: 'completed',
+    queries: ['synthetic totals'],
+    results: [
+      {
+        file_id: 'file_projection',
+        filename: 'totals.txt',
+        score: 1,
+        text: `TX-001=25\nTX-002=50\n${marker}${'detail '.repeat(20000)}`,
+      },
+    ],
+  };
+  expect(Buffer.byteLength(JSON.stringify(raw), 'utf8')).toBeGreaterThan(65536);
+  const server = new ModelServer([[raw], [message('Follow-up complete.')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as JsonObject)
+      .base_url as string,
+    apiKey: 'synthetic-hosted-projection',
+    supportsWebsockets: false,
+  });
+  const evidence = new Map<string, typeof raw>();
+  let summary: JsonObject | undefined = undefined;
+  await using session = await new Agent({
+    instructions: 'Search synthetic records.',
+    model: 'fixture-hosted-responses',
+    provider,
+    tools: [fileSearch('vs_projection', { includeSearchResults: true })],
+    transformContext: ({ items }) =>
+      summary === undefined
+        ? undefined
+        : [
+            ...items.filter((item) => item.type !== 'file_search_call'),
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: JSON.stringify(summary) }],
+            },
+          ],
+  }).session();
+  // The provider has been completing hosted work before local projection.
+  await (await session.submit('Search.')).wait();
+  expect(server.requests).toHaveLength(1);
+  const reference = 'evidence/fs_projection';
+  for await (const item of session.items())
+    if (item.type === 'file_search_call')
+      evidence.set(reference, item.provider_data as typeof raw);
+  expect(evidence.get(reference)).toEqual(raw);
+  const facts = evidence
+    .get(reference)!
+    .results[0].text.split('\n', 2)
+    .map((line) => line.split('='));
+  summary = {
+    record_ids: facts.map(([id]) => id),
+    total: facts.reduce((sum, [, value]) => sum + Number(value), 0),
+    evidence_ref: reference,
+  };
+  await (await session.submit('Use the retained totals.')).wait();
+  const secondInput = JSON.stringify(server.requests[1].input);
+  expect(server.requests).toHaveLength(2);
+  expect(Buffer.byteLength(secondInput, 'utf8')).toBeLessThan(65536);
+  expect(secondInput).not.toContain(marker);
+  expect(secondInput).toContain(reference);
+  expect(summary).toEqual({
+    record_ids: ['TX-001', 'TX-002'],
+    total: 75,
+    evidence_ref: reference,
+  });
+  expect(JSON.stringify(await session.saveState())).toContain(marker);
+}, 30_000);
 
 it('advertises deferred tools to provider search and runs a discovered function', async () => {
   const parameters = {

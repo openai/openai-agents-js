@@ -366,6 +366,8 @@ export class NativeThread {
     observationSubmissionId?: string,
   ): Promise<string>;
   _start_raw_usage(): void;
+  _start_request_attempts(): void;
+  _take_request_attempts(turn_id: string): string;
   _attach_raw_usage(parent: NativeThread): void;
   _take_raw_usage(turn_id: string): string;
   _start_produced_items(): void;
@@ -449,6 +451,7 @@ export class NativeModelWebSocket {
     content_item_kinds: boolean,
   ): string;
   send_text(text: string): Promise<void>;
+  _send_owned_text(text: string, ticket: string): Promise<void>;
   receive(): Promise<NativeFrame | null>;
   close(code: number, reason: string): Promise<void>;
 }
