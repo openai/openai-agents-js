@@ -88,6 +88,86 @@ pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseIt
     }
 }
 
+pub(crate) fn matches_acknowledged_output(
+    accepted: &ResponseItem,
+    candidate: &ResponseItem,
+    native_cancellation: bool,
+) -> bool {
+    if !native_cancellation {
+        return same_acknowledged_output(accepted, candidate);
+    }
+    let same_owner = matches!(
+        (output_identity(accepted), output_identity(candidate)),
+        (Some((left_call, Some(left_turn))), Some((right_call, Some(right_turn))))
+            if left_call == right_call && left_turn == right_turn
+    );
+    same_owner
+        && matches!(
+            (accepted, candidate),
+            (
+                ResponseItem::FunctionCallOutput { .. },
+                ResponseItem::FunctionCallOutput { .. }
+            ) | (
+                ResponseItem::CustomToolCallOutput { .. },
+                ResponseItem::CustomToolCallOutput { .. }
+            )
+        )
+}
+
+pub(crate) fn same_acknowledged_output(left: &ResponseItem, right: &ResponseItem) -> bool {
+    if !same_output_payload(left, right) {
+        return false;
+    }
+    let normalize = |item: &ResponseItem| -> Option<serde_json::Value> {
+        let mut value = serde_json::to_value(item).ok()?;
+        let object = value.as_object_mut()?;
+        object.remove("id");
+        if let Some(metadata) = object
+            .get_mut("internal_chat_message_metadata_passthrough")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            metadata.remove("create_time");
+        }
+        Some(value)
+    };
+    normalize(left)
+        .zip(normalize(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
+#[cfg(test)]
+mod acknowledged_original_tests {
+    use super::*;
+    #[test]
+    fn ignores_only_generated_id_and_time() {
+        let make = |name: &str, turn: &str, generated: bool| {
+            let mut value = serde_json::json!({
+                "type":"custom_tool_call_output", "name":name, "call_id":"call",
+                "output":"accepted", "internal_chat_message_metadata_passthrough":{"turn_id":turn}
+            });
+            if generated {
+                value["id"] = serde_json::json!("cto_generated");
+                value["internal_chat_message_metadata_passthrough"]["create_time"] =
+                    serde_json::json!(1.25);
+            }
+            serde_json::from_value::<ResponseItem>(value).unwrap()
+        };
+        let accepted = make("original", "turn", false);
+        assert!(same_acknowledged_output(
+            &accepted,
+            &make("original", "turn", true)
+        ));
+        assert!(!same_acknowledged_output(
+            &accepted,
+            &make("substitute", "turn", true)
+        ));
+        assert!(!same_acknowledged_output(
+            &accepted,
+            &make("original", "foreign", true)
+        ));
+    }
+}
+
 pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> bool {
     match (left, right) {
         (
@@ -1004,5 +1084,31 @@ mod computer_recovery_tests {
             .unwrap(),
         )));
         assert!(validate_settled(&counterfeit).is_err());
+    }
+}
+
+#[cfg(test)]
+mod acknowledged_cancellation_tests {
+    use super::*;
+    fn output(call: &str, turn: &str, text: &str) -> ResponseItem {
+        serde_json::from_value(serde_json::json!({"type":"function_call_output","call_id":call,"output":text,"internal_chat_message_metadata_passthrough":{"turn_id":turn}})).unwrap()
+    }
+    #[test]
+    fn only_native_cancellation_for_the_same_owned_call_reuses_receipt() {
+        let accepted = output("call", "turn", "genuine-first-result");
+        let cancelled = output("call", "turn", "aborted by user after 2.0s");
+        assert!(!matches_acknowledged_output(&accepted, &cancelled, false));
+        assert!(matches_acknowledged_output(&accepted, &cancelled, true));
+        assert!(!matches_acknowledged_output(
+            &accepted,
+            &output("foreign", "turn", "aborted"),
+            true
+        ));
+        assert!(!matches_acknowledged_output(
+            &accepted,
+            &output("call", "foreign", "aborted"),
+            true
+        ));
+        assert!(matches_acknowledged_output(&accepted, &accepted, false));
     }
 }

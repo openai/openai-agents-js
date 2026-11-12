@@ -236,6 +236,7 @@ export async function tryOpenPlainRun(
     options.agentInputGuardrails?.length ||
     options.agentOutputGuardrails?.length ||
     options.beforeCompact ||
+    options.compaction ||
     options.transformContext ||
     options.hostedPrompt !== undefined ||
     options.tracingCapture ||

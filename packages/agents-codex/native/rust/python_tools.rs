@@ -86,6 +86,7 @@ pub(crate) struct ProfileCatalog {
     pub(crate) transform_context: bool,
     pub(crate) before_compact: bool,
     pub(crate) before_complete: bool,
+    pub(crate) post_turn_compact: bool,
 }
 impl ProfileCatalog {
     pub(crate) fn slot_specs(&self) -> Result<Value> {
@@ -296,6 +297,7 @@ pub(crate) struct ContextCallbacks {
     pub(crate) before_compact: bool,
     pub(crate) transform_context: bool,
     pub(crate) before_complete: bool,
+    pub(crate) post_turn_compact: bool,
 }
 
 #[derive(Clone)]
@@ -989,7 +991,7 @@ impl PythonTools {
         terminal_slots: &[usize],
         input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 4],
+        flags: [bool; 5],
         _reuse_initial: bool,
     ) -> Result<ProfileCatalog> {
         self.allocate_profile_catalog(
@@ -1010,7 +1012,7 @@ impl PythonTools {
         terminal_slots: &[usize],
         input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 4],
+        flags: [bool; 5],
     ) -> Result<ProfileCatalog> {
         self.allocate_profile_catalog(
             specs,
@@ -1030,7 +1032,7 @@ impl PythonTools {
         terminal_slots: &[usize],
         input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 4],
+        flags: [bool; 5],
         durable: bool,
     ) -> Result<ProfileCatalog> {
         let id = self.allocate_generation()?;
@@ -1087,12 +1089,13 @@ impl PythonTools {
             transform_context: flags[1],
             before_compact: flags[2],
             before_complete: flags[3],
+            post_turn_compact: flags[4],
         })
     }
 
     pub(crate) fn startup_profile_catalog(
         &self,
-        flags: [bool; 4],
+        flags: [bool; 5],
         source: &ProfileCatalog,
     ) -> Result<ProfileCatalog> {
         let generation = self.snapshot();
@@ -1167,6 +1170,7 @@ impl PythonTools {
             generation,
             selecting_steps: false,
             transform_context: false,
+            post_turn_compact: false,
             before_compact: false,
             before_complete: false,
         })
@@ -4899,6 +4903,7 @@ mod pending_tests {
                     defaults: None,
                     selecting_steps: true,
                     transform_context: false,
+                    post_turn_compact: false,
                     before_compact: false,
                     before_complete: false,
                 });
@@ -6079,7 +6084,7 @@ mod pending_tests {
                 &[],
                 &[],
                 None,
-                [false; 4],
+                [false; 5],
                 false,
             )
             .unwrap();
@@ -6121,7 +6126,7 @@ mod pending_tests {
                 &[0],
                 &[],
                 None,
-                [false; 4],
+                [false; 5],
                 false,
             )
             .unwrap();
@@ -6153,7 +6158,7 @@ mod pending_tests {
             })
             .unwrap();
         assert!(Arc::ptr_eq(&source.generation, &tools.snapshot()));
-        let startup = tools.startup_profile_catalog([false; 4], &source).unwrap();
+        let startup = tools.startup_profile_catalog([false; 5], &source).unwrap();
         assert_eq!(startup.generation.terminal_slots, HashSet::from([0]));
         assert!(
             tools
@@ -6163,7 +6168,7 @@ mod pending_tests {
                     &[1],
                     &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false
                 )
                 .is_err()
@@ -6176,7 +6181,7 @@ mod pending_tests {
                     &[0, 0],
                     &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false
                 )
                 .is_err()
