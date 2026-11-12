@@ -56,6 +56,7 @@ export type {
   MountCredentialExposureDecision,
   MountCredentialFileReference,
 } from './mountSecurity';
+export { emitSandboxEvent } from './events';
 export { stableJsonStringify } from './shared/stableJson';
 export {
   BOUNDED_FILE_READ_STATUS_BYTES,
