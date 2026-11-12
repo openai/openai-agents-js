@@ -223,6 +223,11 @@ export function inTraceProcessor(): boolean {
   return processorSuppressed.getStore() === true;
 }
 
+/** @internal Observation delivery under the current SDK disable switches. */
+export function traceDispatchDisabled(): boolean {
+  return tracingDisabled || ambient.getStore()?.context.disabled === true;
+}
+
 /** Native-owned span. Close ends recording; its parent context lasts while this object is reachable. */
 export class TraceSpan {
   readonly context: SpanContext;
