@@ -2945,6 +2945,7 @@ export class Session<OutputT = string, Context = unknown> {
   };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
+  private memoryFlush?: Promise<void>;
   private readonly childCallbacks = new ChildCallbacks(
     () => this.observations.currentSequence,
   );
@@ -10477,6 +10478,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private checkCallbackOperation(operation: string): void {
+    this.options.environmentOwner?.checkMemoryOperation(operation);
     for (let scope = toolInvocation.getStore(); scope; scope = scope.parent)
       if (scope.active && scope.session === this)
         throw new NativeError(
@@ -14531,6 +14533,57 @@ export class Session<OutputT = string, Context = unknown> {
     return this.#readHistory();
   }
 
+  /**
+   * Generate sandbox memory explicitly from a successful, settled text conversation.
+   * Requires memory on this resource acquisition. Concurrent calls share one flush.
+   * Native checkpoint restore, non-text history and automatic close generation are unsupported.
+   */
+  flushMemory(): Promise<void> {
+    this.checkCallbackOperation('flush sandbox memory');
+    if (this.memoryFlush) return this.memoryFlush;
+    this.idle('flush sandbox memory');
+    const pending = this.mutate(() => this.prepareMemory());
+    this.memoryFlush = pending;
+    void pending
+      .finally(() => {
+        if (this.memoryFlush === pending) this.memoryFlush = undefined;
+      })
+      .catch(() => {});
+    return pending;
+  }
+
+  private async prepareMemory(): Promise<void> {
+    const owner = this.options.environmentOwner;
+    if (!owner?.hasSandboxMemory)
+      throw new TypeError(
+        'Configure memory on sandboxEnvironment before flushing',
+      );
+    if (this.options.state || this.options.localResume)
+      throw new NativeError(
+        'Native sandbox memory is unavailable on restored Sessions',
+      );
+    const run = this.lastRun;
+    if (!run)
+      throw new NativeError(
+        'Native sandbox memory requires a successful source turn',
+      );
+
+    await run.wait();
+    // Reuse native replay's predecode budget, then enforce the memory record bound.
+    const snapshot: { revision: string; total: number; items: string[] } =
+      JSON.parse(await this.#native._canonical_history(256, true));
+    if (snapshot.total > 256)
+      throw new RangeError(
+        'Native sandbox memory supports at most 256 original records',
+      );
+    await owner.flushMemory(this.id, {
+      ...snapshot,
+      items: snapshot.items.map(
+        (item) => JSON.parse(item) as Record<string, unknown>,
+      ),
+    });
+  }
+
   /** Core has been retaining original JSON object records independently of model
    * context truncation. A limit has been selecting the latest original records;
    * zero has been returning only the content revision and full count. Hot reads
@@ -15303,12 +15356,21 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (managed.capture) return managed.capture;
     managed.captureRequested = true;
+    let memoryPrepared = true;
+    const prepareMemory =
+      this.options.environmentOwner?.hasSandboxMemory && this.lastRun
+        ? async () => {
+            memoryPrepared = false;
+            await this.prepareMemory();
+            memoryPrepared = true;
+          }
+        : undefined;
     let capture: Promise<SessionState>;
     try {
       capture =
         this.lifecycle.kind === 'turn'
           ? this.captureSuspendedState()
-          : this.captureIdleState(true);
+          : this.captureIdleState(true, prepareMemory);
     } catch (error) {
       managed.captureRequested = false;
       throw error;
@@ -15333,6 +15395,11 @@ export class Session<OutputT = string, Context = unknown> {
         return captureRetiredWorkspace(state, managed.receipt);
       },
       async (error) => {
+        if (!memoryPrepared) {
+          managed.captureRequested = false;
+          managed.capture = undefined;
+          throw error;
+        }
         try {
           await this.close();
         } catch (cleanupError) {
@@ -15353,7 +15420,10 @@ export class Session<OutputT = string, Context = unknown> {
   async saveState(): Promise<SessionState> {
     return this.captureIdleState(false);
   }
-  private captureIdleState(retire: boolean): Promise<SessionState> {
+  private captureIdleState(
+    retire: boolean,
+    prepareMemory?: () => Promise<void>,
+  ): Promise<SessionState> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
@@ -15370,6 +15440,13 @@ export class Session<OutputT = string, Context = unknown> {
     this.idle('saveState');
     let snapshot: SessionState | null = null;
     return this.mutate(async () => {
+      if (prepareMemory) {
+        await prepareMemory();
+        if (this.lifecycle.kind !== 'mutation')
+          throw new NativeError(
+            'Managed memory capture was interrupted before checkpoint',
+          );
+      }
       const state = this.decorateState(
         parseNativeCheckpoint(
           await this.#native._export_checkpoint(null, false),
@@ -16806,6 +16883,7 @@ export class Session<OutputT = string, Context = unknown> {
         : Promise.resolve();
     }
     if (state.kind === 'closing') return state.completion;
+    this.options.environmentOwner?.cancelMemory();
     const realtime = this.realtimeOwner;
     realtime?._retireFromSession();
     let realtimeShutdown: Promise<void> | undefined;

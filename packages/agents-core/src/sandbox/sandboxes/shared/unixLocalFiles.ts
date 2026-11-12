@@ -34,6 +34,8 @@ export type LocalFilePath = {
   path: string;
   accessPath: string;
   preserveLeaf: boolean;
+  /** Preserve every descendant component for descriptor-relative no-follow reads. */
+  noFollow?: boolean;
   /** Only root entries require their pinned referent to remain unchanged. */
   rootTarget?: string;
 };
@@ -53,6 +55,7 @@ type FileRequest =
       destination?: LocalFilePath;
       unlinkPath?: LocalFilePath;
       limit?: number;
+      complete?: boolean;
     }
   | { operation: 'chownRecursive'; uid: number; gid: number };
 

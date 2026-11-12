@@ -482,6 +482,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'update'
   | 'interrupt'
   | 'historySnapshot'
+  | 'flushMemory'
   | 'transactHistory'
   | 'modelContext'
   | 'compact'

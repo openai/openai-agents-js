@@ -523,6 +523,39 @@ export class UnixLocalSandboxSession<
     );
   }
 
+  async readFileNoFollow(args: ReadFileArgs): Promise<Uint8Array> {
+    this.assertSessionUsable();
+    if (
+      args.maxBytes !== undefined &&
+      (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+    )
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    if (isAbsolute(args.path))
+      throw new UserError('No-follow reads require a workspace-relative path.');
+    // Preserve provider authorization/overrides, but never use a resolved descendant for IO.
+    this.resolveSandboxPath(args.path);
+    const root = realpathSync(this.state.workspaceRootPath);
+    const path = resolve(root, args.path);
+    const child = relative(root, path);
+    if (
+      !child ||
+      child === '..' ||
+      child.startsWith('../') ||
+      isAbsolute(child)
+    )
+      throw new UserError('No-follow reads require a workspace descendant.');
+    const identity = await this.resolveFilesystemRunAs(args.runAs);
+    return this.files.run(
+      {
+        operation: 'read',
+        path: { path, accessPath: path, preserveLeaf: true, noFollow: true },
+        limit: args.maxBytes,
+        complete: true,
+      },
+      { identity },
+    );
+  }
+
   async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {
     this.assertSessionUsable();
     const identity = await this.resolveFilesystemRunAs(args.runAs);
