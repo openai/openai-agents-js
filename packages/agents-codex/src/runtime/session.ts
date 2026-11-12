@@ -11413,7 +11413,11 @@ export class Session<OutputT = string, Context = unknown> {
               guardrail_results: guardrailRecords,
               ...(originalInput === undefined
                 ? {}
-                : { original_input: originalInput as UserInput & JsonValue }),
+                : {
+                    original_input: JSON.parse(
+                      JSON.stringify(originalInput),
+                    ) as UserInput & JsonValue,
+                  }),
               ...(run.selection?.maxModelSteps === undefined
                 ? {}
                 : {

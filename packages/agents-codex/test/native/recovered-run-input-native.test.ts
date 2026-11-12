@@ -33,6 +33,35 @@ it.each([
     expose: true,
   },
   {
+    label: 'optional message type',
+    input: {
+      role: 'user' as const,
+      type: undefined,
+      content: 'original caller request',
+    },
+    capture: true,
+    legacy: false,
+    expose: true,
+  },
+  ...(['auto', undefined] as const).map((detail) => ({
+    label: `optional image detail ${detail ?? 'undefined'}`,
+    input: {
+      role: 'user' as const,
+      content: [
+        { type: 'input_text' as const, text: 'original caller request' },
+        {
+          type: 'input_image' as const,
+          image_url:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+          detail,
+        },
+      ],
+    },
+    capture: true,
+    legacy: false,
+    expose: true,
+  })),
+  {
     label: 'default off',
     input: 'uncaptured caller request',
     capture: false,
@@ -56,7 +85,7 @@ it.each([
 ])(
   'retains only captured original input after manual recovery: $label',
   async ({ input, capture, legacy, expose }) => {
-    const expected = structuredClone(input);
+    const expected = JSON.parse(JSON.stringify(input));
     const server = new ModelServer([
       [call('lookup', {}, { callId: 'recover-input' })],
       [message('resumed answer')],
@@ -91,8 +120,12 @@ it.each([
     const pending = agent
       .run(input, { captureErrorDetails: capture })
       .catch((error: unknown) => error);
-    if (typeof input !== 'string')
-      input.content[0]!.text = 'caller mutation after admission';
+    if (
+      typeof input !== 'string' &&
+      Array.isArray(input.content) &&
+      input.content[0]?.type === 'input_text'
+    )
+      input.content[0].text = 'caller mutation after admission';
     const wrapped = await pending;
     const interrupted =
       wrapped instanceof RunDiagnosticError ? wrapped.cause : wrapped;
