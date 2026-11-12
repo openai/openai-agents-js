@@ -160,6 +160,14 @@ pub(crate) struct ConnectorCache(
     Arc<std::sync::Mutex<Option<codex_websocket_client::WebSocketConnector>>>,
 );
 
+impl std::fmt::Debug for ConnectorCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConnectorCache")
+            .finish_non_exhaustive()
+    }
+}
+
 impl ConnectorCache {
     fn connector(
         &self,
@@ -632,6 +640,7 @@ pub(super) async fn sentinel_open(
     headers: &str,
     request_engine: std::sync::Weak<crate::engine::EngineState>,
     request_provider: String,
+    connector_cache: Option<&ConnectorCache>,
 ) -> napi::Result<NativeModelWebSocket> {
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let forwarded = sentinel_headers(headers, &provider)?;
@@ -643,8 +652,8 @@ pub(super) async fn sentinel_open(
         .into_client_request()
         .map_err(|_| socket_error())?;
     request.headers_mut().extend(forwarded.clone());
-    let connector = route
-        .websocket
+    let connector = connector_cache
+        .unwrap_or(&route.websocket)
         .connector(&route.client_factory)?
         .with_tcp_nodelay();
     let mut extensions = ExtensionsConfig::default();
@@ -702,6 +711,7 @@ pub(crate) async fn open_message_transport(
     engine: &Arc<super::engine::EngineState>,
     expected_url: &str,
     request: http::Request<()>,
+    connector_cache: Option<&ConnectorCache>,
 ) -> Result<(String, NativeModelWebSocket, http::HeaderMap), codex_api::ApiError> {
     use base64::Engine as _;
 
@@ -783,9 +793,15 @@ pub(crate) async fn open_message_transport(
     let route = engine
         .sentinel_route(&provider_id, &headers)
         .map_err(|_| message_transport_error())?;
-    let remote = sentinel_open(route, &headers, Arc::downgrade(engine), provider_id.clone())
-        .await
-        .map_err(|_| message_transport_error())?;
+    let remote = sentinel_open(
+        route,
+        &headers,
+        Arc::downgrade(engine),
+        provider_id.clone(),
+        connector_cache,
+    )
+    .await
+    .map_err(|_| message_transport_error())?;
     let forwarded = match message_transport_headers(&remote.headers, remote.available()) {
         Ok(headers) => headers,
         Err(error) => {

@@ -2625,6 +2625,8 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
 pub(crate) struct OperationSelection {
     #[serde(default)]
     pub model_override: Option<String>,
+    pub model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     pub generation: String,
     // Omitted slots preserve opening defaults; an explicit empty list clears JS tools.
     pub slots: Option<Vec<usize>>,
@@ -2639,6 +2641,8 @@ pub(crate) struct OperationSelection {
 #[derive(Clone)]
 struct ActiveSelection {
     model_override: Option<String>,
+    model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     turn: String,
     generation: Arc<Generation>,
     slots: Option<Vec<usize>>,
@@ -2831,6 +2835,7 @@ impl PythonTools {
             .filter(|selection| selection.turn == previous)
             .map(|selection| OperationSelection {
                 model_override: selection.model_override.clone(),
+                model_settings_override: selection.model_settings_override.clone(),
                 generation: selection.generation.id.to_string(),
                 slots: selection.slots.clone(),
                 names: selection.names.clone(),
@@ -2981,6 +2986,7 @@ impl PythonTools {
         if self.instance.is_some() {
             return self.child_before_step.then(|| ActiveSelection {
                 model_override: None,
+                model_settings_override: None,
                 turn: turn.to_owned(),
                 generation: self.snapshot(),
                 slots: None,
@@ -2993,6 +2999,7 @@ impl PythonTools {
         operation.and_then(|selection| {
             Some(ActiveSelection {
                 model_override: selection.model_override.clone(),
+                model_settings_override: selection.model_settings_override.clone(),
                 turn: turn.to_owned(),
                 generation: selection
                     .generation
@@ -5366,6 +5373,7 @@ mod pending_tests {
         });
         *tools.selection.lock().unwrap() = Some(ActiveSelection {
             model_override: None,
+            model_settings_override: None,
             turn: "turn".into(),
             generation: tools.snapshot(),
             slots: None,
@@ -5391,6 +5399,7 @@ mod pending_tests {
             .insert("child".into(), Arc::downgrade(&child));
         let root_operation = OperationSelection {
             model_override: None,
+            model_settings_override: None,
             generation: "0".into(),
             slots: Some(Vec::new()),
             names: None,
@@ -5692,6 +5701,7 @@ mod pending_tests {
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         *tools.selection.lock().unwrap() = Some(ActiveSelection {
             model_override: None,
+            model_settings_override: None,
             turn: "successor".into(),
             generation: tools.snapshot(),
             slots: Some(Vec::new()),
@@ -5825,6 +5835,7 @@ mod pending_tests {
             tools.validate_operation(&operation).unwrap();
             *tools.selection.lock().unwrap() = Some(ActiveSelection {
                 model_override: None,
+                model_settings_override: None,
                 turn: "turn".into(),
                 generation: tools.snapshot(),
                 slots: operation.slots,

@@ -248,7 +248,6 @@ import {
   mcpRefIdentity,
   checkMcpPublication,
   transformMcpResult,
-  splitToolDeclarations,
   isHostedRegistration,
   type McpTool,
   type MCPListResourcesResult,
@@ -257,6 +256,7 @@ import {
   type MCPPrompt,
   type MCPGetPromptResult,
 } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import {
   createManualRequest,
   isFunctionApprovalRequest,
@@ -533,6 +533,8 @@ export type OneShotOptions = {
 export interface OperationOptions<Context = unknown> {
   /** Force this model for this run, its handoffs and native children. */
   modelOverride?: string;
+  /** Sparse forced settings for this run, its handoffs and native children. */
+  modelSettingsOverride?: ModelSettings;
   tracing?: TraceOptions;
   /**
    * Explicit parent for this new root; omission or null inherits the Session parent.
@@ -639,6 +641,8 @@ export function validateMaxModelSteps(
 /** @internal */
 export interface OperationSelection {
   readonly modelOverride?: string;
+  readonly modelSettingsOverride?: JsonObject;
+  readonly retryPolicyOverride?: RetryPolicy | null;
   readonly originCatalog?: ToolCatalog;
   readonly originMcp?: readonly McpTool[];
   readonly originProfileId?: string;
@@ -656,6 +660,8 @@ export interface OperationSelection {
 function manualCaptureRefusal(
   selection: OperationSelection | undefined,
 ): string | undefined {
+  if (typeof selection?.retryPolicyOverride === 'function')
+    return 'Cannot capture an executable run-local retry policy';
   if (selection?.budget !== undefined) {
     try {
       selection.budget.checkpoint();
@@ -4692,6 +4698,7 @@ export class Session<OutputT = string, Context = unknown> {
     guardrailInput?: UserInput,
     originalInput?: UserInput,
     modelOverride?: string,
+    modelSettingsOverride?: ModelSettings,
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
@@ -4702,6 +4709,7 @@ export class Session<OutputT = string, Context = unknown> {
         {
           maxModelSteps,
           modelOverride,
+          modelSettingsOverride,
           prepareRequest: this.oneShot?.prepareRequest,
           beforeStep: this.oneShot?.beforeStep,
         },
@@ -5163,6 +5171,14 @@ export class Session<OutputT = string, Context = unknown> {
     required = false,
   ): OperationSelection | undefined {
     const modelOverride = validateModelOverride(options?.modelOverride);
+    const settings =
+      options?.modelSettingsOverride === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettingsOverride);
+    const modelSettingsOverride =
+      settings === undefined ? undefined : modelOverrides(undefined, settings);
+    const retryPolicyOverride =
+      settings?.retry === null ? null : settings?.retry?.policy;
     if (!this.options.openCorrection) assertOutputRepairSupported(output);
     if (
       this.options.chatGPTPlan &&
@@ -5180,6 +5196,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.beforeStep === undefined &&
       options?.maxModelSteps === undefined &&
       modelOverride === undefined &&
+      modelSettingsOverride === undefined &&
       options?.prepareRequest === undefined &&
       budget === undefined
     )
@@ -5223,6 +5240,8 @@ export class Session<OutputT = string, Context = unknown> {
           ? undefined
           : this.selectionNames([...options.tools]),
       modelOverride,
+      modelSettingsOverride,
+      retryPolicyOverride,
       maxModelSteps: validateMaxModelSteps(options?.maxModelSteps),
       beforeStep: options?.beforeStep,
       budget,
@@ -5848,6 +5867,9 @@ export class Session<OutputT = string, Context = unknown> {
               ...(selection.modelOverride === undefined
                 ? {}
                 : { model_override: selection.modelOverride }),
+              ...(selection?.modelSettingsOverride === undefined
+                ? {}
+                : { model_settings_override: selection.modelSettingsOverride }),
               ...(selection.operationDeclarationSource
                 ? {
                     operation_declaration_source:
@@ -5875,7 +5897,9 @@ export class Session<OutputT = string, Context = unknown> {
       input: output.prompt
         ? [...parts, { type: 'text', text: output.prompt }]
         : parts,
-      ...(output.schema === undefined && selection?.modelOverride === undefined
+      ...(output.schema === undefined &&
+      selection?.modelOverride === undefined &&
+      selection?.modelSettingsOverride === undefined
         ? {}
         : {
             start: {
@@ -5885,6 +5909,9 @@ export class Session<OutputT = string, Context = unknown> {
               ...(selection?.modelOverride === undefined
                 ? {}
                 : { model_override: selection.modelOverride }),
+              ...(selection?.modelSettingsOverride === undefined
+                ? {}
+                : { model_settings_override: selection.modelSettingsOverride }),
             },
           }),
     };
@@ -6270,6 +6297,22 @@ export class Session<OutputT = string, Context = unknown> {
     if (captured.service_tier !== undefined)
       settings.serviceTier =
         captured.service_tier as ModelSettings['serviceTier'];
+    // Correction sessions have been running without tools. Their overrides
+    // have been retaining sampling/retry settings without reviving tool forcing.
+    const repairSettingsOverride = run.selection?.modelSettingsOverride
+      ? { ...run.selection.modelSettingsOverride }
+      : undefined;
+    if (repairSettingsOverride) {
+      delete repairSettingsOverride.tool_choice;
+      if (repairSettingsOverride.request_controls !== undefined) {
+        const controls = {
+          ...(repairSettingsOverride.request_controls as JsonObject),
+        };
+        delete controls.named_tool_choice;
+        delete controls.reset_tool_choice;
+        repairSettingsOverride.request_controls = controls;
+      }
+    }
     const open = this.options.openCorrection;
     if (!open)
       throw new NativeError('This Session does not support output repair');
@@ -6305,6 +6348,12 @@ export class Session<OutputT = string, Context = unknown> {
         if (!stoppedBeforeAdmission) {
           if (this.#collectingRawUsage)
             correction.#native._attach_raw_usage(this.#native);
+          const repairSelection = correction.captureSelection(
+            { modelOverride: run.selection?.modelOverride },
+            correction.defaultOutput,
+            run.selection?.budget,
+            run.selection?.modelSettingsOverride !== undefined,
+          );
           // startTurn checks the live Session before invoking native admission.
           repair.run = correction.startTurn(
             JSON.stringify({
@@ -6314,11 +6363,11 @@ export class Session<OutputT = string, Context = unknown> {
             true,
             correction.defaultOutput,
             false,
-            correction.captureSelection(
-              { modelOverride: run.selection?.modelOverride },
-              correction.defaultOutput,
-              run.selection?.budget,
-            ),
+            repairSelection && {
+              ...repairSelection,
+              modelSettingsOverride: repairSettingsOverride,
+              retryPolicyOverride: run.selection?.retryPolicyOverride,
+            },
           );
           possiblyAdmitted = true;
           result = await repair.run.wait();
@@ -8771,7 +8820,15 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
-  private capturedRetryPolicy(profileId?: string): RetryPolicy | undefined {
+  private capturedRetryPolicy(
+    profileId?: string,
+    owner?: NativeTurn | ChildCallbackOwner,
+  ): RetryPolicy | undefined {
+    const override =
+      owner instanceof NativeTurn
+        ? this.rootRun(owner).selection?.retryPolicyOverride
+        : owner?.runRetryPolicyOverride;
+    if (override !== undefined) return override ?? undefined;
     return profileId && profileId !== this.options.agentGraph?.rootId
       ? this.profileRuntimes.get(profileId)!.profile.declaration.modelSettings
           ?.retry?.policy
@@ -8813,6 +8870,36 @@ export class Session<OutputT = string, Context = unknown> {
       hostedPrompt: captured.declaration.hostedPrompt,
       hostedPromptControls: captured.hostedPromptControls,
     };
+  }
+
+  private bindRunRetryPolicy(
+    owner: NativeTurn | ChildCallbackOwner,
+    message: NativeEvent['msg'],
+  ): void {
+    if (owner instanceof NativeTurn) return;
+    if (typeof message.root_turn_id === 'string') {
+      if (
+        owner.rootTurnId !== undefined &&
+        owner.rootTurnId !== message.root_turn_id
+      )
+        throw new NativeError(
+          'Retry policy root differs from the captured child owner',
+        );
+      this.attachChildRootTurn(
+        owner,
+        `child:${owner.childId}:${owner.incarnation}:${owner.turnId}`,
+        message.root_turn_id,
+      );
+    }
+    if (message.run_retry_policy_override === false)
+      owner.runRetryPolicyOverride = null;
+    if (
+      message.run_retry_policy_override === true &&
+      typeof owner.runRetryPolicyOverride !== 'function'
+    )
+      throw new NativeError(
+        'Retry policy has no captured authorized run owner',
+      );
   }
 
   private modelCallback(
@@ -8893,6 +8980,7 @@ export class Session<OutputT = string, Context = unknown> {
           signal.addEventListener('abort', reject, { once: true });
           try {
             check();
+            this.bindRunRetryPolicy(owner, msg);
             if (msg.type === '_sdk_before_complete')
               await this.awaitInputGuardrails(
                 child
@@ -8959,6 +9047,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ? failed.policy
                 : this.capturedRetryPolicy(
                     this.messageProfile(msg)?.profile_id,
+                    owner,
                   );
               if (captured.policyEnabled && !policy)
                 throw new NativeError(
@@ -9038,6 +9127,7 @@ export class Session<OutputT = string, Context = unknown> {
                 );
               const policy = this.capturedRetryPolicy(
                 this.messageProfile(msg)?.profile_id,
+                owner,
               );
               const failed = (error: unknown) => {
                 if (
@@ -10344,6 +10434,14 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     owner.rootTurnId = rootTurnId;
+    for (const reference of this.runs) {
+      const run = reference.deref();
+      if (run?.id === rootTurnId) {
+        owner.runRetryPolicyOverride =
+          this.rootRun(run).selection?.retryPolicyOverride;
+        break;
+      }
+    }
     for (const output of this.applicationOutputs) {
       if (
         output.submissionId === submissionId &&
@@ -11222,6 +11320,12 @@ export class Session<OutputT = string, Context = unknown> {
                   ...(run.selection.modelOverride === undefined
                     ? {}
                     : { model_override: run.selection.modelOverride }),
+                  ...(run.selection.modelSettingsOverride === undefined
+                    ? {}
+                    : {
+                        model_settings_override:
+                          run.selection.modelSettingsOverride,
+                      }),
                   generation: this.catalog.generation.toString(),
                   ...(run.selection.operationDeclarationSource
                     ? {
@@ -11797,10 +11901,13 @@ export class Session<OutputT = string, Context = unknown> {
       operation !== undefined ||
       remaining !== undefined ||
       state.manual_continuation.model_override !== undefined ||
+      state.manual_continuation.model_settings_override !== undefined ||
       this.options.restoredRunBudget !== undefined
     )
       run.selection = {
         modelOverride: state.manual_continuation.model_override,
+        modelSettingsOverride:
+          state.manual_continuation.model_settings_override,
         originCatalog: originalProfile?.catalog ?? this.catalog,
         originMcp: originalProfile?.mcp ?? this.mcpBindings,
         originProfileId: origin?.profile_id,

@@ -1,0 +1,28 @@
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 12e8219c..f665d2d4 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -277,11 +277,18 @@ impl ToolCallRuntime {
+                 {
+                     return Err(CodexErr::Fatal(other.to_string()));
+                 }
+-                Err(other) => (
+-                    ResponseItemEnvelope::new(Self::failure_response(error_call, other).into()),
+-                    None,
+-                    false,
+-                ),
++                Err(other) => {
++                    let metadata = retained_step_context
++                        .tool_router
++                        .tool_runtime(&error_call.tool_name)
++                        .and_then(|tool| tool.managed_agent_tool_origin())
++                        .map(|origin| CodexHarnessMetadata {
++                            sdk_managed_agent_tool: Some(origin),
++                            ..Default::default()
++                        });
++                    let item = Self::failure_response(error_call, other).into();
++                    (ResponseItemEnvelope { item, metadata }, None, false)
++                }
+             };
+             if let Some(text) = call_state.delivered_assistant_message.get() {
+                 response

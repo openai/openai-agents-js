@@ -921,3 +921,66 @@ it.each([false, true])(
   },
   20_000,
 );
+
+it('retains one root admission through retry and portable manual restore', async () => {
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Read a record.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const complete = vi.fn((): ModelResponse => {
+    if (complete.mock.calls.length === 1) throw failure('first root attempt');
+    return {
+      output: [
+        {
+          type: 'function_call',
+          name: 'lookup',
+          call_id: 'retry-manual',
+          arguments: '{}',
+        },
+      ],
+      usage: { input_tokens: 1 },
+    };
+  });
+  const policy = vi.fn(() => ({ retry: true, delayMs: 0 }));
+  await using provider = new NativeProvider({ modelBackend: { complete } });
+  const agent = new Agent({
+    provider,
+    model: 'custom-model',
+    instructions: 'Use the tool and answer.',
+    tools: [lookup],
+    modelSettings: { retry: { maxRetries: 1, policy } },
+  });
+  let state;
+  {
+    await using original = await agent.session();
+    const turn = await original.submit('begin', { budget: { maxRequests: 1 } });
+    const pending = await turn.wait({ until: 'manual_tool' });
+    expect('requests' in pending).toBe(true);
+    state = await original.suspend();
+  }
+  expect(complete).toHaveBeenCalledTimes(2);
+  expect(policy).toHaveBeenCalledTimes(1);
+  expect(state.run_budget).toEqual({
+    version: 1,
+    maxRequests: 1,
+    admittedRequests: 1,
+  });
+  await using restored = await agent.session({
+    state,
+    resumeBudget: { maxRequests: 1 },
+  });
+  for await (const event of restored.interactions()) {
+    const request = lookup.match(event);
+    if (!request) continue;
+    await restored.respond(request.reply('live result'));
+    break;
+  }
+  await expect(restored.restoredTurn!.wait()).rejects.toMatchObject({
+    code: 'run_budget_exceeded',
+    retryable: false,
+  });
+  expect(complete).toHaveBeenCalledTimes(2);
+  expect(policy).toHaveBeenCalledTimes(1);
+}, 20_000);
