@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import process from 'node:process';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, rm, writeFile, readdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';

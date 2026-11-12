@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import process from 'node:process';
+import { clearInterval, clearTimeout, setInterval, setTimeout } from 'node:timers';
 import { spawn } from 'node:child_process';
 import { readdir, readFile, stat } from 'node:fs/promises';
 
@@ -153,7 +155,9 @@ export function runClosed(command, args, options = {}, { deadlineMs = 120_000 } 
         done({ code, signal: signalName, close: true, cleanup });
       })().catch(async (error) => {
         if (!error.cleanup) {
-          try { error.cleanup = await failedCensus(error); } catch {}
+          try { error.cleanup = await failedCensus(error); } catch {
+            // Fallback failure has been leaving an unjoined cleanup receipt below.
+          }
         }
         error.cleanup ??= { joined: false, remaining: [], reason: 'ownership-census-or-retirement-failed' };
         error.parentSignal ??= parentSignal;

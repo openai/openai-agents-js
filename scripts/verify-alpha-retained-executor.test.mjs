@@ -1,4 +1,5 @@
 import { groupWitness } from './retained-process-owner.mjs';
+import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 import { isHostedAdmission } from './retained-hosted-admission.mjs';
 import assert from 'node:assert/strict';
@@ -6,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import test from 'node:test';
 import { adaptSources, assertPassed, checkedFile, hostFailures, preflight, replaceOnce, retainedAdapter, runClosed, sourceCommit, title } from './verify-alpha-retained-executor.mjs';
 

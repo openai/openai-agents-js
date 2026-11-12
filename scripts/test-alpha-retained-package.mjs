@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import process from 'node:process';
 import { cp, mkdir, realpath } from 'node:fs/promises';
 import { resolve, join, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { verifyAlphaPackage } from './verify-alpha-package.mjs';
 import { preflight, retainedAdapter } from './verify-alpha-retained-executor.mjs';
