@@ -125,6 +125,7 @@ import { splitToolDeclarations } from './tool-declarations';
 import {
   NativeProvider,
   captureModelSettings,
+  requestTransportWire,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
@@ -1705,6 +1706,7 @@ export class Agent<Context = undefined, Output = string> {
           await nativeAgentConfig(nativeAgents, instructions, home.codex_home),
         );
       if (projectGuidance) config['features.view_image'] = true;
+      const startupTransport = requestTransportWire(settings);
       const setup: SessionSetup = {
         name: name ?? '',
         instructions,
@@ -1763,6 +1765,9 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          ...(startupTransport === undefined
+            ? {}
+            : { _sdk_request_transport: startupTransport }),
           ...(completedGraph
             ? {
                 _agent_profiles: {

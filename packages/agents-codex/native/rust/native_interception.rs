@@ -3458,7 +3458,7 @@ impl ModelRequestContributor for Boundary {
         }
         let expected_url = url.to_owned();
         let engine = Arc::downgrade(&engine);
-        Some(Arc::new(move |request| {
+        Some(Arc::new(move |request, request_transport| {
             let engine = engine.clone();
             let expected_url = expected_url.clone();
             Box::pin(async move {
@@ -3472,7 +3472,13 @@ impl ModelRequestContributor for Boundary {
                             body: Some(String::new()),
                             retry_after: None,
                         })?;
-                crate::direct_sentinel_stream(&engine, &expected_url, request).await
+                crate::direct_sentinel_stream(
+                    &engine,
+                    &expected_url,
+                    request,
+                    request_transport.as_ref(),
+                )
+                .await
             })
         }))
     }

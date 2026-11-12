@@ -227,6 +227,9 @@ pub struct ThreadOptions {
     managed_instructions: bool,
     #[serde(rename = "_sdk_instruction_files")]
     instruction_files: Vec<Value>,
+    #[serde(rename = "_sdk_request_transport")]
+    sdk_request_transport:
+        Option<codex_protocol::model_request_transport::RequestTransportOverrides>,
     config: Map<String, Value>,
     runtime: Map<String, Value>,
     instructions: Option<String>,
@@ -358,7 +361,15 @@ impl ThreadOptions {
         }
         let runtime = merged(base_runtime, self.runtime)?;
         let source = merged(base_config, self.config)?;
-        let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
+        let mut configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
+        if let Some(transport) = self.sdk_request_transport {
+            let controls = codex_protocol::model_request_controls::ModelRequestControls {
+                request_transport: Some(Some(transport)),
+                ..Default::default()
+            };
+            controls.validate_shape().map_err(anyhow::Error::msg)?;
+            configuration.sdk_request_controls.apply_patch(&controls);
+        }
         let mut options = StartThreadOptions::new(configuration);
         options.thread_extension_init.insert(self.context_callbacks);
         options

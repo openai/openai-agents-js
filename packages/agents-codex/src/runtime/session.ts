@@ -75,6 +75,7 @@ import {
   captureModelResponse,
   isChatModelStream,
   isRawChatChunk,
+  markModelRequestTransport,
   markRawProviderRequest,
   type NativeModel,
   type ModelRequest,
@@ -9153,6 +9154,7 @@ export class Session<OutputT = string, Context = unknown> {
                           }),
                     }),
               };
+              markModelRequestTransport(request, msg.request_transport);
               if (this.options.includeRawProviderEvents)
                 markRawProviderRequest(request);
               Object.freeze(request);
