@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
+import { z } from 'zod';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import {
   Agent,
   NativeProvider,
   shellTool,
+  tool,
   hostedShell,
   fileSessionStore,
   isFunctionApprovalRequest,
@@ -54,6 +56,152 @@ async function approvalFor(session: {
     if (isFunctionApprovalRequest(event)) return event;
   throw new Error('Missing shell approval');
 }
+
+it.each([true, false])(
+  'restores pending Shell approval with the current callback (approve=%s)',
+  async (approve) => {
+    const effects: Array<{ context: string; call: ShellCall }> = [];
+    const original = shellTool<{ label: string }>({
+      needsApproval: true,
+      execute() {
+        throw new Error('The source callback must not execute');
+      },
+    });
+    const current = shellTool<{ label: string }>({
+      needsApproval: true,
+      execute(call, context) {
+        effects.push({ context: context.context.label, call });
+        return {
+          max_output_length: 3,
+          output: [
+            {
+              stdout: 'abcdef',
+              stderr: '',
+              outcome: { type: 'exit', exit_code: 0 },
+            },
+          ],
+        };
+      },
+    });
+    const server = new ModelServer([[shellCall], [message('Settled.')]]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      provider,
+      instructions: 'Use the application Shell.',
+      tools: [original],
+    });
+    let state;
+    {
+      await using source = await agent.session({
+        context: { label: 'source' },
+      });
+      await source.submit('Execute.');
+      await approvalFor(source);
+      expect(effects).toEqual([]);
+      expect(server.requests).toHaveLength(1);
+      state = parseSessionState(JSON.stringify(await source.suspend()));
+    }
+    const restoredAgent = new Agent({
+      provider,
+      instructions: 'Use the application Shell.',
+      tools: [current],
+    });
+    await using restored = await restoredAgent.session({
+      state,
+      context: { label: 'current' },
+    });
+    const request = await approvalFor(restored);
+    expect(request.callId).toBe('call_application');
+    expect(effects).toEqual([]);
+    expect(server.requests).toHaveLength(1);
+    await restored.respond(
+      approve
+        ? request.approve()
+        : request.reject('Application denied execution'),
+    );
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe('Settled.');
+    expect(effects).toHaveLength(approve ? 1 : 0);
+    const receipts = (server.requests[1].input as JsonObject[]).filter(
+      (item) => item.type === 'shell_call_output',
+    );
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].call_id).toBe('call_application');
+    if (approve) {
+      expect(effects[0]).toEqual({
+        context: 'current',
+        call: expect.objectContaining({ action: shellCall.action }),
+      });
+      expect(receipts[0]).toMatchObject({
+        max_output_length: 3,
+        output: [
+          {
+            stdout: 'abc',
+            stderr: '',
+            outcome: { type: 'exit', exit_code: 0 },
+          },
+        ],
+      });
+    } else {
+      expect(receipts[0]).toMatchObject({
+        output: [{ stderr: 'Application denied execution' }],
+      });
+    }
+    server.assertExhausted();
+  },
+);
+
+it.each(['declaration', 'action', 'effective_action'] as const)(
+  'rejects a changed pending Shell %s before effect',
+  async (changed) => {
+    const effects: string[] = [];
+    const local = shellTool({
+      needsApproval: true,
+      execute() {
+        effects.push('shell');
+        return output;
+      },
+    });
+    const server = new ModelServer([[shellCall]]);
+    await using provider = await providerFor(server);
+    const instructions = 'Use the application Shell.';
+    const agent = new Agent({ provider, instructions, tools: [local] });
+    let raw;
+    {
+      await using source = await agent.session();
+      await source.submit('Execute.');
+      await approvalFor(source);
+      raw = JSON.parse(JSON.stringify(await source.suspend()));
+    }
+    let restoredAgent = agent;
+    if (changed === 'declaration') {
+      restoredAgent = new Agent({
+        provider,
+        instructions,
+        tools: [
+          tool({
+            name: 'shell',
+            description: 'An ordinary function.',
+            parameters: z.object({}),
+            execute() {
+              effects.push('ordinary');
+              return 'unreachable';
+            },
+          }),
+        ],
+      });
+    } else {
+      const pending = raw.manual_continuation.pending_manual[0];
+      const field = changed === 'action' ? 'arguments' : 'effective_arguments';
+      const value = JSON.parse(pending[field] ?? pending.arguments);
+      value.action.commands = ['changed command'];
+      pending[field] = JSON.stringify(value);
+    }
+    const state = parseSessionState(JSON.stringify(raw));
+    await expect(restoredAgent.session({ state })).rejects.toThrow();
+    expect(effects).toEqual([]);
+    expect(server.requests).toHaveLength(1);
+  },
+);
 
 it('executes a captured local shell with skills and replays structured output after cold restore', async () => {
   const effects: ShellCall[] = [];

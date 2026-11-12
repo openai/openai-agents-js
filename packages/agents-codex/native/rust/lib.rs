@@ -3848,6 +3848,7 @@ impl NativeThread {
                 // could wake Core before that fatal failure is recorded.
                 let receipt = if inner.engine.local_checklist_store.is_some()
                     || inner.engine.custom_store.is_some()
+                    || request.reply.manual_grant.is_some()
                 {
                     let Some(receipt) = tools
                         .response_receipt(&request, response.clone())
@@ -3882,7 +3883,10 @@ impl NativeThread {
                     let id = codex_protocol::ThreadId::from_string(&request.reply.thread)
                         .map_err(native_error)?;
                     store
-                        .receipt(id, receipt.expect("selected durable callback receipt"))
+                        .receipt(
+                            id,
+                            receipt.clone().expect("selected durable callback receipt"),
+                        )
                         .await
                         .map_err(native_error)?;
                 }
@@ -3894,7 +3898,7 @@ impl NativeThread {
                     })
                     .is_ok();
                 if sent {
-                    tools.record_manual_receipt(&request, response);
+                    tools.record_manual_receipt(&request, response, receipt);
                 }
                 Ok(sent)
             }

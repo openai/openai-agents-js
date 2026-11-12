@@ -23,10 +23,12 @@ struct ManualCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     namespace: Option<String>,
     arguments: String,
-    // Pending grants remain ordinary function calls. Only a checked, completed
-    // native apply_patch call can use this internal history marker.
+    // Only current function or application Shell declarations can own a grant.
+    // Completed custom calls retain their separate native history marker.
     #[serde(default, skip_serializing_if = "is_false")]
     custom: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    shell: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     approval_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,7 +76,9 @@ impl<'de> Deserialize<'de> for CanonicalResult {
         };
         if !matches!(
             envelope.item,
-            ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
+            ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::ShellCallOutput { .. }
         ) {
             return Err(serde::de::Error::custom(
                 "manual result must be a tool output",
@@ -102,8 +106,8 @@ impl Receipt {
         let item = match self {
             Self::Text(text) => {
                 ensure!(
-                    !call.custom,
-                    "legacy text cannot represent a custom call output"
+                    !call.custom && !call.shell,
+                    "legacy text cannot represent a typed call output"
                 );
                 let key = PendingKey {
                     reply: ReplyKey {
@@ -128,10 +132,39 @@ impl Receipt {
             }
         };
         ensure!(
-            matches!((&item, call.custom),
-                (ResponseItem::FunctionCallOutput {call_id: Some(id), ..}, false)
-                | (ResponseItem::CustomToolCallOutput {call_id: id, ..}, true)
-                if *id == call.call_id),
+            match (&item, call.custom, call.shell) {
+                (
+                    ResponseItem::FunctionCallOutput {
+                        call_id: Some(id), ..
+                    },
+                    false,
+                    false,
+                )
+                | (ResponseItem::CustomToolCallOutput { call_id: id, .. }, true, false) =>
+                    *id == call.call_id,
+                (
+                    ResponseItem::ShellCallOutput {
+                        provider_fields, ..
+                    },
+                    false,
+                    true,
+                ) => {
+                    let mut output = json!({"output": provider_fields.get("output")});
+                    if let Some(limit) = provider_fields.get("max_output_length") {
+                        output["max_output_length"] = limit.clone();
+                    }
+                    let original: ResponseItem = serde_json::from_str(&call.arguments)?;
+                    let expected = crate::local_reconciliation::shell_receipt(&original,
+                        DynamicToolResponse { success: true, content_items: vec![
+                            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                                text: serde_json::to_string(&output)?
+                            }] }, turn)?;
+                    provider_fields.get("call_id").and_then(Value::as_str)
+                        == Some(call.call_id.as_str())
+                        && crate::local_reconciliation::same_output_payload(&expected, &item)
+                }
+                _ => false,
+            },
             "manual result does not match original call kind and ID"
         );
         Ok(item)
@@ -158,6 +191,16 @@ impl Receipt {
             return self.matches(&Self::Native(right.0.item.clone()), call, turn);
         }
 
+        if call.shell {
+            let left = match self {
+                Self::Provisional(item) => Self::Native(item.clone()).item(call, turn)?,
+                _ => self.item(call, turn)?,
+            };
+            let right = written.item(call, turn)?;
+            return Ok(crate::local_reconciliation::same_acknowledged_output(
+                &left, &right,
+            ));
+        }
         match (self, written) {
             // Legacy text frames predate native metadata and success storage.
             (Self::Text(left), Self::Text(right)) => Ok(left == right),
@@ -524,6 +567,38 @@ fn history(value: &Value) -> Result<History> {
                         arguments,
                         call_id,
                         custom: false,
+                        shell: false,
+                        approval_required: false,
+                        effective_arguments: None,
+                    });
+                }
+                item @ ResponseItem::ShellCall { .. } => {
+                    let envelope = canonical.as_ref().context("Missing canonical Shell call")?;
+                    ensure!(
+                        crate::local_reconciliation::is_application_shell_call(envelope),
+                        "Provider Shell cannot own a manual grant"
+                    );
+                    let data = serde_json::to_value(&item)?;
+                    let call_id = data["call_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .context("Manual Shell lacks identity")?
+                        .to_owned();
+                    ensure!(
+                        !result.turn.is_empty()
+                            && !result.calls.iter().any(|call| call.call_id == call_id),
+                        "invalid or duplicate manual checkpoint call"
+                    );
+                    if let Some(source) = &source {
+                        result.sources.insert(call_id.clone(), source.clone());
+                    }
+                    result.calls.push(ManualCall {
+                        call_id,
+                        name: "shell".into(),
+                        namespace: None,
+                        arguments: serde_json::to_string(&item)?,
+                        custom: false,
+                        shell: true,
                         approval_required: false,
                         effective_arguments: None,
                     });
@@ -552,26 +627,43 @@ fn history(value: &Value) -> Result<History> {
                         arguments: input,
                         call_id,
                         custom: true,
+                        shell: false,
                         approval_required: false,
                         effective_arguments: None,
                     });
                 }
                 item @ (ResponseItem::FunctionCallOutput { .. }
-                | ResponseItem::CustomToolCallOutput { .. }) => {
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::ShellCallOutput { .. }) => {
+                    let shell = matches!(item, ResponseItem::ShellCallOutput { .. });
                     let (id, custom) = match &item {
                         ResponseItem::FunctionCallOutput { call_id, .. } => (
                             call_id
                                 .as_ref()
-                                .context("manual checkpoint output has no call ID")?,
+                                .context("manual checkpoint output has no call ID")?
+                                .as_str(),
                             false,
                         ),
-                        ResponseItem::CustomToolCallOutput { call_id, .. } => (call_id, true),
+                        ResponseItem::CustomToolCallOutput { call_id, .. } => {
+                            (call_id.as_str(), true)
+                        }
+                        ResponseItem::ShellCallOutput {
+                            provider_fields, ..
+                        } => (
+                            provider_fields
+                                .get("call_id")
+                                .and_then(Value::as_str)
+                                .context("Manual Shell output lacks identity")?,
+                            false,
+                        ),
                         _ => unreachable!(),
                     };
                     let ordinal = result
                         .calls
                         .iter()
-                        .position(|call| call.call_id == *id && call.custom == custom)
+                        .position(|call| {
+                            call.call_id == id && call.custom == custom && call.shell == shell
+                        })
                         .context(
                             "manual checkpoint output is orphaned or has the wrong call kind",
                         )?;
@@ -583,7 +675,7 @@ fn history(value: &Value) -> Result<History> {
                         result
                             .outputs
                             .insert(
-                                id.clone(),
+                                id.to_owned(),
                                 Receipt::Canonical(CanonicalResult(
                                     canonical.context("Missing canonical tool result")?
                                 ))
@@ -970,6 +1062,13 @@ impl PythonTools {
                 | ResponseItem::CustomToolCall { call_id, .. } = &item.item
                 {
                     manual.observed_calls.insert(call_id.clone());
+                } else if let ResponseItem::ShellCall {
+                    provider_fields, ..
+                } = &item.item
+                {
+                    if let Some(id) = provider_fields.get("call_id").and_then(Value::as_str) {
+                        manual.observed_calls.insert(id.to_owned());
+                    }
                 }
             }
             EventMsg::RawResponseCompleted(_) if manual.attempt.as_ref() == Some(&event.id) => {
@@ -990,7 +1089,15 @@ impl PythonTools {
         }
     }
 
-    pub(crate) fn record_manual_receipt(&self, key: &PendingKey, response: DynamicToolResponse) {
+    pub(crate) fn record_manual_receipt(
+        &self,
+        key: &PendingKey,
+        response: DynamicToolResponse,
+        native: Option<ResponseItem>,
+    ) {
+        let item = native
+            .filter(|item| matches!(item, ResponseItem::ShellCallOutput { .. }))
+            .unwrap_or_else(|| PythonOutput(response.clone()).receipt(key));
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         if let Some((frame, keys)) = manual.restored.as_mut() {
             if keys.remove(key).is_some() {
@@ -1003,10 +1110,9 @@ impl PythonTools {
                         FreshTerminalReceipts::record(&mut frame.fresh, generation, key);
                     }
                 }
-                frame.accepted_replies.insert(
-                    key.call.clone(),
-                    Receipt::Native(PythonOutput(response).receipt(key)),
-                );
+                frame
+                    .accepted_replies
+                    .insert(key.call.clone(), Receipt::Native(item));
                 return;
             }
         }
@@ -1023,10 +1129,9 @@ impl PythonTools {
             return;
         }
         manual.receipts.retain(|key_, _| key_.turn == key.turn);
-        manual.receipts.insert(
-            key.clone(),
-            Receipt::Provisional(PythonOutput(response).receipt(key)),
-        );
+        manual
+            .receipts
+            .insert(key.clone(), Receipt::Provisional(item));
     }
 
     pub(crate) fn has_restored_manual(&self) -> bool {
@@ -1265,6 +1370,13 @@ impl PythonTools {
             .iter()
             .position(|entry| entry.name.clone().with_default_namespace() == name)
             .context("manual tool absent from captured source catalog")?;
+        ensure!(
+            matches!(
+                &generation.entries[slot].spec,
+                ToolSpec::ApplicationShell { .. }
+            ) == call.shell,
+            "manual call kind differs from its current declaration"
+        );
         ensure!(
             generation.manual_slots.as_ref().map_or_else(
                 || manual.slots.contains(&name),
@@ -1559,7 +1671,33 @@ impl PythonTools {
                 expected.call_id == pending.call_id
                     && expected.name == pending.name
                     && expected.namespace == pending.namespace
-                    && expected.arguments == pending.arguments,
+                    && expected.arguments == pending.arguments
+                    && expected.custom == pending.custom
+                    && expected.shell == pending.shell
+                    && (!pending.shell
+                        || pending
+                            .effective_arguments
+                            .as_ref()
+                            .is_none_or(|arguments| {
+                                let Ok(value) = serde_json::from_str::<Value>(arguments) else {
+                                    return false;
+                                };
+                                let Ok(mut original) =
+                                    serde_json::from_str::<Value>(&pending.arguments)
+                                else {
+                                    return false;
+                                };
+                                if value
+                                    .get("internal_chat_message_metadata_passthrough")
+                                    .is_none()
+                                {
+                                    original
+                                        .as_object_mut()
+                                        .expect("canonical Shell call")
+                                        .remove("internal_chat_message_metadata_passthrough");
+                                }
+                                value == original
+                            })),
                 "manual pending call differs from original history"
             );
         }
@@ -1616,6 +1754,14 @@ impl PythonTools {
                     }
                     | ResponseItem::CustomToolCallOutput { call_id: id, .. } => {
                         return !later.contains(id.as_str());
+                    }
+                    ResponseItem::ShellCallOutput {
+                        provider_fields, ..
+                    } => {
+                        return provider_fields
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .is_none_or(|id| !later.contains(id));
                     }
                     _ => {}
                 },
@@ -2094,6 +2240,7 @@ mod canonical_result_tests {
             namespace: None,
             arguments: "{}".into(),
             custom: false,
+            shell: false,
             approval_required: false,
             effective_arguments: None,
         }
