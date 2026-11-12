@@ -1,3 +1,6 @@
+import { projectWebSearchCall, webSearchSourcesSchema } from './web-search';
+import type { WebSearchAction } from './web-search';
+export type { WebSearchAction, WebSearchSource } from './web-search';
 import {
   captureModelAttemptSnapshot,
   type CapturedModelAttempt,
@@ -458,21 +461,6 @@ const historyFilePartSchema = z
 type AudioPart = z.infer<typeof historyAudioPartSchema>;
 type ImagePart = z.infer<typeof historyImagePartSchema>;
 type FilePart = z.infer<typeof historyFilePartSchema>;
-const webSearchSourcesSchema = z.array(
-  z.object({ type: z.literal('url'), url: stringSchema }),
-);
-export type WebSearchSource = z.infer<typeof webSearchSourcesSchema>[number];
-export type WebSearchAction =
-  | {
-      type: 'search';
-      query: string | null;
-      queries: string[] | null;
-      /** URLs reported by the provider, when available. */
-      sources?: WebSearchSource[];
-    }
-  | { type: 'open_page'; url: string | null }
-  | { type: 'find_in_page'; url: string | null; pattern: string | null }
-  | { type: 'other' };
 
 export type SessionItem = ItemIdentity &
   (
@@ -998,40 +986,6 @@ function failure(raw: JsonObject): Failure {
       : {}),
   };
 }
-function webAction(raw: JsonObject): WebSearchAction | null {
-  const action = object(raw.action);
-  if (!action)
-    return typeof raw.query === 'string'
-      ? { type: 'search', query: raw.query, queries: null }
-      : null;
-  switch (action.type) {
-    case 'search': {
-      const sources = webSearchSourcesSchema.safeParse(action.sources);
-      return {
-        type: 'search',
-        query: text(action.query),
-        queries: Array.isArray(action.queries)
-          ? action.queries.filter(
-              (value): value is string => typeof value === 'string',
-            )
-          : null,
-        ...(sources.success ? { sources: sources.data } : {}),
-      };
-    }
-    case 'open_page':
-    case 'openPage':
-      return { type: 'open_page', url: text(action.url) };
-    case 'find_in_page':
-    case 'findInPage':
-      return {
-        type: 'find_in_page',
-        url: text(action.url),
-        pattern: text(action.pattern),
-      };
-    default:
-      return { type: 'other' };
-  }
-}
 function reconciliationOutcome(raw: JsonObject) {
   if (
     raw.type !== 'function_call_output' &&
@@ -1183,10 +1137,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   if (raw.type === 'web_search_call')
     return {
       ...common,
-      type: 'web_search_call',
-      status: 'completed',
-      action: webAction(raw),
-      ...(raw.results == null ? {} : { results: raw.results as JsonValue[] }),
+      ...projectWebSearchCall(raw, 'completed'),
     };
   return null;
 }
@@ -1379,12 +1330,7 @@ function nativeItems(
       return [
         {
           ...common,
-          type: 'web_search_call',
-          status: done ? 'completed' : 'in_progress',
-          action: webAction(raw),
-          ...(raw.results == null
-            ? {}
-            : { results: raw.results as JsonValue[] }),
+          ...projectWebSearchCall(raw, done ? 'completed' : 'in_progress'),
         },
       ];
     case 'Extension':
@@ -1392,12 +1338,7 @@ function nativeItems(
         ? [
             {
               ...common,
-              type: 'web_search_call',
-              status: done ? 'completed' : 'in_progress',
-              action: webAction(raw),
-              ...(raw.results == null
-                ? {}
-                : { results: raw.results as JsonValue[] }),
+              ...projectWebSearchCall(raw, done ? 'completed' : 'in_progress'),
             },
           ]
         : [];
