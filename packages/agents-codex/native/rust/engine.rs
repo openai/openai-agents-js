@@ -69,6 +69,7 @@ pub struct EngineState {
     pub goals: Option<goals::GoalBackend>,
     sdk_user_input_enabled: Option<bool>,
     telemetry: Option<crate::telemetry::EmissionSettings>,
+    telemetry_lease: crate::telemetry::EngineLease,
     pub(crate) config_json: String,
     pub(crate) runtime_json: String,
     trusted_command_temp: std::sync::Mutex<Option<tempfile::TempDir>>,
@@ -624,7 +625,7 @@ impl EngineState {
         if let Some(environment) = &environment_options {
             environment.check_trusted_write_policy()?;
         }
-        let telemetry = crate::telemetry::engine_starting().await?;
+        let (telemetry_lease, telemetry) = crate::telemetry::engine_starting().await?;
         let saved_login = config::saved_codex_login(&runtime_json)?;
         ensure!(
             !chatgpt_plan || (saved_login.is_none() && inherited_saved_login.is_none()),
@@ -992,6 +993,7 @@ impl EngineState {
             goals,
             sdk_user_input_enabled,
             telemetry,
+            telemetry_lease,
             config_json,
             runtime_json,
             trusted_command_temp: std::sync::Mutex::new(trusted_command_temp),
@@ -1920,7 +1922,11 @@ impl EngineState {
     pub(crate) async fn close_report(&self) -> anyhow::Result<EngineCloseReport> {
         let _guard = self.lifecycle.lock().await;
         let _observations = self.manual_observations.write().await;
-        self.close_locked().await
+        let report = self.close_locked().await?;
+        if report.diagnostic.is_none() {
+            self.telemetry_lease.retire();
+        }
+        Ok(report)
     }
 
     async fn saved_login_refresh_report(&self) -> anyhow::Result<Option<&'static str>> {

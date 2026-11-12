@@ -1248,6 +1248,7 @@ type ClientSearchCatalog = ToolCatalog & {
 class NativeTurn {
   captureRequestAttempts = false;
   requestAttemptsStarted = false;
+  borrowedRequestAttempts = false;
   requestAttempts?: RequestAttempts;
   clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[] = [];
@@ -6399,10 +6400,42 @@ export class Session<OutputT = string, Context = unknown> {
       run.requestAttemptsStarted &&
       run.requestAttempts === undefined &&
       run.id !== null
-    )
-      run.requestAttempts = parseRequestAttempts(
+    ) {
+      const report = parseRequestAttempts(
         this.#native._take_request_attempts(run.id),
       );
+      run.requestAttempts = run.borrowedRequestAttempts
+        ? Object.freeze({
+            ...report,
+            availability:
+              report.availability === 'complete'
+                ? report.counts.length > 0
+                  ? 'partial'
+                  : 'unavailable'
+                : report.availability,
+            borrowedRequestsUnavailable: true,
+          })
+        : report;
+    }
+  }
+
+  private markBorrowedRequestAttempts(
+    owner: NativeTurn | ChildCallbackOwner,
+  ): void {
+    const mark = (run: NativeTurn) => {
+      if (run.requestAttemptsStarted && run.requestAttempts === undefined)
+        run.borrowedRequestAttempts = true;
+    };
+    if (owner instanceof NativeTurn) mark(owner);
+    else if (owner.rootTurnId) {
+      for (const reference of this.runs) {
+        const run = reference.deref();
+        if (run?.id === owner.rootTurnId) {
+          mark(run);
+          break;
+        }
+      }
+    }
   }
 
   private finish(
@@ -9214,6 +9247,7 @@ export class Session<OutputT = string, Context = unknown> {
                         );
                       },
                       canonicalItems,
+                      () => this.markBorrowedRequestAttempts(owner),
                     );
                     check();
                     reply({ window });
