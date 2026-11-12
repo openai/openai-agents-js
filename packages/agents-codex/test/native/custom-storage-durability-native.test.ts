@@ -1,5 +1,5 @@
 import { execFileSync, fork, type ChildProcess } from 'node:child_process';
-import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1057,6 +1057,69 @@ describe('public native custom storage durability', () => {
       server.assertExhausted();
     },
   );
+
+  it('stops reporting a release-only failure after the engine close retry', async () => {
+    const path = await directory();
+    const durable = fileSessionStore(path);
+    const server = new ModelServer([[message('durable answer')]]);
+    const provider = await providerFor(server);
+    let releaseAvailable = false;
+    const releases: Parameters<SessionStore['release']>[] = [];
+    const session = await new Agent({
+      instructions: 'Answer.',
+      model: 'gpt-5',
+      provider,
+    }).session({
+      storage: {
+        ...durable,
+        async release(...lease) {
+          releases.push(lease);
+          if (!releaseAvailable) throw new Error('fixture release unavailable');
+          await durable.release(...lease);
+        },
+      },
+    });
+    try {
+      await (await session.submit('Answer.')).wait();
+      const lock = join(path, `${session.id}.lock`);
+      const first = session.close();
+      expect(session.close()).toBe(first);
+      const incomplete = await first.catch((error: unknown) => error);
+      expect(incomplete).toBeInstanceOf(AggregateError);
+      expect((incomplete as AggregateError).errors).toContainEqual(
+        expect.objectContaining({
+          message: expect.stringMatching(/canonical storage operation failed/),
+        }),
+      );
+      // Core's shutdown and discard both fail, then the engine's release fails.
+      expect(releases).toHaveLength(3);
+      expect((await stat(lock)).isDirectory()).toBe(true);
+
+      releaseAvailable = true;
+      const recovered = await session.close().catch((error: unknown) => error);
+      expect(recovered).toBeInstanceOf(NativeError);
+      expect(recovered).toMatchObject({
+        message:
+          'thread-store internal error: canonical storage operation failed; close and reconcile the application backend',
+      });
+      expect((recovered as NativeError).cause).toBeUndefined();
+      expect(releases).toHaveLength(4);
+      expect(
+        releases.every(([id, fence]) => {
+          return id === session.id && fence === releases[0][1];
+        }),
+      ).toBe(true);
+      await expect(stat(lock)).rejects.toMatchObject({ code: 'ENOENT' });
+      await provider.close();
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(releases).toHaveLength(4);
+      server.assertExhausted();
+    } finally {
+      releaseAvailable = true;
+      await session.close().catch(() => {});
+      await provider.close();
+    }
+  });
 
   it.skipIf(process.platform !== 'linux').each(['intent', 'result'] as const)(
     'reports a real built-in local %s write failure and stops further dispatch',
