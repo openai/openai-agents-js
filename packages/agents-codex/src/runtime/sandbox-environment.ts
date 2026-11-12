@@ -147,6 +147,49 @@ async function observeSandboxLifecycle<T>(
   }
 }
 
+function observeNativeSandboxOperation(
+  runtime: typeof sandboxRuntime,
+  backendId: string,
+  message: Record<string, unknown>,
+): void {
+  const { operation, phase, ok, duration_ms: durationMs } = message;
+  if (
+    operation !== 'exec' &&
+    operation !== 'write_stdin' &&
+    operation !== 'view_image'
+  )
+    return;
+  const event = {
+    type: 'sandbox_operation' as const,
+    name: `sandbox.${operation}`,
+    timestamp: new Date().toISOString(),
+    data: { backend_id: backendId },
+  };
+  if (phase === 'start') {
+    runtime.dispatchSandboxEvent({ ...event, phase: 'start' });
+  } else if (
+    phase === 'finish' &&
+    typeof ok === 'boolean' &&
+    typeof durationMs === 'number' &&
+    Number.isFinite(durationMs) &&
+    durationMs >= 0
+  ) {
+    runtime.dispatchSandboxEvent({
+      ...event,
+      phase: ok ? 'end' : 'error',
+      durationMs,
+      ...(ok
+        ? {}
+        : {
+            error: {
+              name: 'SandboxOperationError',
+              message: 'Sandbox operation failed',
+            },
+          }),
+    });
+  }
+}
+
 function createSandboxEnvironment<
   Context,
   Options extends SandboxClientOptions,
@@ -564,6 +607,8 @@ function createSandboxEnvironment<
             gateway.environment! as Environment<Context>,
             runtime,
           ),
+          (message) =>
+            observeNativeSandboxOperation(runtime, client.backendId, message),
         );
       };
       const inspectedState = borrowed?.state ?? originalResumeState;
