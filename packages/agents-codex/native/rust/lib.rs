@@ -646,32 +646,17 @@ impl Engine {
 
         let inner = self.current()?;
         let raw = checkpoint_wire_value(payload_json).map_err(native_error)?;
-        let mut options: options::ThreadOptions =
-            config::decode(serde_json::from_str(options_json).map_err(native_error)?)
-                .map_err(native_error)?;
-        options
-            .validate_instruction_json(&raw["history"])
-            .map_err(native_error)?;
-        let specs = specs_json
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(native_error)?;
-        let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
-        let payload = serde_json::from_value(raw).map_err(native_error)?;
-        Box::pin(async move {
-            let _context_operation = inner.operation(false).map_err(native_error)?;
-            checkpoint::restore(
-                &inner,
-                payload,
-                options,
-                specs,
-                fresh_manual.unwrap_or(false),
-            )
-            .await
-            .map_err(native_error)
-        })
+        restore_checkpoint_value(
+            inner,
+            raw,
+            options_json,
+            specs_json,
+            fresh_manual.unwrap_or(false),
+            None,
+        )
         .await
     }
+
     #[napi(getter, js_name = "startup_warnings")]
     pub fn startup_warnings(&self) -> Vec<String> {
         self.startup_warnings.clone()
@@ -1087,12 +1072,42 @@ impl NativeThread {
     }
 }
 
+async fn restore_checkpoint_value(
+    inner: RuntimeOwned<engine::EngineState>,
+    raw: serde_json::Value,
+    options_json: &str,
+    specs_json: Option<&str>,
+    fresh_manual: bool,
+    source: Option<&context::Change>,
+) -> napi::Result<NativeThread> {
+    let mut options: options::ThreadOptions =
+        config::decode(serde_json::from_str(options_json).map_err(native_error)?)
+            .map_err(native_error)?;
+    options
+        .validate_instruction_json(&raw["history"])
+        .map_err(native_error)?;
+    let specs = specs_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(native_error)?;
+    let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
+    let payload = serde_json::from_value(raw).map_err(native_error)?;
+    Box::pin(async move {
+        let _context_operation = inner.operation(false).map_err(native_error)?;
+        checkpoint::restore(&inner, payload, options, specs, fresh_manual, source)
+            .await
+            .map_err(native_error)
+    })
+    .await
+}
+
 // A prospective replacement remains owned before native construction starts.
 #[napi(js_name = "_ContextChange")]
 pub struct ContextChange {
     change: tokio::sync::Mutex<Option<RuntimeOwned<context::Change>>>,
     source_resources: ResourceRequests,
     candidate: std::sync::Mutex<Option<Arc<std::sync::Mutex<EngineOwner>>>>,
+    prepared: tokio::sync::Mutex<Option<serde_json::Value>>,
     prospective: std::sync::Mutex<Option<RuntimeOwned<codex_core_api::EnvironmentManager>>>,
     remote_drain: std::sync::Mutex<
         Option<tokio::sync::watch::Receiver<codex_exec_server::EnvironmentConnectionState>>,
@@ -1147,8 +1162,45 @@ impl ContextChange {
             .ok_or_else(|| native_error("context change is released"))?
             .prepare(&summary, retained_indices)
             .map_err(native_error)?;
+        let native_checkpoint = checkpoint.clone();
         usage::checkpoint_to_wire(&mut checkpoint).map_err(native_error)?;
-        serde_json::to_string(&checkpoint).map_err(native_error)
+        let result = serde_json::to_string(&checkpoint).map_err(native_error)?;
+        *self.prepared.lock().await = Some(native_checkpoint);
+        Ok(result)
+    }
+
+    #[napi(js_name = "restoreCandidate")]
+    pub async fn restore_candidate(
+        &self,
+        options_json: String,
+        specs_json: Option<String>,
+    ) -> napi::Result<NativeThread> {
+        let change = self.change.lock().await;
+        let source = change
+            .as_ref()
+            .ok_or_else(|| native_error("context change is released"))?;
+        let owner = self
+            .candidate
+            .lock()
+            .map_err(native_error)?
+            .clone()
+            .ok_or_else(|| native_error("context candidate has not been created"))?;
+        let inner = Engine::current_owner(&owner)?;
+        let raw = self
+            .prepared
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| native_error("context compaction has not been prepared"))?;
+        restore_checkpoint_value(
+            inner,
+            raw,
+            &options_json,
+            specs_json.as_deref(),
+            false,
+            Some(source),
+        )
+        .await
     }
 
     #[napi(js_name = "createCandidateEngine")]
@@ -1274,6 +1326,7 @@ impl ContextChange {
     #[napi]
     pub async fn release(&self) {
         self.change.lock().await.take();
+        self.prepared.lock().await.take();
     }
 
     #[napi(js_name = "publishCandidateMcpServers")]
@@ -1572,6 +1625,7 @@ impl NativeThread {
             change: tokio::sync::Mutex::new(Some(RuntimeOwned::new(Arc::new(change)))),
             source_resources: self.inner.lock().map_err(native_error)?.resources.clone(),
             candidate: std::sync::Mutex::new(None),
+            prepared: tokio::sync::Mutex::new(None),
             prospective: std::sync::Mutex::new(None),
             remote_drain: std::sync::Mutex::new(None),
             creation_started: std::sync::atomic::AtomicBool::new(false),
@@ -2324,6 +2378,23 @@ impl NativeThread {
     #[napi(js_name = "call")]
     pub async fn call(&self, operation: String, params_json: String) -> napi::Result<String> {
         let params: Value = serde_json::from_str(&params_json).map_err(native_error)?;
+        match operation.as_str() {
+            "append_rollout_items" => {
+                let items: Vec<codex_history::RolloutItem> =
+                    serde_json::from_value(params.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(native_error)?;
+                checkpoint::validate_external_mcp_approvals(&items).map_err(native_error)?;
+            }
+            "inject_response_items" | "inject_if_running" => {
+                let items: Vec<codex_protocol::models::ResponseItem> =
+                    serde_json::from_value(params.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(native_error)?;
+                for item in &items {
+                    checkpoint::validate_external_response_item(item).map_err(native_error)?;
+                }
+            }
+            _ => {}
+        }
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         // Preparation reserves the immutable config/declaration source while

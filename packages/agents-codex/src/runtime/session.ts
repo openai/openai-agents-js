@@ -30,6 +30,10 @@ import {
 import type { ResponsesCompaction } from './responses-compaction';
 import { audioInputByteLimit } from './media';
 import {
+  assertHostedMcpConfigurations,
+  hostedMcpBinding,
+} from './hosted-mcp-binding';
+import {
   ManagedWorkspaceCheckpoint,
   captureRetiredWorkspace,
   managedWorkspaceRestore,
@@ -10388,7 +10392,7 @@ export class Session<OutputT = string, Context = unknown> {
         !tool ||
         tool.kind !== 'manual' ||
         msg.tool !== tool.name ||
-        msg.namespace != null
+        (msg.namespace ?? null) !== toolNamespace(tool)
       )
         throw new NativeError('Invalid managed tool identity');
       const approval = managedApproval(tool);
@@ -10403,7 +10407,7 @@ export class Session<OutputT = string, Context = unknown> {
       const identity = {
         callId,
         toolName: tool.name,
-        namespace: null,
+        namespace: toolNamespace(tool),
         family: 'function' as const,
       };
       this.observeToolStart(run, identity);
@@ -11106,6 +11110,16 @@ export class Session<OutputT = string, Context = unknown> {
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
   ): Promise<SessionState> {
+    if (
+      [...this.manualCalls.values()].some(
+        (call) => call.run === run && hostedMcpBinding(call.tool),
+      )
+    )
+      return Promise.reject(
+        new NativeError(
+          'Pending Hosted MCP approval requires a live reply; portable suspension is not supported',
+        ),
+      );
     const refusal = manualCaptureRefusal(run.selection);
     if (refusal) return Promise.reject(new NativeError(refusal));
     this.requireCompleteRepairReceipts();
@@ -12688,6 +12702,10 @@ export class Session<OutputT = string, Context = unknown> {
             'Updated MCP tools must have been declared when the Session opened',
           );
       const replacements = captureTools(next.tools);
+      assertHostedMcpConfigurations(
+        replacements.tools,
+        this.threadOptions._hosted_tools ?? [],
+      );
       const callbackBindings = this.profileCurrent
         ? this.profileRuntimes.get(this.profileCurrent.profile_id)?.profile
             .callbackTools
@@ -12982,6 +13000,7 @@ export class Session<OutputT = string, Context = unknown> {
           .filter((tool) => tool.kind === 'manual')
           .map((tool) => ({
             name: tool.name,
+            namespace: toolNamespace(tool),
           })),
       ),
       this.terminalSlots(),
@@ -13092,6 +13111,8 @@ export class Session<OutputT = string, Context = unknown> {
         (item) =>
           item.type === 'mcp_call' &&
           item.turnId === turn.turnId &&
+          'callId' in item &&
+          'threadId' in item &&
           item.callId === callId &&
           item.threadId === this.id,
       );
@@ -14618,7 +14639,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (current !== capturedContext)
           throw new NativeError('Model context snapshot is stale');
       }
-      const checkpoint = await owner.change.prepare(summary, retainedIndices);
+      await owner.change.prepare(summary, retainedIndices);
       const current = decode(
         z.object({
           instructions: z.string(),
@@ -14654,18 +14675,16 @@ export class Session<OutputT = string, Context = unknown> {
       owner.candidate = await owner.creation;
       beforeRetirement();
       this.carrier?.bindEngine(owner.candidate);
-      owner.thread = await owner.candidate.restore_checkpoint(
-        checkpoint,
+      owner.thread = await owner.change.restoreCandidate(
         encode(options),
         this.catalog.specsJson,
-        false,
       );
       beforeRetirement();
       this.configureNative(owner.thread);
       const manualSlots = encode(
         this.catalog.tools
           .filter((tool) => tool.kind === 'manual')
-          .map((tool) => ({ name: tool.name })),
+          .map((tool) => ({ name: tool.name, namespace: toolNamespace(tool) })),
       );
       owner.thread._configure_manual_tools(manualSlots);
       if (this.options.includeRawProviderEvents)

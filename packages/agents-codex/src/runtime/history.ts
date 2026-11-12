@@ -540,7 +540,7 @@ export type SessionItem = ItemIdentity &
     | {
         type: 'mcp_call';
         threadId?: string;
-        callId?: string;
+        callId?: string | null;
         serverLabel: string;
         name: string;
         arguments: JsonValue;
@@ -705,12 +705,23 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('mcp_call'),
       threadId: z.string().optional(),
-      callId: z.string().optional(),
+      callId: z.string().nullable().optional(),
       serverLabel: z.string(),
       name: z.string(),
       arguments: jsonValue,
       status: repairItemStatusSchema,
       output: jsonValue,
+      error: jsonValue,
+      turn_id: z.string().optional(),
+      provider_data: jsonObject.optional(),
+    }),
+    z.object({
+      type: z.literal('mcp_list_tools'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      server_label: z.string(),
+      tools: jsonValue,
       error: jsonValue,
     }),
     z.object({
@@ -2044,12 +2055,21 @@ export function projectHostedToolItem(
       ? { ...common, type: raw.type, action: raw.action ?? null }
       : { ...common, type: 'shell_call_output', output: raw.output ?? null };
   }
-  const status = hostedToolStatusSchema.safeParse(raw.status);
+  const status = hostedToolStatusSchema.safeParse(
+    (raw.type === 'mcp_list_tools' || raw.type === 'mcp_call') &&
+      raw.status === undefined
+      ? raw.error == null
+        ? 'completed'
+        : 'failed'
+      : raw.status,
+  );
   if (!status.success) return;
   if (
     raw.type !== 'file_search_call' &&
     raw.type !== 'code_interpreter_call' &&
-    raw.type !== 'image_generation_call'
+    raw.type !== 'image_generation_call' &&
+    raw.type !== 'mcp_list_tools' &&
+    raw.type !== 'mcp_call'
   )
     return;
   const {
@@ -2087,6 +2107,25 @@ export function projectHostedToolItem(
         type: raw.type,
         result: text(raw.result),
         revised_prompt: text(raw.revised_prompt),
+      };
+    case 'mcp_list_tools':
+      return {
+        ...common,
+        type: raw.type,
+        server_label: text(raw.server_label) ?? '',
+        tools: raw.tools ?? [],
+        error: raw.error ?? null,
+      };
+    case 'mcp_call':
+      return {
+        ...common,
+        type: raw.type,
+        serverLabel: text(raw.server_label) ?? '',
+        callId: null,
+        name: text(raw.name) ?? '',
+        arguments: text(raw.arguments) ?? '',
+        output: raw.output ?? null,
+        error: raw.error ?? null,
       };
   }
 }
