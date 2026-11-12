@@ -419,7 +419,33 @@ const applicationToolOutputSchema = z
 /** Passive accepted tool data. Display identities never authorize tool execution. */
 export type ApplicationToolOutput = z.infer<typeof applicationToolOutputSchema>;
 
+const rememberedApprovalSchema = z
+  .object({
+    profile_id: z.string().nullable(),
+    profile: z.string().regex(/^[0-9a-f]{64}$/),
+    key: z.string().min(1),
+    signature: z.string().regex(/^[0-9a-f]{64}$/),
+    approve: z.boolean(),
+    reason: z.string().nullable(),
+  })
+  .strict();
+/** @internal Application-keyed future policy, never a native invocation grant. */
+export type RememberedApproval = z.infer<typeof rememberedApprovalSchema>;
+
 const sdkOutputState = {
+  remembered_approvals: z
+    .array(rememberedApprovalSchema)
+    .superRefine((records, ctx) => {
+      const keys = records.map((record) =>
+        JSON.stringify([record.profile_id, record.key, record.signature]),
+      );
+      if (new Set(keys).size !== keys.length)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Remembered approvals must identify distinct declarations',
+        });
+    })
+    .optional(),
   output_context: outputContextSchema,
   repair_turns: z.array(repairTurnWireSchema).default([]),
   repair_items: z.array(repairItemWireSchema).default([]),
@@ -480,6 +506,7 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'repair_turns',
         'repair_items',
         'application_tool_outputs',
+        'remembered_approvals',
         'pending_application_tool_outputs',
         'manual_continuation',
         'manual_context',
@@ -1174,6 +1201,7 @@ export function nativeCheckpoint(state: SessionState) {
     repair_turns: _turns,
     repair_items: _items,
     application_tool_outputs: _applicationOutputs,
+    remembered_approvals: _rememberedApprovals,
     pending_application_tool_outputs: _pendingApplicationOutputs,
     ...checkpoint
   } = state;

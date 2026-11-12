@@ -327,6 +327,7 @@ export type ToolDecision<Arguments = unknown> =
 
 const approvalDefinition = Symbol('managed function approval');
 interface ManagedApproval<Context = unknown> {
+  readonly portable?: { readonly key: string; readonly policy: JsonValue };
   prepareOriginalInput?: (
     args: JsonValue,
     context: ToolCallContext<Context>,
@@ -601,6 +602,13 @@ export function tool<
     boolean | ((context: ToolContext<Context>) => boolean | Promise<boolean>);
   /** Run the input policy before approval and again before callback execution. */
   runBeforeApproval?: boolean;
+  /**
+   * Stable application-owned permission identity for trusted portable remembered decisions.
+   * Restore has been requiring the same current key, profile, schema and approval policy.
+   * A new key for changes to callback meaning, resources or permission scope.
+   * Unkeyed decisions have been remaining within the current Session.
+   */
+  approvalKey?: string;
   name: string;
   /** Publish this function under a captured native namespace. */
   namespace?: string;
@@ -660,6 +668,12 @@ export function tool<
     typeof options.needsApproval !== 'function'
   )
     throw new TypeError('needsApproval must be a boolean or function');
+  const approvalKey = options.approvalKey;
+  if (
+    approvalKey !== undefined &&
+    (typeof approvalKey !== 'string' || !approvalKey)
+  )
+    throw new TypeError('approvalKey must be a nonempty string');
   if (
     options.runBeforeApproval !== undefined &&
     typeof options.runBeforeApproval !== 'boolean'
@@ -1166,6 +1180,24 @@ export function tool<
       return { required, effective, validated: parsed };
     },
   };
+  if (approvalKey !== undefined)
+    Object.defineProperty(approval, 'portable', {
+      value: Object.freeze({
+        key: approvalKey,
+        policy: structuredClone([
+          declaration.name,
+          declaration.namespace ?? null,
+          declaration.description,
+          declaration.parameters,
+          approval.resultSchema,
+          typeof needsApproval === 'function' ? 'predicate' : needsApproval,
+          runBeforeApproval,
+          before !== undefined,
+          after !== undefined,
+          declaration.finishTurn ?? false,
+        ]),
+      }),
+    });
   return Object.freeze({ ...declaration, [approvalDefinition]: approval });
 }
 
