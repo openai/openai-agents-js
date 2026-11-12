@@ -2,7 +2,7 @@ import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 import { createServer } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -60,25 +60,6 @@ async function providerPeer(
     noServer: true,
     perMessageDeflate: false,
   });
-  // Test-only fault injection: record the Core-facing carrier, not the provider socket.
-  const coreCarrierSockets = new Set<WebSocket>();
-  const originalUpgrade = WebSocketServer.prototype.handleUpgrade;
-  const captureUpgrade = vi
-    .spyOn(WebSocketServer.prototype, 'handleUpgrade')
-    .mockImplementation(function (
-      this: WebSocketServer,
-      request,
-      socket,
-      head,
-      callback,
-    ) {
-      return originalUpgrade.call(this, request, socket, head, (accepted) => {
-        if (this !== sockets) {
-          coreCarrierSockets.add(accepted);
-        }
-        callback(accepted, request);
-      });
-    });
   const metadata = (
     headers: import('node:http').IncomingHttpHeaders,
   ): JsonObject => {
@@ -208,13 +189,12 @@ async function providerPeer(
     setWebsocketRejection(status: 401 | 426 | undefined) {
       upgradeRejection = status;
     },
-    async retireCoreCarrier() {
-      expect(coreCarrierSockets.size).toBeGreaterThan(0);
+    async retireProviderSockets() {
+      expect(sockets.clients.size).toBeGreaterThan(0);
       await Promise.all(
-        [...coreCarrierSockets].map(async (socket) => {
-          if (socket.readyState === 3) return;
+        [...sockets.clients].map(async (socket) => {
+          if (socket.readyState === socket.CLOSED) return;
           const closed = once(socket, 'close');
-          // Await the Core pump's close handshake before the next model send.
           socket.close();
           await closed;
         }),
@@ -234,7 +214,6 @@ async function providerPeer(
       try {
         await provider.close();
       } finally {
-        captureUpgrade.mockRestore();
         for (const socket of sockets.clients) socket.terminate();
         await new Promise<void>((resolve) => sockets.close(() => resolve()));
         server.closeAllConnections();
@@ -841,7 +820,7 @@ describe('Python-aligned native provider error metadata', () => {
         ).toBe('primed');
         expect(effects).toBe(1);
         expect(peer.rejectedRequests).toBe(0);
-        await peer.retireCoreCarrier();
+        await peer.retireProviderSockets();
         peer.setWebsocketRejection(401);
         const turn = await session.submit(
           'Reject this fresh sampling request.',
