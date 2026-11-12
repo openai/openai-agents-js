@@ -1,0 +1,32 @@
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index 61a7410393e5c83080ed7e4552438b6f35374360..95f08ffe723dd43b0df367ac91c4940018213cd5 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -51,6 +51,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
+         self.0.exposure()
+     }
+ 
++    fn managed_agent_role(&self) -> Option<&str> {
++        self.0.managed_agent_role()
++    }
++
+     fn client_search_source(&self) -> Option<ToolName> {
+         self.0.client_search_source()
+     }
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index a7c8ed1d1b3f62ead97742b01a75e272ca57ca64..19e8c2f72d368187e14ffa9ecc28fa229dcc35de 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -816,7 +816,12 @@ fn apply_direct_model_only_namespace_overrides(
+         return;
+     }
+ 
++    let allow_declared_roles = turn_context.config.features.enabled(Feature::CodeMode);
+     for tool in registry.entries_mut() {
++        // Keep explicitly declared SDK roles callable from Code Mode.
++        if allow_declared_roles && tool.runtime.managed_agent_role().is_some() {
++            continue;
++        }
+         let configured = tool
+             .runtime
+             .tool_name()

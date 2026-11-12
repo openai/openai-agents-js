@@ -959,7 +959,11 @@
     {
       "path": "sdk-managed-agent-tools.patch",
       "sha256": "73a136e46af2e85112ce1f29c4b971e1ee1909ebe2f0bc6a50ea704f96d74a15"
+    },
+    {
+      "path": "sdk-managed-agent-tool-code-mode.patch",
+      "sha256": "0f89982ea8439b01d19639f0f90ff93658d55f1ab3cbc2c014a7616c00f4a066"
     }
   ],
-  "result_tree": "4f68cd5f11c8a368840abd2d59bc851f076f1513"
+  "result_tree": "54e09a2e4c2e05a44dcf3f8889c93f5e0d8e383f"
 }
