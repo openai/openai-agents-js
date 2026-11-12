@@ -37,7 +37,6 @@ describe('NativeRuntime ownership', () => {
   });
 
   it.each<NativeProviderOptions>([
-    { supportsWebsockets: true },
     { modelBackend: { complete: vi.fn() } },
     {
       chatGPT: {
@@ -57,6 +56,42 @@ describe('NativeRuntime ownership', () => {
       await owner.close();
     },
   );
+
+  it.each([undefined, false, true])(
+    'has been preserving explicit runtime transport selection: %s',
+    async (supportsWebsockets) => {
+      const owner = new NativeRuntime();
+      const provider = new NativeProvider({
+        runtime: owner,
+        apiKey: 'synthetic',
+        supportsWebsockets,
+      });
+      const lease = provider._acquire(undefined, true);
+      try {
+        expect(lease.websocketsAllowed).toBe(supportsWebsockets === true);
+        expect(lease.privateRuntime).toBeDefined();
+        await expect(owner.close()).rejects.toThrow('borrowing Providers');
+      } finally {
+        await lease.release();
+        await provider.close();
+        await owner.close();
+      }
+    },
+  );
+
+  it('has been keeping default Provider WebSockets outside private Engine reuse', async () => {
+    await using provider = new NativeProvider({
+      apiKey: 'synthetic',
+      supportsWebsockets: true,
+    });
+    const lease = provider._acquire(undefined, true);
+    try {
+      expect(lease.websocketsAllowed).toBe(true);
+      expect(lease.privateRuntime).toBeUndefined();
+    } finally {
+      await lease.release();
+    }
+  });
 
   it('resolves ambient keys at acquisition and leaves missing-key admission retryable', async () => {
     vi.stubEnv('OPENAI_API_KEY', undefined);
@@ -177,11 +212,11 @@ describe('NativeRuntime ownership', () => {
 });
 
 describe('NativeRuntime private plain kernel handoff', () => {
-  function provider(runtime: NativeRuntime) {
+  function provider(runtime: NativeRuntime, supportsWebsockets = false) {
     return new NativeProvider({
       runtime,
       apiKey: 'synthetic',
-      supportsWebsockets: false,
+      supportsWebsockets,
     });
   }
   function kernel() {
@@ -200,43 +235,46 @@ describe('NativeRuntime private plain kernel handoff', () => {
     return { engine, carrier, holder, closeEngine, closeCarrier, closeHolder };
   }
 
-  it('keeps the parked kernel across Provider close and a macrotask, with token-bound stale controls', async () => {
-    const owner = new NativeRuntime();
-    const first = provider(owner);
-    const a = first._acquire(undefined, true);
-    const k = kernel();
-    await a.open();
-    a.httpTransports(() => k.holder, k.engine);
-    a.privateRuntime!.bind(k.engine, k.carrier, k.holder);
-    await a.privateRuntime!.finish(true, true);
-    await first.close();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const second = provider(owner);
-    const b = second._acquire(undefined, true);
-    try {
-      expect(b.privateRuntime!.peek()?.engine).toBe(k.engine);
-      b.httpTransports(() => k.holder, k.engine);
-      await a.release();
-      await a.privateRuntime!.finish(false);
+  it.each([false, true])(
+    'keeps the parked kernel across Provider close and a macrotask, with token-bound stale controls (WebSockets: %s)',
+    async (supportsWebsockets) => {
+      const owner = new NativeRuntime();
+      const first = provider(owner, supportsWebsockets);
+      const a = first._acquire(undefined, true);
+      const k = kernel();
+      await a.open();
+      a.httpTransports(() => k.holder, k.engine);
+      a.privateRuntime!.bind(k.engine, k.carrier, k.holder);
+      await a.privateRuntime!.finish(true, true);
       await first.close();
-      expect(b.privateRuntime!.peek()?.engine).toBe(k.engine);
-      await expect(a.privateRuntime!.reset()).rejects.toThrow('closed');
-      await expect(owner.close()).rejects.toThrow('borrowing Providers');
-      expect(k.closeEngine).not.toHaveBeenCalled();
-      await b.privateRuntime!.finish(true, true);
-      await second.close();
-      expect(k.closeEngine).not.toHaveBeenCalled();
-      await owner.close();
-      expect(k.closeEngine).toHaveBeenCalledTimes(1);
-      expect(k.closeCarrier).toHaveBeenCalledTimes(1);
-      expect(k.closeHolder).toHaveBeenCalledTimes(1);
-    } finally {
-      await b.privateRuntime!.finish(false);
-      await second.close();
-      await first.close();
-      await owner.close();
-    }
-  });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const second = provider(owner, supportsWebsockets);
+      const b = second._acquire(undefined, true);
+      try {
+        expect(b.privateRuntime!.peek()?.engine).toBe(k.engine);
+        b.httpTransports(() => k.holder, k.engine);
+        await a.release();
+        await a.privateRuntime!.finish(false);
+        await first.close();
+        expect(b.privateRuntime!.peek()?.engine).toBe(k.engine);
+        await expect(a.privateRuntime!.reset()).rejects.toThrow('closed');
+        await expect(owner.close()).rejects.toThrow('borrowing Providers');
+        expect(k.closeEngine).not.toHaveBeenCalled();
+        await b.privateRuntime!.finish(true, true);
+        await second.close();
+        expect(k.closeEngine).not.toHaveBeenCalled();
+        await owner.close();
+        expect(k.closeEngine).toHaveBeenCalledTimes(1);
+        expect(k.closeCarrier).toHaveBeenCalledTimes(1);
+        expect(k.closeHolder).toHaveBeenCalledTimes(1);
+      } finally {
+        await b.privateRuntime!.finish(false);
+        await second.close();
+        await first.close();
+        await owner.close();
+      }
+    },
+  );
 
   it('uses no shared private slot for busy or ordinary leases', async () => {
     await using owner = new NativeRuntime();
