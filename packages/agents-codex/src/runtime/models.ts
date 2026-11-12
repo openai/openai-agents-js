@@ -14,7 +14,11 @@ import type {
 import { z } from 'zod';
 import { applyPatchOperationSchema } from './apply-patch';
 import { captureImage, inlineAudioSource } from './media';
-import { copyJsonValue, type JsonObject } from './binding';
+import {
+  copyJsonValue,
+  losslessJsonObjectSchema,
+  type JsonObject,
+} from './binding';
 
 function selectedFunctionName(
   choice: unknown,
@@ -124,6 +128,42 @@ export interface NativeModel {
 export interface ModelProvider {
   getModel(modelName: string): NativeModel;
 }
+/** @internal Pump borrowed model events while the caller retains admission and native replies. */
+export async function pumpModelStream(
+  stream: AsyncIterable<JsonObject>,
+  sink: {
+    check(): void;
+    start(): void;
+    push(event: string, original: JsonObject): Promise<boolean>;
+    finish(): void;
+  },
+): Promise<void> {
+  const iterator = stream[Symbol.asyncIterator]();
+  let finished = false;
+  try {
+    sink.check();
+    sink.start();
+    while (true) {
+      sink.check();
+      const next = await iterator.next();
+      sink.check();
+      if (next.done) {
+        finished = true;
+        break;
+      }
+      const continuing = await sink.push(
+        JSON.stringify(losslessJsonObjectSchema.parse(next.value)),
+        next.value,
+      );
+      sink.check();
+      if (!continuing) break;
+    }
+  } finally {
+    if (!finished) await iterator.return?.();
+  }
+  sink.finish();
+}
+
 /** @internal Capture on settlement, before the application can change retained values. */
 export function captureModelResponse(
   response: ModelResponse,
