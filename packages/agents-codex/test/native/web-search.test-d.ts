@@ -72,8 +72,9 @@ webSearch({ searchContextSize: 'unbounded' });
 search.mode = 'live';
 // @ts-expect-error Captured domain lists are readonly.
 hosted.allowedDomains?.push('example.test');
-// @ts-expect-error The native public Agent accepts only the three outer choice strings.
 settings.toolChoice = { type: 'web_search' };
+// @ts-expect-error Function choices have been requiring captured ToolRef values.
+settings.toolChoice = { type: 'function', name: 'web_search' };
 
 // @ts-expect-error Unsupported search content type.
 webSearch({ route: 'hosted', searchContentTypes: ['video'] });
