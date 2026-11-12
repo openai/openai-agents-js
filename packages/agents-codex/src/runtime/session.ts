@@ -56,6 +56,8 @@ import {
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
+  isChatModelStream,
+  isRawChatChunk,
   markRawProviderRequest,
   type NativeModel,
   type ModelRequest,
@@ -9188,7 +9190,10 @@ export class Session<OutputT = string, Context = unknown> {
                   try {
                     check();
                     const streamOwner = encode(receipt);
-                    sourceNative._start_model_producer(streamOwner);
+                    sourceNative._start_model_producer(
+                      streamOwner,
+                      isChatModelStream(stream),
+                    );
                     while (true) {
                       check();
                       const next = await iterator.next();
@@ -9203,6 +9208,7 @@ export class Session<OutputT = string, Context = unknown> {
                           JSON.stringify(
                             losslessJsonObjectSchema.parse(next.value),
                           ),
+                          isRawChatChunk(next.value),
                         );
                       check();
                       if (!continuing) break;
