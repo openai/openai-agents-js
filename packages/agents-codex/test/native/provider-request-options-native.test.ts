@@ -131,3 +131,102 @@ for (const Adapter of [ChatCompletionsModel, ResponsesModel]) {
     });
   }
 }
+
+it.each([ChatCompletionsModel, ResponsesModel])(
+  'uses scoped options in the borrowed adapter on the issuing native turn with %s',
+  async (Adapter) => {
+    const seen: Array<{
+      url: URL;
+      headers: Headers;
+      body: Record<string, unknown>;
+    }> = [];
+    let credentialCalls = 0;
+    const client = new OpenAI({
+      apiKey: async () => {
+        credentialCalls += 1;
+        return 'synthetic-borrowed-' + credentialCalls;
+      },
+      baseURL: 'http://test.invalid/v1',
+      defaultHeaders: { 'x-drop': 'client' },
+      defaultQuery: { keep: 'client', empty: 'client' },
+      fetch: async (url, init) => {
+        seen.push({
+          url: new URL(String(url)),
+          headers: new Headers(init?.headers),
+          body: JSON.parse(String(init?.body)),
+        });
+        return Response.json(
+          Adapter === ChatCompletionsModel
+            ? {
+                id: `chat-${seen.length}`,
+                choices: [
+                  {
+                    finish_reason: 'stop',
+                    message: { role: 'assistant', content: 'ok' },
+                  },
+                ],
+              }
+            : {
+                id: `response-${seen.length}`,
+                status: 'completed',
+                output: [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'ok' }],
+                  },
+                ],
+              },
+        );
+      },
+    });
+    await using provider = new NativeProvider({
+      baseUrl: 'https://unused.invalid/v1',
+      modelBackend: new Adapter(client, undefined, {
+        requestOptions: {
+          headers: { 'X-Routing': 'adapter', 'x-adapter': 'retained' },
+          query: { route: 'adapter' },
+        },
+      }),
+    });
+    await using session = await new Agent({
+      model: 'gpt-5',
+      instructions: 'Answer.',
+      provider,
+    }).session();
+    const first = await session.submit('Scoped.', {
+      modelSettingsOverride: {
+        extraHeaders: { 'x-routing': 'operation', 'x-drop': null },
+        extraQuery: { route: 'operation', empty: null, count: 2 },
+      },
+    });
+    expect((await first.wait()).finalOutput).toBe('ok');
+    const second = await session.submit('Defaults.');
+    expect((await second.wait()).finalOutput).toBe('ok');
+    expect(seen).toHaveLength(2);
+    expect(seen[0].headers.get('authorization')).toBe(
+      'Bearer synthetic-borrowed-1',
+    );
+    expect(seen[0].headers.get('x-routing')).toBe('operation');
+    expect(seen[0].headers.get('x-adapter')).toBe('retained');
+    expect(seen[0].headers.has('x-drop')).toBe(false);
+    expect(Object.fromEntries(seen[0].url.searchParams)).toEqual({
+      route: 'operation',
+      keep: 'client',
+      empty: '',
+      count: '2',
+    });
+    expect(seen[1].headers.get('authorization')).toBe(
+      'Bearer synthetic-borrowed-2',
+    );
+    expect(seen[1].headers.get('x-routing')).toBe('adapter');
+    expect(seen[1].headers.get('x-drop')).toBe('client');
+    expect(Object.fromEntries(seen[1].url.searchParams)).toEqual({
+      route: 'adapter',
+      keep: 'client',
+      empty: 'client',
+    });
+    for (const call of seen)
+      expect(call.body).not.toHaveProperty('request_transport');
+  },
+);

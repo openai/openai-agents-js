@@ -87,10 +87,10 @@ index d32120885..a2983eceb 100644
  pub struct PromptCacheOptions {
      pub ttl: codex_protocol::model_request_controls::PromptCacheTtl,
 diff --git a/codex-rs/codex-api/src/endpoint/responses.rs b/codex-rs/codex-api/src/endpoint/responses.rs
-index 855ca634f..bf776022b 100644
+index fb0a75013..e4e3a856b 100644
 --- a/codex-rs/codex-api/src/endpoint/responses.rs
 +++ b/codex-rs/codex-api/src/endpoint/responses.rs
-@@ -52,6 +52,73 @@ impl<T: HttpTransport> ResponsesClient<T> {
+@@ -54,6 +54,75 @@ impl<T: HttpTransport> ResponsesClient<T> {
          }
      }
  
@@ -134,15 +134,17 @@ index 855ca634f..bf776022b 100644
 +            .expect("hierarchical URL")
 +            .push(resource)
 +            .push(id);
++        let path = path.path().trim_start_matches('/');
++        let prepared = crate::prepare_request_transport(
++            &self.session.provider().url_for_path(path),
++            self.request_transport.as_ref(),
++        )?;
 +        let response = self
 +            .session
-+            .execute_with(
-+                Method::GET,
-+                path.path().trim_start_matches('/'),
-+                headers,
-+                None,
-+                |request| request.response_body_limit_bytes = Some(MAX_JSON_RESPONSE_BODY_BYTES),
-+            )
++            .execute_with(Method::GET, path, headers, None, |request| {
++                prepared.apply(request);
++                request.response_body_limit_bytes = Some(MAX_JSON_RESPONSE_BODY_BYTES);
++            })
 +            .await?;
 +        super::responses_json::check_json_structure(&response.body)?;
 +        let body: Value = serde_json::from_slice(&response.body)
@@ -165,10 +167,10 @@ index 855ca634f..bf776022b 100644
          self,
          request: Option<Arc<dyn RequestTelemetry>>,
 diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
-index 0b4af4b1d..088a159c1 100644
+index cc84a3ecd..98d345889 100644
 --- a/codex-rs/codex-api/src/lib.rs
 +++ b/codex-rs/codex-api/src/lib.rs
-@@ -177,3 +177,5 @@ pub use crate::endpoint::RealtimeHostedMcpApprovalFilter;
+@@ -180,3 +180,5 @@ pub use crate::endpoint::RealtimeHostedMcpApprovalFilter;
  pub use crate::endpoint::RealtimeHostedMcpApprovalMode;
  pub use crate::endpoint::RealtimeHostedMcpTool;
  pub use crate::endpoint::RealtimeHostedMcpToolFilter;
@@ -426,7 +428,7 @@ index de6dc8318..ec9e5a911 100644
                          request_controls: Default::default(),
                          tool_choice: None,
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 5b293d76c..88e4dfb80 100644
+index f6860933f..34db3a2cc 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -34,6 +34,7 @@ use std::sync::atomic::Ordering;
@@ -453,7 +455,7 @@ index 5b293d76c..88e4dfb80 100644
  }
  
  /// Minted from the native HTTP response collector, never from saved JSON.
-@@ -711,6 +714,7 @@ impl ModelClient {
+@@ -712,6 +715,7 @@ impl ModelClient {
              event_sender: None,
              http_client_factory,
              restored_history: false,
@@ -461,7 +463,7 @@ index 5b293d76c..88e4dfb80 100644
              request_contributors,
              executed_tool_calls: None,
              api_key_cyber_access_programs:
-@@ -734,6 +738,69 @@ impl ModelClient {
+@@ -735,6 +739,69 @@ impl ModelClient {
          self
      }
  
@@ -531,7 +533,7 @@ index 5b293d76c..88e4dfb80 100644
      pub(crate) fn with_session_context(
          mut self,
          prompt_cache_key_override: Option<String>,
-@@ -795,6 +862,7 @@ impl ModelClient {
+@@ -796,6 +863,7 @@ impl ModelClient {
              websocket_session,
              pending_http_response: None,
              turn_state: Arc::new(OnceLock::new()),
@@ -539,7 +541,7 @@ index 5b293d76c..88e4dfb80 100644
          }
      }
  
-@@ -1177,6 +1245,14 @@ impl ModelClient {
+@@ -1178,6 +1246,14 @@ impl ModelClient {
                  })
              })
              .transpose()?;
@@ -554,7 +556,7 @@ index 5b293d76c..88e4dfb80 100644
          controls
              .validate_profile(model_info)
              .map_err(CodexErr::InvalidRequest)?;
-@@ -1224,12 +1300,33 @@ impl ModelClient {
+@@ -1225,12 +1301,33 @@ impl ModelClient {
                  Ok(selected)
              })
              .transpose()?;
@@ -593,7 +595,7 @@ index 5b293d76c..88e4dfb80 100644
          let is_openai = self.state.provider.info().is_openai();
          // These prompt-only items are rebuilt on every request. Hash their visible payloads
          // within the thread so retries and resumed sessions preserve their identity.
-@@ -1264,6 +1361,16 @@ impl ModelClient {
+@@ -1265,6 +1362,16 @@ impl ModelClient {
              )));
              prefix.push(instructions);
          }
@@ -610,7 +612,7 @@ index 5b293d76c..88e4dfb80 100644
          input.splice(0..0, prefix);
          filter_provider_response_metadata(&mut input, is_openai);
          let reasoning = if prompt_owns_model {
-@@ -1380,6 +1487,8 @@ impl ModelClient {
+@@ -1381,6 +1488,8 @@ impl ModelClient {
              }),
              request_controls: codex_api::ResponsesRequestControls {
                  hosted_tool_choice,
@@ -619,7 +621,7 @@ index 5b293d76c..88e4dfb80 100644
                  prompt: prompt_reference,
                  instructions: hosted_prompt
                      .filter(|prompt| !prompt.omit_instructions)
-@@ -1392,8 +1501,7 @@ impl ModelClient {
+@@ -1393,8 +1502,7 @@ impl ModelClient {
                      })
                      .transpose()?,
                  truncation: controls.truncation.clone().flatten(),
@@ -629,7 +631,7 @@ index 5b293d76c..88e4dfb80 100644
                  extra_body: controls.extra_body.clone().flatten().unwrap_or_default(),
                  max_output_tokens: controls.max_output_tokens.flatten(),
                  temperature: controls.temperature.flatten(),
-@@ -1841,6 +1949,16 @@ impl ModelClientSession {
+@@ -1846,6 +1954,16 @@ impl ModelClientSession {
          self.client.uses_chatgpt_plan()
      }
  
@@ -646,7 +648,7 @@ index 5b293d76c..88e4dfb80 100644
      pub(crate) fn saved_login_limits_need_attention(&self) -> bool {
          let source = &self.client.state.session_source;
          // ThreadSpawn children expose the same attention API as root turns.
-@@ -2006,6 +2124,11 @@ impl ModelClientSession {
+@@ -2011,6 +2129,11 @@ impl ModelClientSession {
          if !self.client.responses_websocket_enabled() {
              return Ok(());
          }
@@ -658,7 +660,7 @@ index 5b293d76c..88e4dfb80 100644
          let provider = Arc::clone(&self.client.state.provider);
          let auth_manager = provider.auth_manager();
          let mut auth_recovery = auth_manager
-@@ -2275,14 +2398,17 @@ impl ModelClientSession {
+@@ -2284,14 +2407,17 @@ impl ModelClientSession {
                          (
                              dispatch,
                              contributor.preserves_provider_request_window(&url),
@@ -678,7 +680,7 @@ index 5b293d76c..88e4dfb80 100644
              let chatgpt_plan = self.client.uses_chatgpt_plan();
              if chatgpt_plan && direct.is_none() {
                  return Err(CodexErr::Fatal(
-@@ -2360,6 +2486,7 @@ impl ModelClientSession {
+@@ -2376,6 +2502,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -686,7 +688,7 @@ index 5b293d76c..88e4dfb80 100644
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2398,16 +2525,6 @@ impl ModelClientSession {
+@@ -2414,16 +2541,6 @@ impl ModelClientSession {
                  prompt.cyber_access_program,
                  self.client.api_key_cyber_access_programs,
              )?;
@@ -703,7 +705,7 @@ index 5b293d76c..88e4dfb80 100644
              let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
              options.extra_headers.extend(responses_headers);
              let interceptors = crate::model_request::prepare_with_attempts(
-@@ -2426,6 +2543,52 @@ impl ModelClientSession {
+@@ -2442,6 +2559,52 @@ impl ModelClientSession {
                              as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
                      }),
              );
@@ -756,7 +758,7 @@ index 5b293d76c..88e4dfb80 100644
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
-@@ -2434,7 +2597,13 @@ impl ModelClientSession {
+@@ -2450,7 +2613,13 @@ impl ModelClientSession {
                  }
                  request.input = input;
              }
@@ -771,7 +773,7 @@ index 5b293d76c..88e4dfb80 100644
              let client = ApiResponsesClient::new(
                  transport,
                  client_setup.api_provider,
-@@ -2526,6 +2695,15 @@ impl ModelClientSession {
+@@ -2543,6 +2712,15 @@ impl ModelClientSession {
  
              match stream_result {
                  Ok((request_id, interrupt, events, producer_task, producer_stop)) => {
@@ -787,7 +789,7 @@ index 5b293d76c..88e4dfb80 100644
                      let (mut stream, response) = map_response_events(
                          request_id,
                          crate::model_request::intercept_stream(events, interceptors),
-@@ -2542,8 +2720,13 @@ impl ModelClientSession {
+@@ -2559,8 +2737,13 @@ impl ModelClientSession {
                      stream.producer_task = producer_task;
                      stream.producer_stop = producer_stop;
                      stream.request_observation = request_observation;
@@ -803,7 +805,7 @@ index 5b293d76c..88e4dfb80 100644
                      return Ok(stream);
                  }
                  Err(ApiError::Transport(unauthorized_transport))
-@@ -2561,6 +2744,7 @@ impl ModelClientSession {
+@@ -2578,6 +2761,7 @@ impl ModelClientSession {
                          response_debug_context.request_id.as_deref(),
                          /*output_items*/ &[],
                      );
@@ -811,7 +813,7 @@ index 5b293d76c..88e4dfb80 100644
                      auth_recovery.pending_retry = PendingUnauthorizedRetry::from_recovery(
                          handle_unauthorized(
                              unauthorized_transport,
-@@ -2577,6 +2761,11 @@ impl ModelClientSession {
+@@ -2594,6 +2778,11 @@ impl ModelClientSession {
                      continue;
                  }
                  Err(err) => {
@@ -823,7 +825,7 @@ index 5b293d76c..88e4dfb80 100644
                      let response_debug_context =
                          extract_response_debug_context_from_api_error(&err);
                      let err = if chatgpt_plan {
-@@ -2624,6 +2813,9 @@ impl ModelClientSession {
+@@ -2641,6 +2830,9 @@ impl ModelClientSession {
          inference_trace: &InferenceTraceContext,
          auth_recovery: &mut RequestAuthRecovery,
      ) -> Result<WebsocketStreamOutcome> {
@@ -833,7 +835,7 @@ index 5b293d76c..88e4dfb80 100644
          let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
          let provider = Arc::clone(&self.client.state.provider);
          loop {
-@@ -2656,6 +2848,7 @@ impl ModelClientSession {
+@@ -2673,6 +2865,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -841,7 +843,7 @@ index 5b293d76c..88e4dfb80 100644
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2759,7 +2952,11 @@ impl ModelClientSession {
+@@ -2781,7 +2974,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -854,7 +856,7 @@ index 5b293d76c..88e4dfb80 100644
              let (mode, reason) = if continuation.is_some() {
                  ("incremental", "incremental")
              } else {
-@@ -3021,6 +3218,10 @@ impl ModelClientSession {
+@@ -3043,6 +3240,10 @@ impl ModelClientSession {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<()> {
@@ -867,10 +869,10 @@ index 5b293d76c..88e4dfb80 100644
          // ordinary request run the awaited context policy before sending input.
 diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
 new file mode 100644
-index 000000000..7c7c3a300
+index 000000000..c6732fe2e
 --- /dev/null
 +++ b/codex-rs/core/src/client/provider_history.rs
-@@ -0,0 +1,857 @@
+@@ -0,0 +1,863 @@
 +use super::*;
 +use codex_protocol::provider_history::{
 +    ProviderHistoryInputBoundary, ProviderHistoryReference, ProviderHistorySelection,
@@ -891,7 +893,7 @@ index 000000000..7c7c3a300
 +    generation: Option<u64>,
 +    revision: Option<u64>,
 +    headers: HeaderMap,
-+    query: Option<HashMap<String, String>>,
++    effective_url: String,
 +}
 +
 +impl std::fmt::Debug for Scope {
@@ -1307,11 +1309,18 @@ index 000000000..7c7c3a300
 +            .ok_or_else(|| invalid("Provider history has no admitted canonical input"))?;
 +        let mut auth_headers = provider.headers.clone();
 +        setup.api_auth.add_auth_headers(&mut auth_headers);
++        let mut effective_url = provider.url_for_path("/responses");
++        let prepared = codex_api::prepare_request_transport(
++            &effective_url,
++            request.request_controls.request_transport.as_ref(),
++        )
++        .map_err(self_error)?;
++        prepared.apply_parts(&mut effective_url, &mut auth_headers);
 +        let scope = Scope {
 +            generation: setup.auth_owner_generation,
 +            revision: setup.auth_revision,
 +            headers: auth_headers,
-+            query: provider.query_params.clone(),
++            effective_url,
 +        };
 +        let current_route = route(&provider.base_url)?;
 +        let (saved, needs_read) = {
@@ -1404,6 +1413,7 @@ index 000000000..7c7c3a300
 +            )
 +        {
 +            ApiResponsesClient::new(transport, provider.clone(), setup.api_auth.clone())
++                .with_request_transport(request.request_controls.request_transport.clone())
 +                .verify_history_anchor(&saved.selection, saved.stored_response, headers)
 +                .await
 +                .map_err(|error| self_error(error))?;
@@ -1705,7 +1715,6 @@ index 000000000..7c7c3a300
 +        assert!(unsent_hash_indices(&canonical_window(&window).unwrap(), &hashes).is_err());
 +    }
 +
-+
 +    #[test]
 +    fn full_idless_group_retains_source_ordinals_after_prefix_insertion_and_reordering() {
 +        let same: ResponseItem = serde_json::from_value(
@@ -1726,7 +1735,6 @@ index 000000000..7c7c3a300
 +        assert_eq!(projected.delivered_input_indices, vec![0, 1, 2]);
 +        assert!(sampling_input_projection(Some(&captured), &[same, other], vec![0, 1], 0).is_err());
 +    }
-+
 +}
 diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
 index 5a196f9c8..316e3dd7c 100644
@@ -2680,10 +2688,10 @@ index d46b8b058..83b9bd963 100644
  pub use model_request::ModelRequestContributor;
  pub use model_request::ModelRequestInput;
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
-index ab89e0514..efec3ac7b 100644
+index db2023c37..702cd42ef 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
-@@ -204,6 +204,15 @@ pub struct ModelRequestInput<'a> {
+@@ -205,6 +205,15 @@ pub struct ModelRequestInput<'a> {
      pub model_omitted: bool,
  }
  
@@ -2699,7 +2707,7 @@ index ab89e0514..efec3ac7b 100644
  /// Trusted in-process HTTP stream dispatch. The endpoint session still prepares,
  /// authenticates, observes and retries the request through HttpTransport.
  /// A selected dispatcher owns the route: failures must never fall back to I/O.
-@@ -234,6 +243,14 @@ pub struct ToolsOnlyCallInput {
+@@ -237,6 +246,14 @@ pub struct ToolsOnlyCallInput {
  /// Contributes request-scoped preparation and response interception.
  /// Return None for requests this host does not manage.
  pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
@@ -2715,7 +2723,7 @@ index ab89e0514..efec3ac7b 100644
      /// Hosts mirror the exact turn snapshot before enqueueing its live notification.
      fn model_attempt(&self, _input: ModelAttemptInput) -> Result<(), String> {
 diff --git a/codex-rs/protocol/src/lib.rs b/codex-rs/protocol/src/lib.rs
-index 4b9c7f153..5ee35fc09 100644
+index 2b354ad52..d2dcea728 100644
 --- a/codex-rs/protocol/src/lib.rs
 +++ b/codex-rs/protocol/src/lib.rs
 @@ -28,6 +28,7 @@ mod environment;
@@ -2727,7 +2735,7 @@ index 4b9c7f153..5ee35fc09 100644
  pub mod local_media;
  pub mod mcp;
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index 2b87be0f4..acaf75af5 100644
+index 5bd5b9715..6609d584c 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
 @@ -2927,6 +2927,9 @@ pub struct ThreadSettingsAppliedEvent {

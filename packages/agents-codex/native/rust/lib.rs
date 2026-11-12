@@ -568,6 +568,7 @@ impl Engine {
                 Arc::downgrade(&inner),
                 provider_id,
                 None,
+                None,
             )
             .await
         })
@@ -616,6 +617,7 @@ impl Engine {
                 &headers,
                 body.into(),
                 &ticket,
+                None,
                 None,
             )
             .await?;
@@ -5400,6 +5402,7 @@ async fn direct_sentinel_stream(
     inner: &engine::EngineState,
     expected_url: &str,
     request: codex_client::Request,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> Result<codex_client::StreamResponse, TransportError> {
     use base64::Engine as _;
     use futures_util::StreamExt as _;
@@ -5546,6 +5549,7 @@ async fn direct_sentinel_stream(
         body.into(),
         &ticket,
         request.response_body_limit_bytes,
+        request_transport,
     )
     .await
     .map_err(|_| invalid())?;
@@ -5653,6 +5657,7 @@ async fn sentinel_stream_dispatch(
     body: bytes::Bytes,
     ticket: &serde_json::Value,
     response_body_limit_bytes: Option<usize>,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
@@ -5663,6 +5668,9 @@ async fn sentinel_stream_dispatch(
         .build_request("POST".parse().map_err(native_error)?, "responses")
         .with_raw_body(body.clone());
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    codex_api::prepare_request_transport(&request.url, request_transport)
+        .map_err(native_error)?
+        .apply(&mut request);
     if let Some(authorization) = &inner.plan_authorization {
         let body: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|_| input_error("Invalid Sign in with ChatGPT request body"))?;

@@ -39,6 +39,8 @@ it.each([
   'tool-history',
   'tool-text-parts',
   'tool-media',
+  'user-media',
+  'hosted-records',
   'structured',
   'phase-close',
   'tool-record-bound',
@@ -89,6 +91,9 @@ it.each([
       mode === 'phase-close' ||
       mode === 'tool-history' ||
       mode === 'tool-text-parts' ||
+      mode === 'tool-media' ||
+      mode === 'user-media' ||
+      mode === 'hosted-records' ||
       mode === 'structured';
     const toolResult = {
       package_manager: 'pnpm',
@@ -111,12 +116,31 @@ it.each([
         ? JSON.stringify({ decision: 'Use pnpm.' })
         : 'The project uses pnpm.',
     );
+    const finalItems =
+      mode === 'hosted-records'
+        ? [
+            {
+              type: 'file_search_call',
+              id: 'memory-search',
+              status: 'completed',
+              queries: ['fixture memory query'],
+              results: null,
+            },
+            {
+              type: 'image_generation_call',
+              id: 'excluded-image-generation',
+              status: 'failed',
+              result: null,
+            },
+            finalMessage,
+          ]
+        : [finalMessage];
     let effects = 0;
     const server = new ModelServer(
       generates
         ? [
             ...(typedTool ? [toolCalls] : []),
-            [finalMessage],
+            finalItems,
             async () => {
               if (mode === 'phase-close') {
                 phaseEntered.resolve();
@@ -230,16 +254,21 @@ it.each([
           ? agent.withOutputType(z.object({ decision: z.string() }))
           : agent
       ).session({ environment: source });
-      const result = await (await session.submit(appInput)).wait();
+      const input =
+        mode === 'user-media'
+          ? ({
+              role: 'user',
+              content: [
+                { type: 'input_text', text: appInput },
+                { type: 'input_image', file_id: 'opaque-user-memory-image' },
+              ],
+            } as const)
+          : appInput;
+      const result = await (await session.submit(input)).wait();
       if (structured)
         expect(result.finalOutput).toEqual({ decision: 'Use pnpm.' });
       if (typedTool) expect(effects).toBe(toolCalls.length);
-      if (
-        mode === 'generate' ||
-        mode === 'tool-history' ||
-        mode === 'tool-text-parts' ||
-        mode === 'structured'
-      ) {
+      if (generates && mode !== 'phase-close') {
         await Promise.all([session.flushMemory(), session.flushMemory()]);
         await session.flushMemory();
         expect(server.requests).toHaveLength(typedTool ? 4 : 3);
@@ -283,6 +312,36 @@ it.each([
         ).toContain(generatedGuidance);
         expect(JSON.parse(transcript).native_thread_id).toBe(session.id);
         if (structured) expect(transcript).toContain('Use pnpm.');
+        if (mode === 'user-media') {
+          expect(JSON.parse(transcript).items).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                role: 'user',
+                content: expect.arrayContaining([
+                  expect.objectContaining({
+                    type: 'input_image',
+                    file_id: 'opaque-user-memory-image',
+                  }),
+                ]),
+              }),
+            ]),
+          );
+        }
+        if (mode === 'hosted-records') {
+          expect(JSON.parse(transcript).items).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: 'file_search_call',
+                status: 'completed',
+                queries: ['fixture memory query'],
+              }),
+            ]),
+          );
+          expect(transcript).not.toContain('image_generation_call');
+        }
+        expect(transcript).not.toContain(
+          'internal_chat_message_metadata_passthrough',
+        );
         if (typedTool) {
           const items = JSON.parse(transcript).items;
           expect(items).toEqual(
@@ -308,7 +367,14 @@ it.each([
                           text: 'verified local tool result',
                         },
                       ]
-                    : JSON.stringify(toolResult),
+                    : mode === 'tool-media'
+                      ? [
+                          expect.objectContaining({
+                            type: 'input_image',
+                            file_id: 'opaque-memory-image',
+                          }),
+                        ]
+                      : JSON.stringify(toolResult),
               }),
             ]),
           );
@@ -352,9 +418,7 @@ it.each([
         await expect(session.flushMemory()).rejects.toThrow(
           mode === 'tool-record-bound'
             ? /256 original records/
-            : mode === 'tool-media'
-              ? /text content/
-              : /1000000 bytes/,
+            : /1000000 bytes/,
         );
         expect(await store.list('')).toEqual([]);
         expect(server.requests).toHaveLength(2);

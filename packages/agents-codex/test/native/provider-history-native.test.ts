@@ -58,7 +58,11 @@ nativeIt(
   30_000,
 );
 
-async function peer(model: ModelServer, rejection?: number) {
+async function peer(
+  model: ModelServer,
+  rejection?: number,
+  allowChangedRoute?: boolean,
+) {
   let posts = 0;
   const wire: Array<[string | undefined, string | undefined]> = [];
   const auth: Array<{
@@ -67,8 +71,19 @@ async function peer(model: ModelServer, rejection?: number) {
     grant: string | string[] | undefined;
   }> = [];
   const reads: Array<[string | undefined, string | undefined]> = [];
+  const routing: Array<{
+    method: string | undefined;
+    header: string | string[] | undefined;
+    query: string | null;
+  }> = [];
   const port = await model.port();
   const front = createServer((request, response) => {
+    const address = new URL(request.url ?? '/', 'http://synthetic.invalid');
+    routing.push({
+      method: request.method,
+      header: request.headers['x-history-route'],
+      query: address.searchParams.get('tenant'),
+    });
     wire.push([request.method, request.url]);
     auth.push({
       method: request.method,
@@ -84,7 +99,17 @@ async function peer(model: ModelServer, rejection?: number) {
           .end(JSON.stringify({ error: 'Rejected account' }));
         return;
       }
-      const match = request.url?.match(
+      if (
+        allowChangedRoute === false &&
+        (request.headers['x-history-route'] !== 'A' ||
+          address.searchParams.get('tenant') !== 'A')
+      ) {
+        response
+          .writeHead(403)
+          .end(JSON.stringify({ error: 'Rejected route' }));
+        return;
+      }
+      const match = address.pathname.match(
         /^\/v1\/(responses|conversations)\/([^/?]+)$/,
       );
       if (!match) {
@@ -145,6 +170,7 @@ async function peer(model: ModelServer, rejection?: number) {
     baseUrl,
     wire,
     reads,
+    routing,
     auth,
     options: {
       baseUrl,
@@ -1370,3 +1396,94 @@ nativeIt.each([false, true])(
   },
   30_000,
 );
+
+for (const kind of ['header', 'query', 'cold'] as const) {
+  nativeIt.each([false, true])(
+    `rebinds provider history through current ${kind} routing (%s)`,
+    async (permitted) => {
+      const model = new ModelServer([
+        [message('Before.')],
+        [message('After.')],
+      ]);
+      const remote = await peer(model, undefined, permitted);
+      await using provider = new NativeProvider(remote.options);
+      const original: ModelSettings = {
+        store: true,
+        extraHeaders: { 'x-history-route': 'A' },
+        extraQuery: { tenant: 'A' },
+      };
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: original,
+      });
+      await using source = await agent.session({
+        providerHistory: { type: 'previous_response' },
+      });
+      await (await source.submit('Before.')).wait();
+      const changed: ModelSettings = {
+        ...(kind !== 'query'
+          ? { extraHeaders: { 'x-history-route': 'B' } }
+          : {}),
+        ...(kind !== 'header' ? { extraQuery: { tenant: 'B' } } : {}),
+      };
+      const finish = async (
+        active: typeof source,
+        override?: ModelSettings,
+      ) => {
+        if (permitted) {
+          await (
+            await active.submit('After.', { modelSettingsOverride: override })
+          ).wait();
+        } else {
+          await expect(
+            (async () => {
+              await (
+                await active.submit('After.', {
+                  modelSettingsOverride: override,
+                })
+              ).wait();
+            })(),
+          ).rejects.toThrow('anchor validation failed');
+          expect(model.requests).toHaveLength(1);
+          await (
+            await active.submit('Retry the original route.', {
+              modelSettingsOverride: original,
+            })
+          ).wait();
+        }
+      };
+      if (kind === 'cold') {
+        const state = await source.saveState();
+        await source.close();
+        const current = new Agent({
+          instructions: 'Continue.',
+          model: 'gpt-5.5',
+          provider,
+          modelSettings: { ...original, ...changed },
+        });
+        await using restored = await current.session({
+          state,
+          providerHistory: { type: 'previous_response', id: 'response-1' },
+        });
+        await finish(restored);
+      } else await finish(source, changed);
+      expect(remote.routing).toContainEqual({
+        method: 'GET',
+        header: kind === 'query' ? 'A' : 'B',
+        query: kind === 'header' ? 'A' : 'B',
+      });
+      expect(model.requests).toHaveLength(2);
+      expect(remote.routing.filter((item) => item.method === 'POST')).toEqual([
+        { method: 'POST', header: 'A', query: 'A' },
+        {
+          method: 'POST',
+          header: permitted && kind !== 'query' ? 'B' : 'A',
+          query: permitted && kind !== 'header' ? 'B' : 'A',
+        },
+      ]);
+    },
+    30_000,
+  );
+}

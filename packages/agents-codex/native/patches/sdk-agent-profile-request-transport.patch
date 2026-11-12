@@ -1,0 +1,43 @@
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index b1c731d..07768eb 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -382,7 +382,7 @@ impl Session {
+         if restored {
+             if let Some((envelope, record)) = previous {
+                 if record.profile_id != target.profile_id
+-                    || record.model != target.model
++                    || record.model.for_persistence() != target.model.for_persistence()
+                     || envelope.item != target.application_instructions.item
+                     || envelope
+                         .metadata
+@@ -464,7 +464,7 @@ impl Session {
+             serde_json::to_value(PersistedProfile {
+                 profile_id: receipt.profile_id.clone(),
+                 epoch,
+-                model: target.model.clone(),
++                model: target.model.for_persistence(),
+             })
+             .map_err(|error| invalid(error.to_string()))?,
+         );
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index a85eb06..4975d0c 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -183,6 +183,16 @@ pub struct AgentProfileModelSettings {
+     pub request_controls: codex_protocol::model_request_controls::ModelRequestControls,
+ }
+ 
++impl AgentProfileModelSettings {
++    /// Keep durable choices while taking request transport from the current caller.
++    pub fn for_persistence(&self) -> Self {
++        Self {
++            request_controls: self.request_controls.for_persistence(),
++            ..self.clone()
++        }
++    }
++}
++
+ /// Immutable in-process profile supplied by an admitted host roster.
+ #[derive(Clone)]
+ pub struct AgentProfile {

@@ -1148,6 +1148,9 @@ impl PythonTools {
         let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
             "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage,
             "run_retry_policy_override":run_retry_policy_override(admission.as_ref())});
+        if let Some(transport) = admission.request_transport() {
+            message["request_transport"] = json!(transport);
+        }
         if let Some(attempt) = &attempt {
             message["attempt_id"] = json!(attempt.id());
             message["attempt"] = json!(attempt.attempt());

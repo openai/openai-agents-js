@@ -641,12 +641,17 @@ pub(super) async fn sentinel_open(
     request_engine: std::sync::Weak<crate::engine::EngineState>,
     request_provider: String,
     connector_cache: Option<&ConnectorCache>,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> napi::Result<NativeModelWebSocket> {
     let provider = route.provider.api_provider().await.map_err(native_error)?;
-    let forwarded = sentinel_headers(headers, &provider)?;
-    let url = provider
+    let mut forwarded = sentinel_headers(headers, &provider)?;
+    let mut url = provider
         .websocket_url_for_path("responses")
-        .map_err(native_error)?;
+        .map_err(native_error)?
+        .to_string();
+    codex_api::prepare_request_transport(&url, request_transport)
+        .map_err(native_error)?
+        .apply_parts(&mut url, &mut forwarded);
     let mut request = url
         .as_str()
         .into_client_request()
@@ -799,6 +804,9 @@ pub(crate) async fn open_message_transport(
         Arc::downgrade(engine),
         provider_id.clone(),
         connector_cache,
+        request
+            .extensions()
+            .get::<codex_protocol::model_request_transport::RequestTransportOverrides>(),
     )
     .await
     .map_err(|_| message_transport_error())?;
