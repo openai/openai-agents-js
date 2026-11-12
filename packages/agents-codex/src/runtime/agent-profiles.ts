@@ -263,6 +263,9 @@ export function captureProfileRuntimes(
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
       mcp_result_tools: policies.servers,
       mcp_metadata_tools: policies.metadata_servers,
+      ...(policies.discovery_servers === undefined
+        ? {}
+        : { mcp_discovery_tools: policies.discovery_servers }),
       mcp_tools: Object.fromEntries(
         mcp.map((server) => [
           server.name,
