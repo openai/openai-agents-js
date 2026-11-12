@@ -184,6 +184,8 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 ) => string | Promise<string>;
 
 export interface ToolCallContext<Context = unknown> {
+  /** Exact JSON text of an admitted direct function call, before input policy. */
+  readonly rawArguments?: string;
   /** Provider conversation snapshot captured when this Realtime call was issued. */
   readonly history?: readonly Readonly<Record<string, unknown>>[];
   /** Detached speech usage at callback creation; excludes backend thread usage. */
@@ -652,7 +654,8 @@ export function tool<
   description?: string;
   /**
    * Standard Schema requires strict mode and synchronous validation.
-   * Validated values may contain primitives, plain objects, arrays, and dates.
+   * Input policy and approval require detachable values such as plain objects,
+   * arrays, and dates. Execution-only tools may also receive opaque values.
    */
   parameters: T;
   /** Validate the callback result before converting it to model-visible content. */
@@ -758,6 +761,8 @@ export function tool<
   let parseInput: (value: unknown) => ToolParameterOutput<T>;
   const standardSchema =
     !isZodObject(parameters) && !(parameters instanceof z.ZodType);
+  const requireDetachedArguments =
+    before !== undefined || Boolean(options.needsApproval);
   if (!standardSchema) {
     const zodParameters = parameters as z.ZodType;
     if (strict) {
@@ -782,15 +787,17 @@ export function tool<
     parseInput = (value) =>
       copyApprovalInput(
         prepared.parser(JSON.stringify(value)),
-        true,
+        requireDetachedArguments,
       ) as ToolParameterOutput<T>;
   }
-  const snapshotEffectiveArguments = (parsed: ToolParameterOutput<T>) =>
-    Object.freeze(
-      standardSchema
-        ? copyApprovalInput(parsed, true)
-        : { ...(parsed as Record<string, unknown>) },
+  const snapshotEffectiveArguments = (parsed: ToolParameterOutput<T>) => {
+    const snapshot = standardSchema
+      ? copyApprovalInput(parsed, requireDetachedArguments)
+      : { ...(parsed as Record<string, unknown>) };
+    return (
+      snapshot === parsed ? snapshot : Object.freeze(snapshot)
     ) as Readonly<ToolContextArguments<T>>;
+  };
   const recoverRunError = async (
     phase: ToolErrorContext['phase'],
     error: unknown,

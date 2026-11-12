@@ -308,3 +308,122 @@ it('rejects asynchronous Standard Schema validation before native callback execu
   expect(server.requests).toHaveLength(1);
   server.assertExhausted();
 });
+
+class OwnedSchemaValue {
+  visits = 0;
+  constructor(readonly value: string) {}
+  visit() {
+    this.visits += 1;
+  }
+}
+
+it.each(['plain', 'managed'] as const)(
+  'preserves an execution-only schema class without freezing it (%s)',
+  async (entrypoint) => {
+    const owned = new OwnedSchemaValue('parsed');
+    const { parameters } = schema();
+    const opaque: StandardSchemaWithJSON<Input, OwnedSchemaValue> = {
+      '~standard': {
+        ...parameters['~standard'],
+        types: undefined as unknown as {
+          input: Input;
+          output: OwnedSchemaValue;
+        },
+        validate: () => ({ value: owned }),
+      },
+    };
+    const server = new ModelServer([
+      [call('external', { value: 'raw' }, { callId: 'opaque-call' })],
+      [message('done')],
+    ]);
+    await using selected = await provider(server);
+    const execute = vi.fn(
+      (input: OwnedSchemaValue, context: { effectiveArguments: unknown }) => {
+        expect(input).toBe(owned);
+        expect(context.effectiveArguments).toBe(owned);
+        expect(Object.isFrozen(owned)).toBe(false);
+        input.visit();
+        return input.value;
+      },
+    );
+    const agent = new Agent({
+      instructions: 'Use external.',
+      model: 'gpt-5',
+      provider: selected,
+      tools: [
+        tool({ name: 'external', strict: true, parameters: opaque, execute }),
+      ],
+    });
+    const result =
+      entrypoint === 'plain'
+        ? await agent.run('begin')
+        : await (async () => {
+            await using session = await agent.session();
+            return await (await session.submit('begin')).wait();
+          })();
+    expect(result.finalOutput).toBe('done');
+    expect(execute).toHaveBeenCalledExactlyOnceWith(owned, expect.anything());
+    expect(owned.visits).toBe(1);
+    expect(Object.isFrozen(owned)).toBe(false);
+    expect(server.requests[1].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          call_id: 'opaque-call',
+          output: 'parsed',
+        }),
+      ]),
+    );
+    server.assertExhausted();
+  },
+);
+
+it.each(['before', 'approval'] as const)(
+  'keeps opaque schema values out of the %s policy callback',
+  async (policy) => {
+    const owned = new OwnedSchemaValue('parsed');
+    const { parameters } = schema();
+    const opaque: StandardSchemaWithJSON<Input, OwnedSchemaValue> = {
+      '~standard': {
+        ...parameters['~standard'],
+        types: undefined as unknown as {
+          input: Input;
+          output: OwnedSchemaValue;
+        },
+        validate: () => ({ value: owned }),
+      },
+    };
+    const server = new ModelServer([
+      [call('external', { value: 'raw' }, { callId: 'opaque-call' })],
+    ]);
+    await using selected = await provider(server);
+    const before = vi.fn(() => ({ action: 'allow' as const }));
+    const needsApproval = vi.fn(() => false);
+    const execute = vi.fn(() => 'unreachable');
+    const agent = new Agent({
+      instructions: 'Use external.',
+      model: 'gpt-5',
+      provider: selected,
+      tools: [
+        tool({
+          name: 'external',
+          strict: true,
+          parameters: opaque,
+          ...(policy === 'before' ? { before } : { needsApproval }),
+          execute,
+        }),
+      ],
+    });
+    await expect(agent.run('begin')).rejects.toThrow(
+      policy === 'before'
+        ? 'Standard Schema tool output cannot be detached'
+        : 'Manual tool arguments failed validation',
+    );
+    expect(before).not.toHaveBeenCalled();
+    expect(needsApproval).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(owned.visits).toBe(0);
+    expect(Object.isFrozen(owned)).toBe(false);
+    server.assertExhausted();
+  },
+);
