@@ -269,8 +269,10 @@ export async function openSession(
     const current = decode(z.array(jsonObject), catalog.specsJson);
     for (const call of pending) {
       const select = (specs: typeof prior) =>
-        specs.find(
-          (spec) => spec.type === 'function' && spec.name === call.name,
+        specs.find((spec) =>
+          call.shell
+            ? call.name === 'shell' && spec.type === 'shell'
+            : spec.type === 'function' && spec.name === call.name,
         );
       const oldSpec = select(prior);
       const currentSpec = select(current);
