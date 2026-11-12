@@ -6064,8 +6064,19 @@ impl NativeModelResponse {
 #[napi(js_name = "CODEX_REVISION")]
 pub const CODEX_REVISION: &str = include_str!("../CODEX_REVISION").trim_ascii();
 
+#[napi(js_name = "initialize_sdk_client")]
+pub fn initialize_sdk_client(version: String) -> napi::Result<()> {
+    match codex_login::default_client::set_default_client_version(version) {
+        Ok(()) | Err(codex_login::default_client::SetOriginatorError::AlreadyInitialized) => Ok(()),
+        Err(codex_login::default_client::SetOriginatorError::InvalidHeaderValue) => {
+            Err(napi::Error::from_reason("Invalid SDK package version"))
+        }
+    }
+}
+
 #[napi_derive::module_init]
 fn init() {
+    let _ = codex_login::default_client::set_default_originator("openai_agents_js".to_owned());
     napi::bindgen_prelude::register_async_runtime(node_runtime::NodeRuntime::default());
 }
 

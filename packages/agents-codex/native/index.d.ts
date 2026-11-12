@@ -539,6 +539,7 @@ export function register_trace_credentials(headers_json: string): string;
 export function release_trace_credentials(ref: string): void;
 export function _embedded_commands(): string;
 export const CODEX_REVISION: string;
+export function initialize_sdk_client(version: string): void;
 
 declare const binding: {
   _decision_questions: typeof _decision_questions;
@@ -588,6 +589,7 @@ declare const binding: {
   release_trace_credentials: typeof release_trace_credentials;
   shutdown_telemetry: typeof shutdown_telemetry;
   _embedded_commands: typeof _embedded_commands;
+  initialize_sdk_client: typeof initialize_sdk_client;
   CODEX_REVISION: typeof CODEX_REVISION;
 };
 export default binding;

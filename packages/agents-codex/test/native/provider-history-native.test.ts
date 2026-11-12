@@ -65,6 +65,11 @@ async function peer(
 ) {
   let posts = 0;
   const wire: Array<[string | undefined, string | undefined]> = [];
+  const identities: Array<{
+    method: string | undefined;
+    originator: string | string[] | undefined;
+    userAgent: string | undefined;
+  }> = [];
   const auth: Array<{
     method: string | undefined;
     authorization: string | undefined;
@@ -85,6 +90,11 @@ async function peer(
       query: address.searchParams.get('tenant'),
     });
     wire.push([request.method, request.url]);
+    identities.push({
+      method: request.method,
+      originator: request.headers.originator,
+      userAgent: request.headers['user-agent'],
+    });
     auth.push({
       method: request.method,
       authorization: request.headers.authorization,
@@ -169,6 +179,7 @@ async function peer(
   return {
     baseUrl,
     wire,
+    identities,
     reads,
     routing,
     auth,
@@ -181,6 +192,41 @@ async function peer(
     },
   };
 }
+
+nativeIt(
+  'identifies the SDK on provider history anchor GET and model POST requests',
+  async () => {
+    const model = new ModelServer([[message('Finished.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: true },
+    });
+    await agent.run('Continue.', {
+      providerHistory: { type: 'previous_response', id: 'response_external' },
+    });
+    const { version } = JSON.parse(
+      await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+    );
+    expect(
+      remote.identities.map(({ method, originator, userAgent }) => ({
+        method,
+        originator,
+        client: userAgent?.split(' ', 1)[0],
+      })),
+    ).toEqual(
+      ['GET', 'POST'].map((method) => ({
+        method,
+        originator: 'openai_agents_js',
+        client: `openai_agents_js/${version}`,
+      })),
+    );
+  },
+  30_000,
+);
 
 nativeIt(
   'advances a response chain with each native tool effect once',

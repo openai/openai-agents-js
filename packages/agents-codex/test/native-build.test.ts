@@ -27,6 +27,29 @@ afterEach(() => {
 });
 
 describe('native addon loading', () => {
+  it('initializes native identity with the installed package version before exposing the addon', () => {
+    const versions: string[] = [];
+    const compiled = {
+      initialize_sdk_client: (version: string) => versions.push(version),
+    };
+    const mod = { exports: {} };
+    runInNewContext(
+      readFileSync(resolve(import.meta.dirname, '../native/index.js'), 'utf8'),
+      {
+        require: (id: string) => {
+          if (id === './codex.node') return compiled;
+          if (id === '../package.json') return { version: '0.21.0-alpha.42' };
+          return { join };
+        },
+        module: mod,
+        __dirname: '/fixture/native',
+        process,
+      },
+    );
+    expect(versions).toEqual(['0.21.0-alpha.42']);
+    expect(mod.exports).toBe(compiled);
+  });
+
   it('preserves a missing system library reason in the diagnostic message', () => {
     const original = Object.assign(
       new Error(
@@ -801,7 +824,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         }
         // Exercise the real CommonJS binding's runtime defaults for the same
         // simulated platform; the fixture Rust output cannot be loaded by Node.
-        const compiled = {};
+        const compiled = { initialize_sdk_client: () => {} };
         const mod = {
           exports: {} as { _packaged_runtime(): Record<string, string> },
         };

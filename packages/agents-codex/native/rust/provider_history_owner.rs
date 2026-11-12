@@ -69,9 +69,12 @@ pub(crate) async fn resolve(
     // Scope identity uses the actual provider, never the private loopback URL.
     // Current credentials remain live memory and are excluded from snapshots.
     provider.headers = headers.clone();
+    // Wire attribution stays outside the durable provider identity.
+    let mut request_headers = codex_login::default_client::default_headers();
+    request_headers.extend(headers);
     Ok(ModelProviderHistoryRoute {
         provider,
         transport: route.transport.clone(),
-        headers,
+        headers: request_headers,
     })
 }

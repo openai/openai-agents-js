@@ -1051,7 +1051,11 @@
     {
       "path": "sdk-unknown-turn-receipt.patch",
       "sha256": "523377e7592e19dfcf39a0f5f12688194364e462222a72ebafdcd3d4e964c0c6"
+    },
+    {
+      "path": "sdk-client-version.patch",
+      "sha256": "1fae03966cd574d2522aea5e036fc4fdd02bba45716952cf7991cae32ec642b1"
     }
   ],
-  "result_tree": "9ce245d52957bec2bfd0dd9192891ae5b66970e7"
+  "result_tree": "b1a8edbe6268ec3214d71e81a9ca4e803637f3b7"
 }
