@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: reload TLS trust for each default WebSocket run (#2527)
+fix: reload TLS trust for one-shot WebSocket `Agent.run` calls without an explicit `NativeRuntime` (#2527)
