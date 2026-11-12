@@ -76,6 +76,7 @@ import {
   binding,
   checkEncodedCapacity,
   type JsonObject,
+  type JsonValue,
 } from './binding';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import {
@@ -2386,4 +2387,23 @@ export function captureRealtimeAgentGraph(
     captureTools(splitToolDeclarations(declaration.tools).tools),
     declaration.instructions ?? '',
   );
+}
+
+/** @internal Existing one-shot opening for the Conversations history owner. */
+export function openOwnedHistorySession<Context, Output>(
+  agent: Agent<Context, Output>,
+  input: JsonValue[],
+  ...args: SessionArguments<Context>
+): Promise<CoreSession<Output, Context>> {
+  const options = {
+    ...args[0],
+    [ownedRun]: {
+      input,
+      decisions: captureDecisionProvider(agent.decisions),
+      beforeComplete: agent.beforeComplete,
+    },
+  } as OwnedSessionOptions<Context>;
+  return agent.session(...([options] as SessionArguments<Context>)) as Promise<
+    CoreSession<Output, Context>
+  >;
 }
