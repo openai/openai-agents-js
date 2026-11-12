@@ -274,7 +274,11 @@ export class SandboxMemoryOwner {
     if (this.enqueuedRevision !== snapshot.revision) {
       await this.operation('sandbox.memory.enqueue_rollout', async () => {
         await this.storage.ensureLayout(this.config);
-        await this.storage.appendJsonl(rolloutPath, transcript);
+        // Each revision is a complete snapshot; keep one bounded latest record.
+        await this.storage.writeText(
+          rolloutPath,
+          `${boundedJson(transcript)}\n`,
+        );
       });
       this.enqueuedRevision = snapshot.revision;
     }

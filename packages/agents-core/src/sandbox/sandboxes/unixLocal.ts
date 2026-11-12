@@ -225,6 +225,7 @@ export class UnixLocalSandboxSession<
   private stopPromise?: Promise<void>;
   private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
+  readonly readFileNoFollow?: (args: ReadFileArgs) => Promise<Uint8Array>;
   private readonly workspaceCleanupPath?: string;
 
   private get files(): UnixLocalFiles {
@@ -251,6 +252,8 @@ export class UnixLocalSandboxSession<
       args[preparedFileIO] === null
         ? null
         : (args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection));
+    if (this.hostFiles)
+      this.readFileNoFollow = this.readFileWithoutLinks.bind(this);
     this.state = args.state;
     // Low-level session construction is an explicit trusted host operation.
     // Keep cleanup independent of subsequent changes to the public state object.
@@ -523,7 +526,7 @@ export class UnixLocalSandboxSession<
     );
   }
 
-  async readFileNoFollow(args: ReadFileArgs): Promise<Uint8Array> {
+  private async readFileWithoutLinks(args: ReadFileArgs): Promise<Uint8Array> {
     this.assertSessionUsable();
     if (
       args.maxBytes !== undefined &&

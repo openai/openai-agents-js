@@ -496,3 +496,85 @@ it('retires the native memory callback guard for delayed application work', asyn
     await peer.close();
   }
 }, 30000);
+
+it('bounds the latest native rollout across successive large text snapshots', async () => {
+  const peer = await startPublicExecutor();
+  const script = Array.from({ length: 4 }, () => [
+    [message('Remember pnpm.')],
+    [
+      message(
+        JSON.stringify({
+          rollout_summary: 'pnpm',
+          rollout_slug: 'pnpm',
+          raw_memory: 'pnpm',
+        }),
+      ),
+    ],
+    [message(JSON.stringify({ summary: 'pnpm', memory: 'pnpm' }))],
+  ]).flat();
+  const server = new ModelServer(script);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-provider',
+    supportsWebsockets: false,
+  });
+  let workspace = '';
+  let session: Session | undefined;
+  try {
+    const source = sandboxEnvironment({
+      client: new UnixLocalSandboxClient(),
+      manifest: new Manifest({}),
+      memory: {
+        phaseOne: new Agent({
+          provider,
+          model: 'gpt-5',
+          instructions: 'Extract memory.',
+        }),
+        phaseTwo: new Agent({
+          provider,
+          model: 'gpt-5',
+          instructions: 'Consolidate memory.',
+        }),
+      },
+      connect: async (resource) => {
+        workspace = resource.state.workspaceRootPath;
+        return Environment.lease(
+          new Environment({
+            url: peer.url,
+            headers: peer.headers,
+            cwd: workspace,
+            tools: [],
+          }),
+          async () => {},
+        );
+      },
+    });
+    session = await new Agent({
+      provider,
+      model: 'gpt-5',
+      instructions: 'Remember project context.',
+    }).session({ environment: source });
+    for (let index = 0; index < 4; index++) {
+      await (
+        await session.submit(
+          index === 0 ? 'x'.repeat(350_000) : `Continue ${index}.`,
+        )
+      ).wait();
+      await session.flushMemory();
+    }
+    const transcript = await readFile(
+      join(workspace, 'sessions', `${session.id}.jsonl`),
+      'utf8',
+    );
+    expect(Buffer.byteLength(transcript)).toBeLessThan(1_000_000);
+    expect(transcript.trim().split('\n')).toHaveLength(1);
+    expect(transcript).toContain('Continue 3.');
+    expect(server.requests).toHaveLength(12);
+    server.assertExhausted();
+  } finally {
+    await session?.close();
+    await peer.close();
+  }
+}, 60000);

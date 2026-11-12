@@ -61,6 +61,13 @@ describe.skipIf(process.platform === 'win32')(
       await rm(root, { recursive: true, force: true });
     });
 
+    it('does not advertise host-only no-follow reads on the container backend', async () => {
+      expect(session.readFileNoFollow).toBeUndefined();
+      expect(
+        Buffer.from(await session.readFile({ path: 'note.txt' })).toString(),
+      ).toBe('before\n');
+    });
+
     it('isolates file helpers from application environment and retains mount environment', async () => {
       const manifest = new Manifest({
         root: workspace,
