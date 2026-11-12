@@ -1008,6 +1008,7 @@ pub(super) enum ModelDelivery {
         finish: oneshot::Sender<ModelStreamFinish>,
         projection: codex_api::ApplicationModelStream,
         observe_raw_chat: bool,
+        chat_stream: bool,
     },
 }
 struct ModelStreamCursor {
@@ -1302,6 +1303,7 @@ impl PythonTools {
                 finish,
                 projection: codex_api::ApplicationModelStream::new(observe_raw && !chat_stream),
                 observe_raw_chat: observe_raw && chat_stream,
+                chat_stream,
             }),
         ) else {
             unreachable!()
@@ -1489,7 +1491,10 @@ impl PythonTools {
                 }))
                 .map_err(|_| anyhow::anyhow!("Expired model producer reply")),
             ModelDelivery::Streaming {
-                finish, projection, ..
+                finish,
+                projection,
+                chat_stream,
+                ..
             } => {
                 let usage = projection.completed_usage().cloned();
                 let mut result = projection.finish(
@@ -1497,6 +1502,16 @@ impl PythonTools {
                         .is_err()
                         .then_some("Native model stream producer failed"),
                 );
+                if chat_stream
+                    && let Ok(events) = &mut result
+                    && let Some(codex_api::ResponseEvent::Completed {
+                        usage_metadata: Some(usage_metadata),
+                        ..
+                    }) = events.last_mut()
+                {
+                    // Chat synthesizes this completion for Core's normalized counters.
+                    usage_metadata.metadata = None;
+                }
                 if let (Some(attempt), Some(usage)) = (&attempt, usage) {
                     if let Err(error) = attempt.report_usage(usage) {
                         if result.is_ok() {

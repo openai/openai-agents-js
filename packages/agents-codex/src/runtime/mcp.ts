@@ -3,6 +3,7 @@ import { projectMcpToolNames } from './mcp-names';
 /** @internal */
 export { projectMcpToolNames } from './mcp-names';
 import {
+  encode,
   jsonObject,
   losslessJsonObjectSchema,
   type JsonObject,
@@ -675,6 +676,44 @@ export function selectHttpLeaves(
   });
   mcpNameSources.set(selected, mcpNameSources.get(server) ?? server.tools);
   return selected;
+}
+
+/** @internal Derive the operation-active roster from captured descriptors. */
+export function operationMcpRoster(
+  bindings: readonly McpTool[],
+  defaults: readonly McpTool[],
+  active: readonly McpTool[],
+  names?: readonly { namespace: string; name: string }[],
+): McpTool[] {
+  const selectedNames =
+    names === undefined
+      ? undefined
+      : new Set(names.map((name) => encode([name.namespace, name.name])));
+  return bindings.flatMap((server) => {
+    if (!(server instanceof HttpMCP) || server.activation !== 'operation')
+      return defaults.filter(
+        (selected) =>
+          selected.name === server.name &&
+          (selected.tools.length > 0 ||
+            active.some((active) => active.name === selected.name)),
+      );
+    if (!server.tools.length)
+      return active.filter(
+        (active) =>
+          active.name === server.name &&
+          defaults.some((selected) => selected.name === server.name),
+      );
+    const projected = selectedNames === undefined ? [] : mcpToolNames([server]);
+    const tools =
+      selectedNames === undefined
+        ? (defaults.find((selected) => selected.name === server.name)?.tools ??
+          [])
+        : server.tools.filter((_raw, index) => {
+            const name = projected[index];
+            return selectedNames.has(encode([name.namespace, name.name]));
+          });
+    return tools.length ? [selectHttpLeaves(server, tools)] : [];
+  });
 }
 
 /** @internal Activate one ordinary resource connection without granting tools. */
