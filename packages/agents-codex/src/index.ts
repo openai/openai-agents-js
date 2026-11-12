@@ -51,6 +51,7 @@ export type {
 export type {
   NativeProviderOptions,
   ModelSettings,
+  HostedToolChoice,
   ProviderCompactionPolicy,
 } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';

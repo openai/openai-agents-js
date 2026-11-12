@@ -6221,6 +6221,7 @@ export class Session<OutputT = string, Context = unknown> {
           ...(repairSettingsOverride.request_controls as JsonObject),
         };
         delete controls.named_tool_choice;
+        delete controls.hosted_tool_choice;
         delete controls.reset_tool_choice;
         repairSettingsOverride.request_controls = controls;
       }
