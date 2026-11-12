@@ -905,9 +905,13 @@
       "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
     },
     {
+      "path": "sdk-application-apply-patch.patch",
+      "sha256": "5426ca44464782995b1eafaaa96356bf5f30082ab49168d7aa886cea6131fd09"
+    },
+    {
       "path": "sdk-trace-provider-restart.patch",
       "sha256": "f34d52ce9a626d24097742c98dd36bd599313bbe8bf3c5a67e6c4386e5770ec3"
     }
   ],
-  "result_tree": "fabdd13730131af39ff25f09e9305b2e001b7bee"
+  "result_tree": "f3b2ae66c10c14fd46209ca5193e27f0d15244b7"
 }
