@@ -404,6 +404,30 @@ impl PythonTools {
     }
 }
 
+fn resolve_tool(
+    input: &ToolCompletionInput<'_>,
+    tools: &PythonTools,
+    catalog: &StepCatalog,
+    name: &ToolName,
+) -> std::result::Result<Option<(Arc<Generation>, usize)>, String> {
+    let profile = tools
+        .source_profile(Some(input.step_store))
+        .map_err(|error| error.to_string())?;
+    Ok(std::iter::once(catalog.generation.clone())
+        .chain(admitted_client_generations(
+            input.thread_store,
+            &catalog.generation,
+            &profile,
+        ))
+        .find_map(|generation| {
+            let slot = generation
+                .entries
+                .iter()
+                .position(|entry| entry.name.clone().with_default_namespace() == *name)?;
+            Some((generation, slot))
+        }))
+}
+
 pub(super) fn hold(input: ToolCompletionInput<'_>) -> bool {
     let Some(tools) = input.thread_store.get::<PythonTools>() else {
         return false;
@@ -421,17 +445,12 @@ pub(super) fn hold(input: ToolCompletionInput<'_>) -> bool {
         return false;
     };
     let name = ToolName::new(namespace.clone(), name.clone()).with_default_namespace();
-    let Some(slot) = catalog
-        .generation
-        .entries
-        .iter()
-        .position(|entry| entry.name.clone().with_default_namespace() == name)
-    else {
+    let Ok(Some((generation, slot))) = resolve_tool(&input, &tools, &catalog, &name) else {
         return false;
     };
-    if !catalog.generation.terminal_slots.contains(&slot)
+    if !generation.terminal_slots.contains(&slot)
         || !tools.current_completion_owner(input.thread_store.level_id())
-        || !tools.admits_generation(&catalog.generation)
+        || !tools.admits_generation(&generation)
     {
         return false;
     }
@@ -443,7 +462,7 @@ pub(super) fn hold(input: ToolCompletionInput<'_>) -> bool {
         .any(|key| {
             key.reply.thread == input.thread_store.level_id()
                 && key.reply.instance == tools.instance
-                && key.reply.generation == catalog.generation.id
+                && key.reply.generation == generation.id
                 && key.reply.slot == slot
                 && key.turn == input.turn_id
                 && key.call == *call_id
@@ -477,19 +496,14 @@ pub(super) async fn propose(
         return Ok(None);
     };
     let name = ToolName::new(namespace.clone(), name.clone()).with_default_namespace();
-    let Some(slot) = catalog
-        .generation
-        .entries
-        .iter()
-        .position(|entry| entry.name.clone().with_default_namespace() == name)
-    else {
+    let Some((generation, slot)) = resolve_tool(&input, &tools, &catalog, &name)? else {
         return Ok(None);
     };
-    if !catalog.generation.terminal_slots.contains(&slot) {
+    if !generation.terminal_slots.contains(&slot) {
         return Ok(None);
     }
     if !tools.current_completion_owner(input.thread_store.level_id())
-        || !tools.admits_generation(&catalog.generation)
+        || !tools.admits_generation(&generation)
     {
         return Err("Expired terminal tool generation".into());
     }
@@ -501,7 +515,7 @@ pub(super) async fn propose(
         .find(|key| {
             key.reply.thread == input.thread_store.level_id()
                 && key.reply.instance == tools.instance
-                && key.reply.generation == catalog.generation.id
+                && key.reply.generation == generation.id
                 && key.reply.slot == slot
                 && key.turn == input.turn_id
                 && key.call == *call_id
@@ -531,7 +545,7 @@ pub(super) async fn propose(
         reply: ReplyKey {
             thread: input.thread_store.level_id().to_owned(),
             instance: tools.instance.clone(),
-            generation: catalog.generation.id,
+            generation: generation.id,
             slot,
             manual_grant: None,
         },
@@ -552,11 +566,12 @@ pub(super) async fn propose(
     let id = tools.family.next_step.fetch_add(1, Ordering::Relaxed);
     let (sender, receive) = oneshot::channel();
     // These are data sent for host conversion. Only the owned nonce can reply.
-    let entry = &catalog.generation.entries[slot];
+    let entry = &generation.entries[slot];
     let mut request = json!({"id":input.turn_id,"msg":{
         "type":"_sdk_tool_completion", "thread":input.thread_store.level_id(),
+        "_sdk_python_tool":key.reply,
         "instance":tools.instance, "turn_id":input.turn_id,
-        "generation":catalog.generation.id.to_string(), "request_id":id.to_string(),
+        "generation":generation.id.to_string(), "request_id":id.to_string(),
         "native_step":input.step_store.level_id(), "slot":slot,
         "tool":{"name":entry.name.name,"namespace":entry.name.namespace},
         "call_id":call_id, "output":output.body, "model":input.model, "continuation_count":input.continuation_count, "guard_only":guard_only
@@ -578,7 +593,7 @@ pub(super) async fn propose(
             .tool_proposal
             .lock()
             .expect("terminal proposal poisoned") = Some(TerminalProposal {
-            generation: catalog.generation.clone(),
+            generation: generation.clone(),
             key: key.clone(),
             step: input.step_store.level_id().to_owned(),
             request_id: id,
@@ -598,7 +613,7 @@ pub(super) async fn propose(
             id,
             Pending {
                 key,
-                generation: catalog.generation.clone(),
+                generation: generation.clone(),
                 step: input.step_store.level_id().to_owned(),
                 sender,
                 callback: None,
@@ -671,7 +686,7 @@ pub(super) async fn propose(
     }
     let decision = received??;
     if !tools.current_completion_owner(input.thread_store.level_id())
-        || !tools.admits_generation(&catalog.generation)
+        || !tools.admits_generation(&generation)
     {
         return Err("Expired terminal tool generation".into());
     }

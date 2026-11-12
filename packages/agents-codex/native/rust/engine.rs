@@ -1161,6 +1161,9 @@ impl EngineState {
                         .thread_extension_init
                         .get::<crate::agent_profiles::OpeningProfiles>(
                     ) {
+                        let source =
+                            crate::agent_profiles::restore_source(&opening, &history.history)?;
+                        opening.validate_pending_source(&source)?;
                         Some(crate::agent_profiles::validate_restored(
                             &opening,
                             &history.history,
