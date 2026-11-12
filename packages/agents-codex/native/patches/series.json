@@ -995,7 +995,11 @@
     {
       "path": "sdk-tracing-annotation-shapes.patch",
       "sha256": "a8ca9902c1041e980d996af7235c31ff00aba450a3b606053add632982c6d0ee"
+    },
+    {
+      "path": "sdk-independent-websocket-base.patch",
+      "sha256": "bcb4ba165d5d56bfbd29f31405514224c96282ccf67a34d48f04af99d8809601"
     }
   ],
-  "result_tree": "c68a8f3f7260417faa9270eb0c7d6e2306777437"
+  "result_tree": "ecf7edd9f507c68993edd485360937507d07e505"
 }
