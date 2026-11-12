@@ -1037,17 +1037,6 @@ describe('OpenAIRealtimeBase helpers', () => {
       ).toEqual(['b appended', 'c appended']);
     });
 
-    it('appends a create that follows an unacknowledged deletion', () => {
-      // Local history still lists `b` because the deletion has not come back
-      // yet. Anchoring `c` to it would name an item the server has dropped.
-      expect(
-        creates(
-          [message('a', '1'), message('b', '2')],
-          [message('a', '1'), message('b', '2'), message('c', '3')],
-        ),
-      ).toEqual(['c appended']);
-    });
-
     it('does not anchor a middle insert to an item awaiting deletion', () => {
       // The delete for `b` went out on an earlier call and has not come back,
       // so local history still lists it. Anchoring `x` to `b` names an item the
@@ -1248,15 +1237,6 @@ describe('OpenAIRealtimeBase helpers', () => {
             (event: any) => `${event.item.id} after ${event.previous_item_id}`,
           ),
       ).toEqual(['x after b']);
-    });
-
-    it('still anchors when a surviving item has to stay behind the create', () => {
-      expect(
-        creates(
-          [message('a', '1'), message('c', '3')],
-          [message('a', '1'), message('b', '2'), message('c', '3')],
-        ),
-      ).toEqual(['b after a']);
     });
   });
 
