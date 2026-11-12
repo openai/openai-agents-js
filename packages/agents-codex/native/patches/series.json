@@ -1,5 +1,5 @@
 {
-  "result_tree": "02b90bedf0f6dd6288f344559fc04b278fe62bc2",
+  "result_tree": "76518c820fc629dde7f6c603964944c461bb45f7",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -892,6 +892,10 @@
     {
       "path": "sdk-native-cancellation-receipt.patch",
       "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
+    },
+    {
+      "path": "sdk-provider-hosted-mcp.patch",
+      "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
     },
     {
       "path": "sdk-chat-completions-raw-response.patch",

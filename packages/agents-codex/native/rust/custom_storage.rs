@@ -125,21 +125,24 @@ fn identities(
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
             RolloutItem::ResponseItem(row) => {
                 let call_id = match &row.item {
-                    ResponseItem::FunctionCall { call_id, .. }
-                    | ResponseItem::CustomToolCall { call_id, .. }
-                    | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
                     ResponseItem::ShellCall {
                         provider_fields, ..
                     } if crate::local_reconciliation::is_application_shell_call(row) => {
                         provider_fields.get("call_id").and_then(Value::as_str)
                     }
-                    _ => None,
+                    item => crate::local_reconciliation::invocation_id(item),
                 };
                 if let Some(call_id) = call_id {
                     let identity = (
                         row.item.turn_id().unwrap_or(&turn).to_owned(),
                         call_id.to_owned(),
                     );
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
+                    {
+                        return Err(error("ambiguous original Hosted MCP approval identity"));
+                    }
                     if let Some(previous) = calls.get(&identity)
                         && (matches!(
                             previous,
@@ -757,7 +760,9 @@ impl ThreadStore for CustomThreadStore {
             self.check_provider(Some(&params.metadata.model_provider))?;
             self.open(params.thread_id, true).await?;
             params.history = None;
-            self.projection.resume_thread(params).await
+            let mut history = self.projection.resume_thread(params).await?;
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
+            Ok(history)
         })
     }
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {

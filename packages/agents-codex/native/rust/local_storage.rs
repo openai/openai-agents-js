@@ -1254,17 +1254,18 @@ impl ThreadStore for LocalChecklistStore {
                         "prepared local writer does not match this opening",
                     ));
                 }
-                let history = expected.history().clone();
+                let mut history = expected.history().clone();
                 writer.prepared = None;
                 writer.resume_cleanup_pending = false;
                 expected.transferred.store(true, Ordering::Release);
                 // No await after consumption: Core now owns its init cleanup.
+                crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
                 return Ok(history);
             }
             if writers.contains_key(&id) {
                 return Err(checklist_error("local thread already has a native writer"));
             }
-            let history = self.inner.resume_thread(params).await?;
+            let mut history = self.inner.resume_thread(params).await?;
             {
                 let mut pending = self
                     .resume_admissions
@@ -1375,6 +1376,7 @@ impl ThreadStore for LocalChecklistStore {
                 self.hold_startup_close_probe(Some(id), StartupClosePoint::RegisteredResume)
                     .await;
             }
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
             Ok(history)
         };
         #[cfg(test)]
