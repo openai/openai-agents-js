@@ -9,7 +9,7 @@ import {
 } from '../../../src';
 
 async function main() {
-  const [statePath, effectsPath, baseUrl, decision, turnId, mode] =
+  const [statePath, effectsPath, baseUrl, decision, turnId, mode, maxRequests] =
     process.argv.slice(2);
   const guarded = mode === 'guarded';
   const predicates: string[] = [];
@@ -56,6 +56,10 @@ async function main() {
   });
   await using session = await agent.session({
     state: parseSessionState(readFileSync(statePath, 'utf8')),
+    resumeBudget:
+      maxRequests === undefined
+        ? undefined
+        : { maxRequests: Number(maxRequests) },
   });
   const turn = session.restoredTurn;
   if (!turn || turn.turnId !== turnId)

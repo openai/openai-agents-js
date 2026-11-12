@@ -12,6 +12,10 @@ export type {
 export { applyDiff } from '@openai/agents-core/utils';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
+export type {
+  RequestAttemptCount,
+  RequestAttempts,
+} from './runtime/request-attempts';
 export { Agent, Runner } from './runtime/public-agent';
 export type {
   AgentOptions,
@@ -204,6 +208,7 @@ export type { RunBudget } from './runtime/run-budget';
 export type {
   Observation,
   ObservationOptions,
+  OutputAccepted,
   ExecutionItemSummary,
   ObservedEvent,
   ModelRequestDispatching,
