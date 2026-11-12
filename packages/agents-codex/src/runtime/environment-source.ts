@@ -1,5 +1,8 @@
 import type { SandboxSkillLease } from './sandbox-skills';
-import type { SandboxMemoryOwner } from './sandbox-memory';
+import type {
+  SandboxMemoryOwner,
+  SandboxMemoryTerminal,
+} from './sandbox-memory';
 import type { CanonicalHistorySnapshot } from './history';
 import type { ManagedWorkspaceBinding } from './managed-workspace';
 import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
@@ -145,11 +148,12 @@ export class EnvironmentAcquisition {
   flushMemory(
     thread: string,
     snapshot: CanonicalHistorySnapshot,
+    terminal: SandboxMemoryTerminal,
   ): Promise<void> {
     const owner = this.state?.sandboxMemory;
     if (!owner || !this.state)
       throw new TypeError('This Environment has no native sandbox memory');
-    return this.state.scope(() => owner.flush(thread, snapshot));
+    return this.state.scope(() => owner.flush(thread, snapshot, terminal));
   }
 
   /** @internal Guard active phase callbacks across Sessions sharing this resource. */
