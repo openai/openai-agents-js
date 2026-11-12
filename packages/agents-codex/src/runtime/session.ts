@@ -1160,6 +1160,7 @@ const submissions = new WeakMap<
   {
     output: PreparedOutput;
     readonly outputOverride: boolean;
+    originalInput?: UserInput;
     profileSettlement?: Promise<void>;
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
@@ -4662,6 +4663,7 @@ export class Session<OutputT = string, Context = unknown> {
     maxModelSteps?: number,
     budget?: RunBudgetTracker,
     guardrailInput?: UserInput,
+    originalInput?: UserInput,
     modelOverride?: string,
   ): Promise<NativeRunResult> {
     this.startTurn(
@@ -4684,6 +4686,7 @@ export class Session<OutputT = string, Context = unknown> {
       undefined,
       undefined,
       guardrailInput,
+      originalInput,
     );
 
     return this.#waitResult();
@@ -5749,6 +5752,7 @@ export class Session<OutputT = string, Context = unknown> {
     writableRoots?: readonly string[],
     parentTrace = this.options.parentTrace,
     guardrailInput?: UserInput,
+    originalInput?: UserInput,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -5763,6 +5767,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    submissions.get(run)!.originalInput = originalInput;
     run.guardrailInput = this.hasInputGuardrails ? guardrailInput : undefined;
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
@@ -11421,6 +11426,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (result.model_attempt !== undefined)
           this.observeModelAttempt(run, result.model_attempt, false);
         const measuredUsage = this.runUsage(run);
+        const originalInput = submissions.get(this.rootRun(run))!.originalInput;
         const state = fromNativeCheckpoint(
           this.checkpointCatalog(
             parseNativeCheckpoint(result.checkpoint),
@@ -11440,6 +11446,13 @@ export class Session<OutputT = string, Context = unknown> {
             manual_continuation: result.manual_continuation,
             manual_context: {
               guardrail_results: guardrailRecords,
+              ...(originalInput === undefined
+                ? {}
+                : {
+                    original_input: JSON.parse(
+                      JSON.stringify(originalInput),
+                    ) as UserInput & JsonValue,
+                  }),
               ...(run.selection?.maxModelSteps === undefined
                 ? {}
                 : {
@@ -11609,6 +11622,7 @@ export class Session<OutputT = string, Context = unknown> {
     );
     run.guardrailResults.push(...guardrailRecords);
     run.tracing = tracing;
+    submissions.get(run)!.originalInput = state.manual_context.original_input;
 
     run.parentTrace = this.options.parentTrace;
     run.id = state.manual_continuation.turn_id;
@@ -14041,7 +14055,8 @@ export class Session<OutputT = string, Context = unknown> {
     const guardrailResults = turn.guardrailResults;
     if (!turn.turnId && guardrailResults.length === 0) return;
     const settled = this.rootObservationScope(run).phase() === 'ended';
-    let incomplete = !settled;
+    const originalInput = input ?? submissions.get(run)?.originalInput ?? null;
+    let incomplete = !settled || originalInput === null;
     const rawResponses: JsonObject[] = [];
     let items: readonly ProducedItem[] = [];
     if (settled) {
@@ -14090,7 +14105,7 @@ export class Session<OutputT = string, Context = unknown> {
       incomplete = true;
     }
     const details: RunErrorDetails = {
-      input,
+      input: originalInput === null ? null : structuredClone(originalInput),
       lastAgent,
       items,
       rawResponses: Object.freeze(rawResponses),
