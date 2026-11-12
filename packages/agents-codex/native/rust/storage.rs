@@ -259,6 +259,11 @@ impl MemoryThreadStore {
                 RolloutItem::ResponseItem(item) if matches!(&item.item,
                     ResponseItem::ShellCall { provider_fields, .. }
                         if provider_fields.get("call_id").and_then(serde_json::Value::as_str) == Some(key.call.as_str()))));
+            let patch = capture.prefix.iter().any(|row| {
+                matches!(row,
+                RolloutItem::ResponseItem(item) if matches!(&item.item,
+                    ResponseItem::ApplyPatchCall { call_id, .. } if call_id == &key.call))
+            });
             let mut in_turn = false;
             let mut sampled = None;
             let mut calls = 0usize;
@@ -287,13 +292,34 @@ impl MemoryThreadStore {
                         ResponseItem::FunctionCall { call_id, .. } => {
                             calls += 1;
                             if call_id == &key.call {
-                                if shell {
+                                if shell || patch {
                                     preserve = false;
                                 }
                                 sampled = Some(calls <= capture.sampled_calls);
                                 if ordinal >= capture.prefix.len() {
                                     preserve = false;
                                 }
+                            }
+                        }
+                        ResponseItem::ApplyPatchCall { call_id, .. } => {
+                            calls += 1;
+                            if call_id == &key.call {
+                                sampled = Some(calls <= capture.sampled_calls);
+                                if !patch || ordinal >= capture.prefix.len() {
+                                    preserve = false;
+                                }
+                            }
+                        }
+                        ResponseItem::ApplyPatchCallOutput { call_id, .. }
+                            if call_id == &key.call && sampled == Some(true) =>
+                        {
+                            if !patch
+                                || ordinal < capture.prefix.len()
+                                || item.item.turn_id() != Some(key.turn.as_str())
+                            {
+                                preserve = false;
+                            } else {
+                                matches.push(ordinal - capture.prefix.len());
                             }
                         }
                         ResponseItem::ShellCall {
@@ -338,7 +364,7 @@ impl MemoryThreadStore {
                             internal_chat_message_metadata_passthrough: metadata,
                             ..
                         } if call_id == &key.call && sampled == Some(true) => {
-                            if shell || ordinal < capture.prefix.len() {
+                            if shell || patch || ordinal < capture.prefix.len() {
                                 preserve = false;
                             } else {
                                 matches.push(ordinal - capture.prefix.len());
@@ -568,6 +594,7 @@ impl ThreadStore for MemoryThreadStore {
                                 ResponseItem::FunctionCall { .. }
                                     | ResponseItem::CustomToolCall { .. }
                                     | ResponseItem::ShellCall { .. }
+                                    | ResponseItem::ApplyPatchCall { .. }
                             ) =>
                     {
                         writer.calls += 1;
