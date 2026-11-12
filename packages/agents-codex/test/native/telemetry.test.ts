@@ -10,6 +10,7 @@ for (const mode of [
   'completion-decisions-unknown',
   'completion-decisions-refusal',
   'processor-handlers',
+  'external-parent-export',
   'lifecycle',
   'preclaim',
   'late',

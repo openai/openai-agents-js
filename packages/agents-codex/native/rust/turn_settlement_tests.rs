@@ -488,6 +488,7 @@ async fn completed_steering_ids_cannot_credit_a_later_generation_or_recovery() {
         let request = |kind| {
             let mut metadata = None;
             engine.interception.request(ModelRequestInput {
+                attempts: None,
                 kind,
                 thread_id: &state.id.to_string(),
                 model: "gpt-5.1-codex",

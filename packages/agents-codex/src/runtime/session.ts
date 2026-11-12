@@ -27,6 +27,7 @@ import {
   restoreModelUsageOffset,
   type ModelAttemptState,
 } from './model-attempts';
+import { parseRequestAttempts, type RequestAttempts } from './request-attempts';
 import { audioInputByteLimit } from './media';
 import {
   ManagedWorkspaceCheckpoint,
@@ -428,6 +429,8 @@ export interface SessionOptions {
   decisions?: DecisionProvider;
   observationRetention?: 'bounded' | 'all';
   includeModelOutputItems?: boolean;
+  includeOutputAccepted?: boolean;
+  includeRequestAttempts?: boolean;
   includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
@@ -481,6 +484,7 @@ export interface SessionOptions {
   ) => Promise<Session<any, any>>;
   /** @internal Active restored output can differ from the opening default. */
   restoredOutput?: { output: PreparedOutput; outputOverride: boolean };
+  restoredRunBudget?: RunBudgetTracker;
   onClose?: () => Promise<void>;
   /** @internal Live application source, never persisted or inherited from state. */
   environmentOwner?: EnvironmentAcquisition;
@@ -625,8 +629,13 @@ interface OperationSelection {
 function manualCaptureRefusal(
   selection: OperationSelection | undefined,
 ): string | undefined {
-  if (selection?.budget !== undefined)
-    return 'Cannot capture an active run with a budget';
+  if (selection?.budget !== undefined) {
+    try {
+      selection.budget.checkpoint();
+    } catch {
+      return 'Cannot capture an active run with token or cost budget limits';
+    }
+  }
   if (
     selection?.beforeStep !== undefined ||
     selection?.prepareRequest !== undefined
@@ -783,6 +792,7 @@ export interface TurnRequestWait<T, NativeId extends string | null = string> {
   guardrailResults?(): readonly GuardrailRecord[];
   applicationToolOutputs?(): readonly ApplicationToolOutput[];
   runUsage?(): RunUsage;
+  requestAttempts?(): RequestAttempts | undefined;
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -864,6 +874,14 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
         requests,
         steerExact,
       );
+  }
+
+  /** Native attempts for the original explicit submission, after logical settlement.
+   * Undefined without capture or before settlement. Repairs, restored runs and
+   * later steering successors have separate native ownership. No payloads persist.
+   */
+  get requestAttempts(): RequestAttempts | undefined {
+    return this.requests?.requestAttempts?.();
   }
 
   get guardrailResults(): readonly GuardrailRecord[] {
@@ -1220,6 +1238,9 @@ type ClientSearchCatalog = ToolCatalog & {
 };
 
 class NativeTurn {
+  captureRequestAttempts = false;
+  requestAttemptsStarted = false;
+  requestAttempts?: RequestAttempts;
   clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[] = [];
   guardrailInput?: UserInput;
@@ -2713,6 +2734,7 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly applicationOutputs: ApplicationToolOutput[];
   private readonly pendingApplicationOutputs: ApplicationToolOutput[];
   private repairReceiptsIncomplete = false;
+  private readonly logicalResultSettled = new WeakSet<NativeTurn>();
   private readonly completedResults = new WeakMap<
     NativeRunResult,
     Completed<unknown>
@@ -4383,6 +4405,8 @@ export class Session<OutputT = string, Context = unknown> {
           applicationToolOutputs: () => this.applicationOutputSnapshot(run),
           rootResultReady: () => scope.phase() === 'ended',
           runUsage: () => this.runUsage(run),
+          requestAttempts: () =>
+            scope.phase() === 'ended' ? run.requestAttempts : undefined,
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
@@ -4399,6 +4423,33 @@ export class Session<OutputT = string, Context = unknown> {
         },
       );
       this.turnHandles.set(run, turn);
+      const submission = submissions.get(run)!;
+      if (
+        this.options.includeOutputAccepted &&
+        !submission.compaction &&
+        !submission.realtimeTools &&
+        !submission.review
+      ) {
+        // The producer owns one cached result, even when nobody calls wait().
+        // Leave any application callback scope before joining internal cleanup.
+        completion = toolInvocation.exit(() =>
+          this.#waitResult(run)
+            .then((value) => {
+              const result = this.#complete(run, value);
+              this.observations.append({
+                type: 'output_accepted',
+                submissionId: this.submissionIds.get(run)!,
+                turnId: value.turnId,
+              });
+              return result;
+            })
+            .finally(() => {
+              this.logicalResultSettled.add(run);
+              this.observations.notify();
+            }),
+        );
+        void completion.catch(() => {});
+      }
     }
     return turn;
   }
@@ -4550,7 +4601,14 @@ export class Session<OutputT = string, Context = unknown> {
           const phase = submissions.get(run)!.observation;
           if (phase !== 'ended') return phase;
         }
-        return 'ended';
+        const submission = submissions.get(root)!;
+        return !this.options.includeOutputAccepted ||
+          submission.compaction ||
+          submission.realtimeTools ||
+          submission.review ||
+          this.logicalResultSettled.has(root)
+          ? 'ended'
+          : 'finishing';
       },
     };
   }
@@ -4720,6 +4778,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : this.captureExecutorRoots(options.writableRoots);
     const run = this.allocateRun(output, outputType !== undefined);
+    run.captureRequestAttempts = this.options.includeRequestAttempts === true;
     run.parentTrace = parentTrace;
     run.guardrailInput = this.hasInputGuardrails
       ? structuredClone(input)
@@ -4824,6 +4883,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.writableRoots,
       parentTrace,
       this.hasInputGuardrails ? structuredClone(input) : undefined,
+      this.options.includeRequestAttempts === true,
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
     return this.#turnFor(run);
@@ -5721,6 +5781,7 @@ export class Session<OutputT = string, Context = unknown> {
     writableRoots?: readonly string[],
     parentTrace = this.options.parentTrace,
     guardrailInput?: UserInput,
+    captureRequestAttempts = false,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -5735,6 +5796,7 @@ export class Session<OutputT = string, Context = unknown> {
         ? undefined
         : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
+    run.captureRequestAttempts = captureRequestAttempts;
     run.guardrailInput = this.hasInputGuardrails ? guardrailInput : undefined;
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
@@ -5809,11 +5871,18 @@ export class Session<OutputT = string, Context = unknown> {
     const wire = run.tracing ? undefined : encodeReceipt(receipt, byteLimit);
     // Active-only state never changes when another root merely registers.
     this.manualCheckpointRun = run;
+    const submit = (wire: string) => {
+      if (run.captureRequestAttempts) {
+        this.#native._start_request_attempts();
+        run.requestAttemptsStarted = true;
+      }
+      return this.#native._submit(wire);
+    };
     this.dispatchRun(
       run,
       async () => {
         const tracing = run.tracing;
-        if (!tracing) return this.#native._submit(wire!);
+        if (!tracing) return submit(wire!);
         let submission: string;
         try {
           const span = await tracing.ready;
@@ -5839,7 +5908,7 @@ export class Session<OutputT = string, Context = unknown> {
           submissions.get(run)!.tracingAdmissionFailed = true;
           throw error;
         }
-        return this.#native._submit(submission);
+        return submit(submission);
       },
       this.hasOperationMcp,
     );
@@ -6308,6 +6377,17 @@ export class Session<OutputT = string, Context = unknown> {
     }
     if (!check(true)) return { type: 'stopped' };
     throw new OutputValidationError(text, issues);
+  }
+
+  private retainRequestAttempts(run: NativeTurn): void {
+    if (
+      run.requestAttemptsStarted &&
+      run.requestAttempts === undefined &&
+      run.id !== null
+    )
+      run.requestAttempts = parseRequestAttempts(
+        this.#native._take_request_attempts(run.id),
+      );
   }
 
   private finish(
@@ -7900,6 +7980,7 @@ export class Session<OutputT = string, Context = unknown> {
     ) {
       if (msg.model_attempt !== undefined)
         this.observeModelAttempt(run, msg.model_attempt, false);
+      this.retainRequestAttempts(run);
       this.notifyManualProgress();
       let error = run.failure;
       if (
@@ -10920,6 +11001,7 @@ export class Session<OutputT = string, Context = unknown> {
                   names: run.selection.names ?? null,
                   before_step:
                     run.selection.maxModelSteps !== undefined ||
+                    run.selection.budget !== undefined ||
                     this.options.agentGraph !== undefined,
                 })
               : undefined,
@@ -11267,6 +11349,9 @@ export class Session<OutputT = string, Context = unknown> {
           },
           {
             manual_continuation: result.manual_continuation,
+            ...(run.selection?.budget === undefined
+              ? {}
+              : { run_budget: run.selection.budget.checkpoint() }),
             manual_context: {
               ...(run.selection?.maxModelSteps === undefined
                 ? {}
@@ -11312,6 +11397,7 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TurnAborted('Manual checkpoint cancelled');
         // Publish only after one validated serialized receipt is retained.
         this.sealedStateJson = encodeReceipt(state);
+        this.retainRequestAttempts(run);
         this.finish(
           run,
           new InteractionRequired(parseSessionState(this.sealedStateJson)),
@@ -11374,7 +11460,8 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       this.options.agentGraph ||
       operation !== undefined ||
-      remaining !== undefined
+      remaining !== undefined ||
+      this.options.restoredRunBudget !== undefined
     )
       run.selection = {
         originCatalog: originalProfile?.catalog ?? this.catalog,
@@ -11391,6 +11478,7 @@ export class Session<OutputT = string, Context = unknown> {
                 })),
               ),
         maxModelSteps: remaining,
+        budget: this.options.restoredRunBudget,
         generation: this.catalog.generation,
         preparationIndex: 0,
         stepIndex: 0,
@@ -16211,6 +16299,7 @@ export class Session<OutputT = string, Context = unknown> {
         try {
           acknowledgmentFailure =
             (await this.closeNative()) ?? acknowledgmentFailure;
+          this.retainRequestAttempts(run);
         } finally {
           await run.mcpPublication?.catch(() => {});
           await Promise.allSettled([

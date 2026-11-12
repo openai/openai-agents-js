@@ -13,6 +13,7 @@ import {
   type RepairItemWire,
 } from './history';
 import { nonnegativeTokenCountWireSchema } from './run-events';
+import { requestRunBudgetCheckpointSchema } from './run-budget';
 import {
   binding,
   losslessJsonObjectSchema,
@@ -441,6 +442,7 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'pending_application_tool_outputs',
         'manual_continuation',
         'manual_context',
+        'run_budget',
         'operation_tools',
         'default_tools',
         'default_resource_servers',
@@ -472,6 +474,38 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
 
 export const sessionStateSchema = z
   .discriminatedUnion('format_version', [
+    z
+      .object({
+        format_version: z.literal(17),
+        ...rootState,
+        ...treeState,
+        ...sdkOutputState,
+        ...checkpointSelectionFields,
+        network_policy_digest: z
+          .string()
+          .regex(/^sha256:v1:[a-f0-9]{64}$/)
+          .optional(),
+        manual_continuation: manualContinuationSchema,
+        manual_context: manualContextSchema,
+        run_budget: requestRunBudgetCheckpointSchema,
+      })
+      .catchall(jsonValue),
+    z
+      .object({
+        format_version: z.literal(18),
+        ...rootState,
+        ...treeState,
+        ...sdkOutputState,
+        ...checkpointSelectionFields,
+        network_policy_digest: z
+          .string()
+          .regex(/^sha256:v1:[a-f0-9]{64}$/)
+          .optional(),
+        manual_continuation: manualContinuationSchema,
+        manual_context: manualContextSchema,
+        run_budget: requestRunBudgetCheckpointSchema,
+      })
+      .catchall(jsonValue),
     z
       .object({
         format_version: z.literal(16),
@@ -620,6 +654,12 @@ export const sessionStateSchema = z
   ])
   .superRefine((state, ctx) => {
     const aware = state.format_version !== 2 && state.format_version !== 3;
+    const budgeted = state.format_version === 17 || state.format_version === 18;
+    if (budgeted !== 'run_budget' in state)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Request budgets require a budgeted manual checkpoint format',
+      });
     const plan = state.format_version === 16;
     const network = state.format_version >= 12 && !plan;
     validatePlanCheckpointFormat(state.root_metadata.model_provider, plan, ctx);
@@ -672,6 +712,7 @@ export const sessionStateSchema = z
       state.format_version !== 11 &&
       state.format_version !== 14 &&
       state.format_version !== 15 &&
+      state.format_version !== 18 &&
       (state.root_code_mode != null ||
         state.descendants.some((child) => child.code_mode != null))
     )
@@ -731,6 +772,8 @@ export const sessionStateSchema = z
       state.format_version !== 11 &&
       state.format_version !== 13 &&
       state.format_version !== 15 &&
+      state.format_version !== 17 &&
+      state.format_version !== 18 &&
       ('manual_continuation' in state || 'manual_context' in state)
     ) {
       ctx.addIssue({
@@ -745,7 +788,9 @@ export const sessionStateSchema = z
       state.format_version === 9 ||
       state.format_version === 11 ||
       state.format_version === 13 ||
-      state.format_version === 15
+      state.format_version === 15 ||
+      state.format_version === 17 ||
+      state.format_version === 18
     ) {
       const continuation = state.manual_continuation;
       const pending = continuation.pending_manual.map((call) => call.call_id);
@@ -923,10 +968,16 @@ function validateCheckpointTree(
 }
 export type SessionState = z.infer<typeof sessionStateSchema>;
 
+export function isBudgetedManualSessionState(
+  state: SessionState | null | undefined,
+): state is Extract<SessionState, { format_version: 17 | 18 }> {
+  return state?.format_version === 17 || state?.format_version === 18;
+}
+
 /** Existing manual owner, with or without an SDK output envelope. */
 export type ManualSessionState = Extract<
   SessionState,
-  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 }
+  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 | 17 | 18 }
 >;
 export function isManualSessionState(
   state: SessionState | null | undefined,
@@ -938,14 +989,19 @@ export function isManualSessionState(
     state?.format_version === 9 ||
     state?.format_version === 11 ||
     state?.format_version === 13 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 17 ||
+    state?.format_version === 18
   );
 }
 export function isOutputAwareState(
   state: SessionState | null | undefined,
 ): state is Extract<
   SessionState,
-  { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 }
+  {
+    format_version:
+      4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
+  }
 > {
   return (
     state?.format_version === 4 ||
@@ -960,7 +1016,9 @@ export function isOutputAwareState(
     state?.format_version === 13 ||
     state?.format_version === 14 ||
     state?.format_version === 15 ||
-    state?.format_version === 16
+    state?.format_version === 16 ||
+    state?.format_version === 17 ||
+    state?.format_version === 18
   );
 }
 /** @internal Read static SDK overlays only after the versioned state validator. */
@@ -976,7 +1034,9 @@ export function readCheckpointSelections(
     state?.format_version === 13 ||
     state?.format_version === 14 ||
     state?.format_version === 15 ||
-    state?.format_version === 16
+    state?.format_version === 16 ||
+    state?.format_version === 17 ||
+    state?.format_version === 18
   )
     return {
       ...(state.default_resource_servers === undefined
@@ -1049,7 +1109,7 @@ function outputStateFields(
         SessionState,
         {
           format_version:
-            4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+            4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
         }
       >
     | undefined,
@@ -1085,7 +1145,11 @@ export function fromNativeCheckpoint(
   identity: OutputIdentity,
   prior?: SessionState | null,
   repairs?: OutputRepairs,
-  manual?: { manual_continuation: unknown; manual_context: unknown },
+  manual?: {
+    manual_continuation: unknown;
+    manual_context: unknown;
+    run_budget?: unknown;
+  },
   selection: CheckpointSelections = {},
   networkPolicy: string | undefined = undefined,
   executorReadOnly = false,
@@ -1096,17 +1160,21 @@ export function fromNativeCheckpoint(
     ...selection,
     ...(executorReadOnly ? { executor_read_only: true } : {}),
     format_version:
-      state.format_version === 5
-        ? 16
-        : networkPolicy === undefined
-          ? (state.format_version === 4 ? 6 : 4) +
-            (manual ? 1 : 0) +
-            (selection.operation_tools !== undefined ||
-            selection.default_tools !== undefined ||
-            selection.default_resource_servers !== undefined
-              ? 4
-              : 0)
-          : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
+      manual?.run_budget !== undefined
+        ? state.format_version === 4
+          ? 18
+          : 17
+        : state.format_version === 5
+          ? 16
+          : networkPolicy === undefined
+            ? (state.format_version === 4 ? 6 : 4) +
+              (manual ? 1 : 0) +
+              (selection.operation_tools !== undefined ||
+              selection.default_tools !== undefined ||
+              selection.default_resource_servers !== undefined
+                ? 4
+                : 0)
+            : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
     ...(networkPolicy === undefined
       ? {}
       : { network_policy_digest: networkPolicy }),
@@ -1123,6 +1191,7 @@ export function nativeCheckpoint(state: SessionState) {
   const {
     manual_continuation: _continuation,
     manual_context: _context,
+    run_budget: _budget,
     output_context: _output,
     operation_tools: _operation,
     default_tools: _defaults,
@@ -1145,7 +1214,8 @@ export function nativeCheckpoint(state: SessionState) {
             state.format_version === 10 ||
             state.format_version === 11 ||
             state.format_version === 14 ||
-            state.format_version === 15
+            state.format_version === 15 ||
+            state.format_version === 18
           ? 4
           : 2,
   };

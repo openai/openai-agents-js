@@ -888,6 +888,7 @@ struct Channel {
     observe_raw_provider_events: AtomicBool,
     state: Mutex<State>,
     raw_usage: Mutex<Option<Arc<codex_core::SdkRawUsageLink>>>,
+    request_attempts: Mutex<Option<Arc<codex_core::SdkRequestAttemptsLink>>>,
     graph: crate::graph_stop::Graph,
     // At most MAX_PENDING live requests. Cancellation messages must not be
     // dropped when that bound is full, hence the unbounded control channel.
@@ -914,6 +915,28 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn seal_request_attempts(&self, turn_id: &str) {
+        if self.root {
+            if let Some(capture) = self
+                .channel
+                .request_attempts
+                .lock()
+                .expect("request attempts link poisoned")
+                .as_ref()
+            {
+                capture.seal(turn_id);
+            }
+        }
+    }
+
+    pub(crate) fn bind_request_attempts(&self, link: codex_core::SdkRequestAttemptsLink) {
+        *self
+            .channel
+            .request_attempts
+            .lock()
+            .expect("request attempts link poisoned") = Some(Arc::new(link));
+    }
+
     pub(crate) fn raw_usage_active(&self) -> bool {
         self.channel
             .raw_usage
@@ -1079,6 +1102,7 @@ impl Control {
             sentinel_request: Mutex::new(SentinelState::default()),
             channel: Arc::new(Channel {
                 raw_usage: Mutex::new(None),
+                request_attempts: Mutex::new(None),
                 observe_raw_provider_events: AtomicBool::new(false),
                 graph: crate::graph_stop::Graph::default(),
                 state: Mutex::new(State {
@@ -3082,6 +3106,15 @@ impl TurnLifecycleContributor for Boundary {
                 if !control.root {
                     if let Some(link) = control
                         .channel
+                        .request_attempts
+                        .lock()
+                        .expect("request attempts link poisoned")
+                        .as_ref()
+                    {
+                        link.attach(input.thread_store);
+                    }
+                    if let Some(link) = control
+                        .channel
                         .raw_usage
                         .lock()
                         .expect("raw usage link poisoned")
@@ -3413,6 +3446,7 @@ impl ModelRequestContributor for Boundary {
         });
         if control.sentinel_provider.get().is_some() {
             let ticket = Arc::new(SentinelTicket {
+                attempts: input.attempts.clone(),
                 nonce: codex_protocol::ThreadId::new().to_string(),
                 kind: input.kind,
                 model: input.model.to_owned(),
@@ -3479,6 +3513,7 @@ impl ModelRequestContributor for Boundary {
 }
 
 struct SentinelTicket {
+    attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
     nonce: String,
     kind: ModelRequestKind,
     model: String,
@@ -3817,14 +3852,18 @@ pub(crate) async fn sentinel_admit(
             }))
         })
         .transpose()?;
-    Ok(serde_json::to_string(&json!({
+    let mut receipt = json!({
         "control": control.incarnation,
         "kind": if ticket.kind == ModelRequestKind::Warmup { "warmup" } else { "generation" },
         "model": ticket.model,
         "model_omitted": ticket.model_omitted,
         "content_item_kinds": content_item_kinds,
         "completion": completion,
-    }))?)
+    });
+    if ticket.attempts.is_some() {
+        receipt["request_attempts"] = Value::Bool(true);
+    }
+    Ok(serde_json::to_string(&receipt)?)
 }
 
 pub(crate) async fn sentinel_restore_schemas(
@@ -3909,7 +3948,10 @@ pub(crate) fn sentinel_http_turn(
     engine: &crate::engine::EngineState,
     provider_id: &str,
     meta: &Value,
-) -> Result<Option<Arc<crate::turn_settlement::Turn>>> {
+) -> Result<(
+    Option<Arc<crate::turn_settlement::Turn>>,
+    Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
+)> {
     let id = meta["sdk_sentinel_thread"]
         .as_str()
         .context("Missing sentinel owner")?;
@@ -3938,9 +3980,10 @@ pub(crate) fn sentinel_http_turn(
         .owner
         .as_ref()
         .and_then(|owner| owner.settlement.as_ref());
-    settlement
+    let turn = settlement
         .map(|turn| turn.upgrade().context("Native sentinel turn ended"))
-        .transpose()
+        .transpose()?;
+    Ok((turn, ticket.attempts.clone()))
 }
 
 // Only the originally admitted native request may retain its settled error.
@@ -7928,6 +7971,7 @@ mod tests {
         let issue = |kind, client_metadata: &mut Option<_>| {
             boundary
                 .request(ModelRequestInput {
+                    attempts: None,
                     kind,
                     thread_id: &control.id,
                     client_metadata,
@@ -7998,6 +8042,7 @@ mod tests {
                     control: control.clone(),
                     tool_admission: None,
                     ticket: Arc::new(SentinelTicket {
+                        attempts: None,
                         nonce: "ticket".into(),
                         kind: ModelRequestKind::Generation,
                         model: "issuing-model".into(),

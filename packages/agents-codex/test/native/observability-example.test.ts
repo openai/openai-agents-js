@@ -52,6 +52,7 @@ for (const [scenario, outcome, callback] of [
   ['tool', 'tool_callback_exception', 'threw'],
   ['validation', 'output_validation_failure', 'not_called'],
   ['provider', 'provider_failure', 'not_called'],
+  ['retry', 'completed', 'not_called'],
 ]) {
   it(`receives real trace/log records and separate application settlement: ${scenario}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'observability-'));
@@ -77,7 +78,9 @@ for (const [scenario, outcome, callback] of [
       expect(receipt.sessionId).toBeTruthy();
       expect(receipt.turnId).toBeTruthy();
       expect(receipt.settlement.status).toBe(
-        scenario === 'tool-error' ? 'completed' : 'rejected',
+        scenario === 'tool-error' || scenario === 'retry'
+          ? 'completed'
+          : 'rejected',
       );
       expect(receipt.toolCalls).toEqual(
         scenario.startsWith('tool') ? ['A'] : [],
@@ -111,11 +114,22 @@ for (const [scenario, outcome, callback] of [
       expect(
         requests.every((log) => log['conversation.id'] === receipt.sessionId),
       ).toBe(true);
-      expect([
-        ...new Set(
-          requests.map((log) => String(log['http.response.status_code'])),
-        ),
-      ]).toEqual([scenario === 'provider' ? '400' : '200']);
+      const statuses = requests.map((log) =>
+        String(log['http.response.status_code']),
+      );
+      if (scenario === 'retry') {
+        expect(receipt.providerRequests).toBe(2);
+        expect(receipt.completedModelRequests).toBe(1);
+        expect(statuses).toContain('200');
+        expect(statuses.length).toBeLessThanOrEqual(receipt.providerRequests);
+        expect(
+          statuses.every((status) => status === '503' || status === '200'),
+        ).toBe(true);
+      } else {
+        expect([...new Set(statuses)]).toEqual([
+          scenario === 'provider' ? '400' : '200',
+        ]);
+      }
       for (const secret of [
         'synthetic-agents-testing-key',
         'synthetic-provider-key',

@@ -2,9 +2,11 @@ import { parentPort } from 'node:worker_threads';
 // Register the same TS source loader in each isolate; bootstrap owns shutdown.
 import { register } from 'tsx/esm/api';
 register();
-const { Agent, NativeProvider, telemetry } =
-  await import('../../../src/index.ts');
-const { ModelServer, message } = await import('./model-server.ts');
+// The TS loader can expose CommonJS sources as a default namespace in workers.
+const sdk = await import('../../../src/index.ts');
+const { Agent, NativeProvider, telemetry } = sdk.default ?? sdk;
+const fixture = await import('./model-server.ts');
+const { ModelServer, message } = fixture.default ?? fixture;
 let count = 0;
 parentPort.on('message', async (command) => {
   if (command === 'close') {

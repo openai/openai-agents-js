@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, tool, type Session, type ToolContext } from '@openai/agents';
 import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
@@ -157,6 +159,67 @@ describe('independent specialist example lifecycle without native execution', ()
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'independent specialist example with the native runtime',
   () => {
+    it('propagates an explicit trace into the separate specialist Session', async () => {
+      const example = new URL(
+        '../../../../examples/codex/specialist-agent.ts',
+        import.meta.url,
+      );
+      const result = await promisify(execFile)(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '--eval',
+          `
+          import assert from 'node:assert/strict';
+          import { Agent, telemetry, tool } from '@openai/agents';
+          import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
+          import { z } from 'zod';
+          const { consult, summarySchema } = (await import(${JSON.stringify(example.href)})).default;
+          const seen = [];
+          await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+          try {
+            const tracedCatalog = tool({
+              name: 'traced_catalog', description: 'Read.', parameters: z.strictObject({}),
+              execute(_args, ctx) {
+                assert(ctx.traceContext);
+                seen.push(ctx.traceContext.traceparent.split('-')[1]);
+                return ctx.context.title;
+              },
+            });
+            await withScriptedResponses([
+              [toolCall('consult', {}, { callId: 'consult' })], [text('Done.')],
+            ], async (outer) => withScriptedResponses([
+              [toolCall('traced_catalog', {}, { callId: 'catalog' })],
+              [text('{"title":"Selected"}')],
+            ], async (inner) => {
+              const specialist = new Agent({
+                instructions: 'Read.', model: 'gpt-5.5', tools: [tracedCatalog],
+                provider: inner.provider, outputType: summarySchema,
+              });
+              await new Agent({
+                instructions: 'Consult.', model: 'gpt-5.5', tools: [consult], provider: outer.provider,
+              }).run('Consult.', {
+                context: { specialist, catalog: { title: 'Selected' } },
+                parentTrace: { traceparent: '00-11111111111111111111111111111111-2222222222222222-01' },
+              });
+              assert.deepEqual(seen, ['1'.repeat(32)]);
+              assert.deepEqual(JSON.parse(outer.toolOutput('consult')), { title: 'Selected' });
+            }));
+          } finally {
+            await telemetry.shutdown();
+          }
+        `,
+        ],
+        {
+          timeout: 60_000,
+          env: { ...process.env, OPENAI_API_KEY: '', CODEX_API_KEY: '' },
+        },
+      );
+      expect(result.stderr).not.toContain('AssertionError');
+    }, 70_000);
+
     it('runs its no-key command scenario with both actual tool receipts', async () => {
       expect(await runSpecialistExample()).toEqual({
         answer: 'Violet catalog.',

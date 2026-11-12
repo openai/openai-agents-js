@@ -354,14 +354,18 @@ it('joins physical callback cleanup after approving and cancelling a native call
   expect(() => request.approve()).toThrow();
 });
 
-it.each([
-  { approve: true, guarded: false },
-  { approve: false, guarded: false },
-  { approve: true, guarded: true },
-  { approve: false, guarded: true },
-])(
-  'restores required approval and accepted siblings in a fresh process (approve=$approve, guarded=$guarded)',
-  async ({ approve, guarded }) => {
+it.each(
+  [
+    { approve: true, guarded: false },
+    { approve: false, guarded: false },
+    { approve: true, guarded: true },
+    { approve: false, guarded: true },
+  ].flatMap((entry) =>
+    [false, true].map((budgeted) => ({ ...entry, budgeted })),
+  ),
+)(
+  'restores required approval and accepted siblings in a fresh process (approve=$approve, guarded=$guarded, budgeted=$budgeted)',
+  async ({ approve, guarded, budgeted }) => {
     const { mkdtemp, writeFile, readFile, rm } =
       await import('node:fs/promises');
     const { appendFileSync } = await import('node:fs');
@@ -417,7 +421,10 @@ it.each([
       let turnId: string;
       {
         await using source = await agent.session();
-        const turn = await source.submit('begin');
+        const turn = await source.submit(
+          'begin',
+          budgeted ? { budget: { maxRequests: 2 } } : undefined,
+        );
         turnId = turn.turnId;
         const old = await nextApproval(source);
         const saved = await source.suspend();
@@ -445,6 +452,7 @@ it.each([
           approve ? 'approve' : 'reject',
           turnId,
           guarded ? 'guarded' : 'plain',
+          ...(budgeted ? ['2'] : []),
         ],
         { stdio: ['ignore', 'pipe', 'pipe'] },
       );

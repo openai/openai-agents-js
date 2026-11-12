@@ -283,6 +283,8 @@ impl Drop for SocketState {
 
 #[napi(js_name = "NativeModelWebSocket")]
 pub struct NativeModelWebSocket {
+    request_engine: std::sync::Weak<crate::engine::EngineState>,
+    request_provider: String,
     inner: Option<RuntimeOwned<SocketState>>,
 
     status: u16,
@@ -353,6 +355,18 @@ impl NativeModelWebSocket {
     }
 
     async fn send(&self, data: Bytes, kind: Data) -> napi::Result<()> {
+        self.send_owned(data, kind, None).await
+    }
+
+    async fn send_owned(
+        &self,
+        data: Bytes,
+        kind: Data,
+        attempts: Option<(
+            Option<Arc<crate::turn_settlement::Turn>>,
+            Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>,
+        )>,
+    ) -> napi::Result<()> {
         let state = self.state()?;
         (async move {
             let mut terminal = state.terminal.subscribe();
@@ -365,6 +379,13 @@ impl NativeModelWebSocket {
                 result = async {
                     let write = state.write.lock().await;
                     let mut pending = PendingSend { state: &state, write, complete: false };
+                    if pending.write.is_none() { return Err(socket_error()); }
+                    if let Some((turn, observer)) = attempts {
+                        if turn.as_deref().is_some_and(crate::turn_settlement::Turn::sampling_stopped) {
+                            std::future::pending::<()>().await;
+                        }
+                        observer.send_started(codex_extension_api::ModelRequestTransport::Websocket);
+                    }
                     let mut start = 0;
                     loop {
                         let end = (start + MAX_FRAME_PAYLOAD_BYTES).min(data.len());
@@ -440,6 +461,28 @@ impl NativeModelWebSocket {
             )));
         }
         self.send(Bytes::from(text), Data::Text).await
+    }
+
+    /// Only an admitted response.create uses this private counted send path.
+    #[napi(js_name = "_send_owned_text")]
+    pub async fn send_owned_text(&self, text: String, ticket: String) -> napi::Result<()> {
+        if text.len() > MAX_REQUEST_BYTES {
+            return Err(crate::input_error(
+                "Native WebSocket request exceeds the transport limit",
+            ));
+        }
+        let engine = self.request_engine.upgrade().ok_or_else(socket_error)?;
+        let ticket: serde_json::Value =
+            serde_json::from_str(&ticket).map_err(|_| socket_error())?;
+        let (turn, attempts) = crate::native_interception::sentinel_http_turn(
+            &engine,
+            &self.request_provider,
+            &ticket,
+        )
+        .map_err(crate::native_error)?;
+        let observer = attempts.ok_or_else(socket_error)?;
+        self.send_owned(Bytes::from(text), Data::Text, Some((turn, observer)))
+            .await
     }
 
     #[napi(js_name = "receive")]
@@ -569,6 +612,8 @@ pub(super) fn sentinel_headers(
 pub(super) async fn sentinel_open(
     route: Arc<NativeModelRoute>,
     headers: &str,
+    request_engine: std::sync::Weak<crate::engine::EngineState>,
+    request_provider: String,
 ) -> napi::Result<NativeModelWebSocket> {
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let forwarded = sentinel_headers(headers, &provider)?;
@@ -623,6 +668,8 @@ pub(super) async fn sentinel_open(
         Err(error) => return Err(transport_error(error)),
     };
     Ok(NativeModelWebSocket {
+        request_engine,
+        request_provider,
         inner,
 
         status,

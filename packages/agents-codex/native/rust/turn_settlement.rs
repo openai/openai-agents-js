@@ -876,6 +876,7 @@ fn terminal(
             turn.release_callback_ownership();
         }
         if let Some(owner) = thread_store.get::<crate::native_interception::Control>() {
+            owner.seal_request_attempts(&turn.id);
             owner.graph().changed.send_replace(());
         }
     }
