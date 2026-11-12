@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   Agent,
+  type ModelSettings,
   NativeProvider,
   getProviderHistory,
   localStorage,
@@ -970,4 +971,137 @@ for (const store of [false, null]) {
     },
     30000,
   );
+}
+
+for (const kind of ['conversation', 'previous_response'] as const) {
+  for (const phase of ['pre_turn', 'mid_turn'] as const) {
+    nativeIt(
+      `lineage skips local automatic compaction (${kind}, ${phase})`,
+      async () => {
+        const effects: string[] = [];
+        const record = tool({
+          name: 'record_effect',
+          parameters: z.object({ value: z.string() }),
+          execute: ({ value }) => {
+            effects.push(value);
+            return 'Accepted.';
+          },
+        });
+        const model = new ModelServer(
+          [
+            [
+              phase === 'mid_turn'
+                ? call(
+                    'record_effect',
+                    { value: 'once' },
+                    { callId: 'effect-once' },
+                  )
+                : message('Before.'),
+            ],
+            [message('After.')],
+          ],
+          [
+            JSON.stringify({
+              input_tokens: 1_000_000,
+              output_tokens: 1,
+              total_tokens: 1_000_001,
+            }),
+          ],
+        );
+        const remote = await peer(model);
+        await using provider = new NativeProvider(remote.options);
+        const agent = new Agent({
+          instructions: 'Continue.',
+          model: 'gpt-5.5',
+          provider,
+          modelSettings: { store: true },
+          tools: [record],
+        });
+        const selected =
+          kind === 'conversation'
+            ? { type: kind, id: 'conv_current' }
+            : { type: kind };
+        await using session = await agent.session({
+          providerHistory: selected,
+        });
+        await (await session.submit('Before.')).wait();
+        if (phase === 'pre_turn') await (await session.submit('After.')).wait();
+        expect(model.requests).toHaveLength(2);
+        expect(effects).toEqual(phase === 'mid_turn' ? ['once'] : []);
+      },
+      30000,
+    );
+  }
+  const choices: ModelSettings[] = [
+    { providerCompaction: { type: 'static', threshold: 1024 } },
+    { contextManagement: [{ type: 'compaction', compact_threshold: 1024 }] },
+  ];
+  for (const [index, settings] of choices.entries()) {
+    nativeIt(
+      `lineage refuses provider compaction before dispatch (${kind}, ${index})`,
+      async () => {
+        const model = new ModelServer([[message('After clear.')]]);
+        const remote = await peer(model);
+        await using provider = new NativeProvider(remote.options);
+        const agent = new Agent({
+          instructions: 'Continue.',
+          model: 'gpt-5.5',
+          provider,
+          modelSettings: { store: true, ...settings },
+        });
+        const selected =
+          kind === 'conversation'
+            ? { type: kind, id: 'conv_current' }
+            : { type: kind };
+        await using session = await agent.session({
+          providerHistory: selected,
+        });
+        await expect((await session.submit('Before.')).wait()).rejects.toThrow(
+          'Provider-side compaction is unavailable',
+        );
+        expect(remote.wire).toEqual([]);
+        await session.update({ modelSettings: { contextManagement: null } });
+        await (await session.submit('After.')).wait();
+        expect(model.requests).toHaveLength(1);
+        expect(model.requests[0]).not.toHaveProperty('context_management');
+      },
+      30000,
+    );
+  }
+  for (const context of [null, []]) {
+    nativeIt(
+      `lineage allows explicitly disabled provider compaction (${kind}, ${JSON.stringify(context)})`,
+      async () => {
+        const model = new ModelServer([
+          [message('Before.')],
+          [message('After.')],
+        ]);
+        const remote = await peer(model);
+        await using provider = new NativeProvider(remote.options);
+        const agent = new Agent({
+          instructions: 'Continue.',
+          model: 'gpt-5.5',
+          provider,
+          modelSettings: {
+            store: true,
+            providerCompaction: { type: 'static', threshold: 1024 },
+            contextManagement: context,
+          },
+        });
+        const selected =
+          kind === 'conversation'
+            ? { type: kind, id: 'conv_current' }
+            : { type: kind };
+        await using session = await agent.session({
+          providerHistory: selected,
+        });
+        await (await session.submit('Before.')).wait();
+        await (await session.submit('After.')).wait();
+        expect(model.requests).toHaveLength(2);
+        for (const body of model.requests)
+          expect(body.context_management ?? null).toEqual(context);
+      },
+      30000,
+    );
+  }
 }
