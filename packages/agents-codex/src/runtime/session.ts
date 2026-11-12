@@ -1,3 +1,4 @@
+import { QueuedRoots } from './queued-roots';
 import { NativeTurn, type NativeRunResult } from './native-turn';
 import {
   captureHostedPromptReference,
@@ -2684,7 +2685,9 @@ export class Session<OutputT = string, Context = unknown> {
     NativeTurn,
     Turn<unknown, string | null>
   >();
-  private readonly pendingRoots: { run: NativeTurn; parts: JsonValue[] }[] = [];
+  private readonly pendingRoots = new QueuedRoots((run) =>
+    this.finishObservation(run),
+  );
   private readonly decodedOutputs = new WeakMap<NativeTurn, unknown>();
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,
@@ -4501,7 +4504,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
     if (
-      this.pendingRoots.length > 0 ||
+      this.pendingRoots.size > 0 ||
       this.lifecycle.kind !== 'idle' ||
       (this.lastRun &&
         (this.lastRun.callbacks.size > 0 ||
@@ -4647,7 +4650,7 @@ export class Session<OutputT = string, Context = unknown> {
   private assertCanWait(run: NativeTurn): void {
     const callback = toolInvocation.getStore()?.run;
     if (
-      this.pendingRoots.some((entry) => entry.run === run) ||
+      this.pendingRoots.has(run) ||
       this.ownedStep(run) ||
       (callback && this.rootRun(callback) === this.rootRun(run))
     )
@@ -4669,7 +4672,7 @@ export class Session<OutputT = string, Context = unknown> {
       ...(state.kind === 'mutation' ? { mutation: state.completion } : {}),
       ...(state.kind === 'turn' ? { run: state.run } : {}),
     };
-    this.discardPending(cause);
+    this.pendingRoots.discard(cause);
     if (state.kind === 'turn') {
       const { run } = state;
 
@@ -4792,50 +4795,27 @@ export class Session<OutputT = string, Context = unknown> {
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
     submissions.get(run)!.observationAfter = -1;
-    this.pendingRoots.push({ run, parts });
+    this.pendingRoots.register(run, parts);
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
     this.drainPending();
     return turn;
   }
 
-  private discardPending(error: unknown): void {
-    // Detach before abort listeners run; they cannot withdraw a different root.
-    const pending = this.pendingRoots.splice(0);
-    for (const { run } of pending) {
-      run.controller.abort(error);
-      run.accepted.reject(error);
-      run.completion.reject(error);
-      this.finishObservation(run);
-    }
-  }
-
   private drainPending(): void {
-    if (
-      this.lifecycle.kind !== 'idle' ||
-      this.graphStops.size ||
-      this.manualSeal ||
-      this.manualSealing ||
-      this.manualSealed
-    )
-      return;
-    const entry = this.pendingRoots.shift();
-    if (entry) {
-      if (
-        this.options.agentGraph &&
-        !submissions.get(entry.run)!.outputOverride
-      )
-        submissions.get(entry.run)!.output = this.defaultOutput;
-      try {
-        this.dispatchStart(entry.run, entry.parts);
-      } catch (error) {
-        entry.run.controller.abort(error);
-        entry.run.accepted.reject(error);
-        entry.run.completion.reject(error);
-        this.finishObservation(entry.run);
-        this.drainPending();
-      }
-    }
+    this.pendingRoots.promote(
+      () =>
+        this.lifecycle.kind === 'idle' &&
+        !this.graphStops.size &&
+        !this.manualSeal &&
+        !this.manualSealing &&
+        !this.manualSealed,
+      (run, parts) => {
+        if (this.options.agentGraph && !submissions.get(run)!.outputOverride)
+          submissions.get(run)!.output = this.defaultOutput;
+        this.dispatchStart(run, parts);
+      },
+    );
   }
 
   submit(
@@ -11446,7 +11426,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (refusal) return Promise.reject(new NativeError(refusal));
     this.requireCompleteRepairReceipts();
 
-    if (this.pendingRoots.length)
+    if (this.pendingRoots.size)
       return Promise.reject(
         new NativeError('Cannot capture while roots are queued'),
       );
@@ -11506,7 +11486,7 @@ export class Session<OutputT = string, Context = unknown> {
     for (;;) {
       signal?.throwIfAborted();
       if (
-        this.pendingRoots.length ||
+        this.pendingRoots.size ||
         this.manualSealing ||
         !this.current(run) ||
         this.manualCheckpointRun !== run ||
@@ -11619,7 +11599,7 @@ export class Session<OutputT = string, Context = unknown> {
         run.failure !== undefined
       )
         continue;
-      if (this.pendingRoots.length)
+      if (this.pendingRoots.size)
         throw new NativeError('Cannot capture while roots are queued');
       beforeSeal?.(
         requests.map(({ call, action }) => ({
@@ -12515,7 +12495,7 @@ export class Session<OutputT = string, Context = unknown> {
         mode: options.mode ?? 'force',
       }),
     );
-    this.discardPending(
+    this.pendingRoots.discard(
       new TurnAborted('Queued work stopped by Session interruption'),
     );
     if (
@@ -12532,15 +12512,12 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<void> {
     if (mode !== 'force' && mode !== 'graceful')
       return Promise.reject(new TypeError('mode must be force or graceful'));
-    const queued = this.pendingRoots.findIndex((entry) => entry.run === anchor);
-    if (queued >= 0) {
+    if (this.pendingRoots.has(anchor)) {
       this.checkCallbackOperation('cancel');
-      this.pendingRoots.splice(queued, 1);
-      const error = new TurnAborted('Queued work cancelled before admission');
-      anchor.controller.abort(error);
-      anchor.accepted.reject(error);
-      anchor.completion.reject(error);
-      this.finishObservation(anchor);
+      this.pendingRoots.withdraw(
+        anchor,
+        new TurnAborted('Queued work cancelled before admission'),
+      );
       return Promise.resolve();
     }
     if (
@@ -14772,7 +14749,7 @@ export class Session<OutputT = string, Context = unknown> {
       return 'Session is not available for checkpoint inspection';
     if (this.options.localStorage)
       return 'Persistent storage cannot export SessionState';
-    if (this.pendingRoots.length) return 'Session has queued root work';
+    if (this.pendingRoots.size) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
     if (this.childCallbacks.entered().length)
       return 'Native child work or callbacks remain active';
@@ -15352,7 +15329,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.sealedStateJson !== undefined)
       return Promise.resolve(parseSessionState(this.sealedStateJson));
     this.checkCallbackOperation('suspend');
-    if (this.pendingRoots.length)
+    if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
     if (
       this.graphStops.size ||
@@ -16847,7 +16824,7 @@ export class Session<OutputT = string, Context = unknown> {
           interceptionFailures.push(result.reason);
     });
 
-    this.discardPending(
+    this.pendingRoots.discard(
       new TurnAborted('Session closed before queued admission'),
     );
     this.childCallbacks.stop();
