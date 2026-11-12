@@ -91,11 +91,12 @@ for (const operation of [
       expect(server.requests).toHaveLength(2);
     });
   }
-it('restores the accepted native receipt without replaying its editor', async () => {
+it('restores private editor result data without replaying its editor', async () => {
   let effects = 0;
+  const applicationData = { ticket: { value: 'private-editor-receipt' } };
   const edit = () => {
     effects++;
-    return { output: 'once' };
+    return { output: 'once', applicationData };
   };
   const server = new ModelServer([
     [call({ type: 'delete_file', path: 'owned' })],
@@ -116,10 +117,25 @@ it('restores the accepted native receipt without replaying its editor', async ()
   const source = await agent.session();
   let state;
   try {
-    expect((await (await source.submit('edit')).wait()).finalOutput).toBe(
-      'first',
-    );
+    const turn = await source.submit('edit');
+    const result = await turn.wait();
+    expect(result.finalOutput).toBe('first');
+    const retainedData = {
+      callId: 'patch-1',
+      name: 'apply_patch',
+      applicationData: { ticket: { value: 'private-editor-receipt' } },
+    };
+    expect(result.applicationToolOutputs).toEqual([
+      expect.objectContaining(retainedData),
+    ]);
+    applicationData.ticket.value = 'mutated after completion';
+    expect(turn.applicationToolOutputs).toEqual([
+      expect.objectContaining(retainedData),
+    ]);
     state = JSON.parse(JSON.stringify(await source.saveState()));
+    expect(state.application_tool_outputs).toEqual([
+      expect.objectContaining(retainedData),
+    ]);
   } finally {
     await source.close();
   }
@@ -128,10 +144,16 @@ it('restores the accepted native receipt without replaying its editor', async ()
     expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
       'continued',
     );
+    expect(JSON.stringify(await restored.saveState())).toContain(
+      'private-editor-receipt',
+    );
   } finally {
     await restored.close();
   }
   expect(effects).toBe(1);
+  expect(JSON.stringify(server.requests)).not.toContain(
+    'private-editor-receipt',
+  );
   expect(server.requests).toHaveLength(3);
   expect(
     (server.requests[2].input as JsonObject[]).find(
