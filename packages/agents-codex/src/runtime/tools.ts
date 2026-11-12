@@ -218,6 +218,7 @@ const toolSessionOwners = new WeakMap<
     owner: object;
     clientToolSearch?: ClientToolSearchInvocation;
     skillLease?: SandboxSkillLease;
+    configuredAgent?: (input: string) => Promise<string>;
   }
 >();
 
@@ -227,8 +228,25 @@ export function registerToolSessionOwner(
   owner: object,
   clientToolSearch?: ClientToolSearchInvocation,
   skillLease?: SandboxSkillLease,
+  configuredAgent?: (input: string) => Promise<string>,
 ): void {
-  toolSessionOwners.set(context, { owner, clientToolSearch, skillLease });
+  toolSessionOwners.set(context, {
+    owner,
+    clientToolSearch,
+    skillLease,
+    configuredAgent,
+  });
+}
+
+/** @internal Only the original admitted declaration has been installing this owner. */
+export function invokeConfiguredAgentTool(
+  context: ToolCallContext,
+  input: string,
+): Promise<string> {
+  const invoke = toolSessionOwners.get(context)?.configuredAgent;
+  if (!invoke)
+    throw new TypeError('Configured child has no admitted parent tool owner');
+  return invoke(input);
 }
 
 // Private extension hook; retained in declarations for the sibling package.
