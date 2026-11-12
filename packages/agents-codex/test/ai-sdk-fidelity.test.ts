@@ -174,62 +174,83 @@ it('routes native workspace patches through a function-only AI SDK provider', as
   ]);
 });
 
-it('reconstructs a native workspace patch from an AI SDK Responses function call', async () => {
-  const patch =
-    '*** Begin Patch\n*** Add File: report.txt\n+done\n*** End Patch';
-  const provider = createOpenAI({
-    apiKey: 'fixture',
-    fetch: async (_url, init) => {
-      const body = JSON.parse(String(init?.body)) as JsonObject;
-      expect(body.tools).toMatchObject([
-        {
-          type: 'function',
-          name: 'apply_patch',
-          parameters: { properties: { patch: { type: 'string' } } },
-        },
-      ]);
-      return Response.json({
-        id: 'resp_patch',
-        object: 'response',
-        created_at: 0,
-        status: 'completed',
-        model: 'gpt-4.1',
-        output: [
+it.each(['raw', 'structured', 'invalid structured'] as const)(
+  'converts a %s AI SDK Responses workspace patch',
+  async (kind) => {
+    const patch =
+      '*** Begin Patch\n*** Add File: report.txt\n+done\n*** End Patch';
+    const operation = {
+      type: 'create_file',
+      path: 'report.txt',
+      diff:
+        kind === 'invalid structured'
+          ? '+done\n*** Delete File: other.txt'
+          : '+done',
+    };
+    const argumentsText = JSON.stringify(
+      kind === 'raw' ? { patch } : { operation },
+    );
+    const provider = createOpenAI({
+      apiKey: 'fixture',
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init?.body)) as JsonObject;
+        expect(body.text).toMatchObject({ verbosity: 'low' });
+        expect(body.tools).toMatchObject([
           {
-            type: 'function_call',
-            id: 'fc_patch',
-            status: 'completed',
-            call_id: 'call_patch',
+            type: 'function',
             name: 'apply_patch',
-            arguments: JSON.stringify({ patch }),
+            parameters: {
+              properties: {
+                patch: { type: 'string' },
+                operation: expect.any(Object),
+              },
+            },
           },
-        ],
-        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
-      });
-    },
-  });
-  const adapter = new AiSdkModel(provider.responses('gpt-4.1'));
-  const response = await adapter.complete({
-    ...request(),
-    body: {
-      model: 'gpt-4.1',
-      input: [],
-      tools: [{ type: 'custom', name: 'apply_patch' }],
-      tool_choice: { type: 'custom', name: 'apply_patch' },
-    },
-  });
+        ]);
+        return Response.json({
+          id: 'resp_patch',
+          object: 'response',
+          created_at: 0,
+          status: 'completed',
+          model: 'gpt-4.1',
+          output: [
+            {
+              type: 'function_call',
+              id: 'fc_patch',
+              status: 'completed',
+              call_id: 'call_patch',
+              name: 'apply_patch',
+              arguments: argumentsText,
+            },
+          ],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+        });
+      },
+    });
+    const adapter = new AiSdkModel(provider.responses('gpt-4.1'));
+    const response = await adapter.complete({
+      ...request(),
+      body: {
+        model: 'gpt-4.1',
+        input: [],
+        text: { verbosity: 'low' },
+        tools: [{ type: 'custom', name: 'apply_patch' }],
+        tool_choice: { type: 'custom', name: 'apply_patch' },
+      },
+    });
 
-  expect(response.output).toEqual([
-    {
-      type: 'custom_tool_call',
-      id: 'fc_patch',
-      status: 'completed',
-      call_id: 'call_patch',
-      name: 'apply_patch',
-      input: patch,
-    },
-  ]);
-});
+    expect(response.output).toEqual([
+      {
+        type: 'custom_tool_call',
+        id: 'fc_patch',
+        status: 'completed',
+        call_id: 'call_patch',
+        name: 'apply_patch',
+        input: kind === 'invalid structured' ? '' : patch,
+      },
+    ]);
+  },
+);
 
 it.each(
   (['chat', 'responses'] as const).flatMap((endpoint) => [
