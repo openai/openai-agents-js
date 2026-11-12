@@ -1031,7 +1031,11 @@
     {
       "path": "sdk-final-configured-child-tool-selection.patch",
       "sha256": "61b69736dfbba375ba595e35ee4eeaa43edf606691ef47654dfe20d34d3f4ebb"
+    },
+    {
+      "path": "sdk-staged-manual-continuation-input.patch",
+      "sha256": "3953f6f1c1ad5a037affcd835740731d10153b0fc2bbd2e51b7f35552d098c0a"
     }
   ],
-  "result_tree": "e3204c5a37d3c474c3625474ab10a0039ce161a2"
+  "result_tree": "0da3872db628179015672986967c93f9dfb8ad17"
 }

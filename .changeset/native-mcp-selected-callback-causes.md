@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: Native MCP callback failures have been retaining selected application exceptions as private causes.
+Native MCP callback failures retain the original application error for explicit diagnostics while keeping standard errors generic.

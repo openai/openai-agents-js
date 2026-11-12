@@ -774,6 +774,7 @@ pub async fn recover_prepared(
     trace: Option<W3cTraceContext>,
     observation_submission_id: Option<String>,
     terminal: Option<crate::python_tools::RecoveredToolCompletionSeed>,
+    staged_input: codex_extension_api::StagedInputBatch,
 ) -> Result<Value> {
     let thread = &state.thread;
     let mut init = thread.config_snapshot().await.turn_extension_init;
@@ -786,6 +787,7 @@ pub async fn recover_prepared(
     if let Some(terminal) = terminal {
         terminal.attach(&mut init);
     }
+    init.insert(staged_input);
     crate::recovery_guard::Seed::attach(&mut init, &turn_id, original_call_ids);
     let value = idle_submission(
         thread

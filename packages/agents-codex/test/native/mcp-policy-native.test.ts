@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { inspect } from 'node:util';
 import { WebSocketServer } from 'ws';
 import {
   afterAll,
@@ -2761,7 +2762,7 @@ it.each([true, false])(
 
 for (const asynchronous of [false, true]) {
   it.each(['transform', 'extract', 'metadata'] as const)(
-    `retains the selected %s callback failure as a private cause (async=${asynchronous})`,
+    `retains the selected %s callback failure for explicit diagnostics (async=${asynchronous})`,
     async (phase) => {
       const privateResult = 'SYNTHETIC_PRIVATE_MCP_RESULT';
       const selected = new Error('SYNTHETIC_SELECTED_CALLBACK_FAILURE');
@@ -2809,7 +2810,10 @@ for (const asynchronous of [false, true]) {
       expect((failure as NativeError).message).toBe(
         'Native MCP result policy failed',
       );
-      expect((failure as NativeError).cause).toBe(selected);
+      expect(Object.hasOwn(failure as NativeError, 'cause')).toBe(false);
+      expect((failure as NativeError).getMcpCallbackError()?.error).toBe(
+        selected,
+      );
       await expect(turn.wait()).rejects.toBe(failure);
       expect(remote.effects).toHaveLength(phase === 'metadata' ? 0 : 1);
       expect(model.requests).toHaveLength(1);
@@ -2819,6 +2823,8 @@ for (const asynchronous of [false, true]) {
         JSON.stringify(model.requests),
         JSON.stringify(items),
         JSON.stringify(await session.saveState()),
+        inspect(failure, { getters: true }),
+        JSON.stringify(failure),
       ];
       await session.close();
       await telemetry.forceFlush();
@@ -2859,6 +2865,7 @@ it.each(['transform', 'extract', 'metadata'] as const)(
       'Native MCP result policy failed',
     );
     expect(Object.hasOwn(failure as NativeError, 'cause')).toBe(false);
+    expect((failure as NativeError).getMcpCallbackError()).toBeUndefined();
     expect(model.requests).toHaveLength(1);
   },
 );
