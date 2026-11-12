@@ -1400,6 +1400,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    executor_tools: None,
                     client_search: None,
                     original_payload: self.resolve_generation(key.reply.generation).and_then(
                         |generation| {

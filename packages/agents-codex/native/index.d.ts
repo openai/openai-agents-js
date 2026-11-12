@@ -338,6 +338,7 @@ export class NativeThread {
     default_slots_json?: string,
     allocate_generation?: boolean,
   ): Promise<string>;
+  _configured_child_policy(request_json: string): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(
     response_json: string,

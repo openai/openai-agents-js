@@ -1029,9 +1029,13 @@
       "sha256": "77c570ed69481b556ace4340382601513ac13aa377accc10da563d23bb895333"
     },
     {
+      "path": "sdk-final-configured-child-tool-selection.patch",
+      "sha256": "61b69736dfbba375ba595e35ee4eeaa43edf606691ef47654dfe20d34d3f4ebb"
+    },
+    {
       "path": "sdk-staged-manual-continuation-input.patch",
       "sha256": "3953f6f1c1ad5a037affcd835740731d10153b0fc2bbd2e51b7f35552d098c0a"
     }
   ],
-  "result_tree": "ce884e055b276aaa1258dd3c3dc55150cfe6f34c"
+  "result_tree": "0da3872db628179015672986967c93f9dfb8ad17"
 }

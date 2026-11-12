@@ -3737,6 +3737,55 @@ impl NativeThread {
         }
     }
 
+    #[napi(js_name = "_configured_child_policy")]
+    pub async fn _configured_child_policy(&self, request_json: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _admission = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(input_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("managed tools unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Configured child callback owner has retired"))?;
+        owner
+            .check_pending(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        let thread = if key.reply.thread == inner.id.to_string() {
+            Arc::clone(&inner.thread)
+        } else {
+            let id =
+                codex_protocol::ThreadId::from_string(&key.reply.thread).map_err(input_error)?;
+            inner
+                .engine
+                .manager
+                .get_thread(id)
+                .await
+                .map_err(native_error)?
+        };
+        if !thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .is_some_and(|current| Arc::ptr_eq(&current, &owner))
+        {
+            return Err(native_error("Configured child callback owner has changed"));
+        }
+        let executor_tools = owner
+            .configured_child_executor_tools(&key)
+            .map_err(native_error)?;
+        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
+            .await
+            .map_err(native_error)?;
+        owner
+            .check_pending(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        policy["tools"] = serde_json::json!(executor_tools);
+        serde_json::to_string(&policy).map_err(native_error)
+    }
+
     #[napi(js_name = "_cancel_child_callback")]
     pub async fn _cancel_child_callback(&self, request_json: String) -> napi::Result<bool> {
         let _admission_state = self.current()?;
