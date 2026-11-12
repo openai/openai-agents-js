@@ -2363,6 +2363,32 @@ fn is_implicit_remote_policy(receipt: &Value) -> bool {
     }
 }
 
+/// Capture the named issuing turn's accepted executor grants, never opening defaults.
+pub(crate) async fn configured_child_policy(
+    thread: &codex_core_api::CodexThread,
+    turn: &str,
+) -> Result<Value> {
+    let selections = thread
+        .current_turn_environment_selections(turn)
+        .await
+        .context("Configured child parent turn is no longer active")?;
+    let [selection] = selections.as_slice() else {
+        anyhow::bail!("Configured child requires one accepted executor Environment");
+    };
+    let config = thread.config().await;
+    let local_network = local_session_network_policy(&config);
+    let receipt = codex_protocol::protocol::sdk_executor_policy_receipt(
+        selection,
+        selection.environment_id == REMOTE_ENVIRONMENT_ID,
+        local_network.as_ref(),
+    )
+    .context("Configured child executor policy is unavailable")?;
+    Ok(serde_json::json!({
+        "cwd": receipt["cwd"],
+        "writableRoots": receipt["writable_roots"],
+    }))
+}
+
 /// The candidate of an in-place context change belongs to the same live
 /// owner. Its declaration must carry the roots currently applied by Core.
 pub(crate) async fn context_candidate_runtime(

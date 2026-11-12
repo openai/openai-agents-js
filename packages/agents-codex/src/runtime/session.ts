@@ -12120,13 +12120,60 @@ export class Session<OutputT = string, Context = unknown> {
     context: ToolCallContext,
     declaration: ConfiguredAgentTool,
     input: string,
+    request: JsonObject,
   ): Promise<string> {
     context.signal.throwIfAborted();
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
+    let environment = this.environment;
+    if (environment && environment.writePolicy !== 'legacy') {
+      const policy = z
+        .object({
+          cwd: z.string(),
+          writableRoots: z.array(z.string()),
+        })
+        .parse(
+          JSON.parse(
+            await this.#native._configured_child_policy(encodeReceipt(request)),
+          ),
+        );
+      context.signal.throwIfAborted();
+      if (!this.current(owner))
+        throw new NativeError('Configured child parent is no longer active');
+      const {
+        kind,
+        headers,
+        connectTimeout,
+        writePolicy,
+        mounts,
+        readOnlyRoots,
+        env,
+        approval,
+        transformArguments,
+        transformResult,
+        ...settings
+      } = environment;
+      environment = new Environment({
+        ...settings,
+        env,
+        approval,
+        transformArguments,
+        transformResult,
+        ...(kind === 'local'
+          ? { local: true as const, writePolicy, mounts, readOnlyRoots }
+          : {
+              writePolicy: 'strict' as const,
+              url: environment.url,
+              headers,
+              ...(connectTimeout === undefined ? {} : { connectTimeout }),
+            }),
+        cwd: policy.cwd,
+        writableRoots: policy.writableRoots,
+      });
+    }
     const session = await declaration.open(
       context.context,
-      this.environment,
+      environment,
       context.signal,
     );
     const child = { session, owner, signal: context.signal, active: true };
@@ -12346,6 +12393,11 @@ export class Session<OutputT = string, Context = unknown> {
                 context,
                 configuredAgentTool(tool)!,
                 input,
+                {
+                  _sdk_python_tool: marker,
+                  turnId: msg.turnId!,
+                  callId: msg.callId!,
+                },
               )
           : undefined,
       );
