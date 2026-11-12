@@ -436,6 +436,128 @@ it.each([true, false])(
   30_000,
 );
 
+it('retires an imported approval after a new remembered rejection', async () => {
+  const effects: string[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    approvalKey: 'fixture.risky.v1',
+    execute: ({ value }) => {
+      effects.push(value);
+      return value;
+    },
+  });
+  const server = new ModelServer([
+    [
+      call('risky', { value: 'first' }, { callId: 'decision-first' }),
+      call('risky', { value: 'pending' }, { callId: 'decision-pending' }),
+    ],
+    [message('resumed')],
+    [call('risky', { value: 'later' }, { callId: 'decision-later' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use the tool.',
+    model: 'fixture',
+    provider,
+    tools: [risky],
+  });
+  const source = await agent.session();
+  let saved;
+  try {
+    await source.submit('begin');
+    const stream = source.interactions()[Symbol.asyncIterator]();
+    const first = (await stream.next()).value;
+    const pending = (await stream.next()).value;
+    if (
+      !isFunctionApprovalRequest(first) ||
+      !isFunctionApprovalRequest(pending)
+    )
+      throw new Error('Expected two managed approvals');
+    expect(first.callId).not.toBe(pending.callId);
+    expect(effects).toEqual([]);
+    await source.respond(first.approve({ always: true }));
+    saved = await source.suspend();
+  } finally {
+    await source.close();
+  }
+  await using restored = await agent.session({ state: saved });
+  await restored.respond(
+    (await nextApproval(restored)).reject(undefined, { always: true }),
+  );
+  await restored.restoredTurn!.wait();
+  expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
+    'done',
+  );
+  expect(effects).toHaveLength(1);
+  expect(effects).not.toContain('later');
+  server.assertExhausted();
+}, 30_000);
+
+it('keeps remembered decisions made under updated effective instructions', async () => {
+  const effects: string[] = [];
+  const risky = tool({
+    name: 'risky',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    approvalKey: 'fixture.risky.v1',
+    execute: ({ value }) => {
+      effects.push(value);
+      return value;
+    },
+  });
+  const server = new ModelServer([
+    [call('risky', { value: 'first' }, { callId: 'updated-first' })],
+    [message('done')],
+    [call('risky', { value: 'later' }, { callId: 'updated-later' })],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Opening policy.',
+    model: 'fixture',
+    provider,
+    tools: [risky],
+  });
+  const source = await agent.session();
+  let saved;
+  try {
+    await source.update({ instructions: 'Current policy.' });
+    const turn = await source.submit('begin');
+    await source.respond(
+      (await nextApproval(source)).approve({ always: true }),
+    );
+    await turn.wait();
+    saved = await source.saveState();
+  } finally {
+    await source.close();
+  }
+  const current = new Agent({
+    instructions: 'Current policy.',
+    model: 'fixture',
+    provider,
+    tools: [risky],
+  });
+  await using restored = await current.session({ state: saved });
+  const turn = await restored.submit('continue');
+  const outcome = await Promise.race([
+    turn.wait().then(() => ({ kind: 'completed' as const })),
+    nextApproval(restored).then((request) => ({
+      kind: 'approval' as const,
+      request,
+    })),
+  ]);
+  if (outcome.kind === 'approval') {
+    await restored.respond(outcome.request.reject());
+    await turn.wait();
+  }
+  expect(outcome.kind).toBe('completed');
+  expect(effects).toEqual(['first', 'later']);
+  server.assertExhausted();
+});
+
 it.each(['key', 'profile', 'schema', 'policy', 'unkeyed'] as const)(
   'requires current authority for portable remembered approval (%s)',
   async (change) => {

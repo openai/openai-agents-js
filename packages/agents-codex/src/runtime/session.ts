@@ -15380,8 +15380,7 @@ export class Session<OutputT = string, Context = unknown> {
           (profile?.profile.declaration ?? this.options.applicationAgent)
             ?.name ?? null,
           profile?.instructions ??
-            this.options.applicationAgent?.instructions ??
-            this.threadOptions.instructions ??
+            this.#native._application_instructions() ??
             null,
         ]),
       )
