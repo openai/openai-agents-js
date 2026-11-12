@@ -26,6 +26,8 @@ export class NativeTurn {
   requestAttemptsStarted = false;
   borrowedRequestAttempts = false;
   requestAttempts?: RequestAttempts;
+  submissionRequestAttempts?: RequestAttempts;
+  requestAttemptParent?: NativeTurn;
   clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[] = [];
   guardrailInput?: UserInput;
@@ -73,6 +75,7 @@ export class NativeTurn {
     usageParent?: NativeTurn,
   ) {
     if (usageParent) attachModelUsageSource(usageParent, this);
+    this.requestAttemptParent = usageParent;
     this.accepted.promise.catch(() => {});
     this.completion.promise.catch(() => {});
   }

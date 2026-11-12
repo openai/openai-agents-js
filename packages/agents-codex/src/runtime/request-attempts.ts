@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { parseTokenCount, type TokenCount } from './run-events';
+import { addTokenCounts, parseTokenCount, type TokenCount } from './run-events';
 
 const countSchema = z.strictObject({
   owner: z.enum(['root', 'child']),
@@ -36,5 +36,40 @@ export function parseRequestAttempts(snapshot: string): RequestAttempts {
       ),
     ),
     borrowedRequestsUnavailable: report.borrowed_requests_unavailable,
+  });
+}
+
+/** Merge already-settled, disjoint native owners into bounded count groups. */
+export function mergeRequestAttempts(
+  previous: RequestAttempts | undefined,
+  next: RequestAttempts,
+): RequestAttempts {
+  if (previous === undefined) return next;
+  const counts = new Map<string, RequestAttemptCount>();
+  for (const entry of [...previous.counts, ...next.counts]) {
+    const key = `${entry.owner}/${entry.operation}/${entry.transport}`;
+    const prior = counts.get(key);
+    counts.set(
+      key,
+      Object.freeze({
+        ...entry,
+        count: addTokenCounts(prior?.count ?? 0, entry.count),
+      }),
+    );
+  }
+  const values = Object.freeze([...counts.values()]);
+  const borrowed =
+    previous.borrowedRequestsUnavailable || next.borrowedRequestsUnavailable;
+  return Object.freeze({
+    availability:
+      previous.availability === 'complete' && next.availability === 'complete'
+        ? 'complete'
+        : previous.availability === 'partial' ||
+            next.availability === 'partial' ||
+            values.length > 0
+          ? 'partial'
+          : 'unavailable',
+    counts: values,
+    borrowedRequestsUnavailable: borrowed,
   });
 }
