@@ -1,3 +1,4 @@
+export type { ProviderHistory } from './runtime/provider-history';
 export type { AcceptedTextChunk, AcceptText } from './runtime/accepted-text';
 export { retryPolicies } from './runtime/model-retry';
 export type {
@@ -212,6 +213,7 @@ export type {
 export {
   parseSessionState,
   readSessionInstructions,
+  getProviderHistory,
   pendingInput,
   withPendingInput,
   withoutPendingInput,

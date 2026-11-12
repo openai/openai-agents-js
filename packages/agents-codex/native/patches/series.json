@@ -1035,7 +1035,11 @@
     {
       "path": "sdk-staged-manual-continuation-input.patch",
       "sha256": "3953f6f1c1ad5a037affcd835740731d10153b0fc2bbd2e51b7f35552d098c0a"
+    },
+    {
+      "path": "sdk-provider-history-lineage.patch",
+      "sha256": "61fb3fddfead8336a9cf6ac9ecaf2a3b56cdcd0b86442aca4bac9863182d508c"
     }
   ],
-  "result_tree": "0da3872db628179015672986967c93f9dfb8ad17"
+  "result_tree": "3a187719f0dcb22c827798e2f22083b8d9864100"
 }

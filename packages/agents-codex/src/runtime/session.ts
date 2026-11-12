@@ -1,3 +1,7 @@
+import {
+  providerHistorySettings,
+  type ProviderHistory,
+} from './provider-history';
 import { configuredAgentTool, type ConfiguredAgentTool } from './agent-tool';
 import { QueuedRoots } from './queued-roots';
 import {
@@ -505,6 +509,7 @@ export interface SessionOptions {
   agentGraph?: CapturedAgentGraph & { readonly fingerprint: string };
   context?: unknown;
   initialModelSettings?: ModelSettings;
+  providerHistory?: ProviderHistory;
   /** @internal Captured authorized prompt source; never serialized as a callback. */
   hostedPrompt?: HostedPromptSource<any>;
   /** @internal Opening declaration presence, separate from native model defaults. */
@@ -3161,13 +3166,17 @@ export class Session<OutputT = string, Context = unknown> {
       )
         await this.#native._validate_hosted_search_model();
       if (
-        (this.options.initialModelSettings ||
+        (this.options.providerHistory ||
+          this.options.initialModelSettings ||
           this.options.hostedPromptControls) &&
         !this.restored
       ) {
         const settings = modelOverrides(
           undefined,
-          this.options.initialModelSettings,
+          providerHistorySettings(
+            this.options.providerHistory,
+            this.options.initialModelSettings,
+          ),
           this.options.hostedPromptControls,
         );
         if (
@@ -3372,6 +3381,20 @@ export class Session<OutputT = string, Context = unknown> {
   private async restoreModelControls(
     settings: ModelSettings | undefined,
   ): Promise<void> {
+    const historySettings = providerHistorySettings(
+      this.options.providerHistory,
+      settings,
+    );
+    if (this.options.providerHistory !== undefined) {
+      if (
+        (await this.#native._update_model_settings(
+          encode(modelOverrides(undefined, { store: historySettings!.store })),
+        )) !== true
+      )
+        throw new NativeError(
+          'Current provider history storage was not acknowledged',
+        );
+    }
     // Ordinary portable state already carries the accepted invocation deadline.
     const rebindInvocationTimeout =
       this.restored === null ||
@@ -13425,6 +13448,14 @@ export class Session<OutputT = string, Context = unknown> {
       );
     const settings = modelOverrides(options.model, capturedSettings);
     if (
+      capturedSettings?.store !== undefined &&
+      this.options.providerHistory?.type === 'previous_response' &&
+      capturedSettings.store !== true
+    )
+      throw new TypeError(
+        'Previous-response HTTP continuation requires store=true',
+      );
+    if (
       this.options.nativeAgents &&
       (options.instructions !== undefined || Object.keys(settings).length)
     )
@@ -14559,6 +14590,8 @@ export class Session<OutputT = string, Context = unknown> {
    * the same LocalStorage and current Agent; no portable checkpoint conversion. */
   async forkStored(options: StoredForkOptions = {}): Promise<string> {
     this.checkCallbackOperation('fork stored history');
+    if (this.options.providerHistory !== undefined)
+      throw new NativeError('Fork is unavailable for provider-managed history');
     if (!options || typeof options !== 'object' || Array.isArray(options))
       throw new TypeError('Stored fork options must be an object');
     if (!this.options.localStorage)
@@ -14647,6 +14680,13 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<void> {
     this.checkCallbackOperation('change stored history while closing');
     this.idle('change stored history while closing');
+    if (
+      action.kind === 'revert' &&
+      this.options.providerHistory?.type === 'conversation'
+    )
+      throw new NativeError(
+        'Revert is unavailable for provider-managed conversations',
+      );
     this.storedHistoryClose = this.#native._stored_history_close_action(
       JSON.stringify(action),
     );
@@ -15154,6 +15194,10 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support a supplied compaction summary; use compact() without options for native compaction',
       );
     this.checkCallbackOperation('compact');
+    if (this.options.providerHistory !== undefined)
+      throw new NativeError(
+        'Compaction is unavailable for provider-managed history',
+      );
     this.idle('compact');
     if (options !== undefined) {
       const { summary, signal, snapshot, retain } = options;
@@ -15494,6 +15538,8 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support fork; retain Session.id and reopen with the same storage backend',
       );
     this.checkCallbackOperation('fork');
+    if (this.options.providerHistory !== undefined)
+      throw new NativeError('Fork is unavailable for provider-managed history');
     if (this.graphStops.size || this.childContinuations.size)
       throw new NativeError('fork requires a settled Session');
     return this.mutate(async () => {

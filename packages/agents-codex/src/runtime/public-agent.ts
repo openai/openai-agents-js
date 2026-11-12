@@ -1,3 +1,7 @@
+import {
+  captureProviderHistory,
+  type ProviderHistory,
+} from './provider-history';
 import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
 import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
 import {
@@ -206,6 +210,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
     : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Select current provider-owned HTTP history; restore requires its exact accepted anchor. */
+  providerHistory?: ProviderHistory;
   /** Restore has been requiring the original trusted limits and effective missing-usage policy. */
   resumeBudget?: RunBudget;
   /** Format original function argument/body failures; omission preserves propagation.
@@ -734,6 +740,7 @@ export class Agent<Context = undefined, Output = string> {
       ...(managedOpening
         ? { state: managedOpening.state, [managedWorkspaceRestore]: true }
         : {}),
+      providerHistory: captureProviderHistory(suppliedOptions?.providerHistory),
       parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
     } as OwnedSessionOptions<Context>;
     if (
@@ -861,7 +868,10 @@ export class Agent<Context = undefined, Output = string> {
     input: UserInput | null,
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
-    const options = { ...(args[0] ?? {}) };
+    const options = {
+      ...(args[0] ?? {}),
+      providerHistory: captureProviderHistory(args[0]?.providerHistory),
+    };
     const modelOverride = validateModelOverride(options.modelOverride);
     const modelSettingsOverride =
       options.modelSettingsOverride === undefined
@@ -933,6 +943,7 @@ export class Agent<Context = undefined, Output = string> {
         : undefined;
     const errorInput = captureErrorDetails ? structuredClone(input) : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
+      providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
       ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
@@ -988,6 +999,7 @@ export class Agent<Context = undefined, Output = string> {
       options.prepareRequest === undefined &&
       modelOverride === undefined &&
       modelSettingsOverride === undefined &&
+      options.providerHistory === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -1157,6 +1169,16 @@ export class Agent<Context = undefined, Output = string> {
     const provider = opening
       ? opening.provider
       : (openingProvider ?? this.provider);
+    if (
+      options.providerHistory !== undefined &&
+      provider.modelBackend !== undefined
+    )
+      throw new TypeError(
+        'Provider history requires a supported owning Responses transport',
+      );
+    const historyHttpOnly =
+      options.providerHistory !== undefined &&
+      provider.supportsWebsockets === undefined;
     const model = opening ? opening.model : (openingModel ?? this.model);
     const settings = opening
       ? opening.settings
@@ -1318,7 +1340,8 @@ export class Agent<Context = undefined, Output = string> {
       validatePrepareRequestCompatibility(
         prepareRequest,
         !!output.repair,
-        provider.responseMode !== 'buffered' &&
+        !historyHttpOnly &&
+          provider.responseMode !== 'buffered' &&
           (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
             false,
         !!(
@@ -1614,6 +1637,21 @@ export class Agent<Context = undefined, Output = string> {
     ];
 
     const native = graphNative ?? (await binding());
+    if (options.providerHistory?.type === 'previous_response' && graph) {
+      const pending = [graph.rootId];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const id = pending.pop()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const profile = graph.profiles.get(id)!.profile;
+        if (profile.declaration.modelSettings?.store !== true)
+          throw new TypeError(
+            'Every reachable handoff profile requires current store=true',
+          );
+        pending.push(...Object.values(profile.handoffs));
+      }
+    }
     const completedGraph = graph
       ? Object.freeze({
           ...graph,
@@ -1729,6 +1767,7 @@ export class Agent<Context = undefined, Output = string> {
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
+            ...(historyHttpOnly ? { supports_websockets: false } : {}),
           },
         },
         runtime: {
@@ -1767,6 +1806,9 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          ...(options.providerHistory === undefined
+            ? {}
+            : { _provider_history: options.providerHistory }),
           ...(startupTransport === undefined
             ? {}
             : { _sdk_request_transport: startupTransport }),
@@ -1925,10 +1967,11 @@ export class Agent<Context = undefined, Output = string> {
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
+        providerHistory: options.providerHistory,
         hostedPrompt,
         hostedPromptControls: promptControls,
         checklist: declarations.checklist,
-        websocketsAllowed: lease.websocketsAllowed,
+        websocketsAllowed: lease.websocketsAllowed && !historyHttpOnly,
         onClose: lease.release,
         managedWorkspace: environmentOwner.managedWorkspace,
         [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[

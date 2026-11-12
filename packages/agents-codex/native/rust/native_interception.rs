@@ -3424,6 +3424,23 @@ impl ModelRequestContributor for Boundary {
         })
     }
 
+    fn provider_history_route(
+        &self,
+        url: &str,
+        headers: &http::HeaderMap,
+    ) -> Option<futures_util::future::BoxFuture<'static, Result<codex_extension_api::ModelProviderHistoryRoute, String>>> {
+        let engine = self.engine.get()?.upgrade()?;
+        let base = engine.sentinel.read().expect("sentinel poisoned").as_ref()?.0.clone();
+        if !url.starts_with(&format!("{}/p-", base.trim_end_matches('/'))) {
+            return None;
+        }
+        let url = url.to_owned();
+        let headers = headers.clone();
+        Some(Box::pin(async move {
+            crate::provider_history_owner::resolve(engine, url, headers).await
+        }))
+    }
+
     fn preserves_provider_request_window(&self, url: &str) -> bool {
         // This exact native route validates the provider/grant/one-use ticket,
         // restores tool schemas, and sends input/model/store through Reqwest.

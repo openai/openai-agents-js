@@ -2444,6 +2444,7 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-path-uri",
  "futures",
+ "http 1.4.0",
  "serde",
  "serde_json",
  "tokio-util",

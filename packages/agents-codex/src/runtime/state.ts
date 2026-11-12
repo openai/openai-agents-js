@@ -1,3 +1,7 @@
+import {
+  captureProviderHistory,
+  type ProviderHistory,
+} from './provider-history';
 import { modelAttemptSnapshotSchema } from './model-attempts';
 import { nativeInput, validateStagedInputAudio, type UserInput } from './input';
 import { captureFile, captureImage, mediaRecord } from './media';
@@ -1111,6 +1115,30 @@ function validateCheckpointTree(
   }
 }
 export type SessionState = z.infer<typeof sessionStateSchema>;
+
+/** Untrusted saved anchor data; independent application authorization required before restore. */
+export function getProviderHistory(
+  state: SessionState,
+): ProviderHistory | undefined {
+  for (let index = state.history.length - 1; index >= 0; index--) {
+    const row = checkpointRecord(state.history[index]);
+    const payload = checkpointRecord(row?.payload);
+    if (
+      row?.type !== 'event_msg' ||
+      payload?.type !== 'thread_settings_applied' ||
+      payload.thread_id !== state.source_session_id
+    )
+      continue;
+    const settings = checkpointRecord(payload.thread_settings);
+    const receipt = checkpointRecord(settings?.provider_history);
+    if (receipt === undefined) return undefined;
+    const selection = captureProviderHistory(
+      receipt.selection as ProviderHistory | undefined,
+    );
+    return selection === undefined ? undefined : { ...selection };
+  }
+  return undefined;
+}
 
 export function isBudgetedManualSessionState(
   state: SessionState | null | undefined,
