@@ -271,6 +271,14 @@ const nativeIntegerKeys = new Set([
   'next_cell_id',
   'profile_epoch',
   'epoch',
+  'requests',
+  'requests_without_token_usage',
+  'input_tokens',
+  'cached_input_tokens',
+  'cache_write_input_tokens',
+  'output_tokens',
+  'reasoning_output_tokens',
+  'total_tokens',
 ]);
 const nativeIntegerToken = new RegExp(
   String.raw`"(?:${[...nativeIntegerKeys].join('|')})"[ \t\r\n]*:[ \t\r\n]*[-0-9]`,
@@ -305,7 +313,11 @@ export function parseNative(source: string): unknown {
       return value;
     },
   );
-  function restore(receipt: unknown, key: string): void {
+  function restore(
+    receipt: unknown,
+    key: string,
+    keepSafeNumber = false,
+  ): void {
     if (typeof receipt !== 'object' || receipt === null) return;
     const original = tokens.get(receipt)?.get(key);
     if (original !== undefined) {
@@ -314,8 +326,25 @@ export function parseNative(source: string): unknown {
           'Invalid native receipt integer or missing Node.js JSON source access',
         );
       }
-      Reflect.set(receipt, key, original);
+      if (!keepSafeNumber || !Number.isSafeInteger(Reflect.get(receipt, key)))
+        Reflect.set(receipt, key, original);
     }
+  }
+  function restoreModelAttempt(value: unknown, keepSafeNumbers = false): void {
+    if (!value || typeof value !== 'object' || !('usage' in value)) return;
+    const usage = value.usage;
+    restore(usage, 'requests', keepSafeNumbers);
+    restore(usage, 'requests_without_token_usage', keepSafeNumbers);
+    if (usage && typeof usage === 'object' && 'token_usage' in usage)
+      for (const field of [
+        'input_tokens',
+        'cached_input_tokens',
+        'cache_write_input_tokens',
+        'output_tokens',
+        'reasoning_output_tokens',
+        'total_tokens',
+      ])
+        restore(usage.token_usage, field, keepSafeNumbers);
   }
   // These are native envelope fields. Data inside arguments/output is application JSON.
   restore(parsed, 'nonce');
@@ -336,9 +365,28 @@ export function parseNative(source: string): unknown {
   }
   for (const state of checkpointCodeStates(parsed))
     restore(state, 'next_cell_id');
+  if (parsed && typeof parsed === 'object' && 'model_attempt' in parsed)
+    restoreModelAttempt(parsed.model_attempt);
+  for (const candidate of [parsed, checkpoint])
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      'manual_context' in candidate
+    ) {
+      const context = candidate.manual_context;
+      if (context && typeof context === 'object' && 'model_attempt' in context)
+        // Portable checkpoints already retain large counts as decimal strings.
+        // Keep safe numeric counts stable for deferred checkpoint digests.
+        restoreModelAttempt(context.model_attempt, true);
+    }
   if (typeof parsed === 'object' && parsed !== null && 'msg' in parsed) {
     const msg = parsed.msg;
     restore(msg, 'profile_epoch');
+    if (msg && typeof msg === 'object') {
+      if ('model_attempt' in msg) restoreModelAttempt(msg.model_attempt);
+      if ('type' in msg && msg.type === '_sdk_model_attempt' && 'data' in msg)
+        restoreModelAttempt(msg.data);
+    }
     if (typeof msg === 'object' && msg !== null && '_sdk_python_tool' in msg) {
       restore(msg._sdk_python_tool, 'generation');
       restore(msg._sdk_python_tool, 'profile_epoch');

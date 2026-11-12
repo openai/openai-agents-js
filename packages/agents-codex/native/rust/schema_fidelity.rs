@@ -289,6 +289,7 @@ impl Receipts {
             specs,
             defaults: Vec::new(),
             terminal_slots: Default::default(),
+            input_error_slots: Default::default(),
         });
         // Register only presentation metadata. No executable plan, current
         // generation, search-history retention, or application policy changes.
@@ -444,6 +445,7 @@ mod tests {
             specs: vec![DynamicToolSpec::Function(original)],
             defaults: vec![0],
             terminal_slots: Default::default(),
+            input_error_slots: Default::default(),
         });
         receipts.register(&generation);
         generation
@@ -621,6 +623,7 @@ mod prepared_tests {
             specs: vec![DynamicToolSpec::Function(raw)],
             defaults: vec![0],
             terminal_slots: Default::default(),
+            input_error_slots: Default::default(),
         });
         receipts.register(&generation);
         (generation, data)
