@@ -85,9 +85,9 @@ export class SandboxMemoryStorage {
     runAs?: string;
     store?: MemoryStore;
     tracingParent?: Span<any> | Trace;
-    /** @internal Native owners require a no-follow, bounded complete reader. */
+    /** Optional no-follow, bounded complete reader for native memory owners. */
     readFile?: SandboxSessionLike['readFile'];
-    /** @internal Native owners supply detached, header-only operation delivery. */
+    /** Optional detached, header-only operation delivery for native memory owners. */
     runOperation?: <T>(name: string, run: () => Promise<T>) => Promise<T>;
   }) {
     this.session = args.session;
