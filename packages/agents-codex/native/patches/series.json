@@ -1003,7 +1003,11 @@
     {
       "path": "sdk-explicit-hosted-tool-choice.patch",
       "sha256": "de6a3b0c7813382749a194a3bff82c20cf0f1aaf596b33c4d5ea67dc7f91cb7b"
+    },
+    {
+      "path": "sdk-websocket-route-auth-scope.patch",
+      "sha256": "13001bb37181ab5e050411238cce6604360f8b932200b1f0317ac623d10e76a9"
     }
   ],
-  "result_tree": "dd2d18ab1cf156b708e0e7c19f7f974d2c52e001"
+  "result_tree": "8f873937d965499bcd0f2e0af505ff5147f8e501"
 }
