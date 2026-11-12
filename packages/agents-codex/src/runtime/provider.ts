@@ -59,6 +59,8 @@ export interface NativeProviderOptions {
   streamIdleTimeoutMs?: number;
   websocketConnectTimeoutMs?: number;
   baseUrl?: string;
+  /** Base URL for Responses WebSockets when that transport is allowed. */
+  websocketBaseUrl?: string;
   apiKey?: string;
   /** Use the file-backed ChatGPT login saved by the Codex CLI for Responses. */
   codexLogin?: {
@@ -158,6 +160,7 @@ export class NativeProvider {
         options.chatGPT !== undefined ||
         options.modelBackend !== undefined ||
         options.baseUrl !== undefined ||
+        options.websocketBaseUrl !== undefined ||
         options.queryParams !== undefined ||
         options.headers !== undefined ||
         options.envHeaders !== undefined ||
@@ -205,6 +208,27 @@ export class NativeProvider {
         (typeof options[key] !== 'string' || !options[key])
       )
         throw new TypeError(`${key} must be a non-empty string`);
+    }
+    if (options.websocketBaseUrl !== undefined) {
+      const error =
+        'websocketBaseUrl must be an absolute HTTP(S) or WS(S) URL without userinfo or fragment';
+      const endpoint = options.websocketBaseUrl;
+      if (typeof endpoint !== 'string') throw new TypeError(error);
+      let base: URL;
+      try {
+        base = new URL(endpoint);
+      } catch {
+        throw new TypeError(error);
+      }
+      const authority = /^(?:https?|wss?):\/\/([^/?#]+)/i.exec(endpoint)?.[1];
+      if (
+        !authority ||
+        authority.includes('@') ||
+        !base.hostname ||
+        /\s/.test(endpoint) ||
+        base.href.includes('#')
+      )
+        throw new TypeError(error);
     }
     if (
       options.supportsWebsockets !== undefined &&
@@ -530,6 +554,7 @@ export class NativeProvider {
           ...this.#routing,
           ...Object.fromEntries(
             Object.entries({
+              websocket_base_url: options.websocketBaseUrl,
               request_max_retries: getPlanCredential
                 ? 0
                 : options.requestMaxRetries,
@@ -945,6 +970,7 @@ function captureCodexLogin(options: NativeProviderOptions) {
     options.apiKey !== undefined ||
     options.modelBackend !== undefined ||
     options.baseUrl !== undefined ||
+    options.websocketBaseUrl !== undefined ||
     options.supportsWebsockets === true ||
     options.responseMode === 'buffered' ||
     options.headers !== undefined ||

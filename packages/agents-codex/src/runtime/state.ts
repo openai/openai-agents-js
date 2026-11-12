@@ -259,6 +259,27 @@ const treeState = {
     .nullable()
     .optional(),
 };
+const manualNativeReceiptSchema = z.union([
+  z
+    .object({
+      type: z.enum([
+        'function_call_output',
+        'custom_tool_call_output',
+        'shell_call_output',
+      ]),
+      call_id: z.string().min(1),
+      output: jsonValue,
+    })
+    .catchall(jsonValue),
+  z
+    .object({
+      type: z.literal('apply_patch_call_output'),
+      call_id: z.string().min(1),
+      status: z.enum(['completed', 'failed']),
+      output: stringSchema.optional(),
+    })
+    .catchall(jsonValue),
+]);
 const manualContinuationSchema = z.object({
   model_override: z.string().min(1).optional(),
   model_settings_override: losslessJsonObjectSchema.optional(),
@@ -283,23 +304,11 @@ const manualContinuationSchema = z.object({
       z
         .object({
           type: z.literal('response_item'),
-          payload: z
-            .object({
-              type: z.enum(['function_call_output', 'custom_tool_call_output']),
-              call_id: z.string().min(1),
-              output: jsonValue,
-            })
-            .catchall(jsonValue),
+          payload: manualNativeReceiptSchema,
           metadata: jsonObject.optional(),
         })
         .catchall(jsonValue),
-      z
-        .object({
-          type: z.enum(['function_call_output', 'custom_tool_call_output']),
-          call_id: z.string().min(1),
-          output: jsonValue,
-        })
-        .catchall(jsonValue),
+      manualNativeReceiptSchema,
     ]),
   ),
   pending_manual: z
@@ -309,6 +318,8 @@ const manualContinuationSchema = z.object({
         name: z.string().min(1),
         namespace: optionalStringSchema,
         arguments: stringSchema,
+        shell: z.boolean().optional(),
+        patch: z.boolean().optional(),
         approval_required: z.boolean().optional(),
         effective_arguments: optionalStringSchema,
       }),

@@ -312,9 +312,9 @@ async function main() {
       await assert.rejects(
         telemetry.startTrace({
           name: 'metadata-still-bounded',
-          metadata: { value: 'é'.repeat(3000) },
+          metadata: { value: 'é'.repeat(32769) },
         }),
-        /4096 UTF-8 bytes/,
+        /64 KiB/,
       );
       assert.equal(
         (await telemetry.forceFlush({ timeoutMs: 3000 })).status,

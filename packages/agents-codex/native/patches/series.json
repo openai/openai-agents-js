@@ -987,7 +987,19 @@
     {
       "path": "sdk-provider-compaction-threshold.patch",
       "sha256": "bf3cc2302fb84ae70b68546b5bd0994f3a9d0c0023a59fa25688501d2e062157"
+    },
+    {
+      "path": "sdk-generic-provider-hosted-tools.patch",
+      "sha256": "86489613d82d450619641aa6e11a682d5e29fc87ca064b0fc48419f3df7d47c6"
+    },
+    {
+      "path": "sdk-tracing-annotation-shapes.patch",
+      "sha256": "a8ca9902c1041e980d996af7235c31ff00aba450a3b606053add632982c6d0ee"
+    },
+    {
+      "path": "sdk-independent-websocket-base.patch",
+      "sha256": "bcb4ba165d5d56bfbd29f31405514224c96282ccf67a34d48f04af99d8809601"
     }
   ],
-  "result_tree": "9887d36e422c2c3781eef3b9dd6c5d7f9a134a91"
+  "result_tree": "ecf7edd9f507c68993edd485360937507d07e505"
 }

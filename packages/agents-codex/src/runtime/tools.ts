@@ -1,3 +1,4 @@
+import type { StandardSchemaWithJSON } from '@openai/agents-core';
 import type { SandboxSkillLease } from './sandbox-skills';
 import { isZodObject } from '@openai/agents-core/utils';
 import {
@@ -33,7 +34,11 @@ import type { WebSearch } from './web-search';
 import type { HostedTool, ClientToolSearchExecutor } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
-import { assembleManualTool, type ManualTool } from './manual';
+import {
+  assembleManualTool,
+  copyApprovalInput,
+  type ManualTool,
+} from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
 import { hostedMcpBinding } from './hosted-mcp-binding';
@@ -251,6 +256,7 @@ function inheritToolSessionOwner<T extends ToolCallContext>(
 
 export interface ToolContext<
   Context = unknown,
+  Arguments = Record<string, unknown>,
 > extends ToolCallContext<Context> {
   readonly decide: BoundDecide;
   /** Explicitly report trusted measured usage while this native invocation is admitted. */
@@ -258,7 +264,7 @@ export interface ToolContext<
   /** Detached snapshot of the model's arguments. */
   readonly originalArguments: Readonly<JsonObject>;
   /** Shallow read-only view of the validated callback arguments. */
-  readonly effectiveArguments: Readonly<Record<string, unknown>>;
+  readonly effectiveArguments: Readonly<Arguments>;
 }
 
 /** A name resolves only to a binding admitted when the Session opened. */
@@ -571,8 +577,23 @@ export type Tool<Context = any> =
   | NativeGoals
   | Checklist;
 
+type ToolParameters = z.ZodType | StandardSchemaWithJSON;
+type ToolParameterInput<T extends ToolParameters> = T extends z.ZodType
+  ? z.input<T>
+  : T extends StandardSchemaWithJSON<infer Input, unknown>
+    ? Input
+    : never;
+type ToolParameterOutput<T extends ToolParameters> = T extends z.ZodType
+  ? z.output<T>
+  : T extends StandardSchemaWithJSON<unknown, infer Output>
+    ? Output
+    : never;
+type ToolContextArguments<T extends ToolParameters> = T extends z.ZodType
+  ? Record<string, unknown>
+  : ToolParameterOutput<T>;
+
 export function tool<
-  T extends z.ZodType,
+  T extends ToolParameters,
   Context = unknown,
   Result extends z.ZodType = z.ZodType<
     JsonValue | ToolOutput,
@@ -611,7 +632,10 @@ export function tool<
     originalArguments: JsonValue,
   ) => string | Promise<string>;
   needsApproval?:
-    boolean | ((context: ToolContext<Context>) => boolean | Promise<boolean>);
+    | boolean
+    | ((
+        context: ToolContext<Context, ToolContextArguments<T>>,
+      ) => boolean | Promise<boolean>);
   /** Run the input policy before approval and again before callback execution. */
   runBeforeApproval?: boolean;
   /**
@@ -626,27 +650,33 @@ export function tool<
   namespace?: string;
   namespaceDescription?: string;
   description?: string;
+  /**
+   * Standard Schema requires strict mode and synchronous validation.
+   * Validated values may contain primitives, plain objects, arrays, and dates.
+   */
   parameters: T;
   /** Validate the callback result before converting it to model-visible content. */
   result?: Result;
   /** Allow, deny, or replace validated arguments before the callback runs. */
   before?: (
-    context: ToolContext<Context>,
-  ) => ToolDecision<z.input<T>> | Promise<ToolDecision<z.input<T>>>;
+    context: ToolContext<Context, ToolContextArguments<T>>,
+  ) =>
+    | ToolDecision<ToolParameterInput<T>>
+    | Promise<ToolDecision<ToolParameterInput<T>>>;
   /**
    * Transform validated content. Returning the same output preserves background
    * intent; a replacement is foreground unless wrapped in backgroundResult().
    */
   after?: (
     output: ToolOutput,
-    context: ToolContext<Context>,
+    context: ToolContext<Context, ToolContextArguments<T>>,
   ) =>
     | ToolOutput
     | BackgroundResult<ToolOutput>
     | Promise<ToolOutput | BackgroundResult<ToolOutput>>;
   execute: (
-    args: z.output<T>,
-    context: ToolContext<Context>,
+    args: ToolParameterOutput<T>,
+    context: ToolContext<Context, ToolContextArguments<T>>,
   ) =>
     | z.input<Result>
     | BackgroundResult<z.input<Result>>
@@ -725,19 +755,42 @@ export function tool<
   if (outputSchema !== undefined && outputSchema.type !== 'object')
     throw new TypeError('outputSchema must define a JSON object');
   let inputSchema: unknown;
-  if (strict) {
-    if (!isZodObject(parameters))
-      throw new TypeError('Strict tool parameters must be a Zod object');
-    inputSchema = getSchemaAndParserFromInputType(parameters, name, {
-      strict,
-    }).schema;
+  let parseInput: (value: unknown) => ToolParameterOutput<T>;
+  const standardSchema =
+    !isZodObject(parameters) && !(parameters instanceof z.ZodType);
+  if (!standardSchema) {
+    const zodParameters = parameters as z.ZodType;
+    if (strict) {
+      if (!isZodObject(parameters))
+        throw new TypeError('Strict tool parameters must be a Zod object');
+      inputSchema = getSchemaAndParserFromInputType(parameters, name, {
+        strict,
+      }).schema;
+    } else {
+      inputSchema = z.toJSONSchema(zodParameters, { io: 'input' });
+    }
+    parseInput = (value) =>
+      zodParameters.parse(
+        strict ? stripStrictNullsForZodSchema(zodParameters, value) : value,
+      ) as ToolParameterOutput<T>;
   } else {
-    inputSchema = z.toJSONSchema(parameters, { io: 'input' });
+    const prepared = getSchemaAndParserFromInputType(parameters, name, {
+      strict,
+    });
+    inputSchema = prepared.schema;
+    // The shared Standard Schema parser rejects asynchronous validation.
+    parseInput = (value) =>
+      copyApprovalInput(
+        prepared.parser(JSON.stringify(value)),
+        true,
+      ) as ToolParameterOutput<T>;
   }
-  const parseInput = (value: unknown): z.output<T> =>
-    parameters.parse(
-      strict ? stripStrictNullsForZodSchema(parameters, value) : value,
-    );
+  const snapshotEffectiveArguments = (parsed: ToolParameterOutput<T>) =>
+    Object.freeze(
+      standardSchema
+        ? copyApprovalInput(parsed, true)
+        : { ...(parsed as Record<string, unknown>) },
+    ) as Readonly<ToolContextArguments<T>>;
   const recoverRunError = async (
     phase: ToolErrorContext['phase'],
     error: unknown,
@@ -850,8 +903,8 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed: z.output<T>;
-      if (approved) parsed = approved.value as z.output<T>;
+      let parsed: ToolParameterOutput<T>;
+      if (approved) parsed = approved.value as ToolParameterOutput<T>;
       else if (effectiveArgs !== undefined) parsed = parseInput(effectiveArgs);
       else {
         try {
@@ -870,7 +923,7 @@ export function tool<
           };
         }
       }
-      let callContext: ToolContext<Context> = {
+      let callContext: ToolContext<Context, ToolContextArguments<T>> = {
         ...context,
         reportUsage: (usage, options) => {
           const reporter = (
@@ -892,9 +945,7 @@ export function tool<
               new Error('Decision helper requires an admitted callback'),
             )) as BoundDecide),
         originalArguments,
-        effectiveArguments: Object.freeze({
-          ...(parsed as Record<string, unknown>),
-        }),
+        effectiveArguments: snapshotEffectiveArguments(parsed),
       };
       inheritToolSessionOwner(callContext, context);
       admit();
@@ -919,9 +970,7 @@ export function tool<
           parsed = parseInput(decision.arguments);
           callContext = {
             ...callContext,
-            effectiveArguments: Object.freeze({
-              ...(parsed as Record<string, unknown>),
-            }),
+            effectiveArguments: snapshotEffectiveArguments(parsed),
           };
           inheritToolSessionOwner(callContext, context);
         } else if (decision?.action !== 'allow') {
@@ -945,9 +994,7 @@ export function tool<
         parsed = approved.value as typeof parsed;
         callContext = {
           ...callContext,
-          effectiveArguments: Object.freeze({
-            ...(parsed as Record<string, unknown>),
-          }),
+          effectiveArguments: snapshotEffectiveArguments(parsed),
         };
       }
       if (before && beforeExecute) {
@@ -1126,7 +1173,7 @@ export function tool<
         structuredClone(effectiveArgs === undefined ? args : effectiveArgs),
       );
       let effective = effectiveArgs;
-      let callContext: ToolContext<Context> = {
+      let callContext: ToolContext<Context, ToolContextArguments<T>> = {
         ...context,
         reportUsage: (usage, options) => {
           const reporter = (
@@ -1148,9 +1195,7 @@ export function tool<
               new Error('Decision helper requires an admitted callback'),
             )) as BoundDecide),
         originalArguments: Object.freeze(structuredClone(args) as JsonObject),
-        effectiveArguments: Object.freeze({
-          ...(parsed as Record<string, unknown>),
-        }),
+        effectiveArguments: snapshotEffectiveArguments(parsed),
       };
       inheritToolSessionOwner(callContext, context);
       admit();
@@ -1175,9 +1220,7 @@ export function tool<
           parsed = parseInput(structuredClone(effective));
           callContext = {
             ...callContext,
-            effectiveArguments: Object.freeze({
-              ...(parsed as Record<string, unknown>),
-            }),
+            effectiveArguments: snapshotEffectiveArguments(parsed),
           };
           inheritToolSessionOwner(callContext, context);
         } else if (decision.action !== 'allow')

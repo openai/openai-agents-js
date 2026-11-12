@@ -45,6 +45,55 @@ describe('NativeProvider option capture', () => {
   });
 
   it.each([
+    null,
+    42,
+    '',
+    '/relative',
+    'file:///tmp/provider',
+    'wss:///missing-host',
+    ' wss://127.0.0.1/v1',
+    'ws://@127.0.0.1/v1',
+    'ws://synthetic:password@127.0.0.1/v1',
+    'ws://127.0.0.1/v1#',
+    'wss://127.0.0.1/v1#fragment',
+  ])('rejects invalid WebSocket configuration %s', (websocketBaseUrl) => {
+    const options = JSON.parse(JSON.stringify({ websocketBaseUrl }));
+    expect(() => new NativeProvider(options)).toThrow(
+      'websocketBaseUrl must be an absolute HTTP(S) or WS(S) URL without userinfo or fragment',
+    );
+  });
+
+  it.each([
+    ['http://127.0.0.1:2/ws', false],
+    ['https://127.0.0.1:2/ws', true],
+    ['ws://127.0.0.1:2/ws%23encoded?region=local', false],
+    ['wss://127.0.0.1:2/ws?region=%23local', true],
+  ] as const)(
+    'captures %s and keeps the HTTP URL and transport choice',
+    async (websocketBaseUrl, supportsWebsockets) => {
+      const baseUrl = 'http://127.0.0.1:1/http';
+      const provider = new NativeProvider({
+        apiKey: 'synthetic-key',
+        baseUrl,
+        websocketBaseUrl,
+        supportsWebsockets,
+      });
+      const lease = provider._acquire(undefined, true);
+      try {
+        expect(lease.websocketsAllowed).toBe(supportsWebsockets);
+        expect(lease.config['model_providers.native_agent']).toMatchObject({
+          base_url: baseUrl,
+          websocket_base_url: websocketBaseUrl,
+          supports_websockets: supportsWebsockets,
+        });
+      } finally {
+        await lease.release();
+        await provider.close();
+      }
+    },
+  );
+
+  it.each([
     ['private default', {}, true, false, true],
     ['explicit Session or excluded run', {}, false, true, false],
     ['explicit WebSockets', { supportsWebsockets: true }, true, true, true],
@@ -87,6 +136,7 @@ describe('NativeProvider option capture', () => {
   it.each([
     { apiKey: 'synthetic-key' },
     { baseUrl: 'http://127.0.0.1:1/v1' },
+    { websocketBaseUrl: 'ws://127.0.0.1:2/v1' },
     { supportsWebsockets: true },
     { responseMode: 'buffered' as const },
     { headers: { 'x-custom-route': 'synthetic' } },
@@ -94,6 +144,18 @@ describe('NativeProvider option capture', () => {
     expect(() => new NativeProvider({ ...options, codexLogin: {} })).toThrow(
       'codexLogin requires native streaming HTTP with default ChatGPT routing',
     );
+  });
+
+  it('rejects a separate WebSocket endpoint for plan credentials', () => {
+    const getCredential = vi.fn();
+    expect(
+      () =>
+        new NativeProvider({
+          websocketBaseUrl: 'wss://127.0.0.1:2/v1',
+          signInWithChatGPT: { getCredential },
+        }),
+    ).toThrow('signInWithChatGPT requires the default streaming HTTP route');
+    expect(getCredential).not.toHaveBeenCalled();
   });
 
   it('rejects mixed ChatGPT inference options before reading the credential callback', () => {

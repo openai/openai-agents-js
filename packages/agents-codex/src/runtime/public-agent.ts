@@ -86,7 +86,7 @@ import {
   type PreparedOutput,
 } from './output';
 import { webSearchConfig, webSearchName } from './web-search';
-import { hostedToolSpecs } from './hosted-tools';
+import { hostedToolSpecs, hostedToolType } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
@@ -1478,7 +1478,7 @@ export class Agent<Context = undefined, Output = string> {
         : []),
       ...(search ? [webSearchName(search)] : []),
       ...declarations.hostedTools.map((tool) => ({
-        name: tool.kind,
+        name: hostedToolType(tool),
         namespace: 'functions',
       })),
       ...declarations.tools
