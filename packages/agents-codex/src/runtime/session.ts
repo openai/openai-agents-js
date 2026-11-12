@@ -5796,8 +5796,15 @@ export class Session<OutputT = string, Context = unknown> {
     return run;
   }
 
-  private captureRootTracing(options?: TraceOptions): TraceCapture | undefined {
-    return captureTracing(options, this.options.tracingCapture);
+  private captureRootTracing(
+    options?: TraceOptions,
+    continuationTraceId?: string,
+  ): TraceCapture | undefined {
+    return captureTracing(
+      options,
+      this.options.tracingCapture,
+      continuationTraceId,
+    );
   }
 
   private async tracingContext(run: NativeTurn): Promise<string> {
@@ -11640,6 +11647,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.observations.notify();
       let sealed = false;
       try {
+        const continuationTraceId = run.tracing?.correlationId;
         const wire = await this.#native._seal_manual_checkpoint(keys);
         // A successful native return may already have retired its writer.
         // Only an explicit valid not_ready response proves no commit occurred.
@@ -11701,6 +11709,9 @@ export class Session<OutputT = string, Context = unknown> {
                 : { run_budget: run.selection.budget.checkpoint() }),
               manual_context: {
                 guardrail_results: guardrailRecords,
+                ...(continuationTraceId === undefined
+                  ? {}
+                  : { continuation_trace_id: continuationTraceId }),
                 ...(originalInput === undefined
                   ? {}
                   : {
@@ -11854,7 +11865,12 @@ export class Session<OutputT = string, Context = unknown> {
   async _restoreManualContinuation(state: ManualSessionState): Promise<void> {
     this.idle('restore manual continuation');
     const guardrailRecords = this.restoreGuardrailRecords(state);
-    const tracing = this.captureRootTracing();
+    const tracing = this.captureRootTracing(
+      undefined,
+      this.options.parentTrace === undefined
+        ? state.manual_context.continuation_trace_id
+        : undefined,
+    );
     let requests: JsonObject[];
     try {
       const context = tracing ? await tracing.context() : undefined;
