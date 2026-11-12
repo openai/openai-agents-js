@@ -24,6 +24,7 @@ import { promisify } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   Agent,
+  ChatCompletionsModel,
   Environment,
   NativeAgents,
   NativeProvider,
@@ -642,6 +643,106 @@ it
       server.assertExhausted();
     } finally {
       await rm(temporary, { recursive: true, force: true });
+    }
+  },
+);
+
+it.skipIf(!supported)(
+  'applies a native workspace patch through Chat Completions',
+  { timeout: 30_000 },
+  async () => {
+    const patch =
+      '*** Begin Patch\n*** Add File: first.txt\n+first\n' +
+      '*** Add File: second.txt\n+second\n*** End Patch';
+    const approvals: unknown[] = [];
+    const requests: Record<string, any>[] = [];
+    const client = {
+      chat: {
+        completions: {
+          async create(body: Record<string, any>) {
+            requests.push(body);
+            const first = requests.length === 1;
+            if (first) {
+              expect(body.tools).toMatchObject([
+                { type: 'function', function: { name: 'apply_patch' } },
+              ]);
+            } else {
+              const assistant = body.messages.find(
+                (item: Record<string, unknown>) => item.tool_calls,
+              );
+              const [call] = assistant.tool_calls;
+              expect(call.id).toBe('call_patch');
+              expect(JSON.parse(call.function.arguments)).toEqual({ patch });
+              const result = body.messages.find(
+                (item: Record<string, unknown>) =>
+                  item.tool_call_id === 'call_patch',
+              );
+              expect(result.role).toBe('tool');
+              expect(typeof result.content).toBe('string');
+              expect(result.content.length).toBeGreaterThan(0);
+            }
+            return {
+              id: `chat_patch_${requests.length}`,
+              choices: [
+                {
+                  finish_reason: first ? 'tool_calls' : 'stop',
+                  message: first
+                    ? {
+                        content: null,
+                        tool_calls: [
+                          {
+                            id: 'call_patch',
+                            type: 'function',
+                            function: {
+                              name: 'apply_patch',
+                              arguments: JSON.stringify({ patch }),
+                            },
+                          },
+                        ],
+                      }
+                    : { content: 'patched' },
+                },
+              ],
+            };
+          },
+        },
+      },
+    };
+    const executor = await startPublicExecutor();
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'synthetic',
+        modelBackend: new ChatCompletionsModel(client),
+      });
+      await using session = await new Agent({
+        instructions: 'Edit the requested files.',
+        provider,
+      }).session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['apply_patch'],
+          approval(_context, args) {
+            approvals.push(args);
+            return true;
+          },
+        }),
+      });
+      expect(
+        (await (await session.submit('Apply the patch.')).wait()).finalOutput,
+      ).toBe('patched');
+      expect(approvals).toEqual([patch]);
+      expect(await readFile(join(executor.cwd, 'first.txt'), 'utf8')).toBe(
+        'first\n',
+      );
+      expect(await readFile(join(executor.cwd, 'second.txt'), 'utf8')).toBe(
+        'second\n',
+      );
+      expect(requests).toHaveLength(2);
+    } finally {
+      await executor.close();
     }
   },
 );
