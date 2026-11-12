@@ -422,6 +422,15 @@ impl McpResultControl {
             .clone()
     }
 
+    pub(crate) fn has_discovery_filter(&self) -> bool {
+        let state = self.state.lock().expect("MCP result control poisoned");
+        !state.revoked
+            && state
+                .selection
+                .as_ref()
+                .is_some_and(|selection| !selection.discovery_servers.is_empty())
+    }
+
     pub(crate) fn owns_result(
         &self,
         thread: &ExtensionData,

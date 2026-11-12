@@ -303,6 +303,34 @@ async function open(
   cleanup.push(() => session.close());
   return { model, session, provider };
 }
+it('filters native MCP discovery from a captured Agent profile', async () => {
+  const endpoint = await peer();
+  const filter = vi.fn((_context: MCPDiscoveryContext) => false);
+  const { session, model } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: endpoint.url,
+      tools: ['lookup'],
+      toolFilter: filter,
+    }),
+    [[message('filtered')]],
+    false,
+    false,
+    undefined,
+    true,
+  );
+  const turn = await session.submit('Check the available tools.');
+  expect((await turn.wait()).finalOutput).toBe('filtered');
+  expect(filter.mock.calls.map(([context]) => context.runContext)).toEqual([
+    expect.objectContaining({ threadId: session.id, turnId: turn.turnId }),
+  ]);
+  expect(JSON.stringify(model.requests[0]!.tools ?? [])).not.toContain(
+    '"name":"lookup"',
+  );
+  expect(endpoint.effects).toEqual([]);
+  model.assertExhausted();
+}, 20_000);
+
 const lookup = () => ({
   ...call(
     'lookup',

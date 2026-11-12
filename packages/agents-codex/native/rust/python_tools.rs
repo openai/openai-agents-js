@@ -2996,9 +2996,10 @@ impl PythonTools {
         &self,
         turn: &str,
         operation: Option<&OperationSelection>,
+        mcp_discovery: bool,
     ) -> Option<ActiveSelection> {
         if self.instance.is_some() {
-            return self.child_before_step.then(|| ActiveSelection {
+            return (self.child_before_step || mcp_discovery).then(|| ActiveSelection {
                 model_override: None,
                 model_settings_override: None,
                 turn: turn.to_owned(),
@@ -3658,28 +3659,11 @@ impl ToolContributor for PythonContributor {
                 .allowed_mcp_tools
                 .as_ref()
                 .is_some_and(|tools| !tools.is_empty());
-            let mcp_binding = step.get::<Arc<codex_mcp::McpBinding>>();
-            let discovery_selection = match &mcp_binding {
-                Some(binding) if !binding.tools().is_empty() => {
-                    crate::mcp_result_control::discovery_selection(thread, step)
-                        .map_err(|error| error.to_string())?
-                        .filter(|selection| {
-                            binding.tools().iter().any(|tool| {
-                                selection.filters_discovery(
-                                    &tool.server_name,
-                                    tool.tool.name.as_ref(),
-                                )
-                            })
-                        })
-                }
-                _ => None,
-            };
             let source_owned = active.is_none()
                 && cancellation.is_some()
-                && (discovery_selection.is_some()
-                    || step.get::<ProfileCatalog>().is_some_and(|catalog| {
-                        catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
-                    }));
+                && step.get::<ProfileCatalog>().is_some_and(|catalog| {
+                    catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
+                });
             let captured_mcp = thread
                 .get::<codex_extension_api::HostedModelTools>()
                 .map(|hosted| {
@@ -3832,6 +3816,16 @@ impl ToolContributor for PythonContributor {
             let _wait = StepWait {
                 tools: tools.clone(),
                 id,
+            };
+            let mcp_binding = step.get::<Arc<codex_mcp::McpBinding>>();
+            let discovery_selection = if mcp_binding
+                .as_ref()
+                .is_some_and(|binding| !binding.tools().is_empty())
+            {
+                crate::mcp_result_control::discovery_selection(thread, step)
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
             };
             let mcp_names = mcp_binding
                 .map(|binding| {
@@ -4428,7 +4422,12 @@ impl TurnLifecycleContributor for PythonContributor {
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 // The original turn keeps provenance without keeping the thread owner alive.
                 input.turn_store.insert(Arc::downgrade(&tools));
-                if tools.instance.is_some() && tools.child_before_step {
+                let child_mcp_discovery = tools.instance.is_some()
+                    && input
+                        .thread_store
+                        .get::<crate::mcp_result_control::McpResultControl>()
+                        .is_some_and(|control| control.has_discovery_filter());
+                if tools.instance.is_some() && (tools.child_before_step || child_mcp_discovery) {
                     input
                         .turn_store
                         .get_or_init(codex_extension_api::InitialTurnInput::default);
@@ -4462,8 +4461,11 @@ impl TurnLifecycleContributor for PythonContributor {
                     use_deferred_specs,
                 });
                 let operation = input.turn_store.get::<Option<OperationSelection>>();
-                let selection = tools
-                    .turn_selection(input.turn_id, operation.as_deref().and_then(Option::as_ref));
+                let selection = tools.turn_selection(
+                    input.turn_id,
+                    operation.as_deref().and_then(Option::as_ref),
+                    child_mcp_discovery,
+                );
                 *tools
                     .selection
                     .lock()
@@ -5467,7 +5469,7 @@ mod pending_tests {
             operation_declaration_source: None,
         };
         *child.selection.lock().unwrap() =
-            child.turn_selection("child-turn", Some(&root_operation));
+            child.turn_selection("child-turn", Some(&root_operation), false);
         (root, thread, child)
     }
 
@@ -5490,7 +5492,7 @@ mod pending_tests {
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         let disabled =
             PythonTools::descendant(&tools(), "disabled".into(), Arc::default(), None).unwrap();
-        assert!(disabled.turn_selection("turn", None).is_none());
+        assert!(disabled.turn_selection("turn", None, false).is_none());
         assert!(root.selection.lock().unwrap().is_none());
     }
 
