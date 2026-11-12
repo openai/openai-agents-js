@@ -951,7 +951,11 @@
     {
       "path": "sdk-retain-stream-cleanup-usage.patch",
       "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
+    },
+    {
+      "path": "sdk-run-model-settings-override.patch",
+      "sha256": "8a248758e904e7f97ecd968531f91097995f8db6d39229385aa95880f251e20d"
     }
   ],
-  "result_tree": "9104ca63c2c66974c901ecb2019fa886a2692b15"
+  "result_tree": "c8861e462805bc4de42cf62695addab1c7273594"
 }

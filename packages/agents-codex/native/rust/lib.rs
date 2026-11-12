@@ -4491,7 +4491,9 @@ impl NativeThread {
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if let Some(selection) = &selection {
-                if selection.model_override != frame.model_override {
+                if selection.model_override != frame.model_override
+                    || selection.model_settings_override != frame.model_settings_override
+                {
                     return Err(native_error(
                         "manual continuation cannot replace the admitted run model",
                     ));
@@ -4506,14 +4508,15 @@ impl NativeThread {
                     .await
                     .map_err(native_error)?;
             }
-            let reset_tool_choice = inner
+            let mut controls = inner
                 .thread
                 .thread_settings_snapshot()
                 .await
-                .request_controls
-                .reset_tool_choice
-                .flatten()
-                == Some(true);
+                .request_controls;
+            if let Some(settings) = &frame.model_settings_override {
+                controls.apply_patch(&settings.request_controls);
+            }
+            let reset_tool_choice = controls.reset_tool_choice.flatten() == Some(true);
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
@@ -4524,6 +4527,7 @@ impl NativeThread {
                 settings,
                 output_schema,
                 frame.model_override,
+                frame.model_settings_override,
                 selection,
                 trace,
                 observation_submission_id,

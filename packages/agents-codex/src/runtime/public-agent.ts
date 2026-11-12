@@ -306,6 +306,8 @@ export interface RunOptions<Context = undefined> extends Omit<
 > {
   /** Force the model across this run, handoffs and native children. */
   modelOverride?: string;
+  /** Sparse forced settings for this run, its handoffs and native children. */
+  modelSettingsOverride?: ModelSettings;
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
@@ -837,6 +839,17 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
     const modelOverride = validateModelOverride(options.modelOverride);
+    const modelSettingsOverride =
+      options.modelSettingsOverride === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettingsOverride);
+    if (
+      isManualSessionState(options.state) &&
+      modelSettingsOverride !== undefined
+    )
+      throw new TypeError(
+        'modelSettingsOverride cannot replace restored run settings',
+      );
     if (isManualSessionState(options.state) && modelOverride !== undefined)
       throw new TypeError('modelOverride cannot replace a restored run model');
     const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
@@ -950,6 +963,7 @@ export class Agent<Context = undefined, Output = string> {
       !captureErrorDetails &&
       options.prepareRequest === undefined &&
       modelOverride === undefined &&
+      modelSettingsOverride === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -973,6 +987,7 @@ export class Agent<Context = undefined, Output = string> {
     }
     return runOwnedSession(session, preparedInput, {
       modelOverride,
+      modelSettingsOverride,
       guardrailInput,
       errorInput,
       maxModelSteps,
