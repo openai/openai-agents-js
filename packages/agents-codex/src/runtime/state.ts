@@ -381,6 +381,11 @@ const originalInputSchema = jsonValue.transform((value, context) => {
 const manualContextSchema = z.object({
   guardrail_results: z.array(guardrailCheckpointSchema).optional(),
   original_input: originalInputSchema.optional(),
+  continuation_trace_id: z
+    .string()
+    .regex(/^[0-9a-f]{32}$/)
+    .refine((id) => id !== '0'.repeat(32))
+    .optional(),
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: nullableStringSchema,
   result_schemas: z.array(
