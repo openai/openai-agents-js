@@ -93,12 +93,6 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
  * env values stay omitted. Routing options reject same/cross-origin redirects.
  * Native auth/protocol/private-hop headers remain reserved. A new provider
  * refreshes the captured routing values.
- * Without runtime, compatible adjacent one-shot API-key WebSocket calls have
- * been allowing this Provider to retain an Engine and its captured TLS
- * trust/proxy configuration. Completed idle retirement has been discarding that
- * Engine; subsequent calls have been preparing fresh native configuration.
- * Closing this Provider and constructing another has been providing an explicit
- * refresh boundary without waiting for idle retirement.
  * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
  * state until close. Without runtime, a new Provider forces fresh
  * physical clients. With it, captured native configuration, credentials, private
@@ -334,7 +328,9 @@ export class NativeProvider {
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
         (options.baseUrl === undefined && !privateCandidate));
-    let slot = privateCandidate
+    const eligible =
+      privateCandidate && (!websocketsAllowed || options.runtime !== undefined);
+    let slot = eligible
       ? this.#nativeRuntimeBorrow
         ? this.#nativeRuntimeBorrow.reserve(token)
         : (this.#runtime ??= {})

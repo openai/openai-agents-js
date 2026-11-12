@@ -47,7 +47,7 @@ describe('NativeProvider option capture', () => {
   it.each([
     ['private default', {}, true, false, true],
     ['explicit Session or excluded run', {}, false, true, false],
-    ['explicit WebSockets', { supportsWebsockets: true }, true, true, true],
+    ['explicit WebSockets', { supportsWebsockets: true }, true, true, false],
     ['explicit HTTP', { supportsWebsockets: false }, true, false, true],
     [
       'custom base URL',

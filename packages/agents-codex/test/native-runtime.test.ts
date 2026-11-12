@@ -79,6 +79,20 @@ describe('NativeRuntime ownership', () => {
     },
   );
 
+  it('has been keeping default Provider WebSockets outside private Engine reuse', async () => {
+    await using provider = new NativeProvider({
+      apiKey: 'synthetic',
+      supportsWebsockets: true,
+    });
+    const lease = provider._acquire(undefined, true);
+    try {
+      expect(lease.websocketsAllowed).toBe(true);
+      expect(lease.privateRuntime).toBeUndefined();
+    } finally {
+      await lease.release();
+    }
+  });
+
   it('resolves ambient keys at acquisition and leaves missing-key admission retryable', async () => {
     vi.stubEnv('OPENAI_API_KEY', undefined);
     await using owner = new NativeRuntime();
