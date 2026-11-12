@@ -48,7 +48,11 @@ export type {
   FeatureSupport,
   CheckpointStatus,
 } from './runtime/capabilities';
-export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
+export type {
+  NativeProviderOptions,
+  ModelSettings,
+  ProviderCompactionPolicy,
+} from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
@@ -472,6 +476,7 @@ export type {
   NativeModel,
   AiSdkLanguageModel,
   ModelAdapterOptions,
+  ChatCompletionsModelOptions,
   ModelRequestOptions,
   ModelRequestOptionsFactory,
   ModelProvider,

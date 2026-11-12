@@ -35,10 +35,15 @@ import {
   type JsonValue,
 } from './binding';
 
+const stringSchema = z.string();
+const nullableStringSchema = stringSchema.nullable();
+const optionalStringSchema = stringSchema.optional();
+const optionalNullableStringSchema = nullableStringSchema.optional();
+
 export const threadHistorySchema = z.array(
   z
     .object({
-      type: z.string(),
+      type: stringSchema,
       payload: jsonObject,
     })
     .catchall(jsonValue),
@@ -158,43 +163,37 @@ export type RepairTurnWire = RecordedTurnWire & {
   parentSessionId: string;
   parentTurnId: string;
 };
-const receivedUsageWireSchema = z
-  .object({
-    inputTokens: nonnegativeTokenCountWireSchema.optional(),
-    inputTokensDetails: z
-      .object({
-        cachedTokens: nonnegativeTokenCountWireSchema.optional(),
-        cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
-      })
-      .strict()
-      .optional(),
-    outputTokens: nonnegativeTokenCountWireSchema.optional(),
-    outputTokensDetails: z
-      .object({
-        reasoningTokens: nonnegativeTokenCountWireSchema.optional(),
-      })
-      .strict()
-      .optional(),
-    totalTokens: nonnegativeTokenCountWireSchema.optional(),
-  })
-  .strict();
-const recordedResponseWireSchema = z
-  .object({
-    id: z.string().min(1).nullable(),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    responseId: z.string().nullable(),
-    upstreamRequestId: z.string().optional(),
-    status: z.enum(['completed', 'incomplete', 'failed']).optional(),
-    incompleteReason: z
-      .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
-      .optional(),
-    usageSource: z.enum(['received', 'native_normalized']),
-    usage: receivedUsageWireSchema.nullable(),
-  })
-  .strict();
+const receivedUsageWireSchema = z.strictObject({
+  inputTokens: nonnegativeTokenCountWireSchema.optional(),
+  inputTokensDetails: z
+    .strictObject({
+      cachedTokens: nonnegativeTokenCountWireSchema.optional(),
+      cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+    })
+    .optional(),
+  outputTokens: nonnegativeTokenCountWireSchema.optional(),
+  outputTokensDetails: z
+    .strictObject({
+      reasoningTokens: nonnegativeTokenCountWireSchema.optional(),
+    })
+    .optional(),
+  totalTokens: nonnegativeTokenCountWireSchema.optional(),
+});
+const recordedResponseWireSchema = z.strictObject({
+  id: z.string().min(1).nullable(),
+  threadId: z.string().min(1),
+  turnId: z.string().min(1),
+  responseId: nullableStringSchema,
+  upstreamRequestId: optionalStringSchema,
+  status: z.enum(['completed', 'incomplete', 'failed']).optional(),
+  incompleteReason: z
+    .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
+    .optional(),
+  usageSource: z.enum(['received', 'native_normalized']),
+  usage: receivedUsageWireSchema.nullable(),
+});
 export const repairTurnWireSchema = z
-  .object({
+  .strictObject({
     id: z.string().min(1),
     object: z.literal('agent.session.turn'),
     sessionId: z.string().min(1),
@@ -204,32 +203,28 @@ export const repairTurnWireSchema = z
     startedAt: z.number().nullable(),
     completedAt: z.number().nullable(),
     error: z
-      .object({
-        code: z.string(),
-        message: z.string().nullable(),
+      .strictObject({
+        code: stringSchema,
+        message: nullableStringSchema,
         httpStatusCode: z.number().optional(),
       })
-      .strict()
       .nullable(),
     usage: z
-      .object({
+      .strictObject({
         inputTokens: nonnegativeTokenCountWireSchema,
-        inputTokensDetails: z
-          .object({
-            cachedTokens: nonnegativeTokenCountWireSchema,
-            cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
-          })
-          .strict(),
+        inputTokensDetails: z.strictObject({
+          cachedTokens: nonnegativeTokenCountWireSchema,
+          cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+        }),
         outputTokens: nonnegativeTokenCountWireSchema,
-        outputTokensDetails: z
-          .object({ reasoningTokens: nonnegativeTokenCountWireSchema })
-          .strict(),
+        outputTokensDetails: z.strictObject({
+          reasoningTokens: nonnegativeTokenCountWireSchema,
+        }),
         totalTokens: nonnegativeTokenCountWireSchema,
       })
-      .strict()
       .nullable(),
     runUsage: z
-      .object({
+      .strictObject({
         requests: nonnegativeTokenCountWireSchema,
         missingUsageRequests: nonnegativeTokenCountWireSchema,
         inputTokens: nonnegativeTokenCountWireSchema,
@@ -239,7 +234,6 @@ export const repairTurnWireSchema = z
         reasoningOutputTokens: nonnegativeTokenCountWireSchema,
         totalTokens: nonnegativeTokenCountWireSchema,
       })
-      .strict()
       .optional(),
     responses: z.array(recordedResponseWireSchema).optional(),
     responseFacts: z.array(responseFactRecordSchema).optional(),
@@ -247,7 +241,6 @@ export const repairTurnWireSchema = z
     parentSessionId: z.string().min(1),
     parentTurnId: z.string().min(1),
   })
-  .strict()
   .refine(
     (turn) =>
       turn.receipt === undefined ||
@@ -261,20 +254,18 @@ export const repairTurnWireSchema = z
       turn.responses.every((response) => response.turnId === turn.id),
     'Repair response identity must match its recorded turn',
   ) satisfies z.ZodType<RepairTurnWire>;
-export const repairItemWireSchema = z
-  .object({
-    parentSessionId: z.string().min(1),
-    parentTurnId: z.string().min(1),
-    sessionId: z.string().min(1),
-    item: z
-      .object({
-        id: z.string().min(1),
-        turnId: z.string().min(1),
-        type: z.string().min(1),
-      })
-      .catchall(jsonValue),
-  })
-  .strict();
+export const repairItemWireSchema = z.strictObject({
+  parentSessionId: z.string().min(1),
+  parentTurnId: z.string().min(1),
+  sessionId: z.string().min(1),
+  item: z
+    .object({
+      id: z.string().min(1),
+      turnId: z.string().min(1),
+      type: z.string().min(1),
+    })
+    .catchall(jsonValue),
+});
 export type RepairItemWire = z.infer<typeof repairItemWireSchema>;
 
 function mapRecordedUsage<T>(
@@ -436,7 +427,7 @@ export type ItemStatus = 'in_progress' | 'completed' | 'failed' | 'incomplete';
 type ItemIdentity = { id: string; turnId: string };
 const outputTextPartSchema = z.object({
   type: z.literal('output_text'),
-  text: z.string(),
+  text: stringSchema,
   annotations: jsonValue.optional(),
 });
 /** Provider annotations use offsets into this part's original text. */
@@ -445,30 +436,30 @@ type InputTextPart = { type: 'input_text'; text: string };
 // History is passive canonical JSON, not a new user-input capability. Preserve
 // provider fields without requiring callers to construct these observed DTOs.
 const historyAudioPartSchema = z
-  .object({ type: z.literal('input_audio'), audio_url: z.string() })
+  .object({ type: z.literal('input_audio'), audio_url: stringSchema })
   .catchall(jsonValue);
 const historyImagePartSchema = z
   .object({
     type: z.literal('input_image'),
-    image_url: z.string().optional(),
-    file_id: z.string().optional(),
+    image_url: optionalStringSchema,
+    file_id: optionalStringSchema,
     detail: z.enum(['auto', 'low', 'high', 'original']).nullable().optional(),
   })
   .catchall(jsonValue);
 const historyFilePartSchema = z
   .object({
     type: z.literal('input_file'),
-    file_id: z.string().optional(),
-    file_data: z.string().optional(),
-    file_url: z.string().optional(),
-    filename: z.string().nullable().optional(),
+    file_id: optionalStringSchema,
+    file_data: optionalStringSchema,
+    file_url: optionalStringSchema,
+    filename: optionalNullableStringSchema,
   })
   .catchall(jsonValue);
 type AudioPart = z.infer<typeof historyAudioPartSchema>;
 type ImagePart = z.infer<typeof historyImagePartSchema>;
 type FilePart = z.infer<typeof historyFilePartSchema>;
 const webSearchSourcesSchema = z.array(
-  z.object({ type: z.literal('url'), url: z.string() }),
+  z.object({ type: z.literal('url'), url: stringSchema }),
 );
 export type WebSearchSource = z.infer<typeof webSearchSourcesSchema>[number];
 export type WebSearchAction =
@@ -604,15 +595,15 @@ export type SearchItem = Extract<
   { type: 'web_search_call' | 'message' }
 >;
 const patchContentChanges = [
-  z.object({ type: z.literal('add'), content: z.string() }),
-  z.object({ type: z.literal('delete'), content: z.string() }),
+  z.object({ type: z.literal('add'), content: stringSchema }),
+  z.object({ type: z.literal('delete'), content: stringSchema }),
 ] as const;
 const patchChangeSchema = z.discriminatedUnion('type', [
   ...patchContentChanges,
   z.object({
     type: z.literal('update'),
-    unifiedDiff: z.string(),
-    movePath: z.string().nullable(),
+    unifiedDiff: stringSchema,
+    movePath: nullableStringSchema,
   }),
 ]);
 const nativePatchChangeSchema = z
@@ -620,8 +611,8 @@ const nativePatchChangeSchema = z
     ...patchContentChanges,
     z.object({
       type: z.literal('update'),
-      unified_diff: z.string(),
-      move_path: z.string().nullable(),
+      unified_diff: stringSchema,
+      move_path: nullableStringSchema,
     }),
   ])
   .transform((change) =>
@@ -665,13 +656,13 @@ const repairItemProjectionSchema = z.intersection(
       type: z.literal('message'),
       role: z.enum(['user', 'assistant']),
       status: repairItemStatusSchema,
-      phase: z.string().nullable(),
-      displayText: z.string().optional(),
+      phase: nullableStringSchema,
+      displayText: optionalStringSchema,
       content: z.array(
         z.discriminatedUnion('type', [
           z.object({
             type: z.literal('input_text'),
-            text: z.string(),
+            text: stringSchema,
           }),
           outputTextPartSchema,
           historyAudioPartSchema,
@@ -683,107 +674,107 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('reasoning'),
       summary: z.array(
-        z.object({ type: z.literal('summary_text'), text: z.string() }),
+        z.object({ type: z.literal('summary_text'), text: stringSchema }),
       ),
       status: repairItemStatusSchema.nullable(),
     }),
     z.object({
       type: z.literal('function_call'),
-      callId: z.string(),
-      name: z.string(),
+      callId: stringSchema,
+      name: stringSchema,
       arguments: jsonValue,
       status: repairItemStatusSchema,
     }),
     z.object({
       type: z.literal('function_call_output'),
-      callId: z.string(),
+      callId: stringSchema,
       reconciliation: z.enum(['applied', 'not_applied']).optional(),
       status: repairItemStatusSchema,
       output: jsonValue,
-      error: z.string().nullable(),
+      error: nullableStringSchema,
     }),
     z.object({
       type: z.literal('mcp_call'),
-      threadId: z.string().optional(),
-      callId: z.string().nullable().optional(),
-      serverLabel: z.string(),
-      name: z.string(),
+      threadId: optionalStringSchema,
+      callId: optionalNullableStringSchema,
+      serverLabel: stringSchema,
+      name: stringSchema,
       arguments: jsonValue,
       status: repairItemStatusSchema,
       output: jsonValue,
       error: jsonValue,
-      turn_id: z.string().optional(),
+      turn_id: optionalStringSchema,
       provider_data: jsonObject.optional(),
     }),
     z.object({
       type: z.literal('mcp_list_tools'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      server_label: z.string(),
+      server_label: stringSchema,
       tools: jsonValue,
       error: jsonValue,
     }),
     z.object({
       type: z.literal('command_execution'),
-      threadId: z.string().optional(),
-      callId: z.string().optional(),
-      argv: z.array(z.string()).optional(),
-      command: z.string(),
-      cwd: z.string().nullable(),
+      threadId: optionalStringSchema,
+      callId: optionalStringSchema,
+      argv: z.array(stringSchema).optional(),
+      command: stringSchema,
+      cwd: nullableStringSchema,
       status: repairItemStatusSchema,
-      output: z.string().nullable(),
+      output: nullableStringSchema,
       exitCode: z.number().nullable(),
       durationMs: z.number().nullable(),
     }),
     z.object({
       type: z.literal('file_change'),
-      threadId: z.string(),
-      callId: z.string(),
+      threadId: stringSchema,
+      callId: stringSchema,
       status: repairItemStatusSchema,
-      changes: z.record(z.string(), patchChangeSchema),
-      stdout: z.string().nullable(),
-      stderr: z.string().nullable(),
+      changes: z.record(stringSchema, patchChangeSchema),
+      stdout: nullableStringSchema,
+      stderr: nullableStringSchema,
     }),
     z.object({
       type: z.literal('file_search_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      queries: z.array(z.string()),
+      queries: z.array(stringSchema),
       results: jsonValue,
     }),
     z.object({
       type: z.literal('code_interpreter_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      container_id: z.string(),
-      code: z.string().nullable(),
+      container_id: stringSchema,
+      code: nullableStringSchema,
       outputs: jsonValue,
     }),
     z.object({
       type: z.literal('image_generation_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      result: z.string().nullable(),
-      revised_prompt: z.string().nullable(),
+      result: nullableStringSchema,
+      revised_prompt: nullableStringSchema,
     }),
     z.object({
       type: z.literal('shell_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: shellToolStatusSchema,
       provider_data: jsonObject,
-      call_id: z.string(),
+      call_id: stringSchema,
       action: jsonValue,
     }),
     z.object({
       type: z.literal('shell_call_output'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: shellToolStatusSchema,
       provider_data: jsonObject,
-      call_id: z.string(),
+      call_id: stringSchema,
       output: jsonValue,
     }),
     z.object({
@@ -794,18 +785,18 @@ const repairItemProjectionSchema = z.intersection(
         .discriminatedUnion('type', [
           z.object({
             type: z.literal('search'),
-            query: z.string().nullable(),
-            queries: z.array(z.string()).nullable(),
+            query: nullableStringSchema,
+            queries: z.array(stringSchema).nullable(),
             sources: webSearchSourcesSchema.optional(),
           }),
           z.object({
             type: z.literal('open_page'),
-            url: z.string().nullable(),
+            url: nullableStringSchema,
           }),
           z.object({
             type: z.literal('find_in_page'),
-            url: z.string().nullable(),
-            pattern: z.string().nullable(),
+            url: nullableStringSchema,
+            pattern: nullableStringSchema,
           }),
           z.object({ type: z.literal('other') }),
         ])
@@ -814,13 +805,13 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('create_subagent_call'),
       status: repairItemStatusSchema,
-      agentId: z.string(),
-      subagentId: z.string().nullable(),
+      agentId: stringSchema,
+      subagentId: nullableStringSchema,
     }),
     z.object({
       type: z.literal('wait_for_subagents_call'),
       status: repairItemStatusSchema,
-      senderAgentId: z.string(),
+      senderAgentId: stringSchema,
     }),
     z.object({
       type: z.enum([
@@ -830,8 +821,8 @@ const repairItemProjectionSchema = z.intersection(
         'close_subagent_call',
       ]),
       status: repairItemStatusSchema,
-      senderAgentId: z.string(),
-      recipientAgentId: z.string(),
+      senderAgentId: stringSchema,
+      recipientAgentId: stringSchema,
     }),
   ]),
 ) satisfies z.ZodType<SessionItem>;

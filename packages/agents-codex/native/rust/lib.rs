@@ -3296,7 +3296,11 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_start_model_producer")]
-    pub fn _start_model_producer(&self, owner_json: String) -> napi::Result<()> {
+    pub fn _start_model_producer(
+        &self,
+        owner_json: String,
+        chat_stream: Option<bool>,
+    ) -> napi::Result<()> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
             serde_json::from_str(&owner_json).map_err(input_error)?;
@@ -3311,7 +3315,7 @@ impl NativeThread {
             .get::<codex_core::ObserveRawProviderEvents>()
             .is_some();
         owner
-            .start_model_producer_stream(&response, observe_raw)
+            .start_model_producer_stream(&response, observe_raw, chat_stream.unwrap_or(false))
             .map_err(input_error)
     }
 
@@ -3320,6 +3324,7 @@ impl NativeThread {
         &self,
         owner_json: String,
         event_json: String,
+        raw_chat_chunk: Option<bool>,
     ) -> napi::Result<bool> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
@@ -3333,7 +3338,7 @@ impl NativeThread {
             .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
             .ok_or_else(|| input_error("Expired model callback owner"))?;
         owner
-            .push_model_producer_event(&response, &event_json)
+            .push_model_producer_event(&response, &event_json, raw_chat_chunk.unwrap_or(false))
             .await
             .map_err(input_error)
     }
