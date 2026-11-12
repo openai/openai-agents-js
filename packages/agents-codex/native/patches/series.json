@@ -955,7 +955,11 @@
     {
       "path": "sdk-retain-stream-cleanup-usage.patch",
       "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
+    },
+    {
+      "path": "sdk-managed-agent-tools.patch",
+      "sha256": "73a136e46af2e85112ce1f29c4b971e1ee1909ebe2f0bc6a50ea704f96d74a15"
     }
   ],
-  "result_tree": "6406f27406a4def9e24a95bb1cd44beeb35c70cd"
+  "result_tree": "4f68cd5f11c8a368840abd2d59bc851f076f1513"
 }
