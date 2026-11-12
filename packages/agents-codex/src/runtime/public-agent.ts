@@ -131,7 +131,10 @@ import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
-import { validateCustomStorageCompatibility } from './opening-compatibility';
+import {
+  validateCustomStorageCompatibility,
+  validatePrepareRequestCompatibility,
+} from './opening-compatibility';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
@@ -1294,36 +1297,26 @@ export class Agent<Context = undefined, Output = string> {
       const prepareRequest = (options as OwnedSessionOptions<Context>)[
         ownedRun
       ]!.prepareRequest;
-      if (typeof prepareRequest !== 'function')
-        throw new TypeError('prepareRequest must be callable');
-      if (output.repair)
-        throw new TypeError(
-          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
-        );
-      if (
+      validatePrepareRequestCompatibility(
+        prepareRequest,
+        !!output.repair,
         provider.responseMode !== 'buffered' &&
-        (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-          false
-      )
-        throw new TypeError(
-          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
-        );
-      if (
-        programmaticToolCalling ||
-        environmentInput ||
-        declarations.nativeAgents ||
-        declarations.nativeGoals ||
-        declarations.checklist ||
-        declarations.webSearch ||
-        declarations.hostedTools.length > 0 ||
-        declarations.tools.some((tool) => tool.deferLoading) ||
-        declarations.mcp.some(
-          (tool) => tool.deferLoading || isHostedRegistration(tool),
-        )
-      )
-        throw new TypeError(
-          'prepareRequest supports only direct root eager function and ordinary MCP tools',
-        );
+          (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
+            false,
+        !!(
+          programmaticToolCalling ||
+          environmentInput ||
+          declarations.nativeAgents ||
+          declarations.nativeGoals ||
+          declarations.checklist ||
+          declarations.webSearch ||
+          declarations.hostedTools.length > 0 ||
+          declarations.tools.some((tool) => tool.deferLoading) ||
+          declarations.mcp.some(
+            (tool) => tool.deferLoading || isHostedRegistration(tool),
+          )
+        ),
+      );
     }
     const { instructions, files } =
       !opening && options.instructionFiles !== undefined
