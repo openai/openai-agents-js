@@ -1,5 +1,7 @@
+import { beforeGitRepoCopy } from '../internal/gitRepoCopy';
 import {
   copyRemoteSnapshotAuthority,
+  markDeserializedSandboxState,
   getRunStateSessionTrustedConfig,
   getLocalSandboxStateAuthority,
   getRemoteSnapshotStoreAuthority,
@@ -39,6 +41,7 @@ import {
 } from '../client';
 import {
   normalizeExposedPort,
+  normalizeDirectoryEntryLimit,
   recordExposedPortEndpoint,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -78,7 +81,7 @@ import {
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
   serializeMountCredentialRedactionMetadata,
-  serializeManifest,
+  serializeManifestRecord,
 } from './shared/manifestPersistence';
 import {
   assertExistingMountTopologyPreserved,
@@ -226,6 +229,8 @@ export class UnixLocalSandboxSession<
   private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
   readonly readFileNoFollow?: (args: ReadFileArgs) => Promise<Uint8Array>;
+  readonly [beforeGitRepoCopy] = true as const;
+  readonly removeEntryNoFollow?: (path: string) => Promise<void>;
   readonly writeFileNoFollow?: (args: MaterializeEntryArgs) => Promise<void>;
   private readonly workspaceCleanupPath?: string;
 
@@ -254,6 +259,7 @@ export class UnixLocalSandboxSession<
         ? null
         : (args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection));
     if (this.hostFiles) {
+      this.removeEntryNoFollow = this.removeEmptyEntryWithoutLinks.bind(this);
       this.readFileNoFollow = this.readFileWithoutLinks.bind(this);
       this.writeFileNoFollow = this.materializeFileWithoutLinks.bind(this);
     }
@@ -529,6 +535,25 @@ export class UnixLocalSandboxSession<
     );
   }
 
+  private async removeEmptyEntryWithoutLinks(path: string): Promise<void> {
+    const generation = this.fileOperationGeneration;
+    await withUnixLocalFileAccess(this.state, async () => {
+      this.assertSessionUsable();
+      if (
+        this.closePromise ||
+        this.stopPromise ||
+        generation !== this.fileOperationGeneration
+      )
+        throw new UserError('UnixLocal file operation cancelled.');
+      const target = this.noFollowWorkspacePath(path, true);
+      const identity = await this.resolveFilesystemRunAs();
+      await this.files.run(
+        { operation: 'removeEmpty', path: target },
+        { identity },
+      );
+    });
+  }
+
   private async readFileWithoutLinks(args: ReadFileArgs): Promise<Uint8Array> {
     this.assertSessionUsable();
     if (
@@ -556,7 +581,7 @@ export class UnixLocalSandboxSession<
       );
     // Preserve provider authorization/overrides, but never use a resolved descendant for IO.
     this.resolveSandboxPath(inputPath, { forWrite });
-    const root = realpathSync(this.state.workspaceRootPath);
+    const root = this.filesystemRoot(this.state.workspaceRootPath).content;
     const path = resolve(root, inputPath);
     const child = relative(root, path);
     if (
@@ -571,6 +596,7 @@ export class UnixLocalSandboxSession<
 
   async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {
     this.assertSessionUsable();
+    const limit = normalizeDirectoryEntryLimit(args.maxEntries);
     const identity = await this.resolveFilesystemRunAs(args.runAs);
     const resolved = this.resolveSandboxPathTarget(args.path);
     const logicalPath = resolved.workspaceRelativePath ?? resolved.path;
@@ -582,6 +608,7 @@ export class UnixLocalSandboxSession<
         await this.files.run(
           {
             operation: 'list',
+            ...(limit === undefined ? {} : { limit }),
             path: this.resolveFilesystemPath(args.path),
           },
           { identity },
@@ -652,6 +679,7 @@ export class UnixLocalSandboxSession<
         {
           localSourceGrants: this.state.manifest.extraPathGrants,
           manifestRoot: manifest.root,
+          [beforeGitRepoCopy]: args[beforeGitRepoCopy],
         },
       );
     }
@@ -1561,7 +1589,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
 
     const serialized = {
       ...serializeMountCredentialRedactionMetadata(state),
-      manifest: serializeManifest(state.manifest),
+      manifest: serializeManifestRecord(state.manifest),
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
       environment: sanitizeEnvironmentForPersistence(state),
@@ -1578,9 +1606,11 @@ export class UnixLocalSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<UnixLocalSandboxSessionState> {
-    return deserializeLocalSandboxSessionStateValues(
-      state,
-      this.options.snapshot,
+    return markDeserializedSandboxState(
+      await deserializeLocalSandboxSessionStateValues(
+        state,
+        this.options.snapshot,
+      ),
     );
   }
 

@@ -1,4 +1,5 @@
 import type { StandardSchemaWithJSON } from '@openai/agents-core';
+import type { SandboxSkillLease } from './sandbox-skills';
 import { isZodObject } from '@openai/agents-core/utils';
 import {
   getSchemaAndParserFromInputType,
@@ -216,6 +217,8 @@ const toolSessionOwners = new WeakMap<
   {
     owner: object;
     clientToolSearch?: ClientToolSearchInvocation;
+    skillLease?: SandboxSkillLease;
+    configuredAgent?: (input: string) => Promise<string>;
   }
 >();
 
@@ -224,8 +227,26 @@ export function registerToolSessionOwner(
   context: ToolCallContext,
   owner: object,
   clientToolSearch?: ClientToolSearchInvocation,
+  skillLease?: SandboxSkillLease,
+  configuredAgent?: (input: string) => Promise<string>,
 ): void {
-  toolSessionOwners.set(context, { owner, clientToolSearch });
+  toolSessionOwners.set(context, {
+    owner,
+    clientToolSearch,
+    skillLease,
+    configuredAgent,
+  });
+}
+
+/** @internal Only the original admitted declaration has been installing this owner. */
+export function invokeConfiguredAgentTool(
+  context: ToolCallContext,
+  input: string,
+): Promise<string> {
+  const invoke = toolSessionOwners.get(context)?.configuredAgent;
+  if (!invoke)
+    throw new TypeError('Configured child has no admitted parent tool owner');
+  return invoke(input);
 }
 
 // Private extension hook; retained in declarations for the sibling package.
@@ -233,6 +254,15 @@ export function _nativeToolSessionOwner(context: ToolCallContext): object {
   const owner = toolSessionOwners.get(context);
   if (!owner) throw new TypeError('Tool context has no native Session owner');
   return owner.owner;
+}
+
+/** @internal Current resource authority on an SDK-issued callback context. */
+export function _nativeSandboxSkillLease(
+  context: ToolCallContext,
+): SandboxSkillLease | undefined {
+  const owner = toolSessionOwners.get(context);
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
+  return owner.skillLease;
 }
 
 function inheritToolSessionOwner<T extends ToolCallContext>(
@@ -845,13 +875,19 @@ export function tool<
   const needsApproval = options.needsApproval;
   const runBeforeApproval = options.runBeforeApproval ?? false;
   const shell = (
-    options as typeof options & { [shellDeclaration]?: JsonObject }
+    options as typeof options & {
+      [shellDeclaration]?: {
+        readonly spec: JsonObject;
+        readonly portableResult: z.ZodType;
+      };
+    }
   )[shellDeclaration];
+  const portableResult = shell?.portableResult ?? result;
   const native = (
     options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
   )[nativeCallbackDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
-    ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+    ...(shell === undefined ? {} : { [shellDeclaration]: shell.spec }),
     ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
     finishTurn: options.finishTurn ?? false,
     [inputRecovery]: inputErrorFunction !== undefined,
@@ -942,6 +978,7 @@ export function tool<
         originalArguments,
         effectiveArguments: snapshotEffectiveArguments(parsed),
       };
+      inheritToolSessionOwner(callContext, context);
       admit();
       if (before) {
         const decision = await before(callContext);
@@ -966,6 +1003,7 @@ export function tool<
             ...callContext,
             effectiveArguments: snapshotEffectiveArguments(parsed),
           };
+          inheritToolSessionOwner(callContext, context);
         } else if (decision?.action !== 'allow') {
           throw new TypeError(
             'Tool before must allow, deny, or replace arguments',
@@ -1149,13 +1187,16 @@ export function tool<
         }
       : {}),
     function: declaration,
-    resultSchema: result
+    resultSchema: portableResult
       ? decode(
           jsonValue,
           // Managed results retain their callback validator; this portable
           // metadata need not represent non-JSON instance validators.
           JSON.stringify(
-            z.toJSONSchema(result, { io: 'input', unrepresentable: 'any' }),
+            z.toJSONSchema(portableResult, {
+              io: 'input',
+              unrepresentable: 'any',
+            }),
           ),
         )
       : {},
@@ -1190,6 +1231,7 @@ export function tool<
         originalArguments: Object.freeze(structuredClone(args) as JsonObject),
         effectiveArguments: snapshotEffectiveArguments(parsed),
       };
+      inheritToolSessionOwner(callContext, context);
       admit();
       if (
         runBeforeApproval &&
@@ -1214,6 +1256,7 @@ export function tool<
             ...callContext,
             effectiveArguments: snapshotEffectiveArguments(parsed),
           };
+          inheritToolSessionOwner(callContext, context);
         } else if (decision.action !== 'allow')
           throw new TypeError(
             'Tool before must allow, deny, or replace arguments',
@@ -1275,10 +1318,12 @@ export function createShellTool<
 >(
   declaration: JsonObject,
   options: Parameters<typeof tool<T, Context, Result>>[0],
+  portableResult: z.ZodType,
 ): FunctionTool<Context> {
   const captured = {
     ...options,
-    [shellDeclaration]: structuredClone(declaration),
+    // Keep SDK-only result metadata out of the stored approval contract.
+    [shellDeclaration]: { spec: structuredClone(declaration), portableResult },
   };
   return tool(captured);
 }

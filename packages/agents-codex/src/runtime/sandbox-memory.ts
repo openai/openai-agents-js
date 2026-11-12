@@ -366,15 +366,47 @@ function memoryTranscript(
     throw new RangeError(
       'Native sandbox memory supports at most 256 original records',
     );
-  const items: Array<{
-    role: string;
-    content: Array<{ type: string; text: string }>;
-  }> = [];
+  const items: Array<Record<string, unknown>> = [];
   for (const item of snapshot.items) {
+    if (item.role === 'developer' || item.role === 'system') continue;
     if (item.type === 'reasoning') continue;
+    if (item.type === 'function_call') {
+      if (
+        typeof item.name !== 'string' ||
+        typeof item.call_id !== 'string' ||
+        typeof item.arguments !== 'string'
+      )
+        throw new TypeError('Invalid native memory function call');
+      items.push({
+        type: item.type,
+        name: item.name,
+        call_id: item.call_id,
+        arguments: item.arguments,
+        ...(typeof item.namespace === 'string'
+          ? { namespace: item.namespace }
+          : {}),
+      });
+      continue;
+    }
+    if (item.type === 'function_call_output') {
+      if (
+        typeof item.call_id !== 'string' ||
+        (typeof item.output !== 'string' && !Array.isArray(item.output))
+      )
+        throw new TypeError('Invalid native memory function output');
+      items.push({
+        type: item.type,
+        call_id: item.call_id,
+        output:
+          typeof item.output === 'string'
+            ? item.output
+            : item.output.map(memoryTextPart),
+      });
+      continue;
+    }
     if (item.type !== 'message')
       throw new TypeError(
-        'Native sandbox memory currently requires text message history',
+        'Native sandbox memory requires text messages and function tool history',
       );
     if (item.role !== 'user' && item.role !== 'assistant') continue;
     if (!Array.isArray(item.content))
@@ -394,16 +426,7 @@ function memoryTranscript(
           !origins[index].startsWith('user.'))
       )
         continue;
-      if (
-        !part ||
-        typeof part !== 'object' ||
-        (part.type !== 'input_text' && part.type !== 'output_text') ||
-        typeof part.text !== 'string'
-      )
-        throw new TypeError(
-          'Native sandbox memory currently requires text message history',
-        );
-      content.push({ type: part.type, text: part.text });
+      content.push(memoryTextPart(part));
     }
     if (content.length) items.push({ role: item.role, content });
   }
@@ -422,4 +445,17 @@ function memoryTranscript(
   };
   boundedJson(payload);
   return payload;
+}
+
+function memoryTextPart(part: unknown): { type: string; text: string } {
+  if (
+    !part ||
+    typeof part !== 'object' ||
+    !('type' in part) ||
+    !('text' in part) ||
+    (part.type !== 'input_text' && part.type !== 'output_text') ||
+    typeof part.text !== 'string'
+  )
+    throw new TypeError('Native sandbox memory requires text content');
+  return { type: part.type, text: part.text };
 }

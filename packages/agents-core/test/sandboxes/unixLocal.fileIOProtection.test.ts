@@ -1,6 +1,8 @@
 import * as childProcess from 'node:child_process';
 import {
   mkdtemp,
+  mkdir,
+  rename,
   readFile,
   readdir,
   rm,
@@ -49,6 +51,28 @@ describe.skipIf(process.platform === 'win32')(
       sessions.push(session);
       return session;
     }
+
+    it('removes only confined files and empty directories, rejecting swapped parents', async () => {
+      const session = await create();
+      const workspace = session.state.workspaceRootPath;
+      await mkdir(join(workspace, 'skill', 'nested'), { recursive: true });
+      await writeFile(join(workspace, 'skill', 'nested', 'old'), 'old');
+      await expect(
+        session.removeEntryNoFollow!('skill/nested'),
+      ).rejects.toThrow();
+      await session.removeEntryNoFollow!('skill/nested/old');
+      await session.removeEntryNoFollow!('skill/nested');
+      await mkdir(join(root, 'outside'));
+      await writeFile(join(root, 'outside', 'keep'), 'outside');
+      await rename(join(workspace, 'skill'), join(workspace, 'saved-skill'));
+      await symlink(join(root, 'outside'), join(workspace, 'skill'));
+      await expect(
+        session.removeEntryNoFollow!('skill/keep'),
+      ).rejects.toThrow();
+      expect(await readFile(join(root, 'outside', 'keep'), 'utf8')).toBe(
+        'outside',
+      );
+    });
 
     it('selects Python by default once, and ignores manifest interpreter configuration', async () => {
       const probe = vi.spyOn(childProcess, 'spawnSync');
