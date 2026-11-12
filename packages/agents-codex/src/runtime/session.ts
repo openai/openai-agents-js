@@ -173,6 +173,7 @@ import {
   enrichNativeError,
   nativeError,
   markNativeErrorNotStarted,
+  retainMcpCallbackError,
   type RunErrorDetails,
 } from './native-error';
 import {
@@ -16506,6 +16507,7 @@ export class Session<OutputT = string, Context = unknown> {
         continue;
       }
       const callback = async () => {
+        let callbackFailure: { cause: unknown } | undefined;
         try {
           if (owner instanceof NativeTurn) await owner.accepted.promise;
           if (
@@ -16543,6 +16545,9 @@ export class Session<OutputT = string, Context = unknown> {
               this.options.context,
               submission,
               { ...notice, incarnation, generation: notice.generation ?? '' },
+              (cause) => {
+                callbackFailure = { cause };
+              },
             );
             if (
               !requestExpired &&
@@ -16656,6 +16661,9 @@ export class Session<OutputT = string, Context = unknown> {
           )
             return;
           const failure = new NativeError('Native MCP result policy failed');
+          if (callbackFailure) {
+            retainMcpCallbackError(failure, callbackFailure.cause);
+          }
           // Retain the owning SDK failure before releasing a sender can wake native stop.
           // The current owner check keeps retired calls out of a replacement turn.
           if (this.current(owner)) {

@@ -1027,7 +1027,16 @@ export async function transformMcpResult<Context>(
     incarnation?: string | null;
     turn_id?: string;
   },
+  onCallbackFailure?: (cause: unknown) => void,
 ): Promise<JsonObject> {
+  const invoke = async <T>(callback: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await callback();
+    } catch (cause) {
+      onCallbackFailure?.(cause);
+      throw cause;
+    }
+  };
   if (
     String(notice.generation) !== generation.toString() ||
     notice.source !== 'config'
@@ -1054,18 +1063,17 @@ export async function transformMcpResult<Context>(
       cell_id: notice.cell_id ?? null,
       runtime_tool_call_id: notice.runtime_tool_call_id ?? null,
     });
-    const value = await server.requestMetadata(
-      Object.freeze({
-        context,
-        submission,
-        call,
-        serverName: server.name,
-        toolName: notice.tool_name,
-        arguments: Object.freeze(
-          losslessJsonObjectSchema.parse(notice.arguments),
-        ),
-      }),
-    );
+    const metadataContext = Object.freeze({
+      context,
+      submission,
+      call,
+      serverName: server.name,
+      toolName: notice.tool_name,
+      arguments: Object.freeze(
+        losslessJsonObjectSchema.parse(notice.arguments),
+      ),
+    });
+    const value = await invoke(() => server.requestMetadata!(metadataContext));
     return value == null ? {} : losslessJsonObjectSchema.parse(value);
   }
   if (!server || (!server.transformResult && !server.extractApplicationData))
@@ -1080,22 +1088,23 @@ export async function transformMcpResult<Context>(
   const original = losslessJsonObjectSchema.parse(notice.result);
   const result = server.transformResult
     ? losslessJsonObjectSchema.parse(
-        await server.transformResult(resultContext, original),
+        await invoke(() => server.transformResult!(resultContext, original)),
       )
     : original;
   let data: JsonObject | null | undefined;
   if (server.extractApplicationData) {
     if (notice.arguments === undefined || notice.callable_name === undefined)
       throw new Error('Native MCP extraction has no captured input or name');
-    data = await server.extractApplicationData(
-      Object.freeze({
-        ...resultContext,
-        arguments: Object.freeze(
-          losslessJsonObjectSchema.parse(notice.arguments),
-        ),
-        toolDisplayName: notice.callable_name,
-      }),
-      losslessJsonObjectSchema.parse(result),
+    const extractionContext = Object.freeze({
+      ...resultContext,
+      arguments: Object.freeze(
+        losslessJsonObjectSchema.parse(notice.arguments),
+      ),
+      toolDisplayName: notice.callable_name,
+    });
+    const extractionResult = losslessJsonObjectSchema.parse(result);
+    data = await invoke(() =>
+      server.extractApplicationData!(extractionContext, extractionResult),
     );
   }
   return withToolApplicationData(result, data);
