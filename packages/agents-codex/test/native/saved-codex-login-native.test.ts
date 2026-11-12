@@ -41,6 +41,7 @@ const expiredAccess = 'synthetic-expired-access';
 const savedRefresh = 'synthetic-saved-refresh';
 const rotatedAccess = 'synthetic-rotated-access';
 const rotatedRefresh = 'synthetic-rotated-refresh';
+const stalledRefreshStartupTimeout = 48_000;
 type Mode =
   | 'usage'
   | 'mismatch'
@@ -76,8 +77,8 @@ for (const testScenario of [
       'finishes saved login rotation after Turn cancellation, isolates Realtime auth, and restores configured execution',
     closeFailure: undefined,
     // Ten 15s children, two 25s children, and three 5s TLS commands,
-    // plus 5s for setup and cleanup.
-    timeout: 220_000,
+    // plus 5s for setup and cleanup and the stalled grant's startup budget.
+    timeout: 220_000 + stalledRefreshStartupTimeout,
   },
   {
     title: 'reports a saved login refresh cache read failure on owner close',
@@ -139,6 +140,7 @@ for (const testScenario of [
       | 'hosted-media'
       | undefined;
     let cancelAll = false;
+    let stalledGrant: PromiseWithResolvers<void> | undefined;
     let stalledGrantClosed = false;
     let hostedMediaRequests = 0;
     let executionRequests = 0;
@@ -315,6 +317,7 @@ for (const testScenario of [
             response.writeHead(200, { 'content-type': 'application/json' });
             // Send valid JSON without ending the chunked response body.
             response.write(JSON.stringify(tokenResponse));
+            stalledGrant?.resolve();
             await writeFile(join(directory, 'grant-consumed'), '');
             return;
           }
@@ -617,7 +620,7 @@ for (const testScenario of [
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.GITHUB_ACTIONS !== 'true' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1';
-      const run = async (mode: Mode) => {
+      const run = async (mode: Mode, started?: Promise<void>) => {
         let stdout: string;
         try {
           const loginHome =
@@ -639,11 +642,15 @@ for (const testScenario of [
                 ? ['optional-sandbox']
                 : []),
             ],
-            mode === 'local' ||
-              mode === 'stalled-refresh' ||
-              mode === 'trusted-credentials'
-              ? 25_000
-              : 15_000,
+            started
+              ? {
+                  started,
+                  startup: stalledRefreshStartupTimeout,
+                  completion: 25_000,
+                }
+              : mode === 'local' || mode === 'trusted-credentials'
+                ? 25_000
+                : 15_000,
           ));
         } catch (error) {
           const { stdout: stage, killed } = error as {
@@ -785,7 +792,8 @@ for (const testScenario of [
       grantCount = 0;
       await rm(join(directory, 'grant-consumed'));
       const beforeStall = rotated.length;
-      await run('stalled-refresh');
+      stalledGrant = Promise.withResolvers<void>();
+      await run('stalled-refresh', stalledGrant.promise);
       expect(stalledGrantClosed).toBe(true);
       expect(grantCount).toBe(1);
       expect(rotated).toHaveLength(beforeStall + 1);
