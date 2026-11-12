@@ -12,11 +12,13 @@ import {
   tool,
   type ChildInvocation,
   type ExecutorContext,
+  type NativeToolCall,
   type Session,
   type ToolContext,
 } from '@openai/agents';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { nativeDescendantModel } from './fixtures/native-descendant-model';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
@@ -130,6 +132,112 @@ it.each([true, false])(
       expect(JSON.stringify(childRequest)).toContain(
         'MANAGED_ROLE_INSTRUCTIONS',
       );
+      server.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+);
+
+it.each([true, false])(
+  'runs the named role tool through Code Mode with its explicit policy (%s)',
+  async (allowed) => {
+    const executor = await startPublicExecutor();
+    const approvals: [string, NativeToolCall][] = [];
+    const server = new ModelServer([
+      [
+        {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'managed-code',
+          input: [
+            'if (typeof tools.collaboration__spawn_agent !== "undefined") {',
+            '  throw new Error("Built-in collaboration tools must be called directly");',
+            '}',
+            'text(await tools.collaboration__research_topic({input: "Read the record."}));',
+          ].join('\n'),
+        },
+      ],
+      ...(allowed ? [[message('managed code child result')]] : []),
+      [message('parent final result')],
+    ]);
+    try {
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        instructions: 'Use the named research tool from Code Mode.',
+        model: nativeDescendantModel,
+        provider,
+        programmaticToolCalling: true,
+        tools: [
+          new NativeAgents({
+            additionalRoles: [
+              new NativeRole({
+                name: 'research',
+                description: 'Research a topic.',
+                instructions: 'CODE_MODE_ROLE_INSTRUCTIONS',
+              }),
+            ],
+            managedTools: [
+              {
+                name: 'research_topic',
+                role: 'research',
+                description: 'Research a topic.',
+              },
+            ],
+            approval(context, request) {
+              approvals.push([context.callId, request]);
+              return allowed;
+            },
+          }),
+        ],
+      });
+      await using session = await agent.session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+      });
+      const turn = await session.submit('Research the record.');
+      const result = await turn.wait();
+      const codeOutput = (
+        server.requests.at(-1)?.input as JsonObject[] | undefined
+      )?.find(
+        (item) =>
+          item.call_id === 'managed-code' &&
+          item.type === 'custom_tool_call_output',
+      );
+      expect(
+        result.finalOutput,
+        JSON.stringify({ approvals, codeOutput }),
+      ).toBe('parent final result');
+      expect(approvals).toHaveLength(1);
+      const [callbackId, request] = approvals[0];
+      expect(request).toMatchObject({
+        name: 'research_topic',
+        namespace: 'collaboration',
+        route: 'programmatic_tool_calling',
+        callId: null,
+        outerCallId: 'managed-code',
+      });
+      expect(request.runtimeToolCallId).toBeTruthy();
+      expect(callbackId).toBe(request.runtimeToolCallId);
+      expect(server.requests).toHaveLength(allowed ? 3 : 2);
+      if (allowed) {
+        expect(JSON.stringify(server.requests[1])).toContain(
+          'CODE_MODE_ROLE_INSTRUCTIONS',
+        );
+        expect(JSON.stringify(server.requests[2])).toContain(
+          'managed code child result',
+        );
+      }
       server.assertExhausted();
     } finally {
       await executor.close();
