@@ -919,7 +919,11 @@
     {
       "path": "sdk-trace-flush-worker-completion.patch",
       "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
+    },
+    {
+      "path": "sdk-preserve-native-reasoning-provider-metadata.patch",
+      "sha256": "dd2c6016c3fe79373b2ba5d16953008eed810266a9bd669fb23d74e4544812bd"
     }
   ],
-  "result_tree": "ff9fa3c4e0186771ec45e16572d19d0d2d53f68c"
+  "result_tree": "86f7bcddafa252487a5005975a1946ac45fd83d4"
 }
