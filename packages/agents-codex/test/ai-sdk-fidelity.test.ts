@@ -6,6 +6,7 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { nativeInput } from '../src/runtime/input';
 import { expect, it } from 'vitest';
 import { AiSdkModel, type ModelRequest } from '../src/runtime/models';
+import type { JsonObject } from '../src/runtime/binding';
 
 function request(
   detail?: string,
@@ -49,6 +50,129 @@ function request(
     signal: new AbortController().signal,
   };
 }
+
+it('routes native workspace patches through a function-only AI SDK provider', async () => {
+  const patch =
+    '*** Begin Patch\n*** Add File: report.txt\n+done\n*** End Patch';
+  const requests: JsonObject[] = [];
+  const provider = createOpenAI({
+    apiKey: 'fixture',
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as JsonObject;
+      requests.push(body);
+      const initial = requests.length === 1;
+      return Response.json({
+        id: 'chat_patch',
+        object: 'chat.completion',
+        created: 0,
+        model: 'gpt-4.1',
+        choices: [
+          {
+            index: 0,
+            finish_reason: initial ? 'tool_calls' : 'stop',
+            message: initial
+              ? {
+                  role: 'assistant',
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: 'call_patch',
+                      type: 'function',
+                      function: {
+                        name: 'apply_patch',
+                        arguments: JSON.stringify({ patch }),
+                      },
+                    },
+                  ],
+                }
+              : { role: 'assistant', content: 'done' },
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    },
+  });
+  const adapter = new AiSdkModel(provider.chat('gpt-4.1'));
+  const complete = (history: JsonObject[]) =>
+    adapter.complete({
+      ...request(),
+      body: {
+        model: 'gpt-4.1',
+        input: [
+          ...history,
+          {
+            type: 'additional_tools',
+            tools: [
+              {
+                type: 'namespace',
+                name: 'functions',
+                tools: [{ type: 'custom', name: 'apply_patch' }],
+              },
+            ],
+          },
+        ],
+        tool_choice: {
+          type: 'custom',
+          name: 'apply_patch',
+          namespace: 'functions',
+        },
+      },
+    });
+
+  const first = await complete([]);
+  expect(first.output).toEqual([
+    {
+      type: 'custom_tool_call',
+      call_id: 'call_patch',
+      name: 'apply_patch',
+      input: patch,
+    },
+  ]);
+  expect(requests[0]).toMatchObject({
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'apply_patch',
+          parameters: { properties: { patch: { type: 'string' } } },
+        },
+      },
+    ],
+    tool_choice: { type: 'function', function: { name: 'apply_patch' } },
+  });
+
+  const resumed = await complete([
+    ...(first.output as JsonObject[]),
+    {
+      type: 'custom_tool_call_output',
+      call_id: 'call_patch',
+      output: 'patched',
+    },
+  ]);
+  expect(requests[1]?.messages).toMatchObject([
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          id: 'call_patch',
+          type: 'function',
+          function: {
+            name: 'apply_patch',
+            arguments: JSON.stringify({ patch }),
+          },
+        },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'call_patch', content: 'patched' },
+  ]);
+  expect(resumed.output).toEqual([
+    {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'done' }],
+    },
+  ]);
+});
 
 it.each(
   (['chat', 'responses'] as const).flatMap((endpoint) => [

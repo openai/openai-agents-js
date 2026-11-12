@@ -13,6 +13,7 @@ import { copyJsonValue, type JsonObject } from './binding';
 function selectedFunctionName(
   choice: unknown,
   offered: readonly unknown[],
+  workspacePatchOffered = false,
 ): string {
   if (!choice || typeof choice !== 'object' || Array.isArray(choice))
     throw new TypeError('Named tool choice must select an offered function');
@@ -21,8 +22,13 @@ function selectedFunctionName(
     string,
     unknown
   >;
+  const workspacePatchChoice =
+    workspacePatchOffered &&
+    declaration.type === 'custom' &&
+    declaration.function == null &&
+    declaration.name === 'apply_patch';
   if (
-    declaration.type !== 'function' ||
+    (declaration.type !== 'function' && !workspacePatchChoice) ||
     (declaration.namespace != null && declaration.namespace !== 'functions') ||
     !selected ||
     typeof selected !== 'object' ||
@@ -332,7 +338,29 @@ function openAIRetryAdvice({
     return { suggested: true };
   return undefined;
 }
-function chatApplyPatchInput(argumentsText: unknown): string {
+function workspacePatchFunction() {
+  return {
+    name: 'apply_patch',
+    description: 'Apply a patch to files in the workspace.',
+    parameters: {
+      type: 'object',
+      properties: {
+        patch: {
+          type: 'string',
+          description:
+            'A patch between *** Begin Patch and *** End Patch. ' +
+            'Use *** Add File:, *** Update File:, or *** Delete File: headers, ' +
+            'and *** Move to: within an update to rename a file.',
+        },
+      },
+      required: ['patch'],
+      additionalProperties: false,
+    },
+    strict: true,
+  };
+}
+
+function workspacePatchInput(argumentsText: unknown): string {
   if (typeof argumentsText !== 'string') return '';
   try {
     const envelope = JSON.parse(argumentsText) as
@@ -497,28 +525,7 @@ export class ChatCompletionsModel implements NativeModel {
           );
         if (type === 'custom' && tool.name === 'apply_patch') {
           applyPatchOffered = true;
-          return {
-            type: 'function',
-            function: {
-              name: 'apply_patch',
-              description: 'Apply a patch to files in the workspace.',
-              parameters: {
-                type: 'object',
-                properties: {
-                  patch: {
-                    type: 'string',
-                    description:
-                      'A patch between *** Begin Patch and *** End Patch. ' +
-                      'Use *** Add File:, *** Update File:, or *** Delete File: headers, ' +
-                      'and *** Move to: within an update to rename a file.',
-                  },
-                },
-                required: ['patch'],
-                additionalProperties: false,
-              },
-              strict: true,
-            },
-          };
+          return { type: 'function', function: workspacePatchFunction() };
         }
         if (type !== 'function')
           throw new TypeError(
@@ -626,17 +633,13 @@ export class ChatCompletionsModel implements NativeModel {
       options.tool_choice != null &&
       typeof options.tool_choice === 'object'
     ) {
-      const choice = options.tool_choice as JsonObject;
-      const patchChoice =
-        applyPatchOffered &&
-        choice.type === 'custom' &&
-        choice.name === 'apply_patch';
       options.tool_choice = {
         type: 'function',
         function: {
           name: selectedFunctionName(
-            patchChoice ? { ...choice, type: 'function' } : choice,
+            options.tool_choice,
             tools.map((tool: any) => tool.function.name),
+            applyPatchOffered,
           ),
         },
       };
@@ -697,7 +700,7 @@ export class ChatCompletionsModel implements NativeModel {
           type: 'custom_tool_call',
           call_id: call.id,
           name: 'apply_patch',
-          input: chatApplyPatchInput(call.function.arguments),
+          input: workspacePatchInput(call.function.arguments),
         });
         continue;
       }
@@ -981,6 +984,7 @@ export class AiSdkModel implements NativeModel {
     const prompt: any[] = [];
     const declarations = [...((body.tools ?? []) as JsonObject[])];
     const names = new Map<string, string>();
+    const patchCalls = new Set<string>();
     for (const item of body.input as JsonObject[]) {
       if (item.type === 'additional_tools') {
         declarations.push(...(item.tools as JsonObject[]));
@@ -1039,19 +1043,27 @@ export class AiSdkModel implements NativeModel {
             content: content.map((part) => part.text).join(''),
           });
         } else prompt.push({ role: item.role, content });
-      } else if (item.type === 'function_call') {
+      } else if (
+        item.type === 'function_call' ||
+        (item.type === 'custom_tool_call' && item.name === 'apply_patch')
+      ) {
         if (item.namespace != null && item.namespace !== 'functions')
           throw new TypeError(
             'AiSdkModel supports the default function namespace',
           );
         names.set(item.call_id as string, item.name as string);
+        if (item.type === 'custom_tool_call')
+          patchCalls.add(item.call_id as string);
         const previous = prompt.at(-1);
         const content = previous?.role === 'assistant' ? previous.content : [];
         content.push({
           type: 'tool-call',
           toolCallId: item.call_id,
           toolName: item.name,
-          input: JSON.parse(item.arguments as string),
+          input:
+            item.type === 'custom_tool_call'
+              ? { patch: item.input }
+              : JSON.parse(item.arguments as string),
         });
         if (previous?.role !== 'assistant')
           prompt.push({ role: 'assistant', content });
@@ -1088,7 +1100,11 @@ export class AiSdkModel implements NativeModel {
           });
         if (previous?.role !== 'assistant')
           prompt.push({ role: 'assistant', content });
-      } else if (item.type === 'function_call_output') {
+      } else if (
+        item.type === 'function_call_output' ||
+        (item.type === 'custom_tool_call_output' &&
+          patchCalls.has(item.call_id as string))
+      ) {
         const value = item.output;
         let output: any;
         if (typeof value !== 'string') {
@@ -1145,6 +1161,7 @@ export class AiSdkModel implements NativeModel {
         throw new TypeError('AiSdkModel received unsupported native input');
     }
     const tools: any[] = [];
+    let applyPatchOffered = false;
     const addTool = (item: JsonObject): void => {
       if (item.namespace != null && item.namespace !== 'functions')
         throw new TypeError(
@@ -1156,6 +1173,16 @@ export class AiSdkModel implements NativeModel {
             'AiSdkModel supports the default function namespace',
           );
         for (const tool of item.tools as JsonObject[]) addTool(tool);
+      } else if (item.type === 'custom' && item.name === 'apply_patch') {
+        applyPatchOffered = true;
+        const declaration = workspacePatchFunction();
+        tools.push({
+          type: 'function',
+          name: declaration.name,
+          description: declaration.description,
+          inputSchema: declaration.parameters,
+          strict: declaration.strict,
+        });
       } else if (item.type === 'function') {
         if (item.output_schema != null)
           throw new TypeError(
@@ -1180,6 +1207,7 @@ export class AiSdkModel implements NativeModel {
         toolName: selectedFunctionName(
           choice,
           tools.map((tool: any) => tool.name),
+          applyPatchOffered,
         ),
       };
     }
@@ -1313,6 +1341,15 @@ export class AiSdkModel implements NativeModel {
           part.input,
           tools.find((tool) => tool.name === part.toolName)?.inputSchema,
         );
+        if (applyPatchOffered && part.toolName === 'apply_patch') {
+          output.push({
+            type: 'custom_tool_call',
+            call_id: part.toolCallId,
+            name: part.toolName,
+            input: workspacePatchInput(args),
+          });
+          continue;
+        }
         output.push({
           type: 'function_call',
           call_id: part.toolCallId,
