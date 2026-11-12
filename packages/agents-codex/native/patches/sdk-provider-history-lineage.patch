@@ -2676,10 +2676,10 @@ index bc50b5f1d..0218b6873 100644
  codex-history = { workspace = true }
  codex-config = { workspace = true }
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index d46b8b058..83b9bd963 100644
+index 48669076f..330f46269 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
-@@ -159,6 +159,7 @@ pub use model_request::CompactionResult;
+@@ -160,6 +160,7 @@ pub use model_request::CompactionResult;
  pub use model_request::CompactionWindow;
  pub use model_request::ModelContextInput;
  pub use model_request::ModelHttpStream;
