@@ -343,6 +343,7 @@ export {
   fileSearch,
   codeInterpreter,
   hostedShell,
+  hostedTool,
   imageGeneration,
   toolSearch,
 } from './runtime/hosted-tools';
@@ -354,6 +355,7 @@ export type {
   HostedShell,
   HostedShellEnvironment,
   HostedShellOptions,
+  ProviderHostedTool,
   ImageGeneration,
   ImageGenerationOptions,
   ToolSearch,

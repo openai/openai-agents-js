@@ -8,6 +8,66 @@ export interface HostedToolOptions {
   providerData?: JsonObject;
 }
 
+/** An opaque provider-executed declaration with no local callback or approval grant. */
+export interface ProviderHostedTool {
+  readonly kind: 'provider_hosted';
+  readonly providerData: JsonObject;
+}
+
+const typedProviderToolTypes = new Set([
+  'function',
+  'namespace',
+  'custom',
+  'apply_patch',
+  'computer',
+  'computer_use_preview',
+  'local_shell',
+  'shell',
+  'tool_search',
+  'mcp',
+  'web_search',
+  'file_search',
+  'code_interpreter',
+  'image_generation',
+  'provider_only',
+]);
+
+function captureProviderDefinition(value: unknown): JsonObject {
+  const definition = copyJsonValue(value);
+  if (
+    definition === null ||
+    typeof definition !== 'object' ||
+    Array.isArray(definition)
+  )
+    throw new TypeError('Provider-only tool requires a JSON object');
+  const type = definition.type;
+  if (
+    typeof type !== 'string' ||
+    !type ||
+    type.trim() !== type ||
+    type.includes('\0')
+  )
+    throw new TypeError('Provider-only tool requires a nonempty type');
+  if (typedProviderToolTypes.has(type))
+    throw new TypeError('Use the typed declaration for this tool category');
+  return definition;
+}
+
+/** Capture a provider-only declaration; typed tool categories keep their existing owners. */
+export function hostedTool(providerData: JsonObject): ProviderHostedTool {
+  return capture({
+    kind: 'provider_hosted' as const,
+    providerData: captureProviderDefinition(providerData),
+  });
+}
+
+/** @internal Policy identity of an already captured provider declaration. */
+export function hostedToolType(tool: HostedTool): string {
+  return tool.kind === 'provider_hosted'
+    ? (tool.providerData.type as string)
+    : tool.kind;
+}
+
 export interface FileSearchOptions extends HostedToolOptions {
   maxNumResults?: number;
   includeSearchResults?: boolean;
@@ -127,7 +187,12 @@ export interface ToolSearch<Context = any> extends Omit<
 }
 
 export type HostedTool =
-  FileSearch | CodeInterpreter | HostedShell | ImageGeneration | ToolSearch;
+  | FileSearch
+  | CodeInterpreter
+  | HostedShell
+  | ImageGeneration
+  | ToolSearch
+  | ProviderHostedTool;
 
 /** Capture nested provider configuration without retaining application objects. */
 function capture<T>(value: T): T {
@@ -197,6 +262,11 @@ export function getClientToolSearchExecutor<Context>(
 
 /** @internal Re-capture structural declarations at the session opening boundary. */
 export function captureHostedTool<T extends HostedTool>(tool: T): T {
+  if (tool.kind === 'provider_hosted')
+    return capture({
+      ...tool,
+      providerData: captureProviderDefinition(tool.providerData),
+    }) as T;
   if (
     tool.kind === 'shell' &&
     tool.environment?.type !== 'container_auto' &&
@@ -216,6 +286,11 @@ export function captureHostedTool<T extends HostedTool>(tool: T): T {
 /** @internal The bridge removes SDK include controls before provider serialization. */
 export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
   return tools.map((tool): JsonObject => {
+    if (tool.kind === 'provider_hosted')
+      return {
+        type: 'provider_only',
+        definition: captureProviderDefinition(tool.providerData),
+      };
     const providerData = copyJsonValue(tool.providerData ?? {});
     if (
       providerData === null ||

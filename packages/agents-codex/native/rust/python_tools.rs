@@ -1372,6 +1372,9 @@ impl PythonTools {
                             codex_tools::HostedToolSpec::ToolSearch(_) => {
                                 ToolName::plain("tool_search")
                             }
+                            codex_tools::HostedToolSpec::ProviderOnly { definition } => {
+                                ToolName::plain(definition.tool_type())
+                            }
                         }
                         .with_default_namespace()
                     })

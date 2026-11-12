@@ -1,4 +1,8 @@
 import { QueuedRoots } from './queued-roots';
+import {
+  CallbackDeliveries,
+  type NativeCallbackDelivery,
+} from './callback-deliveries';
 import { NativeTurn, type NativeRunResult } from './native-turn';
 import { validatePrepareRequestCompatibility } from './opening-compatibility';
 import {
@@ -288,7 +292,6 @@ import {
   type NativeThread,
 } from './binding';
 import {
-  nativeMarker,
   parseEvent,
   parseEvents,
   requestTypes,
@@ -1241,39 +1244,6 @@ function continuationWasSuperseded(error: unknown): boolean {
     !Array.isArray(reason) &&
     (reason.type === 'superseded' || reason.type === 'pending_trigger_turn')
   );
-}
-
-const nativeCallbackReceipt = z.discriminatedUnion('kind', [
-  z
-    .object({
-      kind: z.literal('tool'),
-      request: z
-        .object({
-          _sdk_python_tool: nativeMarker.strict(),
-          turnId: z.string(),
-          callId: z.string(),
-        })
-        .strict(),
-      invocation: z.string().regex(/^(0|[1-9][0-9]*)$/),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal('preparation'),
-      thread: z.string(),
-      instance: z.string().optional(),
-      id: z.string().regex(/^(0|[1-9][0-9]*)$/),
-    })
-    .strict(),
-]);
-interface NativeCallbackDelivery {
-  wire: string;
-  native: NativeThread;
-  controller: AbortController;
-  claimed: boolean;
-  buffered: boolean;
-  retired: boolean;
-  released: boolean;
 }
 
 const clientSearchCatalogSource = Symbol('client tool search source');
@@ -2732,14 +2702,8 @@ export class Session<OutputT = string, Context = unknown> {
   // Close must release tracing on surviving handles without retaining old results.
   private readonly runs = new Set<WeakRef<NativeTurn>>();
   private readonly runFinalizer: FinalizationRegistry<WeakRef<NativeTurn>>;
-  private readonly callbackDeliveries = new Map<
-    string,
-    NativeCallbackDelivery
-  >();
-  private readonly callbackEvents = new WeakMap<
-    NativeEvent,
-    NativeCallbackDelivery
-  >();
+  private readonly callbackDeliveries: CallbackDeliveries =
+    new CallbackDeliveries();
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
   private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
@@ -6654,63 +6618,6 @@ export class Session<OutputT = string, Context = unknown> {
       this.finishObservation(run);
     }
   }
-  private captureCallbackDelivery(
-    native: NativeThread,
-    receipt: unknown,
-    event?: NativeEvent,
-  ): NativeCallbackDelivery {
-    const wire = encodeReceipt(nativeCallbackReceipt.parse(receipt));
-    let delivery = this.callbackDeliveries.get(wire);
-    if (!delivery) {
-      delivery = {
-        wire,
-        native,
-        controller: new AbortController(),
-        claimed: false,
-        buffered: false,
-        retired: false,
-        released: false,
-      };
-      this.callbackDeliveries.set(wire, delivery);
-    } else if (delivery.native !== native) {
-      throw new NativeError('Native callback receipt changed its owner');
-    }
-    if (event) this.callbackEvents.set(event, delivery);
-    return delivery;
-  }
-  private releaseCallbackDelivery(
-    delivery: NativeCallbackDelivery,
-    cleanupFailed = false,
-  ): void {
-    if (delivery.released) return;
-    delivery.native._release_python_callback(delivery.wire, cleanupFailed);
-    delivery.released = true;
-    if (this.callbackDeliveries.get(delivery.wire) === delivery)
-      this.callbackDeliveries.delete(delivery.wire);
-  }
-  private retireCallbackDelivery(delivery: NativeCallbackDelivery): void {
-    delivery.retired = true;
-    delivery.controller.abort(new NativeError('Native callback cancelled'));
-    if (!delivery.claimed) this.releaseCallbackDelivery(delivery);
-  }
-  private callbackAuthorityFailed(
-    delivery: NativeCallbackDelivery | undefined,
-    error: unknown,
-  ): never {
-    let cancelled = delivery?.retired ?? false;
-    if (delivery && !cancelled) {
-      try {
-        cancelled = delivery.native._python_callback_cancelled(delivery.wire);
-      } catch {
-        throw error;
-      }
-    }
-    if (delivery && cancelled) {
-      this.retireCallbackDelivery(delivery);
-      throw delivery.controller.signal.reason;
-    }
-    throw error;
-  }
   private decisionScope(message: Record<string, unknown>, signal: AbortSignal) {
     const profile = this.messageProfile(message);
     const provider =
@@ -6748,45 +6655,6 @@ export class Session<OutputT = string, Context = unknown> {
         await Promise.allSettled([...pending]);
       },
     };
-  }
-
-  private async ownCallbackDelivery(
-    event: NativeEvent,
-    owner: NativeTurn | ChildCallbackOwner,
-    callback: (
-      signal: AbortSignal,
-      delivery?: NativeCallbackDelivery,
-    ) => Promise<void>,
-  ): Promise<void> {
-    const delivery = this.callbackEvents.get(event);
-    if (!delivery) return callback(owner.controller.signal);
-    if (delivery.claimed || delivery.released) return;
-    delivery.claimed = true;
-    const signal = AbortSignal.any([
-      owner.controller.signal,
-      delivery.controller.signal,
-    ]);
-    let primary: { error: unknown } | undefined;
-    try {
-      // The outer owner registers this Promise before native claim or any
-      // application validation, including synchronous policy callbacks.
-      await Promise.resolve();
-      if (
-        !signal.aborted &&
-        delivery.native._enter_python_callback(delivery.wire)
-      )
-        await callback(signal, delivery);
-    } catch (error) {
-      if (!(signal.aborted && Object.is(error, signal.reason)))
-        primary = { error };
-    } finally {
-      try {
-        this.releaseCallbackDelivery(delivery, primary !== undefined);
-      } catch (error) {
-        primary ??= { error };
-      }
-    }
-    if (primary) throw primary.error;
   }
 
   private observeProfileChange(
@@ -6830,7 +6698,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (observeSandboxOperation) native._enable_sandbox_operations();
       while (this.isOpen && this.#native === native) {
         if (delivery && !delivery.claimed && !delivery.buffered)
-          this.releaseCallbackDelivery(delivery);
+          this.callbackDeliveries.release(delivery);
         delivery = undefined;
         let event: NativeEvent;
         try {
@@ -6857,7 +6725,7 @@ export class Session<OutputT = string, Context = unknown> {
           const raw = batch[batchIndex++]!;
           event = parseEvent(raw);
           if (event.msg._sdk_callback !== undefined)
-            delivery = this.captureCallbackDelivery(
+            delivery = this.callbackDeliveries.capture(
               native,
               event.msg._sdk_callback,
               event,
@@ -6875,12 +6743,7 @@ export class Session<OutputT = string, Context = unknown> {
         }
         if (this.#native !== native) return;
         if (event.msg.type === '_sdk_callback_cancel') {
-          const wire = encodeReceipt(
-            nativeCallbackReceipt.parse(event.msg.receipt),
-          );
-          const cancelled = this.callbackDeliveries.get(wire);
-          if (cancelled?.native === native)
-            this.retireCallbackDelivery(cancelled);
+          this.callbackDeliveries.cancel(native, event.msg.receipt);
           continue;
         }
         if (!this.isOpen) return;
@@ -7045,11 +6908,9 @@ export class Session<OutputT = string, Context = unknown> {
             '_sdk_callback' in pending.msg &&
             pending.msg._sdk_callback !== undefined
           )
-            this.captureCallbackDelivery(native, pending.msg._sdk_callback);
+            this.callbackDeliveries.capture(native, pending.msg._sdk_callback);
         }
-        for (const pending of this.callbackDeliveries.values())
-          if (pending.native === native && !pending.claimed)
-            this.releaseCallbackDelivery(pending);
+        this.callbackDeliveries.releaseUnclaimed(native);
       } finally {
         this.realtimeOwner?._readerClosed();
         // Release callbacks waiting for this reader before auxiliary readers
@@ -7486,7 +7347,7 @@ export class Session<OutputT = string, Context = unknown> {
     const callKey = msg.type + ':' + callId;
     if (owner.calls.has(callKey)) return;
     owner.calls.add(callKey);
-    const delivery = this.callbackEvents.get(event);
+    const delivery = this.callbackDeliveries.get(event);
     if (delivery) delivery.buffered = true;
     this.childCallbacks.track(
       owner,
@@ -8355,10 +8216,10 @@ export class Session<OutputT = string, Context = unknown> {
     event: NativeEvent,
     nativeSource: NativeThread,
   ): Promise<void> {
-    const buffered = this.callbackEvents.get(event);
+    const buffered = this.callbackDeliveries.get(event);
     if (buffered) buffered.buffered = true;
     return this.trackOwnedCallback(owner, () =>
-      this.ownCallbackDelivery(event, owner, async (signal, delivery) => {
+      this.callbackDeliveries.own(event, owner, async (signal, delivery) => {
         const native = delivery?.native ?? nativeSource;
         const msg = event.msg;
         const child = !(owner instanceof NativeTurn);
@@ -8862,12 +8723,12 @@ export class Session<OutputT = string, Context = unknown> {
     event: NativeEvent,
     native: NativeThread,
   ): Promise<void> {
-    const buffered = this.callbackEvents.get(event);
+    const buffered = this.callbackDeliveries.get(event);
     if (buffered) buffered.buffered = true;
     return this.trackOwnedCallback(
       owner,
       () =>
-        this.ownCallbackDelivery(event, owner, async (signal, delivery) => {
+        this.callbackDeliveries.own(event, owner, async (signal, delivery) => {
           const sourceNative = delivery?.native ?? native;
           const msg = event.msg;
           const child = !(owner instanceof NativeTurn);
@@ -8927,7 +8788,7 @@ export class Session<OutputT = string, Context = unknown> {
                 sourceCatalog ||
               !sourceNative._check_step(encode(receipt))
             )
-              this.callbackAuthorityFailed(
+              this.callbackDeliveries.authorityFailed(
                 delivery,
                 new NativeError('Expired model callback owner'),
               );
@@ -9125,7 +8986,7 @@ export class Session<OutputT = string, Context = unknown> {
                   );
                   retainModelAttemptFailure(owner, failure);
                 } catch (replyError) {
-                  this.callbackAuthorityFailed(delivery, replyError);
+                  this.callbackDeliveries.authorityFailed(delivery, replyError);
                 }
               };
               try {
@@ -9530,7 +9391,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private prepareRequest(run: NativeTurn, event: NativeEvent): Promise<void> {
-    return this.ownCallbackDelivery(event, run, (signal, delivery) =>
+    return this.callbackDeliveries.own(event, run, (signal, delivery) =>
       this.prepareCallbackRequest(run, event, signal, delivery),
     );
   }
@@ -9567,7 +9428,7 @@ export class Session<OutputT = string, Context = unknown> {
                 receipt,
               );
             } catch (error) {
-              this.callbackAuthorityFailed(delivery, error);
+              this.callbackDeliveries.authorityFailed(delivery, error);
             }
           }
         };
@@ -9635,7 +9496,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private selectStep(run: NativeTurn, event: NativeEvent): Promise<void> {
-    return this.ownCallbackDelivery(event, run, (signal, delivery) =>
+    return this.callbackDeliveries.own(event, run, (signal, delivery) =>
       this.selectCallbackStep(run, event, signal, delivery),
     );
   }
@@ -9679,7 +9540,7 @@ export class Session<OutputT = string, Context = unknown> {
             try {
               native._reply_step(response);
             } catch (error) {
-              this.callbackAuthorityFailed(delivery, error);
+              this.callbackDeliveries.authorityFailed(delivery, error);
             }
           }
         };
@@ -9722,7 +9583,7 @@ export class Session<OutputT = string, Context = unknown> {
               )
                 throw new NativeError('Step selection is no longer active');
             } catch (error) {
-              this.callbackAuthorityFailed(delivery, error);
+              this.callbackDeliveries.authorityFailed(delivery, error);
             }
           };
           assertActive();
@@ -9848,10 +9709,10 @@ export class Session<OutputT = string, Context = unknown> {
     event: NativeEvent,
     native: NativeThread,
   ): Promise<void> {
-    const delivery = this.callbackEvents.get(event);
+    const delivery = this.callbackDeliveries.get(event);
     if (delivery) delivery.buffered = true;
     return this.trackOwnedCallback(owner, () =>
-      this.ownCallbackDelivery(event, owner, (signal, captured) =>
+      this.callbackDeliveries.own(event, owner, (signal, captured) =>
         this.selectCallbackChildStep(
           owner,
           event,
@@ -9905,7 +9766,7 @@ export class Session<OutputT = string, Context = unknown> {
         try {
           native._reply_child_step(response);
         } catch (error) {
-          this.callbackAuthorityFailed(delivery, error);
+          this.callbackDeliveries.authorityFailed(delivery, error);
         }
       }
     };
@@ -9972,7 +9833,7 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError('Child step selection is no longer active');
           return false;
         } catch (error) {
-          this.callbackAuthorityFailed(delivery, error);
+          this.callbackDeliveries.authorityFailed(delivery, error);
         }
       };
       signal.throwIfAborted();
@@ -12032,7 +11893,7 @@ export class Session<OutputT = string, Context = unknown> {
     owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
   ): Promise<void> {
-    return this.ownCallbackDelivery(event, owner, (signal, delivery) =>
+    return this.callbackDeliveries.own(event, owner, (signal, delivery) =>
       this.executeCallbackRequest(owner, event, signal, delivery),
     );
   }
@@ -12084,7 +11945,7 @@ export class Session<OutputT = string, Context = unknown> {
       try {
         return native._check_python_tool(encodeReceipt(msg));
       } catch (error) {
-        this.callbackAuthorityFailed(delivery, error);
+        this.callbackDeliveries.authorityFailed(delivery, error);
       }
     };
     const execute = async () => {
@@ -12277,7 +12138,7 @@ export class Session<OutputT = string, Context = unknown> {
             if (key !== undefined) this.manualCalls.delete(key);
           }
         } catch (error) {
-          this.callbackAuthorityFailed(delivery, error);
+          this.callbackDeliveries.authorityFailed(delivery, error);
         } finally {
           if (deferredObservation && !accepted)
             this.discardPendingApplicationOutputs(owner, identity.callId);
