@@ -2527,6 +2527,8 @@ impl EngineState {
                         base.trim_end_matches('/'),
                         URL_SAFE_NO_PAD.encode(id.as_bytes())
                     ));
+                    // The original provider owns the upstream WebSocket route.
+                    info.websocket_base_url = None;
                     info.query_params = None;
                     // Only the private hop has no request retry budget.
                     // The original provider's native transport owns that

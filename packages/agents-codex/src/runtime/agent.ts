@@ -272,7 +272,9 @@ export async function openSession(
         specs.find((spec) =>
           call.shell
             ? call.name === 'shell' && spec.type === 'shell'
-            : spec.type === 'function' && spec.name === call.name,
+            : call.patch
+              ? call.name === 'apply_patch' && spec.type === 'applyPatch'
+              : spec.type === 'function' && spec.name === call.name,
         );
       const oldSpec = select(prior);
       const currentSpec = select(current);
