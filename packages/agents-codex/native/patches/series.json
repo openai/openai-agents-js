@@ -921,9 +921,13 @@
       "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
     },
     {
+      "path": "sdk-v2-interrupt-residency.patch",
+      "sha256": "cbc37c09cca0012ceccca17cf8f8e45cc41f642725acaf450bc90e59fcdb6326"
+    },
+    {
       "path": "sdk-run-model-override.patch",
       "sha256": "3c902abc5f5cc738441217e53fec59914ea63058576d578d1f7d09abd201c13b"
     }
   ],
-  "result_tree": "8f8de37501449c74edc237a5ab7a76159c70b233"
+  "result_tree": "ead3d82e29c953ab9dd99b1783cc3c8e89748481"
 }
