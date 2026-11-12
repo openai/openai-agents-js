@@ -378,7 +378,11 @@ class PosixSourceDirectory implements NativeSourceDirectory {
     });
   }
 
-  async readFile(name: string, maxBytes?: number): Promise<Uint8Array> {
+  async readFile(
+    name: string,
+    maxBytes?: number,
+    prefix?: boolean,
+  ): Promise<Uint8Array> {
     validateName(name);
     const fd = await this.run(() =>
       invoke(
@@ -419,6 +423,7 @@ class PosixSourceDirectory implements NativeSourceDirectory {
           }
         },
         maxBytes,
+        prefix,
       );
     } catch (error) {
       await invoke(close, [fd], 'close').catch(() => {});

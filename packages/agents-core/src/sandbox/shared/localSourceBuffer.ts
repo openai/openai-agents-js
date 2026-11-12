@@ -7,7 +7,16 @@ export async function readLocalSourceBuffer(
   size: number | bigint | undefined,
   read: (buffer: Buffer) => Promise<number>,
   maxBytes?: number,
+  prefix = false,
 ): Promise<Uint8Array> {
+  if (
+    prefix &&
+    maxBytes !== undefined &&
+    size !== undefined &&
+    size >= 0 &&
+    size > maxBytes
+  )
+    size = maxBytes;
   // Node's fs.readFile uses a signed 32-bit I/O length ceiling even on runtimes
   // whose Buffer API supports larger allocations. Preserve that source limit.
   const maxLength =
@@ -54,8 +63,9 @@ export async function readLocalSourceBuffer(
   const chunks: Buffer[] = [];
   let total = 0;
   for (;;) {
+    if (prefix && total === maxLength) return Buffer.concat(chunks, total);
     const buffer = Buffer.allocUnsafe(
-      Math.min(CHUNK_BYTES, maxLength - total + 1),
+      Math.min(CHUNK_BYTES, maxLength - total + (prefix ? 0 : 1)),
     );
     const count = await next(buffer);
     if (count === 0) return Buffer.concat(chunks, total);

@@ -32,11 +32,14 @@ export type SkillMetadataLimits = Readonly<{
 export type LocalDirLazySkillSource = {
   source: Dir | LocalDir | GitRepo;
   index?: SkillIndexEntry[];
-  getIndex?: (
-    manifest: Manifest,
-    skillsPath: string,
-    limits?: SkillMetadataLimits,
-  ) => SkillIndexEntry[];
+  getIndex?: {
+    (manifest: Manifest, skillsPath: string): SkillIndexEntry[];
+    (
+      manifest: Manifest,
+      skillsPath: string,
+      limits: SkillMetadataLimits,
+    ): SkillIndexEntry[] | Promise<SkillIndexEntry[]>;
+  };
 };
 
 export type SkillDescriptor = {
@@ -134,6 +137,17 @@ export async function resolveSkillRuntimeMetadata(
   runAs?: string,
   limits?: SkillMetadataLimits,
 ): Promise<SkillIndexEntry[]> {
+  if (limits && configuration.lazyFrom) {
+    const lazy = configuration.lazyFrom;
+    if (lazy.index) return lazy.index;
+    if (lazy.getIndex && session)
+      return await lazy.getIndex(
+        session.state.manifest,
+        configuration.skillsPath,
+        limits,
+      );
+    return deriveIndexFromDirEntry(lazy.source);
+  }
   if (!configuration.from || !session?.listDir || !session.readFile) {
     return [];
   }
@@ -370,12 +384,14 @@ export function resolveSkillsMetadata(
   }
 
   const configuredIndex =
-    resolveLazySkillIndex(
-      capability.lazyFrom,
-      manifest,
-      capability.skillsPath,
-      limits,
-    ) ??
+    (limits && capability.lazyFrom
+      ? (capability.lazyFrom.index ??
+        (runtimeMetadata.length > 0 ? runtimeMetadata : undefined))
+      : resolveLazySkillIndex(
+          capability.lazyFrom,
+          manifest,
+          capability.skillsPath,
+        )) ??
     capability.index ??
     (runtimeMetadata.length > 0 ? runtimeMetadata : undefined) ??
     deriveIndexFromDirEntry(capability.from);
@@ -538,7 +554,6 @@ function resolveLazySkillIndex(
   lazySource: LocalDirLazySkillSource | undefined,
   manifest?: Manifest,
   skillsPath: string = '.agents',
-  limits?: SkillMetadataLimits,
 ): SkillIndexEntry[] | undefined {
   if (!lazySource) {
     return undefined;
@@ -547,9 +562,7 @@ function resolveLazySkillIndex(
     return lazySource.index;
   }
   if (lazySource.getIndex && manifest) {
-    const derivedIndex = limits
-      ? lazySource.getIndex(manifest, skillsPath, limits)
-      : lazySource.getIndex(manifest, skillsPath);
+    const derivedIndex = lazySource.getIndex(manifest, skillsPath);
     return derivedIndex.length > 0 ? derivedIndex : undefined;
   }
 

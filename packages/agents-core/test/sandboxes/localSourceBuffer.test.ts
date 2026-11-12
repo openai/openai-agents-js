@@ -107,3 +107,16 @@ test('accepts exactly the byte budget and retains initial-size snapshot semantic
     ).toString(),
   ).toBe('SAFE');
 });
+
+test.each([100, 0, undefined])(
+  'reads only the requested metadata prefix with reported size %s',
+  async (size) => {
+    const actual = await readLocalSourceBuffer(
+      size,
+      reader(Buffer.from('SAFE private tail')),
+      4,
+      true,
+    );
+    expect(Buffer.from(actual).toString()).toBe('SAFE');
+  },
+);

@@ -146,12 +146,13 @@ async function openSourceParent(
 export async function readLocalSourceFile(
   path: string,
   maxBytes?: number,
+  prefix?: boolean,
 ): Promise<Uint8Array> {
   const { parent, name } = await openSourceParent(path, 'local_file');
   try {
     if (!name) throw pathChanged('local_file', path);
     try {
-      return await parent.readFile(name, maxBytes);
+      return await parent.readFile(name, maxBytes, prefix);
     } catch (error) {
       sourceError(error, 'local_file', path);
     }
@@ -227,9 +228,9 @@ function bindDirectory(
         sourceError(error, 'local_dir', `${path}/${name}`);
       }
     },
-    async readFile(name, maxBytes) {
+    async readFile(name, maxBytes, prefix) {
       try {
-        return await directory.readFile(name, maxBytes);
+        return await directory.readFile(name, maxBytes, prefix);
       } catch (error) {
         sourceError(error, 'local_dir', `${path}/${name}`);
       }
@@ -279,12 +280,13 @@ export async function readLocalSourceFileAt(
   root: NativeSourceDirectory,
   components: readonly string[],
   maxBytes?: number,
+  prefix?: boolean,
 ): Promise<Uint8Array> {
   if (components.length === 0) {
     throw new UserError('Local source file needs a relative component.');
   }
   return withSourceDirectory(root, components.slice(0, -1), (directory) =>
-    directory.readFile(components[components.length - 1], maxBytes),
+    directory.readFile(components[components.length - 1], maxBytes, prefix),
   );
 }
 

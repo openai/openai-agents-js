@@ -275,7 +275,11 @@ function createBindings() {
     checkStatus(await call(closeHandle, [handle]), 'NtClose');
   }
 
-  async function read(handle: unknown, maxBytes?: number): Promise<Uint8Array> {
+  async function read(
+    handle: unknown,
+    maxBytes?: number,
+    prefix?: boolean,
+  ): Promise<Uint8Array> {
     await checkType(handle, false);
     const info = Buffer.alloc(24); // FILE_STANDARD_INFORMATION; EndOfFile at 8.
     checkStatus(
@@ -302,6 +306,7 @@ function createBindings() {
         return bytesWritten(output, buffer.length);
       },
       maxBytes,
+      prefix,
     );
   }
 
@@ -421,7 +426,7 @@ function directoryHandle(
         );
       });
     },
-    async readFile(name, maxBytes) {
+    async readFile(name, maxBytes, prefix) {
       const file = await run(async () => {
         validateName(name);
         return native.open(handle, name, false);
@@ -430,7 +435,7 @@ function directoryHandle(
       // queue so configured concurrent file reads remain concurrent.
       let bytes: Uint8Array;
       try {
-        bytes = await native.read(file, maxBytes);
+        bytes = await native.read(file, maxBytes, prefix);
       } catch (error) {
         try {
           await native.close(file);

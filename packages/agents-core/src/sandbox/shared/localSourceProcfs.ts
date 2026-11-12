@@ -117,7 +117,11 @@ class ProcfsSourceDirectory implements NativeSourceDirectory {
     });
   }
 
-  async readFile(name: string, maxBytes?: number): Promise<Uint8Array> {
+  async readFile(
+    name: string,
+    maxBytes?: number,
+    prefix?: boolean,
+  ): Promise<Uint8Array> {
     validateName(name);
     const file = await this.run(() =>
       open(
@@ -138,6 +142,7 @@ class ProcfsSourceDirectory implements NativeSourceDirectory {
         async (buffer) =>
           (await file.read(buffer, 0, buffer.length, null)).bytesRead,
         maxBytes,
+        prefix,
       );
     } catch (error) {
       failed = true;
