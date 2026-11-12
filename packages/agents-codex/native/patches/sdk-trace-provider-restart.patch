@@ -1,5 +1,5 @@
 diff --git a/codex-rs/otel/src/provider.rs b/codex-rs/otel/src/provider.rs
-index 8d06696..2986037 100644
+index 8d066965..29860372 100644
 --- a/codex-rs/otel/src/provider.rs
 +++ b/codex-rs/otel/src/provider.rs
 @@ -785,12 +785,12 @@ fn build_tracer_provider(
@@ -34,7 +34,7 @@ index 8d06696..2986037 100644
      )
  }
 diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
-index c254bf0..acad86a 100644
+index c254bf0e..acad86aa 100644
 --- a/codex-rs/otel/src/sdk_trace.rs
 +++ b/codex-rs/otel/src/sdk_trace.rs
 @@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -175,7 +175,7 @@ index c254bf0..acad86a 100644
      let registration = {
          let span = context.span();
 diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
-index 2cfb8eb..c3074bd 100644
+index 2cfb8eb4..ad214018 100644
 --- a/codex-rs/otel/src/sdk_trace_routes.rs
 +++ b/codex-rs/otel/src/sdk_trace_routes.rs
 @@ -7,6 +7,7 @@ use serde::Deserialize;
@@ -186,7 +186,7 @@ index 2cfb8eb..c3074bd 100644
  use std::sync::{Arc, Mutex, OnceLock};
  use std::time::{Duration, Instant, UNIX_EPOCH};
  
-@@ -108,6 +109,40 @@ fn lock() -> std::sync::MutexGuard<'static, Routes> {
+@@ -108,6 +109,41 @@ fn lock() -> std::sync::MutexGuard<'static, Routes> {
      state().lock().unwrap_or_else(|e| e.into_inner())
  }
  
@@ -218,6 +218,7 @@ index 2cfb8eb..c3074bd 100644
 +        acknowledged: routes.sequence,
 +        delivered: routes.sequence,
 +        next_credential: routes.next_credential,
++        credentials: std::mem::take(&mut routes.credentials),
 +        ..Routes::default()
 +    };
 +    GENERATION.fetch_add(1, Ordering::AcqRel);
@@ -227,7 +228,7 @@ index 2cfb8eb..c3074bd 100644
  pub fn register_trace_credentials(input: &str) -> Result<String, String> {
      if input.len() > 65536 {
          return Err("trace credential headers exceed limit".into());
-@@ -1017,9 +1052,21 @@ impl SpanProcessor for TraceBatchProcessor {
+@@ -1017,9 +1053,21 @@ impl SpanProcessor for TraceBatchProcessor {
  
  #[derive(Debug)]
  pub(crate) struct RoutedSpanProcessor<P> {
@@ -251,7 +252,7 @@ index 2cfb8eb..c3074bd 100644
  impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
      fn on_start(&self, span: &mut Span, cx: &Context) {
          let policy = crate::sdk_trace::policy_for_context(cx);
-@@ -1028,6 +1075,9 @@ impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
+@@ -1028,6 +1076,9 @@ impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
          }
          self.inner.on_start(span, cx);
          let mut s = lock();
@@ -261,7 +262,7 @@ index 2cfb8eb..c3074bd 100644
          if let Some(data) = span.exported_data() {
              let descriptor =
                  retained_root_descriptor(&data, "start", policy.as_deref(), s.sequence + 1);
-@@ -1051,6 +1101,9 @@ impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
+@@ -1051,6 +1102,9 @@ impl<P: RouteSink> SpanProcessor for RoutedSpanProcessor<P> {
              return;
          }
          let mut s = lock();
@@ -271,7 +272,7 @@ index 2cfb8eb..c3074bd 100644
          let descriptor = retained_root_descriptor(&span, "end", policy.as_deref(), s.sequence + 1);
          let credential = policy.as_ref().and_then(|p| p.credential.as_ref());
          event(
-@@ -1221,10 +1274,7 @@ mod tests {
+@@ -1221,10 +1275,7 @@ mod tests {
          set_trace_routes(r#"{"processor_ids":["first"],"replace":false}"#).unwrap();
          let recorder = Recorder::default();
          let provider = SdkTracerProvider::builder()
@@ -283,7 +284,7 @@ index 2cfb8eb..c3074bd 100644
              .build();
          let tracer = provider.tracer("route-test");
          let mut old = tracer.start("old");
-@@ -1674,14 +1724,14 @@ mod tests {
+@@ -1674,14 +1725,14 @@ mod tests {
          let release = Arc::new((Mutex::new(false), Condvar::new()));
          let admitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
          let provider = SdkTracerProvider::builder()

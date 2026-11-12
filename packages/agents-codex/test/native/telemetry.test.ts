@@ -12,6 +12,7 @@ for (const mode of [
   'processor-handlers',
   'lifecycle',
   'restart',
+  'restart-credentials',
   'preclaim',
   'late',
   'postclaim',

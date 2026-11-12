@@ -225,6 +225,90 @@ async function main() {
     await telemetry.shutdown();
     await assert.rejects(failedEngine(), /shut down or failed to initialize/);
     await assert.rejects(telemetry.configure(), { message: once });
+  } else if (mode === 'restart-credentials') {
+    const authorizations: (string | undefined)[] = [];
+    const server = createServer(async (request, response) => {
+      for await (const _chunk of request) {
+        /* Drain the complete export body. */
+      }
+      authorizations.push(request.headers.authorization);
+      response.writeHead(200).end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    const exporter = new telemetry.OpenAITraceExporter({
+      endpoint: `http://127.0.0.1:${address.port}/v1/traces/ingest`,
+      apiKey: 'synthetic-fallback',
+    });
+    const credentials = new telemetry.TraceExportCredentials({
+      headers: { Authorization: 'Bearer synthetic-open-credential' },
+    });
+    let oldScope: telemetry.TraceSpan | undefined;
+    try {
+      await telemetry.configure({ traceProcessors: [exporter] });
+      await telemetry.withTrace(
+        { name: 'credential before restart', exportCredential: credentials },
+        async (span) => {
+          oldScope = span;
+        },
+      );
+      const reference = credentials.register(native);
+      assert.equal((await telemetry.forceFlush()).status, 'success');
+      const before = authorizations.length;
+      assert(before > 0);
+      await telemetry.shutdown();
+      await telemetry.configure({
+        restartAfterShutdown: true,
+        traceProcessors: [exporter],
+      });
+      await telemetry.withTrace(
+        { name: 'credential after restart', exportCredential: credentials },
+        async () => {},
+      );
+      assert.equal((await telemetry.forceFlush()).status, 'success');
+      assert(authorizations.length > before);
+      assert(
+        authorizations.every(
+          (value) => value === 'Bearer synthetic-open-credential',
+        ),
+      );
+      await assert.rejects(
+        telemetry.withSpan(
+          { name: 'stale credential scope', parent: oldScope },
+          async () => {},
+        ),
+        /retired telemetry provider/,
+      );
+      credentials.close();
+      await assert.rejects(
+        telemetry.withTrace(
+          { name: 'closed credential', exportCredential: credentials },
+          async () => {},
+        ),
+        /credentials are closed/,
+      );
+      assert.throws(
+        () =>
+          native.start_trace_span(
+            JSON.stringify({
+              name: 'released registration',
+              kind: 'workflow',
+              credential_ref: reference,
+            }),
+          ),
+        /unknown trace credential reference/,
+      );
+      await telemetry.shutdown();
+    } finally {
+      credentials.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   } else if (mode === 'restart') {
     const first: string[] = [];
     const second: string[] = [];
