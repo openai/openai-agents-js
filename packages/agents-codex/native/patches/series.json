@@ -987,7 +987,11 @@
     {
       "path": "sdk-provider-compaction-threshold.patch",
       "sha256": "bf3cc2302fb84ae70b68546b5bd0994f3a9d0c0023a59fa25688501d2e062157"
+    },
+    {
+      "path": "sdk-tracing-annotation-shapes.patch",
+      "sha256": "c1a05136516225892be0372fa634649a0fec8c43f355efd50955427695a3a801"
     }
   ],
-  "result_tree": "9887d36e422c2c3781eef3b9dd6c5d7f9a134a91"
+  "result_tree": "d97558b357c0008475f8362a5f849f6c08f52203"
 }
