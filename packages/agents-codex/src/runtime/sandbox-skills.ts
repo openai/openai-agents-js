@@ -308,6 +308,9 @@ export class SandboxSkillBinding<Context = any> {
     const listDir = sandbox.listDir?.bind(sandbox);
     if (!listDir)
       throw new Error('Restored eager Skills require sandbox listDir()');
+    const removeOpaqueDirectories =
+      declaredPaths.includes(this.configuration.skillsPath) &&
+      Boolean(sandbox.removeEntryNoFollow);
     let remaining = treeLimits.maxMembers;
     const list = async (path: string, missingAllowed = false) => {
       signal.throwIfAborted();
@@ -369,7 +372,11 @@ export class SandboxSkillBinding<Context = any> {
         if (member.type === 'file')
           files.push({ path: member.path, directory: false });
         else if (member.type === 'dir') {
-          if (declared) files.push({ path: member.path, directory: true });
+          // Opaque eager sources do not expose their current child names here.
+          // A retained sentinel identifies a managed root; only a confined
+          // provider primitive may remove its emptied directories.
+          if (declared || removeOpaqueDirectories)
+            files.push({ path: member.path, directory: true });
           const children = await list(member.path);
           pending.push(
             ...children.map((child) => ({ ...child, depth: member.depth + 1 })),

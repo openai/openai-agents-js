@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   access,
   mkdir,
@@ -18,6 +20,7 @@ import {
   Manifest,
   dir,
   file,
+  gitRepo,
   normalizeSandboxClientCreateArgs,
   skills,
   sandboxEnvironment,
@@ -735,6 +738,7 @@ nativeIt.each([
   { kind: 'from', savedSkills: true, conflict: 'none' },
   { kind: 'from', savedSkills: true, conflict: 'missing-sentinel' },
   { kind: 'from', savedSkills: true, conflict: 'directory-to-file' },
+  { kind: 'git-repo', savedSkills: true, conflict: 'directory-to-file' },
 ] as const)(
   'stages $kind eager skills on an authorized cold resume with savedSkills=$savedSkills and conflict=$conflict',
   async ({ kind, savedSkills, conflict }) => {
@@ -814,11 +818,44 @@ nativeIt.each([
       kind === 'inline'
         ? 'EAGER_RESUMED_BYTES\r\n'
         : '---\nname: report\ndescription: EAGER_RESUME_INDEX\n---\nEAGER_RESUMED_BYTES\r\n';
+    const currentSource = join(archiveBase, 'current-source');
+    if (kind === 'git-repo') {
+      await mkdir(join(currentSource, 'skill-root', 'report'), {
+        recursive: true,
+      });
+      await writeFile(
+        join(currentSource, 'skill-root', 'report', 'SKILL.md'),
+        document,
+      );
+      await writeFile(
+        join(currentSource, 'skill-root', 'report', 'replaced'),
+        'replacement file',
+      );
+      const git = promisify(execFile);
+      await git('git', ['-C', currentSource, 'init']);
+      await git('git', ['-C', currentSource, 'add', '.']);
+      await git('git', [
+        '-C',
+        currentSource,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-m',
+        'current skills',
+      ]);
+    }
     let resumedRoot = '';
     try {
       const source = sandboxEnvironment({
         client: resumedClient,
-        manifest: new Manifest({ root: '/workspace' }),
+        manifest: new Manifest({
+          root: '/workspace',
+          ...(kind === 'git-repo'
+            ? { extraPathGrants: [{ path: currentSource, readOnly: true }] }
+            : {}),
+        }),
         authorizedResumeState: { backendId: resumedClient.backendId, state },
         skills: skills(
           kind === 'inline'
@@ -832,18 +869,28 @@ nativeIt.each([
                 ],
               }
             : {
-                from: dir({
-                  children: {
-                    report: dir({
-                      children: {
-                        'SKILL.md': file({ content: document }),
-                        ...(conflict === 'directory-to-file'
-                          ? { replaced: file({ content: 'replacement file' }) }
-                          : {}),
-                      },
-                    }),
-                  },
-                }),
+                from:
+                  kind === 'git-repo'
+                    ? gitRepo({
+                        repo: `file://${currentSource}`,
+                        subpath: 'skill-root',
+                      })
+                    : dir({
+                        children: {
+                          report: dir({
+                            children: {
+                              'SKILL.md': file({ content: document }),
+                              ...(conflict === 'directory-to-file'
+                                ? {
+                                    replaced: file({
+                                      content: 'replacement file',
+                                    }),
+                                  }
+                                : {}),
+                            },
+                          }),
+                        },
+                      }),
               },
         ),
         connect: async (sandbox) => {
