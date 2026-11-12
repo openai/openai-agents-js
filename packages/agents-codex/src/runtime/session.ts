@@ -705,11 +705,23 @@ const rawProviderUsageSchema = z.array(
     ),
   }),
 );
+/** The tool name and declared role for a managed agent invocation. */
+export interface ManagedAgentToolOrigin {
+  readonly name: string;
+  readonly role: string;
+}
+
+const managedAgentToolOriginSchema = z.object({
+  name: z.string(),
+  role: z.string(),
+});
+
 /** An accepted assistant or tool item and its producing Agent. */
 export interface ProducedItem {
   readonly item: HistoryItem;
   readonly agent: import('./public-agent').Agent<any, any>;
   readonly handoffTarget?: import('./public-agent').Agent<any, any>;
+  readonly toolOrigin?: ManagedAgentToolOrigin;
 }
 
 const producedItemSchema = z.object({
@@ -14382,10 +14394,20 @@ export class Session<OutputT = string, Context = unknown> {
           typeof targetId === 'string'
             ? this.callbackProfileRuntime(targetId)?.profile.agent
             : undefined;
+        const toolOrigin = managedAgentToolOriginSchema.safeParse(
+          metadata &&
+            typeof metadata === 'object' &&
+            'sdk_managed_agent_tool' in metadata
+            ? metadata.sdk_managed_agent_tool
+            : undefined,
+        );
         return Object.freeze({
           item,
           agent,
           ...(handoffTarget === undefined ? {} : { handoffTarget }),
+          ...(toolOrigin.success
+            ? { toolOrigin: Object.freeze(toolOrigin.data) }
+            : {}),
         });
       }),
     );
