@@ -44,6 +44,7 @@ import {
 import {
   sessionStateSchema,
   isManualSessionState,
+  isOutputAwareState,
   nativeCheckpoint,
 } from './state';
 import { environmentConfig, projectSearchRuntime } from './environment';
@@ -82,7 +83,8 @@ export async function openSession(
       (profile) => profile.catalog.tools,
     ),
   ]);
-  const { initialMessages, ...liveOptions } = options;
+  const { initialMessages, verifyRememberedApprovals, ...liveOptions } =
+    options;
   const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
     initialMessages,
@@ -132,6 +134,13 @@ export async function openSession(
     throw new TypeError(
       'Checkpoint and Environment must agree on read-only execution',
     );
+  if (isOutputAwareState(saved) && saved.remembered_approvals?.length) {
+    const verified = await verifyRememberedApprovals?.(structuredClone(saved));
+    options.environmentOwner?.signal.throwIfAborted();
+    if (verified !== true) {
+      delete saved.remembered_approvals;
+    }
+  }
   const native = await binding();
   const restoredSource = saved && options.agentGraph?.restoredSource;
   if (restoredSource) {

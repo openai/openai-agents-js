@@ -260,6 +260,13 @@ export interface SessionBaseOptions<Context = undefined> {
    * Requires a fresh opt-in when restoring; never selects an ambient project.
    */
   projectGuidance?: boolean;
+  /**
+   * Authenticate the entire saved checkpoint for the current application principal
+   * before reusing remembered tool approvals. Omit this to request fresh approval.
+   */
+  verifyRememberedApprovals?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
   /** Replace opening declarations. Omission inherits Agent.tools; [] removes them. */
   tools?: readonly Tool<Context>[];
 }
@@ -707,6 +714,11 @@ export class Agent<Context = undefined, Output = string> {
       typeof options.onInteraction !== 'function'
     )
       throw new TypeError('onInteraction must be callable');
+    if (
+      options.verifyRememberedApprovals !== undefined &&
+      typeof options.verifyRememberedApprovals !== 'function'
+    )
+      throw new TypeError('verifyRememberedApprovals must be callable');
     let tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
@@ -870,6 +882,7 @@ export class Agent<Context = undefined, Output = string> {
       observationRetention: options.observationRetention,
       context: options.context,
       onInteraction: options.onInteraction,
+      verifyRememberedApprovals: options.verifyRememberedApprovals,
       toolErrorFormatter: options.toolErrorFormatter,
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
@@ -1828,6 +1841,7 @@ export class Agent<Context = undefined, Output = string> {
         environment,
         context,
         onInteraction: options.onInteraction,
+        verifyRememberedApprovals: options.verifyRememberedApprovals,
         toolErrorFormatter,
         applicationAgent: this,
         realtimeDeclaration:

@@ -452,6 +452,9 @@ export interface SessionOptions {
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
   toolErrorFormatter?: ToolErrorFormatter<any>;
+  verifyRememberedApprovals?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
