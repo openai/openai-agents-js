@@ -248,7 +248,6 @@ import {
   mcpRefIdentity,
   checkMcpPublication,
   transformMcpResult,
-  splitToolDeclarations,
   isHostedRegistration,
   type McpTool,
   type MCPListResourcesResult,
@@ -257,6 +256,7 @@ import {
   type MCPPrompt,
   type MCPGetPromptResult,
 } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import {
   createManualRequest,
   isFunctionApprovalRequest,

@@ -118,8 +118,8 @@ import {
   mcpConfig,
   mcpToolNames,
   mcpToolSelections,
-  splitToolDeclarations,
 } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import {
   NativeProvider,
   captureModelSettings,

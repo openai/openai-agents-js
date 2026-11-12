@@ -15,7 +15,7 @@ import {
   projectNativeHostedToolItem,
   projectHistory,
 } from '../../src/runtime/history';
-import { splitToolDeclarations } from '../../src/runtime/mcp';
+import { splitToolDeclarations } from '../../src/runtime/tool-declarations';
 import { Session as OwnedSession } from '../../src/runtime/session';
 import { captureTools } from '../../src/runtime/tools';
 import type {
