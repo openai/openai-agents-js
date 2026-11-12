@@ -817,7 +817,9 @@ it('captures a reloaded child when its row is issued by an open iterator', async
   }
 }, 20_000);
 
-it('attributes produced managed-role calls and outputs', async () => {
+async function checkProducedManagedRoleOrigins(
+  scenario: 'success' | 'empty input' | 'child failure',
+) {
   const executor = await startPublicExecutor();
   try {
     const managed = {
@@ -830,11 +832,27 @@ it('attributes produced managed-role calls and outputs', async () => {
       [
         call(
           managed.name,
-          { input: 'Read the record.' },
+          { input: scenario === 'empty input' ? '' : 'Read the record.' },
           { namespace: 'collaboration', callId: 'managed' },
         ),
       ],
-      [message('child result')],
+      ...(scenario === 'empty input'
+        ? []
+        : [
+            scenario === 'success'
+              ? [message('child result')]
+              : {
+                  status: 400,
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    error: {
+                      type: 'invalid_request_error',
+                      code: 'invalid_request_error',
+                      message: 'Synthetic child model failure',
+                    },
+                  }),
+                },
+          ]),
       [message('parent result')],
     ]);
     const config = await server.config();
@@ -894,8 +912,18 @@ it('attributes produced managed-role calls and outputs', async () => {
         origin,
       ]);
     }
+    if (scenario === 'child failure') {
+      expect(JSON.stringify(server.requests.at(-1)?.input)).toContain(
+        'Managed agent did not complete its turn',
+      );
+    }
     server.assertExhausted();
   } finally {
     await executor.close();
   }
-});
+}
+
+it.each(['success', 'empty input', 'child failure'] as const)(
+  'attributes produced managed-role calls and outputs (%s)',
+  checkProducedManagedRoleOrigins,
+);
