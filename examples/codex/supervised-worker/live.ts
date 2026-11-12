@@ -121,8 +121,9 @@ async function serve(prompt: string) {
   const socketPath = join(directory, 'control.sock');
   const stopping = new AbortController();
   const stop = () => stopping.abort();
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  // Keep the owner listening until cleanup finishes so tracing cannot exit early.
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
   const server = createServer();
   server.requestTimeout = 10_000;
   server.headersTimeout = 10_000;
@@ -269,10 +270,13 @@ async function serve(prompt: string) {
       await completion;
     }
   } finally {
-    process.off('SIGINT', stop);
-    process.off('SIGTERM', stop);
-    // Only this run's freshly created directory belongs to this cleanup.
-    await rm(directory, { recursive: true, force: true });
+    try {
+      // Only this run's freshly created directory belongs to this cleanup.
+      await rm(directory, { recursive: true, force: true });
+    } finally {
+      process.off('SIGINT', stop);
+      process.off('SIGTERM', stop);
+    }
   }
 }
 
