@@ -756,25 +756,30 @@ it.each([
   'graceful-complete',
   'non-error',
   'input-guardrail',
+  'input-throw',
+  'input-invalid',
+  'guarded-cancel',
 ] as const)(
   'records a settled source outcome (%s)',
   async (mode) => {
     const cancelledSource =
       mode === 'cancelled' ||
       mode === 'phase-failure' ||
-      mode === 'graceful-abort';
+      mode === 'graceful-abort' ||
+      mode === 'guarded-cancel';
     const toolSource = cancelledSource || mode === 'step-limit';
     const sourceFailure =
       mode === 'non-error'
         ? 'provider unavailable'
         : new Error('original source completion failure');
     const phaseFailure = new Error('unrelated memory phase failure');
+    const inputFailure = new Error('raw input guard callback failure');
     const peer = await startPublicExecutor();
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     let effects = 0;
     const server = new ModelServer([
-      ...(mode === 'input-guardrail'
+      ...(mode.startsWith('input-')
         ? []
         : [
             mode === 'graceful-complete'
@@ -836,15 +841,22 @@ it.each([
               },
             }
           : {}),
-        ...(mode === 'input-guardrail'
+        ...(mode.startsWith('input-') || mode === 'guarded-cancel'
           ? {
               inputGuardrails: [
                 {
                   name: 'blocked-input',
-                  callback: () => ({
-                    tripwireTriggered: true,
-                    outputInfo: 'private-rejected-input',
-                  }),
+                  runInParallel: false,
+                  callback: () => {
+                    if (mode === 'guarded-cancel')
+                      return { tripwireTriggered: false };
+                    if (mode === 'input-throw') throw inputFailure;
+                    if (mode === 'input-invalid') return {} as never;
+                    return {
+                      tripwireTriggered: true,
+                      outputInfo: 'private-rejected-input',
+                    };
+                  },
                 },
               ],
             }
@@ -925,7 +937,7 @@ it.each([
         }),
       });
       const turn = await session.submit(
-        mode === 'input-guardrail'
+        mode.startsWith('input-')
           ? 'synthetic rejected sensitive input'
           : 'Start the project lookup.',
         mode === 'step-limit' ? { maxModelSteps: 1 } : undefined,
@@ -940,9 +952,12 @@ it.each([
         await expect(stopping).resolves.toBeUndefined();
       }
       const cancelled = await original;
-      if (mode === 'input-guardrail') {
-        expect(turn.id).not.toBeNull();
-        expect(cancelled).toBeInstanceOf(GuardrailTripwire);
+      if (mode.startsWith('input-')) {
+        expect(turn.turnId).toEqual(expect.any(String));
+        if (mode === 'input-throw') expect(cancelled).toBe(inputFailure);
+        else if (mode === 'input-invalid')
+          expect(cancelled).toBeInstanceOf(TypeError);
+        else expect(cancelled).toBeInstanceOf(GuardrailTripwire);
         await expect(session.flushMemory()).rejects.toBe(cancelled);
         expect(server.requests).toHaveLength(0);
         await expect(

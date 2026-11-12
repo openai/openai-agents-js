@@ -1208,6 +1208,8 @@ const submissions = new WeakMap<
     readonly outputOverride: boolean;
     originalInput?: UserInput;
     profileSettlement?: Promise<void>;
+    memoryAdmissionRecorded?: boolean;
+    memoryAdmissionFailure?: { error: unknown };
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
     observationAfter: number;
@@ -4770,6 +4772,7 @@ export class Session<OutputT = string, Context = unknown> {
     const run = this.allocateRun(output, outputType !== undefined);
     run.captureRequestAttempts = this.options.includeRequestAttempts === true;
     run.parentTrace = parentTrace;
+    run.inputGuardrailsPassed = this.hasInputGuardrails ? false : undefined;
     run.guardrailInput = this.hasInputGuardrails
       ? structuredClone(input)
       : undefined;
@@ -5781,6 +5784,7 @@ export class Session<OutputT = string, Context = unknown> {
     submissions.get(run)!.originalInput = originalInput;
     run.captureRequestAttempts = captureRequestAttempts;
     run.guardrailInput = this.hasInputGuardrails ? guardrailInput : undefined;
+    run.inputGuardrailsPassed = this.hasInputGuardrails ? false : undefined;
     run.parentTrace = parentTrace;
     run.writableRoots = roots;
     submissions.get(run)!.callerSignal = callerSignal;
@@ -6571,6 +6575,29 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const continueRetained = error === undefined && retained;
     run.failure = error;
+    if (
+      this.options.environmentOwner?.hasSandboxMemory &&
+      run.id !== null &&
+      this.rootRun(run).inputGuardrailsPassed !== false &&
+      (!this.restoredRoot ||
+        this.turnHandles.get(this.rootRun(run)) !== this.restoredRoot.turn) &&
+      submission &&
+      !submission.memoryAdmissionRecorded
+    ) {
+      submission.memoryAdmissionRecorded = true;
+      const turnId = run.id;
+      const persistence = Promise.resolve()
+        .then(() => this.#native._record_memory_input_admission(turnId))
+        .catch((cause: unknown) => {
+          submission.memoryAdmissionFailure = { error: cause };
+        });
+      run.callbacks.add(persistence);
+      void persistence.then(() => {
+        run.callbacks.delete(persistence);
+        this.finish(run, error, output, unsampledSteering);
+      });
+      return;
+    }
     if (submission?.previous && continuationWasSuperseded(error))
       this.lastRun = submission.previous;
 
@@ -8534,6 +8561,7 @@ export class Session<OutputT = string, Context = unknown> {
     childContext?: ChildBeforeStepContext<Context>,
   ): Promise<void> {
     if (!guards.length) return;
+    if (run instanceof NativeTurn) run.inputGuardrailsPassed = false;
     const agent = this.sourceApplicationAgent(message);
     if (!agent) throw new NativeError('Guardrail has no source Agent');
     const signal = run.controller.signal;
@@ -8628,6 +8656,7 @@ export class Session<OutputT = string, Context = unknown> {
     } finally {
       await scope.close();
     }
+    if (run instanceof NativeTurn) run.inputGuardrailsPassed = true;
   }
 
   private async checkOutputGuardrails(
@@ -9664,6 +9693,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ? agent.inputGuardrails
                 : (this.options.agentInputGuardrails ?? [])),
             ];
+            if (!guards.length) run.inputGuardrailsPassed = true;
             try {
               await this.checkInputGuardrails(
                 run,
@@ -14578,6 +14608,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (
         run.id === null ||
         !Object.is(error, run.failure) ||
+        this.rootRun(run).inputGuardrailsPassed === false ||
         (error instanceof GuardrailTripwire && error.record.kind === 'input')
       )
         throw error;
@@ -14599,9 +14630,11 @@ export class Session<OutputT = string, Context = unknown> {
         has_final_output: false,
       };
     }
-    // Reuse native replay's predecode budget, then enforce the memory record bound.
+    const admissionFailure = submissions.get(run)?.memoryAdmissionFailure;
+    if (admissionFailure) throw admissionFailure.error;
+    // Reuse native replay's predecode budget and durable input-admission proof.
     const snapshot: { revision: string; total: number; items: string[] } =
-      JSON.parse(await this.#native._canonical_history(256, true));
+      JSON.parse(await this.#native._memory_history(run.id!));
     if (snapshot.total > 256)
       throw new RangeError(
         'Native sandbox memory supports at most 256 original records',
