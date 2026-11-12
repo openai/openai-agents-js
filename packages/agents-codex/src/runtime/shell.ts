@@ -1,6 +1,8 @@
 import { z } from 'zod';
+import { losslessJsonObjectSchema, type JsonObject } from './binding';
 import {
   createShellTool,
+  ToolOutput,
   type tool,
   type FunctionTool,
   type ToolContext,
@@ -26,6 +28,10 @@ export interface ShellCall {
 }
 
 export interface ShellCommandOutput {
+  /** Application-only command label retained with the accepted result. */
+  readonly command?: string;
+  /** Application-only metadata for this command's result. */
+  readonly providerData?: JsonObject;
   readonly stdout: string;
   readonly stderr: string;
   readonly outcome:
@@ -34,6 +40,8 @@ export interface ShellCommandOutput {
 }
 
 export interface ShellOutput {
+  /** Application-only metadata for the Shell executor's result. */
+  readonly providerData?: JsonObject;
   readonly output: readonly ShellCommandOutput[];
   readonly max_output_length?: number | null;
 }
@@ -50,20 +58,56 @@ const shellCallSchema: z.ZodType<ShellCall> = z.looseObject({
   }),
 });
 
+const shellCommandOutputSchema = z.object({
+  stdout: z.string(),
+  stderr: z.string(),
+  outcome: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('exit'), exit_code: z.number() }),
+    z.object({ type: z.literal('timeout') }),
+  ]),
+});
+
 /** @internal The same structured output contract applies to external reconciliation. */
 export const shellOutputSchema: z.ZodType<ShellOutput> = z.object({
-  output: z.array(
-    z.object({
-      stdout: z.string(),
-      stderr: z.string(),
-      outcome: z.discriminatedUnion('type', [
-        z.object({ type: z.literal('exit'), exit_code: z.number() }),
-        z.object({ type: z.literal('timeout') }),
-      ]),
-    }),
-  ),
+  output: z.array(shellCommandOutputSchema),
   max_output_length: z.number().nullable().optional(),
 });
+
+const shellExecutorOutputSchema: z.ZodType<ToolOutput> = z
+  .object({
+    output: z.array(
+      shellCommandOutputSchema.extend({
+        command: z.string().optional(),
+        providerData: losslessJsonObjectSchema.optional(),
+      }),
+    ),
+    max_output_length: z.number().nullable().optional(),
+    providerData: losslessJsonObjectSchema.optional(),
+  })
+  .transform((value) => {
+    const metadata: JsonObject = {};
+    if (value.providerData !== undefined)
+      metadata.providerData = value.providerData;
+    const entries = value.output.map((entry) => {
+      const data: JsonObject = {};
+      if (entry.command !== undefined) data.command = entry.command;
+      if (entry.providerData !== undefined)
+        data.providerData = entry.providerData;
+      return data;
+    });
+    if (entries.some((entry) => Object.keys(entry).length > 0))
+      metadata.shellOutput = entries;
+    return new ToolOutput(
+      [
+        {
+          type: 'inputText',
+          text: JSON.stringify(shellOutputSchema.parse(value)),
+        },
+      ],
+      true,
+      metadata,
+    );
+  });
 
 type ShellPolicies<Context> = Pick<
   Parameters<
@@ -108,7 +152,7 @@ export function shellTool<Context = unknown>(
   return createShellTool<
     typeof shellCallSchema,
     Context,
-    typeof shellOutputSchema
+    typeof shellExecutorOutputSchema
   >(
     {
       type: 'shell',
@@ -128,7 +172,8 @@ export function shellTool<Context = unknown>(
       name: 'shell',
       description: 'Execute commands using the application shell executor.',
       parameters: shellCallSchema,
-      result: shellOutputSchema,
+      result: shellExecutorOutputSchema,
     },
+    shellOutputSchema,
   );
 }
