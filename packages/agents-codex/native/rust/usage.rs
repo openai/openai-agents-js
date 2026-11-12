@@ -101,6 +101,14 @@ fn visit_record(value: &mut Value, counter: CounterVisitor) -> anyhow::Result<()
 
 // Called only for a serialized native EventMsg, never arbitrary tool data.
 fn visit_event(message: &mut Value, counter: CounterVisitor) -> anyhow::Result<()> {
+    if let Some(snapshot) = message.get_mut("model_attempt") {
+        visit_model_attempt(snapshot, counter)?;
+    }
+    if message["type"] == "_sdk_model_attempt"
+        && let Some(data) = message.get_mut("data")
+    {
+        visit_model_attempt(data, counter)?;
+    }
     match message.get("type").and_then(Value::as_str) {
         Some("raw_response_completed") => {
             if let Some(usage) = message.get_mut("token_usage") {
@@ -124,6 +132,25 @@ fn visit_event(message: &mut Value, counter: CounterVisitor) -> anyhow::Result<(
         _ => {}
     }
     Ok(())
+}
+
+fn visit_model_attempt(snapshot: &mut Value, counter: CounterVisitor) -> anyhow::Result<()> {
+    let Some(usage) = snapshot.get_mut("usage") else {
+        return Ok(());
+    };
+    for name in ["requests", "requests_without_token_usage"] {
+        if let Some(count) = usage.get_mut(name) {
+            counter(count)?;
+        }
+    }
+    if let Some(tokens) = usage.get_mut("token_usage") {
+        visit_usage(tokens, counter)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn model_attempt_to_wire(snapshot: &mut Value) -> anyhow::Result<()> {
+    visit_model_attempt(snapshot, counter_to_wire)
 }
 
 pub(crate) fn event_to_wire(message: &mut Value) -> anyhow::Result<()> {
@@ -611,6 +638,31 @@ mod tests {
         let mut safe_string = json!("7");
         counter_from_wire(&mut safe_string)?;
         assert_eq!(safe_string, json!(7));
+        Ok(())
+    }
+    #[test]
+    fn model_attempt_snapshots_keep_exact_tokens_in_live_and_history_slots() -> anyhow::Result<()> {
+        let original = json!({"type":"task_complete", "model_attempt":{
+            "owner_attempt_id":"original", "terminal_attempt_id":"original",
+            "usage":{"requests":1,"requests_without_token_usage":0,
+                "token_usage":{"input_tokens":9_007_199_254_740_993_i64,"total_tokens":i64::MAX}}}});
+        let mut live = original.clone();
+        event_to_wire(&mut live)?;
+        assert_eq!(
+            live["model_attempt"]["usage"]["token_usage"]["input_tokens"],
+            "9007199254740993"
+        );
+        visit_event(&mut live, counter_from_wire)?;
+        assert_eq!(live, original);
+        let mut notice =
+            json!({"type":"_sdk_model_attempt", "data":original["model_attempt"].clone()});
+        event_to_wire(&mut notice)?;
+        assert_eq!(
+            notice["data"]["usage"]["token_usage"]["total_tokens"],
+            i64::MAX.to_string()
+        );
+        visit_event(&mut notice, counter_from_wire)?;
+        assert_eq!(notice["data"], original["model_attempt"]);
         Ok(())
     }
 }

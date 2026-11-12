@@ -25,6 +25,8 @@ The application has been owning the Session and provider. Reader cancellation ha
 
 The adapter has been omitting sensitive tool data by default. Explicit `{ includeToolData: true }` as the third argument has been enabling complete retained function/MCP arguments and results at settlement, keyed by canonical call ID. The application has been authorizing disclosure before opting in; remote bytes omitted by native retention limits have been remaining unavailable. Missing observations have been producing `resync_required`, with authorized history recovery remaining application-owned.
 
+The packaged adapter has been limiting each text view to 256 parts and 1,048,576 UTF-8 bytes. Opted-in tool data has been using a separate 1,048,576-byte limit and allowing at most 256 calls and 256 results. Exceeding a limit has been producing `resync_required`. The copyable recipes below have been counting text in UTF-16 code units instead, so non-ASCII text has been reaching their text limit at a different point.
+
 The copyable owning-response and AG-UI recipes below have been remaining available for their separate ownership and protocol contracts.
 
 ## Run the example

@@ -222,6 +222,7 @@ impl Continuation {
     pub(crate) fn terminal_seed(
         &mut self,
         raw: &Value,
+        reset_tool_choice: bool,
     ) -> Result<Option<RecoveredToolCompletionSeed>> {
         let calls = history(raw)?.calls;
         let mut held = Vec::new();
@@ -250,7 +251,7 @@ impl Continuation {
             }
         }
         Ok(match self.tool_outcomes.take() {
-            Some(outcomes) if self.fresh.is_some() || !held.is_empty() => {
+            Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),
                     outcomes,
@@ -641,6 +642,7 @@ fn restored_profile_plan(
 )> {
     let rows: Vec<RolloutItem> = serde_json::from_value(raw.clone())?;
     let source = crate::agent_profiles::restore_source(opening, &rows)?;
+    opening.validate_pending_source(&source)?;
     let mut pending_ids = HashSet::new();
     for call in &frame.pending_manual {
         ensure!(
@@ -700,7 +702,11 @@ fn restored_profile_plan(
             proof.source.0 == proof.receipt.source && proof.source.1 == opening.fingerprint,
             "Handoff differs from original call source or admitted graph"
         );
-        opening.validate_restored_handoff(&proof.name, &proof.receipt)?;
+        opening.validate_restored_handoff(
+            &proof.name,
+            &proof.receipt,
+            proof.next_profile.is_none(),
+        )?;
         if let Some((next, graph)) = &proof.next_profile {
             ensure!(
                 graph == &opening.fingerprint
@@ -1183,7 +1189,14 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
-                    computer_arguments: None,
+                    client_search: None,
+                    original_payload: self.resolve_generation(key.reply.generation).and_then(
+                        |generation| {
+                            generation.entries.get(key.reply.slot).and_then(|entry| {
+                                original_tool_payload(&entry.spec, &request["msg"]["arguments"])
+                            })
+                        },
+                    ),
                     media: None,
                     deadline: None,
                     invocation,
@@ -1749,6 +1762,7 @@ impl PythonTools {
         Continuation,
         Vec<ResponseItemEnvelope>,
         ThreadSettingsOverrides,
+        Vec<String>,
     )> {
         let history = history(raw)?;
         let manual = self.manual.lock().expect("manual tools poisoned");
@@ -1829,6 +1843,7 @@ impl PythonTools {
             );
         }
         let mut items = Vec::new();
+        let mut canonical_call_ids = Vec::new();
         for (id, call) in frame.reply_order.iter().zip(&history.calls) {
             let receipt = frame
                 .accepted_replies
@@ -1842,7 +1857,10 @@ impl PythonTools {
                 );
             } else if !held_ids.contains(id) {
                 items.push(item);
+            } else {
+                continue;
             }
+            canonical_call_ids.push(id.clone());
         }
         let context = history
             .context
@@ -1856,6 +1874,12 @@ impl PythonTools {
             summary: Some(saved.reasoning_summary.unwrap_or_default()),
             service_tier: Some(saved.service_tier),
             tool_choice: saved.tool_choice,
+            request_controls: saved.request_controls.hosted_prompt.map(|prompt| {
+                codex_protocol::model_request_controls::ModelRequestControls {
+                    hosted_prompt: Some(prompt),
+                    ..Default::default()
+                }
+            }),
             ..Default::default()
         };
         let mut frame = frame.clone();
@@ -1867,7 +1891,7 @@ impl PythonTools {
                 .cloned()
                 .collect();
         }
-        Ok((frame, items, settings))
+        Ok((frame, items, settings, canonical_call_ids))
     }
 
     pub(crate) fn retire_manual(&self) {
@@ -1923,6 +1947,7 @@ mod progress_tests {
         tools.observe_manual_event(&Event {
             id: "physical-turn".into(),
             msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                model_attempt_id: None,
                 response_id: "response".into(),
                 token_usage: None,
                 usage_metadata: None,

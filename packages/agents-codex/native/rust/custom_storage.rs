@@ -1,5 +1,6 @@
 //! Application-owned canonical snapshots with a disposable native projection.
-use codex_history::RolloutItem;
+use codex_history::sdk_originals::SdkOriginalHistoryCheckpoint;
+use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::{
     ThreadId, dynamic_tools::DynamicToolResponse, models::ResponseItem, protocol::EventMsg,
 };
@@ -13,6 +14,56 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Mutex;
+
+fn validate_saved_prompt_history(history: &[RolloutItem]) -> anyhow::Result<()> {
+    let check_envelope = |envelope: &ResponseItemEnvelope| -> anyhow::Result<()> {
+        anyhow::ensure!(
+            envelope
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.sdk_agent_profile.as_ref())
+                .and_then(
+                    |profile| profile.pointer("/model/request_controls/hosted_prompt/reference")
+                )
+                .is_none_or(serde_json::Value::is_null),
+            "Stored hosted prompt references require current declarations"
+        );
+        Ok(())
+    };
+    for item in history {
+        match item {
+            RolloutItem::ResponseItem(envelope) => check_envelope(envelope)?,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => anyhow::ensure!(
+                event
+                    .thread_settings
+                    .request_controls
+                    .hosted_prompt
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_none_or(|prompt| prompt.reference.is_none()),
+                "Stored hosted prompt references require current declarations"
+            ),
+            RolloutItem::Compacted(compacted) => {
+                for envelope in compacted.replacement_history.iter().flatten() {
+                    check_envelope(envelope)?;
+                }
+                if let Some(SdkOriginalHistoryCheckpoint::Replace(originals)) =
+                    &compacted.sdk_originals
+                {
+                    for envelope in originals
+                        .items
+                        .iter()
+                        .filter_map(|item| item.projection.as_ref())
+                    {
+                        check_envelope(envelope)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 pub type Callback = ThreadsafeFunction<String, Promise<String>, String, napi::Status, false>;
 #[derive(Clone, Serialize, Deserialize)]
@@ -72,33 +123,47 @@ fn identities(
     for item in items {
         match item {
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
-            RolloutItem::ResponseItem(row) => match &row.item {
-                ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. }
-                | ResponseItem::ComputerCall { call_id, .. } => {
+            RolloutItem::ResponseItem(row) => {
+                let call_id = match &row.item {
+                    ResponseItem::ShellCall {
+                        provider_fields, ..
+                    } if crate::local_reconciliation::is_application_shell_call(row) => {
+                        provider_fields.get("call_id").and_then(Value::as_str)
+                    }
+                    item => crate::local_reconciliation::invocation_id(item),
+                };
+                if let Some(call_id) = call_id {
                     let identity = (
                         row.item.turn_id().unwrap_or(&turn).to_owned(),
-                        call_id.clone(),
+                        call_id.to_owned(),
                     );
                     if let Some(previous) = calls.get(&identity)
-                        && (matches!(previous, ResponseItem::ComputerCall { .. })
-                            || matches!(row.item, ResponseItem::ComputerCall { .. }))
+                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
                     {
-                        return Err(error("ambiguous original computer call identity"));
+                        return Err(error("ambiguous original Hosted MCP approval identity"));
+                    }
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(
+                            previous,
+                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                        ) || matches!(
+                            row.item,
+                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                        ))
+                    {
+                        return Err(error("ambiguous original local tool call identity"));
                     }
                     calls.insert(identity, row.item.clone());
+                } else if let Some((call, owner)) =
+                    crate::local_reconciliation::output_identity(&row.item)
+                {
+                    outputs.insert(
+                        (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
+                        row.item.clone(),
+                    );
                 }
-                _ => {
-                    if let Some((call, owner)) =
-                        crate::local_reconciliation::output_identity(&row.item)
-                    {
-                        outputs.insert(
-                            (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
-                            row.item.clone(),
-                        );
-                    }
-                }
-            },
+            }
             _ => {}
         }
     }
@@ -289,6 +354,9 @@ impl CustomThreadStore {
                         }
                     }
                     self.check_mutation(mutation)?;
+                    if let Mutation::Append { items } = mutation {
+                        validate_saved_prompt_history(items).map_err(error)?;
+                    }
                 }
                 for mutation in &snapshot.mutations {
                     self.apply(id, mutation.clone()).await?;
@@ -599,6 +667,11 @@ impl CustomThreadStore {
                 .map_err(|_| error("Computer reconciliation requires a valid screenshot and safety acknowledgements"))?;
             return self.receipt(id, item).await;
         }
+        if matches!(original, ResponseItem::ShellCall { .. }) {
+            let item = crate::local_reconciliation::shell_receipt(original, result, &turn)
+                .map_err(|_| error("Shell reconciliation requires its original local call and valid structured output"))?;
+            return self.receipt(id, item).await;
+        }
         let mut item: ResponseItem = crate::python_tools::PythonOutput(result)
             .to_response_item(
                 &call,
@@ -687,7 +760,9 @@ impl ThreadStore for CustomThreadStore {
             self.check_provider(Some(&params.metadata.model_provider))?;
             self.open(params.thread_id, true).await?;
             params.history = None;
-            self.projection.resume_thread(params).await
+            let mut history = self.projection.resume_thread(params).await?;
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
+            Ok(history)
         })
     }
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
@@ -713,6 +788,58 @@ impl ThreadStore for CustomThreadStore {
     fn discard_thread(&self, id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(self.release(id))
     }
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+        native_cancellation: bool,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or_else(|| error("canonical writer not acquired"))?;
+            if let Some(failure) = &writer.failure {
+                return Err(error(failure));
+            }
+            if !writer.managed.contains(&(turn.to_owned(), call.to_owned())) {
+                return Ok(None);
+            }
+            let accepted = writer.snapshot.mutations.iter().rev().find_map(|mutation| {
+                if let Mutation::Append { items } = mutation {
+                    items.iter().rev().find_map(|row| {
+                        if let RolloutItem::ResponseItem(envelope) = row
+                            && crate::local_reconciliation::output_identity(&envelope.item)
+                                == Some((call, Some(turn)))
+                        {
+                            Some(envelope.item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+            if accepted.as_ref().is_some_and(|accepted| {
+                !crate::local_reconciliation::matches_acknowledged_output(
+                    accepted,
+                    output,
+                    native_cancellation,
+                )
+            }) {
+                let message = "Core drain changed an acknowledged SDK receipt";
+                writer.failure = Some(message.into());
+                return Err(error(message));
+            }
+            Ok(accepted)
+        })
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,

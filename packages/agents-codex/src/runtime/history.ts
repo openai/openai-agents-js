@@ -1,3 +1,7 @@
+import {
+  captureModelAttemptSnapshot,
+  type CapturedModelAttempt,
+} from './model-attempts';
 import { responseContent } from './input';
 import { z } from 'zod';
 import {
@@ -13,6 +17,11 @@ import {
 } from './turn-receipt';
 import {
   addTokenCounts,
+  addRunUsage,
+  mergeRunUsage,
+  runUsageSnapshot,
+  runUsageToWire,
+  type RunUsage,
   nonnegativeTokenCountWireSchema,
   parseTokenCount,
   tokenCountToWire,
@@ -120,6 +129,8 @@ export type HistoryTurn = {
   completedAt: number | null;
   error: Failure | null;
   usage: RecordedTokenUsage | null;
+  /** Retained native-attempt totals; unavailable without native attempt records. */
+  runUsage?: RunUsage;
   /** Retained observations, not complete provider-attempt or charge coverage. */
   responses?: RecordedResponse[];
   responseFacts?: RecordedResponseFact[];
@@ -132,9 +143,10 @@ export type RecordedTurn = HistoryTurn & {
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
 export type RecordedTurnWire = Omit<
   RecordedTurn,
-  'usage' | 'responses' | 'receipt'
+  'usage' | 'responses' | 'receipt' | 'runUsage'
 > & {
   usage: RecordedTokenUsageWire | null;
+  runUsage?: { readonly [Key in keyof RunUsage]: TokenCountWire };
   responses?: RecordedResponseWire[];
   receipt?: z.infer<typeof repairTurnReceiptSchema>;
 };
@@ -216,6 +228,19 @@ export const repairTurnWireSchema = z
       })
       .strict()
       .nullable(),
+    runUsage: z
+      .object({
+        requests: nonnegativeTokenCountWireSchema,
+        missingUsageRequests: nonnegativeTokenCountWireSchema,
+        inputTokens: nonnegativeTokenCountWireSchema,
+        cachedInputTokens: nonnegativeTokenCountWireSchema,
+        cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
+        outputTokens: nonnegativeTokenCountWireSchema,
+        reasoningOutputTokens: nonnegativeTokenCountWireSchema,
+        totalTokens: nonnegativeTokenCountWireSchema,
+      })
+      .strict()
+      .optional(),
     responses: z.array(recordedResponseWireSchema).optional(),
     responseFacts: z.array(responseFactRecordSchema).optional(),
     receipt: repairTurnReceiptSchema.optional(),
@@ -325,9 +350,20 @@ function mapReceivedUsage<T>(
 }
 
 export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
-  const { responses, receipt, ...rest } = turn;
+  const { responses, receipt, runUsage, ...rest } = turn;
   return {
     ...rest,
+    ...(runUsage === undefined
+      ? {}
+      : {
+          runUsage: {
+            ...runUsageToWire(runUsage),
+            requests: tokenCountToWire(runUsage.requests),
+            missingUsageRequests: tokenCountToWire(
+              runUsage.missingUsageRequests,
+            ),
+          },
+        }),
     ...(responses === undefined
       ? {}
       : {
@@ -359,9 +395,25 @@ export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
 }
 
 export function recordedTurnFromWire(turn: RecordedTurnWire): RecordedTurn {
-  const { responses, ...rest } = turn;
+  const { responses, runUsage, ...rest } = turn;
   return {
     ...rest,
+    ...(runUsage === undefined
+      ? {}
+      : {
+          runUsage: runUsageSnapshot(
+            addRunUsage(null, {
+              input_tokens: runUsage.inputTokens,
+              cached_input_tokens: runUsage.cachedInputTokens,
+              cache_write_input_tokens: runUsage.cacheWriteInputTokens,
+              output_tokens: runUsage.outputTokens,
+              reasoning_output_tokens: runUsage.reasoningOutputTokens,
+              total_tokens: runUsage.totalTokens,
+            }),
+            parseTokenCount(runUsage.requests),
+            parseTokenCount(runUsage.missingUsageRequests),
+          ),
+        }),
     ...(responses === undefined
       ? {}
       : {
@@ -466,9 +518,29 @@ export type SessionItem = ItemIdentity &
         error: string | null;
       }
     | {
+        type: 'local_shell_call';
+        callId: string | null;
+        action: JsonObject;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_call';
+        callId: string | null;
+        execution: string;
+        arguments: JsonValue;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_output';
+        callId: string | null;
+        execution: string;
+        tools: JsonValue[];
+        status: ItemStatus;
+      }
+    | {
         type: 'mcp_call';
         threadId?: string;
-        callId?: string;
+        callId?: string | null;
         serverLabel: string;
         name: string;
         arguments: JsonValue;
@@ -585,6 +657,7 @@ const hostedToolStatusSchema = z.enum([
   'incomplete',
   'failed',
 ]);
+const shellToolStatusSchema = hostedToolStatusSchema.or(z.literal('unknown'));
 const repairItemProjectionSchema = z.intersection(
   z.object({ id: z.string().min(1), turnId: z.string().min(1) }),
   z.discriminatedUnion('type', [
@@ -632,12 +705,23 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('mcp_call'),
       threadId: z.string().optional(),
-      callId: z.string().optional(),
+      callId: z.string().nullable().optional(),
       serverLabel: z.string(),
       name: z.string(),
       arguments: jsonValue,
       status: repairItemStatusSchema,
       output: jsonValue,
+      error: jsonValue,
+      turn_id: z.string().optional(),
+      provider_data: jsonObject.optional(),
+    }),
+    z.object({
+      type: z.literal('mcp_list_tools'),
+      turn_id: z.string(),
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      server_label: z.string(),
+      tools: jsonValue,
       error: jsonValue,
     }),
     z.object({
@@ -685,6 +769,22 @@ const repairItemProjectionSchema = z.intersection(
       provider_data: jsonObject,
       result: z.string().nullable(),
       revised_prompt: z.string().nullable(),
+    }),
+    z.object({
+      type: z.literal('shell_call'),
+      turn_id: z.string(),
+      status: shellToolStatusSchema,
+      provider_data: jsonObject,
+      call_id: z.string(),
+      action: jsonValue,
+    }),
+    z.object({
+      type: z.literal('shell_call_output'),
+      turn_id: z.string(),
+      status: shellToolStatusSchema,
+      provider_data: jsonObject,
+      call_id: z.string(),
+      output: jsonValue,
     }),
     z.object({
       type: z.literal('web_search_call'),
@@ -960,11 +1060,16 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
-    raw.type === 'computer_call_output';
+    raw.type === 'computer_call_output' ||
+    raw.type === 'shell_call_output' ||
+    raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
-    raw.type === 'computer_call';
+    raw.type === 'computer_call' ||
+    raw.type === 'local_shell_call' ||
+    raw.type === 'shell_call' ||
+    raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
     ((call || output) && typeof raw.call_id === 'string'
@@ -995,6 +1100,32 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       )[],
     };
   }
+  if (raw.type === 'local_shell_call' && object(raw.action))
+    return {
+      ...common,
+      type: 'local_shell_call',
+      callId: text(raw.call_id),
+      action: object(raw.action)!,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_call' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_call',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      arguments: raw.arguments ?? null,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_output' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_output',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      tools: Array.isArray(raw.tools) ? raw.tools : [],
+      status: status(raw.status, true),
+    };
   if (raw.type === 'reasoning')
     return {
       ...common,
@@ -1373,6 +1504,7 @@ export function projectHistory(
   history: ThreadHistory,
   sessionId: string,
   subagentId?: string,
+  itemRecordIndexes?: Map<HistoryItem, number>,
 ) {
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
@@ -1388,8 +1520,19 @@ export function projectHistory(
     entries.push(response);
     target.set(id, entries);
   }
-  const responseUsage = new Map<string, JsonObject>();
+  const responseUsage = new Map<
+    string,
+    {
+      tokens: JsonObject | null;
+      requests: TokenCount;
+      missing: TokenCount;
+    }
+  >();
   const incompleteCacheWriteUsage = new Set<string>();
+  const modelAttemptUsage = new Map<
+    string,
+    Map<string | null, CapturedModelAttempt>
+  >();
   const failures = new Map<string, Failure>();
   let items: HistoryOccurrence[] = [];
   const identities = new Map<string, HistoryOccurrence>();
@@ -1400,11 +1543,16 @@ export function projectHistory(
   let pendingUser: HistoryOccurrence | undefined;
   const userAliases = new Set<HistoryOccurrence>();
   function remember(item: HistoryItem, native: boolean, recordedId = true) {
-    const output = item.type === 'function_call_output';
+    const output =
+      item.type === 'function_call_output' ||
+      item.type === 'tool_search_output';
     const key = JSON.stringify([item.turnId, item.type, recordedId, item.id]);
     const callKey = JSON.stringify([
       item.turnId,
-      'callId' in item ? item.callId : item.id,
+      item.type === 'tool_search_call' || item.type === 'tool_search_output'
+        ? 'tool_search'
+        : 'function',
+      ('callId' in item ? item.callId : undefined) ?? item.id,
     ]);
     const call = latestCalls.get(callKey);
     let occurrence = identities.get(key);
@@ -1428,12 +1576,21 @@ export function projectHistory(
       occurrence.item.data = item.data;
     }
     identities.set(key, occurrence);
-    if (item.type === 'function_call') latestCalls.set(callKey, occurrence);
-    else if (output && call) call.output = occurrence;
+    if (item.type === 'function_call' || item.type === 'tool_search_call')
+      latestCalls.set(callKey, occurrence);
+    else if (output && call) {
+      call.output = occurrence;
+      if (
+        call.item.type === 'tool_search_call' &&
+        item.type === 'tool_search_output'
+      )
+        call.item.status = item.status;
+    }
     return occurrence;
   }
   const receipts = new Map<string, TurnReceipt>();
-  for (const { type, payload, metadata: recordedMetadata } of history) {
+  for (const [recordIndex, record] of history.entries()) {
+    const { type, payload, metadata: recordedMetadata } = record;
     if (type === 'compacted' || type === 'session_meta')
       pendingUser = undefined;
     if (type === 'turn_context' && typeof payload.turn_id === 'string') {
@@ -1518,7 +1675,7 @@ export function projectHistory(
           'computer_call_output',
         ].includes(String(payload.type)) &&
         metadata?.turn_id === aborted &&
-        latestCalls.has(JSON.stringify([aborted, payload.call_id]))
+        latestCalls.has(JSON.stringify([aborted, 'function', payload.call_id]))
       )
         turn = aborted;
       if (turn) {
@@ -1534,6 +1691,7 @@ export function projectHistory(
             false,
             typeof payload.id === 'string',
           );
+          itemRecordIndexes?.set(item, recordIndex);
           const inputOrder = object(recordedMetadata)?.user_input_order;
           const kinds = metadata?.content_item_kinds;
           if (
@@ -1573,6 +1731,7 @@ export function projectHistory(
           observations.delete(id);
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
+          modelAttemptUsage.delete(id);
           failures.delete(id);
         }
         items = items.filter(({ item }) => !removed.has(item.turnId));
@@ -1616,16 +1775,37 @@ export function projectHistory(
       if (!order.includes(id)) order.push(id);
       if (payload.type === 'error' && !failures.has(id))
         failures.set(id, failure(payload));
-      if (payload.type === 'raw_response_completed') {
+      const attemptSnapshot =
+        payload.type === '_sdk_model_attempt'
+          ? payload.data
+          : payload.model_attempt;
+      if (attemptSnapshot !== undefined) {
+        const captured = captureModelAttemptSnapshot(attemptSnapshot);
+        const owners = modelAttemptUsage.get(id) ?? new Map();
+        owners.set(captured.ownerAttemptId, captured);
+        modelAttemptUsage.set(id, owners);
+      }
+      if (
+        payload.type === 'raw_response_completed' &&
+        typeof payload.model_attempt_id !== 'string'
+      ) {
         const report = object(payload.token_usage);
+        const observed = responseUsage.get(id) ?? {
+          tokens: null,
+          requests: 0,
+          missing: 0,
+        };
+        observed.requests = addTokenCounts(observed.requests, 1);
+        if (!report) observed.missing = addTokenCounts(observed.missing, 1);
+        responseUsage.set(id, observed);
         if (report?.cache_write_input_tokens === undefined)
           incompleteCacheWriteUsage.add(id);
         if (incompleteCacheWriteUsage.has(id)) {
-          const total = responseUsage.get(id);
+          const total = observed.tokens;
           if (total) delete total.cache_write_input_tokens;
         }
         if (report) {
-          const total = responseUsage.get(id) ?? {};
+          const total = observed.tokens ?? {};
           for (const key of usageFields) {
             const count = usageCount(report, key);
             if (
@@ -1636,7 +1816,7 @@ export function projectHistory(
             const sum = addTokenCounts(usageCount(total, key), count);
             total[key] = tokenCountToWire(sum);
           }
-          responseUsage.set(id, total);
+          observed.tokens = total;
         }
       }
 
@@ -1668,11 +1848,11 @@ export function projectHistory(
         payload.type === 'turn_aborted';
       if (started || completed) {
         pendingUser = undefined;
-        if (started) {
-          failures.delete(id);
+        if (started && !modelAttemptUsage.has(id)) {
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
         }
+        if (started) failures.delete(id);
         const error =
           failures.get(id) ??
           (object(payload.error) ? failure(object(payload.error)!) : null);
@@ -1714,8 +1894,43 @@ export function projectHistory(
   for (const [id, turn] of turns) {
     const receipt = receipts.get(id);
     if (receipt) turn.receipt = receipt;
-    const total = responseUsage.get(id);
-    turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    const observed = responseUsage.get(id);
+    const total = observed?.tokens ?? undefined;
+    const nativeOwners = modelAttemptUsage.get(id);
+    if (nativeOwners) {
+      // A restored ledger can retain the turn ID; only its own latest snapshot replaces it.
+      let measured: JsonObject | null = total ? { ...total } : null;
+      let cacheWriteKnown = !incompleteCacheWriteUsage.has(id);
+      let runMeasured = runUsageSnapshot(
+        total ? addRunUsage(null, total) : null,
+        observed?.requests ?? 0,
+        observed?.missing ?? 0,
+      );
+      for (const captured of nativeOwners.values()) {
+        runMeasured = mergeRunUsage(runMeasured, captured.usage);
+        const snapshot = captured.wire;
+        const report = snapshot.usage.token_usage;
+        if (report === null) {
+          if (BigInt(snapshot.usage.requests) !== 0n) cacheWriteKnown = false;
+          continue;
+        }
+        if (report.cache_write_input_tokens === undefined)
+          cacheWriteKnown = false;
+        measured ??= {};
+        for (const key of usageFields) {
+          if (key === 'cache_write_input_tokens' && !cacheWriteKnown) continue;
+          measured[key] = tokenCountToWire(
+            addTokenCounts(usageCount(measured, key), usageCount(report, key)),
+          );
+        }
+      }
+      if (measured && !cacheWriteKnown)
+        delete measured.cache_write_input_tokens;
+      turn.usage = measured ? recordedUsage(measured) : null;
+      turn.runUsage = runMeasured;
+    } else {
+      turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    }
     const accountedIds = new Set(
       (responses.get(id) ?? [])
         .filter(
@@ -1810,17 +2025,59 @@ export function projectHostedToolItem(
   turnId: string,
 ): HostedToolItem | undefined {
   const raw = object(value);
-  if (!raw || typeof raw.id !== 'string') return;
-  const status = hostedToolStatusSchema.safeParse(raw.status);
+  if (!raw) return;
+  const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
+  const id =
+    text(raw.id) ??
+    (shell && typeof raw.call_id === 'string'
+      ? raw.call_id + (raw.type === 'shell_call_output' ? ':output' : '')
+      : null);
+  if (!id) return;
+  const identity = {
+    id,
+    turnId,
+    turn_id: turnId,
+  };
+  if (shell) {
+    const status = shellToolStatusSchema.safeParse(raw.status ?? 'unknown');
+    if (!status.success || typeof raw.call_id !== 'string') return;
+    const {
+      internal_chat_message_metadata_passthrough: _coreMetadata,
+      ...provider
+    } = raw;
+    const common = {
+      ...identity,
+      status: status.data,
+      call_id: raw.call_id,
+      provider_data: structuredClone(provider),
+    };
+    return raw.type === 'shell_call'
+      ? { ...common, type: raw.type, action: raw.action ?? null }
+      : { ...common, type: 'shell_call_output', output: raw.output ?? null };
+  }
+  const status = hostedToolStatusSchema.safeParse(
+    (raw.type === 'mcp_list_tools' || raw.type === 'mcp_call') &&
+      raw.status === undefined
+      ? raw.error == null
+        ? 'completed'
+        : 'failed'
+      : raw.status,
+  );
   if (!status.success) return;
+  if (
+    raw.type !== 'file_search_call' &&
+    raw.type !== 'code_interpreter_call' &&
+    raw.type !== 'image_generation_call' &&
+    raw.type !== 'mcp_list_tools' &&
+    raw.type !== 'mcp_call'
+  )
+    return;
   const {
     internal_chat_message_metadata_passthrough: _coreMetadata,
     ...provider
   } = raw;
   const common = {
-    id: raw.id,
-    turnId,
-    turn_id: turnId,
+    ...identity,
     status: status.data,
     provider_data: structuredClone(provider),
   };
@@ -1850,6 +2107,25 @@ export function projectHostedToolItem(
         type: raw.type,
         result: text(raw.result),
         revised_prompt: text(raw.revised_prompt),
+      };
+    case 'mcp_list_tools':
+      return {
+        ...common,
+        type: raw.type,
+        server_label: text(raw.server_label) ?? '',
+        tools: raw.tools ?? [],
+        error: raw.error ?? null,
+      };
+    case 'mcp_call':
+      return {
+        ...common,
+        type: raw.type,
+        serverLabel: text(raw.server_label) ?? '',
+        callId: null,
+        name: text(raw.name) ?? '',
+        arguments: text(raw.arguments) ?? '',
+        output: raw.output ?? null,
+        error: raw.error ?? null,
       };
   }
 }

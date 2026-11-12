@@ -1,3 +1,14 @@
+export { retryPolicies } from './runtime/model-retry';
+export type {
+  RetryContext,
+  RetryDecision,
+  RetryPolicy,
+  RetryNormalizedError,
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
+  ModelRetryBackoffSettings,
+  ModelRetrySettings,
+} from './runtime/model-retry';
 export { applyDiff } from '@openai/agents-core/utils';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
@@ -10,7 +21,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
-export { RunCleanupError } from './runtime/native-error';
+export { RunCleanupError, RunDiagnosticError } from './runtime/native-error';
 export { DecisionError } from './runtime/decisions';
 export type {
   DecisionInput,
@@ -37,6 +48,7 @@ export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
+  RunErrorDetails,
   ResponseIntegrityReason,
 } from './runtime/native-error';
 export {
@@ -51,6 +63,8 @@ export type {
   SessionUpdate,
   SessionInterruptOptions,
   Completed,
+  RawProviderUsage,
+  ProducedItem,
   PendingRequests,
   SteeringReceipt,
   TurnNeedsAttention,
@@ -131,6 +145,7 @@ export type {
   MCPBeforeDecision,
   MCPStopDecision,
   MCPResultContext,
+  MCPApplicationDataContext,
   StdioMCPOptions,
   HttpMCPOptions,
   HostedVerificationMCPOptions,
@@ -174,7 +189,11 @@ export type {
   ImageDetail,
   FunctionCallOutput,
 } from './runtime/input';
-export type { ChecklistState, SessionState } from './runtime/state';
+export type {
+  ApplicationToolOutput,
+  ChecklistState,
+  SessionState,
+} from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type {
   TokenUsage,
@@ -248,6 +267,7 @@ export type {
   OtelTlsConfig,
   TelemetryOptions,
   TraceOptions,
+  TracingIdGenerator,
   SpanContext,
   TraceEvent,
   TraceProcessor,
@@ -311,17 +331,36 @@ export type {
 export {
   fileSearch,
   codeInterpreter,
+  hostedShell,
   imageGeneration,
+  toolSearch,
 } from './runtime/hosted-tools';
 export type {
   FileSearch,
   FileSearchOptions,
   CodeInterpreter,
   CodeInterpreterOptions,
+  HostedShell,
+  HostedShellEnvironment,
+  HostedShellOptions,
   ImageGeneration,
   ImageGenerationOptions,
+  ToolSearch,
+  ToolSearchOptions,
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
+export { hostedMcp } from './runtime/hosted-mcp';
+export type {
+  HostedMCPApprovalArguments,
+  HostedMCPApprovalRequest,
+  HostedMCPApprovalDecision,
+  HostedMCPOptions,
+  HostedMCPFunction,
+  HostedMCPManual,
+} from './runtime/hosted-mcp';
 export type {
   HostedToolProgress,
   HostedToolItemSummary,
@@ -412,6 +451,10 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+export type {
+  HostedPromptReference,
+  HostedPromptSource,
+} from './runtime/hosted-prompts';
 
 export {
   ChatCompletionsModel,
@@ -428,6 +471,14 @@ export type {
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
+export { shellTool } from './runtime/shell';
+export type {
+  ShellCall,
+  ShellCommandOutput,
+  ShellOutput,
+  ShellSkill,
+  ShellToolOptions,
+} from './runtime/shell';
 export { computerTool, ComputerSafetyError } from './runtime/computer';
 export type {
   Computer,
@@ -464,3 +515,13 @@ export type {
 } from './runtime/guardrails';
 
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
+
+export { Handoff } from './runtime/handoffs';
+export {
+  ResponsesCompaction,
+  responsesCompaction,
+} from './runtime/responses-compaction';
+export type {
+  ResponsesCompactionOptions,
+  ResponsesCompactionContext,
+} from './runtime/responses-compaction';

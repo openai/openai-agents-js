@@ -1,3 +1,7 @@
+export {
+  backgroundResult,
+  type BackgroundResult,
+} from '../runtime/background-result';
 import type { PortableVoiceApiKey } from './portable-credentials';
 export type { PortableVoiceApiKey } from './portable-credentials';
 import { NativeVoiceMedia } from './webrtc';

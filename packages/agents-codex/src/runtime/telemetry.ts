@@ -5,6 +5,7 @@ export {
 } from './openai-trace-exporter';
 import {
   inTraceProcessor,
+  traceDispatchDisabled,
   suppressTracing,
   withoutTracing,
 } from './tracing-context';
@@ -14,17 +15,23 @@ import { binding } from './binding';
 import type { TraceSpan } from './tracing-context';
 export {
   TraceSpan,
+  generateGroupId,
   startTrace,
   startSpan,
   withTrace,
   withSpan,
+  withTraceContext,
   getCurrentTrace,
   getCurrentSpan,
   setTraceContextStorage,
   setTracingDisabled,
   setSensitiveDataLoggingEnabled,
+  setTracingIdGenerator,
 } from './tracing-context';
-export type { TraceContextStorage } from './tracing-context';
+export type {
+  TraceContextStorage,
+  TracingIdGenerator,
+} from './tracing-context';
 type Native = Awaited<ReturnType<typeof binding>>;
 
 /** Native HTTP or gRPC TLS paths. Supply client certificate and key together. */
@@ -297,6 +304,7 @@ export interface TraceOptions {
   /** Clear linkage while retaining ambient and Session content restrictions. */
   readonly detached?: boolean;
   readonly traceId?: string;
+  readonly spanId?: string;
   readonly groupId?: string;
   readonly metadata?: Readonly<Record<string, import('./binding').JsonValue>>;
   /** Disabled ancestry suppresses every descendant trace record. */
@@ -338,6 +346,28 @@ export interface TraceEvent {
   readonly outcome: 'ok' | 'error' | 'unset';
   readonly dropped_attributes_count: number;
   readonly [key: string]: unknown;
+}
+
+/**
+ * Deliver a recorded lifecycle event to the current trace processors.
+ * IDs and timestamps remain observation data. Delivery receives a fresh sequence
+ * and routes; it never activates a span or recovers credentials. Calls from a
+ * trace processor are rejected before queue admission.
+ */
+export async function dispatchTraceEvent(event: TraceEvent): Promise<void> {
+  if (inTraceProcessor())
+    throw new Error(
+      'Trace event dispatch cannot run in a trace processor async context',
+    );
+  if (traceDispatchDisabled()) {
+    if (processorDeliveryStop.signal.aborted)
+      throw new Error('Telemetry has been shutting down');
+    return;
+  }
+  const encoded = JSON.stringify(event);
+  const native = await binding();
+  wakePump?.();
+  await native.dispatch_trace_event(encoded);
 }
 /**
  * Receives immutable native snapshots serially on the host event loop. Exceptions

@@ -5,12 +5,13 @@ import {
   privateRuntime,
   finishPrivateRuntime,
 } from './private-engine-reuse';
-import { RunCleanupError } from './native-error';
+import { RunCleanupError, RunDiagnosticError } from './native-error';
 import { captureInitialMessages } from './initial-messages';
 import { projectProfileCatalog } from './agent-profiles';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
+import { hostedMcpConfigurations } from './hosted-mcp-binding';
 import { assertCheckpointNetworkPolicy } from './state';
 import {
   assertCheckpointSelections,
@@ -75,6 +76,12 @@ export async function openSession(
   oneShot?: OneShotOptions,
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
+  const hostedMcp = hostedMcpConfigurations([
+    ...catalog.tools,
+    ...[...(options.agentGraph?.profiles.values() ?? [])].flatMap(
+      (profile) => profile.catalog.tools,
+    ),
+  ]);
   const { initialMessages, ...liveOptions } = options;
   const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
@@ -155,6 +162,14 @@ export async function openSession(
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
+    ...(hostedMcp.length
+      ? {
+          _hosted_tools: [
+            ...(capturedThreadOptions._hosted_tools ?? []),
+            ...hostedMcp,
+          ],
+        }
+      : {}),
     ...(options.environmentOwner?.workspaceInstructions === undefined
       ? {}
       : {
@@ -473,6 +488,8 @@ export async function openSession(
   );
   options.environmentOwner?.attachSession(session);
   options.environmentOwner?.signal.throwIfAborted();
+  if (oneShot?.returnRawUsage) session._startRawUsage();
+  if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
   if (isManualSessionState(saved))
     await session._restoreManualContinuation(saved);
@@ -489,8 +506,11 @@ async function closePrivateOwnedRuntime(
 
 interface OwnedRunOptions {
   guardrailInput?: import('./input').UserInput;
+  errorInput?: import('./input').UserInput | null;
   returnState?: boolean;
   returnHistory?: boolean;
+  returnRawUsage?: boolean;
+  returnItems?: boolean;
   signal?: AbortSignal;
   maxModelSteps?: number;
   budget?: import('./run-budget').RunBudgetTracker;
@@ -560,21 +580,34 @@ async function completeOwnedSession<Output>(
     }
     throw options.signal.reason;
   }
-  const pending =
-    input == null
-      ? session.wait()
-      : session
-          ._run(
-            input,
-            options.signal,
-            options.maxModelSteps,
-            options.budget,
-            options.guardrailInput,
-          )
-          .then(() => session.wait());
+  const pending = (async () => {
+    if (options.returnRawUsage) session._startRawUsage();
+    if (options.returnItems || options.errorInput !== undefined)
+      session._startProducedItems();
+    if (input != null) {
+      await session._run(
+        input,
+        options.signal,
+        options.maxModelSteps,
+        options.budget,
+        options.guardrailInput,
+      );
+    }
+    return session.wait();
+  })();
   delete options.guardrailInput;
   const result = await pending.catch(async (error) => {
-    const primary = originalFailure(error);
+    let primary = originalFailure(error);
+    if (options.errorInput !== undefined && !options.signal?.aborted) {
+      try {
+        const details = await session._captureRunErrorDetails(
+          options.errorInput,
+        );
+        if (details) primary = new RunDiagnosticError(details, primary);
+      } catch {
+        // Preserve the original failure when evidence capture throws.
+      }
+    }
     try {
       await closeOwned();
     } catch (cleanupError) {
@@ -590,7 +623,10 @@ async function completeOwnedSession<Output>(
   try {
     options.signal?.throwIfAborted();
     const completed =
-      options.returnState || options.returnHistory
+      options.returnState ||
+      options.returnHistory ||
+      options.returnRawUsage ||
+      options.returnItems
         ? Object.freeze({
             ...result,
             ...(options.returnState
@@ -598,6 +634,12 @@ async function completeOwnedSession<Output>(
               : {}),
             ...(options.returnHistory
               ? { history: await captureRunHistory(session) }
+              : {}),
+            ...(options.returnRawUsage
+              ? { rawUsage: session._takeRawUsage(result.turn.turnId) }
+              : {}),
+            ...(options.returnItems
+              ? { items: session._takeProducedItems(result.turn.turnId) }
               : {}),
           })
         : result;

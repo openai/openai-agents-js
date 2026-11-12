@@ -2487,3 +2487,65 @@ it.each(['before', 'approval'] as const)(
   },
   15000,
 );
+
+it.each([true, false])(
+  'resolves forced MCP collision choice and later clear from captured selected bindings (partial=%s)',
+  async (partial) => {
+    const remote = await peer('a.b', undefined, undefined, undefined, ['a_b']);
+    const complete = new HttpMCP({
+      name: 'docs',
+      url: remote.url,
+      approvalMode: 'preapproved',
+      tools: ['a.b', 'a_b'],
+    });
+    const selected = partial
+      ? new HttpMCP({
+          name: 'docs',
+          url: remote.url,
+          approvalMode: 'preapproved',
+          tools: ['a.b'],
+        })
+      : complete;
+    const actual = complete.tool('a.b');
+    const { session, model } = await open(selected, [
+      [
+        call(
+          actual.name,
+          { key: 'forced' },
+          { namespace: actual.namespace!, callId: 'forced-collision' },
+        ),
+      ],
+      [message('complete')],
+      [message('cleared')],
+    ]);
+    await session.update({
+      modelSettings: { toolChoice: selected.tool('a.b') },
+    });
+    expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+      'complete',
+    );
+    await session.update({ modelSettings: { toolChoice: null } });
+    expect((await (await session.submit('clear')).wait()).finalOutput).toBe(
+      'cleared',
+    );
+    const names = (index: number) => {
+      const groups = model.requests[index]!.tools as {
+        name?: string;
+        tools?: { name: string }[];
+      }[];
+      return groups
+        .find((group) => group.name === actual.namespace)
+        ?.tools?.map((tool) => tool.name);
+    };
+    expect(model.requests[0]!.tool_choice).toBe('required');
+    expect(names(0)).toEqual([actual.name]);
+    expect(model.requests[2]!.tool_choice).toBe('auto');
+    expect(new Set(names(2))).toEqual(
+      new Set(
+        partial ? [actual.name] : [actual.name, complete.tool('a_b').name],
+      ),
+    );
+    expect(remote.effects.map((effect) => effect.name)).toEqual(['a.b']);
+    expect(model.requests).toHaveLength(3);
+  },
+);

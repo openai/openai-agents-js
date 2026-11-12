@@ -52,7 +52,10 @@ pub(crate) struct Turn {
     local_exec_cancel_failed: AtomicBool,
     born_fenced: bool,
     same_id_recovery: bool,
+    pub(crate) client_search_catalogs:
+        Mutex<Vec<Arc<crate::python_tools::ClientToolSearchCatalog>>>,
     pub(crate) tool_proposal: Mutex<Option<crate::python_tools::TerminalProposal>>,
+    model_attempt: Mutex<Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>>,
     provider_error: Mutex<
         Option<(
             codex_protocol::protocol::CodexErrorInfo,
@@ -70,6 +73,28 @@ struct Steering {
 }
 
 impl Turn {
+    pub(crate) fn retain_model_attempt(
+        &self,
+        attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+    ) {
+        *self
+            .model_attempt
+            .lock()
+            .expect("Model attempt mirror poisoned") = attempt;
+    }
+    pub(crate) fn model_attempt_snapshot(
+        &self,
+    ) -> anyhow::Result<Option<codex_protocol::model_retry::ModelAttemptSnapshot>> {
+        let attempt = self
+            .model_attempt
+            .lock()
+            .expect("Model attempt mirror poisoned")
+            .clone();
+        attempt
+            .map(|attempt| attempt.snapshot().map_err(anyhow::Error::msg))
+            .transpose()
+    }
+
     pub(crate) fn tool_failure_ready(&self) -> bool {
         *self.admission.borrow() == Admission::Ready
     }
@@ -733,8 +758,10 @@ impl TurnLifecycleContributor for Contributor {
                 local_exec_cancel_failed: AtomicBool::new(false),
                 born_fenced,
                 same_id_recovery,
+                model_attempt: Mutex::default(),
                 provider_error: Mutex::default(),
                 tool_proposal: Mutex::default(),
+                client_search_catalogs: Mutex::default(),
             });
             let turn = input
                 .turn_store

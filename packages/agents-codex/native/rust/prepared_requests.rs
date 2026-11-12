@@ -14,11 +14,6 @@ pub(super) struct Owner {
     thread: String,
     store: usize,
     live: AtomicBool,
-    replies: Mutex<HashMap<u64, PendingReply>>,
-}
-struct PendingReply {
-    generation: Arc<Generation>,
-    sender: oneshot::Sender<Option<PreparedRequestData>>,
 }
 impl Owner {
     fn check(&self) -> std::result::Result<Arc<PythonTools>, String> {
@@ -39,21 +34,20 @@ impl Owner {
         }
         Ok(tools)
     }
-    pub(super) fn queued(&self, id: u64) -> bool {
-        self.check().is_ok()
-            && self
-                .replies
-                .lock()
-                .expect("prepared replies poisoned")
-                .get(&id)
-                .is_some_and(|reply| !reply.sender.is_closed())
-    }
     pub(super) fn retire(&self) {
         self.live.store(false, Ordering::Release);
-        self.replies
-            .lock()
-            .expect("prepared replies poisoned")
-            .clear();
+        if let Some(tools) = self.tools.upgrade() {
+            let ids = {
+                let replies = tools.step_replies.lock().expect("Step replies poisoned");
+                replies.iter().filter_map(|(id, pending)| {
+                    matches!(&pending.reply, context_callbacks::PreparationReply::PreparedRequest { owner, .. }
+                        if std::ptr::eq(owner.as_ref(), self)).then_some(*id)
+                }).collect::<Vec<_>>()
+            };
+            for id in ids {
+                tools.retire_step_callback(id);
+            }
+        }
     }
 }
 #[derive(Default, Debug)]
@@ -86,45 +80,45 @@ impl ModelRequestContributor for Contributor {
             let generation = tools
                 .generation_for_step(input.admission.step_store())
                 .map_err(|error| error.to_string())?;
-            let source = tools
-                .source_profile(input.admission.step_store())
-                .map_err(|error| error.to_string())?;
             let presentation = tools
                 .schema_receipts
                 .prepared(input.data)
                 .map_err(|_| "Invalid prepared schema owner")?;
-            let id = tools.family.next_step.fetch_add(1, Ordering::Relaxed);
-            let (send, receive) = oneshot::channel();
-            {
-                let mut pending = owner.replies.lock().expect("prepared replies poisoned");
-                owner.check()?;
-                pending.insert(
-                    id,
-                    PendingReply {
-                        generation: generation.clone(),
-                        sender: send,
+            let attempt = input.admission.model_attempt();
+            let cancellation = attempt
+                .as_ref()
+                .map(|attempt| attempt.cancellation())
+                .or_else(|| {
+                    tools
+                        .context_stop(&owner.turn)
+                        .ok()
+                        .and_then(|stop| stop.callback_cancellation())
+                })
+                .unwrap_or_else(tokio_util::sync::CancellationToken::new);
+            let captured_owner = Arc::clone(&owner);
+            let mut data = tools
+                .exchange_context(
+                    input.admission.step_store(),
+                    input.admission.thread_id(),
+                    &owner.turn,
+                    cancellation,
+                    attempt.clone(),
+                    {
+                        let mut message = json!({"type":"_sdk_prepare_request",
+                        "recovery_attempt":input.recovery_attempt, "data":presentation.data,
+                        "root_turn_id":input.admission.root_turn_id()});
+                        if let Some(attempt) = &attempt {
+                            message["attempt_id"] = json!(attempt.id());
+                            message["attempt"] = json!(attempt.attempt());
+                            message["retry_configured"] = json!(attempt.retry_configured());
+                        }
+                        message
                     },
-                );
-            }
-            let wait = Wait {
-                owner: owner.clone(),
-                id,
-            };
-            let mut request = json!({
-                "id": owner.turn, "msg": {"type":"_sdk_prepare_request", "turn_id":owner.turn,
-                "thread":input.admission.thread_id(), "generation":generation.id.to_string(),
-                "request_id":id.to_string(), "recovery_attempt":input.recovery_attempt,"data":presentation.data}
-            });
-            if let Some(source) = source {
-                request["msg"]["profile_id"] = json!(source.profile_id);
-                request["msg"]["profile_epoch"] = json!(source.epoch);
-            }
-            tools
-                .family
-                .requests
-                .send(FamilyRequest::Prepared(Arc::downgrade(&owner), id, request))
-                .map_err(|_| "Prepared request reader closed")?;
-            let mut data = receive
+                    |reply| context_callbacks::PreparationReply::PreparedRequest {
+                        owner: captured_owner,
+                        reply,
+                    },
+                )
                 .await
                 .map_err(|_| "Prepared request callback failed or cancelled")?;
             owner.check()?;
@@ -138,7 +132,6 @@ impl ModelRequestContributor for Contributor {
                 .transpose()
                 .map_err(|_| "Invalid prepared schema presentation")?
                 .flatten();
-            drop(wait);
             Ok(PreparedRequestOutput {
                 data,
                 admission: Arc::new(Admission {
@@ -149,19 +142,6 @@ impl ModelRequestContributor for Contributor {
                 }),
             })
         })
-    }
-}
-struct Wait {
-    owner: Arc<Owner>,
-    id: u64,
-}
-impl Drop for Wait {
-    fn drop(&mut self) {
-        self.owner
-            .replies
-            .lock()
-            .expect("prepared replies poisoned")
-            .remove(&self.id);
     }
 }
 struct Admission {
@@ -179,7 +159,9 @@ impl std::fmt::Debug for Admission {
 impl PreparedRequestAdmission for Admission {
     fn admit_request(&self) -> std::result::Result<(), String> {
         let tools = self.owner.check()?;
-        if !tools.admits_generation(&self.generation)
+        if self.original.model_attempt().is_some_and(|attempt| {
+            attempt.cancellation().is_cancelled() || attempt.sampling_stop().requested()
+        }) || !tools.admits_generation(&self.generation)
             || self.owner.store != self.original.turn_store() as *const ExtensionData as usize
             || !self
                 .original
@@ -238,7 +220,6 @@ impl PythonTools {
             thread: input.thread_store.level_id().to_owned(),
             store: input.turn_store as *const ExtensionData as usize,
             live: AtomicBool::new(true),
-            replies: Mutex::new(HashMap::new()),
         });
         let previous = self
             .prepared
@@ -261,23 +242,48 @@ impl PythonTools {
             response.thread == thread && response.turn_id == owner.turn,
             "Expired prepared request owner"
         );
-        let mut replies = owner.replies.lock().expect("prepared replies poisoned");
-        let id = response.request_id.parse()?;
-        let pending = replies.get(&id).context("Expired prepared request reply")?;
         ensure!(
-            response.generation == pending.generation.id.to_string()
-                && self.admits_generation(&pending.generation),
+            !(response.failed && response.data.is_some()),
+            "Conflicting prepared reply"
+        );
+        let receipt = StepReply {
+            thread: response.thread,
+            instance: self.instance.clone(),
+            turn_id: response.turn_id,
+            generation: response.generation,
+            request_id: response.request_id,
+            slots: None,
+            names: None,
+        };
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+        let id = crate::native_id(&receipt.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| {
+                self.step_matches(thread, &receipt, active.as_ref(), pending)
+                    && matches!(&pending.reply,
+                    context_callbacks::PreparationReply::PreparedRequest { owner: captured, .. }
+                        if Arc::ptr_eq(captured, &owner))
+            }),
             "Expired prepared source generation"
         );
-        let pending = replies.remove(&id).expect("checked prepared request reply");
-        if response.failed {
-            return Ok(());
-        }
-        pending
-            .sender
-            .send(response.data)
+        let pending = take_pending_step(&mut replies, id).expect("checked prepared reply");
+        let context_callbacks::PreparationReply::PreparedRequest { reply, .. } = pending.reply
+        else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(response.data)
+            })
             .map_err(|_| anyhow::anyhow!("Expired prepared request reply"))
     }
+
     pub(crate) fn check_prepared_checkpoint(&self) -> Result<()> {
         ensure!(
             self.prepared
@@ -336,7 +342,6 @@ mod tests {
             thread: "root".into(),
             store: turn.as_ref() as *const ExtensionData as usize,
             live: AtomicBool::new(true),
-            replies: Mutex::new(HashMap::new()),
         });
         *tools.prepared.lock().unwrap() = Some(owner.clone());
         (tools, turn, owner)
@@ -405,5 +410,19 @@ mod tests {
         *tools.prepared.lock().unwrap() = None;
         assert!(output.admission.admit_request().is_err());
         assert!(contributor.prepares_request(&turn));
+    }
+    #[tokio::test]
+    async fn prepared_reply_waits_for_its_entered_callback_release() {
+        let (tools, turn, _) = fixture();
+        let contributor = Contributor;
+        let mut prepare = contributor.prepare_request(input(turn));
+        assert!(futures_util::poll!(&mut prepare).is_pending());
+        let event = tools.next_request().await;
+        let callback = event["msg"]["_sdk_callback"].clone();
+        assert!(tools.callback_operation("root", &callback, "enter"));
+        tools.reply_prepared("root", reply(&event)).unwrap();
+        assert!(futures_util::poll!(&mut prepare).is_pending());
+        assert!(tools.callback_operation("root", &callback, "release"));
+        assert!(prepare.await.unwrap().admission.admit_request().is_ok());
     }
 }

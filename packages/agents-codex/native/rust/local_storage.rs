@@ -274,6 +274,16 @@ fn recorded_turns(history: &[RolloutItem]) -> BTreeMap<String, bool> {
 }
 
 impl LocalChecklistStore {
+    pub(crate) async fn retire_thread_owner(&self, id: ThreadId) -> ThreadStoreResult<()> {
+        let mut writers = self.writers.lock().await;
+        if let Some(writer) = writers.get(&id) {
+            writer.check()?;
+        }
+        self.inner.retire_thread_owner(id).await?;
+        writers.remove(&id);
+        Ok(())
+    }
+
     pub(crate) async fn list_threads_including_empty_preview(
         &self,
         params: codex_thread_store::ListThreadsParams,
@@ -1244,17 +1254,18 @@ impl ThreadStore for LocalChecklistStore {
                         "prepared local writer does not match this opening",
                     ));
                 }
-                let history = expected.history().clone();
+                let mut history = expected.history().clone();
                 writer.prepared = None;
                 writer.resume_cleanup_pending = false;
                 expected.transferred.store(true, Ordering::Release);
                 // No await after consumption: Core now owns its init cleanup.
+                crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
                 return Ok(history);
             }
             if writers.contains_key(&id) {
                 return Err(checklist_error("local thread already has a native writer"));
             }
-            let history = self.inner.resume_thread(params).await?;
+            let mut history = self.inner.resume_thread(params).await?;
             {
                 let mut pending = self
                     .resume_admissions
@@ -1365,6 +1376,7 @@ impl ThreadStore for LocalChecklistStore {
                 self.hold_startup_close_probe(Some(id), StartupClosePoint::RegisteredResume)
                     .await;
             }
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
             Ok(history)
         };
         #[cfg(test)]
@@ -1587,6 +1599,37 @@ impl ThreadStore for LocalChecklistStore {
                 revision: None,
                 items,
             })
+        })
+    }
+
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+        native_cancellation: bool,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+            writer.check()?;
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let Some(accepted) = writer.early.get(&(turn.to_owned(), call.to_owned())) else {
+                return Ok(None);
+            };
+            if !crate::local_reconciliation::matches_acknowledged_output(
+                accepted,
+                output,
+                native_cancellation,
+            ) {
+                writer.failure = Some("Core drain changed an acknowledged SDK receipt".into());
+                writer.check()?;
+            }
+            Ok(Some(accepted.clone()))
         })
     }
 

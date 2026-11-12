@@ -3,10 +3,12 @@ import { FunctionAdmission } from './function-admission';
 import {
   _nativeToolSessionOwner,
   createComputerTool,
+  withToolApplicationData,
   type FunctionTool,
   type ToolCallContext,
+  type ToolResponse,
 } from './tools';
-import { losslessJsonObjectSchema, type JsonValue } from './binding';
+import { losslessJsonObjectSchema, type JsonObject } from './binding';
 
 type MaybePromise<T> = T | Promise<T>;
 export type ComputerButton = 'left' | 'right' | 'wheel' | 'back' | 'forward';
@@ -116,6 +118,11 @@ export interface ComputerToolOptions<Context = unknown> {
     context: ToolCallContext<Context>,
     checks: readonly Readonly<Record<string, unknown>>[],
   ) => MaybePromise<boolean>;
+  /** Extract application-only JSON from a detached computer_call_output after screenshot validation. */
+  extractApplicationData?: (
+    context: ToolCallContext<Context>,
+    output: JsonObject,
+  ) => MaybePromise<JsonObject | null | undefined>;
 }
 
 type Lease = {
@@ -163,7 +170,12 @@ export async function closeComputerResources(owner: object): Promise<void> {
 export function computerTool<Context = unknown>(
   options: ComputerToolOptions<Context>,
 ): FunctionTool<Context> {
-  const { computer, onSafetyCheck, approve } = options;
+  const { computer, onSafetyCheck, approve, extractApplicationData } = options;
+  if (
+    extractApplicationData !== undefined &&
+    typeof extractApplicationData !== 'function'
+  )
+    throw new TypeError('Computer extractApplicationData must be callable');
   const provider = 'create' in computer ? computer : undefined;
   const borrowed = provider ? undefined : (computer as Computer<Context>);
   const borrowedGate = borrowed && deviceAdmission(borrowed);
@@ -311,17 +323,29 @@ export function computerTool<Context = unknown>(
           throw new TypeError(
             'Computer screenshot must return base64 PNG data',
           );
-        const output: JsonValue = {
+        const output: JsonObject = {
           output: {
             type: 'computer_screenshot',
             image_url: `data:image/png;base64,${screenshot}`,
           },
           acknowledged_safety_checks: pending,
         };
-        return {
+        const response: ToolResponse = {
           success: true,
           contentItems: [{ type: 'inputText', text: JSON.stringify(output) }],
         };
+        if (!extractApplicationData) return response;
+        admit();
+        const data = await extractApplicationData(
+          context,
+          losslessJsonObjectSchema.parse({
+            type: 'computer_call_output',
+            call_id: call.call_id,
+            ...output,
+          }),
+        );
+        admit();
+        return withToolApplicationData(response, data);
       } catch (error) {
         // Seal the existing callback owner before opening the device's queue.
         if (!context.signal.aborted)

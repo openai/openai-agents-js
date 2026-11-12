@@ -14,7 +14,7 @@ The command prints `The record is allowed.` after checking a two-request tool ro
 
 Pass `prepareRequest` to `session.submit()`, `session.enqueue()`, or a new `agent.run()` with input. The supported profile requires all of these conditions:
 
-- Use `NativeProvider({ supportsWebsockets: false })` explicitly and a standard Responses model. Responses Lite and the default WebSocket path are outside this profile. The scripted peer already supplies an HTTP provider.
+- The editor has been requiring `NativeProvider({ supportsWebsockets: false })` explicitly and a standard Responses model. Responses Lite and WebSocket-enabled calls have been remaining outside this profile. The scripted peer has already been supplying an HTTP provider. An eligible plain run's default HTTP selection has not been replacing this explicit setting.
 - Edit direct root sampling with eager ordinary function or MCP tools. Selected deferred tools reject before the callback. In an explicit Session, `beforeStep` can narrow a mixed opening catalog to an eligible selection. A one-shot `agent.run()` with an editor requires an eager opening catalog.
 - Omit an Environment, programmatic Code Mode, native children, native goals, checklists, web search, and hosted tool registrations. An empty selected tool list does not make these other configurations eligible.
 - For structured output, use native output or prompted output with `maxRetries: 0`. Request editing does not support output correction attempts.

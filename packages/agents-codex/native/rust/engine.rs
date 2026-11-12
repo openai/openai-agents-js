@@ -1161,6 +1161,9 @@ impl EngineState {
                         .thread_extension_init
                         .get::<crate::agent_profiles::OpeningProfiles>(
                     ) {
+                        let source =
+                            crate::agent_profiles::restore_source(&opening, &history.history)?;
+                        opening.validate_pending_source(&source)?;
                         Some(crate::agent_profiles::validate_restored(
                             &opening,
                             &history.history,
@@ -1576,7 +1579,7 @@ impl EngineState {
         startup.config.sdk_tool_choice = settings.tool_choice;
         startup.config.sdk_request_controls = settings.request_controls.clone();
         startup.config.mcp_servers.set(HashMap::new())?;
-        let prepared = if let Some(boundary) = boundary {
+        let mut prepared = if let Some(boundary) = boundary {
             source.thread.ensure_rollout_materialized().await;
             source.thread.flush_rollout().await?;
             Some(
@@ -1590,7 +1593,8 @@ impl EngineState {
         } else {
             None
         };
-        let history = if let Some(prepared) = &prepared {
+        let history = if let Some(prepared) = &mut prepared {
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut prepared.model_context);
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: prepared.source_thread_id,
                 history: Arc::clone(&prepared.model_context),
@@ -1598,7 +1602,13 @@ impl EngineState {
                 rollout_path: None,
             })
         } else {
-            self.history(source.id).await?
+            let mut history = self.history(source.id).await?;
+            if let InitialHistory::Resumed(resumed) = &mut history
+                && crate::checkpoint::remove_replayed_mcp_approvals(&mut resumed.history)
+            {
+                resumed.history_revision = None;
+            }
+            history
         };
         startup.initial_history = history.clone();
         crate::python_tools::PythonTools::install(
@@ -3141,8 +3151,9 @@ async fn read_child(
     ((id, reader.instance), event, terminal_error, question)
 }
 
-fn retired_realtime_output(event: &Event) -> bool {
-    matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
+fn skip_live_native_event(event: &Event) -> bool {
+    matches!(&event.msg, EventMsg::SdkModelAttempt(_))
+        || matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
         if realtime.payload.is_output_retired())
 }
 
@@ -4043,7 +4054,7 @@ impl ThreadState {
                 return graph_event(event);
             }
             if let Some((source, event)) = events.pending.pop_front() {
-                if retired_realtime_output(&event) {
+                if skip_live_native_event(&event) {
                     continue;
                 }
                 return self.child_event(source, event, None, None);
@@ -4156,7 +4167,7 @@ impl ThreadState {
                     events.native_dequeued.store(false, Ordering::Release);
                     events.native = Some(next_native_event(self.thread.clone(), events.native_dequeued.clone()));
                     let (event, question) = event?;
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     if let Some(tools) = &python_tools {
                         tools.observe_manual_event(&event);
                     }
@@ -4188,7 +4199,7 @@ impl ThreadState {
                     if let Some(prefix) = &mut events.publication_prefix {
                         prefix.consume_child(source)?;
                     }
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     return self.child_event(source, event, error, question);
                 },
                 Some(event) = graph.recv(), if !bounded => {
@@ -4209,7 +4220,7 @@ impl ThreadState {
                             .context("Native publication extension prefix was exhausted")?;
                     }
                     let (target, event) = event?;
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     if target.is_empty() || target == self.id.to_string() {
                         return self.root_event(event, None);
                     }
@@ -4474,6 +4485,7 @@ mod question_lifecycle_tests {
         let canceled = Event {
             id: "transport-id".to_owned(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                model_attempt: None,
                 turn_id: Some("original-turn".to_owned()),
                 reason: TurnAbortReason::Interrupted,
                 error: None,

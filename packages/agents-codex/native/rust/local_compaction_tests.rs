@@ -78,7 +78,7 @@ async fn start_seed(native: &NativeThread) -> String {
         }
         assert_ne!(event["msg"]["type"], "error", "{event}");
     };
-    native._respond_python_tool(serde_json::json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"accepted seed"}],"success":true}}).to_string()).await.unwrap();
+    native._respond_python_tool(serde_json::json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"accepted seed"}],"success":true}}).to_string(), None).await.unwrap();
     turn_id
 }
 

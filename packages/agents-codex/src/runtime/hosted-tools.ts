@@ -1,5 +1,7 @@
 import type OpenAI from 'openai';
-import { copyJsonValue, type JsonObject } from './binding';
+import type { Agent } from './public-agent';
+import type { Tool, ToolCallContext, ToolRef } from './tools';
+import { copyJsonValue, type JsonObject, type JsonValue } from './binding';
 
 export interface HostedToolOptions {
   /** Additional provider fields; declared fields and tool identity cannot be replaced. */
@@ -34,6 +36,22 @@ export interface CodeInterpreter extends CodeInterpreterOptions {
   readonly kind: 'code_interpreter';
 }
 
+export type HostedShellEnvironment = Extract<
+  NonNullable<OpenAI.Responses.FunctionShellTool['environment']>,
+  { type: 'container_auto' | 'container_reference' }
+>;
+
+export interface HostedShellOptions extends HostedToolOptions {
+  /** Auto-provision a managed container or use an existing provider container. */
+  environment: HostedShellEnvironment;
+  allowedCallers?: OpenAI.Responses.FunctionShellTool['allowed_callers'];
+}
+
+/** Provider-owned shell execution inside a managed container. */
+export interface HostedShell extends HostedShellOptions {
+  readonly kind: 'shell';
+}
+
 export interface ImageGenerationOptions extends HostedToolOptions {
   action?: OpenAI.Responses.Tool.ImageGeneration['action'];
   background?: OpenAI.Responses.Tool.ImageGeneration['background'];
@@ -63,7 +81,53 @@ export interface ImageGeneration extends ImageGenerationOptions {
   readonly kind: 'image_generation';
 }
 
-export type HostedTool = FileSearch | CodeInterpreter | ImageGeneration;
+export type ClientToolSearchExecutorResult<Context = unknown> =
+  | Tool<Context>
+  | ToolRef
+  | readonly (Tool<Context> | ToolRef)[]
+  | null
+  | undefined;
+
+export interface ClientToolSearchExecutorArgs<Context = unknown> {
+  readonly agent: Agent<Context> | undefined;
+  readonly availableTools: readonly (Tool<Context> | ToolRef)[];
+  readonly loadDefault: (paths: readonly string[]) => readonly ToolRef[];
+  readonly runContext: ToolCallContext<Context>;
+  readonly toolCall: Readonly<{
+    type: 'tool_search_call';
+    call_id: string;
+    execution: 'client';
+    arguments: JsonValue;
+  }>;
+}
+
+export type ClientToolSearchExecutor<Context = unknown> = (
+  args: ClientToolSearchExecutorArgs<Context>,
+) =>
+  | ClientToolSearchExecutorResult<Context>
+  | Promise<ClientToolSearchExecutorResult<Context>>;
+
+const clientToolSearchExecutor = Symbol('native client tool search executor');
+
+export type ToolSearchOptions<Context = unknown> = HostedToolOptions & {
+  description?: string | null;
+  parameters?: JsonValue;
+} & (
+    | { execution?: 'server'; execute?: never }
+    | { execution: 'client'; execute?: ClientToolSearchExecutor<Context> }
+  );
+
+/** Responses search configuration for deferred tools. */
+export interface ToolSearch<Context = any> extends Omit<
+  ToolSearchOptions<Context>,
+  'execute'
+> {
+  readonly [clientToolSearchExecutor]?: ClientToolSearchExecutor<Context>;
+  readonly kind: 'tool_search';
+}
+
+export type HostedTool =
+  FileSearch | CodeInterpreter | HostedShell | ImageGeneration | ToolSearch;
 
 /** Capture nested provider configuration without retaining application objects. */
 function capture<T>(value: T): T {
@@ -97,15 +161,56 @@ export function codeInterpreter(
   return capture({ ...options, kind: 'code_interpreter' as const });
 }
 
+export function hostedShell(options: HostedShellOptions): HostedShell {
+  return captureHostedTool({ ...options, kind: 'shell' });
+}
+
 export function imageGeneration(
   options: ImageGenerationOptions = {},
 ): ImageGeneration {
   return capture({ ...options, kind: 'image_generation' as const });
 }
 
+export function toolSearch<Context = unknown>(
+  options: ToolSearchOptions<Context> = {},
+): ToolSearch<Context> {
+  const { execute, ...configuration } = options;
+  return captureToolSearch(configuration, execute);
+}
+
+function captureToolSearch<Context>(
+  configuration: Omit<ToolSearchOptions<Context>, 'execute'>,
+  execute?: ClientToolSearchExecutor<Context>,
+): ToolSearch<Context> {
+  const result = { ...capture(configuration), kind: 'tool_search' as const };
+  if (execute)
+    Object.defineProperty(result, clientToolSearchExecutor, { value: execute });
+  return Object.freeze(result);
+}
+
+/** @internal Captured application callback, excluded from provider serialization. */
+export function getClientToolSearchExecutor<Context>(
+  tool: ToolSearch<Context>,
+): ClientToolSearchExecutor<Context> | undefined {
+  return tool[clientToolSearchExecutor];
+}
+
 /** @internal Re-capture structural declarations at the session opening boundary. */
-export function captureHostedTool(tool: HostedTool): HostedTool {
-  return capture(tool);
+export function captureHostedTool<T extends HostedTool>(tool: T): T {
+  if (
+    tool.kind === 'shell' &&
+    tool.environment?.type !== 'container_auto' &&
+    tool.environment?.type !== 'container_reference'
+  ) {
+    throw new TypeError(
+      'Hosted shell requires a managed container environment',
+    );
+  }
+  return (
+    tool.kind === 'tool_search'
+      ? captureToolSearch(tool, getClientToolSearchExecutor(tool))
+      : capture(tool)
+  ) as T;
 }
 
 /** @internal The bridge removes SDK include controls before provider serialization. */
@@ -127,6 +232,8 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
         'filters',
       ],
       code_interpreter: ['container', 'allowed_callers', 'include_outputs'],
+      tool_search: ['execution', 'description', 'parameters'],
+      shell: ['environment', 'allowed_callers'],
       image_generation: [
         'action',
         'complexity',
@@ -187,6 +294,27 @@ export function hostedToolSpecs(tools: readonly HostedTool[]): JsonObject[] {
           ? {}
           : { allowed_callers: tool.allowedCallers }),
       };
+    if (tool.kind === 'tool_search')
+      return {
+        ...providerData,
+        type: tool.kind,
+        ...(tool.execution === undefined ? {} : { execution: tool.execution }),
+        ...(tool.description === undefined
+          ? {}
+          : { description: tool.description }),
+        ...(tool.parameters === undefined
+          ? {}
+          : { parameters: tool.parameters }),
+      };
+    if (tool.kind === 'shell')
+      return {
+        ...providerData,
+        type: tool.kind,
+        environment: tool.environment as unknown as JsonObject,
+        ...(tool.allowedCallers === undefined
+          ? {}
+          : { allowed_callers: tool.allowedCallers }),
+      };
     const fields = {
       action: tool.action,
       complexity: tool.complexity,
@@ -223,31 +351,60 @@ export type HostedToolStatus =
   | 'completed'
   | 'incomplete'
   | 'failed';
-type HostedItemIdentity = {
+type HostedItemIdentity<Status extends string = HostedToolStatus> = {
   id: string;
   turn_id: string;
   /** Existing JS history identity. */
   turnId: string;
-  status: HostedToolStatus;
+  status: Status;
   /** Complete provider item, including fields unknown to this SDK version. */
   provider_data: JsonObject;
 };
-export type HostedToolItem = HostedItemIdentity &
-  (
-    | {
-        type: 'file_search_call';
-        queries: string[];
-        results: import('./binding').JsonValue;
-      }
-    | {
-        type: 'code_interpreter_call';
-        container_id: string;
-        code: string | null;
-        outputs: import('./binding').JsonValue;
-      }
-    | {
-        type: 'image_generation_call';
-        result: string | null;
-        revised_prompt: string | null;
-      }
-  );
+export type HostedToolItem =
+  | (HostedItemIdentity &
+      (
+        | {
+            type: 'file_search_call';
+            queries: string[];
+            results: import('./binding').JsonValue;
+          }
+        | {
+            type: 'code_interpreter_call';
+            container_id: string;
+            code: string | null;
+            outputs: import('./binding').JsonValue;
+          }
+        | {
+            type: 'image_generation_call';
+            result: string | null;
+            revised_prompt: string | null;
+          }
+        | {
+            type: 'mcp_list_tools';
+            server_label: string;
+            tools: import('./binding').JsonValue;
+            error: import('./binding').JsonValue;
+          }
+        | {
+            type: 'mcp_call';
+            serverLabel: string;
+            callId: null;
+            name: string;
+            arguments: string;
+            output: import('./binding').JsonValue;
+            error: import('./binding').JsonValue;
+          }
+      ))
+  | (HostedItemIdentity<HostedToolStatus | 'unknown'> &
+      (
+        | {
+            type: 'shell_call';
+            call_id: string;
+            action: import('./binding').JsonValue;
+          }
+        | {
+            type: 'shell_call_output';
+            call_id: string;
+            output: import('./binding').JsonValue;
+          }
+      ));

@@ -60,6 +60,12 @@ impl SupportedOutput {
         event: &ResponseEvent,
     ) -> Option<ResponseIntegrityReason> {
         match event {
+            ResponseEvent::OutputItemAdded(ResponseItem::McpApprovalRequest { id, .. })
+            | ResponseEvent::OutputItemDone(ResponseItem::McpApprovalRequest { id, .. })
+                if id.as_ref().is_none_or(|id| id.trim().is_empty()) =>
+            {
+                Some(ResponseIntegrityReason::UndecodableOutputItem)
+            }
             ResponseEvent::OutputItemAdded(item) | ResponseEvent::OutputItemDone(item)
                 if matches!(
                     item,
@@ -68,6 +74,7 @@ impl SupportedOutput {
                         ..
                     } | ResponseItem::CustomToolCallOutput { .. }
                         | ResponseItem::ComputerCallOutput { .. }
+                        | ResponseItem::McpApprovalResponse { .. }
                 ) || matches!(
                     item,
                     ResponseItem::ToolSearchOutput { call_id: Some(_), execution, .. }
@@ -103,7 +110,15 @@ impl SupportedOutput {
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::FileSearchCall { .. }
                     | ResponseItem::CodeInterpreterCall { .. }
+                    | ResponseItem::ShellCall { .. }
+                    | ResponseItem::ShellCallOutput { .. }
                     | ResponseItem::ImageGenerationCall { .. } => {
+                        self.pending_assistant = false;
+                        self.completed_native_item = true;
+                    }
+                    ResponseItem::McpApprovalRequest { .. }
+                    | ResponseItem::McpListTools { .. }
+                    | ResponseItem::McpCall { .. } => {
                         self.pending_assistant = false;
                         self.completed_native_item = true;
                     }

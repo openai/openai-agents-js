@@ -93,6 +93,10 @@ export class _ContextChange {
   context(): Promise<string>;
   options(): Promise<string>;
   prepare(summary: string, retainedIndices: number[]): Promise<string>;
+  restoreCandidate(
+    optionsJson: string,
+    specsJson?: string | null,
+  ): Promise<NativeThread>;
   createCandidateEngine(
     apiKey?: string | null,
     mcpServersJson?: string | null,
@@ -212,6 +216,12 @@ export class NativeThread {
     call_id: string,
     reply: string,
   ): boolean;
+  _resolve_native_mcp_result_with_assignment(
+    nonce: NativeId,
+    turn_id: string,
+    call_id: string,
+    reply: string,
+  ): Promise<[boolean, boolean]>;
   _read_goal(): Promise<string>;
   _set_paused_goal(
     objective: string,
@@ -230,7 +240,10 @@ export class NativeThread {
   _check_python_tool(request_json: string): boolean;
   _enter_python_callback(receipt_json: string): boolean;
   _python_callback_cancelled(receipt_json: string): boolean;
-  _release_python_callback(receipt_json: string): boolean;
+  _release_python_callback(
+    receipt_json: string,
+    cleanup_failed?: boolean,
+  ): boolean;
   /** JSON array of original native event strings, preserving exact receipt integers. */
   _pending_manual_tools(owner_json: string): string;
   _manual_tool_current(request_json: string): boolean;
@@ -281,12 +294,24 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_model_retry(responseJson: string): void;
+  _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
   _reply_model_producer(response_json: string): void;
+  _start_model_producer(owner_json: string): void;
+  _push_model_producer(
+    owner_json: string,
+    event_json: string,
+  ): Promise<boolean>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
   _reply_compaction(response_json: string): void;
   _reply_model_context(response_json: string): void;
   _reply_natural_completion(response_json: string): void;
+  _load_client_tool_search(request_json: string, paths_json?: string): string;
+  _capture_client_tool_search(
+    request_json: string,
+    specs_json: string,
+  ): NativeId;
   _check_step(response_json: string): boolean;
   _stop_step(response_json: string): boolean;
   _reply_child_step(response_json: string): boolean;
@@ -310,7 +335,10 @@ export class NativeThread {
     allocate_generation?: boolean,
   ): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
-  _respond_python_tool(response_json: string): Promise<boolean>;
+  _respond_python_tool(
+    response_json: string,
+    wait_for_acceptance?: boolean,
+  ): Promise<boolean>;
   _require_tool_approval(requestJson: string, argumentsJson?: string): boolean;
   _approve_manual_tool(requestJson: string): Promise<boolean>;
   _configure_manual_tools(
@@ -337,6 +365,11 @@ export class NativeThread {
     tracing_context?: string,
     observationSubmissionId?: string,
   ): Promise<string>;
+  _start_raw_usage(): void;
+  _attach_raw_usage(parent: NativeThread): void;
+  _take_raw_usage(turn_id: string): string;
+  _start_produced_items(): void;
+  _take_produced_items(turn_id: string): string;
   read_thread_history(subagent_id: string | null): Promise<string>;
   read_checklist(subagent_id?: string | null): Promise<string>;
   _interrupt_session(): Promise<void>;
@@ -471,6 +504,12 @@ export function shutdown_telemetry(timeout_ms?: number): Promise<void>;
 export function start_trace_span(options_json: string): string;
 export function end_trace_span(handle: string, outcome_json: string): void;
 export function retain_trace_context(handle: string): string;
+export function borrow_trace_context(
+  parent: string,
+  restrictions_parent: string | null,
+  disabled: boolean,
+  include_sensitive_data: boolean,
+): string;
 export function _retain_callback_dispatch_context(
   handle: string,
   key: string,
@@ -482,6 +521,7 @@ export function release_trace_span(handle: string): void;
 export function force_flush_telemetry(timeout_ms: number): Promise<string>;
 export function set_trace_routes(options_json: string): number;
 export function drain_trace_events(max_count: number): Promise<string>;
+export function dispatch_trace_event(encoded: string): Promise<void>;
 export function ack_trace_events(
   through_sequence: number,
   failed_deliveries: number,
@@ -525,6 +565,7 @@ declare const binding: {
   start_trace_span: typeof start_trace_span;
   end_trace_span: typeof end_trace_span;
   retain_trace_context: typeof retain_trace_context;
+  borrow_trace_context: typeof borrow_trace_context;
   _retain_callback_dispatch_context: typeof _retain_callback_dispatch_context;
   release_trace_context: typeof release_trace_context;
   trace_span_context: typeof trace_span_context;
@@ -532,6 +573,7 @@ declare const binding: {
   force_flush_telemetry: typeof force_flush_telemetry;
   set_trace_routes: typeof set_trace_routes;
   drain_trace_events: typeof drain_trace_events;
+  dispatch_trace_event: typeof dispatch_trace_event;
   ack_trace_events: typeof ack_trace_events;
   register_trace_credentials: typeof register_trace_credentials;
   release_trace_credentials: typeof release_trace_credentials;

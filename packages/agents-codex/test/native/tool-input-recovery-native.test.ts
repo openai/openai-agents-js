@@ -175,3 +175,72 @@ it('keeps valid transformed inputs behind the existing one-shot approval', async
   expect(formatted).toBe(0);
   server.assertExhausted();
 });
+
+it.each([false, true])(
+  'formats malformed original JSON before policy or approval (approval: %s)',
+  async (managed) => {
+    const raw = ' {"key": ';
+    const server = new ModelServer([
+      [
+        {
+          ...call('lookup', {}, { callId: 'malformed-opt-in' }),
+          arguments: raw,
+        },
+      ],
+      [message('recovered')],
+    ]);
+    await using selected = await provider(server);
+    const counts = { format: 0, before: 0, approval: 0, body: 0, after: 0 };
+    const checked = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      needsApproval: managed
+        ? () => {
+            counts.approval++;
+            return true;
+          }
+        : false,
+      inputErrorFunction(context, error, original) {
+        expect(context.callId).toBe('malformed-opt-in');
+        expect(context).not.toHaveProperty('effectiveArguments');
+        expect(error).toBeInstanceOf(SyntaxError);
+        expect(original).toBe(raw);
+        counts.format++;
+        return 'Custom malformed input';
+      },
+      before() {
+        counts.before++;
+        return { action: 'allow' };
+      },
+      execute() {
+        counts.body++;
+        return 'unexpected';
+      },
+      after(output) {
+        counts.after++;
+        return output;
+      },
+    });
+    await using session = await new Agent({
+      instructions: 'Use lookup.',
+      model: 'gpt-5',
+      provider: selected,
+      tools: [checked],
+    }).session();
+    expect((await (await session.submit('begin')).wait()).finalOutput).toBe(
+      'recovered',
+    );
+    expect(counts).toEqual({
+      format: 1,
+      before: 0,
+      approval: 0,
+      body: 0,
+      after: 0,
+    });
+    expect(server.requests).toHaveLength(2);
+    expect(JSON.stringify(server.requests[1].input)).toContain(
+      'Custom malformed input',
+    );
+    server.assertExhausted();
+  },
+);

@@ -1,3 +1,8 @@
+import {
+  modelAttemptTerminalError,
+  releaseModelAttemptPayload,
+  type ModelAttemptState,
+} from './model-attempts';
 import type { JsonObject } from './binding';
 import type { GuardrailRecord } from './guardrails';
 import type { TokenUsage, TokenCount } from './run-events';
@@ -14,12 +19,14 @@ export interface ChildObservationProducer {
 
 /** Internal callback ownership for independently running native child turns. */
 export interface ChildCallbackOwner {
+  clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[];
   guardrailInput?: readonly JsonObject[];
   inputGuardrailsStarted: boolean;
   inputGuardrailsTask?: Promise<void>;
   readonly childId: string;
   rootTurnId?: string;
+  modelAttempts?: ModelAttemptState;
   tokenUsage: TokenUsage | null;
   requests: TokenCount;
   missingUsageRequests: TokenCount;
@@ -156,7 +163,17 @@ export class ChildCallbacks {
     const owner = this.owners.get(this.key(childId, incarnation, turnId));
     if (!owner) return;
     while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
-    if (owner.failure !== undefined) throw owner.failure;
+    const terminal = modelAttemptTerminalError(owner);
+    try {
+      if (
+        terminal &&
+        (owner.failure === terminal || owner.failure === terminal.error)
+      )
+        throw terminal.error;
+      if (owner.failure !== undefined) throw owner.failure;
+    } finally {
+      if (owner.terminal) releaseModelAttemptPayload(owner);
+    }
   }
   forOrigins(origins: ReadonlySet<string>): readonly ChildCallbackOwner[] {
     return [...this.owners.values()].filter(

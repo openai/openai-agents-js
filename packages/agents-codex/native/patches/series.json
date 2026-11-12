@@ -1,5 +1,5 @@
 {
-  "result_tree": "1bed5c17b4979d3daf59e37b6b17ac842ff0097b",
+  "result_tree": "989e4e5a98c6303e2e02b4e282d794f94a549d11",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -736,6 +736,166 @@
     {
       "path": "sdk-mailbox-receiver-trace-privacy.patch",
       "sha256": "0d98f210b55c1af7d92732611e700c69b6d22b89a47185e6dd8f5729281f5627"
+    },
+    {
+      "path": "sdk-portable-realtime-tool-results.patch",
+      "sha256": "9e108aca0457ab663aaefd4eda7573948fc5b0b479ebb51abd6dc1dcea038f58"
+    },
+    {
+      "path": "sdk-portable-realtime-raw-client-events.patch",
+      "sha256": "88d34b6286fcc7d370aaff958dc624625acf920cf5bab5238e1de42bd4ce03b3"
+    },
+    {
+      "path": "sdk-portable-realtime-hosted-completion.patch",
+      "sha256": "5ac289e87aed8675345ca7a389e685e0f26f38bf46edfe5b3c474fce5d1d15a5"
+    },
+    {
+      "path": "sdk-realtime-history-output-format.patch",
+      "sha256": "bd79a55f664d247f9c7715607bc7b7c2d82004413e73b06e9226e79316f4d097"
+    },
+    {
+      "path": "sdk-reset-tool-choice-after-use.patch",
+      "sha256": "6252ab047f0858279bb1ecb400bd1afa39ff368ebf284b2f1720d917431f8e05"
+    },
+    {
+      "path": "sdk-function-provider-schemas.patch",
+      "sha256": "ab9d85801742d4b5d27226ce26f25ad1909e743f84b4c2822b7afbb0b7b4d60f"
+    },
+    {
+      "path": "sdk-produced-run-items.patch",
+      "sha256": "5662fc947935ad7b28aa70878275fdb8ca93beb9d4259818baabd653793359e3"
+    },
+    {
+      "path": "sdk-provider-hosted-shell.patch",
+      "sha256": "f2bdb3888ab4893bcdec6de7a544f3bb4d5ece98b1efc0e80b4e6c10676d8885"
+    },
+    {
+      "path": "sdk-raw-provider-event-fixtures.patch",
+      "sha256": "1d030d1488ae51cbbb7c75c6814a8a3eedb7454573480e32d44ade99a4d31afc"
+    },
+    {
+      "path": "sdk-native-model-response-stream.patch",
+      "sha256": "0c23bbf1515d26979e84697b7e457dfaf4507cb489dd593927b073b7a5142ae6"
+    },
+    {
+      "path": "sdk-mailbox-deferred-user-fifo.patch",
+      "sha256": "00d32123fc3cc9127c0acc5a71d3ac11289b3af5300e8f9d05e33ebd61ef3e7b"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-produced-items.patch",
+      "sha256": "9d8d9946b04186bb9c8efda78d56f83f764ec3ccce3885217e12493ca9b9f084"
+    },
+    {
+      "path": "sdk-tracing-id-annotations.patch",
+      "sha256": "547f6fa749098e6779a30271dd1e62999a2a048fd651ebbe0c748fa4a5b27ad3"
+    },
+    {
+      "path": "sdk-raw-provider-usage.patch",
+      "sha256": "f0967a375204effb912fa9761b03cbb8bf32634048176e0b7e4e60669fd7c9cc"
+    },
+    {
+      "path": "sdk-trace-context-binding.patch",
+      "sha256": "812668a895ed2a195a841cdee417e40619068b5d17d4dce9b0591628562c7e6c"
+    },
+    {
+      "path": "sdk-application-tool-output-acceptance.patch",
+      "sha256": "f385082704b0d3dd5fa1e15645a152c2c7c342ed29551429d9f2051808a79365"
+    },
+    {
+      "path": "sdk-application-shell.patch",
+      "sha256": "348b596329d213e842f3e3ddedc99fb0a3e8d71453239f5264a795a2d0321238"
+    },
+    {
+      "path": "sdk-application-tool-durable-owner.patch",
+      "sha256": "a6e10d1e8a347c5a8623ffd275b858738b848380460cfbdace7f567fa1905705"
+    },
+    {
+      "path": "sdk-provider-tool-search.patch",
+      "sha256": "b25e248670ddf7b7f02e5fb7f1834906501b49622d65684a7ef0dd82ca590dc0"
+    },
+    {
+      "path": "sdk-native-client-tool-search.patch",
+      "sha256": "9f5145bd9c75c97a0c690bbeb36fe89b66cdf22ade447c6f83aec2a3d474a253"
+    },
+    {
+      "path": "sdk-client-tool-search-discovery-admission.patch",
+      "sha256": "137b34494fb5240f00e811a56b930e1e565c82f1bcf2cc01c1fef8810fc59e2c"
+    },
+    {
+      "path": "sdk-mcp-forced-choice-captured-binding.patch",
+      "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
+    },
+    {
+      "path": "sdk-native-hosted-prompts-request-ownership.patch",
+      "sha256": "8b59e1ee08e56daae315daf79c2ad9ea762d190e4597288031aebfa9fa093ad3"
+    },
+    {
+      "path": "sdk-model-response-omission-admission.patch",
+      "sha256": "0646d01ad045e1959f3c6d8b4708c71c1ada10eda6f848f84d87b8f2eb043c03"
+    },
+    {
+      "path": "sdk-native-model-attempt-retry.patch",
+      "sha256": "4a692bc289d4e8b82c142c66f3404600e78a47a69004e71eb6b9c90750b77569"
+    },
+    {
+      "path": "sdk-realtime-incarnation-ownership.patch",
+      "sha256": "4e6c23fd6ccf170546fbd80a2d032b450412fb228c43d22d03b097f30464bf10"
+    },
+    {
+      "path": "sdk-preserved-speech-tool-continuation.patch",
+      "sha256": "0eec334d147caa10bab871eb2caee86e4173791ffae6e19b5e09127ce78074c0"
+    },
+    {
+      "path": "sdk-model-invocation-terminal-clock.patch",
+      "sha256": "06fa9030c898b52eb5a499e6cb7fe4b4ee30233cb898243d446260d417a4d110"
+    },
+    {
+      "path": "sdk-model-attempt-settlement.patch",
+      "sha256": "10542c2f8ef8c766bba5ace407bf991c25bb42e5074ee881e70f1a42f7437356"
+    },
+    {
+      "path": "sdk-model-attempt-test-fixtures.patch",
+      "sha256": "3a81b24c463d52a7f4aa7caf2fe26d51cc04d1e11f6af8fb05bdf8bb59fa5a20"
+    },
+    {
+      "path": "sdk-model-deadline-admission-type.patch",
+      "sha256": "e17072825b736731573a60583c4ee557d39d7ef0b8ef06e49de89ec90a05a038"
+    },
+    {
+      "path": "sdk-provider-hosted-effect-replay-fence.patch",
+      "sha256": "cc46a7a1c697e833784f9f5ffa7245b0e2354e5bbc5a0a8bb892fae7ae55c53e"
+    },
+    {
+      "path": "sdk-native-owned-stop-durability-report.patch",
+      "sha256": "3418e9344d345661a8857558750dd00552d03e6718f6ea899f5f4a54f988d2a8"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-replay-compat.patch",
+      "sha256": "def8fda0b26fa182be8cb6e3c82ac8375455d1eef40642549a53a3285222d1bd"
+    },
+    {
+      "path": "sdk-trace-lifecycle-dispatch.patch",
+      "sha256": "c5c9091d345a617aa2ed22de31f4d3144a523d3918eee6a34159d7d19c883cfa"
+    },
+    {
+      "path": "sdk-stored-owner-retirement.patch",
+      "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
+    },
+    {
+      "path": "sdk-borrowed-responses-compaction.patch",
+      "sha256": "3405e12b2b7162666f85aaa83c7e9742282361129bd9869902b9647c30693a43"
+    },
+    {
+      "path": "sdk-managed-original-receipt-identity.patch",
+      "sha256": "d156a9f439a84e42dfe1191725b015145fdc4f1079d5d543ece1f18e548230e5"
+    },
+    {
+      "path": "sdk-native-cancellation-receipt.patch",
+      "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
+    },
+    {
+      "path": "sdk-provider-hosted-mcp.patch",
+      "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
     }
   ]
 }
