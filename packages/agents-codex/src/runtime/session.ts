@@ -202,7 +202,7 @@ import {
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { addAbortListener } from 'node:events';
 import type { EnvironmentAcquisition } from './environment-source';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { nativeInput, type UserInput, type FunctionCallOutput } from './input';
 import {
@@ -345,6 +345,7 @@ import {
   type ChecklistState,
   type SessionState,
   type ApplicationToolOutput,
+  type RememberedApproval,
 } from './state';
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
@@ -2864,6 +2865,11 @@ export class Session<OutputT = string, Context = unknown> {
     Map<string, ApprovalDecision>
   >();
   private nativeManualCheckpoint = false;
+  private readonly rememberedApprovals = new Map<string, RememberedApproval>();
+  private readonly restoredApprovalSlots = new Map<
+    string,
+    RememberedApproval
+  >();
   private manualSealing = false;
   private manualSeal?: Promise<SessionState>;
   private manualRestoring = false;
@@ -3280,6 +3286,7 @@ export class Session<OutputT = string, Context = unknown> {
         await this.acknowledgeProfilePublication();
       }
       if (startup.cause) throw startup.cause.value;
+      this.restoreRememberedApprovals();
       this.starting = undefined;
     } catch (error) {
       startup.cause ??= { value: error };
@@ -10657,6 +10664,32 @@ export class Session<OutputT = string, Context = unknown> {
             msg.profile_epoch ?? null,
             String(marker.generation),
           ]);
+          const restoredSlot = JSON.stringify([
+            msg.profile_id ?? null,
+            String(marker.generation),
+            marker.slot,
+          ]);
+          const restoredDecision =
+            run instanceof NativeTurn
+              ? this.restoredApprovalSlots.get(restoredSlot)
+              : undefined;
+          if (restoredDecision) {
+            this.restoredApprovalSlots.delete(restoredSlot);
+            let policy = this.approvalDecisions.get(
+              toolDeclarationIdentity(tool),
+            );
+            if (!policy)
+              this.approvalDecisions.set(
+                toolDeclarationIdentity(tool),
+                (policy = new Map()),
+              );
+            policy.set(source, {
+              approve: restoredDecision.approve,
+              always: true,
+              reason: restoredDecision.reason ?? '',
+              useDefaultReason: restoredDecision.reason === null,
+            });
+          }
           const cached = this.approvalDecisions
             .get(toolDeclarationIdentity(tool))
             ?.get(source);
@@ -10896,6 +10929,20 @@ export class Session<OutputT = string, Context = unknown> {
     const run = call.run;
     const operation = (async () => {
       let accepted: boolean;
+      const portable = managedApproval(call.tool)?.portable;
+      let record: RememberedApproval | undefined;
+      if (decision.always && portable && run instanceof NativeTurn) {
+        const profileId =
+          this.messageProfile(call.event.msg)?.profile_id ?? null;
+        record = {
+          profile_id: profileId,
+          profile: this.approvalProfile(profileId),
+          key: portable.key,
+          signature: this.approvalSignature(call.tool),
+          approve: decision.approve,
+          reason: decision.useDefaultReason ? null : decision.reason,
+        };
+      }
       if (decision.approve)
         accepted = await this.#native._approve_manual_tool(
           encodeReceipt(call.event.msg),
@@ -10951,6 +10998,12 @@ export class Session<OutputT = string, Context = unknown> {
           ]),
           decision,
         );
+        if (record) {
+          this.rememberedApprovals.set(
+            this.rememberedApprovalKey(record),
+            record,
+          );
+        }
       }
       this.notifyManualProgress();
       this.observations.notify();
@@ -11427,70 +11480,72 @@ export class Session<OutputT = string, Context = unknown> {
           this.observeModelAttempt(run, result.model_attempt, false);
         const measuredUsage = this.runUsage(run);
         const originalInput = submissions.get(this.rootRun(run))!.originalInput;
-        const state = fromNativeCheckpoint(
-          this.checkpointCatalog(
-            parseNativeCheckpoint(result.checkpoint),
-            this.checkpointSelections(run),
-          ),
-          submissions.get(run)!.output.identity,
-          this.restored,
-          {
-            turns: this.repairTurns,
-            items: this.repairItems,
-            applicationToolOutputs: this.applicationOutputSnapshot(),
-            pendingApplicationToolOutputs: structuredClone(
-              this.pendingApplicationOutputs,
+        const state = this.withRememberedApprovals(
+          fromNativeCheckpoint(
+            this.checkpointCatalog(
+              parseNativeCheckpoint(result.checkpoint),
+              this.checkpointSelections(run),
             ),
-          },
-          {
-            manual_continuation: result.manual_continuation,
-            manual_context: {
-              guardrail_results: guardrailRecords,
-              ...(originalInput === undefined
-                ? {}
-                : {
-                    original_input: JSON.parse(
-                      JSON.stringify(originalInput),
-                    ) as UserInput & JsonValue,
-                  }),
-              ...(run.selection?.maxModelSteps === undefined
-                ? {}
-                : {
-                    remaining_model_steps:
-                      run.selection.maxModelSteps - run.selection.stepIndex,
-                  }),
-              instructions: this.threadOptions._managed_instructions
-                ? this.#native._application_instructions()
-                : (this.threadOptions.instructions ?? null),
-              result_schemas: this.catalog.tools
-                .filter((tool) => tool.kind === 'manual')
-                .map((tool) => ({
-                  name: tool.name,
-                  schema: manualResultSchema(tool),
-                })),
-              ...(run.modelAttempts?.native
-                ? {
-                    model_attempt: run.modelAttempts.native.wire,
-                    model_usage_offset: runUsageToWire(
-                      measuredUsage,
-                      measuredUsage.requests,
-                      measuredUsage.missingUsageRequests,
-                    ),
-                  }
-                : {}),
-              usage:
-                run.tokenUsage === null
-                  ? null
-                  : runUsageToWire(
-                      measuredUsage,
-                      measuredUsage.requests,
-                      measuredUsage.missingUsageRequests,
-                    ),
+            submissions.get(run)!.output.identity,
+            this.restored,
+            {
+              turns: this.repairTurns,
+              items: this.repairItems,
+              applicationToolOutputs: this.applicationOutputSnapshot(),
+              pendingApplicationToolOutputs: structuredClone(
+                this.pendingApplicationOutputs,
+              ),
             },
-          },
-          this.checkpointSelections(run),
-          networkPolicyDigest(this.environment?.network),
-          this.environment?.readOnly ?? false,
+            {
+              manual_continuation: result.manual_continuation,
+              manual_context: {
+                guardrail_results: guardrailRecords,
+                ...(originalInput === undefined
+                  ? {}
+                  : {
+                      original_input: JSON.parse(
+                        JSON.stringify(originalInput),
+                      ) as UserInput & JsonValue,
+                    }),
+                ...(run.selection?.maxModelSteps === undefined
+                  ? {}
+                  : {
+                      remaining_model_steps:
+                        run.selection.maxModelSteps - run.selection.stepIndex,
+                    }),
+                instructions: this.threadOptions._managed_instructions
+                  ? this.#native._application_instructions()
+                  : (this.threadOptions.instructions ?? null),
+                result_schemas: this.catalog.tools
+                  .filter((tool) => tool.kind === 'manual')
+                  .map((tool) => ({
+                    name: tool.name,
+                    schema: manualResultSchema(tool),
+                  })),
+                ...(run.modelAttempts?.native
+                  ? {
+                      model_attempt: run.modelAttempts.native.wire,
+                      model_usage_offset: runUsageToWire(
+                        measuredUsage,
+                        measuredUsage.requests,
+                        measuredUsage.missingUsageRequests,
+                      ),
+                    }
+                  : {}),
+                usage:
+                  run.tokenUsage === null
+                    ? null
+                    : runUsageToWire(
+                        measuredUsage,
+                        measuredUsage.requests,
+                        measuredUsage.missingUsageRequests,
+                      ),
+              },
+            },
+            this.checkpointSelections(run),
+            networkPolicyDigest(this.environment?.network),
+            this.environment?.readOnly ?? false,
+          ),
         );
 
         if (!this.current(run))
@@ -15329,26 +15384,138 @@ export class Session<OutputT = string, Context = unknown> {
       : state;
   }
 
+  private rememberedApprovalKey(record: RememberedApproval): string {
+    return JSON.stringify([record.profile_id, record.key, record.signature]);
+  }
+
+  private approvalSignature(tool: SessionTool): string {
+    const portable = managedApproval(tool)!.portable!;
+    return createHash('sha256')
+      .update(
+        encode([
+          portable.policy,
+          tool.name,
+          'namespace' in tool ? (tool.namespace ?? null) : null,
+          tool.description,
+          tool.parameters,
+          tool.deferLoading ?? false,
+          tool.strict ?? false,
+          tool.outputSchema ?? null,
+        ]),
+      )
+      .digest('hex');
+  }
+
+  private approvalProfile(profileId: string | null): string {
+    const profile =
+      profileId === null ? undefined : this.profileRuntimes.get(profileId);
+    return createHash('sha256')
+      .update(
+        JSON.stringify([
+          this.options.agentGraph?.fingerprint ?? null,
+          (profile?.profile.declaration ?? this.options.applicationAgent)
+            ?.name ?? null,
+          profile?.instructions ??
+            this.#native._application_instructions() ??
+            null,
+        ]),
+      )
+      .digest('hex');
+  }
+
+  private approvalCatalogs(): readonly (readonly [
+    string | null,
+    ToolCatalog,
+  ])[] {
+    if (!this.options.agentGraph) return [[null, this.catalog]];
+    return [...this.profileRuntimes].map(
+      ([id, runtime]) =>
+        [
+          id,
+          this.profileCurrent?.profile_id === id
+            ? this.catalog
+            : runtime.catalog,
+        ] as const,
+    );
+  }
+
+  private restoreRememberedApprovals(): void {
+    const records = isOutputAwareState(this.restored)
+      ? (this.restored.remembered_approvals ?? [])
+      : [];
+    if (!records.length) return;
+    for (const [profileId, catalog] of this.approvalCatalogs()) {
+      catalog.tools.forEach((tool, slot) => {
+        const portable = managedApproval(tool)?.portable;
+        if (!portable) return;
+        const signature = this.approvalSignature(tool);
+        const record = records.find(
+          (record) =>
+            record.profile_id === profileId &&
+            record.profile === this.approvalProfile(profileId) &&
+            record.key === portable.key &&
+            record.signature === signature,
+        );
+        if (record) {
+          this.rememberedApprovals.set(
+            this.rememberedApprovalKey(record),
+            record,
+          );
+          this.restoredApprovalSlots.set(
+            JSON.stringify([profileId, String(catalog.generation), slot]),
+            record,
+          );
+        }
+      });
+    }
+  }
+
+  private withRememberedApprovals(state: SessionState): SessionState {
+    const records: RememberedApproval[] = [];
+    for (const [profileId, catalog] of this.approvalCatalogs()) {
+      for (const tool of catalog.tools) {
+        const portable = managedApproval(tool)?.portable;
+        if (!portable) continue;
+        const signature = this.approvalSignature(tool);
+        const record = this.rememberedApprovals.get(
+          JSON.stringify([profileId, portable.key, signature]),
+        );
+        if (record?.profile === this.approvalProfile(profileId))
+          records.push(record);
+      }
+    }
+    if (records.length)
+      return { ...state, remembered_approvals: structuredClone(records) };
+    if ('remembered_approvals' in state) {
+      const clean = { ...state };
+      delete clean.remembered_approvals;
+      return clean;
+    }
+    return state;
+  }
+
   private decorateState(state: NativeCheckpoint): SessionState {
     this.requireCompleteRepairReceipts();
     state = this.checkpointCatalog(state, this.checkpointSelections());
     if (!this.restored || isManualSessionState(this.restored))
-      return fromNativeCheckpoint(
-        state,
-        this.defaultOutput.identity,
-        this.restored,
-        {
-          turns: this.repairTurns,
-          items: this.repairItems,
-          applicationToolOutputs: this.applicationOutputSnapshot(),
-          pendingApplicationToolOutputs: structuredClone(
-            this.pendingApplicationOutputs,
-          ),
-        },
-        undefined,
-        this.checkpointSelections(),
-        networkPolicyDigest(this.environment?.network),
-        this.environment?.readOnly ?? false,
+      return this.withRememberedApprovals(
+        fromNativeCheckpoint(
+          state,
+          this.defaultOutput.identity,
+          this.restored,
+          {
+            turns: this.repairTurns,
+            items: this.repairItems,
+            applicationToolOutputs: this.applicationOutputSnapshot(),
+            pendingApplicationToolOutputs: structuredClone(
+              this.pendingApplicationOutputs,
+            ),
+          },
+          undefined,
+          this.checkpointSelections(),
+          networkPolicyDigest(this.environment?.network),
+          this.environment?.readOnly ?? false,
+        ),
       );
     const prior = this.restored.recovery;
     const decorated: NativeCheckpoint = {
@@ -15370,22 +15537,24 @@ export class Session<OutputT = string, Context = unknown> {
         ...state.root_tool_origins,
       },
     };
-    return fromNativeCheckpoint(
-      decorated,
-      this.defaultOutput.identity,
-      this.restored,
-      {
-        turns: this.repairTurns,
-        items: this.repairItems,
-        applicationToolOutputs: this.applicationOutputSnapshot(),
-        pendingApplicationToolOutputs: structuredClone(
-          this.pendingApplicationOutputs,
-        ),
-      },
-      undefined,
-      this.checkpointSelections(),
-      networkPolicyDigest(this.environment?.network),
-      this.environment?.readOnly ?? false,
+    return this.withRememberedApprovals(
+      fromNativeCheckpoint(
+        decorated,
+        this.defaultOutput.identity,
+        this.restored,
+        {
+          turns: this.repairTurns,
+          items: this.repairItems,
+          applicationToolOutputs: this.applicationOutputSnapshot(),
+          pendingApplicationToolOutputs: structuredClone(
+            this.pendingApplicationOutputs,
+          ),
+        },
+        undefined,
+        this.checkpointSelections(),
+        networkPolicyDigest(this.environment?.network),
+        this.environment?.readOnly ?? false,
+      ),
     );
   }
 
