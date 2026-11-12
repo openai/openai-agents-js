@@ -85,7 +85,7 @@ import {
   type OutputSpec,
   type PreparedOutput,
 } from './output';
-import { webSearchName } from './web-search';
+import { webSearchConfig, webSearchName } from './web-search';
 import { hostedToolSpecs } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
@@ -1572,30 +1572,8 @@ export class Agent<Context = undefined, Output = string> {
             },
           }
         : {}),
-      web_search: search?.mode ?? 'disabled',
-      'features.standalone_web_search': search?.route === 'standalone',
+      ...webSearchConfig(search),
     };
-    if (search?.searchContextSize !== undefined)
-      config['tools.web_search.context_size'] = search.searchContextSize;
-    if (search?.allowedDomains !== undefined)
-      config['tools.web_search.allowed_domains'] = [...search.allowedDomains];
-    if (search?.blockedDomains !== undefined)
-      config['tools.web_search.blocked_domains'] = [...search.blockedDomains];
-    if (search?.location !== undefined)
-      config['tools.web_search.location'] = { ...search.location };
-    if (search?.searchContentTypes !== undefined)
-      config['tools.web_search.search_content_types'] = [
-        ...search.searchContentTypes,
-      ];
-    if (search?.imageSettings !== undefined)
-      config['tools.web_search.image_settings'] = {
-        ...(search.imageSettings.maxResults === undefined
-          ? {}
-          : { max_results: search.imageSettings.maxResults }),
-        ...(search.imageSettings.caption === undefined
-          ? {}
-          : { caption: search.imageSettings.caption }),
-      };
     if (settings) {
       if (settings.reasoningEffort !== undefined)
         config.model_reasoning_effort = settings.reasoningEffort;
