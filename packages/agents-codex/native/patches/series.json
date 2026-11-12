@@ -983,7 +983,11 @@
     {
       "path": "sdk-native-sandbox-operation-events.patch",
       "sha256": "44fd1fa7e50f21ee1fc131c838c414781d77efbb9a90330649c771a70b5ca82b"
+    },
+    {
+      "path": "sdk-provider-compaction-threshold.patch",
+      "sha256": "bf3cc2302fb84ae70b68546b5bd0994f3a9d0c0023a59fa25688501d2e062157"
     }
   ],
-  "result_tree": "5b303c6ebbe47b95c0805d91b11ead0ee84f66f8"
+  "result_tree": "9887d36e422c2c3781eef3b9dd6c5d7f9a134a91"
 }

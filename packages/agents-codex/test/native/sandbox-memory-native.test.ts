@@ -23,9 +23,9 @@ import {
   Manifest,
   sandboxEnvironment,
   type SandboxEvent,
+  type SandboxMemoryOptions,
 } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents-core/sandbox/local';
-import { InMemoryMemoryStore } from '../../../agents-core/src/sandbox/memory/storage';
 import { ModelServer, message, call } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -34,7 +34,20 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
   'owns explicit native sandbox memory (%s)',
   async (mode) => {
     const peer = await startPublicExecutor();
-    const store = new InMemoryMemoryStore();
+    const memoryFiles = new Map<string, Uint8Array>();
+    const store = {
+      read: async (path) => memoryFiles.get(path)?.slice() ?? null,
+      write: async (path, data) => {
+        memoryFiles.set(path, data.slice());
+      },
+      delete: async (path) => {
+        memoryFiles.delete(path);
+      },
+      list: async (prefix) =>
+        [...memoryFiles.keys()].filter((path) =>
+          path.startsWith(prefix ? `${prefix}/` : ''),
+        ),
+    } satisfies NonNullable<SandboxMemoryOptions['store']>;
     const events: SandboxEvent[] = [];
     let session: Session | undefined;
     let closing: Promise<void> | undefined;
