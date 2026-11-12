@@ -1,3 +1,7 @@
+import {
+  captureSandboxMemory,
+  type SandboxMemoryOptions,
+} from './sandbox-memory';
 import { parseNative } from './binding';
 import {
   bindManagedWorkspaceSource,
@@ -64,6 +68,8 @@ export interface SandboxEnvironmentOptions<
    * the boundary. SDK-retired in-memory pairs have been retaining provenance.
    */
   authorizedResumeCheckpoint?: ManagedWorkspaceCheckpoint;
+  /** Explicit native generation; invoke Session.flushMemory after a successful text turn. */
+  memory?: SandboxMemoryOptions;
   /** Connect an authenticated native executor to this exact sandbox. */
   connect(
     sandbox: SandboxSessionLike<State>,
@@ -218,6 +224,10 @@ function createSandboxEnvironment<
     validateMountEnvironmentCredentialBoundaries,
   } = runtime;
   const { client, connect } = options;
+  const createMemory =
+    options.memory === undefined
+      ? undefined
+      : captureSandboxMemory(options.memory, runtime);
   const observe = <T>(name: string, operation: () => Promise<T>) =>
     observeSandboxLifecycle(runtime, name, client.backendId, operation);
   if (
@@ -609,6 +619,7 @@ function createSandboxEnvironment<
           ),
           (message) =>
             observeNativeSandboxOperation(runtime, client.backendId, message),
+          createMemory?.(created),
         );
       };
       const inspectedState = borrowed?.state ?? originalResumeState;

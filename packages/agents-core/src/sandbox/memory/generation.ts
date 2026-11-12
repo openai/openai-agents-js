@@ -1,5 +1,11 @@
+import {
+  RolloutExtractionArtifactsSchema,
+  validateRolloutArtifacts,
+  formatRawMemory,
+  formatRolloutSummary,
+  type RolloutExtractionArtifacts,
+} from './artifacts';
 import { randomUUID } from '@openai/agents-core/_shims';
-import { z } from 'zod';
 import type { Agent, AgentOutputType } from '../../agent';
 import { UserError } from '../../errors';
 import logger, { logModelAndToolActionWarning } from '../../logger';
@@ -25,16 +31,6 @@ import {
   renderRolloutExtractionInstructions,
   renderRolloutExtractionUserPrompt,
 } from './prompts';
-
-const RolloutExtractionArtifactsSchema = z.object({
-  rollout_summary: z.string(),
-  rollout_slug: z.string(),
-  raw_memory: z.string(),
-});
-
-type RolloutExtractionArtifacts = z.infer<
-  typeof RolloutExtractionArtifactsSchema
->;
 
 type MemoryLayoutKey = string;
 
@@ -466,22 +462,6 @@ export class SandboxMemoryGenerationManager {
   }
 }
 
-function validateRolloutArtifacts(
-  artifacts: RolloutExtractionArtifacts,
-): boolean {
-  const hasSlug = artifacts.rollout_slug.trim().length > 0;
-  const hasSummary = artifacts.rollout_summary.trim().length > 0;
-  const hasRawMemory = artifacts.raw_memory.trim().length > 0;
-  if (!hasSlug && !hasSummary && !hasRawMemory) {
-    return false;
-  }
-  if (!hasSlug || !hasSummary || !hasRawMemory) {
-    throw new UserError('Phase 1 returned partially-empty memory artifacts.');
-  }
-  normalizeRolloutSlug(artifacts.rollout_slug);
-  return true;
-}
-
 function rolloutMetadataFromTranscript(transcript: string): {
   updatedAt: string;
   terminalState: string;
@@ -512,44 +492,6 @@ function rolloutMetadataFromTranscript(transcript: string): {
         : 'unknown',
     terminalState,
   };
-}
-
-function formatRawMemory(args: {
-  updatedAt: string;
-  rolloutId: string;
-  rolloutPath: string;
-  rolloutSummaryFile: string;
-  terminalState: string;
-  rawMemory: string;
-}): string {
-  return [
-    `rollout_id: ${args.rolloutId}`,
-    `updated_at: ${args.updatedAt}`,
-    `rollout_path: ${args.rolloutPath}`,
-    `rollout_summary_file: ${args.rolloutSummaryFile}`,
-    `terminal_state: ${args.terminalState}`,
-    '',
-    args.rawMemory.trimEnd(),
-    '',
-  ].join('\n');
-}
-
-function formatRolloutSummary(args: {
-  updatedAt: string;
-  rolloutPath: string;
-  sessionId: string;
-  terminalState: string;
-  rolloutSummary: string;
-}): string {
-  return [
-    `session_id: ${args.sessionId}`,
-    `updated_at: ${args.updatedAt}`,
-    `rollout_path: ${args.rolloutPath}`,
-    `terminal_state: ${args.terminalState}`,
-    '',
-    args.rolloutSummary.trimEnd(),
-    '',
-  ].join('\n');
 }
 
 function normalizedLayout(

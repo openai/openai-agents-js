@@ -212,6 +212,8 @@ const sandboxMethodModes = {
   writeStdin: 'async',
   viewImage: 'async',
   readFile: 'async',
+  readFileNoFollow: 'async',
+  writeFileNoFollow: 'async',
   listDir: 'async',
   pathExists: 'async',
   directoryExists: 'async',

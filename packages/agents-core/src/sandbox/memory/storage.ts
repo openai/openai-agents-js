@@ -71,17 +71,52 @@ export class SandboxMemoryStorage {
   private readonly store?: MemoryStore;
   private readonly appendQueues = new Map<string, Promise<void>>();
   private tracingParent?: Span<any> | Trace;
+  private readonly readFileOverride: SandboxSessionLike['readFile'];
+  private readonly writeFileOverride: SandboxSessionLike['writeFileNoFollow'];
+  private get materializeFile() {
+    return (
+      this.writeFileOverride ??
+      this.session.materializeEntry?.bind(this.session)
+    );
+  }
+  private get readFile(): SandboxSessionLike['readFile'] {
+    return this.readFileOverride ?? this.session.readFile?.bind(this.session);
+  }
+  private readonly runOperation?: <T>(
+    name: string,
+    run: () => Promise<T>,
+  ) => Promise<T>;
 
   constructor(args: {
     session: SandboxSessionLike<SandboxSessionState>;
     runAs?: string;
     store?: MemoryStore;
     tracingParent?: Span<any> | Trace;
+    /** Optional no-follow, bounded complete reader for native memory owners. */
+    readFile?: SandboxSessionLike['readFile'];
+    /** Optional resource-owned regular-file writer. */
+    writeFile?: SandboxSessionLike['writeFileNoFollow'];
+    /** Optional detached, header-only operation delivery for native memory owners. */
+    runOperation?: <T>(name: string, run: () => Promise<T>) => Promise<T>;
   }) {
     this.session = args.session;
+    this.readFileOverride = args.readFile;
+    this.writeFileOverride = args.writeFile;
+    this.runOperation = args.runOperation;
     this.runAs = args.runAs;
     this.store = args.store;
     this.tracingParent = args.tracingParent;
+  }
+
+  private withOperation<T>(
+    name: string,
+    data: Record<string, unknown>,
+    run: () => Promise<T>,
+    parent?: Span<any> | Trace,
+  ): Promise<T> {
+    return this.runOperation
+      ? this.runOperation(name, run)
+      : withSandboxSpan(name, data, run, parent);
   }
 
   updateRuntimeContext(args: {
@@ -110,7 +145,7 @@ export class SandboxMemoryStorage {
     const normalizedPath = normalizeRelativePath(path);
     const line = JSON.stringify(payload);
     await this.runQueuedAppend(normalizedPath, async () => {
-      if (!this.session.readFile && this.session.execCommand) {
+      if (!this.readFile && this.session.execCommand) {
         await this.appendJsonlWithShell(normalizedPath, line);
         await this.appendJsonlToStore(normalizedPath, line);
         return;
@@ -133,16 +168,16 @@ export class SandboxMemoryStorage {
       }
     }
 
-    if (this.session.readFile) {
+    if (this.readFile) {
       try {
-        const payload = await withSandboxSpan(
+        const payload = await this.withOperation(
           'sandbox.memory.read_file',
           {
             path: normalizedPath,
             run_as: this.runAs,
           },
           async () =>
-            await this.session.readFile!({
+            await this.readFile!({
               path: normalizedPath,
               runAs: this.runAs,
               maxBytes: MEMORY_TEXT_MAX_BYTES,
@@ -185,9 +220,9 @@ export class SandboxMemoryStorage {
       }
     }
 
-    if (this.session.readFile) {
+    if (this.readFile) {
       try {
-        const payload = await withSandboxSpan(
+        const payload = await this.withOperation(
           'sandbox.memory.read_file',
           {
             path: normalizedPath,
@@ -195,7 +230,7 @@ export class SandboxMemoryStorage {
             full_read: true,
           },
           async () =>
-            await this.session.readFile!({
+            await this.readFile!({
               path: normalizedPath,
               runAs: this.runAs,
             } satisfies ReadFileArgs),
@@ -242,23 +277,21 @@ export class SandboxMemoryStorage {
   }
 
   async writeText(path: string, content: string): Promise<void> {
-    if (!this.session.materializeEntry) {
-      throw new UserError(
-        'Memory generation requires sandbox sessions to provide materializeEntry().',
-      );
+    if (!this.materializeFile) {
+      throw new UserError('Memory generation requires a resource file writer.');
     }
     // Memory lives in the sandbox workspace, not only in the side store, so agents
     // can inspect or edit it and workspace snapshots carry it across resumes.
     const normalizedPath = normalizeRelativePath(path);
     const payload = new TextEncoder().encode(content);
-    await withSandboxSpan(
+    await this.withOperation(
       'sandbox.memory.write_file',
       {
         path: normalizedPath,
         run_as: this.runAs,
       },
       async () =>
-        await this.session.materializeEntry!({
+        await this.materializeFile!({
           path: normalizedPath,
           entry: file({ content }),
           runAs: this.runAs,
@@ -310,7 +343,7 @@ export class SandboxMemoryStorage {
   }
 
   async hydrateFromStore(prefix: string): Promise<void> {
-    if (!this.store?.list || !this.session.materializeEntry) {
+    if (!this.store?.list || !this.materializeFile) {
       return;
     }
     const files = await this.store.list(prefix);
@@ -326,7 +359,7 @@ export class SandboxMemoryStorage {
       if (!payload) {
         continue;
       }
-      await this.session.materializeEntry({
+      await this.materializeFile({
         path: normalizedPath,
         entry: file({ content: payload }),
         runAs: this.runAs,
@@ -478,7 +511,7 @@ export class SandboxMemoryStorage {
       `printf '%s' ${shellQuote(MEMORY_READ_MISSING_MARKER)};`,
       'fi',
     ].join(' ');
-    const output = await withSandboxSpan(
+    const output = await this.withOperation(
       'sandbox.memory.read_file',
       {
         path,
@@ -546,7 +579,7 @@ export class SandboxMemoryStorage {
       'fi;',
       `printf '%s\\n' ${shellQuote(line)} >> ${quotedPath};`,
     ].join(' ');
-    const output = await withSandboxSpan(
+    const output = await this.withOperation(
       'sandbox.memory.append_jsonl',
       {
         path,
@@ -616,7 +649,11 @@ export class SandboxMemoryStorage {
       item: PhaseTwoSelectionItem;
     }> = [];
     for (const entry of entries) {
-      if (entry.type === 'dir' || !entry.name.endsWith('.md')) {
+      if (
+        entry.type === 'dir' ||
+        (this.readFileOverride && entry.type !== 'file') ||
+        !entry.name.endsWith('.md')
+      ) {
         continue;
       }
       const rawMemory = await this.readText(

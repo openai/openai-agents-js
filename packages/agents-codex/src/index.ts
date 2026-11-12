@@ -548,3 +548,5 @@ export type {
   ApplyPatchOperation,
   ApplyPatchResult,
 } from './runtime/apply-patch';
+
+export type { SandboxMemoryOptions } from './runtime/sandbox-memory';

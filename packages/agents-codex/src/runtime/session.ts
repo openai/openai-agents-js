@@ -1,4 +1,6 @@
+import { QueuedRoots } from './queued-roots';
 import { NativeTurn, type NativeRunResult } from './native-turn';
+import { validatePrepareRequestCompatibility } from './opening-compatibility';
 import {
   captureHostedPromptReference,
   type HostedPromptSource,
@@ -239,7 +241,7 @@ import {
 import {
   HttpMCP,
   StdioMCP,
-  selectHttpLeaves,
+  operationMcpRoster,
   resourceMcpBinding,
   mcpConfig,
   mcpPolicies,
@@ -2686,7 +2688,9 @@ export class Session<OutputT = string, Context = unknown> {
     NativeTurn,
     Turn<unknown, string | null>
   >();
-  private readonly pendingRoots: { run: NativeTurn; parts: JsonValue[] }[] = [];
+  private readonly pendingRoots = new QueuedRoots((run) =>
+    this.finishObservation(run),
+  );
   private readonly decodedOutputs = new WeakMap<NativeTurn, unknown>();
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,
@@ -2885,6 +2889,7 @@ export class Session<OutputT = string, Context = unknown> {
   };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
+  private memoryFlush?: Promise<void>;
   private readonly childCallbacks = new ChildCallbacks(
     () => this.observations.currentSequence,
   );
@@ -4503,7 +4508,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     }
     if (
-      this.pendingRoots.length > 0 ||
+      this.pendingRoots.size > 0 ||
       this.lifecycle.kind !== 'idle' ||
       (this.lastRun &&
         (this.lastRun.callbacks.size > 0 ||
@@ -4649,7 +4654,7 @@ export class Session<OutputT = string, Context = unknown> {
   private assertCanWait(run: NativeTurn): void {
     const callback = toolInvocation.getStore()?.run;
     if (
-      this.pendingRoots.some((entry) => entry.run === run) ||
+      this.pendingRoots.has(run) ||
       this.ownedStep(run) ||
       (callback && this.rootRun(callback) === this.rootRun(run))
     )
@@ -4671,7 +4676,7 @@ export class Session<OutputT = string, Context = unknown> {
       ...(state.kind === 'mutation' ? { mutation: state.completion } : {}),
       ...(state.kind === 'turn' ? { run: state.run } : {}),
     };
-    this.discardPending(cause);
+    this.pendingRoots.discard(cause);
     if (state.kind === 'turn') {
       const { run } = state;
 
@@ -4794,50 +4799,27 @@ export class Session<OutputT = string, Context = unknown> {
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
     submissions.get(run)!.observationAfter = -1;
-    this.pendingRoots.push({ run, parts });
+    this.pendingRoots.register(run, parts);
     // This output was captured from the same schema or opening default.
     const turn = this.issuedTurn(run) as Turn<OutputT | Next, string | null>;
     this.drainPending();
     return turn;
   }
 
-  private discardPending(error: unknown): void {
-    // Detach before abort listeners run; they cannot withdraw a different root.
-    const pending = this.pendingRoots.splice(0);
-    for (const { run } of pending) {
-      run.controller.abort(error);
-      run.accepted.reject(error);
-      run.completion.reject(error);
-      this.finishObservation(run);
-    }
-  }
-
   private drainPending(): void {
-    if (
-      this.lifecycle.kind !== 'idle' ||
-      this.graphStops.size ||
-      this.manualSeal ||
-      this.manualSealing ||
-      this.manualSealed
-    )
-      return;
-    const entry = this.pendingRoots.shift();
-    if (entry) {
-      if (
-        this.options.agentGraph &&
-        !submissions.get(entry.run)!.outputOverride
-      )
-        submissions.get(entry.run)!.output = this.defaultOutput;
-      try {
-        this.dispatchStart(entry.run, entry.parts);
-      } catch (error) {
-        entry.run.controller.abort(error);
-        entry.run.accepted.reject(error);
-        entry.run.completion.reject(error);
-        this.finishObservation(entry.run);
-        this.drainPending();
-      }
-    }
+    this.pendingRoots.promote(
+      () =>
+        this.lifecycle.kind === 'idle' &&
+        !this.graphStops.size &&
+        !this.manualSeal &&
+        !this.manualSealing &&
+        !this.manualSealed,
+      (run, parts) => {
+        if (this.options.agentGraph && !submissions.get(run)!.outputOverride)
+          submissions.get(run)!.output = this.defaultOutput;
+        this.dispatchStart(run, parts);
+      },
+    );
   }
 
   submit(
@@ -5204,29 +5186,21 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     if (options?.prepareRequest !== undefined) {
-      if (typeof options.prepareRequest !== 'function')
-        throw new TypeError('prepareRequest must be callable');
-      if (output.repair)
-        throw new TypeError(
-          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
-        );
-      if (this.options.websocketsAllowed !== false)
-        throw new TypeError(
-          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
-        );
-      if (
-        this.options.nativeAgents ||
-        this.codeModeEnabled ||
-        this.environment ||
-        this.options.webSearch ||
-        !!this.options.hostedTools?.length ||
-        this.options.nativeGoals ||
-        this.options.checklist ||
-        this.openingMcpTools.some(isHostedRegistration)
-      )
-        throw new TypeError(
-          'prepareRequest supports only direct root eager function and ordinary MCP tools',
-        );
+      validatePrepareRequestCompatibility(
+        options.prepareRequest,
+        !!output.repair,
+        this.options.websocketsAllowed !== false,
+        !!(
+          this.options.nativeAgents ||
+          this.codeModeEnabled ||
+          this.environment ||
+          this.options.webSearch ||
+          !!this.options.hostedTools?.length ||
+          this.options.nativeGoals ||
+          this.options.checklist ||
+          this.openingMcpTools.some(isHostedRegistration)
+        ),
+      );
     }
     return {
       originCatalog: this.catalog,
@@ -5714,40 +5688,12 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TurnAborted('HTTP activation no longer owns this root');
     };
     assertOwner();
-    const names = run?.selection?.names;
-    const selectedNames =
-      names === undefined
-        ? undefined
-        : new Set(names.map((name) => encode([name.namespace, name.name])));
-    const next = this.mcpBindings.flatMap((server) => {
-      if (!(server instanceof HttpMCP) || server.activation !== 'operation')
-        return this.defaultMcpTools.filter(
-          (selected) =>
-            selected.name === server.name &&
-            (selected.tools.length > 0 ||
-              this.mcpTools.some((active) => active.name === selected.name)),
-        );
-      if (!server.tools.length)
-        return this.mcpTools.filter(
-          (active) =>
-            active.name === server.name &&
-            this.defaultMcpTools.some(
-              (selected) => selected.name === server.name,
-            ),
-        );
-      const projected =
-        selectedNames === undefined ? [] : mcpToolNames([server]);
-      const tools =
-        selectedNames === undefined
-          ? (this.defaultMcpTools.find(
-              (selected) => selected.name === server.name,
-            )?.tools ?? [])
-          : server.tools.filter((_raw, index) => {
-              const name = projected[index];
-              return selectedNames.has(encode([name.namespace, name.name]));
-            });
-      return tools.length ? [selectHttpLeaves(server, tools)] : [];
-    });
+    const next = operationMcpRoster(
+      this.mcpBindings,
+      this.defaultMcpTools,
+      this.mcpTools,
+      run?.selection?.names,
+    );
     const config = encode(
       mcpConfig(
         next,
@@ -10429,6 +10375,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private checkCallbackOperation(operation: string): void {
+    this.options.environmentOwner?.checkMemoryOperation(operation);
     for (let scope = toolInvocation.getStore(); scope; scope = scope.parent)
       if (scope.active && scope.session === this)
         throw new NativeError(
@@ -11452,7 +11399,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (refusal) return Promise.reject(new NativeError(refusal));
     this.requireCompleteRepairReceipts();
 
-    if (this.pendingRoots.length)
+    if (this.pendingRoots.size)
       return Promise.reject(
         new NativeError('Cannot capture while roots are queued'),
       );
@@ -11512,7 +11459,7 @@ export class Session<OutputT = string, Context = unknown> {
     for (;;) {
       signal?.throwIfAborted();
       if (
-        this.pendingRoots.length ||
+        this.pendingRoots.size ||
         this.manualSealing ||
         !this.current(run) ||
         this.manualCheckpointRun !== run ||
@@ -11625,7 +11572,7 @@ export class Session<OutputT = string, Context = unknown> {
         run.failure !== undefined
       )
         continue;
-      if (this.pendingRoots.length)
+      if (this.pendingRoots.size)
         throw new NativeError('Cannot capture while roots are queued');
       beforeSeal?.(
         requests.map(({ call, action }) => ({
@@ -12521,7 +12468,7 @@ export class Session<OutputT = string, Context = unknown> {
         mode: options.mode ?? 'force',
       }),
     );
-    this.discardPending(
+    this.pendingRoots.discard(
       new TurnAborted('Queued work stopped by Session interruption'),
     );
     if (
@@ -12538,15 +12485,12 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<void> {
     if (mode !== 'force' && mode !== 'graceful')
       return Promise.reject(new TypeError('mode must be force or graceful'));
-    const queued = this.pendingRoots.findIndex((entry) => entry.run === anchor);
-    if (queued >= 0) {
+    if (this.pendingRoots.has(anchor)) {
       this.checkCallbackOperation('cancel');
-      this.pendingRoots.splice(queued, 1);
-      const error = new TurnAborted('Queued work cancelled before admission');
-      anchor.controller.abort(error);
-      anchor.accepted.reject(error);
-      anchor.completion.reject(error);
-      this.finishObservation(anchor);
+      this.pendingRoots.withdraw(
+        anchor,
+        new TurnAborted('Queued work cancelled before admission'),
+      );
       return Promise.resolve();
     }
     if (
@@ -14483,6 +14427,57 @@ export class Session<OutputT = string, Context = unknown> {
     return this.#readHistory();
   }
 
+  /**
+   * Generate sandbox memory explicitly from a successful, settled text conversation.
+   * Requires memory on this resource acquisition. Concurrent calls share one flush.
+   * Native checkpoint restore, non-text history and automatic close generation are unsupported.
+   */
+  flushMemory(): Promise<void> {
+    this.checkCallbackOperation('flush sandbox memory');
+    if (this.memoryFlush) return this.memoryFlush;
+    this.idle('flush sandbox memory');
+    const pending = this.mutate(() => this.prepareMemory());
+    this.memoryFlush = pending;
+    void pending
+      .finally(() => {
+        if (this.memoryFlush === pending) this.memoryFlush = undefined;
+      })
+      .catch(() => {});
+    return pending;
+  }
+
+  private async prepareMemory(): Promise<void> {
+    const owner = this.options.environmentOwner;
+    if (!owner?.hasSandboxMemory)
+      throw new TypeError(
+        'Configure memory on sandboxEnvironment before flushing',
+      );
+    if (this.options.state || this.options.localResume)
+      throw new NativeError(
+        'Native sandbox memory is unavailable on restored Sessions',
+      );
+    const run = this.lastRun;
+    if (!run)
+      throw new NativeError(
+        'Native sandbox memory requires a successful source turn',
+      );
+
+    await run.wait();
+    // Reuse native replay's predecode budget, then enforce the memory record bound.
+    const snapshot: { revision: string; total: number; items: string[] } =
+      JSON.parse(await this.#native._canonical_history(256, true));
+    if (snapshot.total > 256)
+      throw new RangeError(
+        'Native sandbox memory supports at most 256 original records',
+      );
+    await owner.flushMemory(this.id, {
+      ...snapshot,
+      items: snapshot.items.map(
+        (item) => JSON.parse(item) as Record<string, unknown>,
+      ),
+    });
+  }
+
   /** Core has been retaining original JSON object records independently of model
    * context truncation. A limit has been selecting the latest original records;
    * zero has been returning only the content revision and full count. Hot reads
@@ -14778,7 +14773,7 @@ export class Session<OutputT = string, Context = unknown> {
       return 'Session is not available for checkpoint inspection';
     if (this.options.localStorage)
       return 'Persistent storage cannot export SessionState';
-    if (this.pendingRoots.length) return 'Session has queued root work';
+    if (this.pendingRoots.size) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
     if (this.childCallbacks.entered().length)
       return 'Native child work or callbacks remain active';
@@ -15255,12 +15250,21 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (managed.capture) return managed.capture;
     managed.captureRequested = true;
+    let memoryPrepared = true;
+    const prepareMemory =
+      this.options.environmentOwner?.hasSandboxMemory && this.lastRun
+        ? async () => {
+            memoryPrepared = false;
+            await this.prepareMemory();
+            memoryPrepared = true;
+          }
+        : undefined;
     let capture: Promise<SessionState>;
     try {
       capture =
         this.lifecycle.kind === 'turn'
           ? this.captureSuspendedState()
-          : this.captureIdleState(true);
+          : this.captureIdleState(true, prepareMemory);
     } catch (error) {
       managed.captureRequested = false;
       throw error;
@@ -15285,6 +15289,11 @@ export class Session<OutputT = string, Context = unknown> {
         return captureRetiredWorkspace(state, managed.receipt);
       },
       async (error) => {
+        if (!memoryPrepared) {
+          managed.captureRequested = false;
+          managed.capture = undefined;
+          throw error;
+        }
         try {
           await this.close();
         } catch (cleanupError) {
@@ -15305,7 +15314,10 @@ export class Session<OutputT = string, Context = unknown> {
   async saveState(): Promise<SessionState> {
     return this.captureIdleState(false);
   }
-  private captureIdleState(retire: boolean): Promise<SessionState> {
+  private captureIdleState(
+    retire: boolean,
+    prepareMemory?: () => Promise<void>,
+  ): Promise<SessionState> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
@@ -15322,6 +15334,13 @@ export class Session<OutputT = string, Context = unknown> {
     this.idle('saveState');
     let snapshot: SessionState | null = null;
     return this.mutate(async () => {
+      if (prepareMemory) {
+        await prepareMemory();
+        if (this.lifecycle.kind !== 'mutation')
+          throw new NativeError(
+            'Managed memory capture was interrupted before checkpoint',
+          );
+      }
       const state = this.decorateState(
         parseNativeCheckpoint(
           await this.#native._export_checkpoint(null, false),
@@ -15358,7 +15377,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.sealedStateJson !== undefined)
       return Promise.resolve(parseSessionState(this.sealedStateJson));
     this.checkCallbackOperation('suspend');
-    if (this.pendingRoots.length)
+    if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
     if (
       this.graphStops.size ||
@@ -16758,6 +16777,7 @@ export class Session<OutputT = string, Context = unknown> {
         : Promise.resolve();
     }
     if (state.kind === 'closing') return state.completion;
+    this.options.environmentOwner?.cancelMemory();
     const realtime = this.realtimeOwner;
     realtime?._retireFromSession();
     let realtimeShutdown: Promise<void> | undefined;
@@ -16853,7 +16873,7 @@ export class Session<OutputT = string, Context = unknown> {
           interceptionFailures.push(result.reason);
     });
 
-    this.discardPending(
+    this.pendingRoots.discard(
       new TurnAborted('Session closed before queued admission'),
     );
     this.childCallbacks.stop();
