@@ -13,6 +13,7 @@ type Result<T> = std::result::Result<T, String>;
 #[derive(Debug, Default)]
 pub(crate) struct Prefix {
     id: Option<String>,
+    model: Option<String>,
     // The restored request input is followed by the provider's projected output.
     // Core reconstruction uses only the original input before this boundary.
     history: Vec<Value>,
@@ -25,9 +26,11 @@ pub(crate) struct Prefix {
 impl Prefix {
     /// Expand Core's delta using its accepted completion receipt. The native
     /// receipt, rather than provider output, owns interrupted/normal history.
+    /// Admission carries the routing model even when the wire omits it.
     pub(crate) fn reconstruct(
         &self,
         mut request: Value,
+        model: &str,
         completion: Option<&Value>,
     ) -> Result<Value> {
         let body = request
@@ -49,10 +52,8 @@ impl Prefix {
             let receipt = completion
                 .and_then(Value::as_object)
                 .ok_or("Invalid native WebSocket completion receipt")?;
-            let model = body.get("model").and_then(Value::as_str);
             if receipt.get("response_id").and_then(Value::as_str) != Some(reference)
-                || model.is_none()
-                || receipt.get("model").and_then(Value::as_str) != model
+                || receipt.get("model").and_then(Value::as_str) != Some(model)
             {
                 return Err("Invalid native WebSocket completion receipt".into());
             }
@@ -74,7 +75,12 @@ impl Prefix {
 
     /// Select a provider delta only after schema restoration, against this
     /// socket's last committed provider input and stable request properties.
-    pub(crate) fn encode(&self, edited: &Value) -> Result<Value> {
+    pub(crate) fn encode(
+        &self,
+        edited: &Value,
+        model: &str,
+        native_continuation: bool,
+    ) -> Result<Value> {
         let body = edited
             .as_object()
             .ok_or("Edited Responses request must be an object")?;
@@ -82,10 +88,13 @@ impl Prefix {
             .get("input")
             .and_then(Value::as_array)
             .ok_or("Edited Responses input must be a list")?;
-        let properties = properties(body);
-        // The bridge normalizes the request and committed output before comparison.
+        // Core records the continuation for retry safety before dispatch.
+        // A full request must stay full even if the restored prefix matches.
         let reference = self.id.as_ref().filter(|_| {
-            self.properties.as_ref() == Some(&properties) && input.starts_with(&self.history)
+            native_continuation
+                && self.model.as_deref() == Some(model)
+                && self.properties.as_ref() == Some(&properties(body))
+                && input.starts_with(&self.history)
         });
         let mut outgoing = if let Some(reference) = reference {
             let mut delta: Map<String, Value> = body
@@ -120,6 +129,7 @@ impl Prefix {
         id: String,
         mut edited: Value,
         items: Vec<Value>,
+        model: String,
         warmup: bool,
     ) -> Result<()> {
         if self.active_id.as_ref().is_some_and(|active| active != &id) {
@@ -134,6 +144,7 @@ impl Prefix {
         let original_len = history.len();
         history.extend(items);
         self.id = Some(id);
+        self.model = Some(model);
         self.history = history;
         self.original_len = original_len;
         self.properties = Some(properties(body));
@@ -205,6 +216,45 @@ mod tests {
     }
 
     #[test]
+    fn continues_omitted_model_only_with_the_admitted_model() {
+        let mut prefix = Prefix::default();
+        let edited = json!({"prompt":{"id":"pmpt_fixture"}, "input":["original"]});
+        prefix
+            .commit(
+                "r".into(),
+                edited,
+                vec![json!("accepted")],
+                "hint".into(),
+                false,
+            )
+            .unwrap();
+        let delta = json!({
+            "prompt":{"id":"pmpt_fixture"}, "input":["next"], "previous_response_id":"r"
+        });
+        let receipt = json!({"response_id":"r", "model":"hint", "output":["accepted"]});
+        assert!(
+            prefix
+                .reconstruct(delta.clone(), "other", Some(&receipt))
+                .is_err()
+        );
+        let mut full = prefix.reconstruct(delta, "hint", Some(&receipt)).unwrap();
+        let wire = prefix.encode(&full, "hint", true).unwrap();
+        assert_eq!(wire["previous_response_id"], "r");
+        assert_eq!(wire["input"], json!(["next"]));
+        assert!(wire.get("model").is_none());
+
+        let resend = prefix.encode(&full, "other", true).unwrap();
+        assert!(resend.get("previous_response_id").is_none());
+        assert!(resend.get("model").is_none());
+        assert_eq!(resend["input"], json!(["original", "accepted", "next"]));
+        assert_eq!(prefix.encode(&full, "hint", false).unwrap(), resend);
+
+        full["model"] = json!("hint");
+        let explicit = prefix.encode(&full, "hint", true).unwrap();
+        assert!(explicit.get("previous_response_id").is_none());
+    }
+
+    #[test]
     fn moves_large_input_and_reconstructs_from_the_native_receipt() {
         let mut prefix = Prefix::default();
         let edited = request(json!([{
@@ -213,7 +263,13 @@ mod tests {
         let original = edited["input"][0].clone();
         let original_output = edited["input"][0]["output"].as_str().unwrap().as_ptr();
         prefix
-            .commit("r".into(), edited, vec![json!("provider")], false)
+            .commit(
+                "r".into(),
+                edited,
+                vec![json!("provider")],
+                "m".into(),
+                false,
+            )
             .unwrap();
         assert_eq!(
             prefix.history[0]["output"].as_str().unwrap().as_ptr(),
@@ -222,10 +278,10 @@ mod tests {
         let receipt = json!({"response_id":"r", "model":"m", "output":["accepted partial"]});
         let delta =
             json!({"model":"m", "stream":true, "input":["next"], "previous_response_id":"r"});
-        let full = prefix.reconstruct(delta, Some(&receipt)).unwrap();
+        let full = prefix.reconstruct(delta, "m", Some(&receipt)).unwrap();
         assert_eq!(full["input"], json!([original, "accepted partial", "next"]));
         assert!(full.get("previous_response_id").is_none());
-        let wire = prefix.encode(&full).unwrap();
+        let wire = prefix.encode(&full, "m", true).unwrap();
         assert!(wire.get("previous_response_id").is_none());
         assert_eq!(wire["input"], full["input"]);
     }
@@ -234,7 +290,7 @@ mod tests {
     fn continuation_requires_matching_socket_response_model_and_receipt_shape() {
         let mut prefix = Prefix::default();
         prefix
-            .commit("r".into(), request(json!([])), vec![], false)
+            .commit("r".into(), request(json!([])), vec![], "m".into(), false)
             .unwrap();
         let delta = json!({"model":"m", "input":[], "previous_response_id":"r"});
         for receipt in [
@@ -242,19 +298,33 @@ mod tests {
             json!({"response_id":"r", "model":"other", "output":[]}),
             json!({"response_id":"r", "model":"m", "output":null}),
         ] {
-            assert!(prefix.reconstruct(delta.clone(), Some(&receipt)).is_err());
+            assert!(
+                prefix
+                    .reconstruct(delta.clone(), "m", Some(&receipt))
+                    .is_err()
+            );
         }
-        assert!(Prefix::default().reconstruct(delta, None).is_err());
+        assert!(Prefix::default().reconstruct(delta, "m", None).is_err());
     }
 
     #[test]
     fn warmup_continuation_has_no_completion_tail() {
         let mut prefix = Prefix::default();
         prefix
-            .commit("w".into(), request(json!(["original"])), vec![], true)
+            .commit(
+                "w".into(),
+                request(json!(["original"])),
+                vec![],
+                "m".into(),
+                true,
+            )
             .unwrap();
         let full = prefix
-            .reconstruct(json!({"input":["next"], "previous_response_id":"w"}), None)
+            .reconstruct(
+                json!({"input":["next"], "previous_response_id":"w"}),
+                "m",
+                None,
+            )
             .unwrap();
         assert_eq!(full["input"], json!(["original", "next"]));
     }
@@ -264,20 +334,20 @@ mod tests {
         let mut prefix = Prefix::default();
         let edited = request(json!(["original"]));
         prefix
-            .commit("r".into(), edited, vec![json!("output")], false)
+            .commit("r".into(), edited, vec![json!("output")], "m".into(), false)
             .unwrap();
         let mut next = request(json!(["original", "output", "next"]));
         next["client_metadata"] = json!({"different":"ticket"});
         next["stream_options"] = json!({"new":"delivery"});
         next["access_programs"] = json!(["new"]);
         next["generate"] = json!(true);
-        let delta = prefix.encode(&next).unwrap();
+        let delta = prefix.encode(&next, "m", true).unwrap();
         assert_eq!(delta["type"], "response.create");
         assert_eq!(delta["previous_response_id"], "r");
         assert_eq!(delta["input"], json!(["next"]));
         next["model"] = json!("changed");
         next["previous_response_id"] = json!("untrusted");
-        let full = prefix.encode(&next).unwrap();
+        let full = prefix.encode(&next, "m", true).unwrap();
         assert_eq!(full["input"], next["input"]);
         assert!(full.get("previous_response_id").is_none());
     }
@@ -288,24 +358,24 @@ mod tests {
         let mut edited = request(json!(["original"]));
         edited["temperature"] = json!(0);
         prefix
-            .commit("r".into(), edited.clone(), vec![], false)
+            .commit("r".into(), edited.clone(), vec![], "m".into(), false)
             .unwrap();
         edited["temperature"] = json!(1);
         assert!(
             prefix
-                .encode(&edited)
+                .encode(&edited, "m", true)
                 .unwrap()
                 .get("previous_response_id")
                 .is_none()
         );
         let mut edited = request(json!([{"number":0}]));
         prefix
-            .commit("r".into(), edited.clone(), vec![], false)
+            .commit("r".into(), edited.clone(), vec![], "m".into(), false)
             .unwrap();
         edited["input"][0]["number"] = json!(1);
         assert!(
             prefix
-                .encode(&edited)
+                .encode(&edited, "m", true)
                 .unwrap()
                 .get("previous_response_id")
                 .is_none()
@@ -320,17 +390,18 @@ mod tests {
                 "r".into(),
                 request(json!(["original"])),
                 vec![json!("provider")],
+                "m".into(),
                 false,
             )
             .unwrap();
         prefix.clear_provider_prefix();
         let would_match = prefix
-            .encode(&request(json!(["original", "provider", "next"])))
+            .encode(&request(json!(["original", "provider", "next"])), "m", true)
             .unwrap();
         assert!(would_match.get("previous_response_id").is_none());
         let receipt = json!({"response_id":"r", "model":"m", "output":["accepted"]});
         let delta = json!({"model":"m", "input":["next"], "previous_response_id":"r"});
-        let full = prefix.reconstruct(delta, Some(&receipt)).unwrap();
+        let full = prefix.reconstruct(delta, "m", Some(&receipt)).unwrap();
         assert_eq!(full["input"], json!(["original", "accepted", "next"]));
     }
 
@@ -341,11 +412,11 @@ mod tests {
         edited["max_output_tokens"] = json!(1024);
         edited["tools"] = json!([{"parameters":{"minimum":0, "maximum":10}}]);
         prefix
-            .commit("r".into(), edited.clone(), vec![], false)
+            .commit("r".into(), edited.clone(), vec![], "m".into(), false)
             .unwrap();
         let mut next = edited.clone();
         next["input"] = json!([{"number":0}, "next"]);
-        let delta = prefix.encode(&next).unwrap();
+        let delta = prefix.encode(&next, "m", true).unwrap();
         assert_eq!(delta["previous_response_id"], "r");
         assert_eq!(delta["input"], json!(["next"]));
     }
@@ -364,11 +435,17 @@ mod tests {
         assert!(prefix.validate_interrupt(&wrong, true).is_err());
         assert!(
             prefix
-                .commit("other".into(), request(json!([])), vec![], false)
+                .commit(
+                    "other".into(),
+                    request(json!([])),
+                    vec![],
+                    "m".into(),
+                    false
+                )
                 .is_err()
         );
         prefix
-            .commit("r".into(), request(json!([])), vec![], false)
+            .commit("r".into(), request(json!([])), vec![], "m".into(), false)
             .unwrap();
         assert!(prefix.validate_interrupt(&interrupt, true).is_err());
     }

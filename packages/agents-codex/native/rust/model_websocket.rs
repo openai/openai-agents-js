@@ -999,7 +999,13 @@ mod projection_tests {
         let mut prefix = Prefix::default();
         let original = json!({"model": "fixture", "input": []});
         prefix
-            .commit("resp_hosted".into(), original, items.clone(), false)
+            .commit(
+                "resp_hosted".into(),
+                original,
+                items.clone(),
+                "fixture".into(),
+                false,
+            )
             .unwrap();
         let reconstructed = prefix
             .reconstruct(
@@ -1007,12 +1013,13 @@ mod projection_tests {
                     "model": "fixture", "input": [], "previous_response_id": "resp_hosted",
                     "temperature": 0.5
                 }),
+                "fixture",
                 Some(&json!({
                     "model": "fixture", "response_id": "resp_hosted", "output": projected
                 })),
             )
             .unwrap();
-        let wire = prefix.encode(&reconstructed).unwrap();
+        let wire = prefix.encode(&reconstructed, "fixture", true).unwrap();
         assert!(wire.get("previous_response_id").is_none());
         assert_eq!(wire["input"], projected);
     }

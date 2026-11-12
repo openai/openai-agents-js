@@ -511,3 +511,62 @@ it.each(['unaccepted', 'prior-turn'] as const)(
   },
   30_000,
 );
+
+it('retains captured original-input recovery on a discovered tool', async () => {
+  const model = new ModelServer([
+    [search('discover_recovery', {})],
+    [
+      {
+        ...call('discovered_lookup', {}, { callId: 'bad_discovered_json' }),
+        arguments: '{',
+      },
+    ],
+    [message('Recovered discovered input.')],
+  ]);
+  await using provider = await providerFor(model);
+  let effects = 0;
+  let policies = 0;
+  const originals: unknown[] = [];
+  await using session = await new Agent({
+    instructions: 'Discover and call lookup.',
+    model: 'gpt-5.5',
+    provider,
+    tools: [
+      toolSearch({
+        execution: 'client',
+        execute: () =>
+          tool({
+            name: 'discovered_lookup',
+            parameters: z.object({ key: z.string() }),
+            before: () => {
+              policies++;
+              return { action: 'allow' as const };
+            },
+            execute: () => {
+              effects++;
+              return 'unexpected effect';
+            },
+            inputErrorFunction: (_context, error, original) => {
+              expect(error).toBeInstanceOf(SyntaxError);
+              originals.push(original);
+              return 'Invalid discovered input';
+            },
+          }),
+      }),
+    ],
+  }).session();
+  expect((await (await session.submit('Lookup')).wait()).finalOutput).toBe(
+    'Recovered discovered input.',
+  );
+  expect(originals).toEqual(['{']);
+  expect(effects).toBe(0);
+  expect(policies).toBe(0);
+  expect(model.requests[2].input).toContainEqual(
+    expect.objectContaining({
+      type: 'function_call_output',
+      call_id: 'bad_discovered_json',
+      output: 'Invalid discovered input',
+    }),
+  );
+  model.assertExhausted();
+}, 30_000);

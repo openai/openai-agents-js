@@ -90,6 +90,7 @@ async function joinCleanup(tasks: Iterable<Promise<unknown>>): Promise<void> {
 }
 class Prefix {
   id?: string;
+  model?: string;
   nativeInput: JsonValue[] = [];
   originalLength = 0;
   providerInput?: JsonValue[];
@@ -97,12 +98,18 @@ class Prefix {
   activeId?: string;
   warmup = false;
   constructor(public remote: NativeModelWebSocket) {}
-  encode(edited: JsonObject): string {
+  encode(
+    edited: JsonObject,
+    model: string,
+    nativeContinuation: boolean,
+  ): string {
     if (!Array.isArray(edited.input))
       throw new NativeError('Edited Responses input must be a list');
     const outgoing: JsonObject = { ...edited, type: 'response.create' };
     if (
+      nativeContinuation &&
       this.providerInput &&
+      this.model === model &&
       isDeepStrictEqual(this.properties, properties(edited)) &&
       isDeepStrictEqual(
         edited.input.slice(0, this.providerInput.length),
@@ -119,8 +126,10 @@ class Prefix {
     original: JsonValue[],
     edited: JsonObject | undefined,
     items: JsonValue[],
+    model: string,
   ): void {
     this.id = id;
+    this.model = model;
     this.originalLength = original.length;
     this.nativeInput = [...original, ...items];
     this.providerInput =
@@ -218,7 +227,7 @@ export class NativeProviderRoutes {
     engine: Engine,
     provider: string,
     body: JsonObject,
-  ): Promise<JsonObject> {
+  ): Promise<JsonObject & { model: string }> {
     const metadata = jsonObject.parse(body.client_metadata ?? {});
     const ticket = encode({
       sdk_sentinel_thread: metadata.sdk_sentinel_thread,
@@ -227,8 +236,14 @@ export class NativeProviderRoutes {
     const receipt = losslessJsonObjectSchema.parse(
       parseNative(await engine._sentinel_admit(provider, encode(metadata))),
     );
+    const model = receipt.model;
+    const modelMatches =
+      receipt.model_omitted === true
+        ? !Object.hasOwn(body, 'model')
+        : model === body.model;
     if (
-      receipt.model !== body.model ||
+      typeof model !== 'string' ||
+      !modelMatches ||
       !['generation', 'warmup'].includes(String(receipt.kind))
     ) {
       throw new NativeError('Invalid native model admission');
@@ -236,7 +251,7 @@ export class NativeProviderRoutes {
     delete metadata.sdk_sentinel_thread;
     delete metadata.sdk_sentinel_nonce;
     body.client_metadata = metadata;
-    return { ...receipt, ticket };
+    return { ...receipt, model, ticket };
   }
   private async handle(
     request: IncomingMessage,
@@ -477,7 +492,7 @@ export class NativeProviderRoutes {
               );
               if (
                 completion.response_id !== ref ||
-                completion.model !== body.model ||
+                completion.model !== admitted.model ||
                 !Array.isArray(completion.output)
               ) {
                 throw new NativeError(
@@ -507,7 +522,8 @@ export class NativeProviderRoutes {
           const original = body.input;
           let oversized = false;
           try {
-            const payload = prefix.encode(body);
+            // Core records this continuation for retry safety before dispatch.
+            const payload = prefix.encode(body, admitted.model, ref != null);
             if (Buffer.byteLength(payload, 'utf8') > maxWebsocketRequestBytes) {
               oversized = true;
               throw new NativeError(
@@ -550,7 +566,13 @@ export class NativeProviderRoutes {
                     admitted.content_item_kinds === true,
                   ),
                 );
-                prefix.commit(String(response.id), original, body, projected);
+                prefix.commit(
+                  String(response.id),
+                  original,
+                  body,
+                  projected,
+                  admitted.model,
+                );
                 prefix.warmup = admitted.kind === 'warmup';
                 pending = undefined;
                 await this.send(local, frame.text);

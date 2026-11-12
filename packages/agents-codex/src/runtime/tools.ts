@@ -281,6 +281,14 @@ export interface ToolDeclaration {
 }
 
 const prepareInvocation = Symbol('function tool binding');
+const inputRecovery = Symbol('original input recovery');
+
+/** @internal Recovery belongs to the captured function declaration. */
+export function supportsInputErrorRecovery(tool: SessionTool): boolean {
+  const source = managedApproval(tool)?.function ?? tool;
+  return source.kind !== 'manual' && source[inputRecovery] === true;
+}
+
 const computerDeclaration = Symbol('native computer declaration');
 const clientToolSearchDeclaration = Symbol(
   'native client tool search declaration',
@@ -304,6 +312,7 @@ type Invocation<Context> = (
   admit: () => void,
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
+  argumentError?: string,
   beforeExecute?: () => Promise<boolean>,
   onBodyEntry?: () => void,
 ) => Promise<ToolResponse>;
@@ -320,6 +329,7 @@ interface ManagedApproval<Context = unknown> {
     args: JsonValue,
     context: ToolCallContext<Context>,
     admit: () => void,
+    argumentError?: string,
   ) => Promise<{ value: unknown } | { failure: string } | undefined>;
   readonly function: FunctionTool<Context>;
   readonly resultSchema: JsonValue;
@@ -360,6 +370,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly [clientToolSearchDeclaration]?: JsonObject;
   readonly [shellDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
+  readonly [inputRecovery]?: boolean;
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
@@ -528,14 +539,15 @@ export function tool<
   /** Callback-body failures only; cancellation, policy and validation handling unchanged. */
   errorFunction?: ToolErrorFunction<Context> | null;
   /**
-   * Initial Zod validation failure text, before policy, approval, or execution.
-   * Detached original JSON and an unvalidated call context. Default turn failure.
+   * Original JSON syntax or initial Zod validation failure text.
+   * Native SyntaxError with the exact raw string, or ZodError with detached JSON.
+   * Unvalidated call context; no policy, approval, or execution on recovery.
+   * Default schema-validation turn failure; native failed result for malformed JSON.
    * Replacement/restored inputs, output validation, and arbitrary errors excluded.
-   * Core malformed-JSON recovery without custom formatting through this hook.
    */
   inputErrorFunction?: (
     context: ToolCallContext<Context>,
-    error: z.ZodError,
+    error: z.ZodError | SyntaxError,
     originalArguments: JsonValue,
   ) => string | Promise<string>;
   needsApproval?:
@@ -691,12 +703,11 @@ export function tool<
     return typeof formatted === 'string' ? formatted : defaultMessage;
   };
   const recoverOriginalInput = async (
-    error: unknown,
+    error: z.ZodError | SyntaxError,
     original: JsonValue,
     context: ToolCallContext<Context>,
     admit: () => void,
   ): Promise<string> => {
-    if (!(error instanceof z.ZodError)) throw error;
     if (!inputErrorFunction)
       return recoverRunError('arguments', error, context, admit);
     admit();
@@ -718,6 +729,7 @@ export function tool<
   const declaration: FunctionTool<Context> = Object.freeze({
     ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
     finishTurn: options.finishTurn ?? false,
+    [inputRecovery]: inputErrorFunction !== undefined,
     name: options.name,
     namespace: options.namespace,
     namespaceDescription: options.namespaceDescription,
@@ -737,10 +749,27 @@ export function tool<
       admit: () => void,
       effectiveArgs?: JsonValue,
       approved?: ApprovedArguments,
+      argumentError?: string,
       beforeExecute?: () => Promise<boolean>,
       onBodyEntry?: () => void,
     ) {
       admit();
+      if (argumentError !== undefined) {
+        if (approved || effectiveArgs !== undefined)
+          throw new TypeError(
+            'Original input recovery cannot replace approved arguments',
+          );
+        const text = await recoverOriginalInput(
+          new SyntaxError(argumentError),
+          args,
+          context,
+          admit,
+        );
+        return {
+          success: false,
+          contentItems: [{ type: 'inputText' as const, text }],
+        };
+      }
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
@@ -751,6 +780,7 @@ export function tool<
         try {
           parsed = parseInput(args);
         } catch (error) {
+          if (!(error instanceof z.ZodError)) throw error;
           const text = await recoverOriginalInput(
             error,
             originalArguments,
@@ -969,13 +999,24 @@ export function tool<
             args: JsonValue,
             context: ToolCallContext<Context>,
             admit: () => void,
+            argumentError?: string,
           ) {
             if (!inputErrorFunction && !context[toolErrorFormatterBinding])
               return undefined;
             admit();
+            if (argumentError !== undefined)
+              return {
+                failure: await recoverOriginalInput(
+                  new SyntaxError(argumentError),
+                  args,
+                  context,
+                  admit,
+                ),
+              };
             try {
               return { value: parseInput(structuredClone(args)) };
             } catch (error) {
+              if (!(error instanceof z.ZodError)) throw error;
               return {
                 failure: await recoverOriginalInput(
                   error,
@@ -1263,6 +1304,7 @@ export async function invokeFunctionTool(
   checkAdmission?: () => void,
   effectiveArgs?: JsonValue,
   approved?: ApprovedArguments,
+  argumentError?: string,
   beforeExecute?: () => Promise<boolean>,
   onBodyEntry?: () => void,
 ): Promise<ToolResponse> {
@@ -1277,6 +1319,7 @@ export async function invokeFunctionTool(
     admit,
     effectiveArgs,
     approved,
+    argumentError,
     beforeExecute,
     onBodyEntry,
   );

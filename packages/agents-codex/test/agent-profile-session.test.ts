@@ -183,6 +183,7 @@ function fixture({
       }),
     ),
     _active_agent_profile: vi.fn(async () => JSON.stringify(active)),
+    _update_model_settings: vi.fn(async () => true),
     _activate_agent_profile: vi.fn(async (id: string, previous: string) => {
       expect(JSON.parse(previous)).toEqual(active);
       active = { profile_id: id, epoch: active.epoch + 1 };

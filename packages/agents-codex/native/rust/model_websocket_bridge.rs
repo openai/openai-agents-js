@@ -94,6 +94,7 @@ pub(crate) async fn connect(
 
 struct Generation {
     request: Value,
+    model: String,
     warmup: bool,
     content_item_kinds: bool,
     output: Vec<Value>,
@@ -210,13 +211,21 @@ impl Bridge<'_> {
             "sdk_sentinel_thread": metadata.get("sdk_sentinel_thread"),
             "sdk_sentinel_nonce": metadata.get("sdk_sentinel_nonce"),
         });
-        let receipt = relay_json(
+        let mut receipt = relay_json(
             &native_interception::sentinel_admit(&engine, self.provider, &metadata).await?,
         )?;
+        let Value::String(model) = receipt["model"].take() else {
+            anyhow::bail!("Invalid native model admission");
+        };
+        let model_matches = if receipt["model_omitted"] == true {
+            body.get("model").is_none()
+        } else {
+            body["model"].as_str() == Some(model.as_str())
+        };
         let warmup = receipt["kind"] == "warmup";
         ensure!(
             receipt["control"].as_str() == Some(self.owner.incarnation.as_str())
-                && receipt["model"] == body["model"]
+                && model_matches
                 && (warmup || receipt["kind"] == "generation"),
             "Invalid native model admission"
         );
@@ -227,9 +236,10 @@ impl Bridge<'_> {
         metadata.remove("sdk_sentinel_thread");
         metadata.remove("sdk_sentinel_nonce");
         body["client_metadata"] = Value::Object(metadata);
+        let native_continuation = body["previous_response_id"].is_string();
         let mut body = self
             .prefix
-            .reconstruct(body, receipt.get("completion"))
+            .reconstruct(body, &model, receipt.get("completion"))
             .map_err(anyhow::Error::msg)?;
         native_interception::sentinel_restore_schemas(&engine, self.provider, &ticket, &mut body)
             .await?;
@@ -237,7 +247,10 @@ impl Bridge<'_> {
         ensure!(body["input"].is_array(), "Invalid native Responses input");
         drop(permit);
         drop(engine);
-        let wire = self.prefix.encode(&body).map_err(anyhow::Error::msg)?;
+        let wire = self
+            .prefix
+            .encode(&body, &model, native_continuation)
+            .map_err(anyhow::Error::msg)?;
         let payload = serde_json::to_string(&wire)?;
         if payload.len() > MAX_REQUEST_BYTES {
             self.pending.as_mut().expect("native request admitted").1 = true;
@@ -249,6 +262,7 @@ impl Bridge<'_> {
             .map_err(|error| anyhow::anyhow!(error.reason))?;
         self.generation = Some(Generation {
             request: body,
+            model,
             warmup,
             content_item_kinds: receipt["content_item_kinds"] == true,
             output: Vec::new(),
@@ -299,6 +313,7 @@ impl Bridge<'_> {
                     response_id.to_owned(),
                     generation.request,
                     projected,
+                    generation.model,
                     generation.warmup,
                 )
                 .map_err(anyhow::Error::msg)?;

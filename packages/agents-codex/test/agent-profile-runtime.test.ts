@@ -241,6 +241,7 @@ it('captures every model control in profiles and normalizes named and cleared ch
       store: true,
       prompt_cache_retention: '24h',
       prompt_cache_ttl: '12h',
+      retry: { has_policy: false },
     },
     personality: null,
   });

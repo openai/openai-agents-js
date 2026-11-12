@@ -183,7 +183,7 @@ export function realtimeHandoffTool(
         Object.freeze({ context: call.context, agent: source }),
         input,
       );
-      return '';
+      return 'Handoff reserved.';
     },
   });
 }

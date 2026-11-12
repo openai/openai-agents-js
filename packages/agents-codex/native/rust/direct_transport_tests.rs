@@ -74,6 +74,10 @@ impl Fixture {
     }
 
     fn issue(&self) -> (Request, Box<dyn ModelResponseInterceptor>) {
+        self.issue_model(false)
+    }
+
+    fn issue_model(&self, model_omitted: bool) -> (Request, Box<dyn ModelResponseInterceptor>) {
         let admission = test_tool_admission(
             &self.control.id,
             &codex_protocol::ThreadId::new().to_string(),
@@ -89,10 +93,13 @@ impl Fixture {
                 thread_id: &self.control.id,
                 client_metadata: &mut metadata,
                 model: "test-model",
+                model_omitted,
             })
             .expect("issued exact native ticket");
-        let body = json!({"model":"test-model", "stream":true, "input":[],
-            "client_metadata":metadata});
+        let mut body = json!({"stream":true, "input":[], "client_metadata":metadata});
+        if !model_omitted {
+            body["model"] = json!("test-model");
+        }
         let mut request = Request::new(http::Method::POST, self.url.clone()).with_json(&body);
         request.headers.insert(
             "x-sdk-sentinel-grant",
@@ -287,7 +294,7 @@ async fn direct_http_duplicate_content_encoding_is_rejected_before_admission() {
 
 #[tokio::test]
 async fn direct_http_headers_and_private_metadata_reach_actual_provider_correctly() {
-    for identity in [false, true] {
+    for (identity, model_omitted) in [(false, false), (true, false), (false, true)] {
         let mut fixture = Fixture::new().await;
         let listener = fixture.listener.take().unwrap();
         let upstream = tokio::spawn(async move {
@@ -296,7 +303,7 @@ async fn direct_http_headers_and_private_metadata_reach_actual_provider_correctl
             reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 4\r\nX-Request-Id: direct-provider\r\n\r\none\n").await.unwrap();
             (headers, body)
         });
-        let (mut request, guard) = fixture.issue();
+        let (mut request, guard) = fixture.issue_model(model_omitted);
         request
             .headers
             .insert("authorization", "Bearer current-auth".parse().unwrap());
@@ -350,7 +357,11 @@ async fn direct_http_headers_and_private_metadata_reach_actual_provider_correctl
         assert!(values("x-sdk-sentinel-grant").is_empty());
         assert!(body["client_metadata"].get("sdk_sentinel_thread").is_none());
         assert!(body["client_metadata"].get("sdk_sentinel_nonce").is_none());
-        assert_eq!(body["model"], "test-model");
+        if model_omitted {
+            assert!(body.get("model").is_none());
+        } else {
+            assert_eq!(body["model"], "test-model");
+        }
         drop(response);
         drop(guard);
         fixture.engine.close().await.unwrap();
@@ -561,4 +572,31 @@ async fn direct_http_review_admit_and_schema_restore_reject_cancelled_and_retire
         drop(guard);
     }
     fixture.engine.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn direct_http_model_omission_requires_the_exact_native_ticket() {
+    for (admitted_omission, injected_model) in [
+        (false, None),
+        (true, Some("test-model")),
+        (true, Some("wrong-model")),
+    ] {
+        let fixture = Fixture::new().await;
+        let (mut request, guard) = fixture.issue_model(admitted_omission);
+        edit_body(&mut request, |body| {
+            body.as_object_mut().unwrap().remove("model");
+            // Caller metadata cannot grant omission to an ordinary native ticket.
+            body["client_metadata"]["model_omitted"] = json!(true);
+            if let Some(model) = injected_model {
+                body["model"] = json!(model);
+            }
+        });
+        assert_eq!(
+            http_status(fixture.dispatch(request).await.err().unwrap()),
+            http::StatusCode::BAD_GATEWAY
+        );
+        fixture.assert_no_upstream().await;
+        drop(guard);
+        fixture.engine.close().await.unwrap();
+    }
 }

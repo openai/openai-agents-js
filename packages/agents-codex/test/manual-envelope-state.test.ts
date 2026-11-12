@@ -77,3 +77,27 @@ it('retains legacy text and bare native receipts while rejecting non-output enve
     ),
   ).toThrow();
 });
+
+it('rejects a saved hosted prompt reference in an accepted manual envelope', () => {
+  const receipt = {
+    type: 'response_item',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'completed',
+      output: 'accepted',
+    },
+    metadata: {
+      sdk_agent_profile: {
+        profile_id: 'agent_0',
+        epoch: 1,
+        model: {
+          model: 'gpt-5',
+          request_controls: {
+            hosted_prompt: { reference: { id: 'pmpt_saved' } },
+          },
+        },
+      },
+    },
+  };
+  expect(() => parseSessionState(JSON.stringify(state(receipt)))).toThrow();
+});
