@@ -3635,7 +3635,7 @@ pub(crate) enum SentinelFailure {
 }
 
 impl SentinelFailure {
-    fn into_response_error(self) -> ModelResponseError {
+    pub(crate) fn into_response_error(self) -> ModelResponseError {
         match self {
             Self::Transport(error) => ModelResponseError::Transport(error),
             Self::WebSocket { oversized } => ModelResponseError::InvalidRequest {

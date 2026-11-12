@@ -1072,6 +1072,7 @@ async fn native_local_close_report_remote_drain_retains_diagnostic_on_retry() {
             remote_drain: Some(receiver),
             close_report: engine::EngineCloseReport {
                 diagnostic: Some("original completed persistence failure".to_owned()),
+                retained_storage_failure: Some("original completed persistence failure".to_owned()),
                 saved_login_refresh: Some("Saved Codex login refresh failed."),
             },
         })),

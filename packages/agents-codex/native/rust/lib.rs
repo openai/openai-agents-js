@@ -39,6 +39,7 @@ mod node_runtime;
 mod ops;
 mod options;
 mod plain_run;
+mod plain_websocket;
 mod plan_usage;
 mod project_search;
 mod provider_error;
@@ -765,6 +766,17 @@ impl Engine {
     #[napi(js_name = "_close_report_defer_saved_login")]
     pub async fn _close_report_defer_saved_login(&self) -> napi::Result<Option<String>> {
         Self::close_owner(Arc::clone(&self.inner), true).await
+    }
+
+    #[napi(js_name = "_retained_storage_failure")]
+    pub fn _retained_storage_failure(&self) -> napi::Result<Option<String>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(native_error)?
+            .close_report
+            .retained_storage_failure
+            .clone())
     }
 }
 

@@ -1,9 +1,14 @@
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Agent, NativeError, NativeProvider } from '../../src';
 import { binding, type JsonObject } from '../../src/runtime/binding';
 import { ModelServer, message } from './fixtures/model-server';
 
-function response(
+function responseFrames(
   index: number,
   chunks = ['answer ', String(index)],
   phase?: 'final_answer',
@@ -14,7 +19,7 @@ function response(
     id: `plain-message-${index}`,
     ...(phase === undefined ? {} : { phase }),
   };
-  const events = [
+  return [
     { type: 'response.created', response: { id: responseId } },
     {
       type: 'response.output_item.added',
@@ -44,6 +49,13 @@ function response(
       },
     },
   ];
+}
+
+function response(
+  index: number,
+  chunks = ['answer ', String(index)],
+  phase?: 'final_answer',
+) {
   return {
     status: 200,
     headers: {
@@ -51,7 +63,9 @@ function response(
       'x-request-id': `plain-upstream-${index}`,
       'x-ratelimit-remaining-requests': '7',
     },
-    body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''),
+    body: responseFrames(index, chunks, phase)
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join(''),
   };
 }
 
@@ -65,6 +79,170 @@ async function providerFor(server: ModelServer, streamMaxRetries = 0) {
     requestMaxRetries: 0,
     streamMaxRetries,
   });
+}
+
+const websocketCleanup: (() => Promise<void>)[] = [];
+
+async function plainWebsocketPeer(
+  first?: 'stall' | 'disconnect' | 'connection-limit',
+  streamMaxRetries = 0,
+) {
+  const directory = await mkdtemp(join(tmpdir(), 'agents-plain-wss-'));
+  const ca = join(directory, 'ca.pem');
+  const caKey = join(directory, 'ca.key');
+  const cert = join(directory, 'server.pem');
+  const key = join(directory, 'server.key');
+  const csr = join(directory, 'server.csr');
+  const extensions = join(directory, 'extensions');
+  const openssl = (...args: string[]) =>
+    execFileSync('openssl', args, { stdio: 'ignore' });
+  const peer = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: false,
+  });
+  websocketCleanup.push(async () => {
+    for (const socket of peer.clients) socket.terminate();
+    await new Promise<void>((resolve, reject) =>
+      peer.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(directory, { recursive: true, force: true });
+  });
+  openssl(
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-days',
+    '1',
+    '-subj',
+    '/CN=Plain WSS test CA',
+    '-keyout',
+    caKey,
+    '-out',
+    ca,
+  );
+  openssl(
+    'req',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-subj',
+    '/CN=localhost',
+    '-keyout',
+    key,
+    '-out',
+    csr,
+  );
+  await writeFile(
+    extensions,
+    'subjectAltName=DNS:localhost,IP:127.0.0.1\nextendedKeyUsage=serverAuth\n',
+  );
+  openssl(
+    'x509',
+    '-req',
+    '-days',
+    '1',
+    '-in',
+    csr,
+    '-CA',
+    ca,
+    '-CAkey',
+    caKey,
+    '-CAcreateserial',
+    '-extfile',
+    extensions,
+    '-out',
+    cert,
+  );
+  vi.stubEnv('CODEX_CA_CERTIFICATE', ca);
+  const server = new ModelServer([], [], undefined, undefined, undefined, {
+    key: await readFile(key),
+    cert: await readFile(cert),
+  });
+  const generations: {
+    request: JsonObject;
+    socket: WebSocket;
+    closed: () => Promise<void>;
+  }[] = [];
+  const warmups: JsonObject[] = [];
+  const failures: unknown[] = [];
+  const deltaReceived = vi.fn();
+  server.onUpgrade((request, socket, head) => {
+    peer.handleUpgrade(request, socket, head, (connection) => {
+      const closedEvent = new Promise<void>((resolve) =>
+        connection.once('close', () => resolve()),
+      );
+      const closed = async () => {
+        await vi.waitFor(
+          () => expect(connection.readyState).toBe(WebSocket.CLOSED),
+          { timeout: 5000 },
+        );
+        await closedEvent;
+      };
+      connection.on('error', (error) => failures.push(error));
+      connection.on('message', (data) => {
+        try {
+          const request = JSON.parse(data.toString()) as JsonObject;
+          if (request.generate === false) {
+            warmups.push(request);
+            connection.send(
+              JSON.stringify({
+                type: 'response.completed',
+                response: { id: `plain-warmup-${warmups.length}` },
+              }),
+            );
+            return;
+          }
+          generations.push({ request, socket: connection, closed });
+          const index = generations.length;
+          if (index === 1 && first === 'disconnect') {
+            connection.terminate();
+            return;
+          }
+          if (index === 1 && first === 'connection-limit') {
+            connection.send(
+              JSON.stringify({
+                type: 'error',
+                status: 400,
+                error: {
+                  code: 'websocket_connection_limit_reached',
+                  message: 'The connection has reached its time limit.',
+                },
+              }),
+            );
+            return;
+          }
+          const frames = responseFrames(index);
+          for (const frame of frames) {
+            connection.send(JSON.stringify(frame));
+            if (
+              first === 'stall' &&
+              index === 1 &&
+              frame.type === 'response.output_text.delta'
+            ) {
+              // The pong follows the text on the same socket: the native peer
+              // has read the actual delta, without claiming a live public observation.
+              connection.once('pong', deltaReceived);
+              connection.ping('after-text-delta');
+              return;
+            }
+          }
+        } catch (error) {
+          failures.push(error);
+          connection.close(1011);
+        }
+      });
+    });
+  });
+  const provider = new NativeProvider({
+    baseUrl: `https://127.0.0.1:${await server.port()}/v1`,
+    apiKey: 'synthetic-plain-wss',
+    supportsWebsockets: true,
+    requestMaxRetries: 0,
+    streamMaxRetries,
+  });
+  return { provider, server, generations, warmups, failures, deltaReceived };
 }
 
 function plainMetadata(
@@ -130,7 +308,15 @@ function plainMetadata(
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await ModelServer.closeAll();
+  try {
+    for (const close of websocketCleanup.splice(0).reverse()) await close();
+  } finally {
+    try {
+      await ModelServer.closeAll();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
 });
 
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
@@ -771,6 +957,175 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       });
       expect(String(failure)).not.toContain(refusal);
       server.assertExhausted();
+    }, 30_000);
+
+    it('uses plain public WSS runs with independent inputs and retains callback fallback', async () => {
+      const peer = await plainWebsocketPeer();
+      await using provider = peer.provider;
+      const agent = new Agent({
+        instructions: 'Answer the request.',
+        model: 'gpt-5',
+        modelSettings: { reasoningEffort: 'low' },
+        provider,
+      });
+      const native = await binding();
+      const plain = vi.spyOn(native.Engine.prototype, '_plain_run');
+      const open = vi.spyOn(
+        native.Engine.prototype,
+        'start_replaceable_thread',
+      );
+      const reuse = vi.spyOn(native.Engine.prototype, '_private_start_thread');
+      const first = await agent.run('first independent question');
+      const second = await agent.run('second independent question');
+      expect([first.finalOutput, second.finalOutput]).toEqual([
+        'answer 1',
+        'answer 2',
+      ]);
+      expect(plain).toHaveBeenCalledTimes(2);
+      expect(open).not.toHaveBeenCalled();
+      expect(reuse).not.toHaveBeenCalled();
+      expect(peer.generations).toHaveLength(2);
+      for (const [index, generation] of peer.generations.entries()) {
+        const wire = JSON.stringify(generation.request.input);
+        expect(wire).toContain(
+          index === 0
+            ? 'first independent question'
+            : 'second independent question',
+        );
+        expect(wire).not.toContain(
+          index === 0
+            ? 'second independent question'
+            : 'first independent question',
+        );
+        expect(generation.request.previous_response_id ?? null).toBeNull();
+        expect(generation.request.type).toBe('response.create');
+        expect(JSON.stringify(generation.request)).toContain(
+          'Answer the request.',
+        );
+        await generation.closed();
+      }
+      expect(first.turn.turnId).not.toBe(second.turn.turnId);
+      expect(first.runUsage).toMatchObject({
+        inputTokens: 20,
+        outputTokens: 10,
+        totalTokens: 30,
+        requests: 1,
+      });
+      expect(second.runUsage).toEqual(first.runUsage);
+      const beforeComplete = vi.fn();
+      agent.beforeComplete = beforeComplete;
+      expect((await agent.run('callback question')).finalOutput).toBe(
+        'answer 3',
+      );
+      expect(beforeComplete).toHaveBeenCalledTimes(1);
+      expect(plain).toHaveBeenCalledTimes(2);
+      expect(open.mock.calls.length + reuse.mock.calls.length).toBeGreaterThan(
+        0,
+      );
+      expect(peer.generations).toHaveLength(3);
+      await peer.generations[2]!.closed();
+      expect(peer.server.requests).toHaveLength(0);
+      expect(peer.failures).toEqual([]);
+      peer.server.assertExhausted();
+    }, 30_000);
+
+    it('joins WSS cancellation after a received delta before same-Provider recovery', async () => {
+      const peer = await plainWebsocketPeer('stall');
+      await using provider = peer.provider;
+      const agent = new Agent({
+        instructions: 'Answer the request.',
+        model: 'gpt-5',
+        provider,
+      });
+      const native = await binding();
+      const plain = vi.spyOn(native.Engine.prototype, '_plain_run');
+      const open = vi.spyOn(
+        native.Engine.prototype,
+        'start_replaceable_thread',
+      );
+      const reuse = vi.spyOn(native.Engine.prototype, '_private_start_thread');
+      const controller = new AbortController();
+      const reason = new Error('cancel after WSS text delta');
+      const running = agent.run('cancel this question', {
+        signal: controller.signal,
+      });
+      void running.catch(() => undefined);
+      try {
+        await vi.waitFor(
+          () => expect(peer.deltaReceived).toHaveBeenCalledTimes(1),
+          { timeout: 10_000 },
+        );
+        expect(peer.generations).toHaveLength(1);
+        controller.abort(reason);
+        await expect(running).rejects.toBe(reason);
+        await peer.generations[0]!.closed();
+      } finally {
+        controller.abort(reason);
+        await running.catch(() => undefined);
+      }
+      expect(
+        (await agent.run('recover with a fresh question')).finalOutput,
+      ).toBe('answer 2');
+      expect(plain).toHaveBeenCalledTimes(2);
+      expect(open).not.toHaveBeenCalled();
+      expect(reuse).not.toHaveBeenCalled();
+      expect(peer.generations).toHaveLength(2);
+      expect(
+        peer.generations[1]!.request.previous_response_id ?? null,
+      ).toBeNull();
+      const recoveryInput = JSON.stringify(peer.generations[1]!.request.input);
+      expect(recoveryInput).toContain('recover with a fresh question');
+      expect(recoveryInput).not.toContain('cancel this question');
+      await peer.generations[1]!.closed();
+      expect(peer.server.requests).toHaveLength(0);
+      expect(peer.failures).toEqual([]);
+      peer.server.assertExhausted();
+    }, 30_000);
+
+    it('does not replay a one-shot WSS request after the peer receives it', async () => {
+      const peer = await plainWebsocketPeer('disconnect', 1);
+      await using provider = peer.provider;
+      const agent = new Agent({
+        instructions: 'Answer the request.',
+        model: 'gpt-5',
+        provider,
+      });
+      const native = await binding();
+      const plain = vi.spyOn(native.Engine.prototype, '_plain_run');
+      await expect(agent.run('Do this once.')).rejects.toMatchObject({
+        message:
+          'Native WebSocket request outcome is unknown after a send or disconnect; it will not be replayed.',
+        category: 'internal_error',
+        retryable: false,
+      });
+      expect(plain).toHaveBeenCalledTimes(1);
+      expect(peer.generations).toHaveLength(1);
+      await peer.generations[0]!.closed();
+      expect(peer.server.requests).toHaveLength(0);
+      expect(peer.failures).toEqual([]);
+      peer.server.assertExhausted();
+    }, 30_000);
+
+    it('retries an explicit one-shot WSS connection-limit rejection', async () => {
+      const peer = await plainWebsocketPeer('connection-limit', 1);
+      await using provider = peer.provider;
+      const agent = new Agent({
+        instructions: 'Answer the request.',
+        model: 'gpt-5',
+        provider,
+      });
+      const native = await binding();
+      const plain = vi.spyOn(native.Engine.prototype, '_plain_run');
+      expect(
+        (await agent.run('Answer on a fresh connection.')).finalOutput,
+      ).toBe('answer 2');
+      expect(plain).toHaveBeenCalledTimes(1);
+      expect(peer.generations).toHaveLength(2);
+      expect(peer.generations[0]!.socket).not.toBe(peer.generations[1]!.socket);
+      for (const generation of peer.generations) await generation.closed();
+      expect(peer.server.requests).toHaveLength(0);
+      expect(peer.failures).toEqual([]);
+      peer.server.assertExhausted();
     }, 30_000);
 
     it('joins cancellation and keeps the Provider usable for a later run', async () => {

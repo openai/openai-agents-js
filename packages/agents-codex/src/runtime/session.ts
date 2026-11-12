@@ -16667,10 +16667,11 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.sessionInteractionFailure)
         return Promise.reject(this.sessionInteractionFailure.error);
       if (this.environmentCloseFailure) return this.environmentCloseFailure;
-      // Completed persistent cleanup retains the engine's durability report.
-      // Release-only diagnostics have already been consumed by native close.
+      // Completed persistent cleanup retains only stored write/flush failures.
+      // Other diagnostics remain available to the engine's teardown callers.
       return this.options.localStorage
-        ? this.#engine._close_report_defer_saved_login().then((message) => {
+        ? Promise.resolve().then(() => {
+            const message = this.#engine._retained_storage_failure();
             if (message) throw new NativeError(message);
           })
         : Promise.resolve();

@@ -92,20 +92,48 @@ pub(crate) struct ReceiptStore(pub Arc<CustomThreadStore>);
 struct Writer {
     fence: String,
     snapshot: Snapshot,
-    failure: Option<String>,
+    failure: Option<RetainedFailure>,
     managed: HashSet<(String, String)>,
+}
+pub(crate) struct CustomStoreCloseReport {
+    pub(crate) diagnostic: Option<String>,
+    pub(crate) retained_storage_failure: Option<String>,
 }
 pub struct CustomThreadStore {
     callback: Arc<Callback>,
     plan_provider: Option<String>,
     projection: crate::storage::MemoryThreadStore,
     writers: Mutex<HashMap<ThreadId, Writer>>,
-    failures: Mutex<HashMap<ThreadId, String>>,
+    failures: Mutex<HashMap<ThreadId, RetainedFailure>>,
     release_failures: Mutex<HashMap<ThreadId, String>>,
 }
 fn error(message: impl ToString) -> ThreadStoreError {
     ThreadStoreError::Internal {
         message: message.to_string(),
+    }
+}
+#[derive(Clone)]
+enum RetainedFailure {
+    Internal(String),
+    Diagnostic(String),
+}
+impl RetainedFailure {
+    fn capture(failure: &ThreadStoreError) -> Self {
+        match failure {
+            ThreadStoreError::Internal { message } => Self::Internal(message.clone()),
+            _ => Self::Diagnostic(failure.to_string()),
+        }
+    }
+    fn replay(&self) -> ThreadStoreError {
+        match self {
+            Self::Internal(message) | Self::Diagnostic(message) => error(message),
+        }
+    }
+    fn diagnostic(&self) -> String {
+        match self {
+            Self::Internal(message) => error(message).to_string(),
+            Self::Diagnostic(message) => message.clone(),
+        }
     }
 }
 fn backend_error(_: impl std::fmt::Display) -> ThreadStoreError {
@@ -306,7 +334,7 @@ impl CustomThreadStore {
             return writer
                 .failure
                 .as_ref()
-                .map_or(Ok(()), |failure| Err(error(failure)));
+                .map_or(Ok(()), |failure| Err(failure.replay()));
         }
         let fence = self
             .call(json!({"operation":"acquire","threadId":id}))
@@ -420,7 +448,7 @@ impl CustomThreadStore {
                                     revision: 0,
                                     mutations: Vec::new(),
                                 },
-                                failure: Some(primary.to_string()),
+                                failure: Some(RetainedFailure::capture(&primary)),
                                 managed: HashSet::new(),
                             },
                         );
@@ -447,7 +475,7 @@ impl CustomThreadStore {
             .get_mut(&id)
             .ok_or_else(|| error("canonical writer not acquired"))?;
         if let Some(failure) = &writer.failure {
-            return Err(error(failure));
+            return Err(failure.replay());
         }
         if let Mutation::Append { items } = &mut mutation {
             if !real_receipt {
@@ -506,31 +534,31 @@ impl CustomThreadStore {
                 .await
                 .is_ok_and(|saved| saved.as_str() == Some(snapshot.as_str()));
             if !accepted {
-                writer.failure = Some(failure.to_string());
+                writer.failure = Some(RetainedFailure::capture(&failure));
                 return Err(failure);
             }
             // Readback can observe a rename whose final durability barrier failed.
             // Confirm the same logical write; a successful idempotent commit must
             // establish the backend's complete durable-acknowledgment boundary.
             if let Err(confirmation) = self.call(request).await {
-                writer.failure = Some(confirmation.to_string());
+                writer.failure = Some(RetainedFailure::capture(&confirmation));
                 return Err(confirmation);
             }
         }
         writer.snapshot = next;
         if let Err(failure) = self.apply(id, mutation).await {
-            writer.failure = Some(failure.to_string());
+            writer.failure = Some(RetainedFailure::capture(&failure));
             return Err(failure);
         }
         Ok(())
     }
     pub async fn check(&self, id: ThreadId) -> ThreadStoreResult<()> {
         if let Some(failure) = self.failures.lock().await.get(&id) {
-            return Err(error(failure));
+            return Err(failure.replay());
         }
         let writers = self.writers.lock().await;
         if let Some(failure) = writers.get(&id).and_then(|w| w.failure.as_ref()) {
-            return Err(error(failure));
+            return Err(failure.replay());
         }
         Ok(())
     }
@@ -569,7 +597,7 @@ impl CustomThreadStore {
         if active != Some(turn) || !writer.managed.insert((turn.to_owned(), call.to_owned())) {
             let failure =
                 "SDK call does not belong to an unused active canonical turn/call identity";
-            writer.failure = Some(failure.into());
+            writer.failure = Some(RetainedFailure::Diagnostic(failure.into()));
             return Err(error(failure));
         }
         Ok(())
@@ -613,7 +641,7 @@ impl CustomThreadStore {
                 .call(json!({"operation":"flush","threadId":id,"fence":writer.fence}))
                 .await
             {
-                writer.failure = Some(failure.to_string());
+                writer.failure = Some(RetainedFailure::capture(&failure));
                 return Err(failure);
             }
         }
@@ -622,7 +650,7 @@ impl CustomThreadStore {
     pub async fn take_release_failure(&self, id: ThreadId) -> Option<String> {
         self.release_failures.lock().await.remove(&id)
     }
-    pub async fn close_all(&self) -> ThreadStoreResult<Option<String>> {
+    pub(crate) async fn close_all(&self) -> ThreadStoreResult<CustomStoreCloseReport> {
         let ids: Vec<_> = self.writers.lock().await.keys().copied().collect();
         let mut first = None;
         for id in ids {
@@ -633,7 +661,13 @@ impl CustomThreadStore {
         if !self.writers.lock().await.is_empty() {
             return Err(first.unwrap_or_else(|| error("canonical writer cleanup incomplete")));
         }
-        let retained = self.failures.lock().await.values().next().cloned();
+        let retained = self
+            .failures
+            .lock()
+            .await
+            .values()
+            .next()
+            .map(RetainedFailure::diagnostic);
         let release_failure = self
             .release_failures
             .lock()
@@ -641,10 +675,13 @@ impl CustomThreadStore {
             .drain()
             .next()
             .map(|(_, failure)| failure);
-        Ok(first
-            .map(|failure| failure.to_string())
-            .or(retained)
-            .or(release_failure))
+        Ok(CustomStoreCloseReport {
+            diagnostic: first
+                .map(|failure| failure.to_string())
+                .or(retained.clone())
+                .or(release_failure),
+            retained_storage_failure: retained,
+        })
     }
     pub async fn reconcile(
         &self,
@@ -712,13 +749,14 @@ impl CustomThreadStore {
         self.receipt(id, item).await
     }
     async fn release(&self, id: ThreadId) -> ThreadStoreResult<()> {
-        self.release_writer(id)
-            .await?
-            .map_or(Ok(()), |failure| Err(error(failure)))
+        self.release_writer(id).await?.map_or(Ok(()), Err)
     }
     // Standalone reconciliation retains the receipt failure separately from
     // physical writer cleanup. Session callers still receive sticky failures.
-    pub(crate) async fn release_writer(&self, id: ThreadId) -> ThreadStoreResult<Option<String>> {
+    pub(crate) async fn release_writer(
+        &self,
+        id: ThreadId,
+    ) -> ThreadStoreResult<Option<ThreadStoreError>> {
         let mut writers = self.writers.lock().await;
         let Some(writer) = writers.get(&id) else {
             return Ok(None);
@@ -742,7 +780,7 @@ impl CustomThreadStore {
         }
         writers.remove(&id);
         self.projection.shutdown_thread(id).await?;
-        Ok(failure)
+        Ok(failure.map(|failure| failure.replay()))
     }
 }
 impl ThreadStore for CustomThreadStore {
@@ -821,7 +859,7 @@ impl ThreadStore for CustomThreadStore {
                 .get_mut(&thread_id)
                 .ok_or_else(|| error("canonical writer not acquired"))?;
             if let Some(failure) = &writer.failure {
-                return Err(error(failure));
+                return Err(failure.replay());
             }
             if !writer.managed.contains(&(turn.to_owned(), call.to_owned())) {
                 return Ok(None);
@@ -850,7 +888,7 @@ impl ThreadStore for CustomThreadStore {
                 )
             }) {
                 let message = "Core drain changed an acknowledged SDK receipt";
-                writer.failure = Some(message.into());
+                writer.failure = Some(RetainedFailure::Diagnostic(message.into()));
                 return Err(error(message));
             }
             Ok(accepted)
