@@ -259,6 +259,8 @@ import {
   transformMcpResult,
   isHostedRegistration,
   type McpTool,
+  type MCPDiscoveryContext,
+  type MCPToolDefinition,
   type MCPListResourcesResult,
   type MCPListResourceTemplatesResult,
   type MCPReadResourceResult,
@@ -5158,6 +5160,9 @@ export class Session<OutputT = string, Context = unknown> {
       modelOverride === undefined &&
       modelSettingsOverride === undefined &&
       options?.prepareRequest === undefined &&
+      !this.mcpBindings.some(
+        (server) => server.toolFilter !== undefined && server.tools.length > 0,
+      ) &&
       budget === undefined
     )
       return;
@@ -9695,7 +9700,7 @@ export class Session<OutputT = string, Context = unknown> {
               signal,
             });
             if (isStepStop(selected)) stopped = true;
-            else
+            else {
               names = this.selectedStepNames(
                 run,
                 event,
@@ -9703,6 +9708,24 @@ export class Session<OutputT = string, Context = unknown> {
                 this.profileOperationNames(selection, event, sourceCatalog),
                 sourceCatalog,
               );
+              names =
+                (await this.filterMcpDiscovery(
+                  event,
+                  names,
+                  Object.freeze({
+                    context: this.options.context as Context,
+                    submission: this.#turnFor(this.rootRun(run)),
+                    threadId: this.id,
+                    turnId: z.string().parse(event.msg.turn_id),
+                    stepIndex,
+                    signal,
+                  }),
+                  () => {
+                    assertActive();
+                    return true;
+                  },
+                )) ?? [];
+            }
           } finally {
             await scope.close();
           }
@@ -9981,7 +10004,26 @@ export class Session<OutputT = string, Context = unknown> {
             }
             if (beforeStep && !isAdmitted()) return skipped;
             capturedSelection.stepIndex++;
-            return beforeStep?.(context);
+            const decision = await beforeStep?.(context);
+            if (!isStepStop(decision)) {
+              const proposed = this.selectedStepNames(owner, event, decision);
+              const filtered = await this.filterMcpDiscovery(
+                event,
+                proposed,
+                Object.freeze({
+                  context: this.options.context as Context,
+                  submission: context.child,
+                  threadId: owner.childId,
+                  turnId: owner.turnId,
+                  stepIndex: context.stepIndex,
+                  signal,
+                }),
+                () => isAdmitted(true),
+              );
+              if (filtered === undefined) return skipped;
+              names = filtered;
+            }
+            return decision;
           },
           signal,
           workflowForTrace,
@@ -9989,7 +10031,6 @@ export class Session<OutputT = string, Context = unknown> {
         );
         if (selected !== skipped) {
           if (isStepStop(selected)) stopped = true;
-          else names = this.selectedStepNames(owner, event, selected);
         }
       } finally {
         await scope.close();
@@ -10075,6 +10116,82 @@ export class Session<OutputT = string, Context = unknown> {
       }
     }
     return { byRaw, byProjected };
+  }
+
+  private async filterMcpDiscovery(
+    event: NativeEvent,
+    names: readonly ReturnType<typeof toolIdentity>[],
+    runContext: MCPDiscoveryContext<Context>['runContext'],
+    admit: () => boolean,
+  ): Promise<readonly ReturnType<typeof toolIdentity>[] | undefined> {
+    const source = this.messageProfile(event.msg);
+    const catalog = this.sourceCatalog(
+      event.msg,
+      z.string().parse(event.msg.generation),
+    );
+    const servers = source
+      ? (this.profileStepMcp.get(
+          this.profileKey(source.profile_id, catalog.generation),
+        ) ?? [])
+      : this.mcpTools;
+    const filters = new Map(
+      servers
+        .filter((server) => server.toolFilter !== undefined)
+        .map((server) => [server.name, server]),
+    );
+    if (!filters.size) return names;
+    const key = (tool: { name: string; namespace?: string | null }) =>
+      JSON.stringify([tool.namespace || 'functions', tool.name]);
+    const allowed = new Set(names.map(key));
+    const discovered = z
+      .array(
+        z.object({
+          server: z.string(),
+          tool: z.string(),
+          name: z.string(),
+          namespace: z.string().nullish(),
+          definition: losslessJsonObjectSchema.optional(),
+        }),
+      )
+      .parse(event.msg.mcp_names ?? []);
+    for (const row of discovered) {
+      const server = filters.get(row.server);
+      const filter = server?.toolFilter;
+      if (
+        !server ||
+        !filter ||
+        !allowed.has(key(row)) ||
+        row.definition === undefined
+      )
+        continue;
+      runContext.signal.throwIfAborted();
+      if (!admit()) return;
+      if (!server.tools.includes(row.tool))
+        throw new NativeError(
+          'MCP discovery is outside its captured declaration',
+        );
+      const definition = z
+        .object({
+          name: z.literal(row.tool),
+          inputSchema: losslessJsonObjectSchema,
+        })
+        .catchall(z.unknown())
+        .parse(row.definition) as MCPToolDefinition;
+      const keep = await filter(
+        Object.freeze({
+          agent: this.sourceApplicationAgent(event.msg),
+          serverName: server.name,
+          runContext,
+        }),
+        structuredClone(definition),
+      );
+      runContext.signal.throwIfAborted();
+      if (!admit()) return;
+      if (typeof keep !== 'boolean')
+        throw new TypeError('MCP toolFilter must return a boolean');
+      if (!keep) allowed.delete(key(row));
+    }
+    return names.filter((name) => allowed.has(key(name)));
   }
 
   private selectedStepNames(
