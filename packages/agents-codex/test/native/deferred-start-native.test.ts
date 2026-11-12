@@ -13,6 +13,7 @@ import {
   webSearch,
   type ActionRequested,
   type Session,
+  type RunBudget,
 } from '../../src';
 import {
   DeferredTools,
@@ -93,6 +94,8 @@ async function fixture(
     repairGate?: ReturnType<typeof gate>;
     changedSession?: 'tools' | 'instructions';
     maxRequests?: number;
+    budget?: RunBudget;
+    reportedUsage?: boolean;
   } = {},
 ) {
   const tool = deferredTool({
@@ -186,7 +189,9 @@ async function fixture(
           '{"input_tokens":5,"output_tokens":2,"total_tokens":7}',
           '{"input_tokens":8,"output_tokens":3,"total_tokens":11}',
         ]
-      : [],
+      : options.reportedUsage
+        ? { input_tokens: 3, output_tokens: 1, total_tokens: 4 }
+        : [],
   );
   const config = await model.config();
   let modelCalls = 0;
@@ -381,9 +386,11 @@ async function fixture(
           },
         })
       : await session.submit('ASK', {
-          ...(options.maxRequests === undefined
-            ? {}
-            : { budget: { maxRequests: options.maxRequests } }),
+          ...(options.budget !== undefined
+            ? { budget: options.budget }
+            : options.maxRequests === undefined
+              ? {}
+              : { budget: { maxRequests: options.maxRequests } }),
         });
     const completion = turn.wait().catch((error: unknown) => error);
     const request = await nextAction(session);
@@ -430,6 +437,57 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private deferred start ownership',
   () => {
+    it.each([
+      {
+        maxTokens: 10,
+        reportedUsage: true,
+        missingUsage: 'stop',
+        code: undefined,
+      },
+      {
+        maxTokens: 4,
+        reportedUsage: true,
+        missingUsage: 'stop',
+        code: 'run_budget_exceeded',
+      },
+      {
+        maxTokens: 10,
+        reportedUsage: false,
+        missingUsage: 'stop',
+        code: 'run_budget_usage_unavailable',
+      },
+      {
+        maxTokens: 10,
+        reportedUsage: false,
+        missingUsage: 'continue',
+        code: undefined,
+      },
+    ] as const)(
+      'preserves token policy through deferred reopening: %j',
+      async ({ maxTokens, reportedUsage, missingUsage, code }) => {
+        await using f = await fixture({
+          budget: { maxTokens, missingUsage },
+          reportedUsage,
+        });
+        await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
+          expect(outcome.status).toBe('continued');
+          if (outcome.status !== 'continued')
+            throw new Error('Expected continuation');
+          if (code)
+            await expect(outcome.turn.wait()).rejects.toMatchObject({ code });
+          else
+            await expect(outcome.turn.wait()).resolves.toMatchObject({
+              finalOutput: 'done',
+            });
+        });
+        expect(f.backend.start).toHaveBeenCalledTimes(1);
+        expect(await f.completion).toBeInstanceOf(InteractionRequired);
+        expect(f.model.requests).toHaveLength(code ? 1 : 2);
+        if (!code) f.model.assertExhausted();
+      },
+      20_000,
+    );
+
     it.each([1, 2])(
       'preserves a request budget of %i through the deferred reopening',
       async (maxRequests) => {

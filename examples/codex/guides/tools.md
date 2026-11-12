@@ -43,7 +43,7 @@ The returned text has been becoming a failed tool result before approval, input 
 
 ### Recover from callback-body errors
 
-With `errorFunction(context, error)`, the SDK has been publishing the returned string as a failed tool result and continuing the model turn. The formatter has been receiving the captured `ToolContext`, including the original and effective arguments. Omitting both the per-tool formatter and the session formatter has been preserving the existing turn failure.
+With the current [source build](building.md), `errorFunction(context, error)` has been converting a callback-body exception into a failed textual tool result and allowing the model turn to continue. The callback has been receiving the captured `ToolContext`, including original and effective arguments. Without a per-tool or session formatter, callback-body exceptions have been failing the turn.
 
 ```ts
 import { tool } from '@openai/agents';
@@ -59,11 +59,11 @@ const lookup = tool({
 });
 ```
 
-This handler has been covering callback-body exceptions only. Cancellation, callback deadlines, approval and input policies, argument/result validation, and cleanup failures have been retaining their existing handling. Formatted failures have been bypassing the `result` schema and `after` hook, and have not been completing a `finishTurn` tool. Formatter exceptions and non-string returns have been failing the turn. Formatting has been remaining outside `callbackTimeout`, under the turn's cancellation and admission checks. Neither failure formatting nor cancellation has been undoing earlier external effects.
+This per-tool formatter has been covering callback-body exceptions only. Its own exceptions and non-string returns have been failing the turn. Cancellation, callback deadlines, policies, argument/result validation, and cleanup failures have been retaining their existing handling.
 
 ### Session defaults for function errors
 
-With the current [source build](building.md), `Agent.session({ toolErrorFormatter })` and `Agent.run(input, { toolErrorFormatter })` have been applying a default to original function argument validation and callback-body failures. Each callback has been receiving `ToolErrorContext`: application `context`, observed `call` metadata, the invocation's `signal`, `phase` (`'arguments'` or `'execution'`), `defaultMessage`, and the original local `error`.
+With the current [source build](building.md), `Agent.session({ toolErrorFormatter })` and `Agent.run(input, { toolErrorFormatter })` have been supplying a default formatter for initial function argument validation and callback-body failures. The formatter has been receiving a `ToolErrorContext` with application `context`, observed `call` metadata, invocation `signal`, `phase` (`'arguments'` or `'execution'`), safe `defaultMessage`, and original local `error`.
 
 ```ts
 import { Agent, tool } from '@openai/agents';
@@ -88,11 +88,13 @@ const result = await (await session.submit('Find a record.')).wait();
 console.log(result.finalOutput);
 ```
 
-Per-tool `inputErrorFunction` and `errorFunction` callbacks have been taking precedence for their respective phases. `errorFunction: null` has been suppressing the session default for both phases. An explicit body formatter has been leaving session argument formatting available. Each session opening, including state restoration, has been capturing a fresh caller-supplied formatter; saved state has not been retaining callbacks.
+Per-tool `inputErrorFunction` and `errorFunction` callbacks have been overriding their respective phases. `errorFunction: null` has been disabling the session default for both phases while preserving an explicit `inputErrorFunction`. An explicit body formatter has been leaving session argument formatting available. Each opening, including restore, has been capturing the caller's current formatter; saved state has not been retaining callbacks.
 
-Global callback exceptions, `undefined`, and non-string returns have been selecting safe default text while the invocation has been remaining active. The default text has been naming the function without including the exception message. An empty string has been remaining a valid failed result. These results have been bypassing output validation and `after`, and have not been finishing a `finishTurn` tool. Async formatters have been receiving the invocation signal for cancellable requests. Cancellation has been joining entered formatting and preventing late publication; cancellation cleanup exceptions have been retaining their original owners.
+Session formatter exceptions, `undefined`, and non-string returns have been selecting safe default text while the invocation has been remaining active. That text has been naming the function without its private exception message. An empty string has been remaining a valid failed result.
 
-The session default has been covering initial host validation before managed approval. Rewritten arguments, approval policies, callback deadlines, output validation and `after` failures have been retaining their existing handling. Missing function names, malformed JSON handled before host entry, native MCP failures and executor failures have been remaining Core-owned and outside this formatter.
+The session default has been handling initial host validation before managed approval. Rewritten arguments, approval policies, callback deadlines, output validation, and `after` failures have been retaining their existing handling. Missing function names, malformed JSON before host entry, native MCP failures, and executor failures have been remaining Core-owned.
+
+Both formatter routes have been bypassing the `result` schema and `after` hook, without completing a `finishTurn` tool. Formatting has been running outside `callbackTimeout`, under invocation cancellation and admission checks. Async formatters have been receiving the invocation signal; cancellation has been joining entered formatting and preventing late publication. Cancellation cleanup exceptions have been retaining their original owners. Formatting has not been undoing earlier external effects.
 
 ### Finish a turn from a function tool
 
@@ -363,6 +365,8 @@ The tools selected for each model step must have unique generated JavaScript nam
 The bundled host itself grants no shell tools or workspace access. Supply an [Environment](executors.md#remote-executor-tools) with current tool permissions for remote file and process operations.
 
 ## Computer tools
+
+The [scripted computer example](../../../packages/agents-codex/TESTING.md#script-a-computer-call) has been exercising the native action and screenshot continuation with a synthetic driver and no desktop access or model credentials.
 
 These computer APIs require a [current source build](building.md). Use `computerTool()` to connect an application-supplied computer driver. This fragment assumes an existing `driver` implementing `Computer` and [configured provider credentials](session-configuration.md):
 

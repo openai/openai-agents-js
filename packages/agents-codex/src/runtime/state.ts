@@ -14,7 +14,7 @@ import {
   type RepairItemWire,
 } from './history';
 import { nonnegativeTokenCountWireSchema } from './run-events';
-import { requestRunBudgetCheckpointSchema } from './run-budget';
+import { runBudgetCheckpointSchema } from './run-budget';
 import {
   binding,
   losslessJsonObjectSchema,
@@ -557,7 +557,7 @@ export const sessionStateSchema = z
           .optional(),
         manual_continuation: manualContinuationSchema,
         manual_context: manualContextSchema,
-        run_budget: requestRunBudgetCheckpointSchema,
+        run_budget: runBudgetCheckpointSchema,
       })
       .catchall(jsonValue),
     z
@@ -573,7 +573,7 @@ export const sessionStateSchema = z
           .optional(),
         manual_continuation: manualContinuationSchema,
         manual_context: manualContextSchema,
-        run_budget: requestRunBudgetCheckpointSchema,
+        run_budget: runBudgetCheckpointSchema,
       })
       .catchall(jsonValue),
     z

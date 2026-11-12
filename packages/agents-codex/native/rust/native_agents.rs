@@ -125,6 +125,7 @@ async fn validate_model(
 
 pub struct Policy {
     pub roles: Vec<String>,
+    pub managed_tools: Vec<String>,
     pub max_depth: usize,
     pub inherited_instructions: Option<Arc<SdkInheritedApplicationInstructions>>,
     // Current startup policy is host authority. Core reads its own copy before
@@ -157,6 +158,9 @@ impl Policy {
                     // The Code Mode wrapper requires an explicit current
                     // ToolPolicy grant, just like each nested dispatch.
                     return true;
+                }
+                if self.managed_tools.iter().any(|tool| tool == name) {
+                    return depth < self.max_depth;
                 }
                 if (depth != 0 && self.max_depth == 1)
                     || (name == "spawn_agent" && depth >= self.max_depth)

@@ -704,6 +704,7 @@ async fn child_submit_waits_for_its_passive_native_turn_to_release_the_slot() {
             let (mut startup, _) = engine.build_startup(options).await.unwrap();
             startup.thread_extension_init.insert(crate::native_agents::Policy {
                 roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                managed_tools: Vec::new(),
                 allowed: Default::default(),
             });
             // The parent remains the only SDK event owner for this native child.
@@ -1836,6 +1837,7 @@ async fn raw_child_steering_and_retained_continuation_case() {
             let (mut startup, instructions) = engine.build_startup(serde_json::from_value(json!({"_managed_instructions":true})).unwrap()).await.unwrap();
             startup.thread_extension_init.insert(crate::native_agents::Policy {
                 roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                managed_tools: Vec::new(),
                 allowed: Default::default(),
             });
             let parent = engine.start_prepared(startup, instructions, None).await.unwrap();

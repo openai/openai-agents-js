@@ -876,6 +876,7 @@ pub struct Control {
     pub(crate) settlement: std::sync::OnceLock<Weak<crate::turn_settlement::Settlement>>,
     sentinel_provider: std::sync::OnceLock<(String, bool)>,
     collaboration_namespace: std::sync::OnceLock<Option<String>>,
+    websocket_drivers: Mutex<Option<tokio_util::task::TaskTracker>>,
     stdin_admission: std::sync::OnceLock<()>,
     command_tty: std::sync::OnceLock<bool>,
     sentinel_request: Mutex<SentinelState>,
@@ -1067,6 +1068,24 @@ impl Control {
         &self.stopped
     }
 
+    pub(crate) fn track_websocket_driver(
+        &self,
+        driver: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+        let mut slot = self.websocket_drivers.lock().expect("websocket drivers poisoned");
+        anyhow::ensure!(!self.is_stopped(), "Native thread ended");
+        let tasks = slot.get_or_insert_with(tokio_util::task::TaskTracker::new);
+        Ok(tasks.spawn(driver))
+    }
+
+    async fn join_websocket_drivers(&self) {
+        let tasks = self.websocket_drivers.lock().expect("websocket drivers poisoned").clone();
+        if let Some(tasks) = tasks {
+            tasks.close();
+            tasks.wait().await;
+        }
+    }
+
     pub(crate) fn new(id: String, root: bool) -> Self {
         Self::with_budget(id, root, MAX_PAYLOAD_BYTES)
     }
@@ -1097,6 +1116,7 @@ impl Control {
             settlement: std::sync::OnceLock::new(),
             sentinel_provider: std::sync::OnceLock::new(),
             collaboration_namespace: std::sync::OnceLock::new(),
+            websocket_drivers: Mutex::default(),
             stdin_admission: std::sync::OnceLock::new(),
             command_tty: std::sync::OnceLock::new(),
             sentinel_request: Mutex::new(SentinelState::default()),
@@ -1153,6 +1173,7 @@ impl Control {
             settlement: std::sync::OnceLock::new(),
             sentinel_provider: std::sync::OnceLock::new(),
             collaboration_namespace: std::sync::OnceLock::new(),
+            websocket_drivers: Mutex::default(),
             stdin_admission: std::sync::OnceLock::new(),
             command_tty: std::sync::OnceLock::new(),
             sentinel_request: Mutex::new(SentinelState::default()),
@@ -3084,6 +3105,7 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     }
                 }
                 control.revoke();
+                control.join_websocket_drivers().await;
                 control.graph().changed.send_replace(());
                 self.finish_numeric_forks(&control, None, None);
                 self.starts
@@ -3451,6 +3473,48 @@ impl ModelRequestContributor for Boundary {
                             retry_after: None,
                         })?;
                 crate::direct_sentinel_stream(&engine, &expected_url, request).await
+            })
+        }))
+    }
+
+    fn websocket_connect(
+        &self,
+        url: &str,
+        thread_id: &str,
+    ) -> Option<codex_api::ResponsesWebsocketConnect> {
+        let engine = self.engine.get()?.upgrade()?;
+        if engine.plan_authorization.is_some()
+            || engine.manager.auth_manager().auth_mode()
+                != Some(codex_protocol::auth::AuthMode::ApiKey)
+        {
+            return None;
+        }
+        let private_origin = {
+            let binding = engine.sentinel.read().expect("sentinel poisoned");
+            let (base, _, excluded) = binding.as_ref()?;
+            if excluded.is_some() {
+                return None;
+            }
+            base.strip_prefix("http://127.0.0.1:")?.trim_end_matches('/').to_owned()
+        };
+        if !url.starts_with(&format!("ws://127.0.0.1:{private_origin}/p-")) {
+            return None;
+        }
+        let control = self.threads.lock().expect("interception index poisoned")
+            .get(thread_id)?.upgrade()?;
+        control.sentinel_provider.get()?;
+        let control = Arc::downgrade(&control);
+        let engine = Arc::downgrade(&engine);
+        let expected_url = url.to_owned();
+        Some(Arc::new(move |request| {
+            let control = control.clone();
+            let engine = engine.clone();
+            let expected_url = expected_url.clone();
+            Box::pin(async move {
+                let retired = || codex_api::ApiError::Stream("Native WebSocket owner ended".into());
+                let control = control.upgrade().ok_or_else(retired)?;
+                let engine = engine.upgrade().ok_or_else(retired)?;
+                crate::model_websocket_bridge::connect(engine, control, expected_url, request).await
             })
         }))
     }
@@ -7990,6 +8054,7 @@ mod tests {
                 .native_agents
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
+                    managed_tools: Vec::new(),
                     max_depth: 1,
                     inherited_instructions: None,
                     allowed: Default::default(),
@@ -9353,6 +9418,7 @@ mod mcp_policy_tests {
             root.native_agents
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
+                    managed_tools: Vec::new(),
                     max_depth: 1,
                     inherited_instructions: None,
                     allowed: Default::default(),

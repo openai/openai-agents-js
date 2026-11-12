@@ -31,6 +31,8 @@ mod local_storage;
 mod mcp_result_control;
 mod mcp_roster;
 mod model_websocket;
+mod model_websocket_bridge;
+mod model_websocket_prefix;
 mod native_agents;
 mod native_interception;
 mod node_runtime;

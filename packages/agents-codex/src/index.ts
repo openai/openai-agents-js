@@ -178,6 +178,7 @@ export { NativeAgents, NativeRole } from './runtime/native-agents';
 export type {
   NativeAgentsOptions,
   NativeRoleOptions,
+  NativeRoleTool,
   NativeToolCall,
   ChildInvocation,
   ChildBeforeStepContext,
@@ -532,6 +533,10 @@ export type {
 } from './runtime/responses-compaction';
 
 export { applyPatchBatchTool, applyPatchTool } from './runtime/apply-patch';
+export {
+  ConversationsHistory,
+  ConversationsWriteError,
+} from './runtime/conversations';
 export type {
   ApplyPatchEditor,
   ApplyPatchOperation,

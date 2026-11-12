@@ -665,7 +665,7 @@ function manualCaptureRefusal(
     try {
       selection.budget.checkpoint();
     } catch {
-      return 'Cannot capture an active run with token or cost budget limits';
+      return 'Cannot capture an active run with estimated-cost budget limits';
     }
   }
   if (
@@ -4982,6 +4982,11 @@ export class Session<OutputT = string, Context = unknown> {
   /** @internal Public voice lifecycle operations cannot join their own callbacks. */
   _checkVoiceOperation(operation: string): void {
     this.checkCallbackOperation(operation);
+  }
+
+  /** @internal Serialized history operations cannot join their own tool callback. */
+  _checkHistoryOperation(): void {
+    this.checkCallbackOperation('access Conversations history for');
   }
 
   /** @internal One response's admitted native tools, without a fabricated model request. */
@@ -15405,11 +15410,7 @@ export class Session<OutputT = string, Context = unknown> {
         );
     };
     check();
-    const checkpointBudget = run.selection?.budget?.checkpoint();
-    const resumeBudget =
-      checkpointBudget === undefined
-        ? undefined
-        : Object.freeze({ maxRequests: checkpointBudget.maxRequests });
+    const resumeBudget = run.selection?.budget?.portableLimits();
     return {
       check,
       open: () => {

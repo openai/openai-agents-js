@@ -897,6 +897,10 @@
       "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
     },
     {
+      "path": "sdk-websocket-message-transport.patch",
+      "sha256": "0065a35b35f53b253a273abf4873a2e5598a433e5eabd80c35b624761df79772"
+    },
+    {
       "path": "sdk-acknowledged-provider-window.patch",
       "sha256": "cbbbd43cfef7f8ae00f23ab6a2e87d6ccd98a1f2e3b32b7b8f470d529a17d4e1"
     },
@@ -953,9 +957,13 @@
       "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
     },
     {
+      "path": "sdk-managed-agent-tools.patch",
+      "sha256": "73a136e46af2e85112ce1f29c4b971e1ee1909ebe2f0bc6a50ea704f96d74a15"
+    },
+    {
       "path": "sdk-run-model-settings-override.patch",
       "sha256": "8a248758e904e7f97ecd968531f91097995f8db6d39229385aa95880f251e20d"
     }
   ],
-  "result_tree": "c8861e462805bc4de42cf62695addab1c7273594"
+  "result_tree": "3c38b0cb54fa78342fdebc6089d2cc27b8a5280f"
 }

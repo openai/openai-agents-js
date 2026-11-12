@@ -57,6 +57,22 @@ console.log((await turn.wait()).finalOutput);
 
 Opening validates and records the entire batch without requesting a model response. User messages can include the [image and file parts](tools.md#input-tools-and-output) accepted by ordinary input; assistant messages contain settled text. Tool history and other roles reject. `agent.run()` accepts the same option. Choose either initial history or `state`/resume; they cannot be combined. Restore retains the recorded items without seeding them again.
 
+### Capture one-shot history for replay
+
+With the current [source build](building.md), pass `returnHistory: true` to `agent.run()` or `Runner.run()` to capture original conversation records. Replay the returned `history` through another Session's `transactHistory()`. Use `returnState: true` to capture a portable checkpoint. You can request both independently.
+
+The [one-shot history replay example](../../classic/docs/native/history-replay.mts) captures a scripted answer and replays its original records into a new Session. It requires Node.js 24, [matching built packages and native runtime](building.md), and direct loopback routing for the scripted provider. It needs no model credentials or external service. Run it from the repository root:
+
+```sh
+pnpm exec tsx examples/classic/docs/native/history-replay.mts
+```
+
+The command prints `continued record` and checks both final answers, exactly two model requests, and the earlier input and answer in the replay request. The new Session uses the application's current Agent instructions and declarations.
+
+The capture excludes system and developer messages. Replay uses the destination Session's provider credentials and tool grants. Retained tool calls and results provide context without executing those calls again. See [original history reads and edits](state.md#original-history-reads-and-edits) for replay validation and replacement.
+
+One-shot capture allows up to 4,096 original records and 8 MiB of serialized history. The SDK reports a size error after the task finishes, so retrying can repeat tool effects. For larger histories, open a Session and use [bounded history reads](state.md#original-history-reads-and-edits).
+
 ### Choose a cancellation lifetime
 
 Use the signal or control that owns the work you want to stop:
