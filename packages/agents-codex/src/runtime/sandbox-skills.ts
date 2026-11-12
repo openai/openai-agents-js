@@ -23,6 +23,34 @@ import {
   type ToolCallContext,
 } from './tools';
 
+type SkillLoadResult = { status: string; skill_name: string; path: string };
+type SkillTreeUsage = { members: number; bytes: number };
+const treeLimits = Object.freeze({
+  maxMembers: 4096,
+  maxDepth: 32,
+  maxBytes: 64 * 1024 * 1024,
+});
+
+function capturedTreeUsage(entry: Entry): SkillTreeUsage {
+  if (entry.type === 'file')
+    return {
+      members: 1,
+      bytes:
+        typeof entry.content === 'string'
+          ? Buffer.byteLength(entry.content)
+          : entry.content.byteLength,
+    };
+  if (entry.type !== 'dir')
+    throw new Error('Captured skill tree contains an unsupported entry');
+  const usage = { members: 1, bytes: 0 };
+  for (const child of Object.values(entry.children ?? {})) {
+    const next = capturedTreeUsage(child);
+    usage.members += next.members;
+    usage.bytes += next.bytes;
+  }
+  return usage;
+}
+
 const metadataLimits = Object.freeze({
   maxEntries: 1024,
   maxFileBytes: 64 * 1024,
@@ -136,6 +164,10 @@ export class SandboxSkillLease {
   #index: SkillIndexEntry[] = [];
   #active = false;
   readonly #grants: string;
+  readonly #retained = new Map<string, SkillTreeUsage>();
+  #retainedBytes = 0;
+  #retainedMembers = 0;
+  #loadTail: Promise<void> = Promise.resolve();
 
   constructor(
     readonly binding: SandboxSkillBinding,
@@ -225,10 +257,7 @@ export class SandboxSkillLease {
     this.checkPaths(this.#index);
   }
 
-  async load(
-    name: string,
-    signal: AbortSignal,
-  ): Promise<{ status: string; skill_name: string; path: string }> {
+  async load(name: string, signal: AbortSignal): Promise<SkillLoadResult> {
     this.admit();
     signal.throwIfAborted();
     const configuration = this.binding.configuration;
@@ -250,6 +279,24 @@ export class SandboxSkillLease {
           : `Lazy skill not found: ${name}`,
       );
     const match = matches[0];
+    // Admission stays with this lease; each queued caller retains its own signal.
+    const pending = this.#loadTail.then(() =>
+      this.loadDestination(match, signal),
+    );
+    this.#loadTail = pending.then(
+      () => {},
+      () => {},
+    );
+    return pending;
+  }
+
+  private async loadDestination(
+    match: SkillIndexEntry,
+    signal: AbortSignal,
+  ): Promise<SkillLoadResult> {
+    this.admit();
+    signal.throwIfAborted();
+    const configuration = this.binding.configuration;
     const destination = match.path ?? match.name;
     const sandbox = this.#sandbox!;
     if (!sandbox.pathExists || !sandbox.materializeEntry)
@@ -265,21 +312,34 @@ export class SandboxSkillLease {
       const relative = configuration.skillsPath
         ? destination.slice(configuration.skillsPath.length + 1)
         : destination;
+      const previous = this.#retained.get(destination) ?? {
+        members: 0,
+        bytes: 0,
+      };
       const entry = await resolveLazySkillEntry(
         configuration.lazyFrom!.source,
         relative,
         {
           limits: {
-            maxMembers: 4096,
-            maxDepth: 32,
-            maxBytes: 64 * 1024 * 1024,
+            maxMembers:
+              treeLimits.maxMembers - this.#retainedMembers + previous.members,
+            maxDepth: treeLimits.maxDepth,
+            maxBytes:
+              treeLimits.maxBytes - this.#retainedBytes + previous.bytes,
           },
           sourceGrants: sandbox.state.manifest.extraPathGrants,
         },
       );
       this.admit();
       signal.throwIfAborted();
+      const usage = capturedTreeUsage(entry);
       await sandbox.materializeEntry({ path: destination, entry });
+      // Successful writes retain these bytes even if the caller then observes cancellation.
+      if (this.#active) {
+        this.#retainedMembers += usage.members - previous.members;
+        this.#retainedBytes += usage.bytes - previous.bytes;
+        this.#retained.set(destination, usage);
+      }
       this.admit();
       signal.throwIfAborted();
     }
@@ -293,6 +353,9 @@ export class SandboxSkillLease {
   retire(): void {
     this.#active = false;
     this.#index = [];
+    this.#retained.clear();
+    this.#retainedBytes = 0;
+    this.#retainedMembers = 0;
     this.#sandbox = undefined;
     this.#environment = undefined;
   }
