@@ -923,7 +923,11 @@
     {
       "path": "sdk-v2-interrupt-residency.patch",
       "sha256": "cbc37c09cca0012ceccca17cf8f8e45cc41f642725acaf450bc90e59fcdb6326"
+    },
+    {
+      "path": "sdk-trace-provider-restart.patch",
+      "sha256": "f34d52ce9a626d24097742c98dd36bd599313bbe8bf3c5a67e6c4386e5770ec3"
     }
   ],
-  "result_tree": "5dba146a719206279d9cea7872e5dc3dc4cc8587"
+  "result_tree": "19df56adbe6e63919c364837326b7a9d0e8272f3"
 }
