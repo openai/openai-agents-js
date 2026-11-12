@@ -245,7 +245,7 @@ import {
 import {
   HttpMCP,
   StdioMCP,
-  selectHttpLeaves,
+  operationMcpRoster,
   resourceMcpBinding,
   mcpConfig,
   mcpPolicies,
@@ -5652,40 +5652,12 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TurnAborted('HTTP activation no longer owns this root');
     };
     assertOwner();
-    const names = run?.selection?.names;
-    const selectedNames =
-      names === undefined
-        ? undefined
-        : new Set(names.map((name) => encode([name.namespace, name.name])));
-    const next = this.mcpBindings.flatMap((server) => {
-      if (!(server instanceof HttpMCP) || server.activation !== 'operation')
-        return this.defaultMcpTools.filter(
-          (selected) =>
-            selected.name === server.name &&
-            (selected.tools.length > 0 ||
-              this.mcpTools.some((active) => active.name === selected.name)),
-        );
-      if (!server.tools.length)
-        return this.mcpTools.filter(
-          (active) =>
-            active.name === server.name &&
-            this.defaultMcpTools.some(
-              (selected) => selected.name === server.name,
-            ),
-        );
-      const projected =
-        selectedNames === undefined ? [] : mcpToolNames([server]);
-      const tools =
-        selectedNames === undefined
-          ? (this.defaultMcpTools.find(
-              (selected) => selected.name === server.name,
-            )?.tools ?? [])
-          : server.tools.filter((_raw, index) => {
-              const name = projected[index];
-              return selectedNames.has(encode([name.namespace, name.name]));
-            });
-      return tools.length ? [selectHttpLeaves(server, tools)] : [];
-    });
+    const next = operationMcpRoster(
+      this.mcpBindings,
+      this.defaultMcpTools,
+      this.mcpTools,
+      run?.selection?.names,
+    );
     const config = encode(
       mcpConfig(
         next,
