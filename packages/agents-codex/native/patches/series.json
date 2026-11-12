@@ -903,7 +903,11 @@
     {
       "path": "sdk-chat-completions-raw-response.patch",
       "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
+    },
+    {
+      "path": "sdk-imported-provider-item-cleanup.patch",
+      "sha256": "224a45ca3ef842c473c57e4b3112311b2430ba178956ac066549b9bed6d21d65"
     }
   ],
-  "result_tree": "387fb32779c0349e57b09ff5a9b542f9d11d5c59"
+  "result_tree": "9185c21ef091cd9ce9272fd970cc4a743862453a"
 }
