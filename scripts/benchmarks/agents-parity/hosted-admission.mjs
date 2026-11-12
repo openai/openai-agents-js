@@ -1,5 +1,7 @@
 /** Untimed, SDK-free container admission; no measurement execution path. */
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
+import console from 'node:console';
 import { execFile, fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import dgram from 'node:dgram';
@@ -7,7 +9,9 @@ import { lstat, chmod, copyFile, mkdir, mkdtemp, readFile, readlink, realpath, w
 import http from 'node:http';
 import net from 'node:net';
 import { dirname, join, parse } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import process from 'node:process';
+import { clearTimeout, setTimeout } from 'node:timers';
+import { fileURLToPath, URL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
@@ -170,7 +174,12 @@ async function denied(protocol, family) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { protocol === 'tcp' ? socket.destroy() : socket.close(); } catch {}
+      try {
+        if (protocol === 'tcp') socket.destroy();
+        else socket.close();
+      } catch {
+        // Cleanup has been preserving the original probe result.
+      }
       if (!error || !['ENETUNREACH', 'EHOSTUNREACH', 'EACCES', 'EPERM', ...(family === 6 ? ['EAFNOSUPPORT'] : [])].includes(error.code)) reject(new Error('Denied-egress control did not prove local rejection'));
       else resolve({ protocol, family, code: error.code });
     };
@@ -187,7 +196,10 @@ async function request(port, path, body) {
       let text = '';
       response.on('data', (chunk) => { text += chunk; if (text.length > 1024 * 1024) call.destroy(new Error('Peer output overflow')); });
       response.once('error', reject);
-      response.once('end', () => { response.statusCode === 200 ? resolve(text) : reject(new Error('Peer HTTP failure')); });
+      response.once('end', () => {
+        if (response.statusCode === 200) resolve(text);
+        else reject(new Error('Peer HTTP failure'));
+      });
     });
     call.setTimeout(3000, () => call.destroy(new Error('Peer request timeout')));
     call.once('error', reject);
