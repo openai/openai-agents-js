@@ -1,4 +1,4 @@
-import { Manifest, localDir, skills } from '@openai/agents/sandbox';
+import { Manifest, localDir, skills } from '@openai/agents/classic/sandbox';
 import { localDirLazySkillSource } from '@openai/agents/sandbox/local';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -143,12 +143,16 @@ async function openSourceParent(
   }
 }
 
-export async function readLocalSourceFile(path: string): Promise<Uint8Array> {
+export async function readLocalSourceFile(
+  path: string,
+  maxBytes?: number,
+  prefix?: boolean,
+): Promise<Uint8Array> {
   const { parent, name } = await openSourceParent(path, 'local_file');
   try {
     if (!name) throw pathChanged('local_file', path);
     try {
-      return await parent.readFile(name);
+      return await parent.readFile(name, maxBytes, prefix);
     } catch (error) {
       sourceError(error, 'local_file', path);
     }
@@ -224,18 +228,18 @@ function bindDirectory(
         sourceError(error, 'local_dir', `${path}/${name}`);
       }
     },
-    async readFile(name) {
+    async readFile(name, maxBytes, prefix) {
       try {
-        return await directory.readFile(name);
+        return await directory.readFile(name, maxBytes, prefix);
       } catch (error) {
         sourceError(error, 'local_dir', `${path}/${name}`);
       }
     },
-    async entries() {
+    async entries(maxEntries) {
       try {
         // Match Node's scandir ordering so bounded materialization queues retain
         // their prior failure/skip behavior on every native backend.
-        return (await directory.entries()).sort((left, right) =>
+        return (await directory.entries(maxEntries)).sort((left, right) =>
           Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)),
         );
       } catch (error) {
@@ -275,31 +279,46 @@ async function withSourceDirectory<T>(
 export async function readLocalSourceFileAt(
   root: NativeSourceDirectory,
   components: readonly string[],
+  maxBytes?: number,
+  prefix?: boolean,
 ): Promise<Uint8Array> {
   if (components.length === 0) {
     throw new UserError('Local source file needs a relative component.');
   }
   return withSourceDirectory(root, components.slice(0, -1), (directory) =>
-    directory.readFile(components[components.length - 1]),
+    directory.readFile(components[components.length - 1], maxBytes, prefix),
   );
 }
 
 export async function readLocalSourceEntriesAt(
   root: NativeSourceDirectory,
   components: readonly string[],
+  maxEntries?: number,
 ): Promise<NativeSourceEntry[]> {
   return withSourceDirectory(root, components, (directory) =>
-    directory.entries(),
+    directory.entries(maxEntries),
   );
 }
 
 /** Walk with entry lists and relative names, retaining no directory per depth. */
 export async function* walkLocalSourceDirectoryEntries(
   root: NativeSourceDirectory,
+  limits?: { maxMembers: number; maxDepth: number },
 ): AsyncGenerator<{ components: string[]; type: NativeSourceEntry['type'] }> {
+  let remaining = limits?.maxMembers;
+  if (remaining !== undefined) {
+    if (remaining < 1)
+      throw new RangeError('Source tree member limit exceeded');
+    remaining--;
+  }
+  const entriesAt = async (components: string[]) => {
+    const entries = await readLocalSourceEntriesAt(root, components, remaining);
+    if (remaining !== undefined) remaining -= entries.length;
+    return entries;
+  };
   yield { components: [], type: 'directory' };
   const stack = [
-    { components: [] as string[], entries: await root.entries(), index: 0 },
+    { components: [] as string[], entries: await entriesAt([]), index: 0 },
   ];
   while (stack.length > 0) {
     const frame = stack[stack.length - 1];
@@ -309,9 +328,11 @@ export async function* walkLocalSourceDirectoryEntries(
       continue;
     }
     const components = [...frame.components, entry.name];
+    if (limits && components.length > limits.maxDepth)
+      throw new RangeError('Source tree depth limit exceeded');
     yield { components, type: entry.type };
     if (entry.type === 'directory') {
-      const entries = await readLocalSourceEntriesAt(root, components);
+      const entries = await entriesAt(components);
       stack.push({ components, entries, index: 0 });
     }
   }

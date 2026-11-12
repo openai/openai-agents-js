@@ -149,6 +149,35 @@ export { retainManagedWorkspaceSnapshot } from './sandboxes/shared/localSnapshot
 
 export { renderRemoteMountPolicyInstructions } from './runtime/prompts';
 
+// Resource-only skill operations; no Classic capability or agent runtime.
+export {
+  createSkillConfiguration,
+  processSkillManifest,
+  resolveSkillRuntimeMetadata,
+  resolveSkillsMetadata,
+  renderSkillsDiscoveryInstructions,
+  renderSkillsInstructions,
+  resolveLazySkillEntry,
+  joinRelativePaths,
+} from './skillResources';
+export type {
+  SkillConfiguration,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+} from './skillResources';
+
+export { modelWorkspaceResourcePath } from './workspacePaths';
+
+export { skillWorkspaceRoot } from './skillResources';
+
+export {
+  getSandboxStateIdentity,
+  getLocalSandboxStateAuthority,
+  isDeserializedSandboxState,
+} from './internal/sessionStateTrust';
+
 export { SandboxMemoryStorage } from './memory/storage';
 export { memory } from './capabilities/memory';
 export {
@@ -157,3 +186,5 @@ export {
   formatRawMemory,
   formatRolloutSummary,
 } from './memory/artifacts';
+
+export { beforeGitRepoCopy } from './internal/gitRepoCopy';

@@ -964,6 +964,39 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(stat(session.state.workspaceRootPath)).rejects.toThrow();
   });
 
+  it('preserves binary manifest payloads through JSON serialization', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') return success('Docker version test');
+        if (args[0] === 'run') return success('container-binary\n');
+        if (args[0] === 'rm') return success();
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const payload = new Uint8Array([0, 255, 128, 10]);
+    const session = await client.create(
+      new Manifest({
+        entries: { 'data.bin': { type: 'file', content: payload } },
+      }),
+    );
+    try {
+      const saved = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      const restored = await client.deserializeSessionState(saved);
+      expect(restored.manifest.entries['data.bin']).toEqual({
+        type: 'file',
+        content: payload,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
   it('applies, copies, overrides, and serializes user-defined labels', async () => {
     let runCount = 0;
     processMocks.runSandboxProcess.mockImplementation(
@@ -1645,6 +1678,13 @@ describe('DockerSandboxClient unit behavior', () => {
       { name: 'link', path: 'mounted/link', type: 'other' },
     ]);
     await expect(
+      session.listDir({ path: 'mounted', maxEntries: 1 }),
+    ).rejects.toThrow(/entry limit/);
+    await expect(
+      session.listDir({ path: 'mounted', maxEntries: 3 }),
+    ).resolves.toHaveLength(3);
+
+    await expect(
       session.createEditor().createFile({
         type: 'create_file',
         path: 'mounted/host-only.txt',
@@ -1660,7 +1700,7 @@ describe('DockerSandboxClient unit behavior', () => {
           command.includes('base64 --') ||
           command.includes('find '),
       );
-    expect(filesystemCommands).toHaveLength(3);
+    expect(filesystemCommands).toHaveLength(5);
     for (const command of filesystemCommands) {
       expect(command).toContain('exec -i');
       expect(command).toContain('container-123');

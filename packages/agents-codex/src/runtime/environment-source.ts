@@ -1,3 +1,4 @@
+import type { SandboxSkillLease } from './sandbox-skills';
 import type { SandboxMemoryOwner } from './sandbox-memory';
 import type { CanonicalHistorySnapshot } from './history';
 import type { ManagedWorkspaceBinding } from './managed-workspace';
@@ -34,6 +35,7 @@ interface LeaseState {
   readonly workspaceInstructions?: string;
   readonly sandboxMemory?: SandboxMemoryOwner;
   readonly observeSandboxOperation?: SandboxOperationObserver;
+  readonly skillLease?: SandboxSkillLease;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -52,6 +54,7 @@ export function createEnvironmentLease<Context>(
   managedWorkspace?: ManagedWorkspaceBinding,
   workspaceInstructions?: string,
   observeSandboxOperation?: SandboxOperationObserver,
+  skillLease?: SandboxSkillLease,
   sandboxMemory?: SandboxMemoryOwner,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
@@ -65,6 +68,7 @@ export function createEnvironmentLease<Context>(
     workspaceInstructions,
     sandboxMemory,
     observeSandboxOperation,
+    skillLease,
   };
   const close = () => {
     if (state.claimed)
@@ -125,6 +129,11 @@ export class EnvironmentAcquisition {
   /** @internal The exact provider lease supplies the sink namespace. */
   get observeSandboxOperation(): SandboxOperationObserver | undefined {
     return this.state?.observeSandboxOperation;
+  }
+
+  /** @internal Current resource authority, carried by this exact acquisition. */
+  get skillLease(): SandboxSkillLease | undefined {
+    return this.state?.skillLease;
   }
 
   /** @internal Fresh declaration presence; never restored from checkpoint data. */

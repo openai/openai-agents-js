@@ -8,9 +8,12 @@ import {
   applyPatchTool,
   isFunctionApprovalRequest,
   localStorage,
+  parseSessionState,
+  tool,
 } from '../../src';
 import { ModelServer, message } from './fixtures/model-server';
 import type { JsonObject } from '../../src/runtime/binding';
+import { z } from 'zod';
 
 afterEach(() => ModelServer.closeAll());
 
@@ -106,6 +109,88 @@ async function nextApproval(session: {
 }
 
 it.each([true, false])(
+  'restores a pending typed patch approval with the current editor (approve=%s)',
+  async (approve) => {
+    const effects: unknown[] = [];
+    const sourceEdit = () => {
+      throw new Error('Source editor must not run');
+    };
+    const currentEdit = (operation: unknown) => {
+      effects.push(operation);
+      return { status: 'completed' as const, output: 'current editor result' };
+    };
+    const original = patchCall();
+    const server = new ModelServer([
+      [original],
+      [message('restored')],
+      [message('continued')],
+    ]);
+    await using selected = await provider(server);
+    const createAgent = (edit: typeof currentEdit) =>
+      new Agent({
+        instructions: 'Use the application editor.',
+        model: 'gpt-5',
+        provider: selected,
+        tools: [
+          applyPatchTool({
+            editor: { createFile: edit, updateFile: edit, deleteFile: edit },
+            needsApproval: true,
+          }),
+        ],
+      });
+    let state;
+    let sourceReply;
+    {
+      await using source = await createAgent(sourceEdit).session();
+      await source.submit('edit');
+      sourceReply = (await nextApproval(source)).approve();
+      expect(effects).toEqual([]);
+      state = parseSessionState(JSON.stringify(await source.suspend()));
+    }
+    await using restored = await createAgent(currentEdit).session({ state });
+    const request = await nextApproval(restored);
+    expect(request.callId).toBe('patch-1');
+    expect(effects).toEqual([]);
+    expect(server.requests).toHaveLength(1);
+    await expect(restored.respond(sourceReply)).rejects.toThrow();
+    const reply = approve
+      ? request.approve()
+      : request.reject('current refused edit');
+    await restored.respond(reply);
+    await expect(restored.respond(reply)).rejects.toThrow();
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe('restored');
+    expect(effects).toEqual(approve ? [original.operation] : []);
+    expect(
+      (server.requests[1].input as JsonObject[]).filter(
+        (item) => item.type === 'apply_patch_call_output',
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        call_id: 'patch-1',
+        status: approve ? 'completed' : 'failed',
+        output: approve ? 'current editor result' : 'current refused edit',
+      }),
+    ]);
+    const settled = parseSessionState(
+      JSON.stringify(await restored.saveState()),
+    );
+    await using replay = await createAgent(currentEdit).session({
+      state: settled,
+    });
+    expect((await (await replay.submit('continue')).wait()).finalOutput).toBe(
+      'continued',
+    );
+    expect(effects).toEqual(approve ? [original.operation] : []);
+    expect(
+      (server.requests[2].input as JsonObject[]).filter(
+        (item) => item.type === 'apply_patch_call_output',
+      ),
+    ).toHaveLength(1);
+    server.assertExhausted();
+  },
+);
+
+it.each([true, false])(
   'gates the native editor through its exact approval (approve=%s)',
   async (approve) => {
     let effects = 0;
@@ -168,3 +253,123 @@ it.each([true, false])(
     server.assertExhausted();
   },
 );
+
+it.each(['declaration', 'operation', 'effective_operation'] as const)(
+  'refuses a changed pending patch %s before editor execution',
+  async (changed) => {
+    let effects = 0;
+    const execute = () => {
+      effects++;
+      throw new Error('Editor must not run');
+    };
+    const server = new ModelServer([[patchCall()]]);
+    await using selected = await provider(server);
+    const instructions = 'Use the application editor.';
+    const agent = new Agent({
+      instructions,
+      model: 'gpt-5',
+      provider: selected,
+      tools: [
+        applyPatchTool({
+          editor: {
+            createFile: execute,
+            updateFile: execute,
+            deleteFile: execute,
+          },
+          needsApproval: true,
+        }),
+      ],
+    });
+    let raw;
+    {
+      await using source = await agent.session();
+      await source.submit('edit');
+      await nextApproval(source);
+      raw = JSON.parse(JSON.stringify(await source.suspend()));
+    }
+    let current = agent;
+    if (changed === 'declaration') {
+      current = new Agent({
+        instructions,
+        model: 'gpt-5',
+        provider: selected,
+        tools: [
+          tool({ name: 'apply_patch', parameters: z.object({}), execute }),
+        ],
+      });
+    } else {
+      const pending = raw.manual_continuation.pending_manual[0];
+      const field =
+        changed === 'operation' ? 'arguments' : 'effective_arguments';
+      const call = JSON.parse(pending[field] ?? pending.arguments);
+      call.operation.path = 'application://changed';
+      pending[field] = JSON.stringify(call);
+    }
+    await expect(
+      current.session({ state: parseSessionState(JSON.stringify(raw)) }),
+    ).rejects.toThrow();
+    expect(server.requests).toHaveLength(1);
+    expect(effects).toBe(0);
+    server.assertExhausted();
+  },
+);
+
+it('retains an accepted typed patch without output beside the pending approval', async () => {
+  const effects: string[] = [];
+  const first = {
+    ...patchCall(),
+    call_id: 'patch-first',
+    operation: { type: 'delete_file', path: 'application://first' },
+  };
+  const second = {
+    ...patchCall(),
+    call_id: 'patch-second',
+    operation: { type: 'delete_file', path: 'application://second' },
+  };
+  const server = new ModelServer([[first, second], [message('both settled')]]);
+  await using selected = await provider(server);
+  const editor = (label: string) => {
+    const edit = (operation: { path: string }) => {
+      effects.push(`${label}:${operation.path}`);
+    };
+    return new Agent({
+      instructions: 'Use the application editor.',
+      model: 'gpt-5',
+      provider: selected,
+      tools: [
+        applyPatchTool({
+          editor: { createFile: edit, updateFile: edit, deleteFile: edit },
+          needsApproval: (context) => context.callId === 'patch-second',
+        }),
+      ],
+    });
+  };
+  let state;
+  {
+    await using source = await editor('source').session();
+    await source.submit('edit twice');
+    const request = await nextApproval(source);
+    expect(request.callId).toBe('patch-second');
+    state = parseSessionState(JSON.stringify(await source.suspend()));
+  }
+  expect(effects).toEqual(['source:application://first']);
+  await using restored = await editor('current').session({ state });
+  const request = await nextApproval(restored);
+  expect(request.callId).toBe('patch-second');
+  await restored.respond(request.approve());
+  expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+    'both settled',
+  );
+  expect(effects).toEqual([
+    'source:application://first',
+    'current:application://second',
+  ]);
+  const outputs = (server.requests[1].input as JsonObject[]).filter(
+    (item) => item.type === 'apply_patch_call_output',
+  );
+  expect(outputs.map((item) => [item.call_id, item.status])).toEqual([
+    ['patch-first', 'completed'],
+    ['patch-second', 'completed'],
+  ]);
+  server.assertExhausted();
+});

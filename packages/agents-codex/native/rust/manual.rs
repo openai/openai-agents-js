@@ -23,12 +23,14 @@ struct ManualCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     namespace: Option<String>,
     arguments: String,
-    // Only current function or application Shell declarations can own a grant.
+    // Only current function, application Shell, or editor declarations can own a grant.
     // Completed custom calls retain their separate native history marker.
     #[serde(default, skip_serializing_if = "is_false")]
     custom: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     shell: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    patch: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     approval_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +47,9 @@ fn manual_request(key: &PendingKey, call: &ManualCall, model: Option<&str>) -> R
         "turnId":key.turn,"callId":call.call_id,"namespace":call.namespace,
         "tool":call.name,"arguments":arguments,"_sdk_python_tool":key.reply,
         "_sdk_code_origin":null,"_sdk_model":model, "_sdk_restored_approval":true, "_sdk_approval_required":call.approval_required}});
+    if !call.custom && !call.shell && !call.patch {
+        request["msg"]["_sdk_raw_function_arguments"] = json!(call.arguments);
+    }
     if let Some(arguments) = &call.effective_arguments {
         request["msg"]["_sdk_effective_arguments"] = serde_json::from_str(arguments)?;
     }
@@ -79,6 +84,7 @@ impl<'de> Deserialize<'de> for CanonicalResult {
             ResponseItem::FunctionCallOutput { .. }
                 | ResponseItem::CustomToolCallOutput { .. }
                 | ResponseItem::ShellCallOutput { .. }
+                | ResponseItem::ApplyPatchCallOutput { .. }
         ) {
             return Err(serde::de::Error::custom(
                 "manual result must be a tool output",
@@ -106,7 +112,7 @@ impl Receipt {
         let item = match self {
             Self::Text(text) => {
                 ensure!(
-                    !call.custom && !call.shell,
+                    !call.custom && !call.shell && !call.patch,
                     "legacy text cannot represent a typed call output"
                 );
                 let key = PendingKey {
@@ -132,15 +138,16 @@ impl Receipt {
             }
         };
         ensure!(
-            match (&item, call.custom, call.shell) {
+            match (&item, call.custom, call.shell, call.patch) {
                 (
                     ResponseItem::FunctionCallOutput {
                         call_id: Some(id), ..
                     },
                     false,
                     false,
+                    false,
                 )
-                | (ResponseItem::CustomToolCallOutput { call_id: id, .. }, true, false) =>
+                | (ResponseItem::CustomToolCallOutput { call_id: id, .. }, true, false, false) =>
                     *id == call.call_id,
                 (
                     ResponseItem::ShellCallOutput {
@@ -148,6 +155,7 @@ impl Receipt {
                     },
                     false,
                     true,
+                    false,
                 ) => {
                     let mut output = json!({"output": provider_fields.get("output")});
                     if let Some(limit) = provider_fields.get("max_output_length") {
@@ -162,6 +170,9 @@ impl Receipt {
                     provider_fields.get("call_id").and_then(Value::as_str)
                         == Some(call.call_id.as_str())
                         && crate::local_reconciliation::same_output_payload(&expected, &item)
+                }
+                (ResponseItem::ApplyPatchCallOutput { call_id, .. }, false, false, true) => {
+                    *call_id == call.call_id
                 }
                 _ => false,
             },
@@ -191,7 +202,7 @@ impl Receipt {
             return self.matches(&Self::Native(right.0.item.clone()), call, turn);
         }
 
-        if call.shell {
+        if call.shell || call.patch {
             let left = match self {
                 Self::Provisional(item) => Self::Native(item.clone()).item(call, turn)?,
                 _ => self.item(call, turn)?,
@@ -568,6 +579,36 @@ fn history(value: &Value) -> Result<History> {
                         call_id,
                         custom: false,
                         shell: false,
+                        patch: false,
+                        approval_required: false,
+                        effective_arguments: None,
+                    });
+                }
+                item @ ResponseItem::ApplyPatchCall { .. } => {
+                    let envelope = canonical.as_ref().context("Missing canonical patch call")?;
+                    ensure!(
+                        crate::local_reconciliation::owns_application_patch(envelope),
+                        "Provider patch cannot own a manual grant"
+                    );
+                    let ResponseItem::ApplyPatchCall { call_id, .. } = &item else {
+                        unreachable!()
+                    };
+                    ensure!(
+                        !result.turn.is_empty()
+                            && !result.calls.iter().any(|call| &call.call_id == call_id),
+                        "invalid or duplicate manual checkpoint call"
+                    );
+                    if let Some(source) = &source {
+                        result.sources.insert(call_id.clone(), source.clone());
+                    }
+                    result.calls.push(ManualCall {
+                        call_id: call_id.clone(),
+                        name: "apply_patch".into(),
+                        namespace: None,
+                        arguments: serde_json::to_string(&item)?,
+                        custom: false,
+                        shell: false,
+                        patch: true,
                         approval_required: false,
                         effective_arguments: None,
                     });
@@ -599,6 +640,7 @@ fn history(value: &Value) -> Result<History> {
                         arguments: serde_json::to_string(&item)?,
                         custom: false,
                         shell: true,
+                        patch: false,
                         approval_required: false,
                         effective_arguments: None,
                     });
@@ -628,14 +670,17 @@ fn history(value: &Value) -> Result<History> {
                         call_id,
                         custom: true,
                         shell: false,
+                        patch: false,
                         approval_required: false,
                         effective_arguments: None,
                     });
                 }
                 item @ (ResponseItem::FunctionCallOutput { .. }
                 | ResponseItem::CustomToolCallOutput { .. }
-                | ResponseItem::ShellCallOutput { .. }) => {
+                | ResponseItem::ShellCallOutput { .. }
+                | ResponseItem::ApplyPatchCallOutput { .. }) => {
                     let shell = matches!(item, ResponseItem::ShellCallOutput { .. });
+                    let patch = matches!(item, ResponseItem::ApplyPatchCallOutput { .. });
                     let (id, custom) = match &item {
                         ResponseItem::FunctionCallOutput { call_id, .. } => (
                             call_id
@@ -644,6 +689,9 @@ fn history(value: &Value) -> Result<History> {
                                 .as_str(),
                             false,
                         ),
+                        ResponseItem::ApplyPatchCallOutput { call_id, .. } => {
+                            (call_id.as_str(), false)
+                        }
                         ResponseItem::CustomToolCallOutput { call_id, .. } => {
                             (call_id.as_str(), true)
                         }
@@ -662,7 +710,10 @@ fn history(value: &Value) -> Result<History> {
                         .calls
                         .iter()
                         .position(|call| {
-                            call.call_id == id && call.custom == custom && call.shell == shell
+                            call.call_id == id
+                                && call.custom == custom
+                                && call.shell == shell
+                                && call.patch == patch
                         })
                         .context(
                             "manual checkpoint output is orphaned or has the wrong call kind",
@@ -1059,7 +1110,8 @@ impl PythonTools {
             }
             EventMsg::RawResponseItem(item) if manual.attempt.as_ref() == Some(&event.id) => {
                 if let ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. } = &item.item
+                | ResponseItem::CustomToolCall { call_id, .. }
+                | ResponseItem::ApplyPatchCall { call_id, .. } = &item.item
                 {
                     manual.observed_calls.insert(call_id.clone());
                 } else if let ResponseItem::ShellCall {
@@ -1096,7 +1148,13 @@ impl PythonTools {
         native: Option<ResponseItem>,
     ) {
         let item = native
-            .filter(|item| matches!(item, ResponseItem::ShellCallOutput { .. }))
+            .filter(|item| {
+                matches!(
+                    item,
+                    ResponseItem::ShellCallOutput { .. }
+                        | ResponseItem::ApplyPatchCallOutput { .. }
+                )
+            })
             .unwrap_or_else(|| PythonOutput(response.clone()).receipt(key));
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         if let Some((frame, keys)) = manual.restored.as_mut() {
@@ -1376,6 +1434,10 @@ impl PythonTools {
                 ToolSpec::ApplicationShell { .. }
             ) == call.shell,
             "manual call kind differs from its current declaration"
+        );
+        ensure!(
+            matches!(&generation.entries[slot].spec, ToolSpec::ApplyPatch {}) == call.patch,
+            "manual patch kind differs from its current declaration"
         );
         ensure!(
             generation.manual_slots.as_ref().map_or_else(
@@ -1674,7 +1736,8 @@ impl PythonTools {
                     && expected.arguments == pending.arguments
                     && expected.custom == pending.custom
                     && expected.shell == pending.shell
-                    && (!pending.shell
+                    && expected.patch == pending.patch
+                    && (!(pending.shell || pending.patch)
                         || pending
                             .effective_arguments
                             .as_ref()
@@ -1696,7 +1759,13 @@ impl PythonTools {
                                         .expect("canonical Shell call")
                                         .remove("internal_chat_message_metadata_passthrough");
                                 }
-                                value == original
+                                if pending.patch {
+                                    value.get("type") == original.get("type")
+                                        && value.get("call_id") == original.get("call_id")
+                                        && value.get("operation") == original.get("operation")
+                                } else {
+                                    value == original
+                                }
                             })),
                 "manual pending call differs from original history"
             );
@@ -1752,7 +1821,8 @@ impl PythonTools {
                     ResponseItem::FunctionCallOutput {
                         call_id: Some(id), ..
                     }
-                    | ResponseItem::CustomToolCallOutput { call_id: id, .. } => {
+                    | ResponseItem::CustomToolCallOutput { call_id: id, .. }
+                    | ResponseItem::ApplyPatchCallOutput { call_id: id, .. } => {
                         return !later.contains(id.as_str());
                     }
                     ResponseItem::ShellCallOutput {
@@ -1918,6 +1988,12 @@ impl PythonTools {
             .context("manual request has no original call")?;
         let receipt = Receipt::Native(if call.shell {
             crate::local_reconciliation::shell_receipt(
+                &serde_json::from_str::<ResponseItem>(&call.arguments)?,
+                response,
+                &key.turn,
+            )?
+        } else if call.patch {
+            crate::local_reconciliation::application_patch_receipt(
                 &serde_json::from_str::<ResponseItem>(&call.arguments)?,
                 response,
                 &key.turn,
@@ -2254,6 +2330,7 @@ mod canonical_result_tests {
             arguments: "{}".into(),
             custom: false,
             shell: false,
+            patch: false,
             approval_required: false,
             effective_arguments: None,
         }

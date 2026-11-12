@@ -1,3 +1,7 @@
+import {
+  beforeGitRepoCopy,
+  type BeforeGitRepoCopy,
+} from './internal/gitRepoCopy';
 import type { Editor } from '../editor';
 import { UserError } from '../errors';
 import type { ToolOutputImage } from '../tool';
@@ -96,7 +100,19 @@ export type ReadFileArgs = {
 export type ListDirectoryArgs = {
   path: string;
   runAs?: string;
+  /** Reject before returning more than this many entries. */
+  maxEntries?: number;
 };
+
+export function normalizeDirectoryEntryLimit(
+  limit?: number,
+): number | undefined {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
+    throw new UserError(
+      'Directory entry limit must be a non-negative safe integer',
+    );
+  return limit;
+}
 
 export type SandboxDirectoryEntry = {
   name: string;
@@ -105,6 +121,7 @@ export type SandboxDirectoryEntry = {
 };
 
 export type MaterializeEntryArgs = {
+  [beforeGitRepoCopy]?: BeforeGitRepoCopy;
   path: string;
   entry: Entry;
   runAs?: string;
@@ -190,6 +207,7 @@ export function urlForExposedPort(
 export interface SandboxSession<
   TState extends SandboxSessionState = SandboxSessionState,
 > {
+  readonly [beforeGitRepoCopy]?: true;
   state: TState;
   start?(options?: SandboxSessionLifecycleOptions): Promise<void>;
   running?(): Promise<boolean>;
@@ -209,6 +227,8 @@ export interface SandboxSession<
   readFileNoFollow?(args: ReadFileArgs): Promise<string | Uint8Array>;
   /** Complete regular-file materialization through a no-follow workspace writer. */
   writeFileNoFollow?(args: MaterializeEntryArgs): Promise<void>;
+  /** Remove one workspace file or empty directory without following symlink components. */
+  removeEntryNoFollow?(path: string): Promise<void>;
   listDir?(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]>;
   pathExists?(path: string, runAs?: string): Promise<boolean>;
   directoryExists?(path: string, runAs?: string): Promise<boolean>;
