@@ -1,6 +1,7 @@
 // Declaration inspection and compatibility policy. This module only reads package files.
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
@@ -157,7 +158,13 @@ export function validateExportTreeTerminals(
 export function collectRuntimeTargets(exportNode, format) {
   return collectExportLeaves(exportNode).filter(({ condition }) => {
     const conditions = condition.split('.');
-    return conditions.includes(format) && !conditions.includes('types');
+    if (conditions.includes('types')) return false;
+    if (conditions.includes(format)) return true;
+    return (
+      conditions.includes('module-sync') &&
+      !conditions.includes('import') &&
+      !conditions.includes('require')
+    );
   });
 }
 
@@ -169,6 +176,7 @@ export function collectRuntimeConditionSets(exportNodes) {
     'default',
     'node',
     'node-addons',
+    'module-sync',
   ]);
   const conditionSets = new Map();
   for (const exportNode of exportNodes) {
@@ -203,6 +211,7 @@ export function resolveConditionalTarget(
     'default',
     'node',
     'node-addons',
+    ...(process.features.require_module ? ['module-sync'] : []),
     format,
   ]);
   for (const [condition, value] of Object.entries(node)) {
