@@ -526,7 +526,7 @@ export type {
   ResponsesCompactionContext,
 } from './runtime/responses-compaction';
 
-export { applyPatchTool } from './runtime/apply-patch';
+export { applyPatchBatchTool, applyPatchTool } from './runtime/apply-patch';
 export type {
   ApplyPatchEditor,
   ApplyPatchOperation,
