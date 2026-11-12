@@ -63,9 +63,6 @@ it.each([1, 2])(
     for await (const event of session.interactions()) {
       if (!isFunctionApprovalRequest(event)) continue;
       expect(effects).toEqual([]);
-      await expect(session.suspend()).rejects.toThrow(
-        'Cannot capture an active run with token or cost budget limits',
-      );
       await session.respond(event.approve());
       approved = true;
       break;
@@ -424,7 +421,7 @@ it('preserves the budget through a warm reply, refuses active capture, and reset
     provider,
     tools: [decision],
   });
-  const budget = { maxRequests: 1, maxTokens: 1000 };
+  const budget = { maxRequests: 1, maxEstimatedCostMicros: 1000 };
   await using session = await agent.session();
   const turn = await session.submit('go', { budget });
   const batch = await turn.wait({ until: 'manual_tool' });
@@ -432,7 +429,7 @@ it('preserves the budget through a warm reply, refuses active capture, and reset
   const request = decision.match(batch.requests[0]);
   if (!request) throw new Error('Expected the decision request');
   const reason =
-    'Cannot capture an active run with token or cost budget limits';
+    'Cannot capture an active run with estimated-cost budget limits';
   expect(await session.checkpointStatus({ kind: 'manualWait' })).toEqual({
     status: 'notReady',
     reasons: [reason],
@@ -475,11 +472,13 @@ it('refuses automatic active capture from a one-shot run without a handler', asy
     tools: [decision],
   });
   await expect(
-    agent.run('go', { budget: { maxRequests: 2, maxTokens: 1000 } }),
+    agent.run('go', {
+      budget: { maxRequests: 2, maxEstimatedCostMicros: 1000 },
+    }),
   ).rejects.toMatchObject({
     name: 'InteractionRequired',
     cause: expect.objectContaining({
-      message: 'Cannot capture an active run with token or cost budget limits',
+      message: 'Cannot capture an active run with estimated-cost budget limits',
     }),
   });
   server.assertExhausted();
@@ -686,3 +685,101 @@ it('requires the original request ceiling for one-shot manual resume', async () 
   ).resolves.toMatchObject({ finalOutput: 'Done' });
   server.assertExhausted();
 });
+
+it.each([
+  { maxTokens: 10, reported: true, missingUsage: 'stop', code: undefined },
+  {
+    maxTokens: 4,
+    reported: true,
+    missingUsage: 'stop',
+    code: 'run_budget_exceeded',
+  },
+  {
+    maxTokens: 10,
+    reported: false,
+    missingUsage: 'stop',
+    code: 'run_budget_usage_unavailable',
+  },
+  { maxTokens: 10, reported: false, missingUsage: 'continue', code: undefined },
+] as const)(
+  'preserves token admission through portable approval: %j',
+  async ({ maxTokens, reported, missingUsage, code }) => {
+    const effects: string[] = [];
+    const approved = tool({
+      name: 'approved',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: () => {
+        effects.push('approved');
+        return 'recorded';
+      },
+    });
+    const server = new ModelServer(
+      [
+        [call('approved', {}, { callId: 'pending' })],
+        ...(code ? [] : [[message('Done')]]),
+      ],
+      reported ? { input_tokens: 3, output_tokens: 1, total_tokens: 4 } : [],
+    );
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use the tool and answer.',
+      provider,
+      tools: [approved],
+    });
+    const budget = { maxTokens, maxRequests: 2, missingUsage };
+    const source = await agent.session();
+    let saved;
+    try {
+      await source.submit('begin', { budget });
+      for await (const event of source.interactions())
+        if (isFunctionApprovalRequest(event)) break;
+      saved = await source.suspend();
+    } finally {
+      await source.close();
+    }
+    expect(saved.format_version).toBe(17);
+    expect(saved.run_budget).toEqual({
+      version: 2,
+      maxTokens,
+      consumedTokens: reported ? 4 : 0,
+      usageMissing: !reported,
+      missingUsage,
+      maxRequests: 2,
+      admittedRequests: 1,
+    });
+    for (const resumeBudget of [
+      undefined,
+      { ...budget, maxTokens: maxTokens + 1 },
+      {
+        ...budget,
+        missingUsage:
+          missingUsage === 'stop' ? ('continue' as const) : ('stop' as const),
+      },
+    ])
+      await expect(
+        agent.session({ state: saved, resumeBudget }),
+      ).rejects.toThrow();
+    expect(server.requests).toHaveLength(1);
+    await using restored = await agent.session({
+      state: parseSessionState(JSON.stringify(saved)),
+      resumeBudget: budget,
+    });
+    for await (const event of restored.interactions())
+      if (isFunctionApprovalRequest(event)) {
+        await restored.respond(event.approve());
+        break;
+      }
+    if (code)
+      await expect(restored.restoredTurn!.wait()).rejects.toMatchObject({
+        code,
+      });
+    else
+      await expect(restored.restoredTurn!.wait()).resolves.toMatchObject({
+        finalOutput: 'Done',
+      });
+    expect(effects).toEqual(['approved']);
+    expect(server.requests).toHaveLength(code ? 1 : 2);
+    server.assertExhausted();
+  },
+);

@@ -659,7 +659,7 @@ function manualCaptureRefusal(
     try {
       selection.budget.checkpoint();
     } catch {
-      return 'Cannot capture an active run with token or cost budget limits';
+      return 'Cannot capture an active run with estimated-cost budget limits';
     }
   }
   if (
@@ -15319,11 +15319,7 @@ export class Session<OutputT = string, Context = unknown> {
         );
     };
     check();
-    const checkpointBudget = run.selection?.budget?.checkpoint();
-    const resumeBudget =
-      checkpointBudget === undefined
-        ? undefined
-        : Object.freeze({ maxRequests: checkpointBudget.maxRequests });
+    const resumeBudget = run.selection?.budget?.portableLimits();
     return {
       check,
       open: () => {
