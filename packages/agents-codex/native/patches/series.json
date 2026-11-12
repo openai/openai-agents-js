@@ -897,6 +897,10 @@
       "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
     },
     {
+      "path": "sdk-websocket-message-transport.patch",
+      "sha256": "0065a35b35f53b253a273abf4873a2e5598a433e5eabd80c35b624761df79772"
+    },
+    {
       "path": "sdk-acknowledged-provider-window.patch",
       "sha256": "cbbbd43cfef7f8ae00f23ab6a2e87d6ccd98a1f2e3b32b7b8f470d529a17d4e1"
     },
@@ -953,5 +957,5 @@
       "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
     }
   ],
-  "result_tree": "9104ca63c2c66974c901ecb2019fa886a2692b15"
+  "result_tree": "6406f27406a4def9e24a95bb1cd44beeb35c70cd"
 }

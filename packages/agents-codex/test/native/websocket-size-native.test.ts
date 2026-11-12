@@ -37,6 +37,7 @@ function padded(body: JsonObject, bytes: number, unit = 'a'): JsonObject {
 async function routePeer(
   restore: (body: JsonObject, request: number) => JsonObject,
   failure?: 'send' | 'receive',
+  omitModel = false,
 ) {
   const routes = new NativeProviderRoutes();
   let origin = '';
@@ -50,6 +51,7 @@ async function routePeer(
     characters: number;
     previous: unknown;
     inputs: number;
+    hasModel: boolean;
   }[] = [];
   const failures: { nonce: string; oversized: boolean }[] = [];
   const remote = {
@@ -62,6 +64,7 @@ async function routePeer(
         characters: payload.length,
         previous: body.previous_response_id,
         inputs: Array.isArray(body.input) ? body.input.length : 0,
+        hasModel: Object.hasOwn(body, 'model'),
       });
       if (failure === 'send') throw new Error('Synthetic uncertain send');
     },
@@ -92,6 +95,7 @@ async function routePeer(
         control: 'size-fixture',
         kind: 'generation',
         model: 'fixture',
+        model_omitted: omitModel,
         completion: { response_id: responseId, model: 'fixture', output: [] },
       });
     },
@@ -134,9 +138,9 @@ async function routePeer(
     ): Promise<'completed' | 'closed'> {
       const body: JsonObject = {
         type: 'response.create',
-        model: 'fixture',
-        ...changed,
+        ...(omitModel ? {} : { model: 'fixture' }),
         input: input('next'),
+        ...changed,
         client_metadata: {
           sdk_sentinel_thread: 'size-fixture',
           sdk_sentinel_nonce: String(++request),
@@ -218,6 +222,44 @@ it('sizes continuation deltas and rejects an oversized full resend', async () =>
   expect(peer.sent.length).toBe(2);
   expect(peer.failures).toEqual([{ nonce: '3', oversized: true }]);
 }, 60_000);
+
+it('continues an omitted-model request using the admitted completion model', async () => {
+  const restored: JsonObject[] = [];
+  const peer = await routePeer(
+    (body) => {
+      restored.push(structuredClone(body));
+      return body;
+    },
+    undefined,
+    true,
+  );
+  const prompt = { id: 'pmpt_carrier_fixture' };
+  expect(await peer.exchange(undefined, { prompt })).toBe('completed');
+  expect(await peer.exchange('resp_size_1', { prompt })).toBe('completed');
+  const fullInput = [...input('next'), ...input('next'), ...input('retry')];
+  expect(await peer.exchange(undefined, { prompt, input: fullInput })).toBe(
+    'completed',
+  );
+  expect(restored).toHaveLength(3);
+  for (const body of restored) {
+    expect(body).not.toHaveProperty('model');
+    expect(body.prompt).toEqual(prompt);
+  }
+  expect(restored[1].input).toEqual([...input('next'), ...input('next')]);
+  expect(peer.sent).toHaveLength(3);
+  expect(peer.sent[0]).toMatchObject({ hasModel: false, inputs: 1 });
+  expect(peer.sent[1]).toMatchObject({
+    hasModel: false,
+    previous: 'resp_size_1',
+    inputs: 1,
+  });
+  expect(peer.sent[2]).toMatchObject({
+    hasModel: false,
+    previous: undefined,
+    inputs: 3,
+  });
+  expect(peer.failures).toEqual([]);
+});
 
 it.each(['send', 'receive'] as const)(
   'keeps an uncertain %s failure distinct from oversize without retrying',

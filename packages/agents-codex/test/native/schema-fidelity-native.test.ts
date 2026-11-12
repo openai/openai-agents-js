@@ -54,6 +54,7 @@ function lookup(
     ...identity,
     parameters: z.object({
       key: z.string().min(minimum).describe('Record key'),
+      offset: z.number().min(0),
       record: z.object({
         owner: z.object({ team: z.string().min(2) }),
         label: z.string().min(4),
@@ -135,8 +136,10 @@ async function fixture(
     response.end();
   });
   servers.push(server);
-  if (websocket) {
-    const ws = new WebSocketServer({ server, perMessageDeflate: false });
+  const ws = websocket
+    ? new WebSocketServer({ server, perMessageDeflate: false })
+    : undefined;
+  if (ws) {
     sockets.push(ws);
     ws.on('connection', (socket) =>
       socket.on('message', (bytes) => {
@@ -160,7 +163,7 @@ async function fixture(
     supportsWebsockets: websocket,
   });
   providers.push(provider);
-  return { provider, received, frames };
+  return { provider, received, frames, ws };
 }
 
 async function answer(session: Session, text: string) {
@@ -207,6 +210,16 @@ describe('native function schema fidelity', () => {
       if (websocket) expect(peer.received).toHaveLength(0);
       // A second turn exercises the WebSocket continuation receipt.
       await answer(session, 'Remember another record.');
+      if (websocket) {
+        const generations = peer.frames.filter(
+          (frame) => frame.generate !== false,
+        );
+        expect(generations).toHaveLength(2);
+        expect(generations[1].previous_response_id).toMatch(/^resp_schema_/);
+        const delta = JSON.stringify(generations[1].input);
+        expect(delta).toContain('Remember another record.');
+        expect(delta).not.toContain('Remember the record.');
+      }
       const state = await session.saveState();
       await session.close();
       const boundary = requests.length;
@@ -435,3 +448,35 @@ it('does not replay a WebSocket request accepted before a disconnect', async () 
   );
   expect(peer.received.length).toBe(0);
 }, 30_000);
+
+it('reconnects a retained WebSocket after an idle peer close', async () => {
+  const peer = await fixture(true);
+  const session = await new Agent({
+    instructions: 'Answer briefly.',
+    model: 'gpt-5.5',
+    provider: peer.provider,
+  }).session();
+  sessions.push(session);
+  await answer(session, 'Before idle close');
+
+  assert(peer.ws);
+  const [connection] = peer.ws.clients;
+  assert(connection);
+  const closed = once(connection, 'close', {
+    signal: AbortSignal.timeout(5_000),
+  });
+  connection.close(1000, 'idle');
+  expect((await closed)[0]).toBe(1000);
+  expect(peer.ws.clients.size).toBe(0);
+
+  await answer(session, 'After idle close');
+  expect(peer.ws.clients.size).toBe(1);
+  const generations = peer.frames.filter((frame) => frame.generate !== false);
+  expect(generations).toHaveLength(2);
+  const replacement = generations[1];
+  expect(replacement.previous_response_id ?? null).toBeNull();
+  const history = JSON.stringify(replacement.input);
+  expect(history).toContain('Before idle close');
+  expect(history).toContain('After idle close');
+  expect(peer.received).toHaveLength(0);
+}, 15_000);
