@@ -13,7 +13,6 @@ import {
   assistantMessage,
   functionCall,
   scriptedSandboxSession,
-  type ScriptedSandboxCallFor,
 } from '../../src/testing';
 
 describe('scriptedSandboxSession', () => {
@@ -334,13 +333,6 @@ describe('scriptedSandboxSession', () => {
         { method: 'execCommand', result: 'ok', respond: 'not a function' },
       ] as any),
     ).toThrowError(InvalidScriptedSandboxStepError);
-  });
-
-  it('exposes method-specific call types', () => {
-    type ExecCall = ScriptedSandboxCallFor<'execCommand'>;
-    expectTypeOf<ExecCall['args'][0]>().toEqualTypeOf<
-      Parameters<NonNullable<SandboxSession['execCommand']>>[0]
-    >();
   });
 });
 

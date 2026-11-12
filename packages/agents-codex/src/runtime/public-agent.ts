@@ -1,5 +1,10 @@
 import { Handoff } from './handoffs';
 import {
+  ResponsesCompaction,
+  responsesCompaction,
+  type ResponsesCompactionOptions,
+} from './responses-compaction';
+import {
   ManagedWorkspaceCheckpoint,
   managedWorkspaceRestore,
   validateManagedWorkspaceOpening,
@@ -170,6 +175,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
     | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling?: boolean;
+  compaction?:
+    ResponsesCompaction<Context> | ResponsesCompactionOptions<Context>;
 } & (
   | { instructions: string; hostedPrompt?: HostedPromptSource<Context> }
   | { instructions?: undefined; hostedPrompt: HostedPromptSource<Context> }
@@ -356,6 +363,7 @@ interface CapturedOpening {
   readonly inputGuardrails: readonly InputGuardrail<any>[];
   readonly outputGuardrails: readonly OutputGuardrail<any>[];
   readonly beforeCompact?: BeforeCompact<any>;
+  readonly compaction?: ResponsesCompaction<any>;
   readonly transformContext?: ContextTransform<any>;
   readonly hostedPrompt?: HostedPromptSource<any>;
   readonly hostedPromptControls?: JsonObject;
@@ -496,6 +504,7 @@ export class Agent<Context = undefined, Output = string> {
     | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling: boolean;
+  compaction?: ResponsesCompaction<Context>;
 
   constructor(options: AgentOptions<Context, Output>) {
     const promptSource = captureHostedPromptSource(options.hostedPrompt);
@@ -548,6 +557,16 @@ export class Agent<Context = undefined, Output = string> {
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
     this.beforeCompact = options.beforeCompact;
+    this.compaction =
+      options.compaction === undefined
+        ? undefined
+        : options.compaction instanceof ResponsesCompaction
+          ? options.compaction
+          : responsesCompaction(options.compaction);
+    if (this.compaction !== undefined && this.beforeCompact !== undefined)
+      throw new TypeError(
+        'compaction and beforeCompact are mutually exclusive',
+      );
     this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
@@ -979,6 +998,17 @@ export class Agent<Context = undefined, Output = string> {
       opening?.agentOutputGuardrails ??
       captureGuardrails(this.outputGuardrails);
     const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
+    const suppliedCompaction = opening ? opening.compaction : this.compaction;
+    const compaction =
+      suppliedCompaction === undefined
+        ? undefined
+        : suppliedCompaction instanceof ResponsesCompaction
+          ? suppliedCompaction
+          : responsesCompaction(suppliedCompaction);
+    if (compaction !== undefined && beforeCompact !== undefined)
+      throw new TypeError(
+        'compaction and beforeCompact are mutually exclusive',
+      );
     const transformContext = opening
       ? opening.transformContext
       : this.transformContext;
@@ -1215,6 +1245,7 @@ export class Agent<Context = undefined, Output = string> {
               outputGuardrails: agentOutputGuardrails,
               programmaticToolCalling,
               beforeCompact,
+              compaction,
               transformContext,
               hostedPrompt,
             } as AgentOptions<Context, Output>),
@@ -1726,8 +1757,15 @@ export class Agent<Context = undefined, Output = string> {
             model_producer: provider.modelBackend !== undefined,
             before_compact:
               beforeCompact !== undefined ||
+              compaction !== undefined ||
               (completedGraph?.roster.some(
                 (profile) => profile.before_compact === true,
+              ) ??
+                false),
+            post_turn_compact:
+              compaction !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.post_turn_compact === true,
               ) ??
                 false),
             before_complete:
@@ -1837,6 +1875,7 @@ export class Agent<Context = undefined, Output = string> {
         agentInputGuardrails,
         agentOutputGuardrails,
         beforeCompact,
+        compaction,
         transformContext,
         contextTransformPurpose,
         agentGraph: completedGraph,
@@ -1938,6 +1977,7 @@ export class Agent<Context = undefined, Output = string> {
             includeRawProviderEvents,
             contextTransformPurpose,
             beforeCompact,
+            compaction,
             transformContext,
             hostedPrompt,
             hostedPromptControls: promptControls,
@@ -2097,6 +2137,7 @@ export function captureAgentProfiles<Context, Output>(
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
+      compaction: source.compaction,
       transformContext: source.transformContext,
       hostedPrompt: source.hostedPrompt,
     } as AgentOptions<Context, Output>);

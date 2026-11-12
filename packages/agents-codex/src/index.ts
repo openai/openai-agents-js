@@ -357,6 +357,15 @@ export type {
   ClientToolSearchExecutorResult,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
+export { hostedMcp } from './runtime/hosted-mcp';
+export type {
+  HostedMCPApprovalArguments,
+  HostedMCPApprovalRequest,
+  HostedMCPApprovalDecision,
+  HostedMCPOptions,
+  HostedMCPFunction,
+  HostedMCPManual,
+} from './runtime/hosted-mcp';
 export type {
   HostedToolProgress,
   HostedToolItemSummary,
@@ -513,3 +522,18 @@ export type {
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
 
 export { Handoff } from './runtime/handoffs';
+export {
+  ResponsesCompaction,
+  responsesCompaction,
+} from './runtime/responses-compaction';
+export type {
+  ResponsesCompactionOptions,
+  ResponsesCompactionContext,
+} from './runtime/responses-compaction';
+
+export { applyPatchTool } from './runtime/apply-patch';
+export type {
+  ApplyPatchEditor,
+  ApplyPatchOperation,
+  ApplyPatchResult,
+} from './runtime/apply-patch';

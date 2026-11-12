@@ -3312,10 +3312,33 @@ impl ModelRequestContributor for Boundary {
         self.context_tools(thread_id)
             .is_some_and(|tools| tools.customizes_compaction())
     }
-    fn before_compact<'a>(
+    fn schedules_post_turn_compaction(
+        &self,
+        thread_id: &str,
+        step_store: &codex_extension_api::ExtensionData,
+    ) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.schedules_post_turn_compaction(step_store))
+    }
+    fn post_turn_compaction<'a>(
         &'a self,
         input: codex_extension_api::CompactionInput<'a>,
-    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+    ) -> ExtensionFuture<'a, std::result::Result<Option<bool>, String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired compaction policy owner")?
+                .post_turn_compaction(input)
+                .await
+                .map_err(|_| "Compaction policy callback failed".to_owned())
+        })
+    }
+    fn before_compact_result<'a>(
+        &'a self,
+        input: codex_extension_api::CompactionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::CompactionResult>, String>,
+    > {
         Box::pin(async move {
             if self.uses_chatgpt_plan() {
                 return Err("Sign in with ChatGPT does not support beforeCompact callbacks".into());
@@ -3377,6 +3400,24 @@ impl ModelRequestContributor for Boundary {
                 .admit_tools_only(input.item, &input.cancellation)
                 .await
         })
+    }
+
+    fn preserves_provider_request_window(&self, url: &str) -> bool {
+        // This exact native route validates the provider/grant/one-use ticket,
+        // restores tool schemas, and sends input/model/store through Reqwest.
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|engine| {
+                engine
+                    .sentinel
+                    .read()
+                    .expect("sentinel poisoned")
+                    .as_ref()
+                    .is_some_and(|(base, _, _)| {
+                        url.starts_with(&format!("{}/p-", base.trim_end_matches('/')))
+                    })
+            })
     }
 
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
@@ -3621,6 +3662,12 @@ impl SentinelRequest {
 }
 
 impl ModelResponseInterceptor for SentinelRequest {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Admission may edit tool calls, but passes messages, reasoning and
+        // the physical response ID unchanged. Core excludes tool output here.
+        true
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -4422,6 +4469,12 @@ fn valid_stdin_arguments(arguments: &str) -> bool {
 }
 
 impl ModelResponseInterceptor for DirectRequest {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Admission may edit tool calls, but passes messages, reasoning and
+        // the physical response ID unchanged. Core excludes tool output here.
+        true
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,

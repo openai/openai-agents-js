@@ -233,21 +233,34 @@ async function verifiedV8(filename, override) {
     }
     let response;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      response = await globalThis.fetch(url);
-      if (response.status === 504 && attempt === 3) {
-        await response.body?.cancel();
-        response = await v8ReleaseAsset(artifact);
+      let failure;
+      try {
+        response = await globalThis.fetch(url);
+      } catch (error) {
+        if (
+          !(error instanceof TypeError) ||
+          error.cause?.code !== 'UND_ERR_CONNECT_TIMEOUT'
+        )
+          throw error;
+        failure = 'hit a connection timeout (UND_ERR_CONNECT_TIMEOUT)';
       }
-      if (response.ok) break;
-      if (response.status !== 504 || attempt === 3)
-        throw new Error(`V8 download failed (${response.status}): ${filename}`);
-      await response.body?.cancel();
+      if (!failure) {
+        if (response.status !== 504) break;
+        await response.body?.cancel();
+        failure = 'returned HTTP 504';
+      }
+      if (attempt === 3) {
+        response = await v8ReleaseAsset(artifact);
+        break;
+      }
       const delay = attempt * 1000;
       console.warn(
-        `V8 download for ${filename} returned HTTP 504 on attempt ${attempt} of 3. Retrying in ${delay} ms.`,
+        `V8 download for ${filename} ${failure} on attempt ${attempt} of 3. Retrying in ${delay} ms.`,
       );
       await setTimeout(delay);
     }
+    if (!response.ok)
+      throw new Error(`V8 download failed (${response.status}): ${filename}`);
     await pipeline(
       Readable.fromWeb(response.body),
       createWriteStream(temporary, { flags: 'wx' }),

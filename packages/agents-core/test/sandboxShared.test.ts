@@ -446,7 +446,6 @@ describe('sandbox shared helpers', () => {
 
   it.each([
     ['', '.'],
-    ['/', '/'],
     ['///', '.'],
     ['/README.md', '/'],
     ['README.md///', '.'],

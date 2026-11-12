@@ -1,7 +1,89 @@
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index b2e0cf3..f7972b2 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -237,18 +237,37 @@ impl ResponsesWebsocketConnection {
+             .is_none_or(|stream| stream.pump_task.is_finished())
+     }
+ 
++    pub async fn stream_request(
++        &self,
++        request: ResponsesWsRequest<'_>,
++        connection_reused: bool,
++        turn_state: Option<Arc<OnceLock<String>>>,
++        observe_raw_provider_events: bool,
++    ) -> Result<ResponseStream, ApiError> {
++        self.stream_request_with_observer(
++            request,
++            connection_reused,
++            turn_state,
++            observe_raw_provider_events,
++            None,
++        )
++        .await
++    }
++
++    /// Captures a content-free send observer into this exact request's producer.
+     #[instrument(
+         name = "responses_websocket.stream_request",
+         level = "info",
+         skip_all,
+         fields(transport = "responses_websocket", api.path = "/responses")
+     )]
+-    pub async fn stream_request(
++    pub async fn stream_request_with_observer(
+         &self,
+         request: ResponsesWsRequest<'_>,
+         connection_reused: bool,
+         turn_state: Option<Arc<OnceLock<String>>>,
+         observe_raw_provider_events: bool,
++        observer: Option<Arc<dyn Fn() + Send + Sync>>,
+     ) -> Result<ResponseStream, ApiError> {
+         let (tx_event, rx_event) =
+             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
+@@ -340,6 +359,7 @@ impl ResponsesWebsocketConnection {
+                             &timing_log_context,
+                             rx_interrupt,
+                             observe_raw_provider_events && !timing_log_context.warmup,
++                            observer,
+                         ) => result,
+                         _ = &mut stopped => Err(ApiError::Stream("local response invocation stopped".into())),
+                         _ = tx_event.closed() => Err(ApiError::Stream(
+@@ -694,9 +714,13 @@ async fn run_websocket_response_stream(
+     timing_log_context: &ResponsesWebsocketTimingLogContext,
+     interrupt: oneshot::Receiver<()>,
+     observe_raw_provider_events: bool,
++    observer: Option<Arc<dyn Fn() + Send + Sync>>,
+ ) -> Result<(), ApiError> {
+     let mut last_server_model: Option<String> = None;
+     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
++    if let Some(observer) = observer {
++        observer();
++    }
+     send_websocket_request(
+         ws_stream,
+         request_text,
+@@ -1114,6 +1138,7 @@ mod tests {
+             &context,
+             rx_interrupt,
+             /*observe_raw_provider_events*/ false,
++            None,
+         )
+         .await
+         .unwrap_err();
+@@ -1252,6 +1277,7 @@ mod tests {
+                 &context,
+                 rx_interrupt,
+                 false,
++                None,
+             )
+             .await
+             .unwrap_err();
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 2bbd50b..50139a7 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -563,6 +563,7 @@
+@@ -591,6 +591,7 @@ struct ModelResponsesTransport<F> {
      direct: Option<codex_extension_api::ModelHttpStream>,
      fallback: F,
      defaults: ApiHeaderMap,
@@ -9,7 +91,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
  }
  
  impl<F> codex_client::HttpTransport for ModelResponsesTransport<F>
-@@ -573,7 +574,13 @@
+@@ -601,7 +602,13 @@ where
          &self,
          req: codex_client::Request,
      ) -> std::result::Result<codex_client::Response, codex_client::TransportError> {
@@ -24,7 +106,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
      }
  
      async fn stream(
-@@ -592,7 +599,11 @@
+@@ -620,7 +627,11 @@ where
              }
              direct(req).await
          } else {
@@ -37,7 +119,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
          }
      }
  }
-@@ -2233,6 +2244,10 @@
+@@ -2263,6 +2274,10 @@ impl ModelClientSession {
                          .map_err(|error| codex_client::TransportError::Build(error.to_string()))
                  },
                  defaults: codex_login::default_client::default_headers(),
@@ -48,7 +130,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
              };
              let request_auth_context = AuthRequestTelemetryContext::new(
                  client_setup.auth.as_ref().map(CodexAuth::auth_mode),
-@@ -2312,7 +2327,7 @@
+@@ -2345,7 +2360,7 @@ impl ModelClientSession {
                  session_telemetry_for_request(session_telemetry, &request);
              let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
              options.extra_headers.extend(responses_headers);
@@ -57,7 +139,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
                  &self.client.request_contributors,
                  &self.client.state.thread_id.to_string(),
                  &model_info.slug,
-@@ -2320,6 +2335,13 @@
+@@ -2353,6 +2368,13 @@ impl ModelClientSession {
                  codex_extension_api::ModelRequestKind::Generation,
                  &mut request.client_metadata,
                  prompt.tool_admission.clone(),
@@ -71,10 +153,10 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
              );
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
-@@ -2361,6 +2383,14 @@
-                     },
-                 )
-             };
+@@ -2411,6 +2433,14 @@ impl ModelClientSession {
+                     .as_ref()
+                     .is_some_and(|input| input == &request.input))
+             .then(|| (request.model.clone(), client_setup.auth_owner_generation));
 +            if interceptors
 +                .iter()
 +                .any(|interceptor| interceptor.produces_response())
@@ -86,7 +168,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
              let produced = crate::model_request::produce_response(&interceptors, &request)
                  .await
                  .map_err(CodexErr::Fatal)?;
-@@ -2555,6 +2585,12 @@
+@@ -2607,6 +2637,12 @@ impl ModelClientSession {
              } else {
                  session_telemetry_for_request(session_telemetry, &request)
              };
@@ -99,7 +181,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
              match self
                  .websocket_connection(WebsocketConnectParams {
                      session_telemetry,
-@@ -2703,7 +2739,7 @@
+@@ -2755,7 +2791,7 @@ impl ModelClientSession {
                  client_setup.auth.as_ref(),
                  &responses_headers,
              );
@@ -108,7 +190,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
                  &self.client.request_contributors,
                  &self.client.state.thread_id.to_string(),
                  &model_info.slug,
-@@ -2715,6 +2751,13 @@
+@@ -2767,6 +2803,13 @@ impl ModelClientSession {
                  },
                  &mut ws_payload.client_metadata,
                  prompt.tool_admission.clone(),
@@ -122,7 +204,7 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
              );
              let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
              stamp_ws_stream_request_start_ms(&mut ws_request);
-@@ -2768,12 +2811,18 @@
+@@ -2820,12 +2863,18 @@ impl ModelClientSession {
                      codex_extension_api::ModelRequestTransport::Websocket,
                  )
              };
@@ -143,9 +225,10 @@ diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
                  .await;
              if let Some(original_item_ids) = original_item_ids {
 diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+index 318a8b6..e3880c7 100644
 --- a/codex-rs/core/src/client_tests.rs
 +++ b/codex-rs/core/src/client_tests.rs
-@@ -2831,6 +2831,7 @@
+@@ -2831,6 +2831,7 @@ mod direct_model_http_transport {
              http::HeaderValue::from_bytes(b"\xe9").unwrap(),
          );
          let transport = super::super::ModelResponsesTransport {
@@ -153,7 +236,7 @@ diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.
              direct: Some(Arc::new(move |request| {
                  *target.lock().unwrap() = Some(request.headers);
                  Box::pin(async { Err(TransportError::Build("captured".into())) })
-@@ -2891,6 +2892,7 @@
+@@ -2891,6 +2892,7 @@ mod direct_model_http_transport {
          let physical = codex_client::ReqwestTransport::from_http_client(physical);
          let constructions = AtomicUsize::new(0);
          let transport = super::super::ModelResponsesTransport {
@@ -161,29 +244,11 @@ diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.
              direct: Some(Arc::new(|_| panic!("execute invoked streaming callback"))),
              fallback: || {
                  constructions.fetch_add(1, Ordering::SeqCst);
-@@ -2913,15 +2915,14 @@
- #[tokio::test]
- async fn explicit_output_cap_stops_after_retained_typed_limit_but_uncapped_policy_remains() {
-     for explicit_cap in [false, true] {
--        let mut observation = ResponseEvent::ResponseObserved(
--            codex_protocol::protocol::ResponseObservation {
-+        let mut observation =
-+            ResponseEvent::ResponseObserved(codex_protocol::protocol::ResponseObservation {
-                 response_id: Some("configured-output-cap".into()),
-                 upstream_request_id: None,
-                 status: codex_protocol::protocol::ResponseObservationStatus::Completed,
-                 incomplete_reason: None,
-                 usage: None,
--            },
--        );
-+            });
-         if let ResponseEvent::ResponseObserved(value) = &mut observation {
-             value.status = codex_protocol::protocol::ResponseObservationStatus::Incomplete;
-             value.incomplete_reason =
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index c226bc1..08b2d9e 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
-@@ -333,6 +333,14 @@
+@@ -333,6 +333,14 @@ impl CodexThread {
              .is_elicitation_pending(server, token)
      }
  
@@ -199,9 +264,10 @@ diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.
      pub fn sdk_start_raw_usage(&self) -> crate::SdkRawUsageLink {
          let capture = crate::session::sdk_raw_usage::SdkRawUsage::default();
 diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 7fdac3f..97534eb 100644
 --- a/codex-rs/core/src/lib.rs
 +++ b/codex-rs/core/src/lib.rs
-@@ -70,6 +70,7 @@
+@@ -70,6 +70,7 @@ pub use codex_thread::GuardianRootSnapshot;
  pub use codex_thread::ThreadConfigSnapshot;
  pub use owned_question::OwnedQuestion;
  pub use session::sdk_raw_usage::SdkRawUsageLink;
@@ -210,12 +276,14 @@ diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
  pub use thread_startup_metadata::ThreadStartupMetadata;
  mod agent;
 diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index 9976e4d..b0bc5c4 100644
 --- a/codex-rs/core/src/model_request.rs
 +++ b/codex-rs/core/src/model_request.rs
-@@ -32,11 +32,34 @@
+@@ -31,12 +31,35 @@ pub(crate) fn prepare(
+     kind: ModelRequestKind,
      metadata: &mut Option<HashMap<String, String>>,
      tool_admission: Option<Arc<dyn ModelToolAdmission>>,
- ) -> Vec<Box<dyn ModelResponseInterceptor>> {
++) -> Vec<Box<dyn ModelResponseInterceptor>> {
 +    prepare_with_attempts(
 +        contributors,
 +        thread_id,
@@ -237,7 +305,7 @@ diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_reques
 +    metadata: &mut Option<HashMap<String, String>>,
 +    tool_admission: Option<Arc<dyn ModelToolAdmission>>,
 +    attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
-+) -> Vec<Box<dyn ModelResponseInterceptor>> {
+ ) -> Vec<Box<dyn ModelResponseInterceptor>> {
      contributors
          .iter()
          .filter_map(|contributor| {
@@ -248,9 +316,10 @@ diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_reques
                  thread_id,
                  client_metadata: &mut additions,
 diff --git a/codex-rs/core/src/responses_metadata.rs b/codex-rs/core/src/responses_metadata.rs
+index bfdeb3b..1f1cb3d 100644
 --- a/codex-rs/core/src/responses_metadata.rs
 +++ b/codex-rs/core/src/responses_metadata.rs
-@@ -229,6 +229,7 @@
+@@ -229,6 +229,7 @@ pub(crate) enum TurnToolSource {
  /// truth.
  #[derive(Clone, Debug)]
  pub struct CodexResponsesMetadata {
@@ -258,7 +327,7 @@ diff --git a/codex-rs/core/src/responses_metadata.rs b/codex-rs/core/src/respons
      /// Guardian parent reference; projected only onto a Guardian request.
      pub(crate) parent_response_id: Option<String>,
      pub(crate) installation_id: String,
-@@ -275,6 +276,7 @@
+@@ -275,6 +276,7 @@ impl CodexResponsesMetadata {
          window_id: String,
      ) -> Self {
          Self {
@@ -267,54 +336,20 @@ diff --git a/codex-rs/core/src/responses_metadata.rs b/codex-rs/core/src/respons
              installation_id,
              session_id,
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 00fd7f3..d50eb04 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -269,6 +269,7 @@
- mod rollout_budget;
+@@ -269,6 +269,7 @@ mod rollout_budget;
  mod rollout_reconstruction;
+ pub(crate) mod sdk_produced_items;
  pub(crate) mod sdk_raw_usage;
 +pub(crate) mod sdk_request_attempts;
  #[allow(clippy::module_inception)]
  pub(crate) mod session;
  pub(crate) mod startup_prewarm;
-diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
---- a/codex-rs/core/src/session/session.rs
-+++ b/codex-rs/core/src/session/session.rs
-@@ -744,7 +744,32 @@
-         window_number: u64,
-         context_window_id: uuid::Uuid,
-     ) -> CodexResponsesMetadata {
-+        let sdk_request_attempts = self
-+            .services
-+            .thread_extension_data
-+            .get::<crate::session::sdk_request_attempts::SdkRequestAttempts>()
-+            .filter(|_| {
-+                !matches!(
-+                    responses_metadata.request_kind,
-+                    Some(CodexResponsesRequestKind::Prewarm)
-+                )
-+            })
-+            .and_then(|capture| {
-+                capture.route(
-+                    &turn_context.sub_id,
-+                    responses_metadata
-+                        .root_turn_id
-+                        .as_deref()
-+                        .unwrap_or(&turn_context.sub_id),
-+                    match responses_metadata.request_kind {
-+                        Some(CodexResponsesRequestKind::Turn) => 0,
-+                        Some(CodexResponsesRequestKind::Compaction(_)) => 1,
-+                        _ => 2,
-+                    },
-+                )
-+            });
-         CodexResponsesMetadata {
-+            sdk_request_attempts,
-             window_number: Some(window_number),
-             context_window_id: Some(context_window_id),
-             mcp_attribution: Some(self.services.executed_tool_calls.mcp_attribution_snapshot()),
 diff --git a/codex-rs/core/src/session/sdk_request_attempts.rs b/codex-rs/core/src/session/sdk_request_attempts.rs
 new file mode 100644
+index 0000000..c52309e
 --- /dev/null
 +++ b/codex-rs/core/src/session/sdk_request_attempts.rs
 @@ -0,0 +1,273 @@
@@ -591,90 +626,48 @@ new file mode 100644
 +        assert_eq!(report["availability"], "unavailable");
 +    }
 +}
-diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
---- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-+++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-@@ -237,18 +237,37 @@
-             .is_none_or(|stream| stream.pump_task.is_finished())
-     }
- 
-+    pub async fn stream_request(
-+        &self,
-+        request: ResponsesWsRequest<'_>,
-+        connection_reused: bool,
-+        turn_state: Option<Arc<OnceLock<String>>>,
-+        observe_raw_provider_events: bool,
-+    ) -> Result<ResponseStream, ApiError> {
-+        self.stream_request_with_observer(
-+            request,
-+            connection_reused,
-+            turn_state,
-+            observe_raw_provider_events,
-+            None,
-+        )
-+        .await
-+    }
-+
-+    /// Captures a content-free send observer into this exact request's producer.
-     #[instrument(
-         name = "responses_websocket.stream_request",
-         level = "info",
-         skip_all,
-         fields(transport = "responses_websocket", api.path = "/responses")
-     )]
--    pub async fn stream_request(
-+    pub async fn stream_request_with_observer(
-         &self,
-         request: ResponsesWsRequest<'_>,
-         connection_reused: bool,
-         turn_state: Option<Arc<OnceLock<String>>>,
-         observe_raw_provider_events: bool,
-+        observer: Option<Arc<dyn Fn() + Send + Sync>>,
-     ) -> Result<ResponseStream, ApiError> {
-         let (tx_event, rx_event) =
-             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
-@@ -340,6 +359,7 @@
-                             &timing_log_context,
-                             rx_interrupt,
-                             observe_raw_provider_events && !timing_log_context.warmup,
-+                            observer,
-                         ) => result,
-                         _ = &mut stopped => Err(ApiError::Stream("local response invocation stopped".into())),
-                         _ = tx_event.closed() => Err(ApiError::Stream(
-@@ -694,9 +714,13 @@
-     timing_log_context: &ResponsesWebsocketTimingLogContext,
-     interrupt: oneshot::Receiver<()>,
-     observe_raw_provider_events: bool,
-+    observer: Option<Arc<dyn Fn() + Send + Sync>>,
- ) -> Result<(), ApiError> {
-     let mut last_server_model: Option<String> = None;
-     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
-+    if let Some(observer) = observer {
-+        observer();
-+    }
-     send_websocket_request(
-         ws_stream,
-         request_text,
-@@ -1113,6 +1137,7 @@
-             &context,
-             rx_interrupt,
-             /*observe_raw_provider_events*/ false,
-+            None,
-         )
-         .await
-         .unwrap_err();
-@@ -1251,6 +1276,7 @@
-                 &context,
-                 rx_interrupt,
-                 false,
-+                None,
-             )
-             .await
-             .unwrap_err();
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 3c42c64..e3d04e6 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -744,7 +744,32 @@ impl Session {
+         window_number: u64,
+         context_window_id: uuid::Uuid,
+     ) -> CodexResponsesMetadata {
++        let sdk_request_attempts = self
++            .services
++            .thread_extension_data
++            .get::<crate::session::sdk_request_attempts::SdkRequestAttempts>()
++            .filter(|_| {
++                !matches!(
++                    responses_metadata.request_kind,
++                    Some(CodexResponsesRequestKind::Prewarm)
++                )
++            })
++            .and_then(|capture| {
++                capture.route(
++                    &turn_context.sub_id,
++                    responses_metadata
++                        .root_turn_id
++                        .as_deref()
++                        .unwrap_or(&turn_context.sub_id),
++                    match responses_metadata.request_kind {
++                        Some(CodexResponsesRequestKind::Turn) => 0,
++                        Some(CodexResponsesRequestKind::Compaction(_)) => 1,
++                        _ => 2,
++                    },
++                )
++            });
+         CodexResponsesMetadata {
++            sdk_request_attempts,
+             window_number: Some(window_number),
+             context_window_id: Some(context_window_id),
+             mcp_attribution: Some(self.services.executed_tool_calls.mcp_attribution_snapshot()),
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index d0e7154..7ee1343 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
-@@ -155,6 +155,7 @@
+@@ -157,6 +157,7 @@ pub use model_request::ModelContextInput;
  pub use model_request::ModelHttpStream;
  pub use model_request::ModelRequestContributor;
  pub use model_request::ModelRequestInput;
@@ -683,9 +676,10 @@ diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/
  pub use model_request::ModelResponseError;
  pub use model_request::ModelResponseInterceptor;
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 6803777..45ff7d3 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
-@@ -154,7 +154,13 @@
+@@ -185,7 +185,13 @@ pub enum CompactionResult {
  }
  
  /// Request identity before provider dispatch.

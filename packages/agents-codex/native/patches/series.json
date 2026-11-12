@@ -1,5 +1,4 @@
 {
-  "result_tree": "05c08ad8860eb4018a36e3e0903956a123c926a1",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -878,8 +877,53 @@
       "sha256": "c5c9091d345a617aa2ed22de31f4d3144a523d3918eee6a34159d7d19c883cfa"
     },
     {
+      "path": "sdk-stored-owner-retirement.patch",
+      "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
+    },
+    {
+      "path": "sdk-borrowed-responses-compaction.patch",
+      "sha256": "3405e12b2b7162666f85aaa83c7e9742282361129bd9869902b9647c30693a43"
+    },
+    {
+      "path": "sdk-managed-original-receipt-identity.patch",
+      "sha256": "d156a9f439a84e42dfe1191725b015145fdc4f1079d5d543ece1f18e548230e5"
+    },
+    {
+      "path": "sdk-native-cancellation-receipt.patch",
+      "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
+    },
+    {
+      "path": "sdk-provider-hosted-mcp.patch",
+      "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
+    },
+    {
+      "path": "sdk-acknowledged-provider-window.patch",
+      "sha256": "cbbbd43cfef7f8ae00f23ab6a2e87d6ccd98a1f2e3b32b7b8f470d529a17d4e1"
+    },
+    {
+      "path": "sdk-chat-completions-raw-response.patch",
+      "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
+    },
+    {
+      "path": "sdk-application-apply-patch.patch",
+      "sha256": "5426ca44464782995b1eafaaa96356bf5f30082ab49168d7aa886cea6131fd09"
+    },
+    {
+      "path": "sdk-imported-provider-item-cleanup.patch",
+      "sha256": "224a45ca3ef842c473c57e4b3112311b2430ba178956ac066549b9bed6d21d65"
+    },
+    {
+      "path": "sdk-application-model-raw-events.patch",
+      "sha256": "fc99d550ba9948829fc1fad79d8eb907da293d2aa78a79152d37a0d166091a7e"
+    },
+    {
+      "path": "sdk-trace-flush-worker-completion.patch",
+      "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
+    },
+    {
       "path": "sdk-owned-request-attempts.patch",
-      "sha256": "d87224e28ad09cf25d4cb1f99c0601ee523827407061c56131ea7063c0fabd44"
+      "sha256": "6bcd5675baf6a7b3571dc74cd5b455266f140720fdfe265d292566a9c282c0dd"
     }
-  ]
+  ],
+  "result_tree": "ba3cb84d8649c14108e47b56cc6c670a64b28f3b"
 }

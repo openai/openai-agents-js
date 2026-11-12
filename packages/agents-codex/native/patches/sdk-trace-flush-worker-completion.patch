@@ -1,0 +1,21 @@
+diff --git a/codex-rs/otel/src/provider.rs b/codex-rs/otel/src/provider.rs
+--- a/codex-rs/otel/src/provider.rs
++++ b/codex-rs/otel/src/provider.rs
+@@ -161,7 +161,7 @@
+                         FLUSH_RUNNING.store(false, Ordering::Release);
+                     }
+                 }
+-                let _reset = Reset;
++                let reset = Reset;
+                 let mut success = true;
+                 if let Some(provider) = tracer {
+                     success &= provider.force_flush().is_ok();
+@@ -169,6 +169,8 @@
+                 if let Some(provider) = logger {
+                     success &= provider.force_flush().is_ok();
+                 }
++                // Release worker admission before waking the flush caller.
++                drop(reset);
+                 let _ = tx.send(success);
+             });
+         if spawned.is_err() {

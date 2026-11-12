@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::native_interception::CapturedTurnStop;
-use codex_extension_api::{CompactionInput, ModelContextInput, TurnCompletionInput};
+use codex_extension_api::{
+    CompactionInput, CompactionResult, CompactionWindow, ModelContextInput, TurnCompletionInput,
+};
 use tokio_util::sync::CancellationToken;
 
 pub(super) struct ContextProjection {
@@ -95,7 +97,8 @@ pub(super) enum PreparationReply {
     },
     Selection(oneshot::Sender<Option<Vec<ToolName>>>),
     Context(oneshot::Sender<std::result::Result<ContextProjection, ()>>),
-    Compaction(oneshot::Sender<std::result::Result<Option<String>, ()>>),
+    Compaction(oneshot::Sender<std::result::Result<Option<CompactionResult>, ()>>),
+    CompactionPolicy(oneshot::Sender<std::result::Result<Option<bool>, ()>>),
     Completion {
         reply: oneshot::Sender<std::result::Result<Option<String>, ()>>,
         stop: Arc<CapturedTurnStop>,
@@ -112,6 +115,7 @@ impl PreparationReply {
             Self::Selection(reply) => reply.is_closed(),
             Self::Context(reply) => reply.is_closed(),
             Self::Compaction(reply) => reply.is_closed(),
+            Self::CompactionPolicy(reply) => reply.is_closed(),
             Self::Completion { reply, .. } => reply.is_closed(),
         }
     }
@@ -153,6 +157,8 @@ pub(crate) struct CompletionReply {
 pub(crate) struct CompactionReply {
     pub(crate) owner: StepReply,
     summary: Option<String>,
+    window: Option<CompactionWindow>,
+    admitted: Option<bool>,
     #[serde(default)]
     failed: bool,
 }
@@ -269,10 +275,38 @@ impl PythonTools {
         self.context_callbacks.before_compact
     }
 
+    pub(crate) fn schedules_post_turn_compaction(&self, step: &ExtensionData) -> bool {
+        self.context_callbacks.post_turn_compact
+            && self
+                .source_catalog(Some(step))
+                .is_ok_and(|catalog| catalog.is_none_or(|catalog| catalog.post_turn_compact))
+    }
+
+    pub(crate) async fn post_turn_compaction(
+        self: &Arc<Self>,
+        input: CompactionInput<'_>,
+    ) -> Result<Option<bool>> {
+        if !self.context_callbacks.post_turn_compact
+            || self
+                .source_catalog(input.step_store)?
+                .is_some_and(|catalog| !catalog.post_turn_compact)
+        {
+            return Ok(None);
+        }
+        let cancellation = self
+            .context_stop(input.turn_id)?
+            .callback_cancellation()
+            .context("Expired compaction policy turn")?;
+        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
+            json!({"type":"_sdk_before_compact_policy", "model":input.model,
+                "automatic":input.automatic, "items":input.items, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
+            PreparationReply::CompactionPolicy).await
+    }
+
     pub(crate) async fn before_compact(
         self: &Arc<Self>,
         input: CompactionInput<'_>,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<CompactionResult>> {
         if !self.customizes_compaction()
             || self
                 .source_catalog(input.step_store)?
@@ -285,13 +319,18 @@ impl PythonTools {
             .callback_cancellation()
             .context("Expired compaction callback turn")?;
         self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
-            json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items}),
+            json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items,
+                "optional":input.optional, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::Compaction).await
     }
 
     pub(crate) fn reply_compaction(&self, response: CompactionReply) -> Result<()> {
         ensure!(
-            !(response.failed && response.summary.is_some()),
+            !(response.failed
+                && (response.summary.is_some()
+                    || response.window.is_some()
+                    || response.admitted.is_some()))
+                && !(response.summary.is_some() && response.window.is_some()),
             "Conflicting compaction reply"
         );
         if let Some(summary) = &response.summary {
@@ -317,21 +356,41 @@ impl PythonTools {
                 pending
             ) && matches!(
                 pending.reply,
-                PreparationReply::Compaction(_)
+                PreparationReply::Compaction(_) | PreparationReply::CompactionPolicy(_)
             )),
             "Expired compaction reply"
         );
+        match &replies.get(&id).expect("checked compaction reply").reply {
+            PreparationReply::Compaction(_) => ensure!(
+                response.admitted.is_none(),
+                "Unexpected compaction policy decision"
+            ),
+            PreparationReply::CompactionPolicy(_) => ensure!(
+                response.summary.is_none() && response.window.is_none(),
+                "Unexpected compaction policy payload"
+            ),
+            _ => unreachable!(),
+        }
         let pending = take_pending_step(&mut replies, id).expect("checked compaction reply");
-        let PreparationReply::Compaction(reply) = pending.reply else {
-            unreachable!()
-        };
-        reply
-            .send(if response.failed {
-                Err(())
-            } else {
-                Ok(response.summary)
-            })
-            .map_err(|_| anyhow::anyhow!("Expired compaction reply"))
+        match pending.reply {
+            PreparationReply::Compaction(reply) => {
+                let value = response
+                    .window
+                    .map(CompactionResult::Window)
+                    .or_else(|| response.summary.map(CompactionResult::Summary));
+                reply
+                    .send(if response.failed { Err(()) } else { Ok(value) })
+                    .map_err(|_| anyhow::anyhow!("Expired compaction reply"))
+            }
+            PreparationReply::CompactionPolicy(reply) => reply
+                .send(if response.failed {
+                    Err(())
+                } else {
+                    Ok(response.admitted)
+                })
+                .map_err(|_| anyhow::anyhow!("Expired compaction policy reply")),
+            _ => unreachable!(),
+        }
     }
 
     pub(super) fn context_stop(&self, turn: &str) -> Result<Arc<CapturedTurnStop>> {
@@ -1010,6 +1069,8 @@ pub(super) struct ModelReply {
     usage: Option<codex_protocol::protocol::TokenUsage>,
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
+    #[serde(default)]
+    raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1078,6 +1139,18 @@ impl PythonTools {
         match reply {
             ProducedResponse::Complete(reply) => {
                 lease.finish().await?;
+                if let Some(id) = reply
+                    .raw_chat_completion
+                    .as_ref()
+                    .and_then(|raw| raw.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                {
+                    ensure!(
+                        id == reply.response_id,
+                        "Original Chat Completion does not match model response"
+                    );
+                }
                 ensure!(
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
@@ -1128,6 +1201,19 @@ impl PythonTools {
                         );
                     }
                 }
+                if let Some(raw) = reply.raw_chat_completion {
+                    events.insert(
+                        events.len() - 1,
+                        Ok(codex_api::ResponseEvent::RawProvider(
+                            codex_protocol::protocol::SdkRawProviderEvent {
+                                source:
+                                    codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+                                transport: codex_protocol::protocol::ResponsesEventTransport::Json,
+                                payload: Value::Object(raw),
+                            },
+                        )),
+                    );
+                }
                 Ok(futures_util::stream::iter(events).boxed())
             }
             ProducedResponse::Stream { events, finish } => {
@@ -1142,7 +1228,11 @@ impl PythonTools {
             }
         }
     }
-    pub(crate) fn start_model_producer_stream(&self, response: &StepReply) -> Result<()> {
+    pub(crate) fn start_model_producer_stream(
+        &self,
+        response: &StepReply,
+        observe_raw: bool,
+    ) -> Result<()> {
         let active = self
             .selection
             .lock()
@@ -1172,7 +1262,7 @@ impl PythonTools {
             PreparationReply::Model(ModelDelivery::Streaming {
                 events,
                 finish,
-                projection: codex_api::ApplicationModelStream::default(),
+                projection: codex_api::ApplicationModelStream::new(observe_raw),
             }),
         ) else {
             unreachable!()

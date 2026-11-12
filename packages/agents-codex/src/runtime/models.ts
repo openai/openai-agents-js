@@ -38,6 +38,14 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
+const rawProviderRequest = Symbol('raw provider observation');
+const rawChatCompletion = Symbol('original Chat Completion');
+
+/** @internal Existing native turn opt-in, without provider request fields. */
+export function markRawProviderRequest(request: ModelRequest): void {
+  Object.defineProperty(request, rawProviderRequest, { value: true });
+}
+
 type OriginalResponsesUsage = {
   usage: unknown;
   responseId: unknown;
@@ -96,6 +104,7 @@ export interface ModelProvider {
 export function captureModelResponse(
   response: ModelResponse,
   captureRawUsage = false,
+  captureRawProviderEvents = false,
 ): JsonObject {
   if (!response || !Array.isArray(response.output))
     throw new TypeError('NativeModel.complete must return ModelResponse');
@@ -132,6 +141,11 @@ export function captureModelResponse(
     if (response.usage.total_tokens === undefined)
       usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
+  const raw = captureRawProviderEvents
+    ? (response as ModelResponse & { [rawChatCompletion]?: JsonObject })[
+        rawChatCompletion
+      ]
+    : undefined;
   const original = captureRawUsage
     ? (
         response as ModelResponse & {
@@ -152,6 +166,7 @@ export function captureModelResponse(
     response_id: responseId,
     output: response.output,
     usage,
+    ...(raw ? { raw_chat_completion: raw } : {}),
     ...(original
       ? {
           original_usage: {
@@ -630,7 +645,17 @@ export class ChatCompletionsModel implements NativeModel {
             reasoning_output_tokens:
               value.usage.completion_tokens_details?.reasoning_tokens ?? 0,
           };
-    return { responseId: value.id, output, usage };
+    const response = { responseId: value.id, output, usage };
+    if (
+      !request.signal.aborted &&
+      (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+        rawProviderRequest
+      ]
+    )
+      Object.defineProperty(response, rawChatCompletion, {
+        value: copyJsonValue(value),
+      });
+    return response;
   }
 }
 

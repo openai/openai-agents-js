@@ -125,15 +125,17 @@ fn identities(
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
             RolloutItem::ResponseItem(row) => {
                 let call_id = match &row.item {
-                    ResponseItem::FunctionCall { call_id, .. }
-                    | ResponseItem::CustomToolCall { call_id, .. }
-                    | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
                     ResponseItem::ShellCall {
                         provider_fields, ..
                     } if crate::local_reconciliation::is_application_shell_call(row) => {
                         provider_fields.get("call_id").and_then(Value::as_str)
                     }
-                    _ => None,
+                    ResponseItem::ApplyPatchCall { call_id, .. }
+                        if crate::local_reconciliation::owns_application_patch(row) =>
+                    {
+                        Some(call_id.as_str())
+                    }
+                    item => crate::local_reconciliation::invocation_id(item),
                 };
                 if let Some(call_id) = call_id {
                     let identity = (
@@ -141,12 +143,22 @@ fn identities(
                         call_id.to_owned(),
                     );
                     if let Some(previous) = calls.get(&identity)
+                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
+                    {
+                        return Err(error("ambiguous original Hosted MCP approval identity"));
+                    }
+                    if let Some(previous) = calls.get(&identity)
                         && (matches!(
                             previous,
-                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                            ResponseItem::ComputerCall { .. }
+                                | ResponseItem::ShellCall { .. }
+                                | ResponseItem::ApplyPatchCall { .. }
                         ) || matches!(
                             row.item,
-                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                            ResponseItem::ComputerCall { .. }
+                                | ResponseItem::ShellCall { .. }
+                                | ResponseItem::ApplyPatchCall { .. }
                         ))
                     {
                         return Err(error("ambiguous original local tool call identity"));
@@ -659,6 +671,14 @@ impl CustomThreadStore {
                 "canonical reconciliation requires an unresolved call",
             ));
         }
+        if matches!(original, ResponseItem::ApplyPatchCall { .. }) {
+            let item =
+                crate::local_reconciliation::application_patch_receipt(original, result, &turn)
+                    .map_err(|_| {
+                        error("Application patch reconciliation requires a typed result")
+                    })?;
+            return self.receipt(id, item).await;
+        }
         if matches!(original, ResponseItem::ComputerCall { .. }) {
             let item = crate::local_reconciliation::computer_receipt(original, result, &turn)
                 .map_err(|_| error("Computer reconciliation requires a valid screenshot and safety acknowledgements"))?;
@@ -757,7 +777,9 @@ impl ThreadStore for CustomThreadStore {
             self.check_provider(Some(&params.metadata.model_provider))?;
             self.open(params.thread_id, true).await?;
             params.history = None;
-            self.projection.resume_thread(params).await
+            let mut history = self.projection.resume_thread(params).await?;
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
+            Ok(history)
         })
     }
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
@@ -783,6 +805,58 @@ impl ThreadStore for CustomThreadStore {
     fn discard_thread(&self, id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(self.release(id))
     }
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+        native_cancellation: bool,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or_else(|| error("canonical writer not acquired"))?;
+            if let Some(failure) = &writer.failure {
+                return Err(error(failure));
+            }
+            if !writer.managed.contains(&(turn.to_owned(), call.to_owned())) {
+                return Ok(None);
+            }
+            let accepted = writer.snapshot.mutations.iter().rev().find_map(|mutation| {
+                if let Mutation::Append { items } = mutation {
+                    items.iter().rev().find_map(|row| {
+                        if let RolloutItem::ResponseItem(envelope) = row
+                            && crate::local_reconciliation::output_identity(&envelope.item)
+                                == Some((call, Some(turn)))
+                        {
+                            Some(envelope.item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+            if accepted.as_ref().is_some_and(|accepted| {
+                !crate::local_reconciliation::matches_acknowledged_output(
+                    accepted,
+                    output,
+                    native_cancellation,
+                )
+            }) {
+                let message = "Core drain changed an acknowledged SDK receipt";
+                writer.failure = Some(message.into());
+                return Err(error(message));
+            }
+            Ok(accepted)
+        })
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,
