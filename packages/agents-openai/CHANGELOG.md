@@ -1,5 +1,39 @@
 # @openai/agents-openai
 
+## 0.22.0
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- 409df96: fix(session): defer automatic Responses compaction for pending tool approvals
+- 52fcb57: fix: allow sandbox clients to prepare manifest environments in their execution context (#2077).
+- 9dd24c0: fix(agents-openai): Allow forcing a function or handoff that shares a built-in Responses tool name (openai/openai-agents-python#5639).
+- 55e0e5d: fix: export valid tracing items when another item cannot be serialized
+- 1da8e24: fix: Accept namespaced OpenAI model IDs for Responses compaction and forward the full identifier to the client (openai/openai-agents-python#5225).
+- 56e5365: fix(openai): Default reasoning effort to `none` for function tools and handoffs on the OpenAI Chat Completions API with `gpt-6-sol` and `gpt-6-luna`, matching openai/openai-agents-python#5420.
+- a6cc47e: feat(tracing): Expose offered Chat Completions tool definitions on generation spans when sensitive data capture is enabled. Custom processors and custom export destinations can inspect the definitions. Hosted OpenAI trace exports omit them.
+- 919553c: fix: batch conversation session appends in order within the 20-item request limit (openai/openai-agents-python#5334)
+- d9277fb: fix(agents-openai): Remove duplicate endpoint helper imports that prevented the provider package from compiling.
+- ef68227: fix: Reject unfinished official Chat Completions streams and describe missing stream completion (openai/openai-agents-python#5211, openai/openai-agents-python#5457).
+- be4f1f9: fix: Preserve bounded JSON usage metadata and reuse OpenAI wire types; breaking types require narrowing usage details, Realtime image content, nullable MCP descriptions, unknown schemas/tracing metadata, and optional transcription breakdowns; saved states retain schema 1.23 when compatible and use 1.24 for richer metadata or newer nested runs.
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+- Updated dependencies [50f6b68]
+- Updated dependencies [9b33d73]
+- Updated dependencies [c1fd369]
+- Updated dependencies [409df96]
+- Updated dependencies [52fcb57]
+- Updated dependencies [c1764e7]
+- Updated dependencies [7589b9c]
+- Updated dependencies [56e5365]
+- Updated dependencies [3fdc610]
+- Updated dependencies [a6cc47e]
+- Updated dependencies [6da8df7]
+- Updated dependencies [ef68227]
+- Updated dependencies [be4f1f9]
+- Updated dependencies [85e7d05]
+- Updated dependencies [35b24d7]
+  - @openai/agents-core@0.22.0
+
 ## 0.21.0
 
 ### Patch Changes

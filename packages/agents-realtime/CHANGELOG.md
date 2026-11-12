@@ -1,5 +1,34 @@
 # @openai/agents-realtime
 
+## 0.22.0
+
+### Minor Changes
+
+- be4f1f9: fix: Preserve bounded JSON usage metadata and reuse OpenAI wire types; breaking types require narrowing usage details, Realtime image content, nullable MCP descriptions, unknown schemas/tracing metadata, and optional transcription breakdowns; saved states retain schema 1.23 when compatible and use 1.24 for richer metadata or newer nested runs.
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- 870954a: fix(realtime): Cancel active WebSocket responses on manual interrupt before audio starts.
+- 2bb5fbf: chore: refresh the Vite development dependency.
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+- Updated dependencies [50f6b68]
+- Updated dependencies [9b33d73]
+- Updated dependencies [c1fd369]
+- Updated dependencies [409df96]
+- Updated dependencies [52fcb57]
+- Updated dependencies [c1764e7]
+- Updated dependencies [7589b9c]
+- Updated dependencies [56e5365]
+- Updated dependencies [3fdc610]
+- Updated dependencies [a6cc47e]
+- Updated dependencies [6da8df7]
+- Updated dependencies [ef68227]
+- Updated dependencies [be4f1f9]
+- Updated dependencies [85e7d05]
+- Updated dependencies [35b24d7]
+  - @openai/agents-core@0.22.0
+
 ## 0.21.0
 
 ### Patch Changes

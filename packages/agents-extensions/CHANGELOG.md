@@ -1,5 +1,31 @@
 # @openai/agents-extensions
 
+## 0.22.0
+
+### Patch Changes
+
+- 50f6b68: fix: refresh compatible SDK, toolchain, and example dependencies
+- a95511b: fix(sandbox): avoid login shells for hosted workspace file operations (openai/openai-agents-python#5406)
+- 3fdc610: fix: remove retry advice from the default tool error message (openai/openai-agents-python#5632)
+- e063b38: chore: update development WebSocket types to undici-types 8.12.3.
+- 35b24d7: Update Zod to 4.6.6 while preserving saved guardrail checkpoints with omitted metadata.
+- Updated dependencies [50f6b68]
+- Updated dependencies [9b33d73]
+- Updated dependencies [c1fd369]
+- Updated dependencies [409df96]
+- Updated dependencies [52fcb57]
+- Updated dependencies [c1764e7]
+- Updated dependencies [7589b9c]
+- Updated dependencies [56e5365]
+- Updated dependencies [3fdc610]
+- Updated dependencies [a6cc47e]
+- Updated dependencies [6da8df7]
+- Updated dependencies [ef68227]
+- Updated dependencies [be4f1f9]
+- Updated dependencies [85e7d05]
+- Updated dependencies [35b24d7]
+  - @openai/agents-core@0.22.0
+
 ## 0.21.0
 
 ### Minor Changes
