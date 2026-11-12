@@ -967,7 +967,11 @@
     {
       "path": "sdk-managed-agent-child-catalog.patch",
       "sha256": "aa9744156b870e194d6dc7e6244e311a290332c7b453747a7440682e69cf674a"
+    },
+    {
+      "path": "sdk-managed-agent-tool-origin.patch",
+      "sha256": "e2433bd08574744b4ee7eed17904c2bf1f58a80f7b825e31134194d9b3abd338"
     }
   ],
-  "result_tree": "effdd74fac4cf115a137acc01da2f64c333e7007"
+  "result_tree": "e828866c98f03e935c02e433e4562cf3e7b44cd3"
 }
