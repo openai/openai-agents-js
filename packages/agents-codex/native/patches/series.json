@@ -1005,9 +1005,13 @@
       "sha256": "de6a3b0c7813382749a194a3bff82c20cf0f1aaf596b33c4d5ea67dc7f91cb7b"
     },
     {
+      "path": "sdk-mcp-discovery-cache.patch",
+      "sha256": "1b966cec16e6fc105e52c5675e648d71d906c87bd4dd111ca12583ef75aefcdc"
+    },
+    {
       "path": "sdk-websocket-route-auth-scope.patch",
-      "sha256": "13001bb37181ab5e050411238cce6604360f8b932200b1f0317ac623d10e76a9"
+      "sha256": "7ea999798faa7f246dde295539a8fb7e5102097c9f720d3615e286026ed47b16"
     }
   ],
-  "result_tree": "8f873937d965499bcd0f2e0af505ff5147f8e501"
+  "result_tree": "3ab9c2cca6989811e0a3589b7c61d4b55d7584b1"
 }

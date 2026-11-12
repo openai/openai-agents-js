@@ -1,5 +1,25 @@
+diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
+index 80e0aa61..9913a366 100644
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -2066,6 +2066,7 @@ dependencies = [
+  "tokio-tungstenite",
+  "tokio-util",
+  "tracing",
++ "tracing-subscriber",
+  "tungstenite",
+  "url",
+  "uuid",
+@@ -3614,6 +3615,7 @@ dependencies = [
+  "codex-login",
+  "codex-model-provider",
+  "codex-model-provider-info",
++ "codex-models-manager",
+  "codex-prompts",
+  "codex-protocol",
+  "codex-utils-cargo-bin",
 diff --git a/codex-rs/cli/src/doctor.rs b/codex-rs/cli/src/doctor.rs
-index 427aa8d3..c7ac0cb3 100644
+index 427aa8d3..d5a925c5 100644
 --- a/codex-rs/cli/src/doctor.rs
 +++ b/codex-rs/cli/src/doctor.rs
 @@ -2310,6 +2310,9 @@ async fn websocket_reachability_check(
@@ -24,25 +44,27 @@ index 427aa8d3..c7ac0cb3 100644
              if let Some(host) = url.host_str()
                  && let Some(port) = url.port_or_known_default()
              {
-@@ -2355,6 +2361,32 @@ async fn websocket_reachability_check(
+@@ -2355,6 +2361,34 @@ async fn websocket_reachability_check(
          }
      };
  
-+    if provider.websocket_base_url.is_some() && auth_changes.is_none() {
-+        return websocket_probe_warning(
-+            "Responses WebSocket auth could not be used",
-+            details,
-+            "independent WebSocket requires tracked credential ownership".to_string(),
-+        );
-+    }
-+    if let Err(message) = provider.validate_websocket_auth(auth.as_ref().map(CodexAuth::auth_mode))
++    let api_auth = match codex_model_provider::prepare_websocket_auth(
++        provider,
++        auth.as_ref().map(CodexAuth::auth_mode),
++        auth_changes.is_some(),
++        api_auth,
++    )
++    .await
 +    {
-+        return websocket_probe_warning(
-+            "Responses WebSocket auth could not be used",
-+            details,
-+            message,
-+        );
-+    }
++        Ok(api_auth) => api_auth,
++        Err(message) => {
++            return websocket_probe_warning(
++                "Responses WebSocket auth could not be used",
++                details,
++                message,
++            );
++        }
++    };
 +    if auth_changes
 +        .as_ref()
 +        .is_some_and(|changes| changes.has_changed().unwrap_or(true))
@@ -70,7 +92,7 @@ index a5d219f3..d1ecc0a9 100644
  assert_matches = { workspace = true }
  pretty_assertions = { workspace = true }
 diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-index 316f417c..3db338a2 100644
+index 316f417c..98750ed4 100644
 --- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
 +++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
 @@ -583,7 +583,7 @@ async fn connect_websocket(
@@ -96,10 +118,72 @@ index 316f417c..3db338a2 100644
                  return Err(map_ws_error(err, &url));
              }
          };
-@@ -1076,6 +1076,92 @@ mod tests {
+@@ -665,7 +665,7 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
+                 .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
+             ApiError::Transport(TransportError::Http {
+                 status,
+-                url: Some(url.to_string()),
++                url: Some(url.origin().ascii_serialization()),
+                 headers: Some(headers),
+                 body,
+                 retry_after,
+@@ -1076,6 +1076,145 @@ mod tests {
      use std::collections::HashMap;
      use std::sync::Arc;
  
++    #[tokio::test]
++    async fn rejected_handshake_diagnostic_omits_endpoint_path_and_query() {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        for suffix in [
++            "/private-path-marker?token=private-query-marker",
++            "/%70rivate-encoded?token=%73ynthetic",
++        ] {
++            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++            let endpoint =
++                Url::parse(&format!("ws://{}{suffix}", listener.local_addr().unwrap())).unwrap();
++            let origin = endpoint.origin().ascii_serialization();
++            let server = tokio::spawn(async move {
++                let (mut stream, _) = listener.accept().await.unwrap();
++                let mut request = Vec::new();
++                let mut buffer = [0; 1024];
++                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
++                    let count = stream.read(&mut buffer).await.unwrap();
++                    assert!(count > 0 && request.len() < 16384);
++                    request.extend_from_slice(&buffer[..count]);
++                }
++                stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
++            });
++            let factory =
++                HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault);
++            let error = tokio::time::timeout(
++                Duration::from_secs(2),
++                connect_websocket(endpoint, HeaderMap::new(), &factory, None, None),
++            )
++            .await
++            .expect("handshake settled")
++            .err()
++            .expect("upgrade rejected");
++            server.await.unwrap();
++            let diagnostic = format!("{error:?}");
++            let ApiError::Transport(TransportError::Http { status, url, .. }) = error else {
++                panic!("expected a typed HTTP rejection");
++            };
++            assert_eq!(status.as_u16(), 401);
++            assert_eq!(url.as_deref(), Some(origin.as_str()));
++            for marker in [
++                "private-path-marker",
++                "private-query-marker",
++                "%70rivate-encoded",
++                "%73ynthetic",
++            ] {
++                assert!(
++                    !diagnostic.contains(marker),
++                    "endpoint data escaped into the returned diagnostic"
++                );
++            }
++        }
++    }
++
 +    #[tokio::test]
 +    async fn handshake_logs_omit_endpoint_path_and_query() {
 +        use tracing::instrument::WithSubscriber;
@@ -371,7 +455,7 @@ index 95a9a96b..fec0c4a2 100644
                                  "http://127.0.0.1:8061/api/codex/models".to_string(),
                              ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 95f7faa6..f94817fc 100644
+index 95f7faa6..5b293d76 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -2040,6 +2040,7 @@ impl ModelClientSession {
@@ -390,33 +474,22 @@ index 95f7faa6..f94817fc 100644
              auth_revision,
              api_auth,
              auth_owner_generation,
-@@ -2117,6 +2119,25 @@ impl ModelClientSession {
+@@ -2117,6 +2119,14 @@ impl ModelClientSession {
              request_route_telemetry,
              responses_headers,
          } = params;
-+        if self
-+            .client
-+            .state
-+            .provider
-+            .info()
-+            .websocket_base_url
-+            .is_some()
-+            && self.client.state.provider.auth_manager().is_none()
-+        {
-+            return Err(ApiError::InvalidRequest {
-+                message: "independent WebSocket requires tracked credential ownership".into(),
-+            });
-+        }
-+        self.client
-+            .state
-+            .provider
-+            .info()
-+            .validate_websocket_auth(auth_mode)
-+            .map_err(|message| ApiError::InvalidRequest { message })?;
++        let api_auth = codex_model_provider::prepare_websocket_auth(
++            self.client.state.provider.info(),
++            auth_mode,
++            self.client.state.provider.auth_manager().is_some(),
++            api_auth,
++        )
++        .await
++        .map_err(|message| ApiError::InvalidRequest { message })?;
          let connection_key = ResponsesConnectionKey::new(&api_provider, auth_revision);
          let reset_reason = match self.websocket_session.connection.as_ref() {
              Some(_)
-@@ -2687,6 +2708,7 @@ impl ModelClientSession {
+@@ -2687,6 +2697,7 @@ impl ModelClientSession {
                  .websocket_connection(WebsocketConnectParams {
                      session_telemetry,
                      api_provider: client_setup.api_provider,
@@ -424,7 +497,7 @@ index 95f7faa6..f94817fc 100644
                      auth_revision: client_setup.auth_revision,
                      api_auth: client_setup.api_auth,
                      auth_owner_generation: client_setup.auth_owner_generation,
-@@ -3660,6 +3682,7 @@ impl AuthRequestTelemetryContext {
+@@ -3660,6 +3671,7 @@ impl AuthRequestTelemetryContext {
  struct WebsocketConnectParams<'a> {
      session_telemetry: &'a SessionTelemetry,
      api_provider: codex_api::Provider,
@@ -445,7 +518,7 @@ index 02e69106..a6b39bc2 100644
  codex-utils-cargo-bin = { workspace = true }
  core_test_support = { workspace = true }
 diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs
-index cf5d463e..90ffd684 100644
+index cf5d463e..367f64b3 100644
 --- a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs
 +++ b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs
 @@ -34,6 +34,7 @@ use codex_model_provider::ProviderAuthScope;
@@ -523,22 +596,22 @@ index cf5d463e..90ffd684 100644
          );
  
          let provider_info = self.config.provider.info();
-+        if provider_info.websocket_base_url.is_some() && auth_changes.is_none() {
-+            return Err(LunaSamplerError::Api(ApiError::InvalidRequest {
-+                message: "independent WebSocket requires tracked credential ownership".into(),
-+            }));
-+        }
-+        provider_info
-+            .validate_websocket_auth(auth_mode)
-+            .map_err(|message| LunaSamplerError::Api(ApiError::InvalidRequest { message }))?;
++        let auth = codex_model_provider::prepare_websocket_auth(
++            provider_info,
++            auth_mode,
++            auth_changes.is_some(),
++            auth,
++        )
++        .await
++        .map_err(|message| LunaSamplerError::Api(ApiError::InvalidRequest { message }))?;
          let client = ResponsesWebsocketClient::new(provider, auth);
          let connect = client.connect(
              &self.config.http_client_factory,
 diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs
-index 6cf716de..a6e70a9e 100644
+index 6cf716de..c33e1d12 100644
 --- a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs
 +++ b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs
-@@ -460,3 +460,156 @@ async fn http_cache_preserves_no_constraint_redirect_policy_and_configured_heade
+@@ -460,3 +460,179 @@ async fn http_cache_preserves_no_constraint_redirect_policy_and_configured_heade
      );
      Ok(())
  }
@@ -695,6 +768,29 @@ index 6cf716de..a6e70a9e 100644
 +    assert_eq!(gateway.opens.load(Ordering::SeqCst), 0);
 +    Ok(())
 +}
++
++#[tokio::test]
++async fn independent_websocket_opens_anonymous_ownerless_route_without_credentials() -> Result<()> {
++    skip_if_no_network!(Ok(()));
++    let http = responses::start_mock_server().await;
++    let ws = responses::start_websocket_server(vec![Vec::new()]).await;
++    let mut info = ModelProviderInfo::create_openai_provider(Some(format!("{}/v1", http.uri())));
++    info.requires_openai_auth = false;
++    info.supports_websockets = true;
++    info.websocket_base_url = Some(format!("{}/v1", ws.uri()).into());
++    let mut config = sampler_config(format!("{}/v1", http.uri()));
++    config.provider = create_model_provider(info, None);
++    assert!(config.provider.auth_manager().is_none());
++    let pool = ConnectionPool::new(Arc::new(config));
++    let permit = Arc::clone(&pool.sockets).acquire_owned().await?;
++    let connection = pool.open_connection(permit).await?;
++    let handshake = ws.single_handshake();
++    assert_eq!(handshake.uri(), "/v1/responses");
++    assert_eq!(handshake.header("authorization"), None);
++    assert_eq!(handshake.header("chatgpt-account-id"), None);
++    drop(connection);
++    Ok(())
++}
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
 index 2a179410..f6686618 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
@@ -745,10 +841,51 @@ index dd0df967..69ae70b5 100644
      }
      assert!(info.to_api_provider(Some(AuthMode::ApiKey)).is_ok());
 diff --git a/codex-rs/model-provider/src/auth.rs b/codex-rs/model-provider/src/auth.rs
-index 3b4a4764..08822f2f 100644
+index 3b4a4764..fc0553aa 100644
 --- a/codex-rs/model-provider/src/auth.rs
 +++ b/codex-rs/model-provider/src/auth.rs
-@@ -198,9 +198,6 @@ pub(crate) fn resolve_provider_auth(
+@@ -16,6 +16,7 @@ use codex_login::auth::AgentIdentityAuth;
+ use codex_login::auth::AgentIdentityAuthError;
+ use codex_login::auth::AgentIdentityAuthPolicy;
+ use codex_model_provider_info::ModelProviderInfo;
++use codex_protocol::auth::AuthMode;
+ use codex_protocol::error::CodexErr;
+ use codex_protocol::protocol::SessionSource;
+ use http::HeaderMap;
+@@ -181,6 +182,32 @@ pub fn unauthenticated_auth_provider() -> SharedAuthProvider {
+     Arc::new(UnauthenticatedAuthProvider)
+ }
+ 
++/// Freeze anonymous authentication before opening an independent WebSocket.
++/// A lazy provider must not resolve a different credential during the handshake.
++pub async fn prepare_websocket_auth(
++    provider: &ModelProviderInfo,
++    mode: Option<AuthMode>,
++    tracked_owner: bool,
++    auth: SharedAuthProvider,
++) -> Result<SharedAuthProvider, String> {
++    provider.validate_websocket_auth(mode)?;
++    if provider.websocket_base_url.is_none() || tracked_owner {
++        return Ok(auth);
++    }
++    let denied = "independent WebSocket requires tracked credential ownership";
++    if provider.requires_openai_auth || mode.is_some() {
++        return Err(denied.into());
++    }
++    let headers = auth
++        .resolve_auth_headers()
++        .await
++        .map_err(|_| denied.to_string())?;
++    if !headers.is_empty() {
++        return Err(denied.into());
++    }
++    Ok(unauthenticated_auth_provider())
++}
++
+ /// Returns the provider-scoped auth manager when this provider uses command-backed auth.
+ ///
+ /// Providers without custom auth continue using the caller-supplied base manager, when present.
+@@ -198,9 +225,6 @@ pub(crate) fn resolve_provider_auth(
      auth: Option<&CodexAuth>,
      provider: &ModelProviderInfo,
  ) -> codex_protocol::error::Result<SharedAuthProvider> {
@@ -758,7 +895,7 @@ index 3b4a4764..08822f2f 100644
      if let Some(auth) = bearer_auth_for_provider(provider)? {
          return Ok(Arc::new(auth));
      }
-@@ -230,9 +227,6 @@ pub(crate) async fn resolve_provider_auth_for_scope(
+@@ -230,9 +254,6 @@ pub(crate) async fn resolve_provider_auth_for_scope(
      provider: &ModelProviderInfo,
      scope: ProviderAuthScope,
  ) -> codex_protocol::error::Result<ResolvedProviderAuth> {
@@ -768,7 +905,90 @@ index 3b4a4764..08822f2f 100644
      let ProviderAuthScope {
          agent_identity_policy,
          session_source,
-@@ -874,13 +868,18 @@ mod websocket_endpoint_auth_tests {
+@@ -474,6 +495,82 @@ mod tests {
+             .await;
+     }
+ 
++    struct LazyWebsocketAuth {
++        resolutions: Arc<AtomicUsize>,
++        credential_on_first: bool,
++    }
++
++    impl AuthProvider for LazyWebsocketAuth {
++        fn add_auth_headers(&self, _: &mut HeaderMap) {}
++
++        fn resolve_auth_headers(&self) -> AuthHeadersFuture<'_> {
++            Box::pin(async move {
++                let count = self.resolutions.fetch_add(1, Ordering::SeqCst);
++                let mut headers = HeaderMap::new();
++                if self.credential_on_first || count > 0 {
++                    headers.insert(
++                        AUTHORIZATION,
++                        HeaderValue::from_static("Bearer synthetic-lazy-credential"),
++                    );
++                }
++                Ok(headers)
++            })
++        }
++    }
++
++    #[tokio::test]
++    async fn independent_websocket_freezes_resolved_anonymous_auth() {
++        let mut provider =
++            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
++        provider.websocket_base_url = Some("ws://localhost:11435/v1".into());
++        let resolutions = Arc::new(AtomicUsize::new(0));
++        let auth: SharedAuthProvider = Arc::new(LazyWebsocketAuth {
++            resolutions: Arc::clone(&resolutions),
++            credential_on_first: false,
++        });
++        let frozen = prepare_websocket_auth(&provider, None, false, auth)
++            .await
++            .unwrap();
++        assert!(frozen.resolve_auth_headers().await.unwrap().is_empty());
++        assert!(frozen.resolve_auth_headers().await.unwrap().is_empty());
++        assert_eq!(resolutions.load(Ordering::SeqCst), 1);
++    }
++
++    #[tokio::test]
++    async fn independent_websocket_rejects_lazy_ownerless_credentials() {
++        let mut provider =
++            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
++        provider.websocket_base_url = Some("ws://localhost:11435/v1".into());
++        let resolutions = Arc::new(AtomicUsize::new(0));
++        let auth: SharedAuthProvider = Arc::new(LazyWebsocketAuth {
++            resolutions: Arc::clone(&resolutions),
++            credential_on_first: true,
++        });
++        assert!(auth.to_auth_headers().is_empty());
++        assert!(
++            prepare_websocket_auth(&provider, None, false, auth)
++                .await
++                .is_err()
++        );
++        assert_eq!(resolutions.load(Ordering::SeqCst), 1);
++    }
++
++    #[tokio::test]
++    async fn ordinary_websocket_preserves_its_lazy_auth_owner() {
++        let provider =
++            create_oss_provider_with_base_url("http://localhost:11434/v1", WireApi::Responses);
++        let resolutions = Arc::new(AtomicUsize::new(0));
++        let auth: SharedAuthProvider = Arc::new(LazyWebsocketAuth {
++            resolutions: Arc::clone(&resolutions),
++            credential_on_first: true,
++        });
++        let selected = prepare_websocket_auth(&provider, None, false, Arc::clone(&auth))
++            .await
++            .unwrap();
++        assert!(Arc::ptr_eq(&selected, &auth));
++        assert_eq!(resolutions.load(Ordering::SeqCst), 0);
++    }
++
+     #[test]
+     fn unauthenticated_auth_provider_adds_no_headers() {
+         let provider =
+@@ -874,13 +971,18 @@ mod websocket_endpoint_auth_tests {
      }
  
      #[test]
@@ -789,7 +1009,7 @@ index 3b4a4764..08822f2f 100644
          provider.experimental_bearer_token = Some("synthetic-explicit-key".into());
          let headers = resolve_provider_auth(Some(&ambient), &provider)
              .unwrap()
-@@ -892,7 +891,7 @@ mod websocket_endpoint_auth_tests {
+@@ -892,7 +994,7 @@ mod websocket_endpoint_auth_tests {
      }
  
      #[tokio::test]
@@ -798,7 +1018,7 @@ index 3b4a4764..08822f2f 100644
          let ambient = managed_headers();
          let mut provider =
              ModelProviderInfo::create_openai_provider(Some("https://http.example/v1".into()));
-@@ -905,6 +904,11 @@ mod websocket_endpoint_auth_tests {
+@@ -905,6 +1007,11 @@ mod websocket_endpoint_auth_tests {
          assert!(
              resolve_provider_auth_for_scope(None, Some(&ambient), &provider, scope.clone())
                  .await
@@ -810,3 +1030,15 @@ index 3b4a4764..08822f2f 100644
                  .is_err()
          );
          provider.experimental_bearer_token = Some("synthetic-explicit-key".into());
+diff --git a/codex-rs/model-provider/src/lib.rs b/codex-rs/model-provider/src/lib.rs
+index 9c818af7..19277608 100644
+--- a/codex-rs/model-provider/src/lib.rs
++++ b/codex-rs/model-provider/src/lib.rs
+@@ -22,6 +22,7 @@ pub use auth::ProviderAuthScope;
+ pub use auth::ResolvedProviderAuth;
+ pub use auth::auth_provider_from_auth;
+ pub use auth::auth_provider_from_auth_manager;
++pub use auth::prepare_websocket_auth;
+ pub use auth::unauthenticated_auth_provider;
+ pub use bearer_auth_provider::BearerAuthProvider;
+ pub use bearer_auth_provider::BearerAuthProvider as CoreAuthProvider;
