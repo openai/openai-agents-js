@@ -39,6 +39,7 @@ mod node_runtime;
 mod ops;
 mod options;
 mod plain_run;
+mod plain_websocket;
 mod plan_usage;
 mod project_search;
 mod provider_error;

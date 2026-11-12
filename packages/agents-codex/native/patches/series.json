@@ -538,7 +538,7 @@
     },
     {
       "path": "0098-private-plain-modelclient-bridge.patch",
-      "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
+      "sha256": "14a78c091fe2553fac56cf2f3f442475c234324a50ca99a6da286b7cd2d068c7"
     },
     {
       "path": "sdk-realtime-voice-policies.patch",
@@ -965,5 +965,5 @@
       "sha256": "0f89982ea8439b01d19639f0f90ff93658d55f1ab3cbc2c014a7616c00f4a066"
     }
   ],
-  "result_tree": "54e09a2e4c2e05a44dcf3f8889c93f5e0d8e383f"
+  "result_tree": "fdd1681caa0352d8b0f0fe686ddf02714e8c357b"
 }
