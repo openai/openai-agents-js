@@ -2727,9 +2727,21 @@ export class Session<OutputT = string, Context = unknown> {
     NativeTurn,
     Turn<unknown, string | null>
   >();
-  private readonly pendingRoots = new QueuedRoots((run) =>
-    this.finishObservation(run),
-  );
+  private readonly pendingRoots = new QueuedRoots((run) => {
+    // Rejected queue entries have not entered native dispatch. Preserve the
+    // native snapshot while reporting their known zero logical submissions.
+    if (
+      run.captureRequestAttempts &&
+      run.id === null &&
+      !run.requestAttemptsStarted
+    )
+      run.submissionRequestAttempts = Object.freeze({
+        availability: 'complete',
+        counts: Object.freeze([]),
+        borrowedRequestsUnavailable: false,
+      });
+    this.finishObservation(run);
+  });
   private readonly decodedOutputs = new WeakMap<NativeTurn, unknown>();
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,

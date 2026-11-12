@@ -2099,6 +2099,7 @@ export function captureAgentProfiles<Context, Output>(
   idPrefix = 'agent_',
   rootPromptControls?: JsonObject,
 ): readonly CapturedAgentProfile<Context, Output>[] {
+  const realtimeGraph = hasRealtimeAgentConfiguration(rootDeclaration);
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
     // Validate actual retries, then compare only the shared wire encoding.
@@ -2207,7 +2208,7 @@ export function captureAgentProfiles<Context, Output>(
     const callbackTools: import('./tools').FunctionTool<Context>[] = [];
     for (const reference of declaration.handoffs) {
       if (reference instanceof DecisionHandoff) {
-        if (hasRealtimeAgentConfiguration(declaration))
+        if (realtimeGraph || hasRealtimeAgentConfiguration(declaration))
           throw new TypeError(
             'DecisionHandoff supports text Agents; use realtimeHandoff for Realtime routing',
           );

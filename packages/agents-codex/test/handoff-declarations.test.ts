@@ -1,8 +1,10 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Handoff } from '../src/runtime/handoffs';
 import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
 import { captureTools, tool } from '../src/runtime/tools';
+import { NativeProvider } from '../src/runtime/provider';
+import { realtimeHandoff } from '../src/runtime/realtime-agent-config';
 
 it('captures an unnamed target and a single callback with its declared schema', () => {
   const route = tool({
@@ -164,4 +166,32 @@ it('rejects Decisions handoffs for realtime configuration and conflicting names 
       new Agent({ instructions: 'Route', tools: [route], handoffs: [handoff] }),
     ),
   ).toThrow('conflicting');
+});
+
+it('rejects nested Decisions handoffs throughout a Realtime graph before native acquisition', async () => {
+  const { DecisionHandoff } = await import('../src/runtime/handoffs');
+  await using provider = new NativeProvider({ apiKey: 'synthetic' });
+  const acquire = vi.spyOn(provider, '_acquire').mockImplementation(() => {
+    throw new Error('Unexpected native acquisition');
+  });
+  const nested = new Agent({
+    name: 'Nested router',
+    instructions: 'Route',
+    handoffs: [
+      new DecisionHandoff({
+        name: 'route',
+        description: 'Route',
+        question: 'Where?',
+        targets: { one: new Agent({ instructions: 'One' }) },
+      }),
+    ],
+  });
+  const root = new Agent({
+    instructions: 'Realtime root',
+    realtime: {},
+    provider,
+    handoffs: [realtimeHandoff(nested)],
+  });
+  await expect(root.session()).rejects.toThrow('supports text Agents');
+  expect(acquire).not.toHaveBeenCalled();
 });

@@ -19,6 +19,58 @@ import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
 
+it.each([true, false])(
+  'retains known-zero queued cancellation totals only when opted in: %s',
+  async (includeRequestAttempts) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let requests = 0;
+    await using provider = new NativeProvider({
+      modelBackend: {
+        async complete() {
+          requests++;
+          entered.resolve();
+          await release.promise;
+          return { output: [message('Done')] };
+        },
+      },
+    });
+    await using session = await new Agent({
+      instructions: 'Answer',
+      provider,
+    }).session({ includeRequestAttempts });
+    const active = await session.submit('Active');
+    await entered.promise;
+    try {
+      const queued = await session.enqueue('Queued');
+      expect(queued.turnId).toBeNull();
+      const result = queued.wait();
+      void result.catch(() => {});
+      await queued.cancel();
+      await expect(result).rejects.toThrow(
+        'Queued work cancelled before admission',
+      );
+      expect(queued.requestAttempts).toBeUndefined();
+      if (includeRequestAttempts) {
+        expect(queued.submissionRequestAttempts).toEqual({
+          availability: 'complete',
+          counts: [],
+          borrowedRequestsUnavailable: false,
+        });
+        frozen(queued.submissionRequestAttempts);
+      } else expect(queued.submissionRequestAttempts).toBeUndefined();
+      expect(requests).toBe(1);
+    } finally {
+      release.resolve();
+    }
+    await active.wait();
+    expect(active.submissionRequestAttempts).toEqual(
+      includeRequestAttempts ? unavailable : undefined,
+    );
+    expect(requests).toBe(1);
+  },
+);
+
 const unavailable = {
   availability: 'unavailable',
   counts: [],
