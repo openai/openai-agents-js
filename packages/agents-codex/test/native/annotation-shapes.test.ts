@@ -31,6 +31,18 @@ for (const mode of [
   'combined',
   'combined-escaped',
   'collision',
+  'carrier-host',
+  'carrier-otlp',
+  'redispatch-wide',
+  'redispatch-root',
+  'redispatch-queue',
+  'redispatch-unrelated',
+  'redispatch-root-queue',
+  'redispatch-root-unrelated',
+  'redispatch-configured',
+  'redispatch-receipt',
+  'redispatch-wide-legacy',
+  'redispatch-root-legacy',
 ]) {
   it(
     'preserves bounded native annotation payloads: ' + mode,

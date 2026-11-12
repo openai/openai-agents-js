@@ -77,7 +77,7 @@ async function main() {
   const events: TraceEvent[] = [];
   const records: OtlpRecord[] = [];
   const server =
-    mode === 'otlp'
+    mode === 'otlp' || mode === 'carrier-otlp'
       ? createServer(async (request, response) => {
           const chunks: Buffer[] = [];
           for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -103,6 +103,24 @@ async function main() {
       },
     ],
     ...(mode === 'generic' ? { spanAttributes: generic } : {}),
+    ...(mode === 'redispatch-configured'
+      ? {
+          spanAttributes: Object.fromEntries(
+            Array.from({ length: 8 }, (_, i) => [
+              'sdk.metadata.config-' + i,
+              'c'.repeat(4000),
+            ]),
+          ),
+        }
+      : {}),
+    ...(mode.startsWith('carrier-')
+      ? {
+          spanAttributes: {
+            'sdk.metadata': 'service-label',
+            'service.fixture': 'retained',
+          },
+        }
+      : {}),
     ...(mode === 'collision'
       ? {
           spanAttributes: {
@@ -116,7 +134,9 @@ async function main() {
           },
         }
       : {}),
-    ...(mode === 'wide-queue'
+    ...(mode === 'wide-queue' ||
+    mode === 'redispatch-queue' ||
+    mode === 'redispatch-root-queue'
       ? { traceDelivery: { maxQueueBytes: 60000 } }
       : {}),
     ...(address && typeof address !== 'string'
@@ -130,7 +150,136 @@ async function main() {
       : {}),
   });
   try {
-    if (mode === 'collision') {
+    if (mode.startsWith('redispatch-')) {
+      let metadata: Metadata = Object.fromEntries(
+        Array.from({ length: 3000 }, (_, i) => ['f' + i, 0]),
+      );
+      let literal: unknown = 'literal';
+      for (let i = 0; i < 65; i++) literal = { x: literal };
+      metadata = { ...metadata, literal: JSON.stringify(literal) };
+      const original = await telemetry.withTrace(
+        {
+          name: 'bounds.replay.root',
+          metadata:
+            mode === 'redispatch-configured'
+              ? { x: 'x'.repeat(64000) }
+              : mode === 'redispatch-queue' ||
+                  mode === 'redispatch-root-queue' ||
+                  mode === 'redispatch-unrelated' ||
+                  mode === 'redispatch-receipt'
+                ? { x: 0 }
+                : metadata,
+        },
+        (root) => root,
+      );
+      if (mode.startsWith('redispatch-root') || mode === 'redispatch-receipt')
+        await telemetry.withSpan(
+          { name: 'bounds.replay.child', parent: original },
+          () => {},
+        );
+      assert.equal(
+        (await telemetry.forceFlush({ timeoutMs: 5000 })).status,
+        'success',
+      );
+      const recorded = events
+        .filter((event) => event.lifecycle === 'end')
+        .at(-1)!;
+      const replay = JSON.parse(JSON.stringify(recorded)) as TraceEvent;
+      if (mode.startsWith('redispatch-root')) {
+        assert(
+          !Object.keys(recorded.attributes).some((key) =>
+            key.startsWith('sdk.metadata.'),
+          ),
+        );
+        assert(
+          Object.keys(
+            (replay.root_descriptor as { attributes: Record<string, unknown> })
+              .attributes,
+          ).some((key) => key.startsWith('sdk.metadata.')),
+        );
+      }
+      if (mode === 'redispatch-queue')
+        Object.assign(
+          replay.attributes,
+          Object.fromEntries(
+            Object.entries(metadata).map(([key, value]) => [
+              'sdk.metadata.' + key,
+              typeof value === 'string' ? value : String(value),
+            ]),
+          ),
+        );
+      if (mode === 'redispatch-root-queue')
+        Object.assign(
+          (replay.root_descriptor as { attributes: Record<string, unknown> })
+            .attributes,
+          Object.fromEntries(
+            Object.entries(metadata).map(([key, value]) => [
+              'sdk.metadata.' + key,
+              typeof value === 'string' ? value : String(value),
+            ]),
+          ),
+        );
+      if (mode === 'redispatch-root-unrelated')
+        Object.assign(replay.root_descriptor!, {
+          unrelated: 'g'.repeat(70000),
+        });
+      if (mode === 'redispatch-queue')
+        Object.assign(replay, {
+          __sdk_annotations: JSON.stringify({ ...metadata, x: 0 }),
+        });
+      if (mode === 'redispatch-root-queue')
+        Object.assign(replay.root_descriptor!, {
+          __sdk_annotations: JSON.stringify({ ...metadata, x: 0 }),
+        });
+      if (mode === 'redispatch-unrelated')
+        Object.assign(replay.attributes, {
+          'sdk.metadata.': 'not-a-valid-key',
+          unrelated: 'g'.repeat(70000),
+        });
+      if (mode.endsWith('-legacy')) {
+        Reflect.deleteProperty(replay, '__sdk_annotations');
+        if (replay.root_descriptor)
+          Reflect.deleteProperty(replay.root_descriptor, '__sdk_annotations');
+      }
+      const count = events.length;
+      if (mode === 'redispatch-receipt') {
+        const parent = JSON.parse(
+          JSON.stringify(
+            events.find(
+              (event) =>
+                event.lifecycle === 'end' && event.name.endsWith('.root'),
+            )!,
+          ),
+        ) as TraceEvent;
+        Object.assign(parent, { __sdk_annotations: '{"x":1}' });
+        Object.assign(replay.root_descriptor!, {
+          __sdk_annotations: '{"x":1}',
+        });
+        await assert.rejects(telemetry.dispatchTraceEvent(parent), /receipt/);
+        await assert.rejects(telemetry.dispatchTraceEvent(replay), /receipt/);
+        assert.equal(events.length, count);
+      } else if (
+        mode === 'redispatch-queue' ||
+        mode === 'redispatch-unrelated' ||
+        mode === 'redispatch-root-queue' ||
+        mode === 'redispatch-root-unrelated'
+      ) {
+        await assert.rejects(
+          telemetry.dispatchTraceEvent(replay),
+          /queue capacity/,
+        );
+        assert.equal(events.length, count);
+      } else {
+        await telemetry.dispatchTraceEvent(replay);
+        assert.equal(events.length, count + 1);
+        assert.deepEqual(events.at(-1)!.attributes, recorded.attributes);
+        assert.deepEqual(
+          events.at(-1)!.root_descriptor,
+          replay.root_descriptor,
+        );
+      }
+      assert.equal(telemetry.getCurrentSpan(), undefined);
+    } else if (mode === 'collision') {
       await telemetry.withTrace(
         { name: 'bounds.collision', metadata: { x: 'x'.repeat(40000) } },
         () => {},
@@ -284,17 +433,20 @@ async function main() {
         JSON.parse(String(ended[0].attributes['sdk.outcome.data'])),
         data,
       );
-    } else if (mode === 'otlp') {
+    } else if (mode === 'otlp' || mode.startsWith('carrier-')) {
       const metadata = {
         ...payload('top-level'),
         'a-long': 'x'.repeat(8192),
         'b-encoded': ['x'.repeat(3000), 'y'.repeat(3000)],
       };
+      const childMetadata = mode.startsWith('carrier-')
+        ? { ...metadata, child: 'owned' }
+        : metadata;
       await telemetry.withTrace(
         { name: 'bounds.otlp.root', metadata },
         async () => {
           await telemetry.withSpan(
-            { name: 'bounds.otlp.child', metadata },
+            { name: 'bounds.otlp.child', metadata: childMetadata },
             () => {},
           );
         },
@@ -303,6 +455,16 @@ async function main() {
         (await telemetry.forceFlush({ timeoutMs: 5000 })).status,
         'success',
       );
+      if (mode === 'carrier-host') {
+        for (const event of events) {
+          metadataMatches(
+            event.attributes,
+            event.name.endsWith('.child') ? childMetadata : metadata,
+          );
+          assert.equal(event.attributes['sdk.metadata'], 'service-label');
+          assert.equal(event.attributes['service.fixture'], 'retained');
+        }
+      }
       const spans = records
         .flatMap((record) =>
           record.resourceSpans.flatMap((resource) =>
@@ -310,16 +472,25 @@ async function main() {
           ),
         )
         .filter((span) => span.name.startsWith('bounds.otlp.'));
-      assert.deepEqual(spans.map((span) => span.name).sort(), [
-        'bounds.otlp.child',
-        'bounds.otlp.root',
-      ]);
+      if (mode !== 'carrier-host')
+        assert.deepEqual(spans.map((span) => span.name).sort(), [
+          'bounds.otlp.child',
+          'bounds.otlp.root',
+        ]);
       for (const span of spans) {
         const attrs = Object.fromEntries(
           span.attributes.map((item) => [item.key, item.value.stringValue!]),
         );
-        assert(!Object.hasOwn(attrs, 'sdk.metadata'));
-        metadataMatches(attrs, metadata);
+        if (mode !== 'carrier-otlp')
+          assert(!Object.hasOwn(attrs, 'sdk.metadata'));
+        metadataMatches(
+          attrs,
+          span.name.endsWith('.child') ? childMetadata : metadata,
+        );
+        if (mode === 'carrier-otlp') {
+          assert.equal(attrs['sdk.metadata'], 'service-label');
+          assert.equal(attrs['service.fixture'], 'retained');
+        }
       }
     } else throw new Error('Unknown case');
     assert.equal(telemetry.getCurrentSpan(), undefined);
