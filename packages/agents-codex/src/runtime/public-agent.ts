@@ -299,7 +299,11 @@ export interface RunOptions<Context = undefined> extends Omit<
   returnRawUsage?: boolean;
   /** Retain the assistant and tool items produced by this run. */
   returnItems?: boolean;
-  /** Retain failed submission evidence in RunDiagnosticError.details. */
+  /**
+   * Opted-in failures have been retaining RunDiagnosticError.details.
+   * Portable manual recovery has been retaining captured caller input;
+   * unavailable origins have been reporting null input and incomplete details.
+   */
   captureErrorDetails?: boolean;
 }
 
