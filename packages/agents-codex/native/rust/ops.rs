@@ -1,7 +1,7 @@
 //! JSON adapters for native operations that contain Rust-only channels or values.
 use crate::config::{decode, optional};
 use crate::environment::StrictExecutorWrites;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use codex_core_api::{AbsolutePathBuf, CodexThread, WithTurnExtensionData};
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::{
@@ -281,6 +281,7 @@ pub struct StartOptions {
     turn_trigger: Option<String>,
     final_output_json_schema: Option<Value>,
     service_tier: Option<String>,
+    model_override: Option<String>,
     parent_turn_id: Option<String>,
     root_turn_id: Option<String>,
     cyber_access_program: Option<CyberAccessProgram>,
@@ -344,6 +345,9 @@ fn rejection(reason: NotSubmittedReason) -> Value {
         }
         NotSubmittedReason::ActiveTurnNotSteerable { turn_kind } => {
             json!({"type": "active_turn_not_steerable", "turn_kind": turn_kind})
+        }
+        NotSubmittedReason::ActiveTurnModelOverrideMismatch => {
+            json!({"type": "active_turn_model_override_mismatch"})
         }
         NotSubmittedReason::ActiveTurnOutputSchemaMismatch => {
             json!({"type": "active_turn_output_schema_mismatch"})
@@ -434,6 +438,12 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
         .transpose()
         .map_err(pre_admission)?;
     let mut p: TurnParams = decode(value).map_err(pre_admission)?;
+    if let Some(selection) = &selection {
+        ensure!(
+            selection.model_override == p.start.model_override,
+            "operation selection differs from the admitted run model"
+        );
+    }
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
     if (strict.is_some()
         || state.engine.local_checklist_store.is_some()
@@ -654,7 +664,7 @@ async fn prepare_write_selection(
 async fn continue_managed<'a>(
     state: &'a crate::engine::ThreadState,
     mutation: &mut Option<tokio::sync::MutexGuard<'a, ()>>,
-    p: TurnParams,
+    mut p: TurnParams,
 ) -> Result<Value> {
     if !(state.instructions.managed()
         && p.input.as_array().is_some_and(Vec::is_empty)
@@ -691,6 +701,14 @@ async fn continue_managed<'a>(
             tools.validate_operation(selection).map_err(pre_admission)?;
         }
     }
+    let retained_model = selection
+        .as_ref()
+        .and_then(|selection| selection.model_override.clone());
+    ensure!(
+        p.start.model_override.is_none() || p.start.model_override == retained_model,
+        "continuation cannot replace the admitted run model"
+    );
+    p.start.model_override = retained_model;
     init.insert(selection);
     if let Some(submission) = p.observation_submission_id {
         state
@@ -717,6 +735,7 @@ pub async fn recover_prepared(
     original_call_ids: Vec<String>,
     thread_settings: ThreadSettingsOverrides,
     final_output_json_schema: Option<Value>,
+    model_override: Option<String>,
     selection: Option<crate::python_tools::OperationSelection>,
     trace: Option<W3cTraceContext>,
     observation_submission_id: Option<String>,
@@ -738,6 +757,7 @@ pub async fn recover_prepared(
         thread
             .recover_turn_if_idle(WithTurnExtensionData::new(
                 RecoverTurnRequest {
+                    model_override,
                     turn_id: turn_id.clone(),
                     thread_settings,
                     final_output_json_schema,
