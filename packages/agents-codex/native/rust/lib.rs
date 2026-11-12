@@ -3277,16 +3277,18 @@ impl NativeThread {
         let inner = self.current()?;
         let response: python_tools::StepReply =
             serde_json::from_str(&owner_json).map_err(input_error)?;
-        let tools = inner
-            .thread
-            .thread_extension_data()
+        let store = inner.thread.thread_extension_data();
+        let tools = store
             .get::<python_tools::PythonTools>()
             .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
         let owner = tools
             .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
             .ok_or_else(|| input_error("Expired model callback owner"))?;
+        let observe_raw = store
+            .get::<codex_core::ObserveRawProviderEvents>()
+            .is_some();
         owner
-            .start_model_producer_stream(&response)
+            .start_model_producer_stream(&response, observe_raw)
             .map_err(input_error)
     }
 
