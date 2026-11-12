@@ -227,6 +227,29 @@ export interface MCPResultContext<Context = unknown> {
   readonly serverName: string;
   readonly toolName: string;
 }
+
+/** One detached server-authored tool definition, before native name projection. */
+export interface MCPToolDefinition {
+  name: string;
+  inputSchema: JsonObject;
+  title?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+/** Admitted discovery owner, without a synthetic tool call ID. */
+export interface MCPDiscoveryContext<Context = unknown> {
+  readonly agent: import('./public-agent').Agent<Context, any> | undefined;
+  readonly serverName: string;
+  readonly runContext: {
+    readonly context: Context;
+    readonly submission: ToolCallContext<Context>['submission'];
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly stepIndex: number;
+    readonly signal: AbortSignal;
+  };
+}
 /** Captured MCP inputs and naming for application-only result extraction. */
 export interface MCPApplicationDataContext<
   Context = unknown,
@@ -241,6 +264,17 @@ export interface MCPOptions<Context = unknown> {
   name: string;
   /** Selected raw tool names. Use [] for a resource-only server. */
   tools: readonly string[];
+  /**
+   * Per-discovery narrowing with the current admitted text context.
+   * Realtime and SIP omit tools from filtered MCP declarations. Use a separate
+   * declaration with an approval callback for Realtime MCP authorization.
+   */
+  toolFilter?: (
+    context: MCPDiscoveryContext<Context>,
+    tool: MCPToolDefinition,
+  ) => boolean | Promise<boolean>;
+  /** Raw native list caching; omission preserving native defaults. */
+  cacheToolsList?: boolean;
   /** Follow native rules (default), or preapprove selected tools. Application approval still applies. */
   approvalMode?: 'native' | 'preapproved';
   /** Inspect or replace arguments before native dispatch; has a 30-second deadline. */
@@ -274,6 +308,8 @@ abstract class MCP<Context> {
   readonly deferLoading: boolean;
   readonly name: string;
   readonly tools: readonly string[];
+  readonly toolFilter?: MCPOptions<Context>['toolFilter'];
+  readonly cacheToolsList?: boolean;
   readonly approvalMode: 'native' | 'preapproved';
   readonly startupTimeout: number;
   readonly executionTimeout: number;
@@ -285,6 +321,24 @@ abstract class MCP<Context> {
   readonly requestMetadata?: MCPOptions<Context>['requestMetadata'];
 
   constructor(options: MCPOptions<Context>) {
+    if (
+      options.toolFilter !== undefined &&
+      typeof options.toolFilter !== 'function'
+    )
+      throw new TypeError('MCP toolFilter must be callable');
+    if (
+      options.cacheToolsList !== undefined &&
+      typeof options.cacheToolsList !== 'boolean'
+    )
+      throw new TypeError('MCP cacheToolsList must be a boolean');
+    if (
+      options.name === 'codex_apps' &&
+      (options.toolFilter !== undefined || options.cacheToolsList !== undefined)
+    )
+      throw new TypeError('MCP discovery controls require an ordinary server');
+    this.toolFilter = options.toolFilter;
+    Object.defineProperty(this, 'toolFilter', { enumerable: false });
+    this.cacheToolsList = options.cacheToolsList;
     if (
       options.deferLoading !== undefined &&
       typeof options.deferLoading !== 'boolean'
@@ -549,7 +603,7 @@ export class HttpMCP<Context = unknown> extends MCP<Context> {
 
 export type HostedVerificationMCPOptions<Context = unknown> = Omit<
   HttpMCPOptions<Context>,
-  'name' | 'requestMetadata'
+  'name' | 'requestMetadata' | 'toolFilter' | 'cacheToolsList'
 >;
 
 /**
@@ -566,7 +620,7 @@ export class HostedVerificationMCP<Context = unknown> extends HttpMCP<Context> {
 
 export type ChatGPTAppsMCPOptions<Context = unknown> = Omit<
   MCPOptions<Context>,
-  'name' | 'requestMetadata'
+  'name' | 'requestMetadata' | 'toolFilter' | 'cacheToolsList'
 >;
 
 /**
@@ -611,6 +665,9 @@ function mcpServerConfig(
     startup_readiness: 'connection',
     startup_timeout_sec: server.startupTimeout,
     tool_timeout_sec: server.executionTimeout,
+    ...(server.cacheToolsList === undefined
+      ? {}
+      : { sdk_cache_tools_list: server.cacheToolsList }),
     ...(server.approvalMode === 'preapproved'
       ? {
           tools: Object.fromEntries(
@@ -664,6 +721,8 @@ export function selectHttpLeaves(
     activation: server.activation,
     deferLoading: server.deferLoading,
     tools,
+    toolFilter: server.toolFilter,
+    cacheToolsList: server.cacheToolsList,
     approvalMode: server.approvalMode,
     startupTimeout: server.startupTimeout,
     executionTimeout: server.executionTimeout,
@@ -722,6 +781,8 @@ export function resourceMcpBinding(server: McpTool): McpTool {
   return new StdioMCP({
     name: server.name,
     tools: [],
+    toolFilter: server.toolFilter,
+    cacheToolsList: server.cacheToolsList,
     command: server.command,
     args: server.args,
     envVars: server.envVars,
@@ -820,6 +881,15 @@ export function mcpPolicies(
 ): string {
   return JSON.stringify({
     generation: JSON.rawJSON(generation.toString()),
+    ...(servers.some((server) => server.toolFilter)
+      ? {
+          discovery_servers: Object.fromEntries(
+            servers
+              .filter((server) => server.toolFilter)
+              .map((server) => [server.name, [...server.tools]]),
+          ),
+        }
+      : {}),
     pre_policy: Object.fromEntries(
       servers
         .filter((server) => server.before || server.approval)

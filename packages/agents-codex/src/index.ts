@@ -157,6 +157,8 @@ export type {
   MCPStopDecision,
   MCPResultContext,
   MCPApplicationDataContext,
+  MCPDiscoveryContext,
+  MCPToolDefinition,
   StdioMCPOptions,
   HttpMCPOptions,
   HostedVerificationMCPOptions,
