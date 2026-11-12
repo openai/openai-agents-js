@@ -356,3 +356,52 @@ describe('native Realtime tool choice', () => {
     expect(() => serializeRealtimeSettings({ toolChoice } as never)).toThrow();
   });
 });
+
+it.each(['server_vad', 'semantic_vad'] as const)(
+  'captures %s provider VAD data without defaults',
+  (type) => {
+    const providerData = { vendor_tuning: { enabled: false, delay_ms: 0 } };
+    const result = serializeRealtimeSettings({
+      turnDetection: { type, providerData },
+    });
+    providerData.vendor_tuning.delay_ms = 9;
+    expect(result).toEqual({
+      turn_detection: {
+        type,
+        provider_data: { vendor_tuning: { enabled: false, delay_ms: 0 } },
+      },
+    });
+    for (const reset of [{}, null])
+      expect(
+        serializeRealtimeSessionUpdate({
+          turnDetection: { type, providerData: reset },
+        }),
+      ).toEqual({ turn_detection: { type, provider_data: reset } });
+  },
+);
+it.each([
+  'type',
+  'threshold',
+  'interrupt_response',
+  'interruptResponse',
+  'provider_data',
+])('rejects typed VAD provider collision %s', (key) => {
+  expect(() =>
+    serializeRealtimeSettings({
+      turnDetection: { type: 'server_vad', providerData: { [key]: true } },
+    }),
+  ).toThrow('cannot override typed');
+});
+it.each([[], 'invalid'])(
+  'rejects invalid VAD provider data %j',
+  (providerData) => {
+    expect(() =>
+      serializeRealtimeSettings({
+        turnDetection: {
+          type: 'server_vad',
+          providerData: providerData as any,
+        },
+      }),
+    ).toThrow('plain objects');
+  },
+);

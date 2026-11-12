@@ -12,6 +12,8 @@ export type NativeRealtimeTranscription = {
 export type NativeRealtimeTurnDetection =
   | {
       readonly type: 'server_vad';
+      /** Vendor VAD tuning only; typed keys cannot be overridden. */
+      readonly providerData?: Readonly<Record<string, JsonValue>> | null;
       readonly modelVersion?: string;
       readonly createResponse?: boolean;
       readonly interruptResponse?: boolean;
@@ -22,6 +24,8 @@ export type NativeRealtimeTurnDetection =
     }
   | {
       readonly type: 'semantic_vad';
+      /** Vendor VAD tuning only; typed keys cannot be overridden. */
+      readonly providerData?: Readonly<Record<string, JsonValue>> | null;
       readonly modelVersion?: string;
       readonly createResponse?: boolean;
       readonly interruptResponse?: boolean;
@@ -142,6 +146,14 @@ function fields(
     }),
   );
 }
+
+const vadTypedKeys = new Set(
+  (
+    'type model_version modelVersion create_response createResponse interrupt_response ' +
+    'interruptResponse threshold prefix_padding_ms prefixPaddingMs silence_duration_ms ' +
+    'silenceDurationMs idle_timeout_ms idleTimeoutMs eagerness provider_data providerData'
+  ).split(' '),
+);
 
 function mcpFilter(
   value: NativeRealtimeMcpToolFilter,
@@ -290,6 +302,15 @@ function settingsObject(
             ['idleTimeoutMs', 'idle_timeout_ms'],
             'eagerness',
           ]);
+  if (settings.turnDetection?.providerData !== undefined) {
+    const data = settings.turnDetection.providerData;
+    if (data !== null) {
+      fields(data, []);
+      if (Object.keys(data).some((key) => vadTypedKeys.has(key)))
+        throw new TypeError('VAD providerData cannot override typed settings');
+    }
+    (result.turn_detection as Record<string, unknown>).provider_data = data;
+  }
   if (settings.reasoning !== undefined)
     result.reasoning = fields(settings.reasoning, ['effort']);
   if (settings.tracing !== undefined)

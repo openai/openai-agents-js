@@ -935,7 +935,11 @@
     {
       "path": "sdk-preserve-native-reasoning-provider-metadata.patch",
       "sha256": "dd2c6016c3fe79373b2ba5d16953008eed810266a9bd669fb23d74e4544812bd"
+    },
+    {
+      "path": "sdk-realtime-vad-provider-data.patch",
+      "sha256": "bb38997bdffe09280acb438f7e31ae6e7b0a609f85c2ac072340b8a8dc7cb729"
     }
   ],
-  "result_tree": "a0e8472148be2f38bc0de8e9ccea32b2e5eb87b2"
+  "result_tree": "aea0df9139ec9363a8bd2110aa6f305951469709"
 }
