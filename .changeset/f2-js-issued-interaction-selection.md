@@ -2,4 +2,4 @@
 "@openai/agents-codex": patch
 ---
 
-Manual request selection and retirement under existing Session authority.
+refactor: Keep manual request selection and retirement under Session authority.
