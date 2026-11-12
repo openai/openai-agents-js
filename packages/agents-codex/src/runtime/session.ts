@@ -2683,6 +2683,7 @@ export class Session<OutputT = string, Context = unknown> {
           identity: ToolIdentity;
           status: ToolStatus;
           applicationData?: JsonObject;
+          restoredOutput?: ToolOutput;
         }
       >;
     }
@@ -8014,6 +8015,7 @@ export class Session<OutputT = string, Context = unknown> {
     identity: ToolIdentity,
     status: ToolStatus,
     applicationData?: JsonObject,
+    restoredOutput?: ToolOutput,
   ): void {
     const state = this.terminalState(owner);
     if (state.observations.has(identity.callId))
@@ -8022,6 +8024,7 @@ export class Session<OutputT = string, Context = unknown> {
       identity: { ...identity },
       status,
       applicationData,
+      restoredOutput,
     });
   }
 
@@ -8048,6 +8051,18 @@ export class Session<OutputT = string, Context = unknown> {
         },
         pending.applicationData,
       );
+      const observations = this.terminalProposals.get(owner)?.observations;
+      const observation = observations?.get(callId);
+      if (observation?.restoredOutput) {
+        observations!.delete(callId);
+        this.observeTool(
+          owner,
+          observation.identity,
+          'tool_finished',
+          observation.status,
+          observation.restoredOutput,
+        );
+      }
     }
   }
 
@@ -12022,6 +12037,7 @@ export class Session<OutputT = string, Context = unknown> {
       let status: ToolStatus | undefined;
       let observedOutput: ToolOutput | null = null;
       let deferredObservation = false;
+      let waitsForRestoredReceipt = false;
       try {
         if (
           !(await this.realtimeFunctionEnabled(owner, msg, tool.name, signal))
@@ -12111,7 +12127,10 @@ export class Session<OutputT = string, Context = unknown> {
         }
         const responseOutput = structuredClone(response);
         const applicationData = toolApplicationData(response);
-        const waitForApplicationAcceptance = applicationData !== undefined;
+        const restoredApplicationOutput =
+          this.manualRestoring && msg._sdk_managed_approved === true;
+        const waitForApplicationAcceptance =
+          applicationData !== undefined && !restoredApplicationOutput;
         if (tool.finishTurn && responseOutput.success) {
           this.registerTerminalObservation(
             owner,
@@ -12119,12 +12138,25 @@ export class Session<OutputT = string, Context = unknown> {
             'completed',
             applicationData,
           );
-          if (applicationData !== undefined)
-            this.pendingApplicationOutputs.push(
-              this.applicationOutputRecord(owner, identity, applicationData),
-            );
+          deferredObservation = true;
+        } else if (restoredApplicationOutput && applicationData !== undefined) {
+          this.registerTerminalObservation(
+            owner,
+            identity,
+            responseOutput.success ? 'completed' : 'failed',
+            applicationData,
+            new ToolOutput(
+              responseOutput.contentItems,
+              responseOutput.success,
+              applicationData,
+            ),
+          );
           deferredObservation = true;
         }
+        if (applicationData !== undefined && deferredObservation)
+          this.pendingApplicationOutputs.push(
+            this.applicationOutputRecord(owner, identity, applicationData),
+          );
         let accepted = false;
         try {
           accepted = await native._respond_python_tool(
@@ -12137,6 +12169,10 @@ export class Session<OutputT = string, Context = unknown> {
             }),
             waitForApplicationAcceptance,
           );
+          waitsForRestoredReceipt =
+            accepted &&
+            restoredApplicationOutput &&
+            applicationData !== undefined;
           if (accepted && applicationData !== undefined && !deferredObservation)
             this.recordApplicationOutput(owner, identity, applicationData);
           if (accepted && msg._sdk_managed_approved === true) {
@@ -12150,7 +12186,7 @@ export class Session<OutputT = string, Context = unknown> {
             this.discardPendingApplicationOutputs(owner, identity.callId);
         }
         if (accepted && !deferredObservation) {
-          const data = toolApplicationData(response);
+          const data = applicationData;
           observedOutput = new ToolOutput(
             responseOutput.contentItems,
             responseOutput.success,
@@ -12197,13 +12233,14 @@ export class Session<OutputT = string, Context = unknown> {
                   ? 'tool_error'
                   : undefined,
           });
-        this.observeToolEnd(
-          owner,
-          identity,
-          finalStatus ?? 'failed',
-          finalStatus === 'cancelled' ? null : observedOutput,
-          deferredObservation,
-        );
+        if (!waitsForRestoredReceipt || finalStatus === 'cancelled')
+          this.observeToolEnd(
+            owner,
+            identity,
+            finalStatus ?? 'failed',
+            finalStatus === 'cancelled' ? null : observedOutput,
+            deferredObservation,
+          );
       }
     };
     const release = admission ? await admission.acquire(signal) : undefined;

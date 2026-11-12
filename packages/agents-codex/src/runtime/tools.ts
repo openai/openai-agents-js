@@ -857,13 +857,19 @@ export function tool<
   const needsApproval = options.needsApproval;
   const runBeforeApproval = options.runBeforeApproval ?? false;
   const shell = (
-    options as typeof options & { [shellDeclaration]?: JsonObject }
+    options as typeof options & {
+      [shellDeclaration]?: {
+        readonly spec: JsonObject;
+        readonly portableResult: z.ZodType;
+      };
+    }
   )[shellDeclaration];
+  const portableResult = shell?.portableResult ?? result;
   const native = (
     options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
   )[nativeCallbackDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
-    ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+    ...(shell === undefined ? {} : { [shellDeclaration]: shell.spec }),
     ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
     finishTurn: options.finishTurn ?? false,
     [inputRecovery]: inputErrorFunction !== undefined,
@@ -1163,13 +1169,16 @@ export function tool<
         }
       : {}),
     function: declaration,
-    resultSchema: result
+    resultSchema: portableResult
       ? decode(
           jsonValue,
           // Managed results retain their callback validator; this portable
           // metadata need not represent non-JSON instance validators.
           JSON.stringify(
-            z.toJSONSchema(result, { io: 'input', unrepresentable: 'any' }),
+            z.toJSONSchema(portableResult, {
+              io: 'input',
+              unrepresentable: 'any',
+            }),
           ),
         )
       : {},
@@ -1291,10 +1300,12 @@ export function createShellTool<
 >(
   declaration: JsonObject,
   options: Parameters<typeof tool<T, Context, Result>>[0],
+  portableResult: z.ZodType,
 ): FunctionTool<Context> {
   const captured = {
     ...options,
-    [shellDeclaration]: structuredClone(declaration),
+    // Keep SDK-only result metadata out of the stored approval contract.
+    [shellDeclaration]: { spec: structuredClone(declaration), portableResult },
   };
   return tool(captured);
 }
