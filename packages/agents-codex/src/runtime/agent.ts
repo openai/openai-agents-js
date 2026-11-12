@@ -349,8 +349,8 @@ export async function openSession(
     );
     if (completedFailure) throw completedFailure;
   });
-  // The explicit runtime parks plain executions only. An ordinary fallback
-  // receives a fresh Engine/home and cannot inherit a previously parked kernel.
+  // Plain-only owners have been parking direct executions only. A fallback has
+  // been receiving a fresh Engine/home instead of inheriting the parked kernel.
   if (borrow?.plainOnly && idle) {
     const home = await borrow.reset();
     runtime = { ...runtime, ...home };
