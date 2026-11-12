@@ -1579,7 +1579,7 @@ impl EngineState {
         startup.config.sdk_tool_choice = settings.tool_choice;
         startup.config.sdk_request_controls = settings.request_controls.clone();
         startup.config.mcp_servers.set(HashMap::new())?;
-        let prepared = if let Some(boundary) = boundary {
+        let mut prepared = if let Some(boundary) = boundary {
             source.thread.ensure_rollout_materialized().await;
             source.thread.flush_rollout().await?;
             Some(
@@ -1593,7 +1593,8 @@ impl EngineState {
         } else {
             None
         };
-        let history = if let Some(prepared) = &prepared {
+        let history = if let Some(prepared) = &mut prepared {
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut prepared.model_context);
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: prepared.source_thread_id,
                 history: Arc::clone(&prepared.model_context),
@@ -1601,7 +1602,13 @@ impl EngineState {
                 rollout_path: None,
             })
         } else {
-            self.history(source.id).await?
+            let mut history = self.history(source.id).await?;
+            if let InitialHistory::Resumed(resumed) = &mut history
+                && crate::checkpoint::remove_replayed_mcp_approvals(&mut resumed.history)
+            {
+                resumed.history_revision = None;
+            }
+            history
         };
         startup.initial_history = history.clone();
         crate::python_tools::PythonTools::install(

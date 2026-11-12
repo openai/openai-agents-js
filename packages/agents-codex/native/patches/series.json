@@ -1,4 +1,5 @@
 {
+  "result_tree": "b9a24b421e46814de5733f432a09df11ddfd7781",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -893,9 +894,12 @@
       "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
     },
     {
+      "path": "sdk-provider-hosted-mcp.patch",
+      "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
+    },
+    {
       "path": "sdk-application-apply-patch.patch",
-      "sha256": "ec477acb2938dac361be9eda7fbb9bb2301281a558ebbe1accd675b9644c5bee"
+      "sha256": "5426ca44464782995b1eafaaa96356bf5f30082ab49168d7aa886cea6131fd09"
     }
-  ],
-  "result_tree": "daeb00520d2f496f16cf0e6c1ab3211f817bbb50"
+  ]
 }

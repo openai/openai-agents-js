@@ -35,6 +35,7 @@ import type { HttpMCP, StdioMCP } from './mcp';
 import { assembleManualTool, type ManualTool } from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
+import { hostedMcpBinding } from './hosted-mcp-binding';
 
 const toolContentSchema = z.unknown().transform((value, context) => {
   try {
@@ -302,6 +303,7 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
     !tool.deferLoading &&
     !tool[nativeCallbackDeclaration] &&
     !tool[clientToolSearchDeclaration] &&
+    !hostedMcpBinding(tool) &&
     !tool[shellDeclaration]
   );
 }
@@ -374,6 +376,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
+  if (hostedMcpBinding(tool)) return 'hosted_mcp';
   return tool.kind === 'manual' ? null : (tool.namespace ?? null);
 }
 
@@ -1302,6 +1305,19 @@ export function captureTools(
           tool[clientToolSearchDeclaration],
         ),
       };
+    }
+    const mcp = hostedMcpBinding(tool);
+    if (mcp) {
+      if (
+        tool.name !== mcp.serverLabel ||
+        tool.deferLoading ||
+        (tool.kind !== 'manual' &&
+          (tool.namespace !== 'hosted_mcp' || tool.finishTurn))
+      )
+        throw new TypeError(
+          'Hosted MCP declarations retain their server identity',
+        );
+      return { type: 'hostedMcp', serverLabel: mcp.serverLabel };
     }
     if (tool[shellDeclaration])
       return losslessJsonObjectSchema.parse(tool[shellDeclaration]);

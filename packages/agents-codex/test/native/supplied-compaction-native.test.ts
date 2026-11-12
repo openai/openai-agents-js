@@ -877,8 +877,8 @@ ${openingFile}`;
     const before = await session.saveState();
     const failure = new Error('candidate restore failed');
     vi.spyOn(
-      addon.Engine.prototype,
-      'restore_checkpoint',
+      addon._ContextChange.prototype,
+      'restoreCandidate',
     ).mockRejectedValueOnce(failure);
     const cleanup = vi.spyOn(
       addon._ContextChange.prototype,
