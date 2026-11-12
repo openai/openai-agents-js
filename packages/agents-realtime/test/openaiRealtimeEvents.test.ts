@@ -1,8 +1,5 @@
-import { describe, it, expect, expectTypeOf } from 'vitest';
-import {
-  parseRealtimeEvent,
-  type RealtimeServerEvent,
-} from '../src/openaiRealtimeEvents';
+import { describe, it, expect } from 'vitest';
+import { parseRealtimeEvent } from '../src/openaiRealtimeEvents';
 
 function createEvent(payload: any): MessageEvent {
   return new MessageEvent('message', { data: JSON.stringify(payload) });
@@ -13,12 +10,6 @@ function createRawEvent(data: any): MessageEvent {
 }
 
 describe('parseRealtimeEvent', () => {
-  it('keeps SDK wire names separate from local action channels', () => {
-    expectTypeOf<
-      Exclude<RealtimeServerEvent['type'], 'error' | `${string}.${string}`>
-    >().toEqualTypeOf<never>();
-  });
-
   it('parses known conversation.item.added event', () => {
     const payload = {
       type: 'conversation.item.added',

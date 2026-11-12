@@ -401,6 +401,17 @@ fn functions(
     for spec in specs {
         match spec {
             DynamicToolSpec::Function(tool) => functions.push((None, Cow::Borrowed(tool))),
+            DynamicToolSpec::ApplyPatch => functions.push((
+                None,
+                Cow::Owned(DynamicToolFunctionSpec {
+                    strict: false,
+                    output_schema: None,
+                    name: "apply_patch".into(),
+                    description: "Native application patch callback".into(),
+                    input_schema: json!({"type":"object"}),
+                    defer_loading: false,
+                }),
+            )),
             DynamicToolSpec::ToolSearch(tool) => {
                 functions.push((None, Cow::Owned(tool.callback_spec())))
             }
@@ -430,6 +441,9 @@ fn functions(
 
 fn original_tool_payload(spec: &ToolSpec, arguments: &Value) -> Option<ToolPayload> {
     match spec {
+        ToolSpec::ApplyPatch {} => Some(ToolPayload::ApplyPatch {
+            arguments: arguments.to_string(),
+        }),
         ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {
             Some(ToolPayload::Computer {
                 arguments: arguments.to_string(),
@@ -446,6 +460,7 @@ fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
             DynamicToolSpec::Function(_)
+            | DynamicToolSpec::ApplyPatch
             | DynamicToolSpec::Computer(_)
             | DynamicToolSpec::ToolSearch(_)
             | DynamicToolSpec::HostedMcp(_)
@@ -469,7 +484,7 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
         }
     }
     let mut seen = HashSet::new();
-    for (namespace, tool) in functions(specs) {
+    for (declaration, (namespace, tool)) in specs.iter().zip(functions(specs)) {
         let key = ToolName::new(
             namespace.as_ref().map(|ns| ns.name.clone()),
             tool.name.clone(),
@@ -489,6 +504,7 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
         );
         ensure!(
             !(key.is_default_namespace()
+                && !matches!(declaration, DynamicToolSpec::ApplyPatch)
                 && matches!(
                     key.name.as_str(),
                     "exec_command"
@@ -1640,6 +1656,10 @@ impl PythonTools {
             return Ok(Some(PythonOutput(response).receipt(key)));
         };
         let output: Box<dyn ToolOutput> = match &payload {
+            ToolPayload::ApplyPatch { arguments } => Box::new(
+                codex_tools::ApplyPatchToolOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native application patch response"))?,
+            ),
             ToolPayload::Computer { arguments } => Box::new(
                 codex_tools::ComputerToolOutput::from_dynamic_response(arguments, response)
                     .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?,
@@ -1653,6 +1673,10 @@ impl PythonTools {
         };
         let mut item: ResponseItem = output.to_response_item(&key.call, &payload).into();
         if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        }
+        | ResponseItem::ApplyPatchCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
         }
@@ -1695,7 +1719,7 @@ impl PythonTools {
             );
             let key = name.clone().with_default_namespace();
             ensure!(
-                !self.fixed.contains(&key),
+                !self.fixed.contains(&key) || matches!(declaration, DynamicToolSpec::ApplyPatch),
                 "JavaScript tool collides with fixed tool: {key}"
             );
             ensure!(
@@ -1717,7 +1741,9 @@ impl PythonTools {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
             }
-            let spec = if let DynamicToolSpec::Computer(computer) = declaration {
+            let spec = if matches!(declaration, DynamicToolSpec::ApplyPatch) {
+                ToolSpec::ApplyPatch {}
+            } else if let DynamicToolSpec::Computer(computer) = declaration {
                 codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?
             } else if let DynamicToolSpec::HostedMcp(mcp) = declaration {
                 ToolSpec::Mcp(codex_tools::HostedMcpTool {
@@ -1747,7 +1773,9 @@ impl PythonTools {
                     ToolExposure::Hidden
                 } else if matches!(
                     declaration,
-                    DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_)
+                    DynamicToolSpec::ApplyPatch
+                        | DynamicToolSpec::Computer(_)
+                        | DynamicToolSpec::Shell(_)
                 ) {
                     ToolExposure::DirectModelOnly
                 } else if tool.defer_loading {
@@ -4014,6 +4042,15 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         ToolCall<'call>: 'a,
     {
         Box::pin(async move {
+            if matches!(self.spec(), ToolSpec::ApplyPatch {})
+                && (!matches!(call.payload, ToolPayload::ApplyPatch { .. })
+                    || call.source != ToolCallSource::Direct)
+            {
+                return Err(FunctionCallError::Fatal(
+                    "Application patch requires its native direct call payload".into(),
+                ));
+            }
+
             let client_search = if let ToolPayload::ClientToolSearch(search) = &call.payload {
                 Some(Arc::new(ClientToolSearchWork {
                     call: search.clone(),
@@ -4115,7 +4152,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                 Err(_)
                     if matches!(
                         call.payload,
-                        ToolPayload::Computer { .. } | ToolPayload::Shell { .. }
+                        ToolPayload::ApplyPatch { .. }
+                            | ToolPayload::Computer { .. }
+                            | ToolPayload::Shell { .. }
                     ) =>
                 {
                     return Err(FunctionCallError::Fatal(
@@ -4144,6 +4183,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .lock()
                     .expect("JavaScript completion receipts poisoned")
                     .insert(key);
+            }
+            if let ToolPayload::ApplyPatch { arguments } = &call.payload {
+                return Ok(
+                    Box::new(codex_tools::ApplyPatchToolOutput::from_dynamic_response(
+                        arguments,
+                        response.response,
+                    )?) as Box<dyn ToolOutput>,
+                );
             }
             if let Some(search) = client_search {
                 let selection =

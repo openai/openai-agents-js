@@ -130,6 +130,11 @@ fn identities(
                     } if crate::local_reconciliation::is_application_shell_call(row) => {
                         provider_fields.get("call_id").and_then(Value::as_str)
                     }
+                    ResponseItem::ApplyPatchCall { call_id, .. }
+                        if crate::local_reconciliation::owns_application_patch(row) =>
+                    {
+                        Some(call_id.as_str())
+                    }
                     item => crate::local_reconciliation::invocation_id(item),
                 };
                 if let Some(call_id) = call_id {
@@ -146,10 +151,14 @@ fn identities(
                     if let Some(previous) = calls.get(&identity)
                         && (matches!(
                             previous,
-                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                            ResponseItem::ComputerCall { .. }
+                                | ResponseItem::ShellCall { .. }
+                                | ResponseItem::ApplyPatchCall { .. }
                         ) || matches!(
                             row.item,
-                            ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
+                            ResponseItem::ComputerCall { .. }
+                                | ResponseItem::ShellCall { .. }
+                                | ResponseItem::ApplyPatchCall { .. }
                         ))
                     {
                         return Err(error("ambiguous original local tool call identity"));
@@ -661,6 +670,14 @@ impl CustomThreadStore {
             return Err(error(
                 "canonical reconciliation requires an unresolved call",
             ));
+        }
+        if matches!(original, ResponseItem::ApplyPatchCall { .. }) {
+            let item =
+                crate::local_reconciliation::application_patch_receipt(original, result, &turn)
+                    .map_err(|_| {
+                        error("Application patch reconciliation requires a typed result")
+                    })?;
+            return self.receipt(id, item).await;
         }
         if matches!(original, ResponseItem::ComputerCall { .. }) {
             let item = crate::local_reconciliation::computer_receipt(original, result, &turn)

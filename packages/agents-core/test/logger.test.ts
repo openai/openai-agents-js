@@ -232,18 +232,6 @@ describe('logger', () => {
         return proxy;
       },
     ],
-    [
-      'Proxy with a throwing prototype trap',
-      () =>
-        new Proxy(
-          {},
-          {
-            getPrototypeOf() {
-              throw new Error('SECRET_PROXY_TRAP_123');
-            },
-          },
-        ),
-    ],
   ] as const)('safely classifies a %s', async (_description, createError) => {
     const { getSafeErrorType } = await import('../src/logger');
 

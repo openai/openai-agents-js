@@ -1045,7 +1045,8 @@ function reconciliationOutcome(raw: JsonObject) {
   if (
     raw.type !== 'function_call_output' &&
     raw.type !== 'custom_tool_call_output' &&
-    raw.type !== 'computer_call_output'
+    raw.type !== 'computer_call_output' &&
+    raw.type !== 'apply_patch_call_output'
   )
     return undefined;
   const kinds = object(
@@ -1061,12 +1062,14 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
     raw.type === 'computer_call_output' ||
+    raw.type === 'apply_patch_call_output' ||
     raw.type === 'shell_call_output' ||
     raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
     raw.type === 'computer_call' ||
+    raw.type === 'apply_patch_call' ||
     raw.type === 'local_shell_call' ||
     raw.type === 'shell_call' ||
     raw.type === 'tool_search_call';
@@ -1136,20 +1139,24 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   if (
     call &&
     typeof raw.call_id === 'string' &&
-    (raw.type === 'computer_call' || typeof raw.name === 'string')
+    (raw.type === 'computer_call' ||
+      raw.type === 'apply_patch_call' ||
+      typeof raw.name === 'string')
   )
     return {
       ...common,
       type: 'function_call',
       callId: raw.call_id,
       name:
-        raw.type === 'computer_call'
-          ? 'computer'
-          : raw.namespace
-            ? `${raw.namespace}.${raw.name}`
-            : String(raw.name),
+        raw.type === 'apply_patch_call'
+          ? 'apply_patch'
+          : raw.type === 'computer_call'
+            ? 'computer'
+            : raw.namespace
+              ? `${raw.namespace}.${raw.name}`
+              : String(raw.name),
       arguments:
-        raw.type === 'computer_call'
+        raw.type === 'computer_call' || raw.type === 'apply_patch_call'
           ? raw
           : (raw.arguments ?? raw.input ?? null),
       status: 'in_progress',
@@ -1160,14 +1167,24 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       ...common,
       type: 'function_call_output',
       callId: raw.call_id,
-      status: reconciliation === 'not_applied' ? 'failed' : 'completed',
+      status:
+        reconciliation === 'not_applied' ||
+        (raw.type === 'apply_patch_call_output' && raw.status === 'failed')
+          ? 'failed'
+          : 'completed',
       output:
-        raw.type === 'computer_call_output'
+        raw.type === 'apply_patch_call_output'
           ? {
-              output: raw.output ?? null,
-              acknowledged_safety_checks: raw.acknowledged_safety_checks ?? [],
+              status: raw.status,
+              ...(raw.output === undefined ? {} : { output: raw.output }),
             }
-          : (raw.output ?? null),
+          : raw.type === 'computer_call_output'
+            ? {
+                output: raw.output ?? null,
+                acknowledged_safety_checks:
+                  raw.acknowledged_safety_checks ?? [],
+              }
+            : (raw.output ?? null),
       error: null,
       ...(reconciliation === undefined ? {} : { reconciliation }),
     };
@@ -1673,12 +1690,18 @@ export function projectHistory(
           'function_call_output',
           'custom_tool_call_output',
           'computer_call_output',
+          'apply_patch_call_output',
         ].includes(String(payload.type)) &&
         metadata?.turn_id === aborted &&
         latestCalls.has(JSON.stringify([aborted, 'function', payload.call_id]))
       )
         turn = aborted;
       if (turn) {
+        if (
+          payload.type === 'apply_patch_call' &&
+          object(recordedMetadata)?.sdk_application_tool !== 'apply_patch'
+        )
+          continue;
         const item = responseItem(payload, turn);
         if (item) {
           if (item.type === 'function_call_output' && item.reconciliation) {
@@ -1987,7 +2010,9 @@ export function projectHistory(
     }
     if (item.type === 'function_call') {
       const original = item.data;
-      const computerCall = original.type === 'computer_call';
+      const computerCall =
+        original.type === 'computer_call' ||
+        original.type === 'apply_patch_call';
       if (computerCall) item.arguments = original;
       const output = occurrence.output?.item;
       if (output?.type === 'function_call_output' && output.reconciliation)

@@ -8117,7 +8117,8 @@ export class Session<OutputT = string, Context = unknown> {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return;
     const item = value as Record<string, unknown>;
     if (
-      item.type !== 'function_call_output' ||
+      (item.type !== 'function_call_output' &&
+        item.type !== 'apply_patch_call_output') ||
       typeof item.call_id !== 'string'
     )
       return;

@@ -78,6 +78,7 @@ impl SupportedOutput {
                         call_id: Some(_),
                         ..
                     } | ResponseItem::CustomToolCallOutput { .. }
+                        | ResponseItem::ApplyPatchCallOutput { .. }
                         | ResponseItem::ComputerCallOutput { .. }
                         | ResponseItem::McpApprovalResponse { .. }
                 ) || matches!(
@@ -110,7 +111,8 @@ impl SupportedOutput {
                         });
                     }
                     ResponseItem::FunctionCall { .. }
-                    | ResponseItem::ComputerCall { .. }
+                    | ResponseItem::ApplyPatchCall { .. }
+                | ResponseItem::ComputerCall { .. }
                     | ResponseItem::CustomToolCall { .. }
                     | ResponseItem::WebSearchCall { .. }
                     | ResponseItem::FileSearchCall { .. }

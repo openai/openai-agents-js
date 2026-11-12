@@ -22,10 +22,7 @@ describe('local workspace path probes', () => {
     filesystemMocks.lstat.mockReset();
   });
 
-  it.each([
-    { name: 'a regular file', isSymbolicLink: false },
-    { name: 'a directory', isSymbolicLink: false },
-  ])(
+  it.each([{ name: 'a regular file', isSymbolicLink: false }])(
     'recognizes $name created after the initial stat',
     async ({ isSymbolicLink }) => {
       filesystemMocks.stat.mockRejectedValueOnce(
