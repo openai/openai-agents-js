@@ -798,7 +798,31 @@ it('captures a reloaded child when its row is issued by an open iterator', async
       await finishChildren(source, 'Start both workers.', 2);
       state = await source.saveState();
     }
-    await using restored = await agent.session({ environment, state });
+    const savedChild = state.descendants[0]!;
+    const context = savedChild.history.find(
+      (item) =>
+        item.type === 'turn_context' &&
+        (item.payload as JsonObject).sdk_receipt,
+    )!.payload as JsonObject;
+    const receipt = context.sdk_receipt as JsonObject;
+    expect(receipt.thread_id).toBe(savedChild.thread_id);
+    expect(receipt).not.toHaveProperty('sandbox_memory_input_admitted');
+    const expectedReceipt = structuredClone(receipt);
+    receipt.sandbox_memory_input_admitted = true;
+
+    await using restored = await agent.session({
+      environment,
+      state: parseSessionState(JSON.stringify(state)),
+    });
+    const roundTrip = await restored.saveState();
+    const restoredContext = roundTrip.descendants
+      .find((child) => child.thread_id === savedChild.thread_id)
+      ?.history.find(
+        (item) =>
+          item.type === 'turn_context' &&
+          (item.payload as JsonObject).turn_id === context.turn_id,
+      )?.payload as JsonObject | undefined;
+    expect(restoredContext?.sdk_receipt).toEqual(expectedReceipt);
     const iterator = restored.subagents();
     const first = (await iterator.next()).value!;
     expect(first.isLive).toBe(false);
