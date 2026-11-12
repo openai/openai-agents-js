@@ -214,6 +214,9 @@ export {
   parseSessionState,
   readSessionInstructions,
   getProviderHistory,
+  pendingInput,
+  withPendingInput,
+  withoutPendingInput,
 } from './runtime/state';
 export type {
   TokenUsage,
@@ -573,3 +576,5 @@ export type {
   LocalDirLazySkillSource,
 } from './runtime/sandbox-skills';
 export type { SandboxMemoryOptions } from './runtime/sandbox-memory';
+
+export type { PendingInput, PendingInputItem } from './runtime/state';
