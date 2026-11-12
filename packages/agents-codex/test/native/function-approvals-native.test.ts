@@ -259,6 +259,271 @@ it.each([true, false])(
   },
 );
 
+it.each([true, false])(
+  'keeps remembered future decisions through portable restore (approve=%s)',
+  async (approve) => {
+    const effects: string[] = [];
+    const binding = () =>
+      tool({
+        name: 'risky',
+        parameters: z.object({ value: z.string() }),
+        needsApproval: true,
+        approvalKey: 'fixture.risky.v1',
+        execute: ({ value }) => {
+          effects.push(value);
+          return value;
+        },
+      });
+    const risky = binding();
+    const server = new ModelServer([
+      [call('risky', { value: 'first' }, { callId: 'remember-first' })],
+      [message('done')],
+      [call('risky', { value: 'later' }, { callId: 'remember-later' })],
+      [message('restored')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use the tool.',
+      model: 'fixture',
+      provider,
+      tools: [risky],
+    });
+    const source = await agent.session();
+    let saved;
+    try {
+      const turn = await source.submit('begin');
+      const request = await nextApproval(source);
+      expect(effects).toEqual([]);
+      await source.respond(
+        approve
+          ? request.approve({ always: true })
+          : request.reject(undefined, { always: true }),
+      );
+      await turn.wait();
+      saved = parseSessionState(JSON.stringify(await source.saveState()));
+    } finally {
+      await source.close();
+    }
+    const rebound = binding();
+    expect(rebound).not.toBe(risky);
+    const current = new Agent({
+      instructions: 'Use the tool.',
+      model: 'fixture',
+      provider,
+      tools: [rebound],
+    });
+    await using restored = await current.session({ state: saved });
+    const turn = await restored.submit('continue');
+    const observed = await Promise.race([
+      turn.wait().then((result) => ({ kind: 'completed' as const, result })),
+      nextApproval(restored).then((request) => ({
+        kind: 'approval' as const,
+        request,
+      })),
+    ]);
+    if (observed.kind === 'approval') {
+      await restored.respond(observed.request.reject());
+      await turn.wait();
+    }
+    expect(observed.kind).toBe('completed');
+    expect(effects).toEqual(approve ? ['first', 'later'] : []);
+    expect(JSON.stringify(server.requests)).not.toContain('fixture.risky.v1');
+    server.assertExhausted();
+  },
+);
+
+it.each([true, false])(
+  'rebinds remembered future decisions in a fresh process (approve=%s)',
+  async (approve) => {
+    const { mkdtemp, readFile, writeFile, rm, appendFile } =
+      await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { spawn } = await import('node:child_process');
+    const directory = await mkdtemp(
+      join(tmpdir(), 'native-remembered-approval-'),
+    );
+    try {
+      const effectsPath = join(directory, 'effects.txt');
+      await writeFile(effectsPath, '');
+      const risky = tool({
+        name: 'risky',
+        parameters: z.object({ value: z.string() }),
+        needsApproval: true,
+        approvalKey: 'fixture.risky.v1',
+        execute: async ({ value }) => {
+          await appendFile(effectsPath, value + '\n');
+          return value;
+        },
+      });
+      const server = new ModelServer([
+        [call('risky', { value: 'first' }, { callId: 'process-first' })],
+        [message('done')],
+        [call('risky', { value: 'later' }, { callId: 'process-later' })],
+        [message('restored')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        instructions: 'Use the tool.',
+        model: 'fixture',
+        provider,
+        tools: [risky],
+      });
+      const source = await agent.session();
+      try {
+        const turn = await source.submit('begin');
+        const request = await nextApproval(source);
+        expect(await readFile(effectsPath, 'utf8')).toBe('');
+        await source.respond(
+          approve
+            ? request.approve({ always: true })
+            : request.reject(undefined, { always: true }),
+        );
+        await turn.wait();
+        await writeFile(
+          join(directory, 'state.json'),
+          JSON.stringify(await source.saveState()),
+        );
+      } finally {
+        await source.close();
+      }
+      const config = await server.config();
+      const baseUrl = (
+        config['model_providers.fixture'] as { base_url: string }
+      ).base_url;
+      const child = spawn(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          new URL('./fixtures/remembered-approval-restore.ts', import.meta.url)
+            .pathname,
+          join(directory, 'state.json'),
+          effectsPath,
+          baseUrl,
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let stdout = '',
+        stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (value) => {
+        stdout += value;
+      });
+      child.stderr.on('data', (value) => {
+        stderr += value;
+      });
+      const timer = setTimeout(() => child.kill(), 20_000);
+      try {
+        const code = await new Promise<number | null>((resolve, reject) => {
+          child.on('error', reject);
+          child.on('exit', resolve);
+        });
+        expect(code, stderr).toBe(0);
+        expect(JSON.parse(stdout).effects).toEqual(
+          approve ? ['first', 'later'] : [],
+        );
+      } finally {
+        clearTimeout(timer);
+        if (child.exitCode === null) child.kill();
+      }
+      server.assertExhausted();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+it.each(['key', 'profile', 'schema', 'policy', 'unkeyed'] as const)(
+  'requires current authority for portable remembered approval (%s)',
+  async (change) => {
+    const effects: string[] = [];
+    const binding = (
+      key: string | undefined,
+      altered = false,
+      predicate = false,
+    ) =>
+      tool({
+        name: 'risky',
+        parameters: altered
+          ? z.object({ value: z.number() })
+          : z.object({ value: z.string() }),
+        needsApproval: predicate ? () => true : true,
+        approvalKey: key,
+        execute: ({ value }) => {
+          effects.push(String(value));
+          return String(value);
+        },
+      });
+    const risky = binding('fixture.risky.v1');
+    const server = new ModelServer([
+      [call('risky', { value: 'first' }, { callId: 'original-policy' })],
+      [message('done')],
+      [
+        call(
+          'risky',
+          { value: change === 'schema' ? 2 : 'later' },
+          { callId: 'different-authority' },
+        ),
+      ],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use the tool.',
+      model: 'fixture',
+      provider,
+      tools: [risky],
+    });
+    const source = await agent.session();
+    let saved;
+    try {
+      const turn = await source.submit('begin');
+      await source.respond(
+        (await nextApproval(source)).approve({ always: true }),
+      );
+      await turn.wait();
+      saved = await source.saveState();
+    } finally {
+      await source.close();
+    }
+    const rebound = binding(
+      change === 'unkeyed'
+        ? undefined
+        : change === 'key'
+          ? 'other-key'
+          : 'fixture.risky.v1',
+      change === 'schema',
+      change === 'policy',
+    );
+    const current = new Agent({
+      instructions: 'Use the tool.',
+      model: 'fixture',
+      provider,
+      tools: [rebound],
+      ...(change === 'profile' ? { name: 'other-profile' } : {}),
+    });
+    try {
+      await using restored = await current.session({ state: saved });
+      const turn = await restored.submit('continue');
+      const request = await nextApproval(restored);
+      expect(effects).toEqual(['first']);
+      await restored.respond(request.reject());
+      await turn.wait();
+    } catch (error) {
+      if (
+        change !== 'schema' ||
+        !(error instanceof Error) ||
+        !/schema|declaration|tools/i.test(error.message)
+      )
+        throw error;
+    }
+    expect(effects).toEqual(['first']);
+  },
+);
+
 it('denies input before approval without running its predicate, body or output policy', async () => {
   const calls: string[] = [];
   const risky = tool({
