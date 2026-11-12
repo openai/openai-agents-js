@@ -292,6 +292,26 @@ function captureRequestOptionsSource(
     : captureRequestOptions(value);
 }
 
+const modelRequestTransport = new WeakMap<ModelRequest, ModelRequestOptions>();
+
+/** @internal Bind transport preferences to the exact native producer request. */
+export function markModelRequestTransport(
+  request: ModelRequest,
+  value: unknown,
+): void {
+  if (value == null) return;
+  if (typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('Invalid native model transport options');
+  const { headers, query } = value as { headers?: unknown; query?: unknown };
+  modelRequestTransport.set(
+    request,
+    captureRequestOptions({
+      ...(headers == null ? {} : { headers }),
+      ...(query == null ? {} : { query }),
+    }),
+  );
+}
+
 async function clientRequestOptions(
   source: CapturedRequestOptions,
   request: ModelRequest,
@@ -314,9 +334,28 @@ async function clientRequestOptions(
       : pending;
   request.signal.throwIfAborted();
   const selected = value === undefined ? {} : captureRequestOptions(value);
+  const scoped = modelRequestTransport.get(request);
+  let headers = selected.headers;
+  if (scoped?.headers !== undefined) {
+    const overridden = new Set(
+      Object.keys(scoped.headers).map((name) => name.toLowerCase()),
+    );
+    headers = {
+      ...Object.fromEntries(
+        Object.entries(headers ?? {}).filter(
+          ([name]) => !overridden.has(name.toLowerCase()),
+        ),
+      ),
+      ...scoped.headers,
+    };
+  }
+  const query =
+    scoped?.query === undefined
+      ? selected.query
+      : { ...selected.query, ...scoped.query };
   return {
-    ...(selected.headers === undefined ? {} : { headers: selected.headers }),
-    ...(selected.query === undefined ? {} : { query: selected.query }),
+    ...(headers === undefined ? {} : { headers }),
+    ...(query === undefined ? {} : { query }),
     ...(selected.timeoutMs === undefined
       ? {}
       : { timeout: selected.timeoutMs }),

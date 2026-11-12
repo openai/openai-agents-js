@@ -1019,7 +1019,15 @@
     {
       "path": "sdk-websocket-overload-classification.patch",
       "sha256": "948693109cb29cd7a29c3b7e5cecd6329ae9e05e891ef3cf1ba56595250ee725"
+    },
+    {
+      "path": "sdk-request-transport-overrides.patch",
+      "sha256": "728cd6534831a53513b90167b2e01a8be8a6ebd0e1034b6e61c5c37c8c61ef3e"
+    },
+    {
+      "path": "sdk-agent-profile-request-transport.patch",
+      "sha256": "77c570ed69481b556ace4340382601513ac13aa377accc10da563d23bb895333"
     }
   ],
-  "result_tree": "fe89d8f6792fc49c032a9d493ca94683099748d3"
+  "result_tree": "29aa1e68efbd6a85db39851c3a05464e1b94dace"
 }
