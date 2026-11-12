@@ -788,6 +788,58 @@ impl ThreadStore for CustomThreadStore {
     fn discard_thread(&self, id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(self.release(id))
     }
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+        native_cancellation: bool,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or_else(|| error("canonical writer not acquired"))?;
+            if let Some(failure) = &writer.failure {
+                return Err(error(failure));
+            }
+            if !writer.managed.contains(&(turn.to_owned(), call.to_owned())) {
+                return Ok(None);
+            }
+            let accepted = writer.snapshot.mutations.iter().rev().find_map(|mutation| {
+                if let Mutation::Append { items } = mutation {
+                    items.iter().rev().find_map(|row| {
+                        if let RolloutItem::ResponseItem(envelope) = row
+                            && crate::local_reconciliation::output_identity(&envelope.item)
+                                == Some((call, Some(turn)))
+                        {
+                            Some(envelope.item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+            if accepted.as_ref().is_some_and(|accepted| {
+                !crate::local_reconciliation::matches_acknowledged_output(
+                    accepted,
+                    output,
+                    native_cancellation,
+                )
+            }) {
+                let message = "Core drain changed an acknowledged SDK receipt";
+                writer.failure = Some(message.into());
+                return Err(error(message));
+            }
+            Ok(accepted)
+        })
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,

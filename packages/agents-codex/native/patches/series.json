@@ -1,5 +1,5 @@
 {
-  "result_tree": "1a8ac293e6da67ad0a802bbeaf08ada081c65226",
+  "result_tree": "989e4e5a98c6303e2e02b4e282d794f94a549d11",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -878,8 +878,24 @@
       "sha256": "c5c9091d345a617aa2ed22de31f4d3144a523d3918eee6a34159d7d19c883cfa"
     },
     {
+      "path": "sdk-stored-owner-retirement.patch",
+      "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
+    },
+    {
+      "path": "sdk-borrowed-responses-compaction.patch",
+      "sha256": "3405e12b2b7162666f85aaa83c7e9742282361129bd9869902b9647c30693a43"
+    },
+    {
+      "path": "sdk-managed-original-receipt-identity.patch",
+      "sha256": "d156a9f439a84e42dfe1191725b015145fdc4f1079d5d543ece1f18e548230e5"
+    },
+    {
+      "path": "sdk-native-cancellation-receipt.patch",
+      "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
+    },
+    {
       "path": "sdk-provider-hosted-mcp.patch",
-      "sha256": "60812e801ba85e74a4d1bf23eb1ccc7142da752944b205ce59dd0a205f92fb1e"
+      "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
     }
   ]
 }
