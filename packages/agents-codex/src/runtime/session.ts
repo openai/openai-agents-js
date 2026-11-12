@@ -1214,6 +1214,7 @@ const submissions = new WeakMap<
     next?: NativeTurn;
     previous?: NativeTurn;
     cancelled?: boolean;
+    stopRequested?: boolean;
     blankFinal?: boolean;
     compaction?: boolean;
     realtimeTools?: { generation: string };
@@ -12692,6 +12693,7 @@ export class Session<OutputT = string, Context = unknown> {
     const wasRestoring = this.manualRestoring;
     if (run) {
       const submission = submissions.get(run);
+      if (submission) submission.stopRequested = true;
       if (submission?.repair)
         this.stopCorrection(submission.repair, options.mode);
       if (
@@ -14573,7 +14575,13 @@ export class Session<OutputT = string, Context = unknown> {
       await run.wait();
     } catch (error) {
       // Only this owned turn's settled failure can become rollout data.
-      if (run.id === null || !Object.is(error, run.failure)) throw error;
+      if (
+        run.id === null ||
+        !Object.is(error, run.failure) ||
+        (error instanceof GuardrailTripwire && error.record.kind === 'input')
+      )
+        throw error;
+      const shared = await import('@openai/agents-core/sandbox/internal');
       terminal = {
         terminal_state:
           error instanceof GuardrailTripwire
@@ -14581,11 +14589,13 @@ export class Session<OutputT = string, Context = unknown> {
             : error instanceof NativeError &&
                 error.code === 'max_model_steps_exceeded'
               ? 'max_turns_exceeded'
-              : error instanceof TurnAborted && submissions.get(run)?.cancelled
+              : error instanceof TurnAborted &&
+                  (submissions.get(run)?.cancelled ||
+                    submissions.get(run)?.stopRequested)
                 ? 'cancelled'
                 : 'failed',
-        exception_type: error instanceof Error ? error.name : 'Error',
-        exception_message: error instanceof Error ? error.message : null,
+        exception_type: shared.sandboxMemoryExceptionName(error),
+        exception_message: shared.sandboxMemoryExceptionMessage(error),
         has_final_output: false,
       };
     }

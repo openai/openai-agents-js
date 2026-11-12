@@ -752,22 +752,47 @@ it.each([
   'guardrail',
   'step-limit',
   'phase-failure',
+  'graceful-abort',
+  'graceful-complete',
+  'non-error',
+  'input-guardrail',
 ] as const)(
   'records a settled source outcome (%s)',
   async (mode) => {
-    const cancelledSource = mode === 'cancelled' || mode === 'phase-failure';
+    const cancelledSource =
+      mode === 'cancelled' ||
+      mode === 'phase-failure' ||
+      mode === 'graceful-abort';
     const toolSource = cancelledSource || mode === 'step-limit';
-    const sourceFailure = new Error('original source completion failure');
+    const sourceFailure =
+      mode === 'non-error'
+        ? 'provider unavailable'
+        : new Error('original source completion failure');
     const phaseFailure = new Error('unrelated memory phase failure');
     const peer = await startPublicExecutor();
     const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
     let effects = 0;
     const server = new ModelServer([
-      [
-        toolSource
-          ? call('held_source', {}, { callId: 'cancelled-source-call' })
-          : message('source completion candidate'),
-      ],
+      ...(mode === 'input-guardrail'
+        ? []
+        : [
+            mode === 'graceful-complete'
+              ? async () => {
+                  entered.resolve();
+                  await release.promise;
+                  return [message('natural source completion')];
+                }
+              : [
+                  toolSource
+                    ? call(
+                        'held_source',
+                        {},
+                        { callId: 'cancelled-source-call' },
+                      )
+                    : message('source completion candidate'),
+                ],
+          ]),
       [
         message(
           JSON.stringify({
@@ -804,11 +829,24 @@ it.each([
         provider,
         model: 'gpt-5',
         instructions: 'Run the lookup.',
-        ...(mode === 'failed'
+        ...(mode === 'failed' || mode === 'non-error'
           ? {
               beforeComplete: () => {
                 throw sourceFailure;
               },
+            }
+          : {}),
+        ...(mode === 'input-guardrail'
+          ? {
+              inputGuardrails: [
+                {
+                  name: 'blocked-input',
+                  callback: () => ({
+                    tripwireTriggered: true,
+                    outputInfo: 'private-rejected-input',
+                  }),
+                },
+              ],
             }
           : {}),
         ...(mode === 'guardrail'
@@ -831,6 +869,10 @@ it.each([
             async execute(_args, context) {
               effects++;
               entered.resolve();
+              if (mode === 'graceful-abort') {
+                await release.promise;
+                return 'drained source tool';
+              }
               if (mode === 'step-limit') return 'completed source tool step';
               await new Promise<never>((_resolve, reject) => {
                 if (context.signal.aborted) reject(context.signal.reason);
@@ -883,16 +925,36 @@ it.each([
         }),
       });
       const turn = await session.submit(
-        'Start the project lookup.',
+        mode === 'input-guardrail'
+          ? 'synthetic rejected sensitive input'
+          : 'Start the project lookup.',
         mode === 'step-limit' ? { maxModelSteps: 1 } : undefined,
       );
       const original = turn.wait().catch((error: unknown) => error);
-      if (cancelledSource) {
+      if (cancelledSource || mode === 'graceful-complete') {
         await entered.promise;
-        await expect(turn.cancel()).resolves.toBeUndefined();
+        const stopping = turn.cancel(
+          mode.startsWith('graceful') ? { mode: 'graceful' } : undefined,
+        );
+        release.resolve();
+        await expect(stopping).resolves.toBeUndefined();
       }
       const cancelled = await original;
-      if (cancelledSource) expect(cancelled).toBeInstanceOf(TurnAborted);
+      if (mode === 'input-guardrail') {
+        expect(turn.id).not.toBeNull();
+        expect(cancelled).toBeInstanceOf(GuardrailTripwire);
+        await expect(session.flushMemory()).rejects.toBe(cancelled);
+        expect(server.requests).toHaveLength(0);
+        await expect(
+          readFile(join(workspace, 'sessions', `${session.id}.jsonl`)),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        return;
+      }
+      if (mode === 'graceful-complete')
+        expect(cancelled).toMatchObject({
+          finalOutput: 'natural source completion',
+        });
+      else if (cancelledSource) expect(cancelled).toBeInstanceOf(TurnAborted);
       else if (mode === 'guardrail')
         expect(cancelled).toBeInstanceOf(GuardrailTripwire);
       else if (mode === 'step-limit')
@@ -911,30 +973,66 @@ it.each([
         'utf8',
       );
       expect(text.trim().split('\n')).toHaveLength(1);
+      const terminalState =
+        mode === 'graceful-complete'
+          ? 'completed'
+          : cancelledSource
+            ? 'cancelled'
+            : mode === 'guardrail'
+              ? 'guardrail_tripped'
+              : mode === 'step-limit'
+                ? 'max_turns_exceeded'
+                : 'failed';
       expect(JSON.parse(text).terminal_metadata).toMatchObject({
-        terminal_state: cancelledSource
-          ? 'cancelled'
-          : mode === 'guardrail'
-            ? 'guardrail_tripped'
-            : mode === 'step-limit'
-              ? 'max_turns_exceeded'
-              : 'failed',
-        exception_type: cancelledSource
-          ? 'TurnAborted'
-          : mode === 'guardrail'
-            ? 'GuardrailTripwire'
-            : mode === 'step-limit'
-              ? 'NativeError'
-              : 'Error',
-        exception_message: cancelledSource
-          ? 'Turn interrupted'
-          : mode === 'guardrail'
-            ? 'Run blocked by guardrail'
-            : mode === 'step-limit'
-              ? 'Root model step limit reached'
-              : sourceFailure.message,
-        has_final_output: false,
+        terminal_state:
+          mode === 'graceful-complete'
+            ? 'completed'
+            : cancelledSource
+              ? 'cancelled'
+              : mode === 'guardrail'
+                ? 'guardrail_tripped'
+                : mode === 'step-limit'
+                  ? 'max_turns_exceeded'
+                  : 'failed',
+        exception_type:
+          mode === 'graceful-complete'
+            ? null
+            : cancelledSource
+              ? 'TurnAborted'
+              : mode === 'guardrail'
+                ? 'GuardrailTripwire'
+                : mode === 'step-limit'
+                  ? 'NativeError'
+                  : 'Error',
+        exception_message:
+          mode === 'graceful-complete'
+            ? null
+            : cancelledSource
+              ? 'Turn interrupted'
+              : mode === 'guardrail'
+                ? 'Run blocked by guardrail'
+                : mode === 'step-limit'
+                  ? 'Root model step limit reached'
+                  : typeof sourceFailure === 'string'
+                    ? sourceFailure
+                    : sourceFailure.message,
+        has_final_output: mode === 'graceful-complete',
       });
+      if (mode !== 'phase-failure') {
+        const raw = await readFile(
+          join(workspace, 'memories', 'raw_memories', `${session.id}.md`),
+          'utf8',
+        );
+        const summary = await readFile(
+          join(workspace, 'memories', 'rollout_summaries', `${session.id}.md`),
+          'utf8',
+        );
+        expect(raw).toContain(`terminal_state: ${terminalState}`);
+        expect(summary).toContain(`terminal_state: ${terminalState}`);
+        expect(JSON.stringify(server.requests.at(-1))).toContain(
+          `terminal_state: ${terminalState}`,
+        );
+      }
       expect(text).not.toContain('private-guard-result');
       expect(await turn.wait().catch((error: unknown) => error)).toBe(
         cancelled,
@@ -943,6 +1041,7 @@ it.each([
       expect(server.requests).toHaveLength(mode === 'phase-failure' ? 2 : 3);
       server.assertExhausted();
     } finally {
+      release.resolve();
       await session?.close();
       await peer.close();
     }

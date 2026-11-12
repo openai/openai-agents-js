@@ -188,3 +188,8 @@ export {
 } from './memory/artifacts';
 
 export { beforeGitRepoCopy } from './internal/gitRepoCopy';
+
+export {
+  exceptionName as sandboxMemoryExceptionName,
+  exceptionMessage as sandboxMemoryExceptionMessage,
+} from './memory/rollouts';

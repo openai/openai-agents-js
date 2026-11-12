@@ -317,7 +317,7 @@ export class SandboxMemoryOwner {
           rolloutId: thread,
           rolloutPath,
           rolloutSummaryFile,
-          terminalState: 'completed',
+          terminalState: terminal.terminal_state,
           rawMemory: artifacts.raw_memory,
         }),
       );
@@ -327,7 +327,7 @@ export class SandboxMemoryOwner {
           updatedAt,
           rolloutPath,
           sessionId: this.resourceSessionId ?? '',
-          terminalState: 'completed',
+          terminalState: terminal.terminal_state,
           rolloutSummary: artifacts.rollout_summary,
         }),
       );
