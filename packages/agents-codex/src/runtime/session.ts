@@ -3316,11 +3316,18 @@ export class Session<OutputT = string, Context = unknown> {
   private async restoreModelControls(
     settings: ModelSettings | undefined,
   ): Promise<void> {
+    // Ordinary portable state already carries the accepted invocation deadline.
+    const rebindInvocationTimeout =
+      this.restored === null ||
+      this.options.agentGraph !== undefined ||
+      isManualSessionState(this.restored);
     // Native merges retry patches field by field. Clear the checkpoint's
     // retry settings before applying the current declaration.
     const patches = [
       modelOverrides(undefined, {
-        invocationTimeoutMs: settings?.invocationTimeoutMs ?? null,
+        invocationTimeoutMs: rebindInvocationTimeout
+          ? (settings?.invocationTimeoutMs ?? null)
+          : undefined,
         attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
         retry: null,
       }),
