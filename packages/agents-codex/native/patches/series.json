@@ -1,5 +1,4 @@
 {
-  "result_tree": "cc15619881408c44002f4603b67c7ca9ff0d0f68",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -898,8 +897,17 @@
       "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
     },
     {
+      "path": "sdk-acknowledged-provider-window.patch",
+      "sha256": "cbbbd43cfef7f8ae00f23ab6a2e87d6ccd98a1f2e3b32b7b8f470d529a17d4e1"
+    },
+    {
+      "path": "sdk-chat-completions-raw-response.patch",
+      "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
+    },
+    {
       "path": "sdk-run-model-override.patch",
-      "sha256": "91c557b9f3b7f4a57205e9e1da466670469896443be064e83495e3ba5402f985"
+      "sha256": "21af96463675ae7de27e1e3978b6e232872b11ab3f91430b66b927e9dacdef42"
     }
-  ]
+  ],
+  "result_tree": "3ccb208ce5a2b3a61655d9a8f1d7d2aa688b65f7"
 }

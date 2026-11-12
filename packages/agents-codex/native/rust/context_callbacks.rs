@@ -299,7 +299,7 @@ impl PythonTools {
             .context("Expired compaction policy turn")?;
         self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
             json!({"type":"_sdk_before_compact_policy", "model":input.model,
-                "automatic":input.automatic, "items":input.items, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted}),
+                "automatic":input.automatic, "items":input.items, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::CompactionPolicy).await
     }
 
@@ -320,7 +320,7 @@ impl PythonTools {
             .context("Expired compaction callback turn")?;
         self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
             json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items,
-                "optional":input.optional, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted}),
+                "optional":input.optional, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::Compaction).await
     }
 
@@ -1069,6 +1069,8 @@ pub(super) struct ModelReply {
     usage: Option<codex_protocol::protocol::TokenUsage>,
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
+    #[serde(default)]
+    raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1137,6 +1139,18 @@ impl PythonTools {
         match reply {
             ProducedResponse::Complete(reply) => {
                 lease.finish().await?;
+                if let Some(id) = reply
+                    .raw_chat_completion
+                    .as_ref()
+                    .and_then(|raw| raw.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                {
+                    ensure!(
+                        id == reply.response_id,
+                        "Original Chat Completion does not match model response"
+                    );
+                }
                 ensure!(
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
@@ -1186,6 +1200,19 @@ impl PythonTools {
                             Ok(codex_api::ResponseEvent::ResponseObserved(observation)),
                         );
                     }
+                }
+                if let Some(raw) = reply.raw_chat_completion {
+                    events.insert(
+                        events.len() - 1,
+                        Ok(codex_api::ResponseEvent::RawProvider(
+                            codex_protocol::protocol::SdkRawProviderEvent {
+                                source:
+                                    codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+                                transport: codex_protocol::protocol::ResponsesEventTransport::Json,
+                                payload: Value::Object(raw),
+                            },
+                        )),
+                    );
                 }
                 Ok(futures_util::stream::iter(events).boxed())
             }

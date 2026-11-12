@@ -130,7 +130,7 @@ index c226bc1e..a01e7e1f 100644
          self.session
              .inject_annotated_response_items(items, turn_context.as_ref())
 diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
-index f146f130..5a2c59ba 100644
+index 7d0f84c2..cb2e44cc 100644
 --- a/codex-rs/core/src/context_manager/history_tests.rs
 +++ b/codex-rs/core/src/context_manager/history_tests.rs
 @@ -708,6 +708,7 @@ fn developer_msg_with_fragments(texts: &[&str]) -> ResponseItem {
@@ -166,10 +166,10 @@ index cd6025b4..bd4c640b 100644
          let target = Arc::new(AgentProfile {
              mcp: Arc::new(
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 34a55a2c..50bb88b7 100644
+index 00fd7f39..617f7a29 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
-@@ -2003,6 +2003,15 @@ impl Session {
+@@ -2047,6 +2047,15 @@ impl Session {
                  return Ok(None);
              }
  
@@ -185,7 +185,7 @@ index 34a55a2c..50bb88b7 100644
              let previous_config = notify_config_contributors
                  .then(|| self.build_effective_session_config(&state.session_configuration));
              let previous_permission_profile = state.session_configuration.permission_profile();
-@@ -4303,6 +4312,10 @@ impl Session {
+@@ -4347,6 +4356,10 @@ impl Session {
          {
              Arc::make_mut(&mut settings).set_captured_named_tool_choice(choice);
          }
@@ -196,7 +196,7 @@ index 34a55a2c..50bb88b7 100644
          Ok(Arc::new(StepContext {
              preempt: turn_context
                  .config
-@@ -5599,7 +5612,7 @@ impl Session {
+@@ -5643,7 +5656,7 @@ impl Session {
                  .await;
              if let Some(turn_state) = turn_state {
                  turn_state.lock().await.token_usage_by_model.record(
@@ -1014,7 +1014,7 @@ index 7c661a2e..cb03bda1 100644
              thread_settings: Default::default(),
              trace: None,
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index e6b17102..f573bce6 100644
+index d0e7154e..8fa126dc 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
 @@ -150,6 +150,7 @@ pub use model_request_observation::{
@@ -1026,10 +1026,10 @@ index e6b17102..f573bce6 100644
  pub use model_request::CompactionResult;
  pub use model_request::CompactionWindow;
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
-index bdaa894f..6c88ec7b 100644
+index 6803777c..1f7cfa10 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
-@@ -338,6 +338,10 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
+@@ -354,6 +354,10 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
      fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>>;
  }
  
@@ -1041,10 +1041,10 @@ index bdaa894f..6c88ec7b 100644
  /// Admission only parses and checks the retained runtime; it must not execute tools or hooks.
  pub trait ModelToolAdmission: Send + Sync + std::fmt::Debug {
 diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
-index 61ef102f..887a8d88 100644
+index 6fed4aac..f501db56 100644
 --- a/codex-rs/protocol/src/protocol.rs
 +++ b/codex-rs/protocol/src/protocol.rs
-@@ -4106,6 +4106,11 @@ pub struct TurnContextNetworkItem {
+@@ -4115,6 +4115,11 @@ pub struct TurnContextNetworkItem {
  /// latest durable baseline.
  #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
  pub struct TurnContextItem {
@@ -1056,7 +1056,7 @@ index 61ef102f..887a8d88 100644
      /// SDK-only evidence captured at a regular model sampling boundary.
      #[serde(default, skip_serializing_if = "Option::is_none")]
      #[schemars(skip)]
-@@ -7014,6 +7019,7 @@ mod tests {
+@@ -7023,6 +7028,7 @@ mod tests {
      #[test]
      fn turn_context_item_serializes_network_when_present() -> Result<()> {
          let item = TurnContextItem {
