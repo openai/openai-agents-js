@@ -134,10 +134,9 @@ export async function openSession(
     throw new TypeError(
       'Checkpoint and Environment must agree on read-only execution',
     );
-  let authenticatedHistory = options[managedWorkspaceRestore] === true;
+  const authenticatedHistory = options[managedWorkspaceRestore] === true;
   if (isOutputAwareState(saved) && saved.remembered_approvals?.length) {
     const verified = await verifyRememberedApprovals?.(structuredClone(saved));
-    authenticatedHistory ||= verified === true;
     options.environmentOwner?.signal.throwIfAborted();
     if (verified !== true) {
       delete saved.remembered_approvals;
