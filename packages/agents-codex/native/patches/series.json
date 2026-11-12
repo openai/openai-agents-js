@@ -1001,9 +1001,13 @@
       "sha256": "bcb4ba165d5d56bfbd29f31405514224c96282ccf67a34d48f04af99d8809601"
     },
     {
+      "path": "sdk-explicit-hosted-tool-choice.patch",
+      "sha256": "de6a3b0c7813382749a194a3bff82c20cf0f1aaf596b33c4d5ea67dc7f91cb7b"
+    },
+    {
       "path": "sdk-provider-history-lineage.patch",
-      "sha256": "144103dee2e55e32a1945fc69ded29c63d1042a59a67bdd6671c71d91af070dc"
+      "sha256": "5e5737f5f5a857acb75167f77c0032a064743a9cde5f1f3a1cd0c114ba60c170"
     }
   ],
-  "result_tree": "adac37c7b0da09745d9894ab43f718b5f2259305"
+  "result_tree": "baa975e8c5b7bb318c38ef56d9e3155a439514d4"
 }

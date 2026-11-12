@@ -23,23 +23,37 @@ index b6bf3d5b1229e9544be68d97a477807f81595de8..43acb8333ae3b42e814d0c50f4f0d2ff
                  tool_choice: None,
                  disabled_plugin_ids: Vec::new(),
 diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
-index d91f201adc9672d0554cc6e686e5e20269055531..a7adfcd5bf4f9531581ff6cd96a49d22df1f3835 100644
+index d321208851f5681c94faa9a7fc5b039b1fc3f8e2..3caf7c2be480510ca4788ea1c505819c0b1f0f47 100644
 --- a/codex-rs/codex-api/src/common.rs
 +++ b/codex-rs/codex-api/src/common.rs
-@@ -285,6 +285,12 @@ impl Serialize for ResponsesApiTools {
+@@ -282,12 +282,26 @@ impl Serialize for ResponsesApiTools {
+     }
+ }
+ 
++/// Request-local canonical hashes and their unchanged wire occurrence map.
++#[derive(Debug, Clone, PartialEq)]
++pub struct ProviderHistoryInputProjection {
++    pub boundary: codex_protocol::provider_history::ProviderHistoryInputBoundary,
++    pub item_sha256: Vec<[u8; 32]>,
++    pub wire_input_indices: Vec<usize>,
++    pub prefix_len: usize,
++}
++
  /// Effective wire values. Cleared and omitted SDK settings emit no member here.
  #[derive(Debug, Default, Serialize, Clone, PartialEq)]
  pub struct ResponsesRequestControls {
+     // Core suppresses the outer scalar when this captured selector is present.
+     #[serde(rename = "tool_choice", skip_serializing_if = "Option::is_none")]
+     pub hosted_tool_choice: Option<codex_protocol::model_request_controls::HostedToolChoice>,
 +    /// Local prepared-request data; never sent to the provider.
 +    #[serde(skip)]
-+    pub canonical_history_input:
-+        Option<codex_protocol::provider_history::ProviderHistoryInputBoundary>,
++    pub canonical_history_input: Option<ProviderHistoryInputProjection>,
 +    #[serde(flatten, serialize_with = "serialize_provider_history")]
 +    pub provider_history: Option<codex_protocol::provider_history::ProviderHistorySelection>,
      #[serde(skip_serializing_if = "Option::is_none")]
      pub prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
      #[serde(skip_serializing_if = "Option::is_none")]
-@@ -312,6 +318,29 @@ pub struct ResponsesRequestControls {
+@@ -315,6 +329,29 @@ pub struct ResponsesRequestControls {
      pub prompt_cache_options: Option<PromptCacheOptions>,
  }
  
@@ -147,6 +161,16 @@ index 855ca634f952923df20ff1a7a62abc5aa84fe667..bf776022b212c2e317b01a12ca2e3a8b
      pub fn with_telemetry(
          self,
          request: Option<Arc<dyn RequestTelemetry>>,
+diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
+index 0b4af4b1dc3133ec0b04db5159236e6c04493f9c..088a159c1df373d342a237923812a86eb3b00db7 100644
+--- a/codex-rs/codex-api/src/lib.rs
++++ b/codex-rs/codex-api/src/lib.rs
+@@ -177,3 +177,5 @@ pub use crate::endpoint::RealtimeHostedMcpApprovalFilter;
+ pub use crate::endpoint::RealtimeHostedMcpApprovalMode;
+ pub use crate::endpoint::RealtimeHostedMcpTool;
+ pub use crate::endpoint::RealtimeHostedMcpToolFilter;
++
++pub use common::ProviderHistoryInputProjection;
 diff --git a/codex-rs/codex-api/tests/provider_history.rs b/codex-rs/codex-api/tests/provider_history.rs
 new file mode 100644
 index 0000000000000000000000000000000000000000..bf2ec0377bc7675b8181cb059591c62427837de2
@@ -399,7 +423,7 @@ index de6dc8318666ef6eecf9fccb0613bdff587d8018..ec9e5a9115c27855de696a1da7ba7542
                          request_controls: Default::default(),
                          tool_choice: None,
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa22ab1f5f0 100644
+index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..a5d7dcc048ea47e66a74e670a085606555909a9e 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -34,6 +34,7 @@ use std::sync::atomic::Ordering;
@@ -515,25 +539,53 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
          controls
              .validate_profile(model_info)
              .map_err(CodexErr::InvalidRequest)?;
-@@ -1242,6 +1306,8 @@ impl ModelClient {
+@@ -1225,11 +1289,19 @@ impl ModelClient {
+             })
+             .transpose()?;
+         let mut input = prompt.get_formatted_input_for_request(model_info);
+-        if !self.reasoning_effort_override_enabled(model_info) {
+-            // Unsupported models and disabled overrides must also accept saved history.
+-            // Filter only the request copy; persisted history remains unchanged.
+-            input.retain(|item| !matches!(item, ResponseItem::ConfigurationUpdate { .. }));
+-        }
++        let mut wire_input_indices = self.provider_history.as_ref().map(|_| Vec::new());
++        let mut input_index = 0;
++        let allow_reasoning_overrides = self.reasoning_effort_override_enabled(model_info);
++        input.retain(|item| {
++            let index = input_index;
++            input_index += 1;
++            let keep = allow_reasoning_overrides
++                || !matches!(item, ResponseItem::ConfigurationUpdate { .. });
++            if keep && let Some(indices) = &mut wire_input_indices {
++                indices.push(index);
++            }
++            keep
++        });
+         let is_openai = self.state.provider.info().is_openai();
+         // These prompt-only items are rebuilt on every request. Hash their visible payloads
+         // within the thread so retries and resumed sessions preserve their identity.
+@@ -1264,6 +1336,11 @@ impl ModelClient {
              )));
              prefix.push(instructions);
          }
-+        let canonical_history_input = self.provider_history.as_ref()
-+            .map(|_| provider_history::canonical_input_boundary(&prompt.input)).transpose()?;
++        let canonical_history_input = wire_input_indices
++            .map(|indices| {
++                provider_history::canonical_input_projection(&prompt.input, indices, prefix.len())
++            })
++            .transpose()?;
          input.splice(0..0, prefix);
          filter_provider_response_metadata(&mut input, is_openai);
          let reasoning = if prompt_owns_model {
-@@ -1357,6 +1423,8 @@ impl ModelClient {
-                 },
-             ),
+@@ -1380,6 +1457,8 @@ impl ModelClient {
+             }),
              request_controls: codex_api::ResponsesRequestControls {
+                 hosted_tool_choice,
 +                canonical_history_input,
 +                provider_history: self.provider_history_selection(),
                  prompt: prompt_reference,
                  instructions: hosted_prompt
                      .filter(|prompt| !prompt.omit_instructions)
-@@ -1818,6 +1886,16 @@ impl ModelClientSession {
+@@ -1841,6 +1920,16 @@ impl ModelClientSession {
          self.client.uses_chatgpt_plan()
      }
  
@@ -550,7 +602,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
      pub(crate) fn saved_login_limits_need_attention(&self) -> bool {
          let source = &self.client.state.session_source;
          // ThreadSpawn children expose the same attention API as root turns.
-@@ -1983,6 +2061,11 @@ impl ModelClientSession {
+@@ -2006,6 +2095,11 @@ impl ModelClientSession {
          if !self.client.responses_websocket_enabled() {
              return Ok(());
          }
@@ -562,7 +614,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
          let provider = Arc::clone(&self.client.state.provider);
          let auth_manager = provider.auth_manager();
          let mut auth_recovery = auth_manager
-@@ -2242,14 +2325,17 @@ impl ModelClientSession {
+@@ -2265,14 +2359,17 @@ impl ModelClientSession {
                          (
                              dispatch,
                              contributor.preserves_provider_request_window(&url),
@@ -582,7 +634,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              let chatgpt_plan = self.client.uses_chatgpt_plan();
              if chatgpt_plan && direct.is_none() {
                  return Err(CodexErr::Fatal(
-@@ -2327,6 +2413,7 @@ impl ModelClientSession {
+@@ -2350,6 +2447,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -590,7 +642,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2365,16 +2452,6 @@ impl ModelClientSession {
+@@ -2388,16 +2486,6 @@ impl ModelClientSession {
                  prompt.cyber_access_program,
                  self.client.api_key_cyber_access_programs,
              )?;
@@ -607,7 +659,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
              options.extra_headers.extend(responses_headers);
              let interceptors = crate::model_request::prepare_with_attempts(
-@@ -2393,6 +2470,52 @@ impl ModelClientSession {
+@@ -2416,6 +2504,52 @@ impl ModelClientSession {
                              as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
                      }),
              );
@@ -660,7 +712,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
-@@ -2401,7 +2524,13 @@ impl ModelClientSession {
+@@ -2424,7 +2558,13 @@ impl ModelClientSession {
                  }
                  request.input = input;
              }
@@ -675,7 +727,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              let client = ApiResponsesClient::new(
                  transport,
                  client_setup.api_provider,
-@@ -2493,6 +2622,15 @@ impl ModelClientSession {
+@@ -2516,6 +2656,15 @@ impl ModelClientSession {
  
              match stream_result {
                  Ok((request_id, interrupt, events, producer_task, producer_stop)) => {
@@ -691,7 +743,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
                      let (mut stream, response) = map_response_events(
                          request_id,
                          crate::model_request::intercept_stream(events, interceptors),
-@@ -2509,8 +2647,13 @@ impl ModelClientSession {
+@@ -2532,8 +2681,13 @@ impl ModelClientSession {
                      stream.producer_task = producer_task;
                      stream.producer_stop = producer_stop;
                      stream.request_observation = request_observation;
@@ -707,15 +759,27 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
                      return Ok(stream);
                  }
                  Err(ApiError::Transport(unauthorized_transport))
-@@ -2528,6 +2671,7 @@ impl ModelClientSession {
+@@ -2551,6 +2705,7 @@ impl ModelClientSession {
                          response_debug_context.request_id.as_deref(),
                          /*output_items*/ &[],
                      );
-+                    if let Some(cursor) = &self.client.provider_history { cursor.reject_unauthorized().await?; }
++                    if let Some(cursor) = &self.client.provider_history { cursor.reject_pre_stream().await?; }
                      auth_recovery.pending_retry = PendingUnauthorizedRetry::from_recovery(
                          handle_unauthorized(
                              unauthorized_transport,
-@@ -2591,6 +2735,9 @@ impl ModelClientSession {
+@@ -2567,6 +2722,11 @@ impl ModelClientSession {
+                     continue;
+                 }
+                 Err(err) => {
++                    if provider_history::definitive_pre_stream_rejection(&err)
++                        && let Some(cursor) = &self.client.provider_history
++                    {
++                        cursor.reject_pre_stream().await?;
++                    }
+                     let response_debug_context =
+                         extract_response_debug_context_from_api_error(&err);
+                     let err = if chatgpt_plan {
+@@ -2614,6 +2774,9 @@ impl ModelClientSession {
          inference_trace: &InferenceTraceContext,
          auth_recovery: &mut RequestAuthRecovery,
      ) -> Result<WebsocketStreamOutcome> {
@@ -725,7 +789,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
          let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
          let provider = Arc::clone(&self.client.state.provider);
          loop {
-@@ -2623,6 +2770,7 @@ impl ModelClientSession {
+@@ -2646,6 +2809,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -733,7 +797,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2725,7 +2873,11 @@ impl ModelClientSession {
+@@ -2748,7 +2912,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -746,7 +810,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
              let (mode, reason) = if continuation.is_some() {
                  ("incremental", "incremental")
              } else {
-@@ -2987,6 +3139,10 @@ impl ModelClientSession {
+@@ -3010,6 +3178,10 @@ impl ModelClientSession {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<()> {
@@ -759,10 +823,10 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa2
          // ordinary request run the awaited context policy before sending input.
 diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..077e06a35f2e064dfd384e7fe9038fdfb2b2a7d6
+index 0000000000000000000000000000000000000000..38b70e781b5a073b3ee47dc9f9f25241dfb796f9
 --- /dev/null
 +++ b/codex-rs/core/src/client/provider_history.rs
-@@ -0,0 +1,483 @@
+@@ -0,0 +1,573 @@
 +use super::*;
 +use codex_protocol::provider_history::{
 +    ProviderHistoryInputBoundary, ProviderHistoryReference, ProviderHistorySelection,
@@ -932,6 +996,42 @@ index 0000000000000000000000000000000000000000..077e06a35f2e064dfd384e7fe9038fdf
 +    })
 +}
 +
++pub(crate) fn canonical_input_projection(
++    items: &[ResponseItem],
++    wire_input_indices: Vec<usize>,
++    prefix_len: usize,
++) -> Result<codex_api::ProviderHistoryInputProjection> {
++    Ok(codex_api::ProviderHistoryInputProjection {
++        boundary: canonical_input_boundary(items)?,
++        item_sha256: items.iter().map(item_digest).collect::<Result<Vec<_>>>()?,
++        wire_input_indices,
++        prefix_len,
++    })
++}
++
++fn canonical_prefix_digest(items: &[[u8; 32]]) -> String {
++    let mut digest = Sha256::new();
++    digest.update(b"sdk-provider-history-input-v1\0");
++    for item in items {
++        digest.update(item);
++    }
++    hex(digest.finalize())
++}
++
++pub(crate) fn definitive_pre_stream_rejection(error: &codex_api::ApiError) -> bool {
++    let status = match error {
++        codex_api::ApiError::Api { status, .. }
++        | codex_api::ApiError::Transport(codex_client::TransportError::Http { status, .. }) => {
++            status.as_u16()
++        }
++        _ => return false,
++    };
++    matches!(
++        status,
++        400 | 401 | 403 | 404 | 405 | 410 | 413 | 415 | 422 | 429
++    )
++}
++
 +impl Cursor {
 +    pub(crate) fn new(start: Start) -> Self {
 +        Self {
@@ -1027,20 +1127,74 @@ index 0000000000000000000000000000000000000000..077e06a35f2e064dfd384e7fe9038fdf
 +        let full_len = request.input.len();
 +        let full_digest = input_digest(&request.input)?;
 +        let unsent = if let Some(window) = &saved.window {
-+            let prefix = request
-+                .input
-+                .get(..window.input_len)
-+                .ok_or_else(|| invalid("Provider history lost acknowledged input"))?;
-+            let tail = request.input[window.input_len..]
-+                .iter()
-+                .map(item_digest)
-+                .map(|digest| digest.map(hex))
-+                .collect::<Result<Vec<_>>>()?;
-+            Some(
-+                window
-+                    .unsent_input_indices(full_len, &input_digest(prefix)?, &tail)
-+                    .map_err(CodexErr::InvalidRequest)?,
-+            )
++            if let Some(boundary) = &window.canonical_input
++                && !request
++                    .input
++                    .get(..window.input_len)
++                    .map(input_digest)
++                    .transpose()?
++                    .is_some_and(|digest| digest == window.input_sha256)
++            {
++                if canonical_input.prefix_len + canonical_input.wire_input_indices.len() != full_len
++                    || canonical_input.item_sha256.len() != canonical_input.boundary.input_len
++                    || canonical_input
++                        .wire_input_indices
++                        .iter()
++                        .any(|index| *index >= canonical_input.item_sha256.len())
++                {
++                    return Err(invalid(
++                        "Provider history has an invalid current input projection",
++                    ));
++                }
++                let prefix = canonical_input
++                    .item_sha256
++                    .get(..boundary.input_len)
++                    .ok_or_else(|| invalid("Provider history lost acknowledged canonical input"))?;
++                let tail = canonical_input.item_sha256[boundary.input_len..]
++                    .iter()
++                    .map(hex)
++                    .collect::<Vec<_>>();
++                let canonical = ProviderHistoryWindowReceipt {
++                    input_len: boundary.input_len,
++                    input_sha256: boundary.input_sha256.clone(),
++                    output_sha256: window.output_sha256.clone(),
++                    canonical_input: None,
++                };
++                let unsent = canonical
++                    .unsent_input_indices(
++                        canonical_input.item_sha256.len(),
++                        &canonical_prefix_digest(prefix),
++                        &tail,
++                    )
++                    .map_err(CodexErr::InvalidRequest)?
++                    .into_iter()
++                    .collect::<std::collections::HashSet<_>>();
++                let mut indices = (0..canonical_input.prefix_len).collect::<Vec<_>>();
++                indices.extend(
++                    canonical_input
++                        .wire_input_indices
++                        .iter()
++                        .enumerate()
++                        .filter(|(_, index)| unsent.contains(*index))
++                        .map(|(offset, _)| canonical_input.prefix_len + offset),
++                );
++                Some(indices)
++            } else {
++                let prefix = request
++                    .input
++                    .get(..window.input_len)
++                    .ok_or_else(|| invalid("Provider history lost acknowledged input"))?;
++                let tail = request.input[window.input_len..]
++                    .iter()
++                    .map(item_digest)
++                    .map(|digest| digest.map(hex))
++                    .collect::<Result<Vec<_>>>()?;
++                Some(
++                    window
++                        .unsent_input_indices(full_len, &input_digest(prefix)?, &tail)
++                        .map_err(CodexErr::InvalidRequest)?,
++                )
++            }
 +        } else {
 +            None
 +        };
@@ -1063,7 +1217,7 @@ index 0000000000000000000000000000000000000000..077e06a35f2e064dfd384e7fe9038fdf
 +            state.reference.provider_route = current_route;
 +            state.reference.pending = true;
 +            state.pending = Some(Pending {
-+                canonical_input,
++                canonical_input: canonical_input.boundary,
 +                input_len: full_len,
 +                input_sha256: full_digest,
 +                output_sha256: Vec::new(),
@@ -1190,7 +1344,7 @@ index 0000000000000000000000000000000000000000..077e06a35f2e064dfd384e7fe9038fdf
 +        self.persist().await
 +    }
 +
-+    pub(crate) async fn reject_unauthorized(&self) -> Result<()> {
++    pub(crate) async fn reject_pre_stream(&self) -> Result<()> {
 +        {
 +            let mut state = self.state.lock().unwrap();
 +            state.pending = None;
@@ -1487,10 +1641,10 @@ index abc8b35fe24d565c484191d70c2465cd1d5120a8..2fc0fa0f2a7160007e49c87b5eda8f4f
          thread_id: Some(session.thread_id()),
          thread_settings: snapshot,
 diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
-index 333800df0704a195498ed5fae1025f7501346f9c..787615d3947b8ab3337376efa18a91d5fd384cae 100644
+index d2744e0b6cb5f32621d5bc1533098ebbd14ee6fe..9f29e3d74d086868fcfadd32e8c09f53801e49fb 100644
 --- a/codex-rs/core/src/session/turn.rs
 +++ b/codex-rs/core/src/session/turn.rs
-@@ -4274,6 +4274,7 @@ async fn try_run_sampling_request(
+@@ -4275,6 +4275,7 @@ async fn try_run_sampling_request(
                      }
  
                      assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
@@ -1498,7 +1652,7 @@ index 333800df0704a195498ed5fae1025f7501346f9c..787615d3947b8ab3337376efa18a91d5
                      sess.reserve_assistant_message_order(&turn_context, &item)
                          .await;
                      if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
-@@ -4916,6 +4917,18 @@ async fn try_run_sampling_request(
+@@ -4917,6 +4918,18 @@ async fn try_run_sampling_request(
      if timeout_ms.is_some() || model_attempt.is_some() {
          deadline_cleanup_errors.extend(deadline.retire_tasks().await);
      }
@@ -1517,7 +1671,7 @@ index 333800df0704a195498ed5fae1025f7501346f9c..787615d3947b8ab3337376efa18a91d5
      let mut tool_cleanup = if !in_flight.is_empty() {
          let _tool_blocking_timing_guard = turn_context.turn_timing_state.begin_tool_blocking();
          let _tool_blocking_span = trace_span!(
-@@ -5004,6 +5017,8 @@ async fn try_run_sampling_request(
+@@ -5005,6 +5018,8 @@ async fn try_run_sampling_request(
          release_failed_tool_candidates(&sess, &step_context).await;
      }
      tool_cleanup?;

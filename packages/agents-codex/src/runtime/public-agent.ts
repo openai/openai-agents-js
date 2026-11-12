@@ -1170,6 +1170,9 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Provider history requires a supported owning Responses transport',
       );
+    const historyHttpOnly =
+      options.providerHistory !== undefined &&
+      provider.supportsWebsockets === undefined;
     const model = opening ? opening.model : (openingModel ?? this.model);
     const settings = opening
       ? opening.settings
@@ -1331,7 +1334,8 @@ export class Agent<Context = undefined, Output = string> {
       validatePrepareRequestCompatibility(
         prepareRequest,
         !!output.repair,
-        provider.responseMode !== 'buffered' &&
+        !historyHttpOnly &&
+          provider.responseMode !== 'buffered' &&
           (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
             false,
         !!(
@@ -1626,6 +1630,21 @@ export class Agent<Context = undefined, Output = string> {
     ];
 
     const native = graphNative ?? (await binding());
+    if (options.providerHistory?.type === 'previous_response' && graph) {
+      const pending = [graph.rootId];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const id = pending.pop()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const profile = graph.profiles.get(id)!.profile;
+        if (profile.declaration.modelSettings?.store !== true)
+          throw new TypeError(
+            'Every reachable handoff profile requires current store=true',
+          );
+        pending.push(...Object.values(profile.handoffs));
+      }
+    }
     const completedGraph = graph
       ? Object.freeze({
           ...graph,
@@ -1740,6 +1759,7 @@ export class Agent<Context = undefined, Output = string> {
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
+            ...(historyHttpOnly ? { supports_websockets: false } : {}),
           },
         },
         runtime: {
@@ -1940,7 +1960,7 @@ export class Agent<Context = undefined, Output = string> {
         hostedPrompt,
         hostedPromptControls: promptControls,
         checklist: declarations.checklist,
-        websocketsAllowed: lease.websocketsAllowed,
+        websocketsAllowed: lease.websocketsAllowed && !historyHttpOnly,
         onClose: lease.release,
         managedWorkspace: environmentOwner.managedWorkspace,
         [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[

@@ -1,10 +1,17 @@
 import { createServer, request as proxyRequest, type Server } from 'node:http';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Agent, NativeProvider, localStorage, StdioMCP, tool } from '../../src';
+import {
+  Agent,
+  NativeProvider,
+  getProviderHistory,
+  localStorage,
+  StdioMCP,
+  tool,
+} from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
@@ -49,7 +56,8 @@ nativeIt(
   30_000,
 );
 
-async function peer(model: ModelServer) {
+async function peer(model: ModelServer, rejection?: number) {
+  let posts = 0;
   const wire: Array<[string | undefined, string | undefined]> = [];
   const auth: Array<{
     method: string | undefined;
@@ -88,6 +96,24 @@ async function peer(model: ModelServer) {
             ? { status: 'completed' }
             : { object: 'conversation' }),
         }),
+      );
+      return;
+    }
+    if (request.method === 'POST' && posts++ === 0 && rejection !== undefined) {
+      request.resume();
+      response.writeHead(rejection, {
+        'content-type':
+          rejection === 200 ? 'text/event-stream' : 'application/json',
+      });
+      response.end(
+        rejection === 200
+          ? ''
+          : JSON.stringify({
+              error: {
+                message: 'Request rejected',
+                type: 'invalid_request_error',
+              },
+            }),
       );
       return;
     }
@@ -701,3 +727,247 @@ nativeIt.each([false, true])(
   },
   30_000,
 );
+
+for (const [status, restore] of [
+  [400, false],
+  [429, false],
+  [500, false],
+  [200, false],
+  [400, true],
+  [429, true],
+] as const) {
+  nativeIt(
+    `lineage releases only a definitive pre-stream rejection fence (${status}, restored=${restore})`,
+    async () => {
+      const model = new ModelServer([[message('Recovered.')]]);
+      const remote = await peer(model, status);
+      await using provider = new NativeProvider(remote.options);
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'conversation', id: 'conv_current' },
+      });
+      await expect((await session.submit('Before.')).wait()).rejects.toThrow();
+      if (status === 400 || status === 429) {
+        if (restore) {
+          const state = await session.saveState();
+          await session.close();
+          await using resumed = await agent.session({
+            state,
+            providerHistory: { type: 'conversation', id: 'conv_current' },
+          });
+          await (await resumed.submit('After.')).wait();
+        } else {
+          await (await session.submit('After.')).wait();
+        }
+        expect(
+          remote.wire.filter(([method]) => method === 'POST'),
+        ).toHaveLength(2);
+      } else {
+        await expect((await session.submit('After.')).wait()).rejects.toThrow(
+          'reconciliation',
+        );
+        expect(
+          remote.wire.filter(([method]) => method === 'POST'),
+        ).toHaveLength(1);
+      }
+    },
+    30000,
+  );
+}
+nativeIt(
+  'lineage sends current instructions after a normal update',
+  async () => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Original instructions.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'conversation', id: 'conv_current' },
+    });
+    await (await session.submit('Before.')).wait();
+    await session.update({ instructions: 'Current instructions.' });
+    await (await session.submit('After.')).wait();
+    expect(JSON.stringify(model.requests[1]!.input)).toContain(
+      'Current instructions.',
+    );
+  },
+  30000,
+);
+for (const store of [undefined, false]) {
+  nativeIt(
+    `lineage refuses an incompatible reachable handoff before dispatch (${store})`,
+    async () => {
+      const model = new ModelServer([]);
+      const remote = await peer(model);
+      await using provider = new NativeProvider(remote.options);
+      const target = new Agent({
+        name: 'Other',
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: store === undefined ? {} : { store },
+      });
+      const agent = new Agent({
+        name: 'Root',
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: { store: true },
+        handoffs: [target],
+      });
+      await expect(
+        agent.session({ providerHistory: { type: 'previous_response' } }),
+      ).rejects.toThrow('store=true');
+      expect(remote.wire).toEqual([]);
+    },
+    30000,
+  );
+}
+nativeIt(
+  'lineage exposes the advanced anchor as detached restore data',
+  async () => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: true },
+    });
+    const source = await agent.session({
+      providerHistory: { type: 'previous_response' },
+    });
+    await (await source.submit('Before.')).wait();
+    const state = await source.saveState();
+    await source.close();
+    const selected = getProviderHistory(state);
+    expect(selected).toEqual({ type: 'previous_response', id: 'response-1' });
+    (selected as { id: string }).id = 'modified';
+    expect(getProviderHistory(state)).toEqual({
+      type: 'previous_response',
+      id: 'response-1',
+    });
+    await using restored = await agent.session({
+      state,
+      providerHistory: getProviderHistory(state),
+    });
+    await (await restored.submit('After.')).wait();
+    expect(model.requests[1]!.previous_response_id).toBe('response-1');
+  },
+  30000,
+);
+
+nativeIt(
+  'lineage carries changed handoff instructions without acknowledging request-only rows',
+  async () => {
+    const model = new ModelServer([
+      [call('transfer_to_other', {}, { callId: 'handoff-other' })],
+      [message('Other accepted.')],
+    ]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const other = new Agent({
+      name: 'Other',
+      instructions: 'Current target instructions.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: true },
+    });
+    const agent = new Agent({
+      name: 'Root',
+      instructions: 'Original root instructions.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: true },
+      handoffs: [other],
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'previous_response' },
+    });
+    await (await session.submit('Handoff.')).wait();
+    expect(model.requests).toHaveLength(2);
+    expect(JSON.stringify(model.requests[1]!.input)).toContain(
+      'Current target instructions.',
+    );
+  },
+  30000,
+);
+nativeIt(
+  'lineage selects HTTP for an implicit default provider transport',
+  async () => {
+    const model = new ModelServer([[message('Accepted.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider({
+      apiKey: 'current-owner',
+      requestMaxRetries: 0,
+      streamMaxRetries: 0,
+    });
+    const acquire = provider._acquire.bind(provider);
+    const replacement = vi
+      .spyOn(provider, '_acquire')
+      .mockImplementation((...args) => {
+        const lease = acquire(...args);
+        const config = lease.config['model_providers.native_agent'] as Record<
+          string,
+          unknown
+        >;
+        expect(config.supports_websockets).toBe(true);
+        config.base_url = remote.baseUrl;
+        return lease;
+      });
+    try {
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'conversation', id: 'conv_current' },
+      });
+      await (await session.submit('Before.')).wait();
+      expect(model.requests).toHaveLength(1);
+    } finally {
+      replacement.mockRestore();
+    }
+  },
+  30000,
+);
+
+for (const store of [false, null]) {
+  nativeIt(
+    `lineage refuses an incompatible storage update before publication (${store})`,
+    async () => {
+      const model = new ModelServer([
+        [message('Before.')],
+        [message('After.')],
+      ]);
+      const remote = await peer(model);
+      await using provider = new NativeProvider(remote.options);
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: { store: true },
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'previous_response' },
+      });
+      await (await session.submit('Before.')).wait();
+      await expect(
+        session.update({ modelSettings: { store } }),
+      ).rejects.toThrow('store=true');
+      await (await session.submit('After.')).wait();
+      expect(model.requests.map((body) => body.store)).toEqual([true, true]);
+    },
+    30000,
+  );
+}

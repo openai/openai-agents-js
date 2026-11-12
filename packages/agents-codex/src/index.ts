@@ -53,6 +53,7 @@ export type {
 export type {
   NativeProviderOptions,
   ModelSettings,
+  HostedToolChoice,
   ProviderCompactionPolicy,
 } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
@@ -206,7 +207,11 @@ export type {
   ChecklistState,
   SessionState,
 } from './runtime/state';
-export { parseSessionState, readSessionInstructions } from './runtime/state';
+export {
+  parseSessionState,
+  readSessionInstructions,
+  getProviderHistory,
+} from './runtime/state';
 export type {
   TokenUsage,
   TokenUsageInfo,
