@@ -39,6 +39,7 @@ mod node_runtime;
 mod ops;
 mod options;
 mod plain_run;
+mod plain_websocket;
 mod plan_usage;
 mod project_search;
 mod provider_error;
@@ -560,8 +561,14 @@ impl Engine {
         (async move {
             let _permit = inner.operation(false).map_err(native_error)?;
             let route = inner.sentinel_route(&provider_id, &headers)?;
-            model_websocket::sentinel_open(route, &headers, Arc::downgrade(&inner), provider_id)
-                .await
+            model_websocket::sentinel_open(
+                route,
+                &headers,
+                Arc::downgrade(&inner),
+                provider_id,
+                None,
+            )
+            .await
         })
         .await
     }
@@ -765,6 +772,17 @@ impl Engine {
     #[napi(js_name = "_close_report_defer_saved_login")]
     pub async fn _close_report_defer_saved_login(&self) -> napi::Result<Option<String>> {
         Self::close_owner(Arc::clone(&self.inner), true).await
+    }
+
+    #[napi(js_name = "_retained_storage_failure")]
+    pub fn _retained_storage_failure(&self) -> napi::Result<Option<String>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(native_error)?
+            .close_report
+            .retained_storage_failure
+            .clone())
     }
 }
 
@@ -4493,7 +4511,9 @@ impl NativeThread {
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
             if let Some(selection) = &selection {
-                if selection.model_override != frame.model_override {
+                if selection.model_override != frame.model_override
+                    || selection.model_settings_override != frame.model_settings_override
+                {
                     return Err(native_error(
                         "manual continuation cannot replace the admitted run model",
                     ));
@@ -4508,14 +4528,15 @@ impl NativeThread {
                     .await
                     .map_err(native_error)?;
             }
-            let reset_tool_choice = inner
+            let mut controls = inner
                 .thread
                 .thread_settings_snapshot()
                 .await
-                .request_controls
-                .reset_tool_choice
-                .flatten()
-                == Some(true);
+                .request_controls;
+            if let Some(settings) = &frame.model_settings_override {
+                controls.apply_patch(&settings.request_controls);
+            }
+            let reset_tool_choice = controls.reset_tool_choice.flatten() == Some(true);
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
@@ -4526,6 +4547,7 @@ impl NativeThread {
                 settings,
                 output_schema,
                 frame.model_override,
+                frame.model_settings_override,
                 selection,
                 trace,
                 observation_submission_id,

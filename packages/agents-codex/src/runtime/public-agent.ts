@@ -69,7 +69,7 @@ import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { tryOpenPlainRun, type PreparedPlainRun } from './plain-run';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
-import { collaborationTools } from './native-agents';
+import { collaborationToolNames } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
 import {
   encode,
@@ -118,18 +118,20 @@ import {
   mcpConfig,
   mcpToolNames,
   mcpToolSelections,
-  splitToolDeclarations,
 } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import {
   NativeProvider,
   captureModelSettings,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
+import { captureOpeningModelSettings } from './opening-model-settings';
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
+import { validateCustomStorageCompatibility } from './opening-compatibility';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
@@ -196,7 +198,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
     : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
-  /** Current original request-only ceiling when restoring a budgeted manual checkpoint. */
+  /** Restore has been requiring the original trusted limits and effective missing-usage policy. */
   resumeBudget?: RunBudget;
   /** Format original function argument/body failures; omission preserves propagation.
    * Per-tool handlers take precedence; errorFunction:null suppresses this fallback.
@@ -307,6 +309,8 @@ export interface RunOptions<Context = undefined> extends Omit<
 > {
   /** Force the model across this run, handoffs and native children. */
   modelOverride?: string;
+  /** Sparse forced settings for this run, its handoffs and native children. */
+  modelSettingsOverride?: ModelSettings;
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
@@ -838,6 +842,17 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
     const modelOverride = validateModelOverride(options.modelOverride);
+    const modelSettingsOverride =
+      options.modelSettingsOverride === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettingsOverride);
+    if (
+      isManualSessionState(options.state) &&
+      modelSettingsOverride !== undefined
+    )
+      throw new TypeError(
+        'modelSettingsOverride cannot replace restored run settings',
+      );
     if (isManualSessionState(options.state) && modelOverride !== undefined)
       throw new TypeError('modelOverride cannot replace a restored run model');
     const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
@@ -951,6 +966,7 @@ export class Agent<Context = undefined, Output = string> {
       !captureErrorDetails &&
       options.prepareRequest === undefined &&
       modelOverride === undefined &&
+      modelSettingsOverride === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -974,6 +990,7 @@ export class Agent<Context = undefined, Output = string> {
     }
     return runOwnedSession(session, preparedInput, {
       modelOverride,
+      modelSettingsOverride,
       guardrailInput,
       errorInput,
       maxModelSteps,
@@ -1120,22 +1137,9 @@ export class Agent<Context = undefined, Output = string> {
       ? opening.provider
       : (openingProvider ?? this.provider);
     const model = opening ? opening.model : (openingModel ?? this.model);
-    let settings = opening
+    const settings = opening
       ? opening.settings
-      : this.modelSettings && captureModelSettings(this.modelSettings);
-    if (!opening && openingSettings !== undefined) {
-      const overrides = captureModelSettings(openingSettings);
-      settings = captureModelSettings({
-        ...settings,
-        ...overrides,
-        retry:
-          overrides.retry === undefined
-            ? settings?.retry
-            : overrides.retry === null
-              ? null
-              : { ...settings?.retry, ...overrides.retry },
-      });
-    }
+      : captureOpeningModelSettings(this.modelSettings, openingSettings);
     const hostedPrompt = opening
       ? opening.hostedPrompt
       : captureHostedPromptSource(this.hostedPrompt);
@@ -1190,18 +1194,12 @@ export class Agent<Context = undefined, Output = string> {
           ? undefined
           : localStoragePath(descriptor as LocalStorage);
     const persistent = descriptor !== undefined;
-    if (
-      customStore &&
-      (environmentInput !== undefined ||
-        (declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
-        declarations.checklist ||
-        declarations.nativeGoals ||
-        declarations.nativeAgents ||
-        catalog.tools.some((tool) => tool.kind === 'manual'))
-    )
-      throw new TypeError(
-        'Custom canonical storage does not support environments, standalone native search, checklists, goals, child agents, or manual tools',
-      );
+    validateCustomStorageCompatibility(
+      customStore,
+      declarations,
+      catalog,
+      environmentInput !== undefined,
+    );
     const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
     if (
       reconciledCalls !== undefined &&
@@ -1504,7 +1502,7 @@ export class Agent<Context = undefined, Output = string> {
         ? [{ name: 'update_plan', namespace: 'functions' }]
         : []),
       ...(nativeAgents
-        ? collaborationTools.map((name) => ({
+        ? collaborationToolNames(nativeAgents).map((name) => ({
             name,
             namespace: 'collaboration',
           }))
@@ -1840,6 +1838,17 @@ export class Agent<Context = undefined, Output = string> {
                 _native_agent_roles: nativeAgents.additionalRoles.map(
                   (role) => role.name,
                 ),
+                ...(nativeAgents.managedTools.length
+                  ? {
+                      _native_agent_tools: nativeAgents.managedTools.map(
+                        ({ name, role, description }) => ({
+                          name,
+                          role,
+                          description,
+                        }),
+                      ),
+                    }
+                  : {}),
                 _native_agent_max_depth: nativeAgents.maxDepth,
                 _native_agent_before_step:
                   nativeAgents.beforeStep !== undefined ||

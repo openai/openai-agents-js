@@ -114,7 +114,33 @@ main().catch(console.error);
 
 Queued submissions have been capturing the string at submission time. Manual checkpoint continuation has been retaining the admitted choice; steering and restored active runs have been rejecting replacement choices. A new run from settled history has been accepting a new override.
 
-Application `ModelProvider` backends have been resolving the effective model name, and direct `NativeModel` backends have been receiving that name in the request body. These native run options have been accepting strings only.
+Application `ModelProvider` backends have been resolving the effective model name, and direct `NativeModel` backends have been receiving that name in the request body. `modelOverride` has been accepting strings only.
+
+### Per-run settings selection
+
+With the current [source build](building.md), `modelSettingsOverride` has been accepting native `ModelSettings` for one new run on `agent.run()` or `session.submit()`. Supplied fields have been overriding step and profile settings across handoffs, native children, and output repair. Omitted fields have been retaining each profile's defaults; nullable fields have been applying their documented clear behavior. Agent and Session defaults have been remaining available for later independent runs. Standard Responses controls have been requiring a standard Responses model.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
+
+const model = process.env.RESPONSES_MODEL;
+if (!model)
+  throw new Error('Set RESPONSES_MODEL to a standard Responses model.');
+await using provider = new NativeProvider();
+const agent = new Agent({
+  instructions: 'Answer clearly.',
+  model,
+  modelSettings: { maxOutputTokens: 1024 },
+  provider,
+});
+await using session = await agent.session();
+const turn = await session.submit('Give a brief answer.', {
+  modelSettingsOverride: { maxOutputTokens: 512, metadata: null },
+});
+console.log((await turn.wait()).finalOutput);
+```
+
+Queued submissions have been capturing settings before admission. Manual checkpoints have been retaining scalar settings and retry limits, and restored active runs have been rejecting replacement overrides. Checkpoint capture has been rejecting a run-local `retry.policy` function without a durable binding; Agent-declared policies have been rebinding from the supplied Agent. With the native Responses transport, `resetToolChoice: true` has been releasing required or named forcing after an accepted tool batch on the current profile, including after manual restore.
 
 ### Supply an application model
 
@@ -151,6 +177,8 @@ Native `modelSettings` accepts the following fields in the current [source build
 
 | Field | Value and behavior |
 | --- | --- |
+| `retry` | `{ maxRetries?, backoff?, policy? }` for native generation retries; `null` clears the override. |
+| `attemptTimeoutMs` | Positive uint32 milliseconds per logical attempt, excluding retry backoff; `null` restores the default. |
 | `reasoningEffort` | A string selecting the model's reasoning effort. |
 | `reasoningSummary` | A string selecting the model's reasoning summary setting. |
 | `serviceTier` | Native routing normalizes `fast` to `priority` and may omit a tier under its model/catalog policy; `null` clears an inherited override. |
@@ -165,7 +193,7 @@ Native `modelSettings` accepts the following fields in the current [source build
 | `promptCacheRetention` | `'in_memory'` or `'24h'`; `null` clears the override. |
 | `promptCacheTtl` | `'30m'` or `'12h'`, independently of retention; `null` clears the override. |
 
-Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Use `maxOutputTokens` for the native output limit. Classic `maxTokens` and `retry` settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md).
+Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Use `maxOutputTokens` for the native output limit. Native `retry` has been accepting generation retry limits, backoff settings, and a policy callback; these settings have been remaining separate from [connection recovery](#connection-retries-and-errors). Classic `maxTokens` has been remaining part of the [classic runtime](../../../packages/agents/CLASSIC.md).
 
 - An opening provider or model overrides the Agent default.
 - Defined `modelSettings` keys override the matching Agent settings. Omitted or `undefined` keys inherit the defaults. An empty object inherits every default.

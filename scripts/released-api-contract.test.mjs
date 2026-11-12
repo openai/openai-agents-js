@@ -33,6 +33,7 @@ import {
   collectConditionTargets,
   collectExportLeaves,
   collectRuntimeConditionSets,
+  collectRuntimeTargets,
   describeOwnedSymbol,
   isPublicDeclaration,
   isDirectObjectTypeAliasDeclaration,
@@ -418,11 +419,36 @@ type Combined = Imported & { value: string };`,
           browser: './dist/browser.mjs',
           workerd: { import: './dist/workerd.mjs' },
           'react-native': { development: './dist/react-native.mjs' },
-          node: { import: './dist/node.mjs' },
+          node: {
+            'module-sync': './dist/node.js',
+            import: './dist/node.mjs',
+          },
           default: './dist/default.mjs',
         },
       ]),
     ).toEqual([['browser'], ['react-native', 'development'], ['workerd']]);
+  });
+
+  test('selects the active Node runtime and still checks format fallbacks', () => {
+    const nodeTarget = {
+      condition: 'node.module-sync',
+      target: './dist/node.js',
+    };
+    const exportNode = {
+      node: { 'module-sync': nodeTarget.target },
+      require: './dist/index.js',
+      import: './dist/index.mjs',
+    };
+    for (const format of ['import', 'require']) {
+      const fallback = { condition: format, target: exportNode[format] };
+      expect(collectRuntimeTargets(exportNode, format)).toEqual([
+        nodeTarget,
+        fallback,
+      ]);
+      expect(resolveConditionalTarget(exportNode, format)).toEqual(
+        process.features.require_module ? nodeTarget : fallback,
+      );
+    }
   });
 
   test('matches direct custom runtime targets with their declaration surface', () => {
@@ -2485,6 +2511,15 @@ describe('native entry points with released classic contracts', () => {
         import: './classic.mjs',
         require: './classic.cjs',
       };
+      const ownerExport = {
+        types: './classic.d.ts',
+        node: { 'module-sync': './owner.cjs' },
+        import: './owner.mjs',
+        require: './owner.cjs',
+      };
+      const ownerImport = process.features.require_module
+        ? ownerExport.node['module-sync']
+        : ownerExport.import;
       await Promise.all([
         writeFile(
           path.join(root, 'index.mjs'),
@@ -2495,7 +2530,7 @@ describe('native entry points with released classic contracts', () => {
         writeFile(path.join(root, 'owner.cjs'), 'exports.Agent = {};'),
         writeFile(
           path.join(root, 'classic.mjs'),
-          "export { Agent } from './owner.mjs';",
+          `export { Agent } from ${JSON.stringify(ownerImport)};`,
         ),
         writeFile(
           path.join(root, 'classic.cjs'),
@@ -2505,11 +2540,6 @@ describe('native entry points with released classic contracts', () => {
           writeFile(path.join(root, file), 'export {};'),
         ),
       ]);
-      const ownerExport = {
-        types: './classic.d.ts',
-        import: './owner.mjs',
-        require: './owner.cjs',
-      };
       const entry = (node) => ({ exportNode: node });
       const packages = {
         '@openai/agents': {
@@ -2578,6 +2608,11 @@ describe('native entry points with released classic contracts', () => {
       ).toContain(
         '@openai/agents/classic.Agent is not the @openai/agents-core runtime binding in require',
       );
+      ownerExport.import = './missing-owner-binding.mjs';
+      await writeFile(path.join(root, ownerExport.import), 'export {};');
+      expect(
+        await contractExecution.validateRuntime(packages, surfaces),
+      ).toContain('@openai/agents-core import.Agent has no runtime binding');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -4,6 +4,7 @@ import {
   type ModelAttemptState,
 } from './model-attempts';
 import type { JsonObject } from './binding';
+import type { RetryPolicy } from './model-retry';
 import type { GuardrailRecord } from './guardrails';
 import type { TokenUsage, TokenCount } from './run-events';
 import type { ObservationPhase } from './observation';
@@ -26,6 +27,7 @@ export interface ChildCallbackOwner {
   inputGuardrailsTask?: Promise<void>;
   readonly childId: string;
   rootTurnId?: string;
+  runRetryPolicyOverride?: RetryPolicy | null;
   modelAttempts?: ModelAttemptState;
   tokenUsage: TokenUsage | null;
   requests: TokenCount;
@@ -140,7 +142,11 @@ export class ChildCallbacks {
         owner.controller.abort(error);
         await failed().catch(() => {});
       })
-      .finally(() => owner.tasks.delete(task));
+      .finally(() => {
+        owner.tasks.delete(task);
+        if (owner.terminal && owner.tasks.size === 0)
+          owner.runRetryPolicyOverride = undefined;
+      });
     owner.tasks.add(task);
   }
   end(childId: string, incarnation: string, turnId?: string): void {
@@ -152,6 +158,7 @@ export class ChildCallbacks {
       ) {
         owner.terminal = true;
         owner.controller.abort(new Error('Native child turn ended'));
+        if (owner.tasks.size === 0) owner.runRetryPolicyOverride = undefined;
       }
     }
   }
@@ -172,7 +179,10 @@ export class ChildCallbacks {
         throw terminal.error;
       if (owner.failure !== undefined) throw owner.failure;
     } finally {
-      if (owner.terminal) releaseModelAttemptPayload(owner);
+      if (owner.terminal) {
+        owner.runRetryPolicyOverride = undefined;
+        releaseModelAttemptPayload(owner);
+      }
     }
   }
   forOrigins(origins: ReadonlySet<string>): readonly ChildCallbackOwner[] {
@@ -210,6 +220,7 @@ export class ChildCallbacks {
     for (const owner of this.owners.values()) {
       owner.terminal = true;
       owner.controller.abort(reason);
+      if (owner.tasks.size === 0) owner.runRetryPolicyOverride = undefined;
     }
   }
   async close(): Promise<void> {
@@ -217,6 +228,7 @@ export class ChildCallbacks {
     await Promise.all(
       [...this.owners.values()].map(async (owner) => {
         while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
+        owner.runRetryPolicyOverride = undefined;
       }),
     );
   }

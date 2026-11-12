@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -251,3 +252,113 @@ it('keeps the original eligible catalog after a named manual restore releases fo
   ]);
   localOnly(server);
 });
+
+it.each([
+  { named: false, withUsage: false },
+  { named: false, withUsage: true },
+  { named: true, withUsage: false },
+  { named: true, withUsage: true },
+])(
+  'releases application forcing after manual restore: named=$named usage=$withUsage',
+  async ({ named, withUsage }) => {
+    const catalog = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../native/.upstream/reviewed-codex/codex-rs/models-manager/models.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as {
+      models: {
+        slug: string;
+        supported_in_api: boolean;
+        use_responses_lite?: boolean;
+      }[];
+    };
+    const model = catalog.models.find(
+      (entry) => entry.supported_in_api && !entry.use_responses_lite,
+    )?.slug;
+    if (!model) throw new Error('Expected a standard Responses catalog model');
+    const effects: string[] = [];
+    const lookup = manualTool({
+      name: 'lookup',
+      description: 'Read',
+      parameters: z.object({ key: z.string() }),
+      result: z.string(),
+    });
+    const seen: JsonObject[] = [];
+    await using provider = new NativeProvider({
+      supportsWebsockets: false,
+      modelBackend: {
+        complete(request) {
+          seen.push(request.body);
+          return {
+            output:
+              seen.length === 1
+                ? [
+                    ...(named
+                      ? []
+                      : [
+                          call(
+                            'echo',
+                            { value: 'once' },
+                            { callId: 'automatic' },
+                          ),
+                        ]),
+                    call('lookup', { key: 'pending' }, { callId: 'manual' }),
+                  ]
+                : named && seen.length === 2
+                  ? [
+                      call(
+                        'echo',
+                        { value: 'after-reset' },
+                        { callId: 'eligible-other' },
+                      ),
+                    ]
+                  : [message('done')],
+            ...(withUsage
+              ? { usage: { input_tokens: 1, output_tokens: 1 } }
+              : {}),
+          };
+        },
+      },
+    });
+    const agent = new Agent({
+      model,
+      instructions: 'Read, then echo.',
+      provider,
+      tools: [lookup, echoTool(effects)],
+      modelSettings: {
+        toolChoice: named ? toolRef('lookup') : 'required',
+        resetToolChoice: true,
+      },
+    });
+    await using original = await agent.session();
+    const batch = await (
+      await original.submit('go')
+    ).wait({ until: 'manual_tool' });
+    if (!('requests' in batch)) throw new Error('Expected a manual request');
+    const saved = parseSessionState(JSON.stringify(await original.suspend()));
+    await original.close();
+    expect(effects).toEqual(named ? [] : ['once']);
+    await using restored = await agent.session({ state: saved });
+    const pending = await restored.wait({ until: 'manual_tool' });
+    if (!('requests' in pending))
+      throw new Error('Expected a restored manual request');
+    const current = lookup.match(pending.requests[0]);
+    if (!current) throw new Error('Expected lookup');
+    await restored.respond(current.reply('accepted'));
+    expect((await restored.wait()).finalOutput).toBe('done');
+    expect(effects).toEqual(named ? ['after-reset'] : ['once']);
+    expect(seen[0].tool_choice).toBe('required');
+    expect(seen[1].tool_choice ?? 'auto').toBe('auto');
+    const declarations = (seen[1].tools as JsonObject[]).flatMap((spec) =>
+      spec.type === 'namespace' ? (spec.tools as JsonObject[]) : [spec],
+    );
+    expect(declarations.map((spec) => spec.name).sort()).toEqual([
+      'echo',
+      'lookup',
+    ]);
+  },
+);

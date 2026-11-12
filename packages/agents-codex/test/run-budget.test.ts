@@ -55,18 +55,16 @@ it.each([0, 1, Number.MAX_SAFE_INTEGER])(
 );
 
 it.each<RunBudget>([
-  { maxTokens: 1 },
   { maxEstimatedCostMicros: 1 },
-  { maxRequests: 1, maxTokens: 0 },
   { maxRequests: 1, maxEstimatedCostMicros: 1 },
 ])(
-  'refuses usage-limited checkpoints without invoking an estimator',
+  'refuses cost-limited checkpoints without invoking an estimator',
   (limits) => {
     const estimateCostMicros = vi.fn(() => 1);
     const budget = RunBudgetTracker.capture({ ...limits, estimateCostMicros })!;
     budget.observe({ total_tokens: 1 });
     expect(() => budget.checkpoint()).toThrow(
-      'Only request-only run budgets support portable checkpoints',
+      'Estimated-cost run budgets do not support portable checkpoints',
     );
     expect(estimateCostMicros).not.toHaveBeenCalled();
   },
@@ -168,6 +166,120 @@ it.each([
     RunBudgetTracker.restoreCheckpoint(
       { version: 1, maxRequests: 2, admittedRequests: 1 },
       current,
+    ),
+  ).toThrow();
+});
+
+it.each([undefined, 2])(
+  'retains token consumption and request ceiling %s',
+  (maxRequests) => {
+    const budget = { maxTokens: 10, maxRequests };
+    const source = RunBudgetTracker.capture(budget)!;
+    source.charge();
+    source.observe({ total_tokens: 4 });
+    const saved = source.checkpoint();
+    expect(saved).toEqual({
+      version: 2,
+      maxTokens: 10,
+      consumedTokens: 4,
+      usageMissing: false,
+      missingUsage: 'stop',
+      maxRequests: maxRequests ?? null,
+      admittedRequests: maxRequests === undefined ? null : 1,
+    });
+    const restored = RunBudgetTracker.restoreCheckpoint(
+      JSON.parse(JSON.stringify(saved)),
+      budget,
+    );
+    restored.check(() => {});
+    restored.observe({ total_tokens: 6 });
+    expect(() => restored.check(() => {})).toThrow(
+      expect.objectContaining({ code: 'run_budget_exceeded' }),
+    );
+  },
+);
+
+it('saturates persisted token consumption without changing usage totals', () => {
+  const source = RunBudgetTracker.capture({
+    maxTokens: Number.MAX_SAFE_INTEGER,
+  })!;
+  source.observe({ total_tokens: Number.MAX_SAFE_INTEGER });
+  source.observe({ total_tokens: Number.MAX_SAFE_INTEGER });
+  expect(source.checkpoint()).toMatchObject({
+    consumedTokens: Number.MAX_SAFE_INTEGER,
+  });
+  const restored = RunBudgetTracker.restoreCheckpoint(source.checkpoint(), {
+    maxTokens: Number.MAX_SAFE_INTEGER,
+  });
+  expect(() => restored.check(() => {})).toThrow(
+    expect.objectContaining({ code: 'run_budget_exceeded' }),
+  );
+});
+
+it.each(['stop', 'continue'] as const)(
+  'retains sticky missing usage with policy %s',
+  (missingUsage) => {
+    const budget = { maxTokens: 10, missingUsage };
+    const source = RunBudgetTracker.capture(budget)!;
+    source.observe(undefined);
+    source.observe({ total_tokens: 1 });
+    const restored = RunBudgetTracker.restoreCheckpoint(
+      source.checkpoint(),
+      budget,
+    );
+    expect(restored.checkpoint()).toMatchObject({
+      consumedTokens: 1,
+      usageMissing: true,
+      missingUsage,
+    });
+    if (missingUsage === 'stop')
+      expect(() => restored.check(() => {})).toThrow(
+        expect.objectContaining({ code: 'run_budget_usage_unavailable' }),
+      );
+    else restored.check(() => {});
+  },
+);
+
+it('requires the original trusted token limits and effective policy', () => {
+  const saved = RunBudgetTracker.capture({
+    maxTokens: 10,
+    maxRequests: 2,
+  })!.checkpoint();
+  for (const current of [
+    undefined,
+    { maxTokens: 11, maxRequests: 2 },
+    { maxTokens: 10 },
+    { maxTokens: 10, maxRequests: 2, missingUsage: 'continue' as const },
+    { maxTokens: 10, maxRequests: 2, maxEstimatedCostMicros: 1 },
+  ])
+    expect(() => RunBudgetTracker.restoreCheckpoint(saved, current)).toThrow();
+  expect(() =>
+    RunBudgetTracker.restoreCheckpoint(saved, {
+      maxTokens: 10,
+      maxRequests: 2,
+      missingUsage: 'stop',
+    }),
+  ).not.toThrow();
+});
+
+it.each([
+  { consumedTokens: 11 },
+  { consumedTokens: -1 },
+  { consumedTokens: 0.5 },
+  { consumedTokens: Number.MAX_SAFE_INTEGER + 1 },
+  { maxTokens: null },
+  { usageMissing: undefined },
+  { missingUsage: 'ignore' },
+  { maxRequests: 1, admittedRequests: null },
+  { maxRequests: null, admittedRequests: 0 },
+  { maxRequests: 1, admittedRequests: 2 },
+  { extra: true },
+])('rejects malformed token receipts %j', (invalid) => {
+  const saved = RunBudgetTracker.capture({ maxTokens: 10 })!.checkpoint();
+  expect(() =>
+    RunBudgetTracker.restoreCheckpoint(
+      { ...saved, ...invalid },
+      { maxTokens: 10 },
     ),
   ).toThrow();
 });

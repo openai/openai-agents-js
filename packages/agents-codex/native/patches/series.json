@@ -538,7 +538,7 @@
     },
     {
       "path": "0098-private-plain-modelclient-bridge.patch",
-      "sha256": "abfe125805fbf65388a542ecccee0ec619509c56fced095748aa990f394ed49e"
+      "sha256": "14a78c091fe2553fac56cf2f3f442475c234324a50ca99a6da286b7cd2d068c7"
     },
     {
       "path": "sdk-realtime-voice-policies.patch",
@@ -955,7 +955,31 @@
     {
       "path": "sdk-retain-stream-cleanup-usage.patch",
       "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
+    },
+    {
+      "path": "sdk-managed-agent-tools.patch",
+      "sha256": "73a136e46af2e85112ce1f29c4b971e1ee1909ebe2f0bc6a50ea704f96d74a15"
+    },
+    {
+      "path": "sdk-managed-agent-tool-code-mode.patch",
+      "sha256": "0f89982ea8439b01d19639f0f90ff93658d55f1ab3cbc2c014a7616c00f4a066"
+    },
+    {
+      "path": "sdk-managed-agent-child-catalog.patch",
+      "sha256": "aa9744156b870e194d6dc7e6244e311a290332c7b453747a7440682e69cf674a"
+    },
+    {
+      "path": "sdk-managed-agent-tool-origin.patch",
+      "sha256": "e2433bd08574744b4ee7eed17904c2bf1f58a80f7b825e31134194d9b3abd338"
+    },
+    {
+      "path": "sdk-run-model-settings-override.patch",
+      "sha256": "6123454f63ad746ef2b37c453968ae020041a59e11def61acdf8f0ef721cb9dc"
+    },
+    {
+      "path": "sdk-managed-agent-tool-failure-origin.patch",
+      "sha256": "4b674bd762e33b35a0c623c8feba652911d10f2ea5395f01ee6b9569dd405f04"
     }
   ],
-  "result_tree": "6406f27406a4def9e24a95bb1cd44beeb35c70cd"
+  "result_tree": "80053b735246ccef425da86a7b026f10fddebdf2"
 }

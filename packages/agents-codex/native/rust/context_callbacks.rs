@@ -7,6 +7,24 @@ use codex_extension_api::{
 };
 use tokio_util::sync::CancellationToken;
 
+fn run_retry_policy_override(
+    admission: &dyn codex_extension_api::ModelToolAdmission,
+) -> Option<bool> {
+    let settings = admission
+        .step_store()
+        .and_then(|store| store.get::<codex_extension_api::CapturedRunModelSettingsOverride>())
+        .or_else(|| {
+            admission
+                .turn_store()
+                .get::<codex_extension_api::CapturedRunModelSettingsOverride>()
+        })?;
+    match settings.0.request_controls.retry.as_ref() {
+        Some(None) => Some(false),
+        Some(Some(retry)) => retry.has_policy,
+        None => None,
+    }
+}
+
 pub(super) struct ContextProjection {
     items: Option<Vec<ResponseItem>>,
     hosted_prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
@@ -218,7 +236,8 @@ impl PythonTools {
             input.cancellation,
             None,
             json!({"type":"_sdk_model_retry", "instance":self.instance,
-                "root_turn_id":input.admission.root_turn_id(),"data":data}),
+                "root_turn_id":input.admission.root_turn_id(),
+                "run_retry_policy_override":run_retry_policy_override(input.admission.as_ref()),"data":data}),
             PreparationReply::ModelRetry,
         )
         .await
@@ -1118,7 +1137,8 @@ impl PythonTools {
             .and_then(Weak::upgrade)
             .is_some_and(|control| control.raw_usage_active());
         let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
-            "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage});
+            "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage,
+            "run_retry_policy_override":run_retry_policy_override(admission.as_ref())});
         if let Some(attempt) = &attempt {
             message["attempt_id"] = json!(attempt.id());
             message["attempt"] = json!(attempt.attempt());
@@ -1200,6 +1220,25 @@ impl PythonTools {
                             Ok(codex_api::ResponseEvent::ResponseObserved(observation)),
                         );
                     }
+                } else if matches!(
+                    events.last(),
+                    Some(Ok(codex_api::ResponseEvent::Completed { .. }))
+                ) {
+                    // Normalized application output has been supplying a completion
+                    // boundary; original provider identifiers/usage have been remaining unknown.
+                    events.insert(
+                        events.len() - 1,
+                        Ok(codex_api::ResponseEvent::ResponseObserved(
+                            codex_protocol::protocol::ResponseObservation {
+                                response_id: None,
+                                upstream_request_id: None,
+                                status:
+                                    codex_protocol::protocol::ResponseObservationStatus::Completed,
+                                incomplete_reason: None,
+                                usage: None,
+                            },
+                        )),
+                    );
                 }
                 if let Some(raw) = reply.raw_chat_completion {
                     events.insert(

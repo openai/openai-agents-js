@@ -7,17 +7,516 @@ import {
   NativeError,
   NativeProvider,
   NativeRole,
+  manualTool,
+  parseSessionState,
   tool,
   type ChildInvocation,
   type ExecutorContext,
+  type NativeToolCall,
   type Session,
   type ToolContext,
 } from '@openai/agents';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { nativeDescendantModel } from './fixtures/native-descendant-model';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
+
+it.each([true, false])(
+  'returns the selected role tool result only after collaboration approval (%s)',
+  async (allowed) => {
+    const executor = await startPublicExecutor();
+    let ordinaryCalls = 0;
+    const approvals: string[] = [];
+    let childRequest: JsonObject | undefined;
+    let finalRequest: JsonObject | undefined;
+    try {
+      const server = new ModelServer([
+        () => [call('research_topic', {}, { callId: 'ordinary' })],
+        () => [
+          call(
+            'research_topic',
+            { input: 'Read the requested record.' },
+            { namespace: 'collaboration', callId: 'managed' },
+          ),
+        ],
+        ...(allowed
+          ? [
+              (request: JsonObject) => {
+                childRequest = request;
+                return [message('managed child result')];
+              },
+              (request: JsonObject) => {
+                finalRequest = request;
+                return [message('parent final result')];
+              },
+            ]
+          : []),
+      ]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        instructions: 'Call the research tool.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [
+          tool({
+            name: 'research_topic',
+            parameters: z.object({}),
+            execute: () => {
+              ordinaryCalls++;
+              return 'ordinary application result';
+            },
+          }),
+          new NativeAgents({
+            additionalRoles: [
+              new NativeRole({
+                name: 'research',
+                description: 'Research a topic.',
+                instructions: 'MANAGED_ROLE_INSTRUCTIONS',
+              }),
+            ],
+            managedTools: [
+              {
+                name: 'research_topic',
+                role: 'research',
+                description: 'Research a topic.',
+              },
+            ],
+            approval(_context, request) {
+              approvals.push(request.name);
+              return allowed;
+            },
+          }),
+        ],
+      });
+      await using session = await agent.session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+      });
+      const root = await session.submit('Research the record.');
+      if (!allowed) {
+        await expect(root.wait()).rejects.toBeInstanceOf(NativeError);
+        expect(ordinaryCalls).toBe(1);
+        expect(approvals).toEqual(['research_topic']);
+        expect(server.requests).toHaveLength(2);
+        server.assertExhausted();
+        return;
+      }
+      expect((await root.wait()).finalOutput).toBe('parent final result');
+      expect(ordinaryCalls).toBe(1);
+      expect(approvals).toEqual(['research_topic']);
+      if (!childRequest || !finalRequest)
+        throw new Error('Expected the child and parent model requests');
+      const items = finalRequest.input as JsonObject[];
+      const output = items.find(
+        (item) =>
+          item.type === 'function_call_output' && item.call_id === 'managed',
+      );
+      expect(output).toBeDefined();
+      expect(JSON.stringify(output)).toContain('managed child result');
+      const metadata = childRequest.client_metadata as Record<string, string>;
+      expect(JSON.parse(metadata['x-codex-turn-metadata']).root_turn_id).toBe(
+        root.turnId,
+      );
+      expect(JSON.stringify(childRequest)).toContain(
+        'MANAGED_ROLE_INSTRUCTIONS',
+      );
+      server.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+);
+
+it('lets a native child call a declared role tool within the configured depth', async () => {
+  const executor = await startPublicExecutor();
+  const approvals: string[] = [];
+  let childRequest: JsonObject | undefined;
+  let grandchildRequest: JsonObject | undefined;
+  let childFinishRequest: JsonObject | undefined;
+  const server = new ModelServer([
+    [
+      call(
+        'delegate_review',
+        { input: 'Review the record.' },
+        { namespace: 'collaboration', callId: 'delegate-review' },
+      ),
+    ],
+    (request) => {
+      childRequest = request;
+      return [
+        call(
+          'collect_fact',
+          { input: 'Collect the requested fact.' },
+          { namespace: 'collaboration', callId: 'collect-fact' },
+        ),
+      ];
+    },
+    (request) => {
+      grandchildRequest = request;
+      return [message('collector result')];
+    },
+    (request) => {
+      childFinishRequest = request;
+      return [message('reviewer result')];
+    },
+    [message('parent final result')],
+  ]);
+  try {
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Delegate the review.',
+      model: nativeDescendantModel,
+      provider,
+      tools: [
+        new NativeAgents({
+          maxDepth: 2,
+          additionalRoles: [
+            new NativeRole({
+              name: 'reviewer',
+              description: 'Review a record.',
+              instructions: 'CATALOG_REVIEWER_ROLE',
+            }),
+            new NativeRole({
+              name: 'collector',
+              description: 'Collect a fact.',
+              instructions: 'CATALOG_COLLECTOR_ROLE',
+            }),
+          ],
+          managedTools: [
+            {
+              name: 'delegate_review',
+              role: 'reviewer',
+              description: 'Delegate a review.',
+            },
+            {
+              name: 'collect_fact',
+              role: 'collector',
+              description: 'Collect a fact.',
+            },
+          ],
+          approval(_context, request) {
+            approvals.push(request.name);
+            return true;
+          },
+        }),
+      ],
+    });
+    await using session = await agent.session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+    });
+    const root = await session.submit('Review the record.');
+    const result = await root.wait();
+    expect(JSON.stringify(childRequest ?? {})).toContain(
+      'CATALOG_REVIEWER_ROLE',
+    );
+    const advertised = Array.isArray(childRequest?.tools)
+      ? [...childRequest.tools]
+      : [];
+    if (Array.isArray(childRequest?.input)) {
+      for (const item of childRequest.input as JsonObject[]) {
+        if (item.type === 'additional_tools' && Array.isArray(item.tools)) {
+          advertised.push(...item.tools);
+        }
+      }
+    }
+    expect(JSON.stringify(advertised)).toContain('"collect_fact"');
+    expect(JSON.stringify(grandchildRequest)).toContain(
+      'CATALOG_COLLECTOR_ROLE',
+    );
+    expect(JSON.stringify(childFinishRequest?.input)).toContain(
+      'collector result',
+    );
+    expect(result.finalOutput).toBe('parent final result');
+    expect(approvals).toEqual(['delegate_review', 'collect_fact']);
+    server.assertExhausted();
+  } finally {
+    await executor.close();
+  }
+});
+
+it.each([true, false])(
+  'runs the named role tool through Code Mode with its explicit policy (%s)',
+  async (allowed) => {
+    const executor = await startPublicExecutor();
+    const approvals: [string, NativeToolCall][] = [];
+    const server = new ModelServer([
+      [
+        {
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'managed-code',
+          input: [
+            'if (typeof tools.collaboration__spawn_agent !== "undefined") {',
+            '  throw new Error("Built-in collaboration tools must be called directly");',
+            '}',
+            'text(await tools.collaboration__research_topic({input: "Read the record."}));',
+          ].join('\n'),
+        },
+      ],
+      ...(allowed ? [[message('managed code child result')]] : []),
+      [message('parent final result')],
+    ]);
+    try {
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic',
+        supportsWebsockets: false,
+      });
+      const agent = new Agent({
+        instructions: 'Use the named research tool from Code Mode.',
+        model: nativeDescendantModel,
+        provider,
+        programmaticToolCalling: true,
+        tools: [
+          new NativeAgents({
+            additionalRoles: [
+              new NativeRole({
+                name: 'research',
+                description: 'Research a topic.',
+                instructions: 'CODE_MODE_ROLE_INSTRUCTIONS',
+              }),
+            ],
+            managedTools: [
+              {
+                name: 'research_topic',
+                role: 'research',
+                description: 'Research a topic.',
+              },
+            ],
+            approval(context, request) {
+              approvals.push([context.callId, request]);
+              return allowed;
+            },
+          }),
+        ],
+      });
+      await using session = await agent.session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+        }),
+      });
+      const turn = await session.submit('Research the record.');
+      const result = await turn.wait();
+      const codeOutput = (
+        server.requests.at(-1)?.input as JsonObject[] | undefined
+      )?.find(
+        (item) =>
+          item.call_id === 'managed-code' &&
+          item.type === 'custom_tool_call_output',
+      );
+      expect(
+        result.finalOutput,
+        JSON.stringify({ approvals, codeOutput }),
+      ).toBe('parent final result');
+      expect(approvals).toHaveLength(1);
+      const [callbackId, request] = approvals[0];
+      expect(request).toMatchObject({
+        name: 'research_topic',
+        namespace: 'collaboration',
+        route: 'programmatic_tool_calling',
+        callId: null,
+        outerCallId: 'managed-code',
+      });
+      expect(request.runtimeToolCallId).toBeTruthy();
+      expect(callbackId).toBe(request.runtimeToolCallId);
+      expect(server.requests).toHaveLength(allowed ? 3 : 2);
+      if (allowed) {
+        expect(JSON.stringify(server.requests[1])).toContain(
+          'CODE_MODE_ROLE_INSTRUCTIONS',
+        );
+        expect(JSON.stringify(server.requests[2])).toContain(
+          'managed code child result',
+        );
+      }
+      server.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+);
+
+it('keeps the completed role tool result across a root manual checkpoint', async () => {
+  const server = new ModelServer([
+    [
+      call(
+        'research_topic',
+        { input: 'Read the record.' },
+        { namespace: 'collaboration', callId: 'managed' },
+      ),
+    ],
+    [message('managed result before checkpoint')],
+    [call('lookup', { key: 'A' }, { callId: 'root-manual' })],
+    [message('resumed parent result')],
+  ]);
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Read a record.',
+    parameters: z.object({ key: z.string() }),
+    result: z.string(),
+  });
+  const executor = await startPublicExecutor();
+  try {
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Research before requesting the record.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [
+        new NativeAgents({
+          additionalRoles: [
+            new NativeRole({
+              name: 'research',
+              description: 'Research a topic.',
+              instructions: 'Read the requested record.',
+            }),
+          ],
+          managedTools: [
+            {
+              name: 'research_topic',
+              role: 'research',
+              description: 'Research a topic.',
+            },
+          ],
+        }),
+        lookup,
+      ],
+    });
+    const environment = new Environment({
+      url: executor.url,
+      cwd: executor.cwd,
+      headers: executor.headers,
+      tools: ['exec_command', 'write_stdin', 'apply_patch'],
+    });
+    await using original = await agent.session({ environment });
+    const root = await original.submit('Read the record.');
+    const boundary = await root.wait({ until: 'manual_tool' });
+    if (!('requests' in boundary) || !lookup.match(boundary.requests[0]))
+      throw new Error('Expected the root manual boundary');
+    const state = parseSessionState(JSON.stringify(await original.suspend()));
+    await original.close();
+
+    await using restored = await agent.session({ state, environment });
+    const continuation = restored.restoredTurn;
+    if (!continuation) throw new Error('Expected a restored turn');
+    const pending = await continuation.wait({ until: 'manual_tool' });
+    if (!('requests' in pending))
+      throw new Error('Expected a restored request');
+    const request = lookup.match(pending.requests[0]);
+    if (!request) throw new Error('Expected the same root manual boundary');
+    await restored.respond(request.reply('verified'));
+    const result = await continuation.wait();
+    expect(result.turn.turnId).toBe(root.turnId);
+    expect(result.finalOutput).toBe('resumed parent result');
+    expect(server.requests).toHaveLength(4);
+    const restoredInput = JSON.stringify(server.requests[3].input);
+    expect(restoredInput).toContain('managed result before checkpoint');
+    expect(restoredInput).toContain('verified');
+    server.assertExhausted();
+  } finally {
+    await executor.close();
+  }
+}, 30000);
+
+it('retires the exact managed child when its parent turn is cancelled', async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = new ModelServer([
+    [
+      call(
+        'research_topic',
+        { input: 'Wait for the record.' },
+        { namespace: 'collaboration', callId: 'managed' },
+      ),
+    ],
+    async () => {
+      started.resolve();
+      await release.promise;
+      return [message('abandoned child result')];
+    },
+    [message('next root result')],
+  ]);
+  const executor = await startPublicExecutor();
+  try {
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Call the research tool.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [
+        new NativeAgents({
+          managedTools: [
+            {
+              name: 'research_topic',
+              role: 'default',
+              description: 'Research a topic.',
+            },
+          ],
+        }),
+      ],
+    });
+    await using session = await agent.session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+    });
+    const root = await session.submit('Research the record.');
+    await started.promise;
+    const [child] = await Array.fromAsync(session.subagents());
+    if (!child?.turn) throw new Error('Expected the exact managed child turn');
+    const outcome = child.turn.wait().catch((error: unknown) => error);
+    await root.cancel({ mode: 'force' });
+    expect(await outcome).toBeInstanceOf(NativeError);
+    const next = await session.submit('Continue without the tool.');
+    expect((await next.wait()).finalOutput).toBe('next root result');
+    server.assertExhausted();
+  } finally {
+    release.resolve();
+    await executor.close();
+  }
+}, 30000);
 
 it('inherits JS tools and context into a declared role and submits to the exact live child', async () => {
   const executor = await startPublicExecutor();
@@ -317,3 +816,114 @@ it('captures a reloaded child when its row is issued by an open iterator', async
     await executor.close();
   }
 }, 20_000);
+
+async function checkProducedManagedRoleOrigins(
+  scenario: 'success' | 'empty input' | 'child failure',
+) {
+  const executor = await startPublicExecutor();
+  try {
+    const managed = {
+      name: 'research_topic',
+      role: 'research',
+      description: 'Research a topic.',
+    };
+    const server = new ModelServer([
+      [call(managed.name, {}, { callId: 'ordinary' })],
+      [
+        call(
+          managed.name,
+          { input: scenario === 'empty input' ? '' : 'Read the record.' },
+          { namespace: 'collaboration', callId: 'managed' },
+        ),
+      ],
+      ...(scenario === 'empty input'
+        ? []
+        : [
+            scenario === 'success'
+              ? [message('child result')]
+              : {
+                  status: 400,
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    error: {
+                      type: 'invalid_request_error',
+                      code: 'invalid_request_error',
+                      message: 'Synthetic child model failure',
+                    },
+                  }),
+                },
+          ]),
+      [message('parent result')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-managed-role-origin',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Use the research tool.',
+      model: nativeDescendantModel,
+      provider,
+      tools: [
+        tool({
+          name: managed.name,
+          parameters: z.object({}),
+          execute: () => 'ordinary tool output',
+        }),
+        new NativeAgents({
+          additionalRoles: [
+            new NativeRole({
+              name: managed.role,
+              description: 'Research a topic.',
+              instructions: 'Find the requested record.',
+            }),
+          ],
+          managedTools: [managed],
+          approval: () => true,
+        }),
+      ],
+    });
+    const completed = await agent.run('Research the record.', {
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+      returnItems: true,
+    });
+
+    expect(completed.finalOutput).toBe('parent result');
+    for (const [callId, origin] of [
+      ['ordinary', undefined],
+      ['managed', { name: managed.name, role: managed.role }],
+    ] as const) {
+      const entries = completed.items?.filter(
+        ({ item }) => 'callId' in item && item.callId === callId,
+      );
+      expect(entries?.map(({ item }) => item.type)).toEqual([
+        'function_call',
+        'function_call_output',
+      ]);
+      expect(entries?.map(({ toolOrigin }) => toolOrigin)).toEqual([
+        origin,
+        origin,
+      ]);
+    }
+    if (scenario === 'child failure') {
+      expect(JSON.stringify(server.requests.at(-1)?.input)).toContain(
+        'Managed agent did not complete its turn',
+      );
+    }
+    server.assertExhausted();
+  } finally {
+    await executor.close();
+  }
+}
+
+it.each(['success', 'empty input', 'child failure'] as const)(
+  'attributes produced managed-role calls and outputs (%s)',
+  checkProducedManagedRoleOrigins,
+);

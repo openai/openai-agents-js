@@ -14,7 +14,7 @@ import {
   type RepairItemWire,
 } from './history';
 import { nonnegativeTokenCountWireSchema } from './run-events';
-import { requestRunBudgetCheckpointSchema } from './run-budget';
+import { runBudgetCheckpointSchema } from './run-budget';
 import {
   binding,
   losslessJsonObjectSchema,
@@ -280,6 +280,7 @@ const treeState = {
 };
 const manualContinuationSchema = z.object({
   model_override: z.string().min(1).optional(),
+  model_settings_override: losslessJsonObjectSchema.optional(),
   // Outcome metadata remains ordinary data; native restore validates its
   // original completed-response anchor and binds fresh callback receipts.
   tool_outcomes: z
@@ -556,7 +557,7 @@ export const sessionStateSchema = z
           .optional(),
         manual_continuation: manualContinuationSchema,
         manual_context: manualContextSchema,
-        run_budget: requestRunBudgetCheckpointSchema,
+        run_budget: runBudgetCheckpointSchema,
       })
       .catchall(jsonValue),
     z
@@ -572,7 +573,7 @@ export const sessionStateSchema = z
           .optional(),
         manual_continuation: manualContinuationSchema,
         manual_context: manualContextSchema,
-        run_budget: requestRunBudgetCheckpointSchema,
+        run_budget: runBudgetCheckpointSchema,
       })
       .catchall(jsonValue),
     z

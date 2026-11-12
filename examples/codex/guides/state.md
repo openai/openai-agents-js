@@ -6,6 +6,7 @@ Choose the record that matches your task. The application reconciles external ef
 | --- | --- |
 | Inspect conversation progress and retained usage | [Native history snapshots](#history-and-state). |
 | Original objects and revision-checked edits | [Original history reads and edits](#original-history-reads-and-edits). |
+| Replay a one-shot result with current instructions | [One-shot history capture](sessions.md#capture-one-shot-history-for-replay). |
 | Move a supported conversation to another Session | [Save or suspend a session](#save-or-suspend-a-session), then [restore its declarations](#restore-instructions-and-tools). |
 | Branch from full conversation history | [Fork a conversation](#fork-a-conversation). |
 | Inspect the settings recorded for a native turn | [Inspect effective turn settings](#inspect-effective-turn-settings). |

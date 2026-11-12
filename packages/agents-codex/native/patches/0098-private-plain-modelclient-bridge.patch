@@ -14,7 +14,7 @@ diff --git a/codex-rs/core/src/sdk_plain_run.rs b/codex-rs/core/src/sdk_plain_ru
 new file mode 100644
 --- /dev/null
 +++ b/codex-rs/core/src/sdk_plain_run.rs
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,126 @@
 +//! Narrow SDK-owned helpers for the private plain-run owner.
 +
 +use crate::config::Config;
@@ -131,4 +131,13 @@ new file mode 100644
 +            .content_filter_guidance()
 +            .to_string(),
 +    })
++}
++
++/// Share the ordinary HTTP fallback transition and clear the cached WebSocket.
++pub fn switch_to_http(
++    session: &mut crate::ModelClientSession,
++    telemetry: &codex_otel::SessionTelemetry,
++    model: &ModelInfo,
++) -> bool {
++    session.try_switch_fallback_transport(telemetry, model)
 +}

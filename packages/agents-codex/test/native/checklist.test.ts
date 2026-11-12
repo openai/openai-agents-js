@@ -9,7 +9,7 @@ import {
   tool,
 } from '../../src';
 import * as nativeBinding from '../../src/runtime/binding';
-import { splitToolDeclarations } from '../../src/runtime/mcp';
+import { splitToolDeclarations } from '../../src/runtime/tool-declarations';
 import { readChecklist } from '../../src/runtime/state';
 
 it('returns a frozen opening declaration and preserves absent versus empty data', () => {

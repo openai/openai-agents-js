@@ -69,6 +69,7 @@ export type {
   Completed,
   RawProviderUsage,
   ProducedItem,
+  ManagedAgentToolOrigin,
   PendingRequests,
   SteeringReceipt,
   TurnNeedsAttention,
@@ -178,6 +179,7 @@ export { NativeAgents, NativeRole } from './runtime/native-agents';
 export type {
   NativeAgentsOptions,
   NativeRoleOptions,
+  NativeRoleTool,
   NativeToolCall,
   ChildInvocation,
   ChildBeforeStepContext,

@@ -502,6 +502,21 @@ describe('recorded response observations', () => {
     },
   });
 
+  it('retains normalized zero cache writes across an application completion boundary', () => {
+    const normalized = accounting('application-completion');
+    normalized.payload.usage = { cache_write_input_tokens: 0 };
+    normalized.payload.turn_token_usage = { cache_write_input_tokens: 0 };
+    const turn = project([
+      observed('application-completion', null, { response_id: null }),
+      normalized,
+    ]);
+
+    expect(turn.usage?.inputTokensDetails.cacheWriteTokens).toBe(0);
+    expect(turn.responses).toMatchObject([
+      { responseId: null, status: 'completed', usage: null },
+    ]);
+  });
+
   it('keeps received cache-write availability through normalized totals and portable history', () => {
     for (const cacheWrite of [undefined, 0, 4]) {
       const normalized = accounting('availability');

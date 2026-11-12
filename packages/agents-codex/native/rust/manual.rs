@@ -208,6 +208,9 @@ impl Receipt {
 pub(crate) struct Continuation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_override: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     pub(crate) turn_id: String,
     pub(crate) reply_order: Vec<String>,
     accepted_replies: HashMap<String, Receipt>,
@@ -1335,6 +1338,10 @@ impl PythonTools {
             return Ok(None);
         }
         let mut frame = Continuation {
+            model_settings_override: history
+                .context
+                .as_ref()
+                .and_then(|context| context.sdk_model_settings_override.clone()),
             model_override: history
                 .context
                 .as_ref()
@@ -1487,6 +1494,14 @@ impl PythonTools {
                     .as_ref()
                     .and_then(|context| context.sdk_model_override.clone()),
             "manual checkpoint differs from its admitted run model"
+        );
+        ensure!(
+            frame.model_settings_override
+                == history
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.sdk_model_settings_override.clone()),
+            "manual checkpoint differs from its admitted run model settings"
         );
         let generation = frame.generation.clone().unwrap_or_else(|| self.snapshot());
         ensure!(
@@ -1888,7 +1903,17 @@ impl PythonTools {
             } else {
                 context.model
             }),
-            effort: Some(context.effort),
+            effort: Some(
+                if frame
+                    .model_settings_override
+                    .as_ref()
+                    .is_some_and(|settings| settings.effort.is_some())
+                {
+                    saved.reasoning_effort
+                } else {
+                    context.effort
+                },
+            ),
             summary: Some(saved.reasoning_summary.unwrap_or_default()),
             service_tier: Some(saved.service_tier),
             tool_choice: saved.tool_choice,

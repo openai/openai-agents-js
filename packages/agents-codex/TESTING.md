@@ -53,6 +53,18 @@ For a namespaced function, pass `namespace` beside `callId`, for example `toolCa
 
 `customToolCall('exec', code, { callId: 'aggregate' })` prescribes a raw custom call for the Code Mode host. Use `peer.toolOutput(callId)` to read the submitted output for either form. The scripted server does not supply the MCP peer, executor, or JavaScript host itself.
 
+## Script a computer call
+
+With the current [source build](../../examples/codex/guides/building.md), use `computerCall()` to script the provider's actions for a [computer tool](../../examples/codex/guides/tools.md#computer-tools). Supply a fake driver to check the native tool loop without opening a browser or controlling a device.
+
+Run the [scripted computer example](../../examples/classic/docs/native/scripted-computer.mts) from the repository root.
+
+```sh
+pnpm exec tsx examples/classic/docs/native/scripted-computer.mts
+```
+
+The script exits silently after checking the driver call and the screenshot sent to the provider. To test safety handling, supply `pendingSafetyChecks` to `computerCall()`. The SDK still applies the tool's approval and safety policies before it calls the driver.
+
 ## Supply usage and rate-limit metadata
 
 Keep item arrays for ordinary text/tool tests. To test budget or quota handling, use a response envelope:

@@ -143,6 +143,7 @@ pub fn build(
     builder.tool_lifecycle_contributor(managed.clone());
     builder.prompt_contributor(managed.clone());
     builder.tool_contributor(managed);
+    builder.tool_contributor(Arc::new(codex_core::ManagedAgentToolContributor));
     let profiles = Arc::new(crate::agent_profiles::Contributor);
     builder.tool_contributor(profiles.clone());
     builder.turn_lifecycle_contributor(profiles);

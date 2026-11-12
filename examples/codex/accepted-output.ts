@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
-import { Agent, NativeError, OutputValidationError } from '@openai/agents';
+import {
+  Agent,
+  NativeError,
+  OutputValidationError,
+  tool,
+} from '@openai/agents';
 import {
   text,
+  toolCall,
   withScriptedResponses,
   type ScriptedResponse,
 } from '@openai/agents/testing';
@@ -243,7 +249,83 @@ async function runAcceptedSections() {
 async function main() {
   const accepted = await runAcceptedOutput(console.log);
   await runAcceptedSections();
+  await runSameTurnSections();
   console.log(JSON.stringify(accepted, null, 2));
+}
+
+async function runSameTurnSections() {
+  const published = new Map<string, string>();
+  const privateCandidates: string[] = [];
+  const facts = {
+    inventory: '7 units available',
+    delivery: 'Delivery unconfirmed',
+  };
+  const publishSection = tool({
+    name: 'publish_section',
+    description:
+      'The application has been checking and publishing one independent section.',
+    parameters: z.strictObject({
+      section: z.enum(['inventory', 'delivery']),
+      content: z.string(),
+    }),
+    execute({ section, content }) {
+      // Trusted application facts have been governing publication.
+      if (content !== facts[section]) return 'Section withheld.';
+      published.set(section, content);
+      return 'Section published.';
+    },
+  });
+  await withScriptedResponses(
+    [
+      [
+        toolCall(
+          'publish_section',
+          { section: 'inventory', content: '7 units available' },
+          { callId: 'accepted-section' },
+        ),
+      ],
+      () => {
+        // The peer has been checking delivery before its next generation response.
+        assert.deepEqual([...published], [['inventory', '7 units available']]);
+        return [
+          toolCall(
+            'publish_section',
+            { section: 'delivery', content: 'All orders delivered' },
+            { callId: 'rejected-section' },
+          ),
+        ];
+      },
+      () => {
+        assert.deepEqual([...published], [['inventory', '7 units available']]);
+        return [text('Provisional summary: all orders delivered.')];
+      },
+    ],
+    async (peer) => {
+      const agent = new Agent({
+        instructions:
+          'You have been publishing independently verified sections with publish_section.',
+        provider: peer.provider,
+        tools: [publishSection],
+        beforeComplete(context) {
+          privateCandidates.push(context.text ?? '');
+          return { action: 'stop' };
+        },
+      });
+      await using session = await agent.session();
+      const turn = await session.submit(
+        'I have been requesting inventory and delivery facts.',
+      );
+      await assert.rejects(turn.wait(), NativeError);
+      assert.equal(peer.requests.length, 3);
+      assert.equal(peer.toolOutput('accepted-section'), 'Section published.');
+      assert.equal(peer.toolOutput('rejected-section'), 'Section withheld.');
+    },
+  );
+  assert.deepEqual(privateCandidates, [
+    'Provisional summary: all orders delivered.',
+  ]);
+  assert.deepEqual([...published], [['inventory', '7 units available']]);
+  console.log('Same-turn application publication:', published);
 }
 
 if (typeof require !== 'undefined' && require.main === module) {
