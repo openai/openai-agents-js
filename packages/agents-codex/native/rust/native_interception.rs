@@ -8054,6 +8054,7 @@ mod tests {
                 .native_agents
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
+                    managed_tools: Vec::new(),
                     max_depth: 1,
                     inherited_instructions: None,
                     allowed: Default::default(),
@@ -9417,6 +9418,7 @@ mod mcp_policy_tests {
             root.native_agents
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
+                    managed_tools: Vec::new(),
                     max_depth: 1,
                     inherited_instructions: None,
                     allowed: Default::default(),

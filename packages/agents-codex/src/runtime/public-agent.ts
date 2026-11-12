@@ -69,7 +69,7 @@ import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { tryOpenPlainRun, type PreparedPlainRun } from './plain-run';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
-import { collaborationTools } from './native-agents';
+import { collaborationToolNames } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
 import {
   encode,
@@ -1504,7 +1504,7 @@ export class Agent<Context = undefined, Output = string> {
         ? [{ name: 'update_plan', namespace: 'functions' }]
         : []),
       ...(nativeAgents
-        ? collaborationTools.map((name) => ({
+        ? collaborationToolNames(nativeAgents).map((name) => ({
             name,
             namespace: 'collaboration',
           }))
@@ -1840,6 +1840,17 @@ export class Agent<Context = undefined, Output = string> {
                 _native_agent_roles: nativeAgents.additionalRoles.map(
                   (role) => role.name,
                 ),
+                ...(nativeAgents.managedTools.length
+                  ? {
+                      _native_agent_tools: nativeAgents.managedTools.map(
+                        ({ name, role, description }) => ({
+                          name,
+                          role,
+                          description,
+                        }),
+                      ),
+                    }
+                  : {}),
                 _native_agent_max_depth: nativeAgents.maxDepth,
                 _native_agent_before_step:
                   nativeAgents.beforeStep !== undefined ||
