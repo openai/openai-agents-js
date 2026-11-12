@@ -84,6 +84,7 @@ const savedLoginCases: (Omit<Rejection, 'retryAfter'> & {
   name: string;
   reason?: 'quota_blocked' | 'rate_limited';
   compaction?: boolean;
+  useRetryPolicy?: boolean;
 })[] = [
   {
     name: 'HTTP plan quota',
@@ -113,6 +114,12 @@ const savedLoginCases: (Omit<Rejection, 'retryAfter'> & {
     reason: 'quota_blocked',
   },
   {
+    name: 'held-open SSE quota with an accepting policy',
+    error: { code: 'insufficient_quota' },
+    reason: 'quota_blocked',
+    useRetryPolicy: true,
+  },
+  {
     name: 'held-open SSE throttle',
     error: { code: 'rate_limit_exceeded' },
     reason: 'rate_limited',
@@ -132,7 +139,7 @@ const savedLoginCases: (Omit<Rejection, 'retryAfter'> & {
 
 savedIt.each(savedLoginCases)(
   'settles saved-login $name with its expected retry policy',
-  async ({ status, error, reason, compaction }) => {
+  async ({ status, error, reason, compaction, useRetryPolicy }) => {
     const directory = await mkdtemp(join(tmpdir(), 'agents-quota-login-'));
     const codexHome = join(directory, 'login');
     const home = join(directory, 'home');
@@ -246,6 +253,7 @@ savedIt.each(savedLoginCases)(
         ? {
             reason,
             compaction,
+            useRetryPolicy,
             rateLimits:
               status === undefined
                 ? { retryAt: '2020-01-01T00:00:00.000Z' }
@@ -277,8 +285,8 @@ savedIt.each(savedLoginCases)(
       expect(failures).toEqual([]);
       expect(peer.tunnels).toContain(`${modelHost}:443`);
       if (compaction) expect(compactionRequests).toBe(1);
-      expect(threads).toHaveLength(2);
-      expect(threads[1]).toBe(threads[0]);
+      expect(threads).toHaveLength(useRetryPolicy ? 1 : 2);
+      if (!useRetryPolicy) expect(threads[1]).toBe(threads[0]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
