@@ -1493,6 +1493,13 @@ pub async fn restore(
     // config-dependent startup. This is the same parser used by JS preflight.
     let has_agent_profiles = options.agent_profiles.is_some();
     let accepted = options.validate_instructions(&checkpoint.history)?;
+    let profile_transport = options
+        .agent_profiles
+        .as_ref()
+        .map(|profiles| {
+            crate::agent_profiles::restored_request_transport(profiles, &checkpoint.history)
+        })
+        .transpose()?;
     if fresh_manual {
         let old = checkpoint.source_session_id;
         ensure!(
@@ -1608,6 +1615,9 @@ pub async fn restore(
     }
 
     let (mut startup, instructions) = engine.build_startup(options).await?;
+    if let Some(transport) = profile_transport {
+        startup.config.sdk_request_controls.request_transport = transport;
+    }
     crate::environment::check_checkpoint_policy(
         checkpoint.executor_policy_digest.as_deref(),
         &startup,
