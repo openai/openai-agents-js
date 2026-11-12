@@ -5,6 +5,7 @@ import {
   AiSdkModel,
   ChatCompletionsModel,
   NativeProvider,
+  applyPatchBatchTool,
   applyPatchTool,
   type ApplyPatchOperation,
 } from '../../src';
@@ -22,34 +23,51 @@ const operations = [
 ];
 const receipts = ['created', 'editor rejected move', 'deleted'];
 
-it.each(['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const)(
-  'replays structured editor results on %s',
-  async (route) => {
+const routes = ['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const;
+it.each(
+  routes.flatMap((route) => [
+    { route, batch: false },
+    { route, batch: true },
+  ]),
+)(
+  'replays structured editor results on $route (batch=$batch)',
+  async ({ route, batch }) => {
+    const toolName = batch ? 'apply_patch_batch' : 'apply_patch';
+    const callCount = batch ? 1 : operations.length;
+    const declaredEditor = batch ? applyPatchBatchTool : applyPatchTool;
     const requests: JsonObject[] = [];
     const edits: ApplyPatchOperation[] = [];
+    const sharedData = { receipt: { ticket: '' } };
     const edit = (operation: ApplyPatchOperation) => {
       const index = edits.length;
       edits.push(operation);
+      sharedData.receipt.ticket = 'private-g18-batch-ticket-' + index;
       return {
         status: index === 1 ? ('failed' as const) : ('completed' as const),
         output: receipts[index],
-        applicationData: { ticket: 'private-g18-batch-ticket' },
+        applicationData: sharedData,
       };
     };
     const response = (request: JsonObject) => {
       requests.push(request);
       const operationIndex = requests.length - 1;
-      const hasCall = operationIndex < operations.length;
-      const responseCalls = operations
-        .slice(operationIndex, operationIndex + 1)
-        .map((operation) => ({
-          type: 'function_call',
-          id: 'fc_patch_' + operationIndex,
-          call_id: 'patch_' + operationIndex,
-          name: 'apply_patch',
-          status: 'completed',
-          arguments: JSON.stringify({ operation }),
-        }));
+      const hasCall = operationIndex < callCount;
+      const responseCalls = hasCall
+        ? [
+            {
+              type: 'function_call',
+              id: 'fc_patch_' + operationIndex,
+              call_id: 'patch_' + operationIndex,
+              name: toolName,
+              status: 'completed',
+              arguments: JSON.stringify(
+                batch
+                  ? { operations }
+                  : { operation: operations[operationIndex] },
+              ),
+            },
+          ]
+        : [];
       if (route === 'ai-sdk-responses')
         return {
           id: 'resp_patch_' + requests.length,
@@ -119,12 +137,22 @@ it.each(['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const)(
       instructions: 'Apply three structured editor operations.',
       provider,
       tools: [
-        applyPatchTool({
+        declaredEditor({
           editor: { createFile: edit, updateFile: edit, deleteFile: edit },
         }),
       ],
     });
-    expect((await agent.run('Apply the edits.')).finalOutput).toBe('finished');
+    const result = await agent.run('Apply the edits.', { returnState: batch });
+    expect(result.finalOutput).toBe('finished');
+    if (batch) {
+      const state = JSON.stringify(result.state);
+      const positions = operations.map((_, index) =>
+        state.indexOf('private-g18-batch-ticket-' + index),
+      );
+      expect(positions[0]).toBeGreaterThanOrEqual(0);
+      expect(positions[1]).toBeGreaterThan(positions[0]);
+      expect(positions[2]).toBeGreaterThan(positions[1]);
+    }
     expect(edits).toEqual([
       { type: 'create_file', path: 'first.txt', diff: 'custom-create' },
       {
@@ -135,17 +163,15 @@ it.each(['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const)(
       },
       { type: 'delete_file', path: 'last.txt' },
     ]);
-    expect(requests).toHaveLength(operations.length + 1);
+    expect(requests).toHaveLength(callCount + 1);
     const responses = route === 'ai-sdk-responses';
     const [tool] = requests[0].tools as any[];
     expect(responses ? tool : tool.function).toMatchObject({
-      name: 'apply_patch',
-      parameters: { required: ['operation'] },
+      name: toolName,
+      parameters: { required: [batch ? 'operations' : 'operation'] },
     });
     const history = (
-      responses
-        ? requests[operations.length].input
-        : requests[operations.length].messages
+      responses ? requests[callCount].input : requests[callCount].messages
     ) as any[];
     const calls = responses
       ? history
@@ -162,18 +188,12 @@ it.each(['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const)(
             arguments: call.function.arguments,
           })),
         );
-    expect(calls.map((call) => call.id)).toEqual([
-      'patch_0',
-      'patch_1',
-      'patch_2',
-    ]);
-    expect(calls.map((call) => call.name)).toEqual([
-      'apply_patch',
-      'apply_patch',
-      'apply_patch',
-    ]);
-    expect(calls.map((call) => JSON.parse(call.arguments).operation)).toEqual(
-      operations,
+    expect(calls.map((call) => call.id)).toEqual(
+      Array.from({ length: callCount }, (_, index) => 'patch_' + index),
+    );
+    expect(calls.every((call) => call.name === toolName)).toBe(true);
+    expect(calls.map((call) => JSON.parse(call.arguments))).toEqual(
+      batch ? [{ operations }] : operations.map((operation) => ({ operation })),
     );
     const results = responses
       ? history
@@ -182,16 +202,15 @@ it.each(['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const)(
       : history
           .filter((item) => item.role === 'tool')
           .map((item) => item.content);
+    const expectedResults = receipts.map((output, index) => ({
+      status: index === 1 ? 'failed' : 'completed',
+      output,
+    }));
     expect(
       results.map((item) =>
         JSON.parse(typeof item === 'string' ? item : item[0].text),
       ),
-    ).toEqual(
-      receipts.map((output, index) => ({
-        status: index === 1 ? 'failed' : 'completed',
-        output,
-      })),
-    );
+    ).toEqual(batch ? [{ results: expectedResults }] : expectedResults);
     expect(JSON.stringify(requests)).not.toContain('private-g18-batch-ticket');
   },
   30_000,

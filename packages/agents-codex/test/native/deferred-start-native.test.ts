@@ -8,6 +8,8 @@ import {
   InteractionRequired,
   NativeProvider,
   manualTool,
+  isFunctionApprovalRequest,
+  tool as functionTool,
   webSearch,
   type ActionRequested,
   type Session,
@@ -65,6 +67,12 @@ async function nextAction(session: Session<unknown>): Promise<ActionRequested> {
   throw new Error('Expected a live deferred request');
 }
 
+async function nextFunctionApproval(session: Session<unknown>) {
+  for await (const event of session.interactions())
+    if (isFunctionApprovalRequest(event)) return event;
+  throw new Error('Expected a live function approval');
+}
+
 async function fixture(
   options: {
     observationRetention?: 'all';
@@ -72,6 +80,7 @@ async function fixture(
     beforeComplete?: Agent['beforeComplete'];
     pending?: boolean;
     twoStarts?: boolean;
+    rememberedApproval?: boolean;
     promptedOverride?: boolean;
     laterPlain?: boolean;
     envKey?: boolean;
@@ -94,6 +103,17 @@ async function fixture(
       result: builder.string(),
     }),
   });
+  const rememberedEffects: string[] = [];
+  const risky = functionTool({
+    name: 'risky',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    approvalKey: 'deferred.risky.v1',
+    execute: ({ value }) => {
+      rememberedEffects.push(value);
+      return value;
+    },
+  });
   const retained = message('x'.repeat(350));
   const retainedEvents = [
     { type: 'response.created', response: { id: 'retained-response' } },
@@ -113,10 +133,19 @@ async function fixture(
     { type: 'response.completed', response: { id: 'retained-response' } },
   ];
   const responses = [
+    ...(options.rememberedApproval === undefined
+      ? []
+      : [
+          [call('risky', { value: 'before' }, { callId: 'approval-before' })],
+          [message('remembered')],
+        ]),
     [call('job', { id: 'one' }, { callId: 'job-call' })],
     ...(options.twoStarts
       ? [[call('job', { id: 'two' }, { callId: 'job-call-two' })]]
       : []),
+    ...(options.rememberedApproval === undefined
+      ? []
+      : [[call('risky', { value: 'after' }, { callId: 'approval-after' })]]),
     ...(options.observationRetention
       ? [
           {
@@ -279,6 +308,7 @@ async function fixture(
       ? []
       : [
           tool,
+          ...(options.rememberedApproval === undefined ? [] : [risky]),
           ...(options.hostedSearch
             ? [webSearch({ mode: 'cached', route: 'hosted' })]
             : []),
@@ -330,6 +360,18 @@ async function fixture(
       await session.update({ instructions: 'Updated Session instructions.' });
     if (options.changedSession === 'tools')
       await session.update({ tools: [tool] });
+    if (options.rememberedApproval !== undefined) {
+      const approvalTurn = await session.submit(
+        'Remember the current decision.',
+      );
+      const approval = await nextFunctionApproval(session);
+      await session.respond(
+        options.rememberedApproval
+          ? approval.approve({ always: true })
+          : approval.reject(undefined, { always: true }),
+      );
+      await approvalTurn.wait();
+    }
     const turn = options.promptedOverride
       ? await session.submit('ASK', {
           outputType: {
@@ -357,6 +399,7 @@ async function fixture(
       turn,
       request,
       completion,
+      rememberedEffects,
       persisted: () => ({ stateJson, bindings }),
       async [Symbol.asyncDispose]() {
         agent.holdRestore?.release.resolve();
@@ -1004,5 +1047,23 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(value).toBe('callback-completed');
       expect(f.backend.start).toHaveBeenCalledTimes(1);
     }, 20_000);
+  },
+);
+
+it.each([true, false])(
+  'reopens a deferred job with its sealed remembered decision (approve=%s)',
+  async (approve) => {
+    await using f = await fixture({ rememberedApproval: approve });
+    const result = await f.jobs.start(f.session, f.request, {}, ({ session }) =>
+      Promise.race([
+        session.restoredTurn!.wait(),
+        nextFunctionApproval(session).then(() => {
+          throw new Error('Deferred reopening requested a fresh approval');
+        }),
+      ]),
+    );
+    expect(result.finalOutput).toBe('done');
+    expect(f.rememberedEffects).toEqual(approve ? ['before', 'after'] : []);
+    f.model.assertExhausted();
   },
 );

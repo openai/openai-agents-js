@@ -1,8 +1,9 @@
 import { z } from 'zod';
-import type { JsonObject } from './binding';
+import { losslessJsonObjectSchema, type JsonObject } from './binding';
 import {
   createApplyPatchTool,
   ToolOutput,
+  tool,
   type FunctionTool,
   type ToolCallContext,
   type ToolContext,
@@ -58,19 +59,48 @@ const resultSchema = z.object({
   output: z.string().optional(),
 });
 
-/** A borrowed editor using native callback admission and accepted call/result history.
- * Paths and diff interpretation remain application-owned. The SDK has no editor close owner.
- */
-export function applyPatchTool<Context = unknown>(options: {
+type EditorToolOptions<Context> = {
   editor: ApplyPatchEditor<Context>;
   needsApproval?:
     boolean | ((context: ToolContext<Context>) => MaybePromise<boolean>);
-}): FunctionTool<Context> {
+};
+
+function captureEditor<Context>(editor: ApplyPatchEditor<Context>) {
   const callbacks = {
-    create_file: options.editor.createFile.bind(options.editor),
-    update_file: options.editor.updateFile.bind(options.editor),
-    delete_file: options.editor.deleteFile.bind(options.editor),
+    create_file: editor.createFile.bind(editor),
+    update_file: editor.updateFile.bind(editor),
+    delete_file: editor.deleteFile.bind(editor),
   };
+  return async (
+    operation: z.infer<typeof applyPatchOperationSchema>,
+    context: ToolCallContext<Context>,
+  ) => {
+    const publicOperation: ApplyPatchOperation =
+      operation.type === 'update_file'
+        ? {
+            type: operation.type,
+            path: operation.path,
+            diff: operation.diff,
+            ...(operation.move_to === undefined
+              ? {}
+              : { moveTo: operation.move_to }),
+          }
+        : operation;
+    const returned = await callbacks[operation.type](publicOperation, context);
+    return {
+      result: resultSchema.parse(returned ?? {}),
+      applicationData: returned ? returned.applicationData : undefined,
+    };
+  };
+}
+
+/** A borrowed editor using native callback admission and accepted call/result history.
+ * Paths and diff interpretation remain application-owned. The SDK has no editor close owner.
+ */
+export function applyPatchTool<Context = unknown>(
+  options: EditorToolOptions<Context>,
+): FunctionTool<Context> {
+  const edit = captureEditor(options.editor);
   return createApplyPatchTool<typeof callSchema, Context>(
     { type: 'applyPatch' },
     {
@@ -81,28 +111,56 @@ export function applyPatchTool<Context = unknown>(options: {
       // Typed editor failures retain their native failure path.
       errorFunction: null,
       execute: async ({ operation }, context) => {
-        const publicOperation: ApplyPatchOperation =
-          operation.type === 'update_file'
-            ? {
-                type: operation.type,
-                path: operation.path,
-                diff: operation.diff,
-                ...(operation.move_to === undefined
-                  ? {}
-                  : { moveTo: operation.move_to }),
-              }
-            : operation;
-        const returned = await callbacks[operation.type](
-          publicOperation,
-          context,
-        );
-        const result = resultSchema.parse(returned ?? {});
+        const { result, applicationData } = await edit(operation, context);
         return new ToolOutput(
           [{ type: 'inputText', text: JSON.stringify(result) }],
           result.status === 'completed',
-          returned ? returned.applicationData : undefined,
+          applicationData,
         );
       },
     },
   );
+}
+
+const batchSchema = z.object({
+  operations: z.array(applyPatchOperationSchema).min(1),
+});
+
+/** Apply an ordered batch with a borrowed editor. A failed result is recorded
+ * and the next operation continues. Each result stays in input order.
+ */
+export function applyPatchBatchTool<Context = unknown>(
+  options: EditorToolOptions<Context>,
+): FunctionTool<Context> {
+  const edit = captureEditor(options.editor);
+  return tool<typeof batchSchema, Context>({
+    name: 'apply_patch_batch',
+    description:
+      "Apply an ordered list of operations with the application's editor",
+    parameters: batchSchema,
+    strict: false,
+    needsApproval: options.needsApproval,
+    errorFunction: null,
+    execute: async ({ operations }, context) => {
+      const results: z.infer<typeof resultSchema>[] = [];
+      const privateResults: (JsonObject | null)[] = [];
+      for (const operation of operations) {
+        context.signal.throwIfAborted();
+        const { result, applicationData } = await edit(operation, context);
+        results.push(result);
+        privateResults.push(
+          applicationData == null
+            ? null
+            : losslessJsonObjectSchema.parse(applicationData),
+        );
+      }
+      return new ToolOutput(
+        [{ type: 'inputText', text: JSON.stringify({ results }) }],
+        results.every((result) => result.status === 'completed'),
+        privateResults.some((result) => result !== null)
+          ? { operations: privateResults }
+          : undefined,
+      );
+    },
+  });
 }

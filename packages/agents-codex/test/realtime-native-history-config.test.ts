@@ -4099,3 +4099,89 @@ nativeIt(
   },
   20000,
 );
+
+nativeIt.each(['server_vad', 'semantic_vad'] as const)(
+  'preserves %s provider VAD data for SIP, text startup, and live updates',
+  async (type) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Reply with text.',
+      }).session();
+      const options = {
+        model: 'fixture-realtime',
+        outputModality: 'text' as const,
+        settings: {
+          turnDetection: {
+            type,
+            providerData: { vendor_tuning: { enabled: false, delay_ms: 0 } },
+          },
+        },
+      };
+      const config = await session.buildRealtimeSipConfig(options);
+      expect(config).toMatchObject({
+        output_modalities: ['text'],
+        audio: {
+          input: {
+            turn_detection: {
+              type,
+              vendor_tuning: { enabled: false, delay_ms: 0 },
+            },
+          },
+        },
+      });
+      expect(peer.frames).toEqual([]);
+      expect(peer.models).toEqual([]);
+      await using voice = await session.realtime(options);
+      const initial = await peer.frame('session.update');
+      const expected = { model: peer.models[0], ...initial.session };
+      delete expected.id;
+      expect(config).toEqual(expected);
+      const after = peer.frames.length;
+      await voice.update({
+        turnDetection: {
+          type,
+          providerData: { vendor_tuning: { delay_ms: 5 } },
+        },
+      });
+      const update = await peer.frame('session.update', after);
+      expect(update.session).toMatchObject({
+        audio: {
+          input: {
+            turn_detection: { type, vendor_tuning: { delay_ms: 5 } },
+          },
+        },
+      });
+      for (const providerData of [{}, null]) {
+        const after = peer.frames.length;
+        await voice.update({ turnDetection: { type, providerData } });
+        const frame = await peer.frame('session.update', after);
+        expect(frame.session.audio.input.turn_detection).toEqual({ type });
+      }
+      const sparseAfter = peer.frames.length;
+      await voice.update({ outputSpeed: 1.25 });
+      const sparse = await peer.frame('session.update', sparseAfter);
+      expect(sparse.session.audio.input?.turn_detection ?? { type }).toEqual({
+        type,
+      });
+      const rejectedAfter = peer.frames.length;
+      await expect(
+        voice.update({
+          turnDetection: { type, providerData: { threshold: 0 } },
+        }),
+      ).rejects.toThrow('cannot override typed');
+      expect(peer.frames).toHaveLength(rejectedAfter);
+      await voice.update({ turnDetection: null });
+      const disabled = await peer.frame('session.update', rejectedAfter);
+      expect(disabled.session.audio.input.turn_detection).toBeNull();
+      expect(model.requests).toEqual([]);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);

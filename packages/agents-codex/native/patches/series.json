@@ -943,7 +943,11 @@
     {
       "path": "sdk-owned-request-attempts.patch",
       "sha256": "f7029857b057d4de1d089a58b15112c8566a5343259a3338959a48b2e4118980"
+    },
+    {
+      "path": "sdk-realtime-vad-provider-data.patch",
+      "sha256": "bb38997bdffe09280acb438f7e31ae6e7b0a609f85c2ac072340b8a8dc7cb729"
     }
   ],
-  "result_tree": "f1a81be6eb271fc2f7b54b8502436e1441af8689"
+  "result_tree": "fe65bc6590bf68ea39c7a1df64f8579305f9e38a"
 }

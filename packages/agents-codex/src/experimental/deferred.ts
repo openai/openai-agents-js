@@ -362,7 +362,7 @@ export class DeferredTools {
     };
     remaining();
     const opening = session._captureDeferredReopen(request);
-    const state = await this.prepareCheckpoint(
+    await this.prepareCheckpoint(
       session,
       request,
       {
@@ -380,7 +380,7 @@ export class DeferredTools {
       try {
         await invokeWithTimeout(
           async (openingSignal) => {
-            reopened = await opening.open(state);
+            reopened = await opening.open();
             openingSignal.throwIfAborted();
             remaining();
           },
