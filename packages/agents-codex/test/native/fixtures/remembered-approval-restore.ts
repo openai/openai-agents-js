@@ -25,8 +25,12 @@ async function main() {
     provider,
     tools: [risky],
   });
+  const saved = parseSessionState(readFileSync(statePath, 'utf8'));
+  const trusted = JSON.stringify(saved);
   await using session = await agent.session({
-    state: parseSessionState(readFileSync(statePath, 'utf8')),
+    state: saved,
+    verifyRememberedApprovals: (checkpoint) =>
+      JSON.stringify(checkpoint) === trusted,
   });
   const turn = await session.submit('continue');
   const result = await Promise.race([

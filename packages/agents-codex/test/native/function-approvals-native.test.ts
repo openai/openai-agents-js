@@ -1,6 +1,7 @@
 import { NativeSessionVoiceWorkflow } from '../../src/voice';
 import { afterEach, expect, it, vi } from 'vitest';
 import { FunctionAdmission } from '../../src/runtime/function-admission';
+import { isOutputAwareState } from '../../src/runtime/state';
 import { z } from 'zod';
 import {
   Agent,
@@ -259,9 +260,14 @@ it.each([true, false])(
   },
 );
 
-it.each([true, false])(
-  'keeps remembered future decisions through portable restore (approve=%s)',
-  async (approve) => {
+it.each([
+  { approve: true, verification: 'verified' },
+  { approve: false, verification: 'verified' },
+  { approve: false, verification: 'missing' },
+  { approve: false, verification: 'rejected' },
+] as const)(
+  'restores portable approval policy with $verification verification (approve=$approve)',
+  async ({ approve, verification }) => {
     const effects: string[] = [];
     const binding = () =>
       tool({
@@ -312,7 +318,28 @@ it.each([true, false])(
       provider,
       tools: [rebound],
     });
-    await using restored = await current.session({ state: saved });
+    const trusted = JSON.stringify(saved);
+    const edited = JSON.parse(trusted) as {
+      remembered_approvals: { approve: boolean }[];
+    };
+    if (verification !== 'verified')
+      edited.remembered_approvals[0].approve = true;
+    const checkpoint = parseSessionState(JSON.stringify(edited));
+    const verify = vi.fn(async (candidate: typeof checkpoint) => {
+      expect(candidate).not.toBe(checkpoint);
+      const verified = JSON.stringify(candidate) === trusted;
+      const decision = isOutputAwareState(candidate)
+        ? candidate.remembered_approvals?.[0]
+        : undefined;
+      if (verified && !approve && decision) decision.approve = true;
+      return verified;
+    });
+    await using restored = await current.session({
+      state: checkpoint,
+      ...(verification === 'missing'
+        ? {}
+        : { verifyRememberedApprovals: verify }),
+    });
     const turn = await restored.submit('continue');
     const observed = await Promise.race([
       turn.wait().then((result) => ({ kind: 'completed' as const, result })),
@@ -325,7 +352,15 @@ it.each([true, false])(
       await restored.respond(observed.request.reject());
       await turn.wait();
     }
-    expect(observed.kind).toBe('completed');
+    expect(observed.kind).toBe(
+      verification === 'verified' ? 'completed' : 'approval',
+    );
+    expect(verify).toHaveBeenCalledTimes(verification === 'missing' ? 0 : 1);
+    if (verification !== 'verified') {
+      expect(await restored.saveState()).not.toHaveProperty(
+        'remembered_approvals',
+      );
+    }
     expect(effects).toEqual(approve ? ['first', 'later'] : []);
     expect(JSON.stringify(server.requests)).not.toContain('fixture.risky.v1');
     server.assertExhausted();
@@ -483,7 +518,10 @@ it('retires an imported approval after a new remembered rejection', async () => 
   } finally {
     await source.close();
   }
-  await using restored = await agent.session({ state: saved });
+  await using restored = await agent.session({
+    state: saved,
+    verifyRememberedApprovals: () => true,
+  });
   await restored.respond(
     (await nextApproval(restored)).reject(undefined, { always: true }),
   );
@@ -540,7 +578,10 @@ it('keeps remembered decisions made under updated effective instructions', async
     provider,
     tools: [risky],
   });
-  await using restored = await current.session({ state: saved });
+  await using restored = await current.session({
+    state: saved,
+    verifyRememberedApprovals: () => true,
+  });
   const turn = await restored.submit('continue');
   const outcome = await Promise.race([
     turn.wait().then(() => ({ kind: 'completed' as const })),
@@ -628,7 +669,10 @@ it.each(['key', 'profile', 'schema', 'policy', 'unkeyed'] as const)(
       ...(change === 'profile' ? { name: 'other-profile' } : {}),
     });
     try {
-      await using restored = await current.session({ state: saved });
+      await using restored = await current.session({
+        state: saved,
+        verifyRememberedApprovals: () => true,
+      });
       const turn = await restored.submit('continue');
       const request = await nextApproval(restored);
       expect(effects).toEqual(['first']);

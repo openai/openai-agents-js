@@ -455,6 +455,9 @@ export interface SessionOptions {
   maxFunctionConcurrency?: number;
   onInteraction?: InteractionHandler;
   toolErrorFormatter?: ToolErrorFormatter<any>;
+  verifyRememberedApprovals?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
@@ -15283,7 +15286,7 @@ export class Session<OutputT = string, Context = unknown> {
   /** @internal Capture the original opening authority before a deferred seal. */
   _captureDeferredReopen(request: ManualToolRequest): {
     check(): void;
-    open(state: SessionState): Promise<Session<any, any>>;
+    open(): Promise<Session<any, any>>;
   } {
     this.checkCallbackOperation('start deferred work on');
     const run = this.lifecycle.kind === 'turn' ? this.lifecycle.run : undefined;
@@ -15318,14 +15321,19 @@ export class Session<OutputT = string, Context = unknown> {
         : Object.freeze({ maxRequests: checkpointBudget.maxRequests });
     return {
       check,
-      open: (state) =>
-        reopen(
-          state,
+      open: () => {
+        if (this.sealedStateJson === undefined)
+          throw new NativeError(
+            'Deferred reopening requires a sealed checkpoint',
+          );
+        return reopen(
+          parseSessionState(this.sealedStateJson),
           active.output,
           active.outputOverride,
           run.parentTrace,
           resumeBudget,
-        ),
+        );
+      },
     };
   }
 
