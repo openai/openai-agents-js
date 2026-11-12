@@ -164,6 +164,7 @@ export function compareConvenienceBindingIdentity(
   identityPairs,
   format,
   conditionLabel = '',
+  alternateOwners = {},
 ) {
   const errors = [];
   for (const pair of identityPairs) {
@@ -184,7 +185,11 @@ export function compareConvenienceBindingIdentity(
       } else {
         const ownerName = pair.bindingOwners?.[exportedName];
         const expectedOwner = ownerName ? loadedModules[ownerName] : owner;
-        if (bundle[exportedName] !== expectedOwner?.[exportedName])
+        const expectedBindings = [expectedOwner?.[exportedName]];
+        // Node's module-sync entry shares CJS; direct ESM fallback has its own binding.
+        if (ownerName && alternateOwners[ownerName])
+          expectedBindings.push(alternateOwners[ownerName][exportedName]);
+        if (!expectedBindings.includes(bundle[exportedName]))
           errors.push(
             `${pair.bundleLabel}.${exportedName} is not the ${ownerName ?? pair.ownerLabel} runtime binding in ${format}${conditionLabel}`,
           );
@@ -499,6 +504,8 @@ export async function validateRuntime(
         loadedModules[format],
         convenienceIdentityPairs(packages),
         format,
+        '',
+        loadedModules[format === 'import' ? 'require' : 'import'],
       ),
     );
   }

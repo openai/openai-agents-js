@@ -943,7 +943,15 @@
     {
       "path": "sdk-realtime-vad-provider-data.patch",
       "sha256": "bb38997bdffe09280acb438f7e31ae6e7b0a609f85c2ac072340b8a8dc7cb729"
+    },
+    {
+      "path": "sdk-plan-backed-model-retry.patch",
+      "sha256": "c3dead552ab58c35a5709ad8cec54e17570f9d19643ea00d7273e1963488d94b"
+    },
+    {
+      "path": "sdk-retain-stream-cleanup-usage.patch",
+      "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
     }
   ],
-  "result_tree": "d94968b0da72ba8767bb3e6ef2c70f90b85c3bc4"
+  "result_tree": "9104ca63c2c66974c901ecb2019fa886a2692b15"
 }
