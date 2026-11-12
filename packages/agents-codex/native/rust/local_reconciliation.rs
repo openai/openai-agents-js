@@ -17,6 +17,16 @@ use serde::{Deserialize, Serialize};
 const APPLIED: &str = "sdk_reconciliation.applied";
 const NOT_APPLIED: &str = "sdk_reconciliation.not_applied";
 
+pub(crate) fn invocation_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. }
+        | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
+        ResponseItem::McpApprovalRequest { id: Some(id), .. } => Some(id.as_str()),
+        _ => None,
+    }
+}
+
 pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>)> {
     let call = match item {
         ResponseItem::FunctionCallOutput {
@@ -24,7 +34,11 @@ pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>
             ..
         }
         | ResponseItem::CustomToolCallOutput { call_id: call, .. }
-        | ResponseItem::ComputerCallOutput { call_id: call, .. } => call,
+        | ResponseItem::ComputerCallOutput { call_id: call, .. }
+        | ResponseItem::McpApprovalResponse {
+            approval_request_id: call,
+            ..
+        } => call,
         ResponseItem::ShellCallOutput {
             provider_fields, ..
         } => provider_fields.get("call_id")?.as_str()?,
@@ -60,6 +74,20 @@ pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseIt
                 call_id: actual, ..
             },
         ) => expected == actual,
+        (
+            ResponseItem::McpApprovalRequest {
+                id: Some(expected),
+                provider_fields,
+                ..
+            },
+            ResponseItem::McpApprovalResponse {
+                approval_request_id: actual,
+                caller,
+                ..
+            },
+        ) => {
+            expected.as_str() == actual.as_str() && provider_fields.get("caller") == caller.as_ref()
+        }
         (
             ResponseItem::ShellCall {
                 provider_fields: call,
@@ -184,6 +212,27 @@ pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> 
                 ..
             },
         ) => left == right && left_checks == right_checks,
+        (
+            ResponseItem::McpApprovalResponse {
+                approval_request_id: left_id,
+                approve: left,
+                reason: left_reason,
+                caller: left_caller,
+                ..
+            },
+            ResponseItem::McpApprovalResponse {
+                approval_request_id: right_id,
+                approve: right,
+                reason: right_reason,
+                caller: right_caller,
+                ..
+            },
+        ) => {
+            left_id == right_id
+                && left == right
+                && left_reason == right_reason
+                && left_caller == right_caller
+        }
         (
             ResponseItem::ShellCallOutput {
                 provider_fields: left,
@@ -512,70 +561,46 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
         };
         let item = &envelope.item;
         let owner = item.turn_id().map(str::to_owned).or_else(|| turn.clone());
-        match item {
+        let invocation_id = match item {
             ResponseItem::FunctionCall { call_id, .. }
             | ResponseItem::CustomToolCall { call_id, .. }
-            | ResponseItem::ComputerCall { call_id, .. } => {
-                ensure!(
-                    calls
-                        .insert(
-                            (owner, call_id.clone()),
-                            Call {
-                                invocation: item,
-                                output: None,
-                            }
-                        )
-                        .is_none(),
-                    "ambiguous tool call identity in local history"
-                );
-            }
+            | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
+            ResponseItem::McpApprovalRequest { id, .. } => id.as_ref().map(|id| id.as_str()),
             ResponseItem::ShellCall {
                 provider_fields, ..
-            } => {
-                let Some(call_id) = provider_fields
-                    .get("call_id")
-                    .and_then(serde_json::Value::as_str)
-                else {
-                    continue;
-                };
-                if !is_application_shell_call(envelope) {
-                    continue;
-                }
-                let call_id = provider_fields
-                    .get("call_id")
-                    .and_then(serde_json::Value::as_str)
-                    .context("recorded shell call has no valid call ID")?;
-                ensure!(
-                    calls
-                        .insert(
-                            (owner, call_id.to_owned()),
-                            Call {
-                                invocation: item,
-                                output: None
-                            }
-                        )
-                        .is_none(),
-                    "ambiguous tool call identity in local history"
-                );
-            }
-            _ => {
-                if let Some((call_id, _)) = output_identity(item)
-                    && let Some(entry) = calls.get_mut(&(owner, call_id.to_owned()))
-                {
-                    ensure!(
-                        output_matches_invocation(entry.invocation, item),
-                        "tool output kind does not match recorded invocation"
-                    );
-                    ensure!(
-                        entry
-                            .output
-                            .is_none_or(|prior| { tag(prior).is_none() && tag(item).is_none() })
-                            || entry.output == Some(item),
-                        "reconciliation conflicts with a retained result"
-                    );
-                    entry.output = Some(item);
-                }
-            }
+            } if is_application_shell_call(envelope) => provider_fields
+                .get("call_id")
+                .and_then(serde_json::Value::as_str),
+            _ => None,
+        };
+        if let Some(call_id) = invocation_id {
+            ensure!(
+                calls
+                    .insert(
+                        (owner, call_id.to_owned()),
+                        Call {
+                            invocation: item,
+                            output: None,
+                        }
+                    )
+                    .is_none(),
+                "ambiguous tool call identity in local history"
+            );
+        } else if let Some((call_id, _)) = output_identity(item)
+            && let Some(entry) = calls.get_mut(&(owner, call_id.to_owned()))
+        {
+            ensure!(
+                output_matches_invocation(entry.invocation, item),
+                "tool output kind does not match recorded invocation"
+            );
+            ensure!(
+                entry
+                    .output
+                    .is_none_or(|prior| { tag(prior).is_none() && tag(item).is_none() })
+                    || entry.output == Some(item),
+                "reconciliation conflicts with a retained result"
+            );
+            entry.output = Some(item);
         }
     }
     Ok(calls)
@@ -735,6 +760,10 @@ pub(crate) fn plan(
             plan.protected_ids.insert(call_id.clone());
         }
         if call.output.is_none() {
+            ensure!(
+                !matches!(call.invocation, ResponseItem::McpApprovalRequest { .. }),
+                "Unresolved Hosted MCP approval requires a live provider decision"
+            );
             missing.push((
                 key,
                 turn.as_deref()

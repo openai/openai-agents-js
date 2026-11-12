@@ -93,6 +93,10 @@ export class _ContextChange {
   context(): Promise<string>;
   options(): Promise<string>;
   prepare(summary: string, retainedIndices: number[]): Promise<string>;
+  restoreCandidate(
+    optionsJson: string,
+    specsJson?: string | null,
+  ): Promise<NativeThread>;
   createCandidateEngine(
     apiKey?: string | null,
     mcpServersJson?: string | null,
