@@ -325,3 +325,27 @@ it.each([
     ),
   ).rejects.toThrow(new RegExp(`Skill tree ${boundary} limit`));
 });
+
+it('captures only own Dir members even with a shadowed ownership method', async () => {
+  const children = Object.create({
+    inherited: { type: 'file', content: 'ignored' },
+  }) as Record<string, import('../src/sandbox/entries').Entry>;
+  Object.defineProperty(children, 'hasOwnProperty', {
+    value: { type: 'file', content: 'SAFE' },
+    enumerable: true,
+  });
+  const captured = await captureSkillEntry(
+    { type: 'dir', children },
+    { maxMembers: 2, maxDepth: 1, maxBytes: 4 },
+    [],
+  );
+  expect(captured).toMatchObject({
+    type: 'dir',
+    children: {
+      hasOwnProperty: { type: 'file', content: 'SAFE' },
+    },
+  });
+  expect(
+    Object.keys((captured as import('../src/sandbox/entries').Dir).children!),
+  ).toEqual(['hasOwnProperty']);
+});

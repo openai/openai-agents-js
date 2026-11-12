@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, type Dirent } from 'node:fs';
 import { readLocalSourceBuffer } from './localSourceBuffer';
 import { lstat, open, opendir, readdir, stat, statfs } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
@@ -152,12 +152,11 @@ class ProcfsSourceDirectory implements NativeSourceDirectory {
     return this.run(async () => {
       // Each call starts a fresh enumeration. Retain the handle until the
       // entire promise settles, including Node's lstat fallback for DT_UNKNOWN.
-      const entries = [];
+      let entries: Dirent[];
       if (maxEntries === undefined) {
-        entries.push(
-          ...(await readdir(procPath(this.handle), { withFileTypes: true })),
-        );
+        entries = await readdir(procPath(this.handle), { withFileTypes: true });
       } else {
+        entries = [];
         const stream = await opendir(procPath(this.handle));
         for await (const entry of stream) {
           if (entries.length >= maxEntries)

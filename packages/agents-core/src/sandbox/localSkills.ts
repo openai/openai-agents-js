@@ -271,7 +271,8 @@ export async function captureSkillEntry(
     if (item.type === 'dir') {
       const children: Record<string, Entry> = Object.create(null);
       for (const name in item.children ?? {}) {
-        if (!Object.hasOwn(item.children!, name)) continue;
+        if (!Object.prototype.hasOwnProperty.call(item.children, name))
+          continue;
         children[name] = await visit(item.children![name], depth + 1);
       }
       return { ...item, children };
