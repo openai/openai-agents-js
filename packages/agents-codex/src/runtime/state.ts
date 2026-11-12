@@ -285,7 +285,11 @@ const manualContinuationSchema = z.object({
           type: z.literal('response_item'),
           payload: z
             .object({
-              type: z.enum(['function_call_output', 'custom_tool_call_output']),
+              type: z.enum([
+                'function_call_output',
+                'custom_tool_call_output',
+                'shell_call_output',
+              ]),
               call_id: z.string().min(1),
               output: jsonValue,
             })
@@ -295,7 +299,11 @@ const manualContinuationSchema = z.object({
         .catchall(jsonValue),
       z
         .object({
-          type: z.enum(['function_call_output', 'custom_tool_call_output']),
+          type: z.enum([
+            'function_call_output',
+            'custom_tool_call_output',
+            'shell_call_output',
+          ]),
           call_id: z.string().min(1),
           output: jsonValue,
         })
@@ -309,6 +317,7 @@ const manualContinuationSchema = z.object({
         name: z.string().min(1),
         namespace: optionalStringSchema,
         arguments: stringSchema,
+        shell: z.boolean().optional(),
         approval_required: z.boolean().optional(),
         effective_arguments: optionalStringSchema,
       }),
