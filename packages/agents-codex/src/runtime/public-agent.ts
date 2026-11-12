@@ -70,7 +70,12 @@ import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
 import { collaborationTools } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
-import { binding, checkEncodedCapacity, type JsonObject } from './binding';
+import {
+  encode,
+  binding,
+  checkEncodedCapacity,
+  type JsonObject,
+} from './binding';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import {
   assertOutputRepairSupported,
@@ -1974,12 +1979,15 @@ export class Agent<Context = undefined, Output = string> {
         ) => {
           let owned: CoreSession<any, any> | undefined;
           try {
+            const sealed = encode(state);
             const restoredOptions: OwnedSessionOptions<any> = {
               parentTrace,
               context: captured.context,
               onInteraction: captured.onInteraction,
               toolErrorFormatter: captured.toolErrorFormatter,
               state,
+              verifyRememberedApprovals: (checkpoint) =>
+                encode(checkpoint) === sealed,
               [deferredOpening]: {
                 opening: captured,
                 restoredOutput: { output: active, outputOverride },
