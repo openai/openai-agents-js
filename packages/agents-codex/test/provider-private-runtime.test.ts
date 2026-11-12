@@ -6,10 +6,10 @@ import { NativeProvider } from '../src/runtime/provider';
 
 // Like provider-transport-owner.test.ts, control only the external cleanup calls.
 // The real Provider owns the lease, immediate callback and temporary home.
-async function retained(useEnvironmentKey = false, supportsWebsockets = false) {
+async function retained(useEnvironmentKey = false) {
   const provider = new NativeProvider({
     ...(useEnvironmentKey ? {} : { apiKey: 'synthetic' }),
-    supportsWebsockets,
+    supportsWebsockets: false,
   });
   const lease = provider._acquire(undefined, true);
   try {
@@ -43,35 +43,6 @@ async function retained(useEnvironmentKey = false, supportsWebsockets = false) {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
-});
-
-it('reuses adjacent WSS owners and retires them on the real idle callback', async () => {
-  const fixture = await retained(false, true);
-  await using provider = fixture.provider;
-  await fixture.lease.privateRuntime!.finish(true);
-  const adjacent = provider._acquire(undefined, true);
-  try {
-    expect(adjacent.websocketsAllowed).toBe(true);
-    expect(adjacent.privateRuntime!.peek()?.engine).toBe(fixture.engine);
-    expect(await adjacent.open()).toEqual(fixture.home);
-    expect(fixture.engine._close_report).not.toHaveBeenCalled();
-  } finally {
-    await adjacent.privateRuntime!.finish(true);
-  }
-  await vi.waitFor(async () => {
-    await expect(stat(fixture.home.codex_home)).rejects.toMatchObject({
-      code: 'ENOENT',
-    });
-  });
-  expect(fixture.engine._close_report).toHaveBeenCalledTimes(1);
-  expect(fixture.carrier.close).toHaveBeenCalledTimes(1);
-  const fresh = provider._acquire(undefined, true);
-  try {
-    expect(fresh.privateRuntime?.peek()).toBeUndefined();
-    expect((await fresh.open()).codex_home).not.toBe(fixture.home.codex_home);
-  } finally {
-    await fresh.release();
-  }
 });
 
 it('cancels pending idle cleanup for a new lease and disposes its home only after that lease', async () => {

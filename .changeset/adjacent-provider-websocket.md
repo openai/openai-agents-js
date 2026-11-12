@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-perf: Reuse native Engines for compatible adjacent API-key WebSocket runs on the same Provider.
+fix: reload TLS trust for one-shot WebSocket `Agent.run` calls without an explicit `NativeRuntime` (#2527)
