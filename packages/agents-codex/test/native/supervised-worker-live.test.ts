@@ -1,5 +1,5 @@
 import { fork } from 'node:child_process';
-import { chmod } from 'node:fs/promises';
+import { chmod, lstat } from 'node:fs/promises';
 import { request } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -142,6 +142,14 @@ it.skipIf(process.platform === 'win32')(
           const input = JSON.stringify(request.input);
           expect(input).toContain('Keep the report short.');
           expect(input).toContain('Tuesday');
+          const providerInput = request.input as RecordValue[];
+          expect(
+            providerInput.filter(
+              (item) =>
+                item.type === 'function_call_output' &&
+                item.call_id === 'live-date',
+            ),
+          ).toHaveLength(1);
           expect(input).not.toContain('wrong identity');
           await releaseFinal.promise;
           return [message('Short report for Tuesday.')];
@@ -308,6 +316,7 @@ it.skipIf(process.platform === 'win32')(
       model.assertExhausted();
       await worker.kill('SIGTERM');
       await worker.finish();
+      await expect(lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       releaseQuestion.resolve();
       releaseFinal.resolve();
@@ -359,8 +368,9 @@ it.skipIf(process.platform === 'win32')(
     });
     expect(model.requests).toHaveLength(1);
     model.assertExhausted();
-    await worker.kill('SIGTERM');
+    await worker.kill('SIGINT');
     await worker.finish();
+    await expect(lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
   },
   45_000,
 );
@@ -392,6 +402,7 @@ it.skipIf(process.platform === 'win32')(
     model.assertExhausted();
     await worker.kill('SIGTERM');
     await worker.finish();
+    await expect(lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
   },
   30_000,
 );

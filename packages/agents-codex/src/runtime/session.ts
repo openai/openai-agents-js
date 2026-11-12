@@ -4976,6 +4976,11 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation(operation);
   }
 
+  /** @internal Serialized history operations cannot join their own tool callback. */
+  _checkHistoryOperation(): void {
+    this.checkCallbackOperation('access Conversations history for');
+  }
+
   /** @internal One response's admitted native tools, without a fabricated model request. */
   async _submitRealtimeTools(
     generation: string,

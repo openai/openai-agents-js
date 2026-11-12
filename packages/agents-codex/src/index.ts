@@ -535,6 +535,10 @@ export type {
 } from './runtime/responses-compaction';
 
 export { applyPatchBatchTool, applyPatchTool } from './runtime/apply-patch';
+export {
+  ConversationsHistory,
+  ConversationsWriteError,
+} from './runtime/conversations';
 export type {
   ApplyPatchEditor,
   ApplyPatchOperation,
