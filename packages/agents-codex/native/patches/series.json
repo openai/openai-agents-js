@@ -961,9 +961,13 @@
       "sha256": "73a136e46af2e85112ce1f29c4b971e1ee1909ebe2f0bc6a50ea704f96d74a15"
     },
     {
+      "path": "sdk-managed-agent-tool-code-mode.patch",
+      "sha256": "0f89982ea8439b01d19639f0f90ff93658d55f1ab3cbc2c014a7616c00f4a066"
+    },
+    {
       "path": "sdk-run-model-settings-override.patch",
       "sha256": "8a248758e904e7f97ecd968531f91097995f8db6d39229385aa95880f251e20d"
     }
   ],
-  "result_tree": "3c38b0cb54fa78342fdebc6089d2cc27b8a5280f"
+  "result_tree": "92f006f42de7f217fb4d94e79068aa8baa3afcc5"
 }
