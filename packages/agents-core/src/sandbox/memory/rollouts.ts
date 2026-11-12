@@ -277,7 +277,7 @@ function terminalMetadataForException(
   };
 }
 
-function exceptionName(exception: unknown): string {
+export function exceptionName(exception: unknown): string {
   if (exception instanceof Error && exception.name) {
     return exception.name;
   }
@@ -291,7 +291,7 @@ function exceptionName(exception: unknown): string {
   return 'Error';
 }
 
-function exceptionMessage(exception: unknown): string | null {
+export function exceptionMessage(exception: unknown): string | null {
   if (exception instanceof Error) {
     return exception.message || null;
   }

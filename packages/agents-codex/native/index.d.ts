@@ -172,6 +172,8 @@ export class NativeThread {
     limit?: number | null,
     forReplay?: boolean,
   ): Promise<string>;
+  _record_memory_input_admission(turn_id: string): Promise<void>;
+  _memory_history(turn_id: string): Promise<string>;
   _stored_history(query_json: string): Promise<string>;
   _set_stored_name(name_json: string): Promise<string>;
   _stored_history_close_action(action_json: string): _StoredHistoryClose;
