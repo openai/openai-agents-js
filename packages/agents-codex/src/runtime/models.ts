@@ -7,6 +7,10 @@ import {
 } from './model-retry';
 import { randomUUID } from 'node:crypto';
 import { APIUserAbortError } from 'openai';
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+} from 'openai/resources/chat';
 import { z } from 'zod';
 import { applyPatchOperationSchema } from './apply-patch';
 import { captureImage, inlineAudioSource } from './media';
@@ -48,6 +52,8 @@ function selectedFunctionName(
 const originalResponsesUsage = Symbol('original Responses usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
+// The adapter assembles items before Core sees them, including tool-only chunks.
+const maxChatStreamBytes = 8 * 1024 * 1024;
 
 /** @internal Existing native turn opt-in, without provider request fields. */
 export function markRawProviderRequest(request: ModelRequest): void {
@@ -207,6 +213,13 @@ export interface ModelAdapterOptions {
   promptCacheKey?: string;
   /** Captured once; a factory supplies a detached snapshot per native model request. */
   requestOptions?: ModelRequestOptions | ModelRequestOptionsFactory;
+}
+
+export interface ChatCompletionsModelOptions extends ModelAdapterOptions {
+  /** Use the provider's streaming API. Defaults to false. */
+  stream?: boolean;
+  /** Request terminal usage when streaming. Defaults to true. */
+  includeUsage?: boolean;
 }
 
 type CapturedRequestOptions =
@@ -501,23 +514,28 @@ function functionToolOutput(
  * Native workspace ApplyPatch uses a function declaration on the provider wire.
  */
 export class ChatCompletionsModel implements NativeModel {
+  readonly stream?: (request: ModelRequest) => AsyncIterable<JsonObject>;
+  readonly #includeUsage: boolean;
   readonly #promptCacheKey: string | undefined;
   readonly #requestOptions: CapturedRequestOptions;
 
   constructor(
     readonly client: any,
     readonly model?: string,
-    options: ModelAdapterOptions = {},
+    options: ChatCompletionsModelOptions = {},
   ) {
     this.#promptCacheKey = capturePromptCacheKey(options);
     this.#requestOptions = captureRequestOptionsSource(options);
+    this.#includeUsage = options.includeUsage ?? true;
+    if (options.stream === true)
+      this.stream = (request) => this.#streamResponse(request);
   }
   getRetryAdvice(
     request: ModelRetryAdviceRequest,
   ): ModelRetryAdvice | undefined {
     return openAIRetryAdvice(request);
   }
-  async complete(request: ModelRequest): Promise<ModelResponse> {
+  #parameters(request: ModelRequest, stream: boolean) {
     const messages: Record<string, unknown>[] = [];
     const nativeTools = [...((request.body.tools ?? []) as JsonObject[])];
     const applyPatchCalls = new Map<string, ApplyPatchWire>();
@@ -777,77 +795,27 @@ export class ChatCompletionsModel implements NativeModel {
       delete options.tool_choice;
       delete options.parallel_tool_calls;
     }
-    const value = await this.client.chat.completions.create(
-      {
+    return {
+      applyPatchWire,
+      body: {
         model: this.model ?? request.body.model,
         messages,
-        stream: false,
+        stream,
         ...options,
+        ...(stream && this.#includeUsage
+          ? { stream_options: { include_usage: true } }
+          : {}),
       },
+    };
+  }
+
+  async complete(request: ModelRequest): Promise<ModelResponse> {
+    const { body, applyPatchWire } = this.#parameters(request, false);
+    const value = await this.client.chat.completions.create(
+      body,
       await clientRequestOptions(this.#requestOptions, request),
     );
-    if (!Array.isArray(value.choices) || value.choices.length !== 1)
-      throw new TypeError(
-        'ChatCompletionsModel requires exactly one response choice',
-      );
-    const choice = value.choices[0];
-    const message = choice.message;
-    if (
-      !['stop', 'tool_calls'].includes(choice.finish_reason) &&
-      message.refusal == null
-    ) {
-      const reason =
-        choice.finish_reason === 'length'
-          ? 'length'
-          : choice.finish_reason === 'content_filter'
-            ? 'content_filter'
-            : 'unsupported';
-      throw new TypeError(
-        `ChatCompletionsModel cannot complete finish_reason=${reason}`,
-      );
-    }
-    const output: JsonObject[] = [];
-    const content: JsonObject[] = [];
-    if (message.content != null) {
-      const part: JsonObject = { type: 'output_text', text: message.content };
-      const probabilities = value.choices[0].logprobs?.content;
-      if (probabilities != null) part.logprobs = probabilities;
-      content.push(part);
-    }
-    if (message.refusal != null)
-      content.push({ type: 'refusal', refusal: message.refusal });
-    if (content.length)
-      output.push({ type: 'message', role: 'assistant', content });
-    for (const call of message.tool_calls ?? []) {
-      if (call.type !== 'function')
-        throw new TypeError(
-          'ChatCompletionsModel received an unsupported tool call',
-        );
-      output.push(
-        functionToolOutput(
-          {
-            type: 'function_call',
-            call_id: call.id,
-            name: call.function.name,
-            arguments: call.function.arguments,
-          },
-          applyPatchWire,
-        ),
-      );
-    }
-    const usage =
-      value.usage == null
-        ? undefined
-        : {
-            input_tokens: value.usage.prompt_tokens ?? 0,
-            output_tokens: value.usage.completion_tokens ?? 0,
-            total_tokens: value.usage.total_tokens ?? 0,
-            cached_input_tokens:
-              value.usage.prompt_tokens_details?.cached_tokens ?? 0,
-            reasoning_output_tokens:
-              value.usage.completion_tokens_details?.reasoning_tokens ?? 0,
-          };
-    const response = { responseId: value.id, output, usage };
+    const response = chatCompletionResult(value, applyPatchWire);
     if (
       !request.signal.aborted &&
       (request as ModelRequest & { [rawProviderRequest]?: boolean })[
@@ -859,6 +827,265 @@ export class ChatCompletionsModel implements NativeModel {
       });
     return response;
   }
+
+  async *#streamResponse(request: ModelRequest): AsyncIterable<JsonObject> {
+    const { body, applyPatchWire } = this.#parameters(request, true);
+    const chunks: AsyncIterable<ChatCompletionChunk> =
+      await this.client.chat.completions.create(
+        body,
+        await clientRequestOptions(this.#requestOptions, request),
+      );
+    const messageId = 'msg_chat_' + randomUUID();
+    let responseId: string | undefined;
+    let finishReason:
+      | NonNullable<ChatCompletionChunk['choices'][number]['finish_reason']>
+      | undefined;
+    let text: string | undefined;
+    let refusal: string | undefined;
+    let usage: ChatCompletion['usage'];
+    let bufferedBytes = 0;
+    let logprobs:
+      | NonNullable<NonNullable<ChatCompletion.Choice['logprobs']>['content']>
+      | undefined;
+    const calls = new Map<
+      number,
+      {
+        id: string;
+        type: 'function';
+        function: { name: string; arguments: string };
+      }
+    >();
+    for await (const chunk of chunks) {
+      request.signal.throwIfAborted();
+      if (responseId === undefined) {
+        if (typeof chunk.id !== 'string' || !chunk.id.trim())
+          throw new TypeError(
+            'ChatCompletionsModel stream requires a response ID',
+          );
+        responseId = chunk.id;
+        yield { type: 'response.created', response: { id: responseId } };
+      }
+      if (chunk.id !== responseId)
+        throw new TypeError('ChatCompletionsModel stream changed response ID');
+      if (chunk.usage != null) usage = chunk.usage;
+      if (chunk.choices.length === 0) continue;
+      const [choice] = chunk.choices;
+      if (chunk.choices.length !== 1 || choice.index !== 0)
+        throw new TypeError(
+          'ChatCompletionsModel requires exactly one response choice',
+        );
+      if (finishReason !== undefined)
+        throw new TypeError(
+          'ChatCompletionsModel stream continued after its final choice',
+        );
+      const { delta } = choice;
+      bufferedBytes += Buffer.byteLength(
+        JSON.stringify({
+          content: delta.content,
+          refusal: delta.refusal,
+          toolCalls: delta.tool_calls,
+          logprobs: choice.logprobs?.content,
+        }),
+      );
+      if (bufferedBytes > maxChatStreamBytes)
+        throw new TypeError(
+          'ChatCompletionsModel stream exceeded its buffer limit',
+        );
+      if (delta.content != null) {
+        if (text === undefined)
+          yield {
+            type: 'response.output_item.added',
+            output_index: 0,
+            item: {
+              id: messageId,
+              type: 'message',
+              role: 'assistant',
+              content: [],
+            },
+          };
+        text = (text ?? '') + delta.content;
+        yield {
+          type: 'response.output_text.delta',
+          item_id: messageId,
+          output_index: 0,
+          content_index: 0,
+          delta: delta.content,
+          ...(choice.logprobs?.content == null
+            ? {}
+            : { logprobs: copyJsonValue(choice.logprobs.content) }),
+        };
+      }
+      if (delta.refusal != null) refusal = (refusal ?? '') + delta.refusal;
+      if (choice.logprobs?.content != null)
+        (logprobs ??= []).push(...choice.logprobs.content);
+      for (const fragment of delta.tool_calls ?? []) {
+        if (
+          !Number.isSafeInteger(fragment.index) ||
+          fragment.index < 0 ||
+          (fragment.type != null && fragment.type !== 'function')
+        )
+          throw new TypeError(
+            'ChatCompletionsModel received an unsupported tool call',
+          );
+        let call = calls.get(fragment.index);
+        if (!call) {
+          call = {
+            id: '',
+            type: 'function',
+            function: { name: '', arguments: '' },
+          };
+          calls.set(fragment.index, call);
+        }
+        if (fragment.id != null) {
+          if (call.id && call.id !== fragment.id)
+            throw new TypeError(
+              'ChatCompletionsModel stream changed a tool call ID',
+            );
+          call.id = fragment.id;
+        }
+        call.function.name += fragment.function?.name ?? '';
+        call.function.arguments += fragment.function?.arguments ?? '';
+      }
+      finishReason = choice.finish_reason ?? undefined;
+    }
+    request.signal.throwIfAborted();
+    if (responseId === undefined || finishReason === undefined)
+      throw new TypeError(
+        'ChatCompletionsModel stream ended without a completed choice',
+      );
+    const toolCalls = [...calls.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, call]) => call);
+    if (
+      toolCalls.some(
+        ({ id, function: { name } }) => !id.trim() || !name.trim(),
+      ) ||
+      new Set(toolCalls.map(({ id }) => id)).size !== toolCalls.length
+    )
+      throw new TypeError(
+        'ChatCompletionsModel stream requires a name and a unique ID for each tool call',
+      );
+    const result = chatCompletionResult(
+      {
+        id: responseId,
+        usage,
+        choices: [
+          {
+            index: 0,
+            finish_reason: finishReason,
+            logprobs:
+              logprobs === undefined
+                ? null
+                : { content: logprobs, refusal: null },
+            message: {
+              role: 'assistant',
+              content: text ?? null,
+              refusal: refusal ?? null,
+              tool_calls: toolCalls,
+            },
+          },
+        ],
+      },
+      applyPatchWire,
+    );
+    const output = result.output.map((item) => ({
+      ...item,
+      id: item.type === 'message' ? messageId : 'item_chat_' + randomUUID(),
+    }));
+    for (const [index, item] of output.entries())
+      yield { type: 'response.output_item.done', output_index: index, item };
+    yield {
+      type: 'response.completed',
+      response: {
+        id: responseId,
+        status: 'completed',
+        output,
+        ...(result.usage === undefined
+          ? {}
+          : {
+              usage: {
+                input_tokens: result.usage.input_tokens ?? 0,
+                output_tokens: result.usage.output_tokens ?? 0,
+                total_tokens: result.usage.total_tokens ?? 0,
+                input_tokens_details: {
+                  cached_tokens: result.usage.cached_input_tokens ?? 0,
+                },
+                output_tokens_details: {
+                  reasoning_tokens: result.usage.reasoning_output_tokens ?? 0,
+                },
+              },
+            }),
+      },
+    };
+  }
+}
+
+function chatCompletionResult(
+  value: Pick<ChatCompletion, 'id' | 'choices' | 'usage'>,
+  applyPatchWire: ApplyPatchWire | undefined,
+): ModelResponse {
+  if (!Array.isArray(value.choices) || value.choices.length !== 1)
+    throw new TypeError(
+      'ChatCompletionsModel requires exactly one response choice',
+    );
+  const choice = value.choices[0];
+  const message = choice.message;
+  if (
+    !['stop', 'tool_calls'].includes(choice.finish_reason) &&
+    message.refusal == null
+  ) {
+    const reason =
+      choice.finish_reason === 'length'
+        ? 'length'
+        : choice.finish_reason === 'content_filter'
+          ? 'content_filter'
+          : 'unsupported';
+    throw new TypeError(
+      `ChatCompletionsModel cannot complete finish_reason=${reason}`,
+    );
+  }
+  const output: JsonObject[] = [];
+  const content: JsonObject[] = [];
+  if (message.content != null) {
+    const part: JsonObject = { type: 'output_text', text: message.content };
+    const probabilities = value.choices[0].logprobs?.content;
+    if (probabilities != null) part.logprobs = copyJsonValue(probabilities);
+    content.push(part);
+  }
+  if (message.refusal != null)
+    content.push({ type: 'refusal', refusal: message.refusal });
+  if (content.length)
+    output.push({ type: 'message', role: 'assistant', content });
+  for (const call of message.tool_calls ?? []) {
+    if (call.type !== 'function')
+      throw new TypeError(
+        'ChatCompletionsModel received an unsupported tool call',
+      );
+    output.push(
+      functionToolOutput(
+        {
+          type: 'function_call',
+          call_id: call.id,
+          name: call.function.name,
+          arguments: call.function.arguments,
+        },
+        applyPatchWire,
+      ),
+    );
+  }
+  const usage =
+    value.usage == null
+      ? undefined
+      : {
+          input_tokens: value.usage.prompt_tokens ?? 0,
+          output_tokens: value.usage.completion_tokens ?? 0,
+          total_tokens: value.usage.total_tokens ?? 0,
+          cached_input_tokens:
+            value.usage.prompt_tokens_details?.cached_tokens ?? 0,
+          reasoning_output_tokens:
+            value.usage.completion_tokens_details?.reasoning_tokens ?? 0,
+        };
+  return { responseId: value.id, output, usage };
 }
 
 /** Borrow a Responses client; Core retains the turn, tool and history owners. */
