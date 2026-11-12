@@ -13927,6 +13927,8 @@ export class Session<OutputT = string, Context = unknown> {
    * the same LocalStorage and current Agent; no portable checkpoint conversion. */
   async forkStored(options: StoredForkOptions = {}): Promise<string> {
     this.checkCallbackOperation('fork stored history');
+    if (this.options.providerHistory !== undefined)
+      throw new NativeError('Fork is unavailable for provider-managed history');
     if (!options || typeof options !== 'object' || Array.isArray(options))
       throw new TypeError('Stored fork options must be an object');
     if (!this.options.localStorage)
@@ -14821,6 +14823,8 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support fork; retain Session.id and reopen with the same storage backend',
       );
     this.checkCallbackOperation('fork');
+    if (this.options.providerHistory !== undefined)
+      throw new NativeError('Fork is unavailable for provider-managed history');
     if (this.graphStops.size || this.childContinuations.size)
       throw new NativeError('fork requires a settled Session');
     return this.mutate(async () => {

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { Agent, NativeProvider, StdioMCP, tool } from '../../src';
+import { Agent, NativeProvider, localStorage, StdioMCP, tool } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
@@ -617,6 +617,87 @@ nativeIt(
     ).toEqual(before.items);
     await (await session.submit('After.')).wait();
     expect(model.requests).toHaveLength(2);
+  },
+  30_000,
+);
+
+nativeIt.each([
+  undefined,
+  { type: 'conversation' as const, id: 'conv_current' },
+  { type: 'previous_response' as const, id: 'response_external' },
+])(
+  'retains the remote owner when forking (%j)',
+  async (providerHistory) => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: true },
+    });
+    await using session = await agent.session({ providerHistory });
+    await (await session.submit('Before.')).wait();
+    const before = await session.historySnapshot();
+    if (providerHistory)
+      await expect(session.fork()).rejects.toThrow(
+        'Fork is unavailable for provider-managed history',
+      );
+    else expect(await session.fork()).toBeTruthy();
+    expect((await session.historySnapshot()).items).toEqual(before.items);
+    await (await session.submit('After.')).wait();
+    expect(model.requests).toHaveLength(2);
+  },
+  30_000,
+);
+
+nativeIt.each([false, true])(
+  'retains the remote owner for stored forks (%s)',
+  async (remoteMode) => {
+    const directory = await mkdtemp(join(tmpdir(), 'provider-fork-'));
+    try {
+      const model = new ModelServer([
+        [message('Before.')],
+        [message('After.')],
+      ]);
+      const remote = await peer(model);
+      await using provider = new NativeProvider(remote.options);
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent.session({
+        storage: localStorage(join(directory, 'threads')),
+        ...(remoteMode
+          ? {
+              providerHistory: {
+                type: 'conversation' as const,
+                id: 'conv_current',
+              },
+            }
+          : {}),
+      });
+      await (await session.submit('Before.')).wait();
+      const before = (await session.storedSessions()).sessions
+        .map((item) => item.id)
+        .sort();
+      let forkId;
+      if (remoteMode)
+        await expect(session.forkStored()).rejects.toThrow(
+          'Fork is unavailable for provider-managed history',
+        );
+      else forkId = await session.forkStored();
+      const after = (await session.storedSessions()).sessions
+        .map((item) => item.id)
+        .sort();
+      expect(after).toEqual(remoteMode ? before : [...before, forkId].sort());
+      await (await session.submit('After.')).wait();
+      expect(model.requests).toHaveLength(2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   },
   30_000,
 );
