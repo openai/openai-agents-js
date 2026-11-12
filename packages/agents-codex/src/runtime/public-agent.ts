@@ -126,6 +126,7 @@ import {
   type ModelSettings,
   type ProviderLease,
 } from './provider';
+import { captureOpeningModelSettings } from './opening-model-settings';
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
@@ -1120,22 +1121,9 @@ export class Agent<Context = undefined, Output = string> {
       ? opening.provider
       : (openingProvider ?? this.provider);
     const model = opening ? opening.model : (openingModel ?? this.model);
-    let settings = opening
+    const settings = opening
       ? opening.settings
-      : this.modelSettings && captureModelSettings(this.modelSettings);
-    if (!opening && openingSettings !== undefined) {
-      const overrides = captureModelSettings(openingSettings);
-      settings = captureModelSettings({
-        ...settings,
-        ...overrides,
-        retry:
-          overrides.retry === undefined
-            ? settings?.retry
-            : overrides.retry === null
-              ? null
-              : { ...settings?.retry, ...overrides.retry },
-      });
-    }
+      : captureOpeningModelSettings(this.modelSettings, openingSettings);
     const hostedPrompt = opening
       ? opening.hostedPrompt
       : captureHostedPromptSource(this.hostedPrompt);
