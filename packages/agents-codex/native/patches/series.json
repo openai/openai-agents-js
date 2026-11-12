@@ -1013,9 +1013,17 @@
       "sha256": "7110c4c522ea0afccc9bf42085582fdda64f7bae2c54364ae39de60d2decfa0b"
     },
     {
+      "path": "sdk-decision-handoff-admission.patch",
+      "sha256": "c16299166bda18fd3d9cdcc0af0d0d9d5d9911246e8fe20b29d13cee12908450"
+    },
+    {
+      "path": "sdk-websocket-overload-classification.patch",
+      "sha256": "948693109cb29cd7a29c3b7e5cecd6329ae9e05e891ef3cf1ba56595250ee725"
+    },
+    {
       "path": "sdk-provider-history-lineage.patch",
-      "sha256": "a7a0e18624c38e08f22a70b9fa7bf2ff0422cdcaf2859fa46ea09d59b4414345"
+      "sha256": "a8dd6ccd9d4804aea88cefd41101345913d7736b6909377011b813f9a91cefd2"
     }
   ],
-  "result_tree": "243bf73746ad49cc7ec6cae3b37214a2f1eb0b06"
+  "result_tree": "d2d302e5299340804ef9f7db3034a2e38a17abf8"
 }

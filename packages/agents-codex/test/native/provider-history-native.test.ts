@@ -1310,3 +1310,63 @@ nativeIt(
   },
   30000,
 );
+
+nativeIt.each([false, true])(
+  'refuses conversation-owned stored reverts without closing (%s)',
+  async (remoteMode) => {
+    const directory = await mkdtemp(join(tmpdir(), 'provider-revert-'));
+    try {
+      const model = new ModelServer([
+        [message('Before.')],
+        [message('After.')],
+      ]);
+      const remote = await peer(model);
+      await using provider = new NativeProvider(remote.options);
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      const storage = localStorage(join(directory, 'threads'));
+      await using session = await agent.session({
+        storage,
+        ...(remoteMode
+          ? {
+              providerHistory: {
+                type: 'conversation' as const,
+                id: 'conv_current',
+              },
+            }
+          : {}),
+      });
+      const sourceId = session.id;
+      await (await session.submit('Before.')).wait();
+      const turns = [];
+      for await (const turn of session.turns()) turns.push(turn.id);
+      const before = await session.historySnapshot();
+      if (remoteMode) {
+        await expect(
+          session.revertStored({ beforeTurnId: turns[0]! }),
+        ).rejects.toThrow(
+          'Revert is unavailable for provider-managed conversations',
+        );
+        const after = await session.historySnapshot();
+        expect(after.items).toEqual(before.items);
+        expect(after.revision).toEqual(before.revision);
+        await (await session.submit('After.')).wait();
+      } else {
+        await session.revertStored({ beforeTurnId: turns[0]! });
+        await using restored = await agent.session({
+          storage,
+          resume: sourceId,
+        });
+        expect((await restored.storedTurns()).turns).toEqual([]);
+        await (await restored.submit('After.')).wait();
+      }
+      expect(model.requests).toHaveLength(2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);

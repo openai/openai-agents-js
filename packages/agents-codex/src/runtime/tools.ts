@@ -19,6 +19,7 @@ import {
   markBackgroundToolResponse,
   type BackgroundResult,
 } from './background-result';
+import { handoffResultTarget, withHandoffResultTarget } from './handoff-result';
 import {
   decode,
   encode,
@@ -131,7 +132,11 @@ function captureToolResponse(value: ToolResponse | ToolOutput): ToolResponse {
     value instanceof ToolOutput
       ? value.applicationData
       : toolApplicationData(value);
-  return withToolApplicationData(response, data);
+  const captured = withToolApplicationData(response, data);
+  const target = handoffResultTarget(value);
+  return target === undefined
+    ? captured
+    : withHandoffResultTarget(captured, target);
 }
 
 /** An elapsed native function callback deadline; effects are not rolled back. */

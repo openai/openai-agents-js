@@ -3814,6 +3814,7 @@ impl NativeThread {
                 request,
                 response,
                 start_response,
+                handoff_target_profile_id,
             } = response;
             {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
@@ -3896,6 +3897,7 @@ impl NativeThread {
                         response: response.clone(),
                         start_response,
                         acceptance,
+                        handoff_target_profile_id,
                     })
                     .is_ok();
                 if sent {
@@ -4654,6 +4656,23 @@ impl NativeThread {
         )
         .await
         .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_record_memory_input_admission")]
+    pub async fn record_memory_input_admission(&self, turn_id: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        canonical_history::record_memory_input_admission(&inner, &turn_id)
+            .await
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_memory_history")]
+    pub async fn memory_history(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::memory_snapshot(&inner, &turn_id)
+            .await
+            .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
