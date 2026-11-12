@@ -25,7 +25,7 @@ use tokio_tungstenite::tungstenite::{Error, Message};
 
 use super::{NativeModelRoute, RuntimeOwned, native_error};
 
-const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 // The largest client header consists of two bytes, eight length bytes and four mask bytes.
 const MAX_FRAME_PAYLOAD_BYTES: usize = 4 * 1024 * 1024 - 14;
 
@@ -292,7 +292,7 @@ pub struct NativeModelWebSocket {
     error_body: Vec<u8>,
 }
 
-enum Frame {
+pub(crate) enum Frame {
     Text(String),
     Binary(Vec<u8>),
     Close(u16, String),
@@ -471,22 +471,37 @@ impl NativeModelWebSocket {
                 "Native WebSocket request exceeds the transport limit",
             ));
         }
-        let engine = self.request_engine.upgrade().ok_or_else(socket_error)?;
         let ticket: serde_json::Value =
             serde_json::from_str(&ticket).map_err(|_| socket_error())?;
-        let (turn, attempts) = crate::native_interception::sentinel_http_turn(
-            &engine,
-            &self.request_provider,
-            &ticket,
-        )
-        .map_err(crate::native_error)?;
-        let observer = attempts.ok_or_else(socket_error)?;
-        self.send_owned(Bytes::from(text), Data::Text, Some((turn, observer)))
-            .await
+        self.send_admitted_text(text, &ticket).await
     }
 
     #[napi(js_name = "receive")]
     pub async fn receive(&self) -> napi::Result<Option<NativeFrame>> {
+        Ok(self.receive_frame().await?.map(Frame::into_native))
+    }
+}
+
+impl NativeModelWebSocket {
+    pub(crate) async fn send_admitted_text(
+        &self,
+        text: String,
+        ticket: &serde_json::Value,
+    ) -> napi::Result<()> {
+        let engine = self.request_engine.upgrade().ok_or_else(socket_error)?;
+        let (turn, attempts) = crate::native_interception::sentinel_http_turn(
+            &engine,
+            &self.request_provider,
+            ticket,
+        )
+        .map_err(crate::native_error)?;
+        let observer = attempts.ok_or_else(socket_error)?;
+        drop(engine);
+        self.send_owned(Bytes::from(text), Data::Text, Some((turn, observer)))
+            .await
+    }
+
+    pub(crate) async fn receive_frame(&self) -> napi::Result<Option<Frame>> {
         let state = self.state()?;
         (async move {
             let mut terminal = state.terminal.subscribe();
@@ -529,10 +544,13 @@ impl NativeModelWebSocket {
                     }
                 } => result?,
             };
-            Ok(frame.map(Frame::into_native))
+            Ok(frame)
         }).await
     }
+}
 
+#[napi]
+impl NativeModelWebSocket {
     #[napi(js_name = "close")]
     pub async fn close(&self, code: u16, reason: String) -> napi::Result<()> {
         let state = self.inner.as_ref().map(|inner| Arc::clone(inner));
@@ -678,6 +696,192 @@ pub(super) async fn sentinel_open(
     })
 }
 
+// The message bridge has been retaining the existing dialer and socket owner.
+// Its only success metadata has been matching the old loopback upgrade surface.
+pub(crate) async fn open_message_transport(
+    engine: &Arc<super::engine::EngineState>,
+    expected_url: &str,
+    request: http::Request<()>,
+) -> Result<(String, NativeModelWebSocket, http::HeaderMap), codex_api::ApiError> {
+    use base64::Engine as _;
+
+    let unmatched = || {
+        codex_api::ApiError::Transport(codex_client::TransportError::Http {
+            status: http::StatusCode::UNAUTHORIZED,
+            url: None,
+            headers: Some(http::HeaderMap::new()),
+            body: Some(String::new()),
+            retry_after: None,
+        })
+    };
+    if request.uri().to_string() != expected_url || request.method() != http::Method::GET {
+        return Err(unmatched());
+    }
+    let binding = engine
+        .sentinel
+        .read()
+        .expect("sentinel poisoned")
+        .clone()
+        .ok_or_else(unmatched)?;
+    let websocket_base = if let Some(base) = binding.0.strip_prefix("http://") {
+        format!("ws://{}", base.trim_end_matches('/'))
+    } else if let Some(base) = binding.0.strip_prefix("https://") {
+        format!("wss://{}", base.trim_end_matches('/'))
+    } else {
+        return Err(unmatched());
+    };
+    let prefix = format!("{websocket_base}/p-");
+    let encoded = expected_url
+        .strip_prefix(&prefix)
+        .and_then(|path| path.strip_suffix("/responses"))
+        .filter(|encoded| {
+            !encoded.is_empty()
+                && encoded
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+        .ok_or_else(unmatched)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| unmatched())?;
+    if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&decoded) != encoded
+        || !request
+            .headers()
+            .get_all("x-sdk-sentinel-grant")
+            .iter()
+            .map(|value| value.as_bytes().trim_ascii())
+            .eq(std::iter::once(binding.1.as_bytes()))
+    {
+        return Err(unmatched());
+    }
+    let provider_id = String::from_utf8(decoded).map_err(|_| message_transport_error())?;
+    // Node rawHeaders has been decoding bytes as Latin-1 after trimming HTTP OWS.
+    // HeaderValue validation has been excluding other ASCII control whitespace.
+    let headers: Vec<(String, String)> = request
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            let value: String = value
+                .as_bytes()
+                .trim_ascii()
+                .iter()
+                .copied()
+                .map(char::from)
+                .collect();
+            (name.as_str().to_owned(), value)
+        })
+        .collect();
+    let headers = serde_json::to_string(&headers).map_err(|_| message_transport_error())?;
+    if engine.plan_authorization.is_some()
+        || engine.manager.auth_manager().auth_mode() != Some(codex_protocol::auth::AuthMode::ApiKey)
+    {
+        return Err(message_transport_error());
+    }
+    let _permit = engine
+        .operation(false)
+        .map_err(|_| message_transport_error())?;
+    let route = engine
+        .sentinel_route(&provider_id, &headers)
+        .map_err(|_| message_transport_error())?;
+    let remote = sentinel_open(route, &headers, Arc::downgrade(engine), provider_id.clone())
+        .await
+        .map_err(|_| message_transport_error())?;
+    let forwarded = match message_transport_headers(&remote.headers, remote.available()) {
+        Ok(headers) => headers,
+        Err(error) => {
+            let _ = remote.close(1000, String::new()).await;
+            return Err(error);
+        }
+    };
+    if !remote.available() {
+        let mut headers = forwarded;
+        let body = &remote.error_body[..remote.error_body.len().min(64 * 1024)];
+        headers.insert(
+            http::header::CONTENT_LENGTH,
+            http::HeaderValue::from_str(&body.len().to_string())
+                .map_err(|_| message_transport_error())?,
+        );
+        headers.insert(
+            http::header::CONNECTION,
+            http::HeaderValue::from_static("close"),
+        );
+        return Err(codex_api::ApiError::Transport(
+            codex_client::TransportError::Http {
+                status: http::StatusCode::from_u16(remote.status)
+                    .map_err(|_| message_transport_error())?,
+                url: None,
+                retry_after: codex_client::RetryAfter::from_headers(&headers),
+                headers: Some(headers),
+                // The old WebSocket client has been accepting only a UTF-8 error body.
+                body: String::from_utf8(body.to_vec()).ok(),
+            },
+        ));
+    }
+    Ok((provider_id, remote, forwarded))
+}
+
+fn message_transport_error() -> codex_api::ApiError {
+    // The old upgrade handler has been destroying the local socket on dial errors.
+    // Neither private endpoint/grant nor upstream credentials have been entering this error.
+    codex_api::ApiError::Transport(codex_client::TransportError::Network(
+        "Native WebSocket operation failed".into(),
+    ))
+}
+
+fn message_transport_headers(
+    headers: &[(String, String)],
+    rates_only: bool,
+) -> Result<http::HeaderMap, codex_api::ApiError> {
+    let nominated: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("connection"))
+        .flat_map(|(_, value)| {
+            value
+                .split(',')
+                .map(|name| name.trim().to_ascii_lowercase())
+        })
+        .collect();
+    let mut forwarded = http::HeaderMap::new();
+    for (name, value) in headers {
+        let name = name.to_ascii_lowercase();
+        if nominated.contains(&name)
+            || matches!(
+                name.as_str(),
+                "connection"
+                    | "content-length"
+                    | "content-encoding"
+                    | "transfer-encoding"
+                    | "keep-alive"
+                    | "proxy-authenticate"
+                    | "proxy-authorization"
+                    | "te"
+                    | "trailer"
+                    | "upgrade"
+                    | "x-agents-model-grant"
+                    | "x-codex-agents-native-route"
+                    | "x-sdk-sentinel-grant"
+            )
+        {
+            continue;
+        }
+        let rate = name == "retry-after"
+            || ["limit", "remaining", "reset"].iter().any(|kind| {
+                ["requests", "tokens", "project-tokens"]
+                    .iter()
+                    .any(|scope| name == format!("x-ratelimit-{kind}-{scope}"))
+            });
+        if rates_only && !rate {
+            continue;
+        }
+        forwarded.append(
+            name.parse::<http::HeaderName>()
+                .map_err(|_| message_transport_error())?,
+            http::HeaderValue::from_str(value).map_err(|_| message_transport_error())?,
+        );
+    }
+    Ok(forwarded)
+}
+
 #[cfg(test)]
 mod certificate_tests {
     use super::*;
@@ -769,18 +973,110 @@ mod certificate_tests {
 
 pub(super) fn project_items(items_json: &str, content_item_kinds: bool) -> napi::Result<String> {
     let values: Vec<serde_json::Value> = serde_json::from_str(items_json).map_err(native_error)?;
-    let items: Vec<ResponseItem> = values
+    serde_json::to_string(&project_response_items(values, content_item_kinds)).map_err(native_error)
+}
+
+pub(crate) fn project_response_items(
+    values: Vec<serde_json::Value>,
+    content_item_kinds: bool,
+) -> Vec<ResponseItem> {
+    values
         .into_iter()
         .filter_map(|value| {
             let mut item: ResponseItem = serde_json::from_value(value).ok()?;
             if item.id().is_some_and(|id| !id.is_prefixed()) {
                 item.set_id(None);
             }
+            // Match Core's private prepare_response_items_for_request projection.
+            match &mut item {
+                ResponseItem::ShellCall {
+                    provider_fields, ..
+                } => {
+                    provider_fields.remove("created_by");
+                }
+                ResponseItem::ShellCallOutput {
+                    provider_fields, ..
+                } => {
+                    provider_fields.remove("created_by");
+                    if let Some(serde_json::Value::Array(output)) =
+                        provider_fields.get_mut("output")
+                    {
+                        for chunk in output {
+                            if let serde_json::Value::Object(chunk) = chunk {
+                                chunk.remove("created_by");
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
             if !content_item_kinds {
                 item.clear_content_item_kinds();
             }
             Some(item)
         })
-        .collect();
-    serde_json::to_string(&items).map_err(native_error)
+        .collect()
+}
+
+#[cfg(test)]
+mod projection_tests {
+    use super::project_response_items;
+    use crate::model_websocket_prefix::Prefix;
+    use serde_json::json;
+
+    #[test]
+    fn shell_continuation_full_resend_omits_provider_creation_metadata() {
+        let call = json!({
+            "type": "shell_call", "call_id": "call_hosted",
+            "created_by": "provider-shell",
+            "environment": {"type": "container_reference", "container_id": "cntr_fixture"},
+            "action": {"commands": ["true"]}
+        });
+        let output = json!({
+            "type": "shell_call_output", "call_id": "call_hosted",
+            "created_by": "provider-shell",
+            "output": [{
+                "stdout": "done", "stderr": "", "outcome": {"type": "exit", "exit_code": 0},
+                "created_by": "provider-command",
+                "vendor": {"created_by": "preserved-nested-value"}
+            }]
+        });
+        let projected =
+            serde_json::to_value(project_response_items(vec![call, output], false)).unwrap();
+        let items = projected.as_array().unwrap();
+        assert!(items[0].get("created_by").is_none());
+        assert!(items[1].get("created_by").is_none());
+        assert!(items[1]["output"][0].get("created_by").is_none());
+        assert_eq!(
+            items[1]["output"][0]["vendor"]["created_by"],
+            "preserved-nested-value"
+        );
+
+        let mut prefix = Prefix::default();
+        let original = json!({"model": "fixture", "input": []});
+        prefix
+            .commit(
+                "resp_hosted".into(),
+                original,
+                items.clone(),
+                "fixture".into(),
+                false,
+            )
+            .unwrap();
+        let reconstructed = prefix
+            .reconstruct(
+                json!({
+                    "model": "fixture", "input": [], "previous_response_id": "resp_hosted",
+                    "temperature": 0.5
+                }),
+                "fixture",
+                Some(&json!({
+                    "model": "fixture", "response_id": "resp_hosted", "output": projected
+                })),
+            )
+            .unwrap();
+        let wire = prefix.encode(&reconstructed, "fixture", true).unwrap();
+        assert!(wire.get("previous_response_id").is_none());
+        assert_eq!(wire["input"], projected);
+    }
 }
