@@ -591,6 +591,7 @@ async function completeOwnedSession<Output>(
         options.maxModelSteps,
         options.budget,
         options.guardrailInput,
+        options.errorInput ?? undefined,
       );
     }
     return session.wait();
