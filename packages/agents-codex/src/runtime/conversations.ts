@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type OpenAI from 'openai';
 import type { JsonObject } from './binding';
 import type { Agent } from './public-agent';
@@ -31,6 +32,7 @@ export class ConversationsHistory {
   readonly #client: OpenAI;
   #conversationId?: string;
   #tail: Promise<unknown> = Promise.resolve();
+  readonly #operation = new AsyncLocalStorage<{ active: boolean }>();
   #activeSession?: Session<unknown, unknown>;
 
   constructor(client: OpenAI, options: { conversationId?: string } = {}) {
@@ -44,7 +46,19 @@ export class ConversationsHistory {
 
   #serial<T>(operation: () => Promise<T>): Promise<T> {
     this.#activeSession?._checkHistoryOperation();
-    const pending = this.#tail.then(operation, operation);
+    if (this.#operation.getStore()?.active)
+      throw new Error('Cannot reenter an active history operation');
+    const token = { active: true };
+    const invoke = () =>
+      this.#operation.run(token, async () => {
+        try {
+          return await operation();
+        } finally {
+          token.active = false;
+          this.#operation.disable();
+        }
+      });
+    const pending = this.#tail.then(invoke, invoke);
     this.#tail = pending.catch(() => undefined);
     return pending;
   }
@@ -72,7 +86,11 @@ export class ConversationsHistory {
       conversationId,
       {
         order: limit === undefined ? 'asc' : 'desc',
-        include: ['reasoning.encrypted_content'],
+        include: [
+          'reasoning.encrypted_content',
+          'message.input_image.image_url',
+          'computer_call_output.output.image_url',
+        ],
       },
     )) {
       items.push(structuredClone(item) as unknown as JsonObject);

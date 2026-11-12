@@ -17,7 +17,17 @@ afterEach(() => ModelServer.closeAll());
 
 it('reopens native runs from ordered provider history without wire lineage', async () => {
   const { client, state } = conversationsClientFixture();
-  state.items = [conversationMessage(0)];
+  const imageUrl =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
+  state.items = [
+    {
+      ...conversationMessage(0),
+      content: [
+        { type: 'input_text', text: '0' },
+        { type: 'input_image', image_url: imageUrl, detail: 'auto' },
+      ],
+    },
+  ];
   const history = new ConversationsHistory(client, {
     conversationId: 'conv_existing',
   });
@@ -42,7 +52,9 @@ it('reopens native runs from ordered provider history without wire lineage', asy
   expect(state.items).toHaveLength(5);
   expect(state.creates).toBe(0);
   expect(server.requests).toHaveLength(2);
+  expect(JSON.stringify(server.requests[0])).toContain(imageUrl);
   const second = JSON.stringify(server.requests[1]);
+  expect(second).toContain(imageUrl);
   expect(second).toContain('first question');
   expect(second).toContain('first answer');
   expect(second).toContain('second question');

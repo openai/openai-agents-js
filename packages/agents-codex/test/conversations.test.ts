@@ -85,3 +85,53 @@ it('rejects competing history options before opening a native Session', async ()
   expect(state.requests).toEqual([]);
   expect(state.creates).toBe(0);
 });
+
+it('retains replayable user image and computer screenshot URLs', async () => {
+  const { client, state } = fixture();
+  state.items = [
+    {
+      ...message(0),
+      content: [
+        { type: 'input_image', image_url: 'https://images.invalid/user.png' },
+      ],
+    },
+    {
+      type: 'computer_call_output',
+      id: 'computer_receipt',
+      call_id: 'computer_call',
+      output: {
+        type: 'computer_screenshot',
+        image_url: 'https://images.invalid/screen.png',
+      },
+    },
+  ];
+  const history = new ConversationsHistory(client, {
+    conversationId: 'conv_existing',
+  });
+  expect(await history.getItems()).toEqual(state.items);
+});
+
+it('rejects reentrant transport calls while queuing external and retired work', async () => {
+  const { client, state } = fixture();
+  const history = new ConversationsHistory(client);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const retiredGate = Promise.withResolvers<void>();
+  let retired: Promise<unknown> | undefined;
+  state.beforeCreate = async () => {
+    state.beforeCreate = undefined;
+    expect(() => history.getItems()).toThrow(/active history operation/);
+    retired = retiredGate.promise.then(() => history.getItems());
+    entered.resolve();
+    await release.promise;
+  };
+  const first = history.getConversationId();
+  await entered.promise;
+  const outside = history.getItems();
+  release.resolve();
+  expect(await first).toBe('conv_1');
+  expect(await outside).toEqual([]);
+  retiredGate.resolve();
+  expect(await retired).toEqual([]);
+  expect(state.creates).toBe(1);
+});

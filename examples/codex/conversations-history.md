@@ -31,7 +31,7 @@ const reopened = new ConversationsHistory(client, {
 console.log(await reopened.getItems());
 ```
 
-The application has been retaining ownership of the OpenAI client. One history instance has been serializing its operations; separate processes and external writers have been requiring application coordination. Native checkpoints and private application data have been remaining outside the remote item list.
+The application has been retaining ownership of the OpenAI client. One history instance has been serializing its operations; separate processes and external writers have been requiring application coordination. The bridge has been rejecting same-history reentry from client transports or Session-opening callbacks. Independent calls and retired callback descendants have been continuing through the queue. Native checkpoints and private application data have been remaining outside the remote item list.
 
 After a later model failure, the bridge has been appending accepted originals before rethrowing the run error, so subsequent runs have been retaining settled tool receipts. For an uncertain append, `ConversationsWriteError` has been retaining the attempted `items`, the confirmed `acknowledged` prefix count, and any completed native `result`. Writes have been disabling automatic HTTP retries. Callers have been reconciling the remote list before retrying because the failing request may already have been committing items.
 

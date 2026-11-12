@@ -16,6 +16,7 @@ export function conversationsClientFixture() {
     requests: [] as { method: string; url: URL; body: any }[],
     batches: [] as JsonObject[][],
     failBatch: undefined as number | undefined,
+    beforeCreate: undefined as (() => Promise<void>) | undefined,
   };
   const client = new OpenAI({
     apiKey: 'synthetic',
@@ -32,6 +33,7 @@ export function conversationsClientFixture() {
           headers: { 'content-type': 'application/json' },
         });
       if (url.pathname === '/v1/conversations' && request.method === 'POST') {
+        await state.beforeCreate?.();
         state.creates++;
         return respond({
           id: `conv_${state.creates}`,
@@ -45,7 +47,27 @@ export function conversationsClientFixture() {
         const after = url.searchParams.get('after');
         if (after !== null)
           ordered = ordered.slice(ordered.findIndex((i) => i.id === after) + 1);
-        const page = ordered.slice(0, 2);
+        const included = new Set(url.searchParams.getAll('include[]'));
+        const page = ordered.slice(0, 2).map((original) => {
+          const item = structuredClone(original);
+          if (
+            item.type === 'message' &&
+            Array.isArray(item.content) &&
+            !included.has('message.input_image.image_url')
+          ) {
+            for (const part of item.content as JsonObject[]) {
+              if (part.type === 'input_image') delete part.image_url;
+            }
+          }
+          if (
+            item.type === 'computer_call_output' &&
+            item.output &&
+            !included.has('computer_call_output.output.image_url')
+          ) {
+            delete (item.output as JsonObject).image_url;
+          }
+          return item;
+        });
         return respond({
           object: 'list',
           data: page,
