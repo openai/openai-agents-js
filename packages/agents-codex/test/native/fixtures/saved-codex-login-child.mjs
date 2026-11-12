@@ -523,6 +523,12 @@ try {
             storeError.message,
             /canonical (?:storage operation|thread persistence) failed/i,
           );
+          stage = 'check one prefix on the retained flush diagnostic';
+          assert(
+            !storeError.message.startsWith(
+              'thread-store internal error: thread-store internal error: ',
+            ),
+          );
         } else {
           assert.equal(
             storeError.message,

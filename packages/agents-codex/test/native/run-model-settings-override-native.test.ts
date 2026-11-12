@@ -12,6 +12,7 @@ import {
   tool,
   toolRef,
   type ModelResponse,
+  type UserMessage,
 } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
@@ -35,6 +36,7 @@ const catalog =
             supported_in_api: boolean;
             use_responses_lite?: boolean;
             multi_agent_version?: string;
+            input_modalities?: string[];
           }[];
         }
       ).models
@@ -648,4 +650,64 @@ nativeIt.each(['named', 'required'] as const)(
     server.assertExhausted();
   },
   30_000,
+);
+
+nativeIt(
+  'restores catalog modalities for an explicit run clear and keeps later profile defaults',
+  async () => {
+    const model = catalog.find(
+      (entry) =>
+        entry.supported_in_api &&
+        !entry.use_responses_lite &&
+        entry.input_modalities?.includes('image'),
+    )?.slug;
+    if (!model)
+      throw new Error('Expected a standard image-capable catalog model');
+    const seen: JsonObject[] = [];
+    await using provider = new NativeProvider({
+      supportsWebsockets: false,
+      modelBackend: {
+        complete(request) {
+          seen.push(request.body);
+          return completed([message('done')]);
+        },
+      },
+    });
+    const agent = new Agent({
+      model,
+      instructions: 'Answer briefly.',
+      provider,
+      modelSettings: { inputModalities: ['text', 'audio'] },
+    });
+    const input: UserMessage = {
+      role: 'user',
+      content: [
+        { type: 'input_text', text: 'Describe the input.' },
+        {
+          type: 'input_image',
+          image_url:
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+        },
+        { type: 'input_audio', audio_url: 'data:audio/wav;base64,UklGRg==' },
+      ],
+    };
+    const kinds = () =>
+      (seen.at(-1)!.input as JsonObject[]).flatMap((item) =>
+        Array.isArray(item.content)
+          ? (item.content as JsonObject[]).map((part) => part.type)
+          : [],
+      );
+    await new Agent({ model, instructions: 'Answer briefly.', provider }).run(
+      input,
+    );
+    expect(kinds()).toContain('input_image');
+    await agent.run(input, {
+      modelSettingsOverride: { inputModalities: null },
+    });
+    expect(kinds()).toContain('input_image');
+    expect(kinds()).not.toContain('input_audio');
+    await agent.run(input);
+    expect(kinds()).toContain('input_audio');
+    expect(kinds()).not.toContain('input_image');
+  },
 );

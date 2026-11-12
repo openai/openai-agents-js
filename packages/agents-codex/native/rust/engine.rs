@@ -38,6 +38,7 @@ pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub(crate) struct EngineCloseReport {
     pub(crate) diagnostic: Option<String>,
+    pub(crate) retained_storage_failure: Option<String>,
     pub(crate) saved_login_refresh: Option<&'static str>,
 }
 
@@ -1958,17 +1959,19 @@ impl EngineState {
                     diagnostics.push(error.to_string());
                 }
             }
-            let canonical = if let Some(store) = &self.custom_store {
-                store.close_all().await?
+            let (canonical, retained_storage_failure) = if let Some(store) = &self.custom_store {
+                let report = store.close_all().await?;
+                (report.diagnostic, report.retained_storage_failure)
             } else {
-                match &self.local_checklist_store {
+                let failure = match &self.local_checklist_store {
                     Some(store) => store
                         .check_failure(None)
                         .await
                         .err()
                         .map(|error| error.to_string()),
                     None => None,
-                }
+                };
+                (failure.clone(), failure)
             };
             diagnostics.extend(canonical);
             if diagnostics.is_empty() {
@@ -1976,6 +1979,7 @@ impl EngineState {
             }
             return Ok(EngineCloseReport {
                 diagnostic: (!diagnostics.is_empty()).then(|| diagnostics.join("; ")),
+                retained_storage_failure,
                 saved_login_refresh: self.saved_login_refresh_report().await?,
             });
         }
@@ -2060,10 +2064,11 @@ impl EngineState {
             fork_diagnostics.push(diagnostic);
         }
         let saved_login_refresh = self.saved_login_refresh_report().await?;
+        let mut retained_storage_failure = None;
         if let Some(store) = &self.custom_store {
-            if let Some(diagnostic) = store.close_all().await? {
-                fork_diagnostics.push(diagnostic);
-            }
+            let report = store.close_all().await?;
+            fork_diagnostics.extend(report.diagnostic);
+            retained_storage_failure = report.retained_storage_failure;
         }
         let diagnostic = if let Some(store) = &self.local_checklist_store {
             store.close_database().await?;
@@ -2078,6 +2083,7 @@ impl EngineState {
             }
             None
         };
+        retained_storage_failure = retained_storage_failure.or(diagnostic.clone());
         if let Some(diagnostic) = diagnostic {
             fork_diagnostics.push(diagnostic);
         }
@@ -2087,6 +2093,7 @@ impl EngineState {
         self.closed.store(true, Ordering::Release);
         Ok(EngineCloseReport {
             diagnostic: (!fork_diagnostics.is_empty()).then(|| fork_diagnostics.join("; ")),
+            retained_storage_failure,
             saved_login_refresh,
         })
     }

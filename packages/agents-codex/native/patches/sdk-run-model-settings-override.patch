@@ -105,7 +105,7 @@ index bd4c640b..195f3998 100644
          let target = Arc::new(AgentProfile {
              mcp: Arc::new(
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index d0769bd7..21d9af36 100644
+index d0769bd7..7b25ea76 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -2057,6 +2057,15 @@ impl Session {
@@ -124,7 +124,12 @@ index d0769bd7..21d9af36 100644
              let previous_config = notify_config_contributors
                  .then(|| self.build_effective_session_config(&state.session_configuration));
              let previous_permission_profile = state.session_configuration.permission_profile();
-@@ -4124,6 +4133,13 @@ impl Session {
+@@ -4120,10 +4129,17 @@ impl Session {
+                 selected.service_tier = root_service_tier;
+                 let mut inherited_settings = ResolvedStepSettings::new(
+                     Arc::new(selected),
+-                    Arc::clone(&settings.model_info),
++                    Arc::clone(&settings.catalog_model_info),
                      self.features.enabled(Feature::FastMode),
                      turn_context.config.model_context_window,
                  );
@@ -232,10 +237,10 @@ index acbe33de..f483f3fe 100644
      pub(crate) app_server_client_version: Option<String>,
      pub(crate) disabled_plugin_ids: Option<Vec<String>>,
 diff --git a/codex-rs/core/src/session/step_settings.rs b/codex-rs/core/src/session/step_settings.rs
-index 35b82d7a..ba9c257d 100644
+index 35b82d7a..e25dd13d 100644
 --- a/codex-rs/core/src/session/step_settings.rs
 +++ b/codex-rs/core/src/session/step_settings.rs
-@@ -49,6 +49,9 @@ pub(crate) struct ResolvedStepSettings {
+@@ -49,7 +49,12 @@ pub(crate) struct ResolvedStepSettings {
      /// Inputs for later sparse patches. Unset defaults and unsupported requested
      /// tiers must not be reconstructed from the effective values below.
      selected: Arc<StepSettings>,
@@ -243,9 +248,20 @@ index 35b82d7a..ba9c257d 100644
 +    pub(crate) model_settings_override:
 +        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
      pub(crate) model_info: Arc<ModelInfo>,
++    /// Pinned metadata before profile/run request-control declarations.
++    pub(super) catalog_model_info: Arc<ModelInfo>,
      /// Start-only run selection, separate from the profile defaults in `selected`.
      pub(crate) model_override: Option<String>,
-@@ -113,6 +116,8 @@ impl ResolvedStepSettings {
+     run_request_controls: Option<codex_protocol::model_request_controls::ModelRequestControls>,
+@@ -72,6 +77,7 @@ impl ResolvedStepSettings {
+         fast_mode_enabled: bool,
+         context_window_override: Option<i64>,
+     ) -> Self {
++        let catalog_model_info = Arc::clone(&model_info);
+         if let Some(Some(prompt)) = &selected.request_controls.hosted_prompt {
+             let model = Arc::make_mut(&mut model_info);
+             model.use_responses_lite = false;
+@@ -113,8 +119,11 @@ impl ResolvedStepSettings {
              agent_profile: None,
              model_override: None,
              run_request_controls: None,
@@ -253,8 +269,11 @@ index 35b82d7a..ba9c257d 100644
 +            model_settings_override: None,
              selected,
              model_info,
++            catalog_model_info,
              reported_context_window,
-@@ -132,9 +137,18 @@ impl ResolvedStepSettings {
+             reasoning_summary,
+             service_tier,
+@@ -132,9 +141,18 @@ impl ResolvedStepSettings {
          {
              return;
          }
@@ -275,7 +294,7 @@ index 35b82d7a..ba9c257d 100644
          self.refresh_run_request_controls();
      }
  
-@@ -150,17 +164,70 @@ impl ResolvedStepSettings {
+@@ -150,17 +168,70 @@ impl ResolvedStepSettings {
          self
      }
  
@@ -319,7 +338,7 @@ index 35b82d7a..ba9c257d 100644
 +            .apply_patch(&settings.request_controls);
 +        let mut resolved = Self::new(
 +            Arc::new(effective),
-+            Arc::clone(&self.model_info),
++            Arc::clone(&self.catalog_model_info),
 +            fast_mode_enabled,
 +            context_window_override,
 +        );
@@ -348,7 +367,7 @@ index 35b82d7a..ba9c257d 100644
              let prompt = controls.hosted_prompt.as_mut()?.as_mut()?;
              prompt.omit_model = false;
              Some(controls)
-@@ -169,9 +236,21 @@ impl ResolvedStepSettings {
+@@ -169,9 +240,21 @@ impl ResolvedStepSettings {
  
      pub(super) fn release_forced_tool_choice(&mut self) {
          if self.tool_choice() == ToolChoice::Required {
@@ -371,7 +390,7 @@ index 35b82d7a..ba9c257d 100644
              self.refresh_run_request_controls();
          }
      }
-@@ -189,7 +268,7 @@ impl ResolvedStepSettings {
+@@ -189,7 +272,7 @@ impl ResolvedStepSettings {
      }
  
      pub(crate) fn reasoning_effort(&self) -> Option<&ReasoningEffort> {
@@ -380,7 +399,7 @@ index 35b82d7a..ba9c257d 100644
              .collaboration_mode
              .settings
              .reasoning_effort
-@@ -203,7 +282,7 @@ impl ResolvedStepSettings {
+@@ -203,7 +286,7 @@ impl ResolvedStepSettings {
      }
  
      pub(crate) fn effective_collaboration_mode(&self) -> CollaborationMode {
@@ -389,7 +408,7 @@ index 35b82d7a..ba9c257d 100644
          collaboration_mode.settings.model = self.model_info.slug.clone();
          collaboration_mode
      }
-@@ -226,11 +305,11 @@ impl ResolvedStepSettings {
+@@ -226,11 +309,11 @@ impl ResolvedStepSettings {
      }
  
      pub(crate) fn invocation_timeout_ms(&self) -> Option<u32> {
@@ -403,7 +422,16 @@ index 35b82d7a..ba9c257d 100644
      }
  
      pub(crate) fn personality(&self) -> Option<Personality> {
-@@ -284,10 +363,12 @@ impl ResolvedStepSettings {
+@@ -272,7 +355,7 @@ impl ResolvedStepSettings {
+                     .and_then(Option::as_ref)
+                     .map(|prompt| prompt.omit_model)
+         {
+-            Arc::clone(&self.model_info)
++            Arc::clone(&self.catalog_model_info)
+         } else {
+             Arc::new(
+                 selected
+@@ -284,10 +367,12 @@ impl ResolvedStepSettings {
                      .await,
              )
          };
@@ -420,7 +448,7 @@ index 35b82d7a..ba9c257d 100644
          let mut next = Self::new(
              Arc::new(selected),
              model_info,
-@@ -296,6 +377,14 @@ impl ResolvedStepSettings {
+@@ -296,6 +381,14 @@ impl ResolvedStepSettings {
          );
          next.agent_profile = self.agent_profile.clone();
          next = next.with_model_override(self.model_override.clone());
@@ -435,7 +463,7 @@ index 35b82d7a..ba9c257d 100644
          next.mcp_approvals_reviewer_override = update
              .approvals_reviewer
              .or(self.mcp_approvals_reviewer_override);
-@@ -312,6 +401,7 @@ impl ResolvedStepSettings {
+@@ -312,6 +405,7 @@ impl ResolvedStepSettings {
          // Sharing these checks would also make ordinary settings updates stricter
          // after a requirements refresh.
          self.selected.validate(constraints)?;
@@ -443,7 +471,7 @@ index 35b82d7a..ba9c257d 100644
          self.selected
              .validate_model_override(self.model_override.as_deref(), constraints)?;
          constraints
-@@ -389,6 +479,36 @@ pub(crate) struct StepSettingsUpdate {
+@@ -389,6 +483,36 @@ pub(crate) struct StepSettingsUpdate {
      pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
  }
  

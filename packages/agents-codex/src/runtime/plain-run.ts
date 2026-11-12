@@ -227,7 +227,6 @@ export async function tryOpenPlainRun(
   const settings = options.initialModelSettings;
   if (
     lease.chatGPT ||
-    lease.websocketsAllowed ||
     !lease.apiKey ||
     options.modelBackend ||
     options.beforeComplete ||
