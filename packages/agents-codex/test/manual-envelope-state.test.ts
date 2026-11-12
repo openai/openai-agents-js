@@ -21,9 +21,28 @@ const state = (receipt: unknown) => ({
   manual_context: { instructions: null, result_schemas: [], usage: null },
 });
 
-it.each([17, 18])(
-  'retains the request budget in manual envelope %i',
-  (version) => {
+it.each(
+  [17, 18].flatMap((version) => [
+    {
+      version,
+      run_budget: { version: 1, maxRequests: 2, admittedRequests: 1 },
+    },
+    {
+      version,
+      run_budget: {
+        version: 2,
+        maxRequests: null,
+        admittedRequests: null,
+        maxTokens: 10,
+        consumedTokens: 4,
+        usageMissing: true,
+        missingUsage: 'continue',
+      },
+    },
+  ]),
+)(
+  'retains budget $run_budget.version in manual envelope $version',
+  ({ version, run_budget }) => {
     const saved = {
       ...state('accepted'),
       format_version: version,
@@ -33,7 +52,7 @@ it.each([17, 18])(
         budget: 0,
         fingerprint: 'a'.repeat(64),
       },
-      run_budget: { version: 1, maxRequests: 2, admittedRequests: 1 },
+      run_budget,
     };
     const parsed = parseSessionState(JSON.stringify(saved));
     expect(isManualSessionState(parsed)).toBe(true);

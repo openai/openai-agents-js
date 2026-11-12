@@ -216,6 +216,8 @@ pub struct ThreadOptions {
     pub(crate) sdk_reconciled_calls: Vec<crate::local_reconciliation::Receipt>,
     #[serde(rename = "_native_agent_roles")]
     native_agent_roles: Option<Vec<String>>,
+    #[serde(rename = "_native_agent_tools")]
+    native_agent_tools: Vec<codex_core::ManagedAgentToolSpec>,
     #[serde(rename = "_native_agent_before_step")]
     native_agent_before_step: bool,
     #[serde(rename = "_native_agent_max_depth")]
@@ -373,6 +375,10 @@ impl ThreadOptions {
             !self.native_agent_before_step || self.native_agent_roles.is_some(),
             "Child step selection requires NativeAgents roles"
         );
+        anyhow::ensure!(
+            self.native_agent_tools.is_empty() || self.native_agent_roles.is_some(),
+            "Native role tools require NativeAgents roles"
+        );
         if self.native_agent_before_step {
             options
                 .thread_extension_init
@@ -407,10 +413,21 @@ impl ThreadOptions {
                 .thread_extension_init
                 .insert(crate::native_agents::Policy {
                     roles,
+                    managed_tools: self
+                        .native_agent_tools
+                        .iter()
+                        .map(|tool| tool.name.clone())
+                        .collect(),
                     max_depth,
                     inherited_instructions,
                     allowed: Default::default(),
                 });
+            if !self.native_agent_tools.is_empty() {
+                options.thread_extension_init.insert(
+                    codex_core::ManagedAgentToolCatalog::new(self.native_agent_tools)
+                        .map_err(anyhow::Error::msg)?,
+                );
+            }
         }
 
         let profile_files = self
