@@ -979,7 +979,11 @@
     {
       "path": "sdk-managed-agent-tool-failure-origin.patch",
       "sha256": "4b674bd762e33b35a0c623c8feba652911d10f2ea5395f01ee6b9569dd405f04"
+    },
+    {
+      "path": "sdk-native-sandbox-operation-events.patch",
+      "sha256": "44fd1fa7e50f21ee1fc131c838c414781d77efbb9a90330649c771a70b5ca82b"
     }
   ],
-  "result_tree": "80053b735246ccef425da86a7b026f10fddebdf2"
+  "result_tree": "5b303c6ebbe47b95c0805d91b11ead0ee84f66f8"
 }
