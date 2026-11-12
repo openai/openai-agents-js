@@ -110,6 +110,70 @@ describe('prepared request capture boundary', () => {
   });
 });
 
+it('preserves paired-invalid prepareRequest error precedence before opening effects', async () => {
+  const loadFiles = vi
+    .spyOn(turnReceipt, 'loadInstructionFiles')
+    .mockRejectedValue(new Error('unexpected instruction reading'));
+  const loader = vi
+    .spyOn(nativeBinding, 'binding')
+    .mockRejectedValue(new Error('unexpected native loading'));
+  const editor = vi.fn(() => undefined);
+  const cases = [
+    {
+      prepareRequest: false as never,
+      maxRetries: 1,
+      error: 'prepareRequest must be callable',
+    },
+    {
+      prepareRequest: editor,
+      maxRetries: 1,
+      error:
+        'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
+    },
+    {
+      prepareRequest: editor,
+      maxRetries: 0,
+      error:
+        'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
+    },
+    {
+      prepareRequest: editor,
+      maxRetries: 0,
+      supportsWebsockets: false,
+      error:
+        'prepareRequest supports only direct root eager function and ordinary MCP tools',
+    },
+  ];
+  for (const profile of cases) {
+    await using provider = new NativeProvider(
+      'supportsWebsockets' in profile
+        ? { supportsWebsockets: profile.supportsWebsockets }
+        : {},
+    );
+    const acquire = vi.spyOn(provider, '_acquire');
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ answer: z.string() }),
+        maxRetries: profile.maxRetries,
+      },
+      tools: [webSearch({ route: 'hosted' })],
+    });
+    await expect(
+      agent.run('go', {
+        prepareRequest: profile.prepareRequest,
+        instructionFiles: ['unreachable-instructions.md'],
+      }),
+    ).rejects.toEqual(new TypeError(profile.error));
+    expect(loadFiles).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(loader).not.toHaveBeenCalled();
+    expect(editor).not.toHaveBeenCalled();
+  }
+});
+
 it.each([
   'websocket',
   'deferred-function',

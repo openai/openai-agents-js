@@ -1,4 +1,5 @@
 import { NativeTurn, type NativeRunResult } from './native-turn';
+import { validatePrepareRequestCompatibility } from './opening-compatibility';
 import {
   captureHostedPromptReference,
   type HostedPromptSource,
@@ -5205,29 +5206,21 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     if (options?.prepareRequest !== undefined) {
-      if (typeof options.prepareRequest !== 'function')
-        throw new TypeError('prepareRequest must be callable');
-      if (output.repair)
-        throw new TypeError(
-          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
-        );
-      if (this.options.websocketsAllowed !== false)
-        throw new TypeError(
-          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
-        );
-      if (
-        this.options.nativeAgents ||
-        this.codeModeEnabled ||
-        this.environment ||
-        this.options.webSearch ||
-        !!this.options.hostedTools?.length ||
-        this.options.nativeGoals ||
-        this.options.checklist ||
-        this.openingMcpTools.some(isHostedRegistration)
-      )
-        throw new TypeError(
-          'prepareRequest supports only direct root eager function and ordinary MCP tools',
-        );
+      validatePrepareRequestCompatibility(
+        options.prepareRequest,
+        !!output.repair,
+        this.options.websocketsAllowed !== false,
+        !!(
+          this.options.nativeAgents ||
+          this.codeModeEnabled ||
+          this.environment ||
+          this.options.webSearch ||
+          !!this.options.hostedTools?.length ||
+          this.options.nativeGoals ||
+          this.options.checklist ||
+          this.openingMcpTools.some(isHostedRegistration)
+        ),
+      );
     }
     return {
       originCatalog: this.catalog,
