@@ -13,6 +13,7 @@ import {
   type ManagedWorkspaceAuthorization,
 } from './managed-workspace';
 import type {
+  Entry,
   SandboxClient,
   SandboxArchiveLimits,
   SandboxConcurrencyLimits,
@@ -348,8 +349,14 @@ function createSandboxEnvironment<
   const capturedManifest = cloneManifest(
     requireManifest(options.manifest, Manifest),
   );
-  if (skillBinding)
+  let eagerSkillEntries: [string, Entry][] = [];
+  if (skillBinding) {
+    const existingPaths = new Set(Object.keys(capturedManifest.entries));
     runtime.processSkillManifest(skillBinding.configuration, capturedManifest);
+    eagerSkillEntries = Object.entries(capturedManifest.entries).filter(
+      ([path]) => !existingPaths.has(path),
+    );
+  }
   const manifest =
     (borrowed || resume) && client.resolveTrustedManifestForResume
       ? client.resolveTrustedManifestForResume(
@@ -474,7 +481,7 @@ function createSandboxEnvironment<
         });
       }));
     try {
-      const open = async () => {
+      const acquireResource = async () => {
         signal.throwIfAborted();
         if (borrowed) {
           const trustedEnvironment = client.resolveTrustedEnvironment
@@ -595,6 +602,9 @@ function createSandboxEnvironment<
             );
           retainManagedWorkspaceSnapshot(sandbox.state.snapshot as any);
         }
+        return sandbox;
+      };
+      const connectAndPublish = async (sandbox: SandboxSessionLike<State>) => {
         const created = sandbox;
         gateway = await acquireEnvironment(
           ({ signal }) => connect(created, { signal }),
@@ -628,6 +638,22 @@ function createSandboxEnvironment<
           skillLease,
         );
       };
+      // Resume inspection protects the old state. The owned provider mutation
+      // takes its own exclusive lock, so staging must follow that inspection.
+      if (originalResumeState && eagerSkillEntries.length > 0) {
+        const sandbox = await withExclusiveSandboxStateInspection(
+          originalResumeState,
+          acquireResource,
+        );
+        await skillBinding!.stageOwnedResume(
+          sandbox,
+          manifest,
+          eagerSkillEntries,
+          signal,
+        );
+        return await connectAndPublish(sandbox);
+      }
+      const open = async () => connectAndPublish(await acquireResource());
       const inspectedState = borrowed?.state ?? originalResumeState;
       return inspectedState
         ? await withExclusiveSandboxStateInspection(inspectedState, open)

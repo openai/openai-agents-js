@@ -726,3 +726,101 @@ nativeIt(
   },
   20_000,
 );
+
+nativeIt.each(['inline', 'from'] as const)(
+  'stages %s eager skills before publishing an authorized cold UnixLocal resume',
+  async (kind) => {
+    const client = new UnixLocalSandboxClient();
+    const archiveBase = await mkdtemp(
+      join(tmpdir(), 'skills-resume-snapshot-'),
+    );
+    const seed = await client.create({
+      manifest: new Manifest({ root: '/workspace' }),
+      snapshot: { type: 'local', baseDir: archiveBase },
+    });
+    const saved = await client.serializeSessionState(seed.state);
+    const snapshot = saved.snapshot as { type: 'local'; path: string };
+    await seed.close();
+    const resumedClient = new UnixLocalSandboxClient({
+      resumeAuthority: {
+        workspaceRootPath: saved.workspaceRootPath as string,
+        workspaceRootOwned: true,
+        localSnapshotPath: snapshot.path,
+      },
+    });
+    const state = await resumedClient.deserializeSessionState(saved);
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([[message('resumed index')]]);
+    await using provider = await providerFor(server);
+    const document =
+      kind === 'inline'
+        ? 'EAGER_RESUMED_BYTES\r\n'
+        : '---\nname: report\ndescription: EAGER_RESUME_INDEX\n---\nEAGER_RESUMED_BYTES\r\n';
+    let resumedRoot = '';
+    try {
+      const source = sandboxEnvironment({
+        client: resumedClient,
+        manifest: new Manifest({ root: '/workspace' }),
+        authorizedResumeState: { backendId: resumedClient.backendId, state },
+        skills: skills(
+          kind === 'inline'
+            ? {
+                skills: [
+                  {
+                    name: 'report',
+                    description: 'EAGER_RESUME_INDEX',
+                    content: document,
+                  },
+                ],
+              }
+            : {
+                from: dir({
+                  children: {
+                    report: dir({
+                      children: { 'SKILL.md': file({ content: document }) },
+                    }),
+                  },
+                }),
+              },
+        ),
+        connect: async (sandbox) => {
+          resumedRoot = sandbox.state.workspaceRootPath;
+          expect(
+            await readFile(
+              join(resumedRoot, '.agents/report/SKILL.md'),
+              'utf8',
+            ),
+          ).toBe(document);
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: resumedRoot,
+              capabilityDirectories: [join(resumedRoot, '.agents')],
+              tools: [],
+            }),
+            async () => {},
+          );
+        },
+      });
+      await using session = await new Agent({
+        provider,
+        model: 'fixture-skills',
+        instructions: 'Inspect the restored skill index.',
+      }).session({ environment: source });
+      await (await session.submit('Inspect the index.')).wait();
+      expect(resumedRoot).not.toBe(saved.workspaceRootPath);
+      expect(JSON.stringify(server.requests[0])).toContain(
+        'EAGER_RESUME_INDEX',
+      );
+      expect(JSON.stringify(server.requests[0])).toContain(
+        `file: ${resumedRoot}/.agents/report`,
+      );
+      server.assertExhausted();
+    } finally {
+      await peer.close();
+      await rm(archiveBase, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);

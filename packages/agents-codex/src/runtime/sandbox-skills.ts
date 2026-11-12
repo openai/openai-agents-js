@@ -14,7 +14,7 @@ import {
   type SkillIndexEntry,
   type SkillsArgs,
 } from '@openai/agents-core/sandbox/internal';
-import type { SandboxSessionLike } from '@openai/agents-core/sandbox';
+import type { Entry, SandboxSessionLike } from '@openai/agents-core/sandbox';
 import type { Environment } from './environment';
 import {
   tool,
@@ -87,6 +87,30 @@ export class SandboxSkillBinding<Context = any> {
           ]
         : [],
     );
+  }
+
+  async stageOwnedResume(
+    sandbox: SandboxSessionLike,
+    trustedManifest: Manifest,
+    entries: readonly [string, Entry][],
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!sandbox.materializeEntry)
+      throw new Error(
+        'Eager resumed Skills require sandbox materializeEntry()',
+      );
+    const expectedGrants = grantStamp(trustedManifest);
+    for (const [path, entry] of entries) {
+      signal.throwIfAborted();
+      if (grantStamp(sandbox.state.manifest) !== expectedGrants)
+        throw new Error(
+          'Sandbox skill grants do not match the current manifest',
+        );
+      await sandbox.materializeEntry({ path, entry });
+      signal.throwIfAborted();
+      if (grantStamp(sandbox.state.manifest) !== expectedGrants)
+        throw new Error('Sandbox skill grants changed during materialization');
+    }
   }
 
   private admit(context: ToolCallContext): SandboxSkillLease {
