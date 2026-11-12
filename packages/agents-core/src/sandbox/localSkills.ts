@@ -1,11 +1,24 @@
-import { lstatSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  opendirSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  type Dirent,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
-  parseSkillFrontmatter,
+  parseSkillMetadataPrefix,
+  type SkillMetadataLimits,
   type LocalDirLazySkillSource,
   type SkillIndexEntry,
-} from './capabilities/skills';
+} from './skillResources';
 import { localDir } from './entries';
+import { SandboxSkillsConfigError } from './errors';
 import type { Manifest } from './manifest';
 import type { SandboxPathGrant } from './pathGrants';
 import {
@@ -33,14 +46,18 @@ export function localDirLazySkillSource(
   const sourceRoot = resolve(options.baseDir ?? process.cwd(), options.src);
   return {
     source: localDir({ src: sourceRoot }),
-    getIndex: (manifest: Manifest) =>
-      discoverLocalDirSkillIndex(options, manifest.extraPathGrants),
+    getIndex: (
+      manifest: Manifest,
+      _skillsPath: string,
+      limits?: SkillMetadataLimits,
+    ) => discoverLocalDirSkillIndex(options, manifest.extraPathGrants, limits),
   };
 }
 
 function discoverLocalDirSkillIndex(
   options: LocalDirLazySkillSourceOptions,
   sourceGrants: SandboxPathGrant[] = [],
+  limits?: SkillMetadataLimits,
 ): SkillIndexEntry[] {
   const base = resolve(options.baseDir ?? process.cwd());
   let root: string;
@@ -53,7 +70,12 @@ function discoverLocalDirSkillIndex(
     return [];
   }
 
-  return readdirSync(root, { withFileTypes: true })
+  let totalBytes = 0;
+  return (
+    limits
+      ? boundedDirectoryEntries(root, limits.maxEntries)
+      : readdirSync(root, { withFileTypes: true })
+  )
     .filter((entry) => entry.isDirectory())
     .sort((left, right) => left.name.localeCompare(right.name))
     .flatMap((entry) => {
@@ -62,14 +84,34 @@ function discoverLocalDirSkillIndex(
         return [];
       }
 
-      let markdown: string;
+      const readLimit = limits
+        ? Math.min(limits.maxFileBytes, limits.maxTotalBytes - totalBytes)
+        : undefined;
+      if (readLimit !== undefined && readLimit <= 0)
+        throw new SandboxSkillsConfigError(
+          'Skill metadata reads exceed their total byte limit',
+        );
+      let markdown: string | Uint8Array | undefined;
       try {
-        markdown = readFileSync(skillMarkdownPath, 'utf8');
+        markdown =
+          readLimit === undefined
+            ? readFileSync(skillMarkdownPath, 'utf8')
+            : readMetadataPrefix(skillMarkdownPath, readLimit);
       } catch {
         return [];
       }
-
-      const frontmatter = parseSkillFrontmatter(markdown);
+      if (markdown === undefined) return [];
+      if (limits) {
+        totalBytes += markdown.length;
+        if (totalBytes > limits.maxTotalBytes)
+          throw new SandboxSkillsConfigError(
+            'Skill metadata reads exceed their total byte limit',
+          );
+      }
+      const frontmatter = parseSkillMetadataPrefix(
+        markdown,
+        limits?.maxFileBytes,
+      );
       return [
         {
           name: frontmatter.name ?? entry.name,
@@ -78,6 +120,52 @@ function discoverLocalDirSkillIndex(
         },
       ];
     });
+}
+
+function boundedDirectoryEntries(root: string, maxEntries: number): Dirent[] {
+  const directory = opendirSync(root);
+  const entries: Dirent[] = [];
+  try {
+    for (let entry; (entry = directory.readSync()) !== null;) {
+      if (entries.length >= maxEntries)
+        throw new SandboxSkillsConfigError(
+          'Skill metadata directory count exceeds its limit',
+        );
+      entries.push(entry);
+    }
+  } finally {
+    directory.closeSync();
+  }
+  return entries;
+}
+
+function readMetadataPrefix(
+  path: string,
+  maxBytes: number,
+): Uint8Array | undefined {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    if (!fstatSync(descriptor).isFile()) return undefined;
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let count = 0;
+    while (count < buffer.length) {
+      const read = readSync(
+        descriptor,
+        buffer,
+        count,
+        buffer.length - count,
+        null,
+      );
+      if (!read) break;
+      count += read;
+    }
+    return buffer.subarray(0, count);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function resolveLocalSkillSourcePath(

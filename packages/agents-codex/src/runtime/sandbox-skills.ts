@@ -23,11 +23,11 @@ import {
   type ToolCallContext,
 } from './tools';
 
-const metadataLimits = {
+const metadataLimits = Object.freeze({
   maxEntries: 1024,
   maxFileBytes: 64 * 1024,
   maxTotalBytes: 4 * 1024 * 1024,
-};
+});
 
 export type Skills = SkillConfiguration;
 export type {
@@ -194,6 +194,7 @@ export class SandboxSkillLease {
       configuration,
       runtime,
       sandbox.state.manifest,
+      metadataLimits,
     );
     if (grantStamp(sandbox.state.manifest) !== this.#grants)
       throw new Error('Sandbox skill grants changed during index discovery');

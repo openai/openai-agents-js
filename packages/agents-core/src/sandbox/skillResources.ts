@@ -23,10 +23,20 @@ export type SkillIndexEntry = {
   path?: string;
 };
 
+export type SkillMetadataLimits = Readonly<{
+  maxEntries: number;
+  maxFileBytes: number;
+  maxTotalBytes: number;
+}>;
+
 export type LocalDirLazySkillSource = {
   source: Dir | LocalDir | GitRepo;
   index?: SkillIndexEntry[];
-  getIndex?: (manifest: Manifest, skillsPath: string) => SkillIndexEntry[];
+  getIndex?: (
+    manifest: Manifest,
+    skillsPath: string,
+    limits?: SkillMetadataLimits,
+  ) => SkillIndexEntry[];
 };
 
 export type SkillDescriptor = {
@@ -122,7 +132,7 @@ export async function resolveSkillRuntimeMetadata(
   configuration: SkillConfiguration,
   session?: SandboxSessionLike,
   runAs?: string,
-  limits?: { maxEntries: number; maxFileBytes: number; maxTotalBytes: number },
+  limits?: SkillMetadataLimits,
 ): Promise<SkillIndexEntry[]> {
   if (!configuration.from || !session?.listDir || !session.readFile) {
     return [];
@@ -173,7 +183,6 @@ export async function resolveSkillRuntimeMetadata(
       throw error;
     }
 
-    let truncated = false;
     if (limits) {
       // Check a provider's result before decoding/parsing it. The extra byte
       // distinguishes a complete file from a bounded metadata prefix.
@@ -190,21 +199,9 @@ export async function resolveSkillRuntimeMetadata(
         throw new SandboxSkillsConfigError(
           'Skill metadata reads exceed their total byte limit',
         );
-      truncated = bytes.byteLength > limits.maxFileBytes;
-      content = bytes.subarray(0, limits.maxFileBytes);
+      content = bytes;
     }
-    let markdown =
-      typeof content === 'string' ? content : new TextDecoder().decode(content);
-    if (truncated) {
-      // A partial last line must not masquerade as a closing YAML delimiter.
-      const lastLine = markdown.lastIndexOf('\n');
-      if (lastLine < 0)
-        throw new SandboxSkillsConfigError(
-          'Skill metadata header exceeds its read limit',
-        );
-      markdown = markdown.slice(0, lastLine + 1);
-    }
-    const frontmatter = parseSkillFrontmatter(markdown, truncated);
+    const frontmatter = parseSkillMetadataPrefix(content, limits?.maxFileBytes);
     metadata.push({
       name: frontmatter.name ?? entry.name,
       description: frontmatter.description ?? 'No description provided.',
@@ -213,6 +210,32 @@ export async function resolveSkillRuntimeMetadata(
   }
 
   return metadata;
+}
+
+/** Parse only complete metadata lines; skill bodies stay in their original files. */
+export function parseSkillMetadataPrefix(
+  content: string | Uint8Array,
+  maxFileBytes?: number,
+): Record<string, string> {
+  let truncated = false;
+  if (maxFileBytes !== undefined) {
+    const bytes =
+      typeof content === 'string' ? new TextEncoder().encode(content) : content;
+    truncated = bytes.byteLength > maxFileBytes;
+    content = bytes.subarray(0, maxFileBytes);
+  }
+  let markdown =
+    typeof content === 'string' ? content : new TextDecoder().decode(content);
+  if (truncated) {
+    // A partial last line must not masquerade as a closing YAML delimiter.
+    const lastLine = markdown.lastIndexOf('\n');
+    if (lastLine < 0)
+      throw new SandboxSkillsConfigError(
+        'Skill metadata header exceeds its read limit',
+      );
+    markdown = markdown.slice(0, lastLine + 1);
+  }
+  return parseSkillFrontmatter(markdown, truncated);
 }
 const SKILLS_SECTION_INTRO = prompt`
 A skill is a set of local instructions to follow that is stored in a \`SKILL.md\` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.
@@ -333,6 +356,7 @@ export function resolveSkillsMetadata(
   capability: SkillConfiguration,
   runtimeMetadata: SkillIndexEntry[] = [],
   manifest?: Manifest,
+  limits?: SkillMetadataLimits,
 ): SkillIndexEntry[] {
   if (capability.skills.length > 0) {
     return capability.skills
@@ -349,6 +373,7 @@ export function resolveSkillsMetadata(
       capability.lazyFrom,
       manifest,
       capability.skillsPath,
+      limits,
     ) ??
     capability.index ??
     (runtimeMetadata.length > 0 ? runtimeMetadata : undefined) ??
@@ -512,6 +537,7 @@ function resolveLazySkillIndex(
   lazySource: LocalDirLazySkillSource | undefined,
   manifest?: Manifest,
   skillsPath: string = '.agents',
+  limits?: SkillMetadataLimits,
 ): SkillIndexEntry[] | undefined {
   if (!lazySource) {
     return undefined;
@@ -520,7 +546,9 @@ function resolveLazySkillIndex(
     return lazySource.index;
   }
   if (lazySource.getIndex && manifest) {
-    const derivedIndex = lazySource.getIndex(manifest, skillsPath);
+    const derivedIndex = limits
+      ? lazySource.getIndex(manifest, skillsPath, limits)
+      : lazySource.getIndex(manifest, skillsPath);
     return derivedIndex.length > 0 ? derivedIndex : undefined;
   }
 

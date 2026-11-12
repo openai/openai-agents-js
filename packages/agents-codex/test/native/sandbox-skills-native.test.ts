@@ -942,3 +942,119 @@ nativeIt(
   },
   20_000,
 );
+
+nativeIt.each(['count', 'aggregate', 'header'] as const)(
+  'bounds %s metadata in the default lazy local index before activation',
+  async (kind) => {
+    const hostRoot = await mkdtemp(join(tmpdir(), 'lazy-skill-metadata-'));
+    const document = `---\ndescription: ${'x'.repeat(kind === 'header' ? 100_000 : 60_000)}\n---\n`;
+    const count = kind === 'count' ? 1025 : kind === 'aggregate' ? 100 : 1;
+    const f = clientFixture();
+    try {
+      for (let i = 0; i < count; i++) {
+        const path = join(hostRoot, `skill-${i}`);
+        await mkdir(path);
+        if (kind !== 'count') await writeFile(join(path, 'SKILL.md'), document);
+      }
+      const source = sandboxEnvironment({
+        client: f.client,
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants: [{ path: hostRoot, readOnly: true }],
+        }),
+        skills: skills({
+          lazyFrom: localDirLazySkillSource({
+            src: hostRoot,
+            baseDir: hostRoot,
+          }),
+        }),
+        connect: async () =>
+          Environment.lease(
+            new Environment({
+              url: 'wss://fixture.invalid',
+              cwd: '/workspace',
+              capabilityDirectories: ['/workspace/.agents'],
+            }),
+            async () => {},
+          ),
+      });
+      await expect(
+        acquireEnvironment(source, new AbortController().signal),
+      ).rejects.toThrow(/Skill metadata.*limit/);
+      expect(f.closed).toHaveLength(1);
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+    }
+  },
+);
+
+nativeIt(
+  'loads a large local lazy document from its bounded captured index',
+  async () => {
+    const hostRoot = await mkdtemp(join(tmpdir(), 'native-lazy-prefix-'));
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([
+      [
+        call(
+          'load_skill',
+          { skill_name: 'report' },
+          { callId: 'bounded-local' },
+        ),
+      ],
+      [message('bounded local index')],
+    ]);
+    await using provider = await providerFor(server);
+    const document =
+      '---\nname: report\ndescription: BOUNDED_LOCAL_INDEX\n---\n' +
+      'body\n'.repeat(220_000);
+    let workspace = '';
+    try {
+      await mkdir(join(hostRoot, 'report'));
+      await writeFile(join(hostRoot, 'report/SKILL.md'), document);
+      const source = sandboxEnvironment({
+        client: new UnixLocalSandboxClient(),
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants: [{ path: hostRoot, readOnly: true }],
+        }),
+        skills: skills({
+          lazyFrom: localDirLazySkillSource({
+            src: hostRoot,
+            baseDir: hostRoot,
+          }),
+        }),
+        connect: async (sandbox) => {
+          workspace = sandbox.state.workspaceRootPath;
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: workspace,
+              capabilityDirectories: [join(workspace, '.agents')],
+              tools: [],
+            }),
+            async () => {},
+          );
+        },
+      });
+      await using session = await new Agent({
+        provider,
+        model: 'fixture-skills',
+        instructions: 'Load the indexed skill.',
+        tools: [...source.skillTools],
+      }).session({ environment: source });
+      await (await session.submit('Load report.')).wait();
+      expect(JSON.stringify(server.requests[0])).toContain(
+        'BOUNDED_LOCAL_INDEX',
+      );
+      expect(
+        await readFile(join(workspace, '.agents/report/SKILL.md'), 'utf8'),
+      ).toBe(document);
+      server.assertExhausted();
+    } finally {
+      await peer.close();
+      await rm(hostRoot, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);
