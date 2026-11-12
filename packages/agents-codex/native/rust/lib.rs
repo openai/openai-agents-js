@@ -3858,6 +3858,7 @@ impl NativeThread {
                 request,
                 response,
                 start_response,
+                handoff_target_profile_id,
             } = response;
             {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
@@ -3940,6 +3941,7 @@ impl NativeThread {
                         response: response.clone(),
                         start_response,
                         acceptance,
+                        handoff_target_profile_id,
                     })
                     .is_ok();
                 if sent {

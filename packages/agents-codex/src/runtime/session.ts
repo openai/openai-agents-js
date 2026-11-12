@@ -6,6 +6,12 @@ import {
 } from './callback-deliveries';
 import { NativeTurn, type NativeRunResult } from './native-turn';
 import { validatePrepareRequestCompatibility } from './opening-compatibility';
+import { handoffResultTarget } from './handoff-result';
+import {
+  acceptedText,
+  type AcceptText,
+  type AcceptedTextChunk,
+} from './accepted-text';
 import {
   captureHostedPromptReference,
   type HostedPromptSource,
@@ -34,7 +40,11 @@ import {
   releaseModelAttemptPayload,
   restoreModelUsageOffset,
 } from './model-attempts';
-import { parseRequestAttempts, type RequestAttempts } from './request-attempts';
+import {
+  mergeRequestAttempts,
+  parseRequestAttempts,
+  type RequestAttempts,
+} from './request-attempts';
 import type { ResponsesCompaction } from './responses-compaction';
 import { audioInputByteLimit } from './media';
 import {
@@ -849,6 +859,9 @@ export interface TurnRequestWait<T, NativeId extends string | null = string> {
   applicationToolOutputs?(): readonly ApplicationToolOutput[];
   runUsage?(): RunUsage;
   requestAttempts?(): RequestAttempts | undefined;
+  submissionRequestAttempts?(): RequestAttempts | undefined;
+  acceptedTextEvents?(): AsyncIterableIterator<Observation>;
+  acceptedTextOwns?(chunk: AcceptedTextChunk): boolean;
   notify(): void;
   rateLimits(): ApiRateLimits;
   wait(
@@ -940,6 +953,14 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     return this.requests?.requestAttempts?.();
   }
 
+  /** Settled sends for this logical submission, including owned continuations
+   * and isolated output repairs. Borrowed transport coverage remains explicit.
+   * Earlier restored work and unrelated submissions stay outside this report.
+   */
+  get submissionRequestAttempts(): RequestAttempts | undefined {
+    return this.requests?.submissionRequestAttempts?.();
+  }
+
   get guardrailResults(): readonly GuardrailRecord[] {
     return Object.freeze([...(this.requests?.guardrailResults?.() ?? [])]);
   }
@@ -966,6 +987,43 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
    */
   events(options: ObservationOptions = {}): AsyncIterableIterator<Observation> {
     return this.observations(options);
+  }
+
+  /** Publish only exact root item prefixes approved by the application.
+   * Approval is independent of final result validation and provider retries.
+   * Lost observations, invalid approval and more than 64 KiB pending fail closed.
+   * Closing this reader leaves execution unchanged.
+   */
+  acceptedText(accept: AcceptText): AsyncIterableIterator<AcceptedTextChunk> {
+    if (typeof accept !== 'function')
+      throw new TypeError(
+        'acceptedText requires an application acceptance callback',
+      );
+    if (this.childId !== null)
+      throw new TypeError('acceptedText requires a root Turn');
+    const observations = this.requests?.acceptedTextEvents?.() ?? this.events();
+    let closed = false;
+    const iterator = acceptedText(
+      observations,
+      accept,
+      (chunk) => !closed && this.requests?.acceptedTextOwns?.(chunk) === true,
+    );
+    return {
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+      next: (value?: unknown) => iterator.next(value),
+      return: async (value?: unknown) => {
+        closed = true;
+        await observations.return?.();
+        return iterator.return(value);
+      },
+      throw: async (error?: unknown) => {
+        closed = true;
+        await observations.return?.();
+        return iterator.throw(error);
+      },
+    };
   }
 
   /** @internal Check owner settlement without creating a result waiter. */
@@ -1558,6 +1616,14 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.options.chatGPTPlan)
       throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('open Realtime on');
+    if (
+      [...this.profileRuntimes.values()].some(
+        (runtime) => Object.keys(runtime.profile.decisionHandoffs ?? {}).length,
+      )
+    )
+      throw new TypeError(
+        'DecisionHandoff supports text Agents; use realtimeHandoff for Realtime routing',
+      );
     // A rejected startup cannot return its owner as a cleanup retry handle.
     // Keep it installed until this explicit retry joins its retained cleanup.
     if (this.realtimeOwner?._startupFailed) await this.realtimeOwner.close();
@@ -4385,10 +4451,37 @@ export class Session<OutputT = string, Context = unknown> {
           guardrailResults: () =>
             [...this.rootSteps(run)].flatMap((step) => step.guardrailResults),
           applicationToolOutputs: () => this.applicationOutputSnapshot(run),
+          acceptedTextEvents: () => this.observations.events({}, scope, true),
+          acceptedTextOwns: (chunk) => {
+            if (
+              chunk.sessionId !== this.id ||
+              !this.isOpen ||
+              this.graphStops.size ||
+              this.manualSealing ||
+              this.manualSealed
+            )
+              return false;
+            const steps = [...this.rootSteps(run)];
+            const source = steps.find((step) => step.id === chunk.turnId);
+            return (
+              source !== undefined &&
+              submissions.get(source)?.observation === 'open' &&
+              this.submissionIds.get(source) === chunk.submissionId &&
+              steps.at(-1) === source &&
+              this.current(source) &&
+              this.lifecycle.kind === 'turn' &&
+              this.lifecycle.run === source &&
+              source.failure === undefined
+            );
+          },
           rootResultReady: () => scope.phase() === 'ended',
           runUsage: () => this.runUsage(run),
           requestAttempts: () =>
             scope.phase() === 'ended' ? run.requestAttempts : undefined,
+          submissionRequestAttempts: () =>
+            scope.phase() === 'ended'
+              ? run.submissionRequestAttempts
+              : undefined,
           notify: () => this.observations.notify(),
           rateLimits: () => this.rateLimits(),
           wait: (turn, options, completion) =>
@@ -4598,6 +4691,17 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private finishObservation(run: NativeTurn): void {
+    // Preserve the native snapshot; only settle known zero before dispatch.
+    if (
+      run.captureRequestAttempts &&
+      run.id === null &&
+      !run.requestAttemptsStarted
+    )
+      run.submissionRequestAttempts ??= Object.freeze({
+        availability: 'complete',
+        counts: Object.freeze([]),
+        borrowedRequestsUnavailable: false,
+      });
     run.guardrailInput = undefined;
     releaseModelAttemptPayload(run);
     submissions.get(run)!.observation = 'ended';
@@ -5766,7 +5870,8 @@ export class Session<OutputT = string, Context = unknown> {
     parentTrace = this.options.parentTrace,
     guardrailInput?: UserInput,
     originalInput?: UserInput,
-    captureRequestAttempts = false,
+    captureRequestAttempts = this.repairUsageParent?.captureRequestAttempts ??
+      false,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -5989,19 +6094,27 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     const run = this.allocateRun(output, outputOverride);
     run.selection = selection;
+    run.captureRequestAttempts = continuedFrom?.captureRequestAttempts ?? false;
+    const dispatch = (tracingContext?: string) => {
+      if (run.captureRequestAttempts) {
+        this.#native._start_request_attempts();
+        run.requestAttemptsStarted = true;
+      }
+      return submit(run, tracingContext);
+    };
     // A retained continuation is the same admitted operation, not a new root.
     run.tracing = continuedFrom
       ? continuedFrom.tracing
       : this.captureRootTracing(tracing);
     if (continuedFrom) continuedFrom.tracing = undefined;
     this.dispatchRun(run, () => {
-      if (!run.tracing) return submit(run);
+      if (!run.tracing) return dispatch();
       return this.tracingContext(run).then((context) => {
         if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
           throw new TurnAborted(
             'Tracing admission stopped before native submission',
           );
-        return submit(run, context);
+        return dispatch(context);
       });
     });
     return run;
@@ -6437,6 +6550,13 @@ export class Session<OutputT = string, Context = unknown> {
             borrowedRequestsUnavailable: true,
           })
         : report;
+      let root = this.rootRun(run);
+      while (root.requestAttemptParent)
+        root = this.rootRun(root.requestAttemptParent);
+      root.submissionRequestAttempts = mergeRequestAttempts(
+        root.submissionRequestAttempts,
+        run.requestAttempts,
+      );
     }
   }
 
@@ -12539,6 +12659,11 @@ export class Session<OutputT = string, Context = unknown> {
             encodeReceipt({
               request: msg,
               response: responseOutput,
+              ...(handoffResultTarget(response) === undefined
+                ? {}
+                : {
+                    handoff_target_profile_id: handoffResultTarget(response),
+                  }),
               ...(isBackgroundToolResponse(response)
                 ? { start_response: false }
                 : {}),
