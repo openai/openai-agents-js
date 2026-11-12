@@ -999,7 +999,11 @@
     {
       "path": "sdk-independent-websocket-base.patch",
       "sha256": "bcb4ba165d5d56bfbd29f31405514224c96282ccf67a34d48f04af99d8809601"
+    },
+    {
+      "path": "sdk-mcp-discovery-cache.patch",
+      "sha256": "1b966cec16e6fc105e52c5675e648d71d906c87bd4dd111ca12583ef75aefcdc"
     }
   ],
-  "result_tree": "ecf7edd9f507c68993edd485360937507d07e505"
+  "result_tree": "98f3242d932770d4f763c548864bd6b1d6b4c5a5"
 }

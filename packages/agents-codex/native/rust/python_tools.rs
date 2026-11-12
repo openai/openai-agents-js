@@ -3658,11 +3658,28 @@ impl ToolContributor for PythonContributor {
                 .allowed_mcp_tools
                 .as_ref()
                 .is_some_and(|tools| !tools.is_empty());
+            let mcp_binding = step.get::<Arc<codex_mcp::McpBinding>>();
+            let discovery_selection = match &mcp_binding {
+                Some(binding) if !binding.tools().is_empty() => {
+                    crate::mcp_result_control::discovery_selection(thread, step)
+                        .map_err(|error| error.to_string())?
+                        .filter(|selection| {
+                            binding.tools().iter().any(|tool| {
+                                selection.filters_discovery(
+                                    &tool.server_name,
+                                    tool.tool.name.as_ref(),
+                                )
+                            })
+                        })
+                }
+                _ => None,
+            };
             let source_owned = active.is_none()
                 && cancellation.is_some()
-                && step.get::<ProfileCatalog>().is_some_and(|catalog| {
-                    catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
-                });
+                && (discovery_selection.is_some()
+                    || step.get::<ProfileCatalog>().is_some_and(|catalog| {
+                        catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
+                    }));
             let captured_mcp = thread
                 .get::<codex_extension_api::HostedModelTools>()
                 .map(|hosted| {
@@ -3816,8 +3833,7 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
-            let mcp_names = step
-                .get::<Arc<codex_mcp::McpBinding>>()
+            let mcp_names = mcp_binding
                 .map(|binding| {
                     binding
                         .tools()
@@ -3825,10 +3841,19 @@ impl ToolContributor for PythonContributor {
                         .filter_map(|tool| {
                             let name = tool.canonical_tool_name();
                             allowed.contains(&name).then(|| {
-                                json!({
+                                let mut projected = json!({
                                     "server": tool.server_name, "tool": tool.tool.name,
                                     "namespace": name.namespace, "name": name.name,
-                                })
+                                });
+                                if discovery_selection.as_ref().is_some_and(|selection| {
+                                    selection.filters_discovery(
+                                        &tool.server_name,
+                                        tool.tool.name.as_ref(),
+                                    )
+                                }) {
+                                    projected["definition"] = json!(&tool.tool);
+                                }
+                                projected
                             })
                         })
                         .collect::<Vec<_>>()
