@@ -537,6 +537,106 @@ export function createApplyPatchTool<T extends z.ZodType, Context>(
   return tool(captured);
 }
 
+async function recoverRunToolError<Context>(
+  phase: ToolErrorContext['phase'],
+  error: unknown,
+  context: ToolCallContext<Context>,
+  admit: () => void,
+  name: string,
+  errorFunction: ToolErrorFunction<Context> | null | undefined,
+): Promise<string> {
+  const formatter = context[toolErrorFormatterBinding];
+  if (errorFunction === null || !formatter || !context.call) throw error;
+  const defaultMessage =
+    phase === 'arguments'
+      ? `Invalid arguments for function '${name}'.`
+      : `Function '${name}' failed.`;
+  admit();
+  let formatted: unknown;
+  try {
+    formatted = await formatter(
+      Object.freeze({
+        context: context.context,
+        call: context.call,
+        signal: context.signal,
+        phase,
+        defaultMessage,
+        error,
+      }),
+    );
+  } catch (failure) {
+    // Cancellation cleanup keeps its original exception and existing owner.
+    try {
+      admit();
+    } catch {
+      throw failure;
+    }
+    return defaultMessage;
+  }
+  admit();
+  return typeof formatted === 'string' ? formatted : defaultMessage;
+}
+
+async function recoverFunctionBodyError<Context>(
+  error: unknown,
+  context: ToolContext<Context>,
+  admit: () => void,
+  name: string,
+  errorFunction: ToolErrorFunction<Context> | null | undefined,
+): Promise<string> {
+  try {
+    admit();
+  } catch {
+    throw error;
+  }
+  const text = errorFunction
+    ? await errorFunction(context, error)
+    : await recoverRunToolError(
+        'execution',
+        error,
+        context,
+        admit,
+        name,
+        errorFunction,
+      );
+  admit();
+  if (typeof text !== 'string')
+    throw new TypeError('errorFunction must return a string');
+  return text;
+}
+
+function captureFunctionContext<Context, Arguments>(
+  context: ToolCallContext<Context>,
+  originalArguments: Readonly<JsonObject>,
+  effectiveArguments: Readonly<Arguments>,
+): ToolContext<Context, Arguments> {
+  const callContext: ToolContext<Context, Arguments> = {
+    ...context,
+    reportUsage: (usage, options) => {
+      const reporter = (
+        context as ToolCallContext<Context> & {
+          [usageReportBinding]?: UsageReporter;
+        }
+      )[usageReportBinding];
+      if (!reporter)
+        throw new Error(
+          'Usage reporting requires an admitted native ToolContext',
+        );
+      context.signal.throwIfAborted();
+      reporter(usage, options);
+    },
+    decide:
+      context.decide ??
+      ((() =>
+        Promise.reject(
+          new Error('Decision helper requires an admitted callback'),
+        )) as BoundDecide),
+    originalArguments,
+    effectiveArguments,
+  };
+  return inheritToolSessionOwner(callContext, context);
+}
+
 /** @internal Bind one borrowed MCP tool to the existing managed callback owner. */
 export function createNamespacedFunctionTool<Context>(options: {
   namespace: Readonly<{ name: string; description?: string }>;
@@ -547,6 +647,7 @@ export function createNamespacedFunctionTool<Context>(options: {
     args: JsonObject,
     context: ToolCallContext<Context>,
     admit: () => void,
+    recover: (error: unknown) => Promise<ToolOutput>,
   ) => Promise<ToolOutput>;
 }): FunctionTool<Context> {
   const { namespace, name, description, parameters, execute } = options;
@@ -556,6 +657,7 @@ export function createNamespacedFunctionTool<Context>(options: {
     parameters,
     namespace: namespace.name,
     namespaceDescription: namespace.description,
+    errorFunction: undefined as ToolErrorFunction<Context> | null | undefined,
     async [prepareInvocation](
       args: JsonValue,
       context: ToolCallContext<Context>,
@@ -563,13 +665,39 @@ export function createNamespacedFunctionTool<Context>(options: {
       admit: () => void,
     ) {
       admit();
+      if (
+        this.errorFunction != null &&
+        typeof this.errorFunction !== 'function'
+      )
+        throw new TypeError('errorFunction must be a function');
       const parsed = losslessJsonObjectSchema.parse(args);
+      const original = Object.freeze(structuredClone(parsed));
+      const effective = Object.freeze(structuredClone(parsed));
       const result = await invokeWithTimeout(
-        (signal) =>
-          execute(parsed, { ...context, signal }, () => {
-            signal.throwIfAborted();
-            admit();
-          }),
+        (signal) => {
+          const callbackContext = inheritToolSessionOwner(
+            withDecisionSignal(context, signal),
+            context,
+          );
+          return execute(
+            parsed,
+            callbackContext,
+            () => {
+              signal.throwIfAborted();
+              admit();
+            },
+            async (error) => {
+              const text = await recoverFunctionBodyError(
+                error,
+                captureFunctionContext(callbackContext, original, effective),
+                admit,
+                name,
+                this.errorFunction,
+              );
+              return new ToolOutput([{ type: 'inputText', text }], false);
+            },
+          );
+        },
         context.signal,
         undefined,
         name,
@@ -821,43 +949,12 @@ export function tool<
       snapshot === parsed ? snapshot : Object.freeze(snapshot)
     ) as Readonly<ToolContextArguments<T>>;
   };
-  const recoverRunError = async (
+  const recoverRunError = (
     phase: ToolErrorContext['phase'],
     error: unknown,
     context: ToolCallContext<Context>,
     admit: () => void,
-  ): Promise<string> => {
-    const formatter = context[toolErrorFormatterBinding];
-    if (errorFunction === null || !formatter || !context.call) throw error;
-    const defaultMessage =
-      phase === 'arguments'
-        ? `Invalid arguments for function '${name}'.`
-        : `Function '${name}' failed.`;
-    admit();
-    let formatted: unknown;
-    try {
-      formatted = await formatter(
-        Object.freeze({
-          context: context.context,
-          call: context.call,
-          signal: context.signal,
-          phase,
-          defaultMessage,
-          error,
-        }),
-      );
-    } catch (failure) {
-      // Cancellation cleanup keeps its original exception and existing owner.
-      try {
-        admit();
-      } catch {
-        throw failure;
-      }
-      return defaultMessage;
-    }
-    admit();
-    return typeof formatted === 'string' ? formatted : defaultMessage;
-  };
+  ) => recoverRunToolError(phase, error, context, admit, name, errorFunction);
   const recoverOriginalInput = async (
     error: z.ZodError | SyntaxError,
     original: JsonValue,
@@ -959,31 +1056,11 @@ export function tool<
           };
         }
       }
-      let callContext: ToolContext<Context, ToolContextArguments<T>> = {
-        ...context,
-        reportUsage: (usage, options) => {
-          const reporter = (
-            context as ToolCallContext<Context> & {
-              [usageReportBinding]?: UsageReporter;
-            }
-          )[usageReportBinding];
-          if (!reporter)
-            throw new Error(
-              'Usage reporting requires an admitted native ToolContext',
-            );
-          context.signal.throwIfAborted();
-          reporter(usage, options);
-        },
-        decide:
-          context.decide ??
-          ((() =>
-            Promise.reject(
-              new Error('Decision helper requires an admitted callback'),
-            )) as BoundDecide),
+      let callContext = captureFunctionContext(
+        context,
         originalArguments,
-        effectiveArguments: snapshotEffectiveArguments(parsed),
-      };
-      inheritToolSessionOwner(callContext, context);
+        snapshotEffectiveArguments(parsed),
+      );
       admit();
       if (before) {
         const decision = await before(callContext);
@@ -1078,22 +1155,13 @@ export function tool<
         );
       } catch (error) {
         if (error instanceof FunctionBodyError) {
-          try {
-            admit();
-          } catch {
-            throw error.original;
-          }
-          const text = errorFunction
-            ? await errorFunction(callContext, error.original)
-            : await recoverRunError(
-                'execution',
-                error.original,
-                callContext,
-                admit,
-              );
-          admit();
-          if (typeof text !== 'string')
-            throw new TypeError('errorFunction must return a string');
+          const text = await recoverFunctionBodyError(
+            error.original,
+            callContext,
+            admit,
+            name,
+            errorFunction,
+          );
           return {
             success: false,
             contentItems: [{ type: 'inputText' as const, text }],
