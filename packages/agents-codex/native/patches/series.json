@@ -947,7 +947,11 @@
     {
       "path": "sdk-realtime-vad-provider-data.patch",
       "sha256": "bb38997bdffe09280acb438f7e31ae6e7b0a609f85c2ac072340b8a8dc7cb729"
+    },
+    {
+      "path": "sdk-plan-backed-model-retry.patch",
+      "sha256": "c3dead552ab58c35a5709ad8cec54e17570f9d19643ea00d7273e1963488d94b"
     }
   ],
-  "result_tree": "fe65bc6590bf68ea39c7a1df64f8579305f9e38a"
+  "result_tree": "afa0f4176bfff7eae18a2d5fb70f9f40eded7e40"
 }

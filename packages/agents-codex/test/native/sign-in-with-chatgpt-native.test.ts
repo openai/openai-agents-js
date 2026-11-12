@@ -1190,9 +1190,14 @@ it.each(['pre_turn', 'mid_turn'] as const)(
   20_000,
 );
 
-it.each([200, 429] as const)(
-  'settles a direct registered throttle Turn over HTTP %s without replay or fallback',
-  async (status) => {
+it.each([
+  [200, false],
+  [429, false],
+  [200, true],
+  [429, true],
+] as const)(
+  'settles a direct registered throttle Turn over HTTP %s without replay or fallback (retry policy: %s)',
+  async (status, useRetryPolicy) => {
     const bearer = token();
     const held = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -1214,11 +1219,16 @@ it.each([200, 429] as const)(
                     type: 'response.created',
                     response: { id: 'direct-throttle' },
                   },
-                  {
-                    type: 'response.output_item.done',
-                    output_index: 0,
-                    item: message('Unaccepted direct partial answer'),
-                  },
+                  // The retry-policy case isolates auth from the partial-output replay fence.
+                  ...(useRetryPolicy
+                    ? []
+                    : [
+                        {
+                          type: 'response.output_item.done',
+                          output_index: 0,
+                          item: message('Unaccepted direct partial answer'),
+                        },
+                      ]),
                   {
                     type: 'response.failed',
                     response: {
@@ -1261,7 +1271,14 @@ it.each([200, 429] as const)(
     const privateHop = vi.spyOn(route, 'handle');
     const source = plan(bearer);
     await using provider = source.provider;
-    await using session = await agent(provider).session();
+    const policy = vi.fn(() => ({ retry: true, delayMs: 0 }));
+    const owner = agent(provider);
+    if (useRetryPolicy)
+      owner.modelSettings = { retry: { maxRetries: 1, policy } };
+    const rolloutRoot = useRetryPolicy ? await directory() : undefined;
+    await using session = await owner.session(
+      rolloutRoot ? { storage: localStorage(rolloutRoot) } : {},
+    );
     const turn = await session.submit('One physical throttle attempt');
     const failed = turn.wait().then(
       () => {
@@ -1282,6 +1299,7 @@ it.each([200, 429] as const)(
       const attention = await turn.waitForAttention({
         signal: AbortSignal.timeout(5_000),
       });
+      expect(policy).not.toHaveBeenCalled();
       expect(attention).toMatchObject({
         type: 'needs_attention',
         reason: 'rate_limited',
@@ -1313,6 +1331,42 @@ it.each([200, 429] as const)(
       expect(source.getCredential).toHaveBeenCalledTimes(1);
       expect(privateHop).not.toHaveBeenCalled();
       server.assertExhausted();
+
+      if (rolloutRoot) {
+        await session.close();
+        const rollout = (await readdir(rolloutRoot, { recursive: true })).find(
+          (name) => name.endsWith(`${session.id}.jsonl`),
+        );
+        assert(rollout, 'Expected the retained root rollout');
+        const attempts = (await readFile(join(rolloutRoot, rollout), 'utf8'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+          .filter(
+            ({ type, payload }) =>
+              type === 'event_msg' &&
+              payload.type === '_sdk_model_attempt' &&
+              payload.turn_id === turn.turnId,
+          )
+          .map(({ payload }) => payload.data);
+        expect(attempts.map(({ phase }) => phase)).toEqual([
+          'started',
+          'finished',
+          'terminal',
+        ]);
+        const attemptId = attempts[0].attempt_id;
+        expect(attemptId).toEqual(expect.stringMatching(/\S/));
+        for (const attempt of attempts) {
+          expect(attempt).toMatchObject({
+            attempt_id: attemptId,
+            owner_attempt_id: attemptId,
+            terminal_attempt_id: null,
+          });
+        }
+        expect(attempts.slice(1).map(({ usage }) => usage.requests)).toEqual([
+          1, 1,
+        ]);
+      }
     } finally {
       release.resolve();
     }
