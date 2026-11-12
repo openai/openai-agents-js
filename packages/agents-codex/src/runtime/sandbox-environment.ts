@@ -115,14 +115,14 @@ async function observeSandboxLifecycle<T>(
     data: { backend_id: backendId },
   };
   // Sink completion never controls acquisition or cleanup.
-  void runtime.emitSandboxEvent({
+  runtime.dispatchSandboxEvent({
     ...event,
     phase: 'start',
     timestamp: new Date(startedAt).toISOString(),
   });
   try {
     const result = await operation();
-    void runtime.emitSandboxEvent({
+    runtime.dispatchSandboxEvent({
       ...event,
       data: { backend_id: backendId },
       phase: 'end',
@@ -131,7 +131,7 @@ async function observeSandboxLifecycle<T>(
     });
     return result;
   } catch (error) {
-    void runtime.emitSandboxEvent({
+    runtime.dispatchSandboxEvent({
       ...event,
       data: { backend_id: backendId },
       phase: 'error',

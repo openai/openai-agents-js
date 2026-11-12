@@ -87,9 +87,11 @@ describe('native sandbox environment', () => {
         f.events.push('start');
       });
       const lines: string[] = [];
+      const cancelBody = vi.fn(async () => {});
       const post = vi.fn<SandboxHttpEventFetch>(async () => ({
         ok: true,
         status: 200,
+        body: { cancel: cancelBody },
       }));
       const remove = addSandboxEventSink(
         createChainedSandboxEventSink(
@@ -146,6 +148,7 @@ describe('native sandbox environment', () => {
         expect(post.mock.calls.map(([, request]) => request.body)).toEqual(
           lines.map((line) => line.trimEnd()),
         );
+        expect(cancelBody).toHaveBeenCalledTimes(6);
         remove();
         const next = fixture();
         const unobserved = await sandboxEnvironment({
@@ -229,6 +232,56 @@ describe('native sandbox environment', () => {
       expect(f.connect).not.toHaveBeenCalled();
     } finally {
       remove();
+    }
+  });
+
+  it('bounds stalled HTTP deliveries and aborts them on timeout and removal', async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const post = vi.fn<SandboxHttpEventFetch>(async (_endpoint, { signal }) => {
+      if (signal) signals.push(signal);
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    });
+    const remove = addSandboxEventSink(
+      createSandboxHttpEventSink({
+        endpoint: 'https://sink.invalid',
+        fetch: post,
+      }),
+    );
+    const healthy = vi.fn();
+    const removeHealthy = addSandboxEventSink(healthy);
+    const openAndClose = async () => {
+      const f = fixture();
+      f.resource.start = vi.fn(async () => {});
+      const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+      const lease = await source({ signal: new AbortController().signal });
+      await lease.close();
+      expect(f.resource.close).toHaveBeenCalledOnce();
+      expect(f.client.delete).toHaveBeenCalledOnce();
+    };
+    try {
+      for (let i = 0; i < 8; i++) await openAndClose();
+      expect(healthy).toHaveBeenCalledTimes(48);
+      expect(post).toHaveBeenCalledTimes(32);
+      expect(signals).toHaveLength(32);
+      expect(signals.every((signal) => !signal.aborted)).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+      await openAndClose();
+      const remaining = signals.slice(32);
+      expect(remaining).toHaveLength(6);
+      expect(remaining.every((signal) => !signal.aborted)).toBe(true);
+      remove();
+      expect(remaining.every((signal) => signal.aborted)).toBe(true);
+    } finally {
+      remove();
+      removeHealthy();
+      vi.useRealTimers();
     }
   });
 
