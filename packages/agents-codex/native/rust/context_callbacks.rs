@@ -1089,6 +1089,8 @@ pub(super) struct ModelReply {
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
     #[serde(default)]
+    received_cache_write_input_tokens: Option<i64>,
+    #[serde(default)]
     raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
 #[derive(Deserialize)]
@@ -1235,7 +1237,16 @@ impl PythonTools {
                                 status:
                                     codex_protocol::protocol::ResponseObservationStatus::Completed,
                                 incomplete_reason: None,
-                                usage: None,
+                                usage: reply.received_cache_write_input_tokens.map(|count| {
+                                    codex_protocol::protocol::ReceivedResponseUsage {
+                                        input_tokens: None,
+                                        cached_input_tokens: None,
+                                        cache_write_input_tokens: Some(count),
+                                        output_tokens: None,
+                                        reasoning_output_tokens: None,
+                                        total_tokens: None,
+                                    }
+                                }),
                             },
                         )),
                     );
@@ -1453,6 +1464,12 @@ impl PythonTools {
                 !reply.response_id.trim().is_empty(),
                 "Model response requires an identifier"
             );
+            if let Some(count) = reply.received_cache_write_input_tokens {
+                ensure!(
+                    (0..=9_007_199_254_740_991).contains(&count),
+                    "Invalid received cache-write token count"
+                );
+            }
             if let (Some(attempt), Some(usage)) = (&attempt, &reply.usage) {
                 attempt
                     .report_usage(usage.clone())

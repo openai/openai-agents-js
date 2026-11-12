@@ -46,6 +46,9 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
+const receivedCacheWriteInputTokens = Symbol(
+  'received cache-write input tokens',
+);
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
 
@@ -149,6 +152,16 @@ export function captureModelResponse(
     if (response.usage.total_tokens === undefined)
       usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
+  const cacheWrite = (
+    response as ModelResponse & { [receivedCacheWriteInputTokens]?: number }
+  )[receivedCacheWriteInputTokens];
+  if (
+    cacheWrite !== undefined &&
+    (!Number.isSafeInteger(cacheWrite) || cacheWrite < 0)
+  )
+    throw new TypeError(
+      'Received cache-write usage requires a nonnegative safe integer token counter',
+    );
   const raw = captureRawProviderEvents
     ? (response as ModelResponse & { [rawChatCompletion]?: JsonObject })[
         rawChatCompletion
@@ -174,6 +187,9 @@ export function captureModelResponse(
     response_id: responseId,
     output: response.output,
     usage,
+    ...(cacheWrite !== undefined
+      ? { received_cache_write_input_tokens: cacheWrite }
+      : {}),
     ...(raw ? { raw_chat_completion: raw } : {}),
     ...(original
       ? {
@@ -933,6 +949,8 @@ function projectResponsesResponse(response: any): ModelResponse {
   if (response.status !== 'completed' && !refusal)
     throw new TypeError('Responses adapter requires a completed response');
   const usage = response.usage;
+  const cacheWrite =
+    usage?.input_tokens_details?.cache_write_tokens ?? undefined;
   const projected: ModelResponse = {
     output,
     ...(response.id ? { responseId: response.id } : {}),
@@ -943,14 +961,17 @@ function projectResponsesResponse(response: any): ModelResponse {
             output_tokens: usage.output_tokens ?? 0,
             total_tokens: usage.total_tokens ?? 0,
             cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
-            cache_write_input_tokens:
-              usage.input_tokens_details?.cache_write_tokens ?? 0,
+            cache_write_input_tokens: cacheWrite ?? 0,
             reasoning_output_tokens:
               usage.output_tokens_details?.reasoning_tokens ?? 0,
           },
         }
       : {}),
   };
+  if (cacheWrite !== undefined)
+    Object.defineProperty(projected, receivedCacheWriteInputTokens, {
+      value: cacheWrite,
+    });
   if (
     response.status === 'completed' &&
     typeof response.id === 'string' &&
