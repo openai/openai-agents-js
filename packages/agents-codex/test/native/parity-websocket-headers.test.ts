@@ -45,6 +45,7 @@ function unavailableSocket(body: Buffer, responseHeaders = headers) {
     close: vi.fn(async () => {}),
     project_response_items: unexpected,
     send_text: unexpected,
+    _send_owned_text: unexpected,
     receive: unexpected,
   } satisfies NativeModelWebSocket;
 }

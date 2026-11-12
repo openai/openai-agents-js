@@ -50,3 +50,15 @@ Returning `undefined` from `beforeComplete` has been accepting a proposal for su
 The second successful scenario has been selecting a Zod schema with `outputType: SupportResult`. The SDK has been validating the final JSON before resolving `turn.wait()` with the typed result. A callback inspecting `context.text` has been receiving proposed raw text before that validation; it has not been receiving a typed guarantee from the text alone. The [output contracts guide](output.md) has been explaining native and prompted output modes.
 
 After the successful wait, the application has been checking the result's category before adding it to the support destination. The unapproved scenario has been demonstrating that a schema-valid result can still fail an application approval check. Each failure scenario has been retaining its publication destination as empty and emitting only a fixed failure category. Error details, rejected text, history, and traces have been needing separate handling under the application's data policy.
+
+## Publishing independent sections
+
+The inventory and dispatch sections have been passing their own checks in separate Turns. The example has been publishing each section before starting the next. The delivery section has been failing its check, so the example has been withholding it while keeping the earlier sections available.
+
+This pattern has been applying when each section has its own evidence and permission to publish. When a later check can invalidate an earlier section, the whole answer has been requiring a successful final result before delivery.
+
+## Observing accepted output
+
+On the matching source build, `agent.session({ includeOutputAccepted: true })` has been enabling `output_accepted`. Turn and Session readers have been receiving this metadata after a successful logical result, including any continuation and output validation. `submissionId` has been identifying the original submission. For a manually restored Turn, it has been identifying the restored handle in the current Session. `turnId` has been identifying the final native step.
+
+The event has been carrying identity only. `await turn.wait()` has been supplying the accepted result for the application's own checks and publication. Bounded readers have still been able to report gaps, so the event has been serving as a notification rather than a delivery receipt.

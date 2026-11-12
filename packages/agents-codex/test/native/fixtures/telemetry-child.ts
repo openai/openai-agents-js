@@ -7,6 +7,7 @@ import {
   Agent,
   DecisionError,
   NativeProvider,
+  TraceContext,
   telemetry,
   tool,
 } from '../../../src';
@@ -190,26 +191,131 @@ async function main() {
       ]),
       /traceProcessors/,
     );
-    await telemetry.withTrace({ name: 'before-replacement' }, async () => {});
-    assert.equal((await telemetry.forceFlush()).status, 'success');
-    for (const events of [configured, perEvent.events, added]) {
-      assert(events.some((event) => event.name === 'before-replacement'));
-    }
-    const replaced: telemetry.TraceEvent[] = [];
-    await telemetry.setTraceProcessors([
-      {
-        onEvents(events) {
-          replaced.push(...events);
-        },
+    const queued: telemetry.TraceEvent[] = [];
+    const release = Promise.withResolvers<void>();
+    await telemetry.addTraceProcessor({
+      async onEvents(events) {
+        await release.promise;
+        queued.push(...events);
       },
-    ]);
-    await telemetry.withTrace({ name: 'after-replacement' }, async () => {});
-    assert.equal((await telemetry.forceFlush()).status, 'success');
-    assert(replaced.some((event) => event.name === 'after-replacement'));
-    for (const events of [configured, perEvent.events, added]) {
-      assert(!events.some((event) => event.name === 'after-replacement'));
+    });
+    const replaced: telemetry.TraceEvent[] = [];
+    try {
+      await telemetry.withTrace({ name: 'before-replacement' }, async () => {});
+      assert.deepEqual(queued, []);
+      await telemetry.setTraceProcessors([
+        {
+          onEvents(events) {
+            replaced.push(...events);
+          },
+        },
+      ]);
+      await telemetry.withTrace({ name: 'after-replacement' }, async () => {});
+    } finally {
+      release.resolve();
     }
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    for (const events of [configured, perEvent.events, added, queued]) {
+      assert.deepEqual(
+        events.map(({ name }) => name),
+        ['before-replacement', 'before-replacement'],
+      );
+    }
+    assert.deepEqual(
+      replaced.map(({ name }) => name),
+      ['after-replacement', 'after-replacement'],
+    );
     await telemetry.shutdown();
+  } else if (mode === 'external-parent-export') {
+    const events: telemetry.TraceEvent[] = [];
+    const received: { data: { id?: string; trace_id?: string }[] }[] = [];
+    const collector = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received.push(JSON.parse(Buffer.concat(chunks).toString()));
+      response.writeHead(200).end();
+    });
+    await new Promise<void>((resolve) =>
+      collector.listen(0, '127.0.0.1', resolve),
+    );
+    const address = collector.address();
+    assert(address && typeof address !== 'string');
+    const localId = '1'.repeat(32);
+    const remoteId = '2'.repeat(32);
+    const remoteParent = '3'.repeat(16);
+    try {
+      await telemetry.configure({
+        traceProcessors: [
+          { onEvent: (event) => void events.push(event) },
+          new telemetry.OpenAITraceExporter({
+            apiKey: 'synthetic-key',
+            endpoint: `http://127.0.0.1:${address.port}/v1/traces/ingest`,
+          }),
+        ],
+      });
+      try {
+        await telemetry.withTrace(
+          { name: 'local workflow', traceId: localId },
+          async () => {},
+        );
+        assert.equal((await telemetry.forceFlush()).status, 'success');
+        assert(
+          received
+            .flatMap(({ data }) => data)
+            .some(({ id }) => id === `trace_${localId}`),
+        );
+
+        const server = new ModelServer([[message('synthetic result')]]);
+        const config = await server.config();
+        const provider = new NativeProvider({
+          baseUrl: (config['model_providers.fixture'] as { base_url: string })
+            .base_url,
+          apiKey: 'synthetic-model-key',
+          supportsWebsockets: false,
+        });
+        try {
+          const result = await new Agent({
+            instructions: 'Respond.',
+            provider,
+          }).run('synthetic request', {
+            parentTrace: new TraceContext({
+              traceparent: `00-${remoteId}-${remoteParent}-01`,
+            }),
+          });
+          assert.equal(result.finalOutput, 'synthetic result');
+          server.assertExhausted();
+        } finally {
+          await provider.close();
+          await ModelServer.closeAll();
+        }
+
+        const flush = await telemetry.forceFlush();
+        assert.equal(flush.status, 'partial');
+        assert(flush.failedDeliveries > 0);
+        assert.equal(flush.droppedRecords, 0);
+        assert(
+          events.some(
+            (event) =>
+              event.trace_id === remoteId &&
+              event.parent_span_id === remoteParent &&
+              event.lifecycle === 'end',
+          ),
+        );
+        assert(
+          received
+            .flatMap(({ data }) => data)
+            .every(
+              ({ id, trace_id }) =>
+                id !== `trace_${remoteId}` && trace_id !== `trace_${remoteId}`,
+            ),
+        );
+      } finally {
+        await telemetry.shutdown();
+      }
+    } finally {
+      collector.closeAllConnections();
+      await new Promise<void>((resolve) => collector.close(() => resolve()));
+    }
   } else if (mode === 'lifecycle') {
     await assert.rejects(
       telemetry.shutdown(),

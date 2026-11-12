@@ -1,0 +1,695 @@
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index b2e0cf3..f7972b2 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -237,18 +237,37 @@ impl ResponsesWebsocketConnection {
+             .is_none_or(|stream| stream.pump_task.is_finished())
+     }
+ 
++    pub async fn stream_request(
++        &self,
++        request: ResponsesWsRequest<'_>,
++        connection_reused: bool,
++        turn_state: Option<Arc<OnceLock<String>>>,
++        observe_raw_provider_events: bool,
++    ) -> Result<ResponseStream, ApiError> {
++        self.stream_request_with_observer(
++            request,
++            connection_reused,
++            turn_state,
++            observe_raw_provider_events,
++            None,
++        )
++        .await
++    }
++
++    /// Captures a content-free send observer into this exact request's producer.
+     #[instrument(
+         name = "responses_websocket.stream_request",
+         level = "info",
+         skip_all,
+         fields(transport = "responses_websocket", api.path = "/responses")
+     )]
+-    pub async fn stream_request(
++    pub async fn stream_request_with_observer(
+         &self,
+         request: ResponsesWsRequest<'_>,
+         connection_reused: bool,
+         turn_state: Option<Arc<OnceLock<String>>>,
+         observe_raw_provider_events: bool,
++        observer: Option<Arc<dyn Fn() + Send + Sync>>,
+     ) -> Result<ResponseStream, ApiError> {
+         let (tx_event, rx_event) =
+             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
+@@ -340,6 +359,7 @@ impl ResponsesWebsocketConnection {
+                             &timing_log_context,
+                             rx_interrupt,
+                             observe_raw_provider_events && !timing_log_context.warmup,
++                            observer,
+                         ) => result,
+                         _ = &mut stopped => Err(ApiError::Stream("local response invocation stopped".into())),
+                         _ = tx_event.closed() => Err(ApiError::Stream(
+@@ -694,9 +714,13 @@ async fn run_websocket_response_stream(
+     timing_log_context: &ResponsesWebsocketTimingLogContext,
+     interrupt: oneshot::Receiver<()>,
+     observe_raw_provider_events: bool,
++    observer: Option<Arc<dyn Fn() + Send + Sync>>,
+ ) -> Result<(), ApiError> {
+     let mut last_server_model: Option<String> = None;
+     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
++    if let Some(observer) = observer {
++        observer();
++    }
+     send_websocket_request(
+         ws_stream,
+         request_text,
+@@ -1114,6 +1138,7 @@ mod tests {
+             &context,
+             rx_interrupt,
+             /*observe_raw_provider_events*/ false,
++            None,
+         )
+         .await
+         .unwrap_err();
+@@ -1252,6 +1277,7 @@ mod tests {
+                 &context,
+                 rx_interrupt,
+                 false,
++                None,
+             )
+             .await
+             .unwrap_err();
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 2bbd50b..50139a7 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -591,6 +591,7 @@ struct ModelResponsesTransport<F> {
+     direct: Option<codex_extension_api::ModelHttpStream>,
+     fallback: F,
+     defaults: ApiHeaderMap,
++    attempts: Option<crate::session::sdk_request_attempts::AttemptRoute>,
+ }
+ 
+ impl<F> codex_client::HttpTransport for ModelResponsesTransport<F>
+@@ -601,7 +602,13 @@ where
+         &self,
+         req: codex_client::Request,
+     ) -> std::result::Result<codex_client::Response, codex_client::TransportError> {
+-        codex_client::HttpTransport::execute(&(self.fallback)()?, req).await
++        let transport = (self.fallback)()?;
++        if self.direct.is_none() {
++            if let Some(attempts) = &self.attempts {
++                attempts.record(1);
++            }
++        }
++        codex_client::HttpTransport::execute(&transport, req).await
+     }
+ 
+     async fn stream(
+@@ -620,7 +627,11 @@ where
+             }
+             direct(req).await
+         } else {
+-            codex_client::HttpTransport::stream(&(self.fallback)()?, req).await
++            let transport = (self.fallback)()?;
++            if let Some(attempts) = &self.attempts {
++                attempts.record(0);
++            }
++            codex_client::HttpTransport::stream(&transport, req).await
+         }
+     }
+ }
+@@ -2263,6 +2274,10 @@ impl ModelClientSession {
+                         .map_err(|error| codex_client::TransportError::Build(error.to_string()))
+                 },
+                 defaults: codex_login::default_client::default_headers(),
++                attempts: responses_metadata
++                    .sdk_request_attempts
++                    .clone()
++                    .map(|route| route.with_http_mode(prompt.prefer_buffered_response)),
+             };
+             let request_auth_context = AuthRequestTelemetryContext::new(
+                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+@@ -2345,7 +2360,7 @@ impl ModelClientSession {
+                 session_telemetry_for_request(session_telemetry, &request);
+             let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
+             options.extra_headers.extend(responses_headers);
+-            let interceptors = crate::model_request::prepare(
++            let interceptors = crate::model_request::prepare_with_attempts(
+                 &self.client.request_contributors,
+                 &self.client.state.thread_id.to_string(),
+                 &model_info.slug,
+@@ -2353,6 +2368,13 @@ impl ModelClientSession {
+                 codex_extension_api::ModelRequestKind::Generation,
+                 &mut request.client_metadata,
+                 prompt.tool_admission.clone(),
++                responses_metadata
++                    .sdk_request_attempts
++                    .clone()
++                    .map(|route| {
++                        Arc::new(route.with_http_mode(prompt.prefer_buffered_response))
++                            as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
++                    }),
+             );
+             let inference_trace_attempt = inference_trace.start_attempt();
+             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
+@@ -2411,6 +2433,14 @@ impl ModelClientSession {
+                     .as_ref()
+                     .is_some_and(|input| input == &request.input))
+             .then(|| (request.model.clone(), client_setup.auth_owner_generation));
++            if interceptors
++                .iter()
++                .any(|interceptor| interceptor.produces_response())
++            {
++                if let Some(attempts) = &responses_metadata.sdk_request_attempts {
++                    attempts.borrowed();
++                }
++            }
+             let produced = crate::model_request::produce_response(&interceptors, &request)
+                 .await
+                 .map_err(CodexErr::Fatal)?;
+@@ -2607,6 +2637,12 @@ impl ModelClientSession {
+             } else {
+                 session_telemetry_for_request(session_telemetry, &request)
+             };
++            let private_response_route =
++                self.client.request_contributors.iter().any(|contributor| {
++                    contributor
++                        .http_stream(&client_setup.api_provider.url_for_path("/responses"))
++                        .is_some()
++                });
+             match self
+                 .websocket_connection(WebsocketConnectParams {
+                     session_telemetry,
+@@ -2755,7 +2791,7 @@ impl ModelClientSession {
+                 client_setup.auth.as_ref(),
+                 &responses_headers,
+             );
+-            let interceptors = crate::model_request::prepare(
++            let interceptors = crate::model_request::prepare_with_attempts(
+                 &self.client.request_contributors,
+                 &self.client.state.thread_id.to_string(),
+                 &model_info.slug,
+@@ -2767,6 +2803,13 @@ impl ModelClientSession {
+                 },
+                 &mut ws_payload.client_metadata,
+                 prompt.tool_admission.clone(),
++                responses_metadata
++                    .sdk_request_attempts
++                    .clone()
++                    .map(|route| {
++                        Arc::new(route)
++                            as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
++                    }),
+             );
+             let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
+             stamp_ws_stream_request_start_ms(&mut ws_request);
+@@ -2820,12 +2863,18 @@ impl ModelClientSession {
+                     codex_extension_api::ModelRequestTransport::Websocket,
+                 )
+             };
++            let observer = responses_metadata
++                .sdk_request_attempts
++                .clone()
++                .filter(|_| !private_response_route)
++                .map(|route| Arc::new(move || route.record(2)) as Arc<dyn Fn() + Send + Sync>);
+             let stream_result = websocket_connection
+-                .stream_request(
++                .stream_request_with_observer(
+                     ws_request,
+                     self.websocket_session.connection_reused(),
+                     Some(Arc::clone(&self.turn_state)),
+                     prompt.observe_raw_provider_events,
++                    observer,
+                 )
+                 .await;
+             if let Some(original_item_ids) = original_item_ids {
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+index 318a8b6..e3880c7 100644
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -2831,6 +2831,7 @@ mod direct_model_http_transport {
+             http::HeaderValue::from_bytes(b"\xe9").unwrap(),
+         );
+         let transport = super::super::ModelResponsesTransport {
++            attempts: None,
+             direct: Some(Arc::new(move |request| {
+                 *target.lock().unwrap() = Some(request.headers);
+                 Box::pin(async { Err(TransportError::Build("captured".into())) })
+@@ -2891,6 +2892,7 @@ mod direct_model_http_transport {
+         let physical = codex_client::ReqwestTransport::from_http_client(physical);
+         let constructions = AtomicUsize::new(0);
+         let transport = super::super::ModelResponsesTransport {
++            attempts: None,
+             direct: Some(Arc::new(|_| panic!("execute invoked streaming callback"))),
+             fallback: || {
+                 constructions.fetch_add(1, Ordering::SeqCst);
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index a01e7e1..b4ec762 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -333,6 +333,14 @@ impl CodexThread {
+             .is_elicitation_pending(server, token)
+     }
+ 
++    /// Starts content-free send counting for one owned SDK native turn.
++    pub fn sdk_start_request_attempts(&self) -> crate::SdkRequestAttemptsLink {
++        let capture = crate::session::sdk_request_attempts::SdkRequestAttempts::default();
++        let link = capture.child_link();
++        self.thread_extension_data().insert(capture);
++        link
++    }
++
+     /// Starts ephemeral provider usage capture for one owned SDK run.
+     pub fn sdk_start_raw_usage(&self) -> crate::SdkRawUsageLink {
+         let capture = crate::session::sdk_raw_usage::SdkRawUsage::default();
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 7fdac3f..97534eb 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -70,6 +70,7 @@ pub use codex_thread::GuardianRootSnapshot;
+ pub use codex_thread::ThreadConfigSnapshot;
+ pub use owned_question::OwnedQuestion;
+ pub use session::sdk_raw_usage::SdkRawUsageLink;
++pub use session::sdk_request_attempts::SdkRequestAttemptsLink;
+ pub use session::turn_context::TurnContext;
+ pub use thread_startup_metadata::ThreadStartupMetadata;
+ mod agent;
+diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index 9976e4d..b0bc5c4 100644
+--- a/codex-rs/core/src/model_request.rs
++++ b/codex-rs/core/src/model_request.rs
+@@ -31,12 +31,35 @@ pub(crate) fn prepare(
+     kind: ModelRequestKind,
+     metadata: &mut Option<HashMap<String, String>>,
+     tool_admission: Option<Arc<dyn ModelToolAdmission>>,
++) -> Vec<Box<dyn ModelResponseInterceptor>> {
++    prepare_with_attempts(
++        contributors,
++        thread_id,
++        model,
++        model_omitted,
++        kind,
++        metadata,
++        tool_admission,
++        None,
++    )
++}
++
++pub(crate) fn prepare_with_attempts(
++    contributors: &[Arc<dyn ModelRequestContributor>],
++    thread_id: &str,
++    model: &str,
++    model_omitted: bool,
++    kind: ModelRequestKind,
++    metadata: &mut Option<HashMap<String, String>>,
++    tool_admission: Option<Arc<dyn ModelToolAdmission>>,
++    attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
+ ) -> Vec<Box<dyn ModelResponseInterceptor>> {
+     contributors
+         .iter()
+         .filter_map(|contributor| {
+             let mut additions = None;
+             let interceptor = contributor.request(ModelRequestInput {
++                attempts: attempts.clone(),
+                 kind,
+                 thread_id,
+                 client_metadata: &mut additions,
+diff --git a/codex-rs/core/src/responses_metadata.rs b/codex-rs/core/src/responses_metadata.rs
+index bfdeb3b..1f1cb3d 100644
+--- a/codex-rs/core/src/responses_metadata.rs
++++ b/codex-rs/core/src/responses_metadata.rs
+@@ -229,6 +229,7 @@ pub(crate) enum TurnToolSource {
+ /// truth.
+ #[derive(Clone, Debug)]
+ pub struct CodexResponsesMetadata {
++    pub(crate) sdk_request_attempts: Option<crate::session::sdk_request_attempts::AttemptRoute>,
+     /// Guardian parent reference; projected only onto a Guardian request.
+     pub(crate) parent_response_id: Option<String>,
+     pub(crate) installation_id: String,
+@@ -275,6 +276,7 @@ impl CodexResponsesMetadata {
+         window_id: String,
+     ) -> Self {
+         Self {
++            sdk_request_attempts: None,
+             parent_response_id: None,
+             installation_id,
+             session_id,
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 617f7a2..d0769bd 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -269,6 +269,7 @@ mod rollout_budget;
+ mod rollout_reconstruction;
+ pub(crate) mod sdk_produced_items;
+ pub(crate) mod sdk_raw_usage;
++pub(crate) mod sdk_request_attempts;
+ #[allow(clippy::module_inception)]
+ pub(crate) mod session;
+ pub(crate) mod startup_prewarm;
+diff --git a/codex-rs/core/src/session/sdk_request_attempts.rs b/codex-rs/core/src/session/sdk_request_attempts.rs
+new file mode 100644
+index 0000000..c52309e
+--- /dev/null
++++ b/codex-rs/core/src/session/sdk_request_attempts.rs
+@@ -0,0 +1,273 @@
++//! Content-free send-start counts for one owned SDK native turn.
++use std::sync::{Arc, Mutex, Weak};
++
++use codex_extension_api::ExtensionData;
++use codex_protocol::error::{CodexErr, Result as CodexResult};
++use serde::Serialize;
++
++const OPERATIONS: [&str; 3] = ["generation", "compaction", "internal"];
++const TRANSPORTS: [&str; 3] = ["http_sse", "http_json", "websocket"];
++
++#[derive(Debug, Default)]
++struct Capture {
++    turn_id: Option<String>,
++    root_turn_id: Option<String>,
++    counts: [[[u64; 3]; 3]; 2],
++    borrowed: bool,
++    overflowed: bool,
++    finished: bool,
++}
++
++#[derive(Clone, Debug)]
++enum Owner {
++    Root(Arc<Mutex<Capture>>),
++    Child(Weak<Mutex<Capture>>),
++}
++
++#[derive(Clone, Debug)]
++pub struct SdkRequestAttemptsLink(Arc<Mutex<Capture>>);
++
++impl SdkRequestAttemptsLink {
++    pub fn seal(&self, turn_id: &str) {
++        let mut capture = self
++            .0
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if capture.turn_id.as_deref().is_none_or(|id| id == turn_id) {
++            capture.turn_id.get_or_insert_with(|| turn_id.to_owned());
++            capture.finished = true;
++        }
++    }
++
++    pub fn read(&self, turn_id: &str) -> CodexResult<String> {
++        SdkRequestAttempts(Owner::Root(self.0.clone())).finish(turn_id)
++    }
++
++    pub fn attach(&self, store: &ExtensionData) {
++        store.insert(SdkRequestAttempts(Owner::Child(Arc::downgrade(&self.0))));
++    }
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct SdkRequestAttempts(Owner);
++
++impl Default for SdkRequestAttempts {
++    fn default() -> Self {
++        Self(Owner::Root(Arc::default()))
++    }
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct AttemptRoute {
++    capture: Weak<Mutex<Capture>>,
++    owner: usize,
++    operation: usize,
++    http_transport: usize,
++}
++
++impl codex_extension_api::ModelRequestAttemptsObserver for AttemptRoute {
++    fn send_started(&self, transport: codex_extension_api::ModelRequestTransport) {
++        self.record(match transport {
++            codex_extension_api::ModelRequestTransport::HttpSse => 0,
++            codex_extension_api::ModelRequestTransport::HttpJson => 1,
++            codex_extension_api::ModelRequestTransport::Websocket => 2,
++        });
++    }
++}
++
++impl AttemptRoute {
++    pub(crate) fn with_http_mode(mut self, buffered: bool) -> Self {
++        self.http_transport = usize::from(buffered);
++        self
++    }
++    pub(crate) fn record(&self, transport: usize) {
++        let Some(capture) = self.capture.upgrade() else {
++            return;
++        };
++        let mut capture = capture
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if capture.finished || capture.overflowed {
++            return;
++        }
++        let transport = if transport < 2 {
++            self.http_transport
++        } else {
++            transport
++        };
++        let count = &mut capture.counts[self.owner][self.operation][transport];
++        match count.checked_add(1) {
++            Some(next) => *count = next,
++            None => capture.overflowed = true,
++        }
++    }
++
++    pub(crate) fn borrowed(&self) {
++        if let Some(capture) = self.capture.upgrade() {
++            let mut capture = capture
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if !capture.finished {
++                capture.borrowed = true;
++            }
++        }
++    }
++}
++
++#[derive(Serialize)]
++struct Count {
++    owner: &'static str,
++    operation: &'static str,
++    transport: &'static str,
++    count: String,
++}
++
++#[derive(Serialize)]
++struct Report {
++    availability: &'static str,
++    counts: Vec<Count>,
++    borrowed_requests_unavailable: bool,
++}
++
++impl SdkRequestAttempts {
++    pub(crate) fn child_link(&self) -> SdkRequestAttemptsLink {
++        SdkRequestAttemptsLink(match &self.0 {
++            Owner::Root(capture) => capture.clone(),
++            Owner::Child(capture) => capture.upgrade().expect("request attempts root ended"),
++        })
++    }
++
++    /// Root identities come from native turn metadata, never passive events.
++    pub(crate) fn route(
++        &self,
++        turn_id: &str,
++        root_turn_id: &str,
++        operation: usize,
++    ) -> Option<AttemptRoute> {
++        let (capture, owner) = match &self.0 {
++            Owner::Root(capture) => (capture.clone(), 0),
++            Owner::Child(capture) => (capture.upgrade()?, 1),
++        };
++        let mut state = capture
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if state.finished {
++            return None;
++        }
++        if owner == 0 {
++            if state.turn_id.as_deref().is_some_and(|id| id != turn_id) {
++                return None;
++            }
++            state.turn_id.get_or_insert_with(|| turn_id.to_owned());
++            state
++                .root_turn_id
++                .get_or_insert_with(|| root_turn_id.to_owned());
++        }
++        if state.root_turn_id.as_deref() != Some(root_turn_id) {
++            return None;
++        }
++        Some(AttemptRoute {
++            capture: Arc::downgrade(&capture),
++            owner,
++            operation,
++            http_transport: 0,
++        })
++    }
++
++    pub(crate) fn finish(&self, turn_id: &str) -> CodexResult<String> {
++        let Owner::Root(capture) = &self.0 else {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempts belong to the root turn".into(),
++            ));
++        };
++        let mut capture = capture
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if !capture.finished {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempts require native turn settlement".into(),
++            ));
++        }
++        if capture.turn_id.as_deref().is_some_and(|id| id != turn_id) {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempts belong to a different turn".into(),
++            ));
++        }
++        if capture.overflowed {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempt counter overflow".into(),
++            ));
++        }
++        let mut counts = Vec::new();
++        for (owner, operations) in capture.counts.iter().enumerate() {
++            for (operation, transports) in operations.iter().enumerate() {
++                for (transport, count) in transports.iter().enumerate() {
++                    if *count != 0 {
++                        counts.push(Count {
++                            owner: if owner == 0 { "root" } else { "child" },
++                            operation: OPERATIONS[operation],
++                            transport: TRANSPORTS[transport],
++                            count: count.to_string(),
++                        });
++                    }
++                }
++            }
++        }
++        serde_json::to_string(&Report {
++            availability: if !capture.borrowed {
++                "complete"
++            } else if counts.is_empty() {
++                "unavailable"
++            } else {
++                "partial"
++            },
++            counts,
++            borrowed_requests_unavailable: capture.borrowed,
++        })
++        .map_err(|_| CodexErr::InvalidRequest("Unable to encode request attempts".into()))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::{Value, json};
++
++    #[test]
++    fn settlement_keeps_failures_and_rejects_foreign_descendants() {
++        let root = SdkRequestAttempts::default();
++        let route = root.route("turn", "turn", 0).unwrap();
++        route.record(0);
++        route.record(0);
++        let store = ExtensionData::new("child");
++        root.child_link().attach(&store);
++        let child = store.get::<SdkRequestAttempts>().unwrap();
++        assert!(child.route("child-turn", "older-root", 0).is_none());
++        child.route("child-turn", "turn", 1).unwrap().record(2);
++        route.borrowed();
++        root.child_link().seal("turn");
++        let report: Value = serde_json::from_str(&root.finish("turn").unwrap()).unwrap();
++        assert_eq!(
++            report,
++            json!({"availability":"partial", "counts":[
++            {"owner":"root","operation":"generation","transport":"http_sse","count":"2"},
++            {"owner":"child","operation":"compaction","transport":"websocket","count":"1"}
++        ], "borrowed_requests_unavailable":true})
++        );
++        route.record(0);
++        assert!(child.route("child-turn", "turn", 0).is_none());
++    }
++
++    #[test]
++    fn zero_and_borrowed_only_have_distinct_availability() {
++        let zero = SdkRequestAttempts::default();
++        zero.child_link().seal("turn");
++        let report: Value = serde_json::from_str(&zero.finish("turn").unwrap()).unwrap();
++        assert_eq!(report["availability"], "complete");
++        let borrowed = SdkRequestAttempts::default();
++        borrowed.route("turn", "turn", 0).unwrap().borrowed();
++        borrowed.child_link().seal("turn");
++        let report: Value = serde_json::from_str(&borrowed.finish("turn").unwrap()).unwrap();
++        assert_eq!(report["availability"], "unavailable");
++    }
++}
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index ec454fc..acbe33d 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -745,7 +745,32 @@ impl Session {
+         window_number: u64,
+         context_window_id: uuid::Uuid,
+     ) -> CodexResponsesMetadata {
++        let sdk_request_attempts = self
++            .services
++            .thread_extension_data
++            .get::<crate::session::sdk_request_attempts::SdkRequestAttempts>()
++            .filter(|_| {
++                !matches!(
++                    responses_metadata.request_kind,
++                    Some(CodexResponsesRequestKind::Prewarm)
++                )
++            })
++            .and_then(|capture| {
++                capture.route(
++                    &turn_context.sub_id,
++                    responses_metadata
++                        .root_turn_id
++                        .as_deref()
++                        .unwrap_or(&turn_context.sub_id),
++                    match responses_metadata.request_kind {
++                        Some(CodexResponsesRequestKind::Turn) => 0,
++                        Some(CodexResponsesRequestKind::Compaction(_)) => 1,
++                        _ => 2,
++                    },
++                )
++            });
+         CodexResponsesMetadata {
++            sdk_request_attempts,
+             window_number: Some(window_number),
+             context_window_id: Some(context_window_id),
+             mcp_attribution: Some(self.services.executed_tool_calls.mcp_attribution_snapshot()),
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 8fa126d..005bda7 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -158,6 +158,7 @@ pub use model_request::ModelContextInput;
+ pub use model_request::ModelHttpStream;
+ pub use model_request::ModelRequestContributor;
+ pub use model_request::ModelRequestInput;
++pub use model_request::ModelRequestAttemptsObserver;
+ pub use model_request::ModelRequestKind;
+ pub use model_request::ModelResponseError;
+ pub use model_request::ModelResponseInterceptor;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 1f7cfa1..0ed71e9 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -185,7 +185,13 @@ pub enum CompactionResult {
+ }
+ 
+ /// Request identity before provider dispatch.
++/// An in-process content-free observer captured for one native model request.
++pub trait ModelRequestAttemptsObserver: Send + Sync + std::fmt::Debug {
++    fn send_started(&self, transport: crate::ModelRequestTransport);
++}
++
+ pub struct ModelRequestInput<'a> {
++    pub attempts: Option<Arc<dyn ModelRequestAttemptsObserver>>,
+     /// Whether this request generates output or warms up the session.
+     pub kind: ModelRequestKind,
+     /// Thread making the request.

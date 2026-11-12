@@ -3,6 +3,7 @@ import {
   CODEX_REVISION,
   parseSessionState,
   isManualSessionState,
+  nativeCheckpoint,
 } from '../src/runtime/state';
 
 const state = (receipt: unknown) => ({
@@ -19,6 +20,35 @@ const state = (receipt: unknown) => ({
   },
   manual_context: { instructions: null, result_schemas: [], usage: null },
 });
+
+it.each([17, 18])(
+  'retains the request budget in manual envelope %i',
+  (version) => {
+    const saved = {
+      ...state('accepted'),
+      format_version: version,
+      output_context: {
+        version: 1,
+        mode: 'plain',
+        budget: 0,
+        fingerprint: 'a'.repeat(64),
+      },
+      run_budget: { version: 1, maxRequests: 2, admittedRequests: 1 },
+    };
+    const parsed = parseSessionState(JSON.stringify(saved));
+    expect(isManualSessionState(parsed)).toBe(true);
+    expect(parsed.run_budget).toEqual(saved.run_budget);
+    const native = nativeCheckpoint(parsed);
+    expect(native.format_version).toBe(version === 18 ? 4 : 2);
+    expect(native).not.toHaveProperty('run_budget');
+    expect(() =>
+      parseSessionState(JSON.stringify({ ...saved, run_budget: undefined })),
+    ).toThrow();
+    expect(() =>
+      parseSessionState(JSON.stringify({ ...saved, format_version: 5 })),
+    ).toThrow();
+  },
+);
 
 it.each(['function_call_output', 'custom_tool_call_output'])(
   'retains the canonical %s envelope and handoff metadata in a manual continuation',

@@ -161,8 +161,19 @@ export async function openSavedLoginLoopback({
     const ca = join(directory, 'ca.pem');
     return {
       tunnels,
-      runChild: (childPath: string, args: string[], timeout = 15_000) =>
-        execute(process.execPath, [childPath, ...args], {
+      runChild: async (
+        childPath: string,
+        args: string[],
+        timeout:
+          | number
+          | {
+              started: Promise<void>;
+              startup: number;
+              completion: number;
+            } = 15_000,
+      ) => {
+        const killSignal = 'SIGKILL';
+        const child = execute(process.execPath, [childPath, ...args], {
           cwd: home,
           // Start without inherited model auth, proxy bypasses, or Node preload hooks.
           env: {
@@ -176,9 +187,28 @@ export async function openSavedLoginLoopback({
             SSL_CERT_FILE: ca,
             SSL_CERT_DIR: home,
           },
-          timeout,
-          killSignal: 'SIGKILL',
-        }),
+          timeout: typeof timeout === 'number' ? timeout : undefined,
+          killSignal,
+        });
+        if (typeof timeout === 'number') return child;
+
+        const kill = () => child.child.kill(killSignal);
+        let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(
+          kill,
+          timeout.startup,
+        );
+        void timeout.started.then(() => {
+          if (timer === undefined) return;
+          clearTimeout(timer);
+          timer = setTimeout(kill, timeout.completion);
+        });
+        try {
+          return await child;
+        } finally {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+      },
       [Symbol.asyncDispose]: dispose,
     };
   } catch (error) {

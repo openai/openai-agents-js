@@ -530,7 +530,12 @@ export class NativeProviderRoutes {
                 'Native WebSocket request exceeds the 64 MiB UTF-8 transport limit; model context limits are separate.',
               );
             }
-            await prefix.remote.send_text(payload);
+            if (admitted.request_attempts === true)
+              await prefix.remote._send_owned_text(
+                payload,
+                String(admitted.ticket),
+              );
+            else await prefix.remote.send_text(payload);
             const output: JsonValue[] = [];
             while (true) {
               const frame = await prefix.remote.receive();

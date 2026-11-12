@@ -918,6 +918,115 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       }
     }, 30_000);
 
+    it('keeps cross-process A2A payloads private without erasing application state', async () => {
+      type Span = {
+        name: string;
+        traceId: string;
+        spanId: string;
+        parentSpanId?: string;
+        attributes: { key: string; value: Record<string, unknown> }[];
+      };
+      const spans: Span[] = [];
+      const payloads: unknown[] = [];
+      const collector = createServer(async (request, response) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const payload = JSON.parse(Buffer.concat(chunks).toString());
+        payloads.push(payload);
+        for (const resource of payload.resourceSpans ?? [])
+          for (const scope of resource.scopeSpans ?? [])
+            spans.push(...scope.spans);
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end('{}');
+      });
+      collector.listen(0, '127.0.0.1');
+      await once(collector, 'listening');
+      const address = collector.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing collector');
+      try {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            fileURLToPath(new URL('./fixtures/a2a-trace.ts', import.meta.url)),
+            `http://127.0.0.1:${address.port}/v1/traces`,
+            'privacy',
+          ],
+          { stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        let output = '',
+          errors = '';
+        child.stdout.on('data', (chunk) => {
+          output += String(chunk);
+        });
+        child.stderr.on('data', (chunk) => {
+          errors += String(chunk);
+        });
+        const [code] = await once(child, 'close');
+        expect(code, errors).toBe(0);
+        expect(output, errors).not.toBe('');
+        const receipt = JSON.parse(output);
+        const remote = receipt.receiver;
+        expect(receipt.pid).not.toBe(remote.pid);
+        expect(receipt.childSensitive).toBe(false);
+        expect(remote.childSensitive).toBe(false);
+        expect(remote.privateHeaderAbsent).toBe(true);
+        expect(remote.principal).toBe('synthetic-principal');
+        expect(remote.privateApplicationState).toBe(true);
+        expect(remote.received).toEqual(receipt.outgoing);
+        expect(
+          Object.keys(receipt.outgoing).every((key) =>
+            ['traceparent', 'tracestate'].includes(key),
+          ),
+        ).toBe(true);
+        expect(receipt.flush).toBe('success');
+        expect(remote.flush).toBe('success');
+        for (const canary of [
+          'PRIVATE_A2A_PROMPT_CANARY',
+          'PRIVATE_A2A_ARGUMENT_CANARY',
+          'PRIVATE_A2A_RESULT_CANARY',
+          'PRIVATE_A2A_CREDENTIAL_CANARY',
+        ]) {
+          expect(JSON.stringify(payloads)).not.toContain(canary);
+          expect(JSON.stringify(receipt.outgoing)).not.toContain(canary);
+        }
+        const attributes = (span: Span) =>
+          Object.fromEntries(
+            span.attributes.map((row) => [
+              row.key,
+              Object.values(row.value)[0],
+            ]),
+          );
+        const dispatch = spans.filter(
+          (span) =>
+            span.name.startsWith('op.dispatch.') &&
+            attributes(span)['submission.id'] === remote.remoteTurn,
+        );
+        expect(dispatch).toHaveLength(1);
+        expect(dispatch[0].traceId).toBe(
+          receipt.outgoing.traceparent.slice(3, 35),
+        );
+        expect(dispatch[0].parentSpanId).toBe(
+          receipt.outgoing.traceparent.slice(36, 52),
+        );
+        expect(
+          new Set(spans.map((span) => attributes(span)['business.service'])),
+        ).toEqual(new Set(['coordinator', 'specialist']));
+        expect(
+          spans.every(
+            (span) =>
+              attributes(span)['business.specialist'] === 'approved-specialist',
+          ),
+        ).toBe(true);
+      } finally {
+        collector.closeAllConnections();
+        await new Promise<void>((resolve) => collector.close(() => resolve()));
+      }
+    }, 60_000);
+
     it.each(
       (['before-save', 'after-save'] as const).flatMap((fault) =>
         (['completed', 'waiting'] as const).map((state) => ({ fault, state })),

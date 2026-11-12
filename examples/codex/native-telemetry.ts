@@ -6,7 +6,14 @@ import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
 import { z } from 'zod';
 
 /** A bounded local receiver for this synthetic walkthrough, not a production collector. */
-export async function startTraceReceiver() {
+export async function startTraceReceiver({
+  maxBatchBytes = 1_048_576,
+}: { maxBatchBytes?: number } = {}) {
+  assert(
+    Number.isSafeInteger(maxBatchBytes) &&
+      maxBatchBytes > 0 &&
+      maxBatchBytes <= 4_194_304,
+  );
   const batches: unknown[] = [];
   let storedBytes = 0;
   const server = createServer(async (request, response) => {
@@ -21,7 +28,7 @@ export async function startTraceReceiver() {
       for await (const chunk of request) {
         bytes += Buffer.byteLength(chunk);
         if (
-          bytes > 1_048_576 ||
+          bytes > maxBatchBytes ||
           storedBytes + bytes > 4_194_304 ||
           batches.length >= 64
         ) {

@@ -21,7 +21,7 @@ import {
 import { startCollector } from './collector';
 import { artifactJson, readHistory } from './history-reader';
 
-type Scenario = 'tool' | 'tool-error' | 'validation' | 'provider';
+type Scenario = 'tool' | 'tool-error' | 'validation' | 'provider' | 'retry';
 
 async function exercise(scenario: Scenario) {
   const toolCalls: string[] = [];
@@ -44,17 +44,16 @@ async function exercise(scenario: Scenario) {
       throw callbackFailure;
     },
   });
-  const responses =
-    scenario === 'provider'
-      ? [httpError(400)]
-      : scenario === 'validation'
-        ? [[text('{"count":"invalid"}')]]
-        : scenario === 'tool-error'
-          ? [
-              [toolCall('lookup', { record: 'A' }, { callId: 'lookup-a' })],
-              [text('The catalog is unavailable.')],
-            ]
-          : [[toolCall('lookup', { record: 'A' }, { callId: 'lookup-a' })]];
+  const lookupCall = [
+    toolCall('lookup', { record: 'A' }, { callId: 'lookup-a' }),
+  ];
+  const responses = {
+    provider: [httpError(400)],
+    retry: [httpError(503), [text('Recovered after retry.')]],
+    validation: [[text('{"count":"invalid"}')]],
+    'tool-error': [lookupCall, [text('The catalog is unavailable.')]],
+    tool: [lookupCall],
+  }[scenario];
 
   return withScriptedResponses(responses, async (peer) => {
     const agent = new Agent<unknown, string | { count: number }>({
@@ -123,6 +122,9 @@ async function exercise(scenario: Scenario) {
       settlement,
       nativeError,
       providerRequests: peer.requests.length,
+      ...(scenario === 'retry'
+        ? { completedModelRequests: turn.runUsage.requests }
+        : {}),
       history,
     };
   });
@@ -179,7 +181,11 @@ async function main() {
   });
   const scenario = values.scenario ?? 'tool-error';
   const output = values.output ?? 'synthetic-trace.json';
-  if (!['tool', 'tool-error', 'validation', 'provider'].includes(scenario))
+  if (
+    !['tool', 'tool-error', 'validation', 'provider', 'retry'].includes(
+      scenario,
+    )
+  )
     throw new Error('Unknown synthetic scenario');
   const artifact = await walkthrough(scenario as Scenario);
   await writeFile(output, artifactJson(artifact), { mode: 0o600 });

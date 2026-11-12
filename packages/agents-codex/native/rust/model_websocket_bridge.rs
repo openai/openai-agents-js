@@ -256,10 +256,12 @@ impl Bridge<'_> {
             self.pending.as_mut().expect("native request admitted").1 = true;
             anyhow::bail!("Native WebSocket request exceeds transport limit");
         }
-        self.socket
-            .send_text(payload)
-            .await
-            .map_err(|error| anyhow::anyhow!(error.reason))?;
+        let sent = if receipt["request_attempts"] == true {
+            self.socket.send_admitted_text(payload, &ticket).await
+        } else {
+            self.socket.send_text(payload).await
+        };
+        sent.map_err(|error| anyhow::anyhow!(error.reason))?;
         self.generation = Some(Generation {
             request: body,
             model,
