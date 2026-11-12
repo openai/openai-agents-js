@@ -298,10 +298,11 @@ export class NativeThread {
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
   _reply_model_producer(response_json: string): void;
-  _start_model_producer(owner_json: string): void;
+  _start_model_producer(owner_json: string, chat_stream?: boolean): void;
   _push_model_producer(
     owner_json: string,
     event_json: string,
+    raw_chat_chunk?: boolean,
   ): Promise<boolean>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;
@@ -377,6 +378,7 @@ export class NativeThread {
   read_checklist(subagent_id?: string | null): Promise<string>;
   _interrupt_session(): Promise<void>;
   _next_session_event(): Promise<string>;
+  _enable_sandbox_operations(): void;
   _next_session_events(): Promise<string[]>;
   _child_turn(child_id: string): Promise<_NativeChildTurn | null>;
   _child_instance(

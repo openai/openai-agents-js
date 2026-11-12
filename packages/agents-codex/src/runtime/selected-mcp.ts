@@ -1,4 +1,4 @@
-import { projectMcpToolNames } from './mcp';
+import { projectMcpToolNames } from './mcp-names';
 import type {
   MCPToolStartObservation,
   MCPToolEndObservation,

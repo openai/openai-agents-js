@@ -1,10 +1,14 @@
-import { afterEach, expect, it } from 'vitest';
-import { readFile, stat } from 'node:fs/promises';
-import { Manifest } from '@openai/agents/sandbox';
+import { afterEach, expect, it, vi } from 'vitest';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import {
+  addSandboxEventSink,
+  Manifest,
+  sandboxEnvironment,
+  type SandboxEvent,
+} from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import { Agent, Environment, NativeProvider } from '../../src';
-import { sandboxEnvironment } from '@openai/agents/sandbox';
-import { ModelServer, message } from './fixtures/model-server';
+import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
@@ -86,3 +90,119 @@ it('opens a public native Session against the exact materialized local provider 
   await expect(stat(workspace)).rejects.toMatchObject({ code: 'ENOENT' });
   server.assertExhausted();
 });
+
+it.skipIf(process.platform === 'win32')(
+  'delivers native shell and image operation headers from the provider lease',
+  async () => {
+    const privateInput = 'synthetic-observer-private-input';
+    const server = new ModelServer([
+      [
+        call(
+          'exec_command',
+          { cmd: `printf %s ${privateInput}; exit 7` },
+          { callId: 'failed-command' },
+        ),
+      ],
+      [
+        call(
+          'write_stdin',
+          { session_id: 700000001, chars: privateInput },
+          { callId: 'missing-terminal' },
+        ),
+      ],
+      [
+        call(
+          'view_image',
+          { path: privateInput + '.png' },
+          { callId: 'read-image' },
+        ),
+      ],
+      (request) => {
+        expect(JSON.stringify(request.input)).toContain(
+          'data:image/png;base64,',
+        );
+        return [message('native operations complete')];
+      },
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-provider',
+      supportsWebsockets: false,
+    });
+    const client = new UnixLocalSandboxClient();
+    const source = sandboxEnvironment({
+      client,
+      manifest: new Manifest(),
+      connect: async (sandbox) => {
+        await writeFile(
+          `${sandbox.state.workspaceRootPath}/${privateInput}.png`,
+          Buffer.from(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+            'base64',
+          ),
+        );
+        const peer = await startPublicExecutor();
+        try {
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: sandbox.state.workspaceRootPath,
+              tools: ['exec_command', 'write_stdin'],
+            }),
+            () => peer.close(),
+          );
+        } catch (error) {
+          await peer.close();
+          throw error;
+        }
+      },
+    });
+    const names = ['sandbox.exec', 'sandbox.write_stdin', 'sandbox.view_image'];
+    const observed: SandboxEvent[] = [];
+    const removeSink = addSandboxEventSink((event) => {
+      if (names.includes(event.name)) observed.push(event);
+    });
+    try {
+      await using session = await new Agent({
+        instructions: 'Use the requested sandbox tools.',
+        provider,
+      }).session({ environment: source, projectGuidance: true });
+      const submission = await session.submit('Use the native sandbox.');
+      expect((await submission.wait()).finalOutput).toBe(
+        'native operations complete',
+      );
+      await vi.waitFor(() =>
+        expect(observed.map(({ name, phase }) => [name, phase])).toEqual([
+          ['sandbox.exec', 'start'],
+          ['sandbox.exec', 'error'],
+          ['sandbox.write_stdin', 'start'],
+          ['sandbox.write_stdin', 'error'],
+          ['sandbox.view_image', 'start'],
+          ['sandbox.view_image', 'end'],
+        ]),
+      );
+      expect(observed.map((event) => event.data)).toEqual(
+        names.flatMap(() => [
+          { backend_id: client.backendId },
+          { backend_id: client.backendId },
+        ]),
+      );
+      for (const event of observed.filter(({ phase }) => phase !== 'start')) {
+        expect(event.durationMs).toBeGreaterThanOrEqual(0);
+        if (event.phase === 'error') {
+          expect(event.error).toEqual({
+            name: 'SandboxOperationError',
+            message: 'Sandbox operation failed',
+          });
+        }
+      }
+      expect(JSON.stringify(observed)).not.toContain(privateInput);
+      server.assertExhausted();
+    } finally {
+      removeSink();
+    }
+  },
+);

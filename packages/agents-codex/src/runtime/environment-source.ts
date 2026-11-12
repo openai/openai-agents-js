@@ -24,10 +24,13 @@ export type EnvironmentSource<Context = any> = (options: {
 export type DisposeGuard = (
   dispose: () => void | Promise<void>,
 ) => Promise<void>;
+type SandboxOperationObserver = (message: Record<string, unknown>) => void;
+
 interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
+  readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -45,6 +48,7 @@ export function createEnvironmentLease<Context>(
   sourceSignal?: AbortSignal,
   managedWorkspace?: ManagedWorkspaceBinding,
   workspaceInstructions?: string,
+  observeSandboxOperation?: SandboxOperationObserver,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -55,6 +59,7 @@ export function createEnvironmentLease<Context>(
     signal: sourceSignal,
     managedWorkspace,
     workspaceInstructions,
+    observeSandboxOperation,
   };
   const close = () => {
     if (state.claimed)
@@ -110,6 +115,11 @@ export class EnvironmentAcquisition {
   /** @internal Immutable current resource text from this exact acquisition. */
   get workspaceInstructions(): string | undefined {
     return this.state?.workspaceInstructions;
+  }
+
+  /** @internal The exact provider lease supplies the sink namespace. */
+  get observeSandboxOperation(): SandboxOperationObserver | undefined {
+    return this.state?.observeSandboxOperation;
   }
 
   attachSession(session: { close(): Promise<void> }): void {
