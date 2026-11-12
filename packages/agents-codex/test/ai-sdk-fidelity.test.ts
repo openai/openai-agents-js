@@ -174,6 +174,63 @@ it('routes native workspace patches through a function-only AI SDK provider', as
   ]);
 });
 
+it('reconstructs a native workspace patch from an AI SDK Responses function call', async () => {
+  const patch =
+    '*** Begin Patch\n*** Add File: report.txt\n+done\n*** End Patch';
+  const provider = createOpenAI({
+    apiKey: 'fixture',
+    fetch: async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as JsonObject;
+      expect(body.tools).toMatchObject([
+        {
+          type: 'function',
+          name: 'apply_patch',
+          parameters: { properties: { patch: { type: 'string' } } },
+        },
+      ]);
+      return Response.json({
+        id: 'resp_patch',
+        object: 'response',
+        created_at: 0,
+        status: 'completed',
+        model: 'gpt-4.1',
+        output: [
+          {
+            type: 'function_call',
+            id: 'fc_patch',
+            status: 'completed',
+            call_id: 'call_patch',
+            name: 'apply_patch',
+            arguments: JSON.stringify({ patch }),
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    },
+  });
+  const adapter = new AiSdkModel(provider.responses('gpt-4.1'));
+  const response = await adapter.complete({
+    ...request(),
+    body: {
+      model: 'gpt-4.1',
+      input: [],
+      tools: [{ type: 'custom', name: 'apply_patch' }],
+      tool_choice: { type: 'custom', name: 'apply_patch' },
+    },
+  });
+
+  expect(response.output).toEqual([
+    {
+      type: 'custom_tool_call',
+      id: 'fc_patch',
+      status: 'completed',
+      call_id: 'call_patch',
+      name: 'apply_patch',
+      input: patch,
+    },
+  ]);
+});
+
 it.each(
   (['chat', 'responses'] as const).flatMap((endpoint) => [
     { endpoint, label: 'explicit', detail: 'high', strict: true },

@@ -372,6 +372,19 @@ function workspacePatchInput(argumentsText: unknown): string {
   }
 }
 
+function aiSdkFunctionOutput(
+  item: JsonObject,
+  applyPatchOffered: boolean,
+): JsonObject {
+  if (!applyPatchOffered || item.name !== 'apply_patch') return item;
+  const { arguments: args, ...call } = item;
+  return {
+    ...call,
+    type: 'custom_tool_call',
+    input: workspacePatchInput(args),
+  };
+}
+
 /**
  * An injected async Chat Completions client. Core owns tool execution and history.
  * Native workspace ApplyPatch uses a function declaration on the provider wire.
@@ -1297,13 +1310,16 @@ export class AiSdkModel implements NativeModel {
         ...raw,
         output: raw.output?.map((item: any) =>
           item.type === 'function_call'
-            ? {
-                ...item,
-                arguments: aiSdkToolArguments(
-                  item.arguments,
-                  tools.find((tool) => tool.name === item.name)?.inputSchema,
-                ),
-              }
+            ? aiSdkFunctionOutput(
+                {
+                  ...item,
+                  arguments: aiSdkToolArguments(
+                    item.arguments,
+                    tools.find((tool) => tool.name === item.name)?.inputSchema,
+                  ),
+                },
+                applyPatchOffered,
+              )
             : item,
         ),
       });
@@ -1341,21 +1357,17 @@ export class AiSdkModel implements NativeModel {
           part.input,
           tools.find((tool) => tool.name === part.toolName)?.inputSchema,
         );
-        if (applyPatchOffered && part.toolName === 'apply_patch') {
-          output.push({
-            type: 'custom_tool_call',
-            call_id: part.toolCallId,
-            name: part.toolName,
-            input: workspacePatchInput(args),
-          });
-          continue;
-        }
-        output.push({
-          type: 'function_call',
-          call_id: part.toolCallId,
-          name: part.toolName,
-          ...(args === undefined ? {} : { arguments: args }),
-        });
+        output.push(
+          aiSdkFunctionOutput(
+            {
+              type: 'function_call',
+              call_id: part.toolCallId,
+              name: part.toolName,
+              ...(args === undefined ? {} : { arguments: args }),
+            },
+            applyPatchOffered,
+          ),
+        );
       } else
         throw new TypeError('AiSdkModel received unsupported output content');
     }
