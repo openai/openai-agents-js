@@ -27,7 +27,7 @@ async function provider(server: ModelServer) {
 function patchCall(): JsonObject {
   return {
     type: 'apply_patch_call',
-    id: 'native-edit',
+    id: 'apc_native_edit',
     call_id: 'patch-1',
     status: 'completed',
     operation: { type: 'delete_file', path: 'application://owned' },
