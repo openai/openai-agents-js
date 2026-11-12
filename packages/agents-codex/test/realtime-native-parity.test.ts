@@ -3484,3 +3484,159 @@ nativeIt(
   },
   15000,
 );
+
+nativeIt(
+  'observes a named structured Realtime handoff through the native owner',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const callbacks: unknown[] = [];
+    const context = { tenant: 'native-handoff' };
+    const target = new Agent({
+      name: 'Billing',
+      instructions: 'Billing destination.',
+    });
+    let source: Agent<any, any>;
+    try {
+      await using provider = await providerFor(model);
+      source = new Agent({
+        name: 'Support',
+        provider,
+        instructions: 'Support source.',
+        handoffs: [
+          realtimeHandoff(target, {
+            name: 'escalate_billing',
+            description: 'Escalate with a structured billing reason.',
+            parameters: z
+              .object({ reason: z.string(), ticket: z.number().int() })
+              .strict(),
+            onHandoff: (call, input) => {
+              callbacks.push({
+                agent: call.agent,
+                context: call.context,
+                input,
+              });
+            },
+          }),
+        ],
+      });
+      await using session = await source.session({ context });
+      const reader = session.events();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        const initial = await peer.frame(
+          (frame) => frame.type === 'session.update',
+        );
+        const transfer = initial.session.tools.find(
+          (entry: Frame) => entry.name === 'escalate_billing',
+        );
+        expect(transfer.description).toBe(
+          'Escalate with a structured billing reason.',
+        );
+        expect(transfer.parameters.properties.reason.type).toBe('string');
+        expect(transfer.parameters.properties.ticket.type).toBe('integer');
+        expect(transfer.parameters.required).toEqual(['reason', 'ticket']);
+        const start = peer.frames.length;
+        peer.call(
+          'escalate_billing',
+          { reason: 'Duplicate charge', ticket: 7 },
+          'structured-transfer',
+        );
+        await peer.frame(
+          (frame) =>
+            frame.type === 'session.update' &&
+            frame.session.instructions?.includes('Billing destination.'),
+          start,
+        );
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(callbacks).toEqual([
+          {
+            agent: source,
+            context,
+            input: { reason: 'Duplicate charge', ticket: 7 },
+          },
+        ]);
+        expect(await voice.getActiveAgent()).toBe(target);
+        let changed;
+        for (let index = 0; index < 100; index++) {
+          const next = await reader.next();
+          expect(next.done).toBe(false);
+          if (next.value.type === 'agent_profile_changed') {
+            changed = next.value;
+            break;
+          }
+        }
+        expect(changed).toMatchObject({
+          agentName: 'Billing',
+          previousAgentName: 'Support',
+        });
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.item?.call_id === 'structured-transfer'),
+        ).toHaveLength(1);
+      } finally {
+        await reader.return?.();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'rejects an invalid structured Realtime transfer before callback or target activation',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    let callbacks = 0;
+    try {
+      await using provider = await providerFor(model);
+      const target = new Agent({
+        name: 'Billing',
+        instructions: 'Billing destination.',
+      });
+      await using session = await new Agent({
+        name: 'Support',
+        provider,
+        instructions: 'Support source.',
+        handoffs: [
+          realtimeHandoff(target, {
+            name: 'escalate_billing',
+            parameters: z.object({ reason: z.string() }).strict(),
+            onHandoff: () => {
+              callbacks++;
+            },
+          }),
+        ],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      await peer.frame((frame) => frame.type === 'session.update');
+      const reading = (async () => {
+        for await (const _ of voice.events()) {
+          /* Native reader owns failures. */
+        }
+      })();
+      const rejected = expect(reading).rejects.toThrow('Invalid input');
+      const start = peer.frames.length;
+      peer.call('escalate_billing', { reason: 7 }, 'invalid-transfer');
+      await rejected;
+      expect(callbacks).toBe(0);
+      expect(
+        peer.frames
+          .slice(start)
+          .some(
+            (frame) =>
+              frame.type === 'session.update' &&
+              frame.session.instructions?.includes('Billing destination.'),
+          ),
+      ).toBe(false);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
