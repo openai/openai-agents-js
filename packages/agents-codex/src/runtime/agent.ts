@@ -505,6 +505,7 @@ async function closePrivateOwnedRuntime(
 }
 
 interface OwnedRunOptions {
+  modelOverride?: string;
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
   returnState?: boolean;
@@ -592,6 +593,7 @@ async function completeOwnedSession<Output>(
         options.budget,
         options.guardrailInput,
         options.errorInput ?? undefined,
+        options.modelOverride,
       );
     }
     return session.wait();

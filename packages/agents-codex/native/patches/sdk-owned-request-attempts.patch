@@ -245,7 +245,7 @@ index 318a8b6..e3880c7 100644
              fallback: || {
                  constructions.fetch_add(1, Ordering::SeqCst);
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index c226bc1..08b2d9e 100644
+index a01e7e1..b4ec762 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
 @@ -333,6 +333,14 @@ impl CodexThread {
@@ -336,7 +336,7 @@ index bfdeb3b..1f1cb3d 100644
              installation_id,
              session_id,
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
-index 00fd7f3..d50eb04 100644
+index 617f7a2..d0769bd 100644
 --- a/codex-rs/core/src/session/mod.rs
 +++ b/codex-rs/core/src/session/mod.rs
 @@ -269,6 +269,7 @@ mod rollout_budget;
@@ -627,10 +627,10 @@ index 0000000..c52309e
 +    }
 +}
 diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
-index 3c42c64..e3d04e6 100644
+index ec454fc..acbe33d 100644
 --- a/codex-rs/core/src/session/session.rs
 +++ b/codex-rs/core/src/session/session.rs
-@@ -744,7 +744,32 @@ impl Session {
+@@ -745,7 +745,32 @@ impl Session {
          window_number: u64,
          context_window_id: uuid::Uuid,
      ) -> CodexResponsesMetadata {
@@ -664,10 +664,10 @@ index 3c42c64..e3d04e6 100644
              context_window_id: Some(context_window_id),
              mcp_attribution: Some(self.services.executed_tool_calls.mcp_attribution_snapshot()),
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index d0e7154..7ee1343 100644
+index 8fa126d..005bda7 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
-@@ -157,6 +157,7 @@ pub use model_request::ModelContextInput;
+@@ -158,6 +158,7 @@ pub use model_request::ModelContextInput;
  pub use model_request::ModelHttpStream;
  pub use model_request::ModelRequestContributor;
  pub use model_request::ModelRequestInput;
@@ -676,7 +676,7 @@ index d0e7154..7ee1343 100644
  pub use model_request::ModelResponseError;
  pub use model_request::ModelResponseInterceptor;
 diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
-index 6803777..45ff7d3 100644
+index 1f7cfa1..0ed71e9 100644
 --- a/codex-rs/ext/extension-api/src/model_request.rs
 +++ b/codex-rs/ext/extension-api/src/model_request.rs
 @@ -185,7 +185,13 @@ pub enum CompactionResult {

@@ -37,6 +37,7 @@ enum Admission {
 
 pub(crate) struct Turn {
     pub(crate) tracing: Option<Arc<codex_otel::sdk_trace::ContextLease>>,
+    pub(crate) model_override: Option<String>,
     id: String,
     accepted: AtomicBool,
     delivered: AtomicBool,
@@ -743,6 +744,10 @@ impl TurnLifecycleContributor for Contributor {
             // Even same-ID recovery receives a new native lifecycle receipt.
             input.turn_store.insert(Turn {
                 tracing: tracing.context.clone(),
+                model_override: input
+                    .turn_store
+                    .get::<codex_extension_api::CapturedRunModelOverride>()
+                    .map(|model| model.0.clone()),
                 id: input.turn_id.to_owned(),
                 accepted: AtomicBool::new(false),
                 delivered: AtomicBool::new(false),

@@ -1868,6 +1868,7 @@ async fn raw_child_steering_and_retained_continuation_case() {
             });
             *store.completion_flush_hold.lock().unwrap() = Some(hold.clone());
             let mut initial = request("initial child input");
+            initial.start.model_override = Some("retained-model-fixture".into());
             initial.trace = child.thread.thread_extension_data()
                 .get::<crate::native_interception::Control>().unwrap().creation_trace().unwrap();
             initial.start.final_output_json_schema = Some(json!({
@@ -1929,6 +1930,8 @@ async fn raw_child_steering_and_retained_continuation_case() {
                 let metadata: Value = serde_json::from_str(request["client_metadata"]["x-codex-turn-metadata"].as_str().unwrap()).unwrap();
                 metadata["thread_id"] == child_id.to_string()
             }).collect();
+            assert_eq!(requests[0]["model"], "retained-model-fixture");
+            assert_eq!(requests[1]["model"], "retained-model-fixture");
             assert!(!requests[0]["input"].to_string().contains("RAW_RETAINED_AFTER_LAST_SAMPLE"));
             assert!(requests[1]["input"].to_string().contains("RAW_RETAINED_AFTER_LAST_SAMPLE"));
             }

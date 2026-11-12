@@ -4485,6 +4485,13 @@ impl NativeThread {
             let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
+            if let Some(selection) = &selection {
+                if selection.model_override != frame.model_override {
+                    return Err(native_error(
+                        "manual continuation cannot replace the admitted run model",
+                    ));
+                }
+            }
             if !items.is_empty() {
                 // Update Core's live model context as well as its rollout. A raw
                 // writer append alone would let prompt normalization invent "aborted".
@@ -4511,6 +4518,7 @@ impl NativeThread {
                 frame.reply_order,
                 settings,
                 output_schema,
+                frame.model_override,
                 selection,
                 trace,
                 observation_submission_id,

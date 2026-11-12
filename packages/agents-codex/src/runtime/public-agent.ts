@@ -134,7 +134,11 @@ import {
   type Tool,
   type SessionTool,
 } from './tools';
-import { validateMaxModelSteps, type OperationOptions } from './session';
+import {
+  validateMaxModelSteps,
+  validateModelOverride,
+  type OperationOptions,
+} from './session';
 import type {
   Session as CoreSession,
   SessionOptions as CoreSessionOptions,
@@ -288,6 +292,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   | 'includeRequestAttempts'
   | 'includeRawProviderEvents'
 > {
+  /** Force the model across this run, handoffs and native children. */
+  modelOverride?: string;
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
@@ -813,6 +819,9 @@ export class Agent<Context = undefined, Output = string> {
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
+    const modelOverride = validateModelOverride(options.modelOverride);
+    if (isManualSessionState(options.state) && modelOverride !== undefined)
+      throw new TypeError('modelOverride cannot replace a restored run model');
     const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
     const initialMessages = captureInitialMessages(
       options.initialMessages,
@@ -922,6 +931,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnItems !== true &&
       !captureErrorDetails &&
       options.prepareRequest === undefined &&
+      modelOverride === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -944,6 +954,7 @@ export class Agent<Context = undefined, Output = string> {
       ])) as CoreSession<Output>;
     }
     return runOwnedSession(session, preparedInput, {
+      modelOverride,
       guardrailInput,
       errorInput,
       maxModelSteps,
@@ -1993,6 +2004,7 @@ export class Agent<Context = undefined, Output = string> {
           active,
           outputOverride,
           parentTrace,
+          resumeBudget,
         ) => {
           let owned: CoreSession<any, any> | undefined;
           try {
@@ -2002,6 +2014,7 @@ export class Agent<Context = undefined, Output = string> {
               onInteraction: captured.onInteraction,
               toolErrorFormatter: captured.toolErrorFormatter,
               state,
+              resumeBudget,
               [deferredOpening]: {
                 opening: captured,
                 restoredOutput: { output: active, outputOverride },

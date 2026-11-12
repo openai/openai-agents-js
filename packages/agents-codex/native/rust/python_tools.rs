@@ -2623,6 +2623,8 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperationSelection {
+    #[serde(default)]
+    pub model_override: Option<String>,
     pub generation: String,
     // Omitted slots preserve opening defaults; an explicit empty list clears JS tools.
     pub slots: Option<Vec<usize>>,
@@ -2636,6 +2638,7 @@ pub(crate) struct OperationSelection {
 }
 #[derive(Clone)]
 struct ActiveSelection {
+    model_override: Option<String>,
     turn: String,
     generation: Arc<Generation>,
     slots: Option<Vec<usize>>,
@@ -2827,6 +2830,7 @@ impl PythonTools {
             .as_ref()
             .filter(|selection| selection.turn == previous)
             .map(|selection| OperationSelection {
+                model_override: selection.model_override.clone(),
                 generation: selection.generation.id.to_string(),
                 slots: selection.slots.clone(),
                 names: selection.names.clone(),
@@ -2976,6 +2980,7 @@ impl PythonTools {
     ) -> Option<ActiveSelection> {
         if self.instance.is_some() {
             return self.child_before_step.then(|| ActiveSelection {
+                model_override: None,
                 turn: turn.to_owned(),
                 generation: self.snapshot(),
                 slots: None,
@@ -2987,6 +2992,7 @@ impl PythonTools {
         }
         operation.and_then(|selection| {
             Some(ActiveSelection {
+                model_override: selection.model_override.clone(),
                 turn: turn.to_owned(),
                 generation: selection
                     .generation
@@ -4371,10 +4377,17 @@ impl TurnLifecycleContributor for PythonContributor {
                     .entries
                     .iter()
                     .any(|entry| entry.exposure == ToolExposure::Deferred);
+                let run_model = input
+                    .turn_store
+                    .get::<codex_extension_api::CapturedRunModelOverride>();
+                let model_name = run_model.as_ref().map_or_else(
+                    || input.collaboration_mode.model(),
+                    |model| model.0.as_str(),
+                );
                 let use_deferred_specs = if deferred && let Some(manager) = self.manager.upgrade() {
                     let model = manager
                         .get_models_manager()
-                        .get_model_info(input.collaboration_mode.model(), &self.models_config)
+                        .get_model_info(model_name, &self.models_config)
                         .await;
                     model.supports_search_tool
                         && (self.code_mode_enabled
@@ -5352,6 +5365,7 @@ mod pending_tests {
             Err(_) => panic!("unexpected fixture owner"),
         });
         *tools.selection.lock().unwrap() = Some(ActiveSelection {
+            model_override: None,
             turn: "turn".into(),
             generation: tools.snapshot(),
             slots: None,
@@ -5376,6 +5390,7 @@ mod pending_tests {
             .unwrap()
             .insert("child".into(), Arc::downgrade(&child));
         let root_operation = OperationSelection {
+            model_override: None,
             generation: "0".into(),
             slots: Some(Vec::new()),
             names: None,
@@ -5676,6 +5691,7 @@ mod pending_tests {
         let executors = contributor.tools_for_step(&session, &thread, &original);
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         *tools.selection.lock().unwrap() = Some(ActiveSelection {
+            model_override: None,
             turn: "successor".into(),
             generation: tools.snapshot(),
             slots: Some(Vec::new()),
@@ -5808,6 +5824,7 @@ mod pending_tests {
             let operation: OperationSelection = serde_json::from_value(wire).unwrap();
             tools.validate_operation(&operation).unwrap();
             *tools.selection.lock().unwrap() = Some(ActiveSelection {
+                model_override: None,
                 turn: "turn".into(),
                 generation: tools.snapshot(),
                 slots: operation.slots,
