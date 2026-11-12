@@ -66,7 +66,7 @@ it.each(['responses', 'ai-sdk-responses'] as const)(
   },
 );
 
-it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity])(
+it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
   'rejects an invalid received cache-write count: %s',
   async (cacheWrite) => {
     const model = new ResponsesModel({

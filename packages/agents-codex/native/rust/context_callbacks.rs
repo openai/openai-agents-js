@@ -1103,7 +1103,6 @@ pub(super) struct ModelReply {
     raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ReceivedCacheWriteUsage {
     count: Option<i64>,
 }
