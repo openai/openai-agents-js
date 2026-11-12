@@ -46,6 +46,7 @@ export async function buildCoreNode(directory) {
       strictExecutionOrder: true,
       keepNames: true,
       sourcemap: true,
+      sourcemapExcludeSources: true,
     },
   });
 }
