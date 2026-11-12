@@ -275,33 +275,45 @@ function createBindings() {
     checkStatus(await call(closeHandle, [handle]), 'NtClose');
   }
 
-  async function read(handle: unknown): Promise<Uint8Array> {
+  async function read(
+    handle: unknown,
+    maxBytes?: number,
+    prefix?: boolean,
+  ): Promise<Uint8Array> {
     await checkType(handle, false);
     const info = Buffer.alloc(24); // FILE_STANDARD_INFORMATION; EndOfFile at 8.
     checkStatus(
       await call(queryInfo, [handle, {}, info, info.length, 5]),
       'NtQueryInformationFile size',
     );
-    return readLocalSourceBuffer(info.readBigInt64LE(8), async (buffer) => {
-      const output: { Information?: number | bigint } = {};
-      const status = await call(readFile, [
-        handle,
-        null,
-        null,
-        null,
-        output,
-        buffer,
-        buffer.length,
-        null,
-        null,
-      ]);
-      if (status >>> 0 === 0xc0000011) return 0; // STATUS_END_OF_FILE
-      checkStatus(status, 'NtReadFile');
-      return bytesWritten(output, buffer.length);
-    });
+    return readLocalSourceBuffer(
+      info.readBigInt64LE(8),
+      async (buffer) => {
+        const output: { Information?: number | bigint } = {};
+        const status = await call(readFile, [
+          handle,
+          null,
+          null,
+          null,
+          output,
+          buffer,
+          buffer.length,
+          null,
+          null,
+        ]);
+        if (status >>> 0 === 0xc0000011) return 0; // STATUS_END_OF_FILE
+        checkStatus(status, 'NtReadFile');
+        return bytesWritten(output, buffer.length);
+      },
+      maxBytes,
+      prefix,
+    );
   }
 
-  async function entries(handle: unknown): Promise<NativeSourceEntry[]> {
+  async function entries(
+    handle: unknown,
+    maxEntries?: number,
+  ): Promise<NativeSourceEntry[]> {
     await checkType(handle, true);
     const result: NativeSourceEntry[] = [];
     let restart = true;
@@ -364,6 +376,8 @@ function createBindings() {
         const name = buffer.toString('utf16le', offset + 104, end);
         if (name !== '.' && name !== '..') {
           validateName(name);
+          if (maxEntries !== undefined && result.length >= maxEntries)
+            throw new RangeError('Local source member limit exceeded');
           result.push({
             name,
             type:
@@ -412,7 +426,7 @@ function directoryHandle(
         );
       });
     },
-    async readFile(name) {
+    async readFile(name, maxBytes, prefix) {
       const file = await run(async () => {
         validateName(name);
         return native.open(handle, name, false);
@@ -421,7 +435,7 @@ function directoryHandle(
       // queue so configured concurrent file reads remain concurrent.
       let bytes: Uint8Array;
       try {
-        bytes = await native.read(file);
+        bytes = await native.read(file, maxBytes, prefix);
       } catch (error) {
         try {
           await native.close(file);
@@ -433,8 +447,8 @@ function directoryHandle(
       await native.close(file);
       return bytes;
     },
-    entries() {
-      return run(() => native.entries(handle));
+    entries(maxEntries) {
+      return run(() => native.entries(handle, maxEntries));
     },
     close() {
       closing ??= pending.then(() => native.close(handle));

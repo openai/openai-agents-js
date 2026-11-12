@@ -501,3 +501,122 @@ nativeIt(
   },
   30_000,
 );
+
+nativeIt.each([false, true])(
+  'preserves acknowledged history and valid edits (restored=%s)',
+  async (restore) => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    const providerHistory = {
+      type: 'conversation' as const,
+      id: 'conv_current',
+    };
+    let state;
+    if (restore) {
+      await using source = await agent.session({ providerHistory });
+      await (await source.submit('Before.')).wait();
+      state = await source.saveState();
+    }
+    await using session = await agent.session({
+      providerHistory,
+      ...(state ? { state } : {}),
+    });
+    if (!restore) await (await session.submit('Before.')).wait();
+    const before = await session.historySnapshot();
+    await expect(
+      session.transactHistory({
+        expectedRevision: before.revision,
+        keep: 0,
+        items: [],
+      }),
+    ).rejects.toThrow('acknowledged provider history');
+    expect(await session.historySnapshot()).toEqual(before);
+    const revision = await session.transactHistory({
+      expectedRevision: before.revision,
+      keep: before.total,
+      items: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Unsent draft.' }],
+        },
+      ],
+    });
+    expect((await session.historySnapshot()).total).toBe(before.total + 1);
+    await session.transactHistory({
+      expectedRevision: revision,
+      keep: before.total,
+      items: [],
+    });
+    expect((await session.historySnapshot()).items).toEqual(before.items);
+    await (await session.submit('After.')).wait();
+    expect(model.requests).toHaveLength(2);
+  },
+  30_000,
+);
+
+nativeIt(
+  'preserves canonical metadata that the wire formatter omits',
+  async () => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    const prior = {
+      type: 'message',
+      id: 'msg_prior',
+      role: 'assistant',
+      content: [
+        {
+          type: 'output_text',
+          text: 'Prior.',
+          annotations: [{ type: 'future_annotation', value: 'retained' }],
+        },
+      ],
+    };
+    await using session = await agent.session({
+      providerHistory: { type: 'conversation', id: 'conv_current' },
+    });
+    const initial = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: initial.revision,
+      keep: initial.total,
+      items: [prior],
+    });
+    await (await session.submit('Before.')).wait();
+    const before = await session.historySnapshot();
+    expect(before.items).toContainEqual(
+      expect.objectContaining({ id: 'msg_prior', content: prior.content }),
+    );
+    expect(JSON.stringify(model.requests[0]!.input)).not.toContain(
+      'future_annotation',
+    );
+    await session.transactHistory({
+      expectedRevision: before.revision,
+      keep: before.total,
+      items: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Unsent draft.' }],
+        },
+      ],
+    });
+    expect(
+      (await session.historySnapshot()).items.slice(0, before.total),
+    ).toEqual(before.items);
+    await (await session.submit('After.')).wait();
+    expect(model.requests).toHaveLength(2);
+  },
+  30_000,
+);

@@ -51,7 +51,8 @@ type FileRequest =
         | 'directoryExists'
         | 'create'
         | 'update'
-        | 'delete';
+        | 'delete'
+        | 'removeEmpty';
       path: LocalFilePath;
       destination?: LocalFilePath;
       unlinkPath?: LocalFilePath;

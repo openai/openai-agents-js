@@ -23,19 +23,23 @@ index b6bf3d5b1229e9544be68d97a477807f81595de8..43acb8333ae3b42e814d0c50f4f0d2ff
                  tool_choice: None,
                  disabled_plugin_ids: Vec::new(),
 diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
-index d91f201adc9672d0554cc6e686e5e20269055531..6ee4f7c064fefa8910ee29e985b1b28a36a0561c 100644
+index d91f201adc9672d0554cc6e686e5e20269055531..a7adfcd5bf4f9531581ff6cd96a49d22df1f3835 100644
 --- a/codex-rs/codex-api/src/common.rs
 +++ b/codex-rs/codex-api/src/common.rs
-@@ -285,6 +285,8 @@ impl Serialize for ResponsesApiTools {
+@@ -285,6 +285,12 @@ impl Serialize for ResponsesApiTools {
  /// Effective wire values. Cleared and omitted SDK settings emit no member here.
  #[derive(Debug, Default, Serialize, Clone, PartialEq)]
  pub struct ResponsesRequestControls {
++    /// Local prepared-request data; never sent to the provider.
++    #[serde(skip)]
++    pub canonical_history_input:
++        Option<codex_protocol::provider_history::ProviderHistoryInputBoundary>,
 +    #[serde(flatten, serialize_with = "serialize_provider_history")]
 +    pub provider_history: Option<codex_protocol::provider_history::ProviderHistorySelection>,
      #[serde(skip_serializing_if = "Option::is_none")]
      pub prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
      #[serde(skip_serializing_if = "Option::is_none")]
-@@ -312,6 +314,29 @@ pub struct ResponsesRequestControls {
+@@ -312,6 +318,29 @@ pub struct ResponsesRequestControls {
      pub prompt_cache_options: Option<PromptCacheOptions>,
  }
  
@@ -395,7 +399,7 @@ index de6dc8318666ef6eecf9fccb0613bdff587d8018..ec9e5a9115c27855de696a1da7ba7542
                          request_controls: Default::default(),
                          tool_choice: None,
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598b3157ecb 100644
+index 63105967bc446728b2dfa34d60abfc94eb279dd5..ce7da7869749bc9c24303cfed4297fa22ab1f5f0 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -34,6 +34,7 @@ use std::sync::atomic::Ordering;
@@ -430,7 +434,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              request_contributors,
              executed_tool_calls: None,
              api_key_cyber_access_programs:
-@@ -734,6 +738,50 @@ impl ModelClient {
+@@ -734,6 +738,57 @@ impl ModelClient {
          self
      }
  
@@ -444,6 +448,13 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
 +
 +    pub(crate) fn attach_provider_history(&self, session: std::sync::Weak<crate::session::session::Session>) {
 +        if let Some(cursor) = &self.provider_history { cursor.attach(session); }
++    }
++
++    pub(crate) fn validate_provider_history_replacement(&self, current: &[&ResponseItem], items: &[&ResponseItem]) -> Result<()> {
++        if let Some(cursor) = &self.provider_history {
++            cursor.validate_replacement(current, items)?;
++        }
++        Ok(())
 +    }
 +
 +    pub(crate) fn observe_provider_history_output(&self, item: &ResponseItem) -> Result<()> {
@@ -481,7 +492,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
      pub(crate) fn with_session_context(
          mut self,
          prompt_cache_key_override: Option<String>,
-@@ -795,6 +843,7 @@ impl ModelClient {
+@@ -795,6 +850,7 @@ impl ModelClient {
              websocket_session,
              pending_http_response: None,
              turn_state: Arc::new(OnceLock::new()),
@@ -489,7 +500,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
          }
      }
  
-@@ -1177,6 +1226,14 @@ impl ModelClient {
+@@ -1177,6 +1233,14 @@ impl ModelClient {
                  })
              })
              .transpose()?;
@@ -504,15 +515,25 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
          controls
              .validate_profile(model_info)
              .map_err(CodexErr::InvalidRequest)?;
-@@ -1357,6 +1414,7 @@ impl ModelClient {
+@@ -1242,6 +1306,8 @@ impl ModelClient {
+             )));
+             prefix.push(instructions);
+         }
++        let canonical_history_input = self.provider_history.as_ref()
++            .map(|_| provider_history::canonical_input_boundary(&prompt.input)).transpose()?;
+         input.splice(0..0, prefix);
+         filter_provider_response_metadata(&mut input, is_openai);
+         let reasoning = if prompt_owns_model {
+@@ -1357,6 +1423,8 @@ impl ModelClient {
                  },
              ),
              request_controls: codex_api::ResponsesRequestControls {
++                canonical_history_input,
 +                provider_history: self.provider_history_selection(),
                  prompt: prompt_reference,
                  instructions: hosted_prompt
                      .filter(|prompt| !prompt.omit_instructions)
-@@ -1818,6 +1876,16 @@ impl ModelClientSession {
+@@ -1818,6 +1886,16 @@ impl ModelClientSession {
          self.client.uses_chatgpt_plan()
      }
  
@@ -529,7 +550,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
      pub(crate) fn saved_login_limits_need_attention(&self) -> bool {
          let source = &self.client.state.session_source;
          // ThreadSpawn children expose the same attention API as root turns.
-@@ -1983,6 +2051,11 @@ impl ModelClientSession {
+@@ -1983,6 +2061,11 @@ impl ModelClientSession {
          if !self.client.responses_websocket_enabled() {
              return Ok(());
          }
@@ -541,7 +562,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
          let provider = Arc::clone(&self.client.state.provider);
          let auth_manager = provider.auth_manager();
          let mut auth_recovery = auth_manager
-@@ -2242,14 +2315,17 @@ impl ModelClientSession {
+@@ -2242,14 +2325,17 @@ impl ModelClientSession {
                          (
                              dispatch,
                              contributor.preserves_provider_request_window(&url),
@@ -561,7 +582,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              let chatgpt_plan = self.client.uses_chatgpt_plan();
              if chatgpt_plan && direct.is_none() {
                  return Err(CodexErr::Fatal(
-@@ -2327,6 +2403,7 @@ impl ModelClientSession {
+@@ -2327,6 +2413,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -569,7 +590,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2365,16 +2442,6 @@ impl ModelClientSession {
+@@ -2365,16 +2452,6 @@ impl ModelClientSession {
                  prompt.cyber_access_program,
                  self.client.api_key_cyber_access_programs,
              )?;
@@ -586,7 +607,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
              options.extra_headers.extend(responses_headers);
              let interceptors = crate::model_request::prepare_with_attempts(
-@@ -2393,6 +2460,52 @@ impl ModelClientSession {
+@@ -2393,6 +2470,52 @@ impl ModelClientSession {
                              as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
                      }),
              );
@@ -639,7 +660,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
-@@ -2401,7 +2514,13 @@ impl ModelClientSession {
+@@ -2401,7 +2524,13 @@ impl ModelClientSession {
                  }
                  request.input = input;
              }
@@ -654,7 +675,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              let client = ApiResponsesClient::new(
                  transport,
                  client_setup.api_provider,
-@@ -2493,6 +2612,15 @@ impl ModelClientSession {
+@@ -2493,6 +2622,15 @@ impl ModelClientSession {
  
              match stream_result {
                  Ok((request_id, interrupt, events, producer_task, producer_stop)) => {
@@ -670,7 +691,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
                      let (mut stream, response) = map_response_events(
                          request_id,
                          crate::model_request::intercept_stream(events, interceptors),
-@@ -2509,8 +2637,13 @@ impl ModelClientSession {
+@@ -2509,8 +2647,13 @@ impl ModelClientSession {
                      stream.producer_task = producer_task;
                      stream.producer_stop = producer_stop;
                      stream.request_observation = request_observation;
@@ -686,7 +707,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
                      return Ok(stream);
                  }
                  Err(ApiError::Transport(unauthorized_transport))
-@@ -2528,6 +2661,7 @@ impl ModelClientSession {
+@@ -2528,6 +2671,7 @@ impl ModelClientSession {
                          response_debug_context.request_id.as_deref(),
                          /*output_items*/ &[],
                      );
@@ -694,7 +715,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
                      auth_recovery.pending_retry = PendingUnauthorizedRetry::from_recovery(
                          handle_unauthorized(
                              unauthorized_transport,
-@@ -2591,6 +2725,9 @@ impl ModelClientSession {
+@@ -2591,6 +2735,9 @@ impl ModelClientSession {
          inference_trace: &InferenceTraceContext,
          auth_recovery: &mut RequestAuthRecovery,
      ) -> Result<WebsocketStreamOutcome> {
@@ -704,7 +725,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
          let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
          let provider = Arc::clone(&self.client.state.provider);
          loop {
-@@ -2623,6 +2760,7 @@ impl ModelClientSession {
+@@ -2623,6 +2770,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -712,7 +733,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2725,7 +2863,11 @@ impl ModelClientSession {
+@@ -2725,7 +2873,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -725,7 +746,7 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
              let (mode, reason) = if continuation.is_some() {
                  ("incremental", "incremental")
              } else {
-@@ -2987,6 +3129,10 @@ impl ModelClientSession {
+@@ -2987,6 +3139,10 @@ impl ModelClientSession {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<()> {
@@ -738,13 +759,14 @@ index 63105967bc446728b2dfa34d60abfc94eb279dd5..55f312105f3a7ea025cb6c3a84c75598
          // ordinary request run the awaited context policy before sending input.
 diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af443e839fd1
+index 0000000000000000000000000000000000000000..077e06a35f2e064dfd384e7fe9038fdfb2b2a7d6
 --- /dev/null
 +++ b/codex-rs/core/src/client/provider_history.rs
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,483 @@
 +use super::*;
 +use codex_protocol::provider_history::{
-+    ProviderHistoryReference, ProviderHistorySelection, ProviderHistoryWindowReceipt,
++    ProviderHistoryInputBoundary, ProviderHistoryReference, ProviderHistorySelection,
++    ProviderHistoryWindowReceipt,
 +};
 +use http::HeaderMap;
 +use sha2::{Digest, Sha256};
@@ -775,6 +797,7 @@ index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af44
 +
 +#[derive(Debug)]
 +struct Pending {
++    canonical_input: ProviderHistoryInputBoundary,
 +    input_len: usize,
 +    input_sha256: String,
 +    output_sha256: Vec<String>,
@@ -891,13 +914,22 @@ index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af44
 +        .collect()
 +}
 +
-+fn input_digest(items: &[ResponseItem]) -> Result<String> {
++fn input_digest<'a>(items: impl IntoIterator<Item = &'a ResponseItem>) -> Result<String> {
 +    let mut digest = Sha256::new();
 +    digest.update(b"sdk-provider-history-input-v1\0");
 +    for item in items {
 +        digest.update(item_digest(item)?);
 +    }
 +    Ok(hex(digest.finalize()))
++}
++
++pub(crate) fn canonical_input_boundary(
++    items: &[ResponseItem],
++) -> Result<ProviderHistoryInputBoundary> {
++    Ok(ProviderHistoryInputBoundary {
++        input_len: items.len(),
++        input_sha256: input_digest(items)?,
++    })
 +}
 +
 +impl Cursor {
@@ -959,6 +991,11 @@ index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af44
 +        headers: HeaderMap,
 +        provider: &codex_api::Provider,
 +    ) -> Result<Option<Vec<ResponseItem>>> {
++        let canonical_input = request
++            .request_controls
++            .canonical_history_input
++            .take()
++            .ok_or_else(|| invalid("Provider history has no admitted canonical input"))?;
 +        let mut auth_headers = provider.headers.clone();
 +        setup.api_auth.add_auth_headers(&mut auth_headers);
 +        let scope = Scope {
@@ -1026,6 +1063,7 @@ index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af44
 +            state.reference.provider_route = current_route;
 +            state.reference.pending = true;
 +            state.pending = Some(Pending {
++                canonical_input,
 +                input_len: full_len,
 +                input_sha256: full_digest,
 +                output_sha256: Vec::new(),
@@ -1046,6 +1084,45 @@ index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af44
 +        });
 +        request.request_controls.provider_history = Some(saved.selection);
 +        Ok(logical)
++    }
++
++    pub(crate) fn validate_replacement(
++        &self,
++        current: &[&ResponseItem],
++        items: &[&ResponseItem],
++    ) -> Result<()> {
++        let state = self.state.lock().unwrap();
++        let refused = || invalid("Cannot replace acknowledged provider history input or output");
++        if state.reference.pending {
++            return Err(refused());
++        }
++        let Some(window) = &state.reference.window else {
++            return Ok(());
++        };
++        let Some(boundary) = &window.canonical_input else {
++            // Older wire-only receipts cannot prove a shorter canonical boundary.
++            // Retaining the entire current projection or appending is still safe.
++            let prefix = items.get(..current.len()).ok_or_else(refused)?;
++            if input_digest(current.iter().copied())? != input_digest(prefix.iter().copied())? {
++                return Err(refused());
++            }
++            return Ok(());
++        };
++        let prefix = items.get(..boundary.input_len).ok_or_else(refused)?;
++        let tail = items[boundary.input_len..]
++            .iter()
++            .map(|item| item_digest(item).map(hex))
++            .collect::<Result<Vec<_>>>()?;
++        let canonical = ProviderHistoryWindowReceipt {
++            input_len: boundary.input_len,
++            input_sha256: boundary.input_sha256.clone(),
++            output_sha256: window.output_sha256.clone(),
++            canonical_input: None,
++        };
++        canonical
++            .unsent_input_indices(items.len(), &input_digest(prefix.iter().copied())?, &tail)
++            .map_err(|_| refused())?;
++        Ok(())
 +    }
 +
 +    pub(crate) fn observe_wire_output(&self, item: &ResponseItem) {
@@ -1101,6 +1178,7 @@ index 0000000000000000000000000000000000000000..3e47f3c86e77a3f9095fe41987d1af44
 +                *id = Some(response.response_id);
 +            }
 +            state.reference.window = Some(ProviderHistoryWindowReceipt {
++                canonical_input: Some(pending.canonical_input),
 +                input_len: pending.input_len,
 +                input_sha256: pending.input_sha256,
 +                output_sha256: pending.output_sha256,
@@ -1246,6 +1324,27 @@ index f273e41e3ff48e6455e35f03be04b314f84778d3..f1e4c7aad72ebe1fd01e8fdef9703c29
              review_model,
              model_context_window: cfg.model_context_window,
              model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index cb0334d86917ea07ec5be9eaff89e8497f1f5896..dc17c2f10c1f0f56517871949fb743627fd43bca 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -518,6 +518,16 @@ impl Session {
+         {
+             return Err(invalid("canonical history item IDs must be unique"));
+         }
++        let items = envelopes.iter().map(|row| &row.item).collect::<Vec<_>>();
++        let current = state
++            .history
++            .annotated_items()
++            .iter()
++            .map(|row| &row.item)
++            .collect::<Vec<_>>();
++        self.services
++            .model_client
++            .validate_provider_history_replacement(&current, &items)?;
+         let revision = originals.revision().to_owned();
+         let checkpoint = codex_history::CompactedItem {
+             sdk_originals: Some(originals.clone().into()),
 diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
 index 8cb93dc82f4573885dd874a3971235e28d4a04ef..af44c5b70b079073e221e193f840645ba24a60d2 100644
 --- a/codex-rs/core/src/session/mod.rs
@@ -2063,10 +2162,10 @@ index 2b87be0f466e4bbb68951a72e64cd4a5b35d9add..acaf75af550d84f95ec8705b62b79c97
      pub tool_choice: Option<crate::config_types::ToolChoice>,
 diff --git a/codex-rs/protocol/src/provider_history.rs b/codex-rs/protocol/src/provider_history.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..85849f5df6de865942cc12adcf5f7f1f1c3a725e
+index 0000000000000000000000000000000000000000..412bd6e04d9696ba3ae47bf55aa76e6392aed3d2
 --- /dev/null
 +++ b/codex-rs/protocol/src/provider_history.rs
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,129 @@
 +//! Session-scoped provider history data; live provider authority stays external.
 +
 +use schemars::JsonSchema;
@@ -2101,10 +2200,20 @@ index 0000000000000000000000000000000000000000..85849f5df6de865942cc12adcf5f7f1f
 +    }
 +}
 +
++/// Canonical input before trusted request-only rows are inserted.
++#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
++#[serde(deny_unknown_fields)]
++pub struct ProviderHistoryInputBoundary {
++    pub input_len: usize,
++    pub input_sha256: String,
++}
++
 +/// Data-only occurrence receipt, without live provider or callback authority.
 +#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
 +#[serde(deny_unknown_fields)]
 +pub struct ProviderHistoryWindowReceipt {
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub canonical_input: Option<ProviderHistoryInputBoundary>,
 +    pub input_len: usize,
 +    pub input_sha256: String,
 +    pub output_sha256: Vec<String>,
@@ -2179,17 +2288,19 @@ index 0000000000000000000000000000000000000000..85849f5df6de865942cc12adcf5f7f1f
 +            return Err("Provider history dispatch requires reconciliation before reuse".into());
 +        }
 +        if &self.selection != current {
-+            return Err("Restored provider history requires its exact current anchor declaration".into());
++            return Err(
++                "Restored provider history requires its exact current anchor declaration".into(),
++            );
 +        }
 +        Ok(())
 +    }
 +}
 diff --git a/codex-rs/protocol/tests/provider_history.rs b/codex-rs/protocol/tests/provider_history.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..48b620632031aab5f4b3aa4b59bd29fb999d115f
+index 0000000000000000000000000000000000000000..9498fb571e95050a3c096b95b38e1e0d6589e23b
 --- /dev/null
 +++ b/codex-rs/protocol/tests/provider_history.rs
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,93 @@
 +use codex_protocol::provider_history::ProviderHistorySelection;
 +use serde_json::json;
 +
@@ -2235,6 +2346,7 @@ index 0000000000000000000000000000000000000000..48b620632031aab5f4b3aa4b59bd29fb
 +    let result_b = digest("44");
 +    let user = digest("55");
 +    let receipt = ProviderHistoryWindowReceipt {
++        canonical_input: None,
 +        input_len: 2,
 +        input_sha256: prefix.clone(),
 +        output_sha256: vec![call_a.clone(), call_b.clone()],
@@ -2258,6 +2370,7 @@ index 0000000000000000000000000000000000000000..48b620632031aab5f4b3aa4b59bd29fb
 +    let a = digest("11");
 +    let b = digest("22");
 +    let receipt = ProviderHistoryWindowReceipt {
++        canonical_input: None,
 +        input_len: 1,
 +        input_sha256: prefix.clone(),
 +        output_sha256: vec![a.clone(), b.clone()],
