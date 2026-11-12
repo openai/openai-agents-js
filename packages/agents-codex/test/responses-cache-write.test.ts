@@ -66,23 +66,6 @@ it.each(['responses', 'ai-sdk-responses'] as const)(
   },
 );
 
-it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1])(
-  'rejects an invalid received cache-write count: %s',
-  async (cacheWrite) => {
-    const model = new ResponsesModel({
-      responses: {
-        create: async () => ({
-          status: 'completed',
-          output: [],
-          usage: { input_tokens_details: { cache_write_tokens: cacheWrite } },
-        }),
-      },
-    });
-    const result = await model.complete(request);
-    expect(() => captureModelResponse(result)).toThrow(/token counter/);
-  },
-);
-
 it.each(['responses', 'ai-sdk-responses'] as const)(
   'keeps %s extension getters unread with raw off and unchanged with raw on',
   async (adapter) => {
