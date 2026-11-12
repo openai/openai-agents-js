@@ -1010,8 +1010,8 @@
     },
     {
       "path": "sdk-websocket-route-auth-scope.patch",
-      "sha256": "7ea999798faa7f246dde295539a8fb7e5102097c9f720d3615e286026ed47b16"
+      "sha256": "7110c4c522ea0afccc9bf42085582fdda64f7bae2c54364ae39de60d2decfa0b"
     }
   ],
-  "result_tree": "3ab9c2cca6989811e0a3589b7c61d4b55d7584b1"
+  "result_tree": "724d06927b5e6192ce99dc9461a70b296a2b9cdb"
 }

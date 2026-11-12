@@ -1,5 +1,5 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 80e0aa61..9913a366 100644
+index 80e0aa61d..9913a3665 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
 @@ -2066,6 +2066,7 @@ dependencies = [
@@ -19,7 +19,7 @@ index 80e0aa61..9913a366 100644
   "codex-protocol",
   "codex-utils-cargo-bin",
 diff --git a/codex-rs/cli/src/doctor.rs b/codex-rs/cli/src/doctor.rs
-index 427aa8d3..d5a925c5 100644
+index 427aa8d3b..d5a925c5a 100644
 --- a/codex-rs/cli/src/doctor.rs
 +++ b/codex-rs/cli/src/doctor.rs
 @@ -2310,6 +2310,9 @@ async fn websocket_reachability_check(
@@ -80,7 +80,7 @@ index 427aa8d3..d5a925c5 100644
      extra_headers.insert(
          OPENAI_BETA_HEADER,
 diff --git a/codex-rs/codex-api/Cargo.toml b/codex-rs/codex-api/Cargo.toml
-index a5d219f3..d1ecc0a9 100644
+index a5d219f32..d1ecc0a9b 100644
 --- a/codex-rs/codex-api/Cargo.toml
 +++ b/codex-rs/codex-api/Cargo.toml
 @@ -33,6 +33,7 @@ url = { workspace = true }
@@ -92,10 +92,82 @@ index a5d219f3..d1ecc0a9 100644
  assert_matches = { workspace = true }
  pretty_assertions = { workspace = true }
 diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-index 316f417c..98750ed4 100644
+index 316f417cb..25452ee4c 100644
 --- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
 +++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-@@ -583,7 +583,7 @@ async fn connect_websocket(
+@@ -54,8 +54,9 @@ use url::Url;
+ 
+ /// A host-owned connection for a selected internal Responses route.
+ pub type ResponsesWebsocketConnect = Arc<
+-    dyn Fn(http::Request<()>)
+-            -> BoxFuture<'static, Result<ResponsesWebsocketMessageTransport, ApiError>>
++    dyn Fn(
++            http::Request<()>,
++        ) -> BoxFuture<'static, Result<ResponsesWebsocketMessageTransport, ApiError>>
+         + Send
+         + Sync,
+ >;
+@@ -482,13 +483,16 @@ impl ResponsesWebsocketClient {
+         self.auth.add_auth_headers(&mut headers);
+ 
+         let (stream, _status, server_reasoning_included, server_model) = connect_websocket(
+-            ws_url,
++            ws_url.clone(),
+             headers,
+             http_client_factory,
+             turn_state,
+             self.host_connect.as_ref(),
+         )
+-        .await?;
++        .await
++        .map_err(|error| {
++            sanitize_handshake_rejection(error, &ws_url, self.provider.websocket_base_url.is_some())
++        })?;
+         Ok(ResponsesWebsocketConnection::new(
+             stream,
+             self.provider.stream_idle_timeout,
+@@ -528,7 +532,10 @@ impl ResponsesWebsocketClient {
+             /*turn_state*/ None,
+             /*host_connect*/ None,
+         )
+-        .await?;
++        .await
++        .map_err(|error| {
++            sanitize_handshake_rejection(error, &ws_url, self.provider.websocket_base_url.is_some())
++        })?;
+         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
+             .await
+             .ok()
+@@ -547,6 +554,28 @@ impl ResponsesWebsocketClient {
+     }
+ }
+ 
++// A configured independent endpoint can reflect its private route in rejection fields.
++// Keep typed retry/status metadata while leaving the ordinary response contract intact.
++fn sanitize_handshake_rejection(error: ApiError, url: &Url, independent: bool) -> ApiError {
++    if !independent {
++        return error;
++    }
++    match error {
++        ApiError::Transport(TransportError::Http {
++            status,
++            retry_after,
++            ..
++        }) => ApiError::Transport(TransportError::Http {
++            status,
++            url: Some(url.origin().ascii_serialization()),
++            headers: None,
++            body: None,
++            retry_after,
++        }),
++        error => error,
++    }
++}
++
+ fn immediate_close_from_message(message: Message) -> Option<ResponsesWebsocketClose> {
+     let Message::Close(frame) = message else {
+         return None;
+@@ -583,7 +612,7 @@ async fn connect_websocket(
      turn_state: Option<Arc<OnceLock<String>>>,
      host_connect: Option<&ResponsesWebsocketConnect>,
  ) -> Result<(WsStream, StatusCode, bool, Option<String>), ApiError> {
@@ -104,7 +176,7 @@ index 316f417c..98750ed4 100644
  
      let mut request = url
          .as_str()
-@@ -606,11 +606,11 @@ async fn connect_websocket(
+@@ -606,11 +635,11 @@ async fn connect_websocket(
              .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
          let (socket, response) = match connector.connect(request, websocket_config()).await {
              Ok((socket, response)) => {
@@ -118,7 +190,7 @@ index 316f417c..98750ed4 100644
                  return Err(map_ws_error(err, &url));
              }
          };
-@@ -665,7 +665,7 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
+@@ -665,7 +694,7 @@ fn map_ws_error(err: WsError, url: &Url) -> ApiError {
                  .and_then(|bytes| String::from_utf8(bytes.clone()).ok());
              ApiError::Transport(TransportError::Http {
                  status,
@@ -127,10 +199,119 @@ index 316f417c..98750ed4 100644
                  headers: Some(headers),
                  body,
                  retry_after,
-@@ -1076,6 +1076,145 @@ mod tests {
+@@ -1076,6 +1105,253 @@ mod tests {
      use std::collections::HashMap;
      use std::sync::Arc;
  
++    #[tokio::test]
++    async fn independent_rejected_handshake_omits_reflected_response_fields() {
++        use tokio::io::{AsyncReadExt, AsyncWriteExt};
++        struct EmptyAuth;
++        impl crate::AuthProvider for EmptyAuth {
++            fn add_auth_headers(&self, _: &mut HeaderMap) {}
++        }
++        for independent in [true, false] {
++            for suffix in [
++                "/private-path-marker?token=private-query-marker",
++                "/%70rivate-encoded?token=%73ynthetic",
++            ] {
++                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++                let endpoint = format!("http://{}{suffix}", listener.local_addr().unwrap());
++                let origin = Url::parse(&endpoint.replace("http://", "ws://"))
++                    .unwrap()
++                    .origin()
++                    .ascii_serialization();
++                let server = tokio::spawn(async move {
++                    let (mut stream, _) = listener.accept().await.unwrap();
++                    let mut request = Vec::new();
++                    let mut buffer = [0; 1024];
++                    while !request.windows(4).any(|part| part == b"\r\n\r\n") {
++                        let count = stream.read(&mut buffer).await.unwrap();
++                        assert!(count > 0 && request.len() < 16384);
++                        request.extend_from_slice(&buffer[..count]);
++                    }
++                    let request = String::from_utf8(request).unwrap();
++                    let target = request
++                        .lines()
++                        .next()
++                        .unwrap()
++                        .split_whitespace()
++                        .nth(1)
++                        .unwrap();
++                    let body = format!("Rejected target {target}");
++                    let response = format!(
++                        "HTTP/1.1 401 Unauthorized\r\nLocation: {target}\r\nRetry-After: 3\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
++                        body.len()
++                    );
++                    stream.write_all(response.as_bytes()).await.unwrap();
++                });
++                let provider = Provider {
++                    name: "reflection-test".into(),
++                    base_url: if independent {
++                        "http://127.0.0.1:1/unused".into()
++                    } else {
++                        endpoint.clone()
++                    },
++                    websocket_base_url: independent.then_some(endpoint),
++                    query_params: None,
++                    headers: HeaderMap::new(),
++                    retry: codex_client::RetryConfig {
++                        max_attempts: 1,
++                        base_delay: Duration::from_millis(1),
++                        retry_429: false,
++                        retry_5xx: false,
++                        retry_transport: false,
++                    },
++                    stream_idle_timeout: Duration::from_secs(2),
++                };
++                let client = ResponsesWebsocketClient::new(provider, Arc::new(EmptyAuth));
++                let factory =
++                    HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault);
++                let error = tokio::time::timeout(
++                    Duration::from_secs(2),
++                    client.connect(&factory, HeaderMap::new(), HeaderMap::new(), None, None),
++                )
++                .await
++                .expect("handshake settled")
++                .err()
++                .expect("upgrade rejected");
++                server.await.unwrap();
++                let diagnostic = format!("{error:?}");
++                let ApiError::Transport(TransportError::Http {
++                    status,
++                    url,
++                    headers,
++                    body,
++                    retry_after,
++                }) = error
++                else {
++                    panic!("expected typed HTTP rejection");
++                };
++                assert_eq!(status.as_u16(), 401);
++                assert_eq!(url.as_deref(), Some(origin.as_str()));
++                assert!(retry_after.is_some());
++                if independent {
++                    assert!(headers.is_none());
++                    assert!(body.is_none());
++                    for marker in [
++                        "private-path-marker",
++                        "private-query-marker",
++                        "%70rivate-encoded",
++                        "%73ynthetic",
++                    ] {
++                        assert!(
++                            !diagnostic.contains(marker),
++                            "reflected endpoint data escaped into the returned diagnostic"
++                        );
++                    }
++                } else {
++                    assert!(headers.unwrap().contains_key("location"));
++                    assert!(body.unwrap().starts_with("Rejected target /"));
++                }
++            }
++        }
++    }
++
 +    #[tokio::test]
 +    async fn rejected_handshake_diagnostic_omits_endpoint_path_and_query() {
 +        use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -269,12 +450,33 @@ index 316f417c..98750ed4 100644
 +        }
 +    }
 +
-+
      #[tokio::test]
      #[expect(
          clippy::await_holding_invalid_type,
+@@ -1144,7 +1420,9 @@ mod tests {
+         let (tx_message, rx_message) = mpsc::unbounded_channel();
+         let pump_task =
+             tokio::spawn(async move {
+-                let Some(ResponsesWebsocketCommand::Send { message, tx_result }) = rx_command.recv().await else {
++                let Some(ResponsesWebsocketCommand::Send { message, tx_result }) =
++                    rx_command.recv().await
++                else {
+                     panic!("missing response.create");
+                 };
+                 assert!(matches!(message, Message::Text(_)));
+@@ -1283,7 +1561,9 @@ mod tests {
+             let (tx_message, rx_message) = mpsc::unbounded_channel();
+             let pump_task =
+                 tokio::spawn(async move {
+-                    let Some(ResponsesWebsocketCommand::Send { tx_result, .. }) = rx_command.recv().await else {
++                    let Some(ResponsesWebsocketCommand::Send { tx_result, .. }) =
++                        rx_command.recv().await
++                    else {
+                         panic!("missing response.create");
+                     };
+                     tx_result.send(Ok(())).unwrap();
 diff --git a/codex-rs/codex-api/tests/realtime_websocket_e2e.rs b/codex-rs/codex-api/tests/realtime_websocket_e2e.rs
-index ed52ca03..da303f11 100644
+index ed52ca031..da303f112 100644
 --- a/codex-rs/codex-api/tests/realtime_websocket_e2e.rs
 +++ b/codex-rs/codex-api/tests/realtime_websocket_e2e.rs
 @@ -697,3 +697,72 @@ async fn realtime_ws_e2e_realtime_v2_parser_emits_handoff_requested() {
@@ -351,7 +553,7 @@ index ed52ca03..da303f11 100644
 +    let _ = trap_task.await;
 +}
 diff --git a/codex-rs/codex-client/src/provider.rs b/codex-rs/codex-client/src/provider.rs
-index 4499905b..d1b82623 100644
+index 4499905bd..d1b826237 100644
 --- a/codex-rs/codex-client/src/provider.rs
 +++ b/codex-rs/codex-client/src/provider.rs
 @@ -121,7 +121,12 @@ impl Provider {
@@ -369,7 +571,7 @@ index 4499905b..d1b82623 100644
  
          let scheme = match url.scheme() {
 diff --git a/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.proto b/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.proto
-index b9f89c95..c8e078be 100644
+index b9f89c95c..c8e078be2 100644
 --- a/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.proto
 +++ b/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.proto
 @@ -50,6 +50,7 @@ message ModelProvider {
@@ -381,7 +583,7 @@ index b9f89c95..c8e078be 100644
  
  message StringMap {
 diff --git a/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs b/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs
-index 6ffc7bbd..c65a0b8f 100644
+index 6ffc7bbdf..c65a0b8f0 100644
 --- a/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs
 +++ b/codex-rs/config/src/thread_config/proto/codex.thread_config.v1.rs
 @@ -79,6 +79,8 @@ pub struct ModelProvider {
@@ -394,7 +596,7 @@ index 6ffc7bbd..c65a0b8f 100644
  #[derive(Clone, PartialEq, ::prost::Message)]
  pub struct StringMap {
 diff --git a/codex-rs/config/src/thread_config/remote.rs b/codex-rs/config/src/thread_config/remote.rs
-index 95a9a96b..fec0c4a2 100644
+index 95a9a96bc..fec0c4a25 100644
 --- a/codex-rs/config/src/thread_config/remote.rs
 +++ b/codex-rs/config/src/thread_config/remote.rs
 @@ -173,7 +173,7 @@ fn model_provider_from_proto(
@@ -455,7 +657,7 @@ index 95a9a96b..fec0c4a2 100644
                                  "http://127.0.0.1:8061/api/codex/models".to_string(),
                              ),
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 95f7faa6..5b293d76 100644
+index 95f7faa63..5b293d76c 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -2040,6 +2040,7 @@ impl ModelClientSession {
@@ -506,7 +708,7 @@ index 95f7faa6..5b293d76 100644
      api_auth: SharedAuthProvider,
      auth_owner_generation: Option<u64>,
 diff --git a/codex-rs/ext/guardian-v2/Cargo.toml b/codex-rs/ext/guardian-v2/Cargo.toml
-index 02e69106..a6b39bc2 100644
+index 02e69106b..a6b39bc2e 100644
 --- a/codex-rs/ext/guardian-v2/Cargo.toml
 +++ b/codex-rs/ext/guardian-v2/Cargo.toml
 @@ -38,6 +38,7 @@ tracing = { workspace = true }
@@ -518,7 +720,7 @@ index 02e69106..a6b39bc2 100644
  codex-utils-cargo-bin = { workspace = true }
  core_test_support = { workspace = true }
 diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs
-index cf5d463e..367f64b3 100644
+index cf5d463e6..367f64b3e 100644
 --- a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs
 +++ b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool.rs
 @@ -34,6 +34,7 @@ use codex_model_provider::ProviderAuthScope;
@@ -608,7 +810,7 @@ index cf5d463e..367f64b3 100644
          let connect = client.connect(
              &self.config.http_client_factory,
 diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs
-index 6cf716de..c33e1d12 100644
+index 6cf716de8..c33e1d12c 100644
 --- a/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs
 +++ b/codex-rs/ext/guardian-v2/src/async_scorer/sampler/connection_pool_tests.rs
 @@ -460,3 +460,179 @@ async fn http_cache_preserves_no_constraint_redirect_policy_and_configured_heade
@@ -792,7 +994,7 @@ index 6cf716de..c33e1d12 100644
 +    Ok(())
 +}
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index 2a179410..f6686618 100644
+index 2a179410f..f6686618e 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
 @@ -489,8 +489,6 @@ other non-default provider fields are not supported"
@@ -805,7 +1007,7 @@ index 2a179410..f6686618 100644
              auth_mode,
              Some(
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index dd0df967..69ae70b5 100644
+index dd0df967e..69ae70b51 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 @@ -907,6 +907,13 @@ fn websocket_override_keeps_http_and_encoded_path_query() {
@@ -841,7 +1043,7 @@ index dd0df967..69ae70b5 100644
      }
      assert!(info.to_api_provider(Some(AuthMode::ApiKey)).is_ok());
 diff --git a/codex-rs/model-provider/src/auth.rs b/codex-rs/model-provider/src/auth.rs
-index 3b4a4764..fc0553aa 100644
+index 3b4a4764c..fc0553aa8 100644
 --- a/codex-rs/model-provider/src/auth.rs
 +++ b/codex-rs/model-provider/src/auth.rs
 @@ -16,6 +16,7 @@ use codex_login::auth::AgentIdentityAuth;
@@ -1031,7 +1233,7 @@ index 3b4a4764..fc0553aa 100644
          );
          provider.experimental_bearer_token = Some("synthetic-explicit-key".into());
 diff --git a/codex-rs/model-provider/src/lib.rs b/codex-rs/model-provider/src/lib.rs
-index 9c818af7..19277608 100644
+index 9c818af7d..192776086 100644
 --- a/codex-rs/model-provider/src/lib.rs
 +++ b/codex-rs/model-provider/src/lib.rs
 @@ -22,6 +22,7 @@ pub use auth::ProviderAuthScope;
