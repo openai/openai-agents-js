@@ -1,3 +1,4 @@
+export type { ProviderHistory } from './runtime/provider-history';
 export { retryPolicies } from './runtime/model-retry';
 export type {
   RetryContext,

@@ -999,7 +999,11 @@
     {
       "path": "sdk-independent-websocket-base.patch",
       "sha256": "bcb4ba165d5d56bfbd29f31405514224c96282ccf67a34d48f04af99d8809601"
+    },
+    {
+      "path": "sdk-provider-history-lineage.patch",
+      "sha256": "b20f70b9ab1cf39730b00b6257d819dee71c69c5350394c03f47f424ec2b3f40"
     }
   ],
-  "result_tree": "ecf7edd9f507c68993edd485360937507d07e505"
+  "result_tree": "cee894a301ee35088593e8ea95f92b5a8cdb87e3"
 }

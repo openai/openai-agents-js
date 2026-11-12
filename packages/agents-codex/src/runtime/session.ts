@@ -1,3 +1,7 @@
+import {
+  providerHistorySettings,
+  type ProviderHistory,
+} from './provider-history';
 import { QueuedRoots } from './queued-roots';
 import {
   CallbackDeliveries,
@@ -483,6 +487,7 @@ export interface SessionOptions {
   agentGraph?: CapturedAgentGraph & { readonly fingerprint: string };
   context?: unknown;
   initialModelSettings?: ModelSettings;
+  providerHistory?: ProviderHistory;
   /** @internal Captured authorized prompt source; never serialized as a callback. */
   hostedPrompt?: HostedPromptSource<any>;
   /** @internal Opening declaration presence, separate from native model defaults. */
@@ -3059,13 +3064,17 @@ export class Session<OutputT = string, Context = unknown> {
       )
         await this.#native._validate_hosted_search_model();
       if (
-        (this.options.initialModelSettings ||
+        (this.options.providerHistory ||
+          this.options.initialModelSettings ||
           this.options.hostedPromptControls) &&
         !this.restored
       ) {
         const settings = modelOverrides(
           undefined,
-          this.options.initialModelSettings,
+          providerHistorySettings(
+            this.options.providerHistory,
+            this.options.initialModelSettings,
+          ),
           this.options.hostedPromptControls,
         );
         if (
@@ -3270,6 +3279,20 @@ export class Session<OutputT = string, Context = unknown> {
   private async restoreModelControls(
     settings: ModelSettings | undefined,
   ): Promise<void> {
+    const historySettings = providerHistorySettings(
+      this.options.providerHistory,
+      settings,
+    );
+    if (this.options.providerHistory !== undefined) {
+      if (
+        (await this.#native._update_model_settings(
+          encode(modelOverrides(undefined, { store: historySettings!.store })),
+        )) !== true
+      )
+        throw new NativeError(
+          'Current provider history storage was not acknowledged',
+        );
+    }
     // Ordinary portable state already carries the accepted invocation deadline.
     const rebindInvocationTimeout =
       this.restored === null ||
@@ -14452,6 +14475,10 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support a supplied compaction summary; use compact() without options for native compaction',
       );
     this.checkCallbackOperation('compact');
+    if (this.options.providerHistory !== undefined)
+      throw new NativeError(
+        'Compaction is unavailable for provider-managed history',
+      );
     this.idle('compact');
     if (options !== undefined) {
       const { summary, signal, snapshot, retain } = options;

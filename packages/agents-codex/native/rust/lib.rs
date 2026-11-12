@@ -43,6 +43,7 @@ mod plain_websocket;
 mod plan_usage;
 mod project_search;
 mod provider_error;
+mod provider_history_owner;
 mod provider_transports;
 mod python_tools;
 mod realtime_adapter;
