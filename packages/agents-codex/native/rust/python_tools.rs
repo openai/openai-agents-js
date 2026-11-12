@@ -375,6 +375,8 @@ pub(crate) struct Reply {
     pub(crate) response: DynamicToolResponse,
     #[serde(default = "request_response_by_default")]
     pub(crate) start_response: bool,
+    #[serde(default)]
+    pub(crate) handoff_target_profile_id: Option<String>,
 }
 
 fn request_response_by_default() -> bool {
@@ -386,6 +388,7 @@ pub(crate) struct ToolReply {
     pub(crate) response: DynamicToolResponse,
     pub(crate) start_response: bool,
     pub(crate) acceptance: Option<oneshot::Sender<()>>,
+    pub(crate) handoff_target_profile_id: Option<String>,
 }
 impl From<DynamicToolResponse> for ToolReply {
     fn from(response: DynamicToolResponse) -> Self {
@@ -393,6 +396,7 @@ impl From<DynamicToolResponse> for ToolReply {
             response,
             start_response: true,
             acceptance: None,
+            handoff_target_profile_id: None,
         }
     }
 }
@@ -3128,7 +3132,17 @@ impl PythonContributor {
             .iter()
             .copied()
             .map(|slot| {
+                let decision_selection = wrap_profile_handoffs
+                    .then(|| {
+                        crate::agent_profiles::decision_handoff_selection(
+                            thread,
+                            profile.as_ref(),
+                            slot,
+                        )
+                    })
+                    .flatten();
                 let callback = Arc::new(PythonExecutor {
+                    decision_selection: decision_selection.clone(),
                     admission: thread
                         .get::<ModelPresentation>()
                         .and_then(|state| state.admission.clone()),
@@ -3144,7 +3158,12 @@ impl PythonContributor {
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>;
                 if wrap_profile_handoffs {
-                    crate::agent_profiles::wrap_handoff_callback(thread, profile.as_ref(), callback)
+                    crate::agent_profiles::wrap_handoff_callback(
+                        thread,
+                        profile.as_ref(),
+                        callback,
+                        decision_selection,
+                    )
                 } else {
                     callback
                 }
@@ -3977,6 +3996,7 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    decision_selection: Option<Arc<crate::agent_profiles::DecisionHandoffSelection>>,
     admission: Option<Arc<crate::turn_settlement::Turn>>,
     manual: Option<Arc<CapturedManualTools>>,
     profile: Option<codex_extension_api::AgentProfileReceipt>,
@@ -4232,6 +4252,25 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     ));
                 }
             };
+            if let Some(selection) = &self.decision_selection {
+                if !self.tools.admits_generation(&self.generation) {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Expired Decision handoff source catalog".into(),
+                    ));
+                }
+                selection
+                    .record(
+                        &call.turn_id,
+                        &call.call_id,
+                        response.handoff_target_profile_id,
+                        response.response.success,
+                    )
+                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+            } else if response.handoff_target_profile_id.is_some() {
+                return Err(FunctionCallError::RespondToModel(
+                    "Only Decision handoffs may select a target".into(),
+                ));
+            }
             if response.response.success
                 && call.source == ToolCallSource::Direct
                 && self.tools.admits_generation(&self.generation)

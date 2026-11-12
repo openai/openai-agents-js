@@ -365,16 +365,37 @@ export function captureTraceValidation():
 export function captureTracing(
   options?: TraceOptions,
   opening?: TraceCapture,
+  continuationTraceId?: string,
 ): TraceCapture | undefined {
+  const hasCallerScope =
+    options !== undefined || ambient.getStore() !== undefined;
+  const hasCurrentScope =
+    hasCallerScope || (opening !== undefined && !opening.policyOnly);
   if (
-    options === undefined &&
-    ambient.getStore() === undefined &&
+    !hasCurrentScope &&
     opening === undefined &&
+    continuationTraceId === undefined &&
     Object.keys(admissionPolicy()).length === 0
   )
     return undefined;
   const storage = currentTraceStorage();
-  return new TraceCapture(start(options ?? {}, 'operation', opening), storage);
+  const traceOptions =
+    !hasCurrentScope && continuationTraceId !== undefined
+      ? {
+          traceId: continuationTraceId,
+          includeSensitiveData: false,
+          detached: opening !== undefined,
+        }
+      : (options ?? {});
+  const policyOnly =
+    !hasCallerScope &&
+    opening === undefined &&
+    continuationTraceId === undefined;
+  return new TraceCapture(
+    start(traceOptions, 'operation', opening),
+    storage,
+    policyOnly,
+  );
 }
 /** @internal One captured native operation; settlement releases every host lease. */
 export class TraceCapture {
@@ -384,6 +405,7 @@ export class TraceCapture {
   constructor(
     readonly ready: Promise<TraceSpan>,
     private readonly storage: TraceContextStorage | undefined,
+    readonly policyOnly: boolean,
   ) {
     void ready.then(
       (span) => {
@@ -395,6 +417,11 @@ export class TraceCapture {
   /** @internal Workflow metadata only; native callback carriers own ancestry. */
   get workflow(): TraceSpan | undefined {
     return this.span?.kind === 'workflow' ? this.span : this.span?.workflow;
+  }
+  /** @internal Historical correlation for a settled checkpoint. */
+  get correlationId(): string | undefined {
+    const context = this.span?.context;
+    return context?.disabled === false ? context.traceId : undefined;
   }
   /** @internal Retain synchronously when ready; otherwise reserve before closing. */
   retain(): Promise<{ token: string; span: TraceSpan }> {

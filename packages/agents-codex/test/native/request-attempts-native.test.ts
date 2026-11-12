@@ -19,6 +19,58 @@ import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
 
+it.each([true, false])(
+  'retains known-zero queued cancellation totals only when opted in: %s',
+  async (includeRequestAttempts) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let requests = 0;
+    await using provider = new NativeProvider({
+      modelBackend: {
+        async complete() {
+          requests++;
+          entered.resolve();
+          await release.promise;
+          return { output: [message('Done')] };
+        },
+      },
+    });
+    await using session = await new Agent({
+      instructions: 'Answer',
+      provider,
+    }).session({ includeRequestAttempts });
+    const active = await session.submit('Active');
+    await entered.promise;
+    try {
+      const queued = await session.enqueue('Queued');
+      expect(queued.turnId).toBeNull();
+      const result = queued.wait();
+      void result.catch(() => {});
+      await queued.cancel();
+      await expect(result).rejects.toThrow(
+        'Queued work cancelled before admission',
+      );
+      expect(queued.requestAttempts).toBeUndefined();
+      if (includeRequestAttempts) {
+        expect(queued.submissionRequestAttempts).toEqual({
+          availability: 'complete',
+          counts: [],
+          borrowedRequestsUnavailable: false,
+        });
+        frozen(queued.submissionRequestAttempts);
+      } else expect(queued.submissionRequestAttempts).toBeUndefined();
+      expect(requests).toBe(1);
+    } finally {
+      release.resolve();
+    }
+    await active.wait();
+    expect(active.submissionRequestAttempts).toEqual(
+      includeRequestAttempts ? unavailable : undefined,
+    );
+    expect(requests).toBe(1);
+  },
+);
+
 const unavailable = {
   availability: 'unavailable',
   counts: [],
@@ -239,6 +291,7 @@ it('marks borrowed model transport attempts unavailable instead of reporting zer
   expect((await turn.wait()).finalOutput).toBe('borrowed done');
   expect(callbacks).toBe(1);
   expect(turn.requestAttempts).toEqual(unavailable);
+  expect(turn.submissionRequestAttempts).toEqual(unavailable);
   frozen(turn.requestAttempts);
   await session.close();
   expect(turn.requestAttempts).toEqual(unavailable);
@@ -511,5 +564,85 @@ it('keeps isolated output repair attempts outside the original native snapshot',
   expect((await turn.wait()).finalOutput).toEqual({ count: 2 });
   expect(server.requests).toHaveLength(2);
   expect(turn.requestAttempts).toEqual(expected(1));
+  expect(turn.submissionRequestAttempts).toEqual(expected(2));
+  frozen(turn.submissionRequestAttempts);
   server.assertExhausted();
+});
+
+it('retains owned repair sends after provider failure without counting a later unrelated submission', async () => {
+  const server = new ModelServer([
+    [message('invalid')],
+    retry,
+    [message('fresh')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Count',
+    provider,
+  }).session({ includeRequestAttempts: true });
+  const turn = await session.submit('go', {
+    outputType: {
+      mode: 'prompted',
+      schema: z.object({ count: z.number() }),
+      maxRetries: 1,
+    },
+  });
+  await expect(turn.wait()).rejects.toThrow();
+  expect(turn.requestAttempts).toEqual(expected(1));
+  expect(turn.submissionRequestAttempts).toEqual(expected(2));
+  const snapshot = turn.submissionRequestAttempts;
+  const fresh = await session.submit('fresh');
+  await fresh.wait();
+  expect(fresh.submissionRequestAttempts).toEqual(expected(1));
+  expect(turn.submissionRequestAttempts).toBe(snapshot);
+  expect(server.requests).toHaveLength(3);
+  server.assertExhausted();
+});
+
+it('retains owned repair sends after cancellation and keeps concurrent Session reports separate', async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const server = new ModelServer([
+    [message('invalid')],
+    async () => {
+      entered.resolve();
+      await release.promise;
+      return [message('{"count":2}')];
+    },
+  ]);
+  const otherServer = new ModelServer([[message('unrelated')]]);
+  await using provider = await providerFor(server);
+  await using otherProvider = await providerFor(otherServer);
+  await using session = await new Agent({
+    instructions: 'Count',
+    provider,
+  }).session({ includeRequestAttempts: true });
+  await using other = await new Agent({
+    instructions: 'Other',
+    provider: otherProvider,
+  }).session({ includeRequestAttempts: true });
+  const turn = await session.submit('go', {
+    outputType: {
+      mode: 'prompted',
+      schema: z.object({ count: z.number() }),
+      maxRetries: 1,
+    },
+  });
+  const result = turn.wait();
+  void result.catch(() => {});
+  try {
+    await entered.promise;
+    expect(turn.submissionRequestAttempts).toBeUndefined();
+    const independent = await other.submit('other');
+    await independent.wait();
+    await turn.cancel();
+    await expect(result).rejects.toThrow();
+    expect(turn.requestAttempts).toEqual(expected(1));
+    expect(turn.submissionRequestAttempts).toEqual(expected(2));
+    expect(independent.submissionRequestAttempts).toEqual(expected(1));
+  } finally {
+    release.resolve();
+  }
+  server.assertExhausted();
+  otherServer.assertExhausted();
 });

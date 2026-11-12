@@ -410,20 +410,39 @@ These live callbacks do not create a durable approval to resume after a restart.
 
 ## Provider-hosted tool compatibility
 
-The [JavaScript source baseline](https://github.com/openai/openai-agents-js/tree/8fbc64a473b06b407df2db2e91418076c0235915) has been providing the SDK behavior below through an API-key `NativeProvider`. Local fixtures have been sending synthetic Responses over HTTP with streamed server events. They have been checking SDK request and history handling without calling OpenAI. Live provider verification has been remaining outstanding for every row.
+### Model and protocol reference
 
-| Tool | Standard Responses over HTTP: local fixture coverage | Responses Lite: SDK restriction |
+OpenAI has been documenting the following combinations for the Responses API. The model references' Markdown pages have been supplying the tool lists. The [file search](https://developers.openai.com/api/docs/guides/tools-file-search), [Code Interpreter](https://developers.openai.com/api/docs/guides/tools-code-interpreter), [image generation](https://developers.openai.com/api/docs/guides/image-generation), and [shell](https://developers.openai.com/api/docs/guides/tools-shell) guides have been describing the Responses integration.
+
+| Agent model | Protocol | File search | Code Interpreter | Image generation | Hosted shell |
+| --- | --- | --- | --- | --- | --- |
+| [`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol.md) | Responses | Provider-documented | Provider-documented | Provider-documented | Provider-documented |
+| [`gpt-5.2`](https://developers.openai.com/api/docs/models/gpt-5.2.md) | Responses | Provider-documented | Provider-documented | Provider-documented | Provider-documented |
+| [`gpt-4.1` (deprecated)](https://developers.openai.com/api/docs/models/gpt-4.1.md) | Responses | Provider-documented | Provider-documented | Provider-documented | Not documented in this model reference |
+| Any model | Responses Lite | SDK-rejected | SDK-rejected | SDK-rejected | SDK-rejected |
+
+`Provider-documented` has been identifying an explicit entry in the linked model reference, rather than a successful live request. `Not documented` has been identifying missing evidence, rather than a provider rejection. These references have been describing model capabilities without establishing account access, Azure deployment support, or support through another provider. These tables have been serving as a documentation reference rather than an SDK model allowlist.
+
+The image-generation column has been describing the agent model's ability to call the tool. The tool's own `model` field has been selecting the image generator separately. The shell guide has been documenting hosted containers through Responses and excluding Chat Completions. A model's support for the Chat Completions endpoint has not been establishing hosted-tool compatibility.
+
+The SDK's bundled native model catalog has been selecting Responses Lite for `gpt-6.1-sol`. The SDK has been rejecting these hosted declarations on that route, despite the provider's documented support through direct Responses. The `gpt-5.2` hosted-tool examples have been showing the standard Responses SDK configuration. Local fixtures have been verifying that route without proving live account access.
+
+### SDK and transport evidence
+
+The current [source build](building.md) has been exposing `fileSearch()`, `codeInterpreter()`, `imageGeneration()`, and `hostedShell()` through an API-key `NativeProvider`. The published stable SDK has not been providing these native declarations. The following coverage has been describing local synthetic peers, without live OpenAI calls.
+
+| Declaration | Responses over streaming HTTP: fixture coverage | Other transport evidence |
 | --- | --- | --- |
-| `fileSearch()` | Request fields, completed results, citations, and idle saved-state restore | Native model validation has been rejecting the declaration |
-| `codeInterpreter()` | Container options, completed outputs, and idle saved-state restore | Native model validation has been rejecting the declaration |
-| `imageGeneration()` | Generation, inline-image editing, partial events, and idle saved-state restore | Native model validation has been rejecting the declaration |
-| `hostedShell()` | Managed-container request, shell-only completion, output history, and continuation | Native model validation has been rejecting the declaration |
+| `fileSearch()` | Request fields, results, citations, and idle saved-state restore | Buffered HTTP and WebSocket fixtures: request fields, completed provider data, and saved history |
+| `codeInterpreter()` | Container options, completed outputs, and idle saved-state restore | No tool-specific buffered HTTP or WebSocket fixture evidence |
+| `imageGeneration()` | Generation, inline-image editing, partial events, and idle saved-state restore | No tool-specific buffered HTTP or WebSocket fixture evidence |
+| `hostedShell()` | Managed-container request, shell-only completion, output history, and continuation | No tool-specific buffered HTTP or WebSocket fixture evidence |
 
-The [native hosted-tool fixtures](../../../packages/agents-codex/test/native/hosted-tools-native.test.ts) have been covering the positive HTTP cases. A refused Lite model update has been raising `Provider-hosted tools require Responses; Responses Lite is unsupported` before any request and preserving the original model for continuation. That negative fixture has been using file search; shared validation has been guarding all four declarations. `hostedShell()` has been accepting `container_auto` and `container_reference`; a local environment has been raising `Hosted shell requires a managed container environment`.
+The [native hosted-tool fixtures](../../../packages/agents-codex/test/native/hosted-tools-native.test.ts) have been covering these cases. The buffered HTTP and WebSocket probes have been using file search as a representative hosted tool. They have not been verifying every tool on those transports. Responses Lite has been rejecting hosted declarations before a provider request. A refused Lite model update has been preserving the original model for continuation. `hostedShell()` has been accepting `container_auto` and `container_reference`. A local environment has been raising `Hosted shell requires a managed container environment`.
 
-WebSocket transport, Codex login, Azure deployments, and other providers have been remaining outside this matrix's fixture evidence. Idle restore has been requiring current declarations and credentials; saved history has not been granting tools or extending provider resource lifetimes. Checkpoints awaiting manual tool results have not been supporting these hosted tools. The Python native SDK at the matching [Python baseline](https://github.com/openai/openai-agents-python/tree/22562087f13e841a7ad00ff97356107c3200608b) has been exposing file search, Code Interpreter, and image generation, without a hosted-shell declaration.
+Idle restore has been requiring current declarations and credentials. Saved history has not been granting tools or extending provider resource lifetimes. Checkpoints awaiting manual tool results have not been supporting these hosted tools. The Python native SDK's current source has also been exposing `HostedShell`. Its `0.24.0-alpha.7` preview has not been providing that declaration.
 
-The [GPT-5.2 model reference](https://developers.openai.com/api/docs/models/gpt-5.2) has been listing all four tools, while the [shell guide](https://developers.openai.com/api/docs/guides/tools-shell) has been describing hosted shell through Responses. Those service references have not been establishing support for every SDK, account, or tool option. The provider has been validating those combinations. No live request, uploaded resource, or customer runtime has been contributing verification to this matrix. The [hosted-tool example](../hosted-tools/README.md) has been explaining resource ownership, image inputs, and detailed observations.
+Live model and account verification has been remaining outstanding for every row. Codex login, Azure deployments, and other providers have been remaining outside this fixture evidence. No live request, uploaded resource, or customer runtime has been contributing verification to these tables. The [hosted-tool example](../hosted-tools/README.md) has been explaining resource ownership, image inputs, and detailed observations.
 
 ## Native web search
 

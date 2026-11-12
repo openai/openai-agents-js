@@ -1383,7 +1383,7 @@ async function manualReplyContextStorageCase() {
   }
 }
 
-async function restoreCase(batches: unknown[]) {
+async function restoreCase(batches: unknown[], stateOnly = false) {
   let directValidationTrace: string | undefined;
   const lookup = manualTool({
     name: 'lookup',
@@ -1438,7 +1438,9 @@ async function restoreCase(batches: unknown[]) {
           state = await session.suspend();
         },
       );
+      assert(state);
       const serialized = JSON.stringify(state);
+      const checkpoint = JSON.parse(serialized) as typeof state;
       assert(!serialized.includes('"strict_executor_writes":'));
       assert(!/"executors":\[(?!\])/.test(serialized));
       // Whole handles only: no substring matches inside longer opaque IDs.
@@ -1449,28 +1451,63 @@ async function restoreCase(batches: unknown[]) {
         ),
       );
       assert(
-        matchingPaths(state, originalTrace).every((path) =>
-          /^\$\.history\.\d+\.payload\.trace_id$/.test(path),
+        matchingPaths(state, originalTrace).every(
+          (path) =>
+            /^\$\.history\.\d+\.payload\.trace_id$/.test(path) ||
+            path === '$.manual_context.continuation_trace_id',
         ),
       );
       assert(!serialized.includes('tracing_context'));
+      const resume = async () => {
+        const result = await agent.run(null, {
+          state: checkpoint,
+          onInteraction(action) {
+            if (action.type !== 'action_requested')
+              throw new Error('Unexpected native request');
+
+            callbackTrace = telemetry.getCurrentSpan()?.context.traceId ?? '';
+            const request = lookup.match(action);
+            assert(request);
+            return request.reply({ value: 'record' });
+          },
+        });
+        assert.equal(result.finalOutput, 'restored-answer');
+      };
+      if (stateOnly) {
+        await flush();
+        const sourceSpans = new Set(
+          decoded(batches).map((span) => span.spanId),
+        );
+        telemetry.setSensitiveDataLoggingEnabled(false);
+        await resume();
+        assert.equal(callbackTrace, originalTrace);
+        peer.assertExhausted();
+        await flush();
+        const restoredSpans = decoded(batches).filter(
+          (span) => !sourceSpans.has(span.spanId),
+        );
+        const restoredOperation = restoredSpans.find(
+          (span) =>
+            attrs(span)['sdk.span.kind'] === 'operation' &&
+            identity(span.traceId) === originalTrace,
+        );
+        assert(restoredOperation);
+        assert(
+          restoredSpans.some(
+            (span) =>
+              !attrs(span)['sdk.span.kind'] &&
+              identity(span.traceId) === originalTrace &&
+              descendant(span, restoredOperation, restoredSpans),
+          ),
+          'Restored native model work lost its saved trace ID',
+        );
+        return;
+      }
       await telemetry.withTrace(
         { name: 'workflow.after_restore' },
         async (workflow) => {
           restoredTrace = workflow.context.traceId;
-          const result = await agent.run(null, {
-            state,
-            onInteraction(action) {
-              if (action.type !== 'action_requested')
-                throw new Error('Unexpected native request');
-
-              callbackTrace = telemetry.getCurrentSpan()?.context.traceId ?? '';
-              const request = lookup.match(action);
-              assert(request);
-              return request.reply({ value: 'record' });
-            },
-          });
-          assert.equal(result.finalOutput, 'restored-answer');
+          await resume();
         },
       );
       assert.notEqual(originalTrace, restoredTrace);
@@ -2031,7 +2068,8 @@ async function main() {
           receiverWake[2] as 'disabled' | 'metadata-only' | 'permissive',
         );
       else if (mode === 'processors') await processorCase(collector.batches);
-      else if (mode === 'restore') await restoreCase(collector.batches);
+      else if (mode === 'restore' || mode === 'restore-state-only')
+        await restoreCase(collector.batches, mode === 'restore-state-only');
       else if (mode === 'model-preparation') await preparedRequestCase();
       else if (mode === 'parent-policy') await parentPolicyCase(collector);
       else if (mode === 'retained')
