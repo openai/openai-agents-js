@@ -14,7 +14,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::engine::EngineState;
 use crate::model_websocket::{
-    Frame, MAX_REQUEST_BYTES, NativeModelWebSocket, open_message_transport,
+    ConnectorCache, Frame, MAX_REQUEST_BYTES, NativeModelWebSocket, open_message_transport,
 };
 use crate::native_interception::SentinelFailure;
 
@@ -91,11 +91,15 @@ impl DriverChannels {
 #[derive(Debug, Default)]
 pub(crate) struct PlainWebSocket {
     state: Arc<Mutex<State>>,
+    connector_cache: Option<ConnectorCache>,
 }
 
 impl PlainWebSocket {
-    pub(crate) fn new() -> Self {
-        Self::default()
+    pub(crate) fn new(fresh_connector: bool) -> Self {
+        Self {
+            connector_cache: fresh_connector.then(ConnectorCache::default),
+            ..Self::default()
+        }
     }
 
     pub(crate) fn interceptor(&self) -> Option<Box<dyn ModelResponseInterceptor>> {
@@ -127,6 +131,7 @@ impl PlainWebSocket {
         let (message_tx, messages) = mpsc::unbounded_channel();
         let (ready, connected) = oneshot::channel();
         let state = Arc::clone(&self.state);
+        let connector_cache = self.connector_cache.clone();
         let driver = {
             let mut slot = self
                 .state
@@ -151,7 +156,7 @@ impl PlainWebSocket {
                         biased;
                         _ = cancel.cancelled() => return,
                         _ = channels.ready.as_mut().expect("opening WebSocket").closed() => return,
-                        opened = dial(engine, expected_url, request) => opened,
+                        opened = dial(engine, expected_url, request, connector_cache) => opened,
                     };
                     let ready = channels.ready.take().expect("opening WebSocket");
                     let (_, socket, headers) = match opened {
@@ -234,6 +239,7 @@ async fn dial(
     engine: Weak<EngineState>,
     expected_url: String,
     mut request: http::Request<()>,
+    connector_cache: Option<ConnectorCache>,
 ) -> Result<(String, NativeModelWebSocket, http::HeaderMap), ApiError> {
     if request.method() != http::Method::GET || request.uri().to_string() != expected_url {
         return Err(unavailable());
@@ -264,7 +270,8 @@ async fn dial(
         http::HeaderValue::from_str(&grant).map_err(|_| unavailable())?,
     );
     // Reuse the authenticated adapter directly; no loopback network request.
-    let opened = open_message_transport(&engine, &private_url, request).await;
+    let opened =
+        open_message_transport(&engine, &private_url, request, connector_cache.as_ref()).await;
     drop(engine);
     opened
 }

@@ -561,8 +561,14 @@ impl Engine {
         (async move {
             let _permit = inner.operation(false).map_err(native_error)?;
             let route = inner.sentinel_route(&provider_id, &headers)?;
-            model_websocket::sentinel_open(route, &headers, Arc::downgrade(&inner), provider_id)
-                .await
+            model_websocket::sentinel_open(
+                route,
+                &headers,
+                Arc::downgrade(&inner),
+                provider_id,
+                None,
+            )
+            .await
         })
         .await
     }
