@@ -511,10 +511,12 @@ export class ObservationBuffer {
   events(
     options: ObservationOptions | undefined,
     scope: TurnObservationScope,
+    startAtScope?: boolean,
   ): AsyncIterableIterator<Observation>;
   events(
     options: ObservationOptions = {},
     scope?: TurnObservationScope,
+    startAtScope = false,
   ): AsyncIterableIterator<ObservedEvent> {
     this.options.validate?.();
     let { after = 0 } = options;
@@ -544,7 +546,7 @@ export class ObservationBuffer {
         try {
           while (!closed) {
             const changed = this.changed.promise;
-            if (this.options.retention === 'all' && scope) {
+            if ((this.options.retention === 'all' || startAtScope) && scope) {
               const floor = scope.after ?? 0;
               if (floor < 0) {
                 if (scope.phase() === 'ended' || this.closed) break;

@@ -1,5 +1,5 @@
 import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
-import { Handoff } from './handoffs';
+import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
 import {
   ResponsesCompaction,
   responsesCompaction,
@@ -12,6 +12,7 @@ import {
 } from './managed-workspace';
 import {
   captureRealtimeConfig,
+  hasRealtimeAgentConfiguration,
   isRealtimeHandoff,
   realtimeHandoffTool,
   type RealtimeAgentConfig,
@@ -187,6 +188,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
   handoffs?: readonly (
     | Agent<Context, Output>
     | Handoff<Context, Output>
+    | DecisionHandoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
@@ -532,6 +534,7 @@ export class Agent<Context = undefined, Output = string> {
   handoffs: readonly (
     | Agent<Context, Output>
     | Handoff<Context, Output>
+    | DecisionHandoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
@@ -612,6 +615,7 @@ export class Agent<Context = undefined, Output = string> {
         (target) =>
           !(target instanceof Agent) &&
           !(target instanceof Handoff) &&
+          !(target instanceof DecisionHandoff) &&
           !isRealtimeHandoff(target) &&
           typeof target !== 'function',
       )
@@ -2094,6 +2098,7 @@ export function captureAgentProfiles<Context, Output>(
   captureProvider = true,
   idPrefix = 'agent_',
   rootPromptControls?: JsonObject,
+  realtimeGraph = hasRealtimeAgentConfiguration(rootDeclaration),
 ): readonly CapturedAgentProfile<Context, Output>[] {
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
@@ -2192,12 +2197,55 @@ export function captureAgentProfiles<Context, Output>(
       );
     const targets: Record<string, string> = Object.create(null);
     const handoffCallbacks: Record<string, number> = Object.create(null);
+    const decisionHandoffs: Record<
+      string,
+      Readonly<{ slot: number; targets: readonly string[] }>
+    > = Object.create(null);
     const handoffOptions: Record<
       string,
       RealtimeHandoff<Context>
     > = Object.create(null);
     const callbackTools: import('./tools').FunctionTool<Context>[] = [];
     for (const reference of declaration.handoffs) {
+      if (reference instanceof DecisionHandoff) {
+        if (realtimeGraph || hasRealtimeAgentConfiguration(declaration))
+          throw new TypeError(
+            'DecisionHandoff supports text Agents; use realtimeHandoff for Realtime routing',
+          );
+        const name = reference.name;
+        if (
+          Object.hasOwn(targets, name) ||
+          Object.hasOwn(decisionHandoffs, name) ||
+          capturedTools.some(
+            (entry) =>
+              toolIdentity(entry).namespace === 'functions' &&
+              entry.name === name,
+          )
+        )
+          throw new TypeError('Duplicate or conflicting DecisionHandoff name');
+        const roster: Record<string, string> = Object.create(null);
+        for (const [choice, candidate] of Object.entries(reference.targets)) {
+          if (!(candidate instanceof Agent))
+            throw new TypeError(
+              'DecisionHandoff targets must be native Agents',
+            );
+          let targetIndex = indices.get(candidate);
+          if (targetIndex === undefined) {
+            targetIndex = agents.length;
+            indices.set(candidate, targetIndex);
+            agents.push(candidate);
+          }
+          roster[choice] = `${idPrefix}${targetIndex}`;
+        }
+        decisionHandoffs[name] = Object.freeze({
+          slot: capturedTools.length + callbackTools.length,
+          targets: Object.freeze([...new Set(Object.values(roster))]),
+        });
+        callbackTools.push(
+          decisionHandoffTool(reference, Object.freeze(roster)),
+        );
+        continue;
+      }
       let target: Agent<Context, Output>;
       if (reference instanceof Handoff) target = reference.target;
       else if (isRealtimeHandoff(reference)) target = reference.agent;
@@ -2237,6 +2285,8 @@ export function captureAgentProfiles<Context, Output>(
                 .replace(/[^a-zA-Z0-9_-]/g, '_')
                 .toLowerCase()
                 .slice(0, 64);
+      if (Object.hasOwn(decisionHandoffs, name))
+        throw new TypeError('Duplicate or conflicting DecisionHandoff name');
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name))
         throw new TypeError('Invalid Realtime handoff name');
       let index = indices.get(target);
@@ -2301,6 +2351,7 @@ export function captureAgentProfiles<Context, Output>(
         declaration,
         handoffs: Object.freeze(targets),
         handoffCallbacks: Object.freeze(handoffCallbacks),
+        decisionHandoffs: Object.freeze(decisionHandoffs),
         handoffOptions: Object.freeze(handoffOptions),
         callbackTools: Object.freeze(callbackTools),
         hostedPromptControls:
@@ -2373,7 +2424,14 @@ export function captureRealtimeAgentGraph(
     instructions: candidate.instructions,
     provider: opening.provider,
   });
-  const profiles = captureAgentProfiles(candidate, declaration, true, idPrefix);
+  const profiles = captureAgentProfiles(
+    candidate,
+    declaration,
+    true,
+    idPrefix,
+    undefined,
+    true,
+  );
   return captureProfileRuntimes(
     profiles,
     captureTools(splitToolDeclarations(declaration.tools).tools),

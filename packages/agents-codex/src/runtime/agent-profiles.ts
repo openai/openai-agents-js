@@ -21,6 +21,9 @@ export interface CapturedAgentProfile<Context, Output> {
   readonly declaration: Agent<Context, Output>;
   readonly handoffs: Readonly<Record<string, string>>;
   readonly handoffCallbacks?: Readonly<Record<string, number>>;
+  readonly decisionHandoffs?: Readonly<
+    Record<string, Readonly<{ slot: number; targets: readonly string[] }>>
+  >;
   readonly handoffOptions?: Readonly<
     Record<string, import('./realtime-agent-config').RealtimeHandoff<Context>>
   >;
@@ -238,6 +241,12 @@ export function captureProfileRuntimes(
       ),
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },
+      ...(Object.keys(profile.decisionHandoffs ?? {}).length
+        ? {
+            decision_handoffs:
+              profile.decisionHandoffs as unknown as JsonObject,
+          }
+        : {}),
       ...(Object.keys(profile.handoffCallbacks ?? {}).length
         ? { handoff_callbacks: { ...profile.handoffCallbacks } }
         : {}),

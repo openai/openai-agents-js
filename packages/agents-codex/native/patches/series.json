@@ -1007,7 +1007,19 @@
     {
       "path": "sdk-mcp-discovery-cache.patch",
       "sha256": "1b966cec16e6fc105e52c5675e648d71d906c87bd4dd111ca12583ef75aefcdc"
+    },
+    {
+      "path": "sdk-websocket-route-auth-scope.patch",
+      "sha256": "7110c4c522ea0afccc9bf42085582fdda64f7bae2c54364ae39de60d2decfa0b"
+    },
+    {
+      "path": "sdk-decision-handoff-admission.patch",
+      "sha256": "c16299166bda18fd3d9cdcc0af0d0d9d5d9911246e8fe20b29d13cee12908450"
+    },
+    {
+      "path": "sdk-websocket-overload-classification.patch",
+      "sha256": "948693109cb29cd7a29c3b7e5cecd6329ae9e05e891ef3cf1ba56595250ee725"
     }
   ],
-  "result_tree": "12345690b6ac00ef4a06c82ed66fa8941d4b6642"
+  "result_tree": "fe89d8f6792fc49c032a9d493ca94683099748d3"
 }
