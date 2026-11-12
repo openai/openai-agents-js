@@ -73,8 +73,11 @@ it.each([true, false])(
         effects.push({ context: context.context.label, call });
         return {
           max_output_length: 3,
+          providerData: { scope: 'sdk-only-result' },
           output: [
             {
+              command: 'sdk-only-command',
+              providerData: { scope: 'sdk-only-entry' },
               stdout: 'abcdef',
               stderr: '',
               outcome: { type: 'exit', exit_code: 0 },
@@ -119,13 +122,51 @@ it.each([true, false])(
         ? request.approve()
         : request.reject('Application denied execution'),
     );
-    expect((await restored.restoredTurn!.wait()).finalOutput).toBe('Settled.');
+    const result = await restored.restoredTurn!.wait();
+    expect(result.finalOutput).toBe('Settled.');
+    const applicationData = {
+      providerData: { scope: 'sdk-only-result' },
+      shellOutput: [
+        {
+          command: 'sdk-only-command',
+          providerData: { scope: 'sdk-only-entry' },
+        },
+      ],
+    };
+    const expectedData = approve
+      ? [
+          expect.objectContaining({
+            callId: 'call_application',
+            name: 'shell',
+            applicationData,
+          }),
+        ]
+      : [];
+    expect(result.applicationToolOutputs ?? []).toEqual(expectedData);
+    expect((await restored.saveState()).application_tool_outputs ?? []).toEqual(
+      expectedData,
+    );
+    const completed = (
+      await Array.fromAsync(
+        restored.restoredTurn!.events({ includeExecutionDetails: true }),
+      )
+    ).filter(
+      (event) =>
+        event.type === 'tool_finished' && event.callId === 'call_application',
+    );
+    expect(completed).toHaveLength(1);
+    if (approve)
+      expect(completed[0]).toMatchObject({
+        status: 'completed',
+        output: { applicationData },
+      });
     expect(effects).toHaveLength(approve ? 1 : 0);
     const receipts = (server.requests[1].input as JsonObject[]).filter(
       (item) => item.type === 'shell_call_output',
     );
     expect(receipts).toHaveLength(1);
     expect(receipts[0].call_id).toBe('call_application');
+    expect(JSON.stringify(receipts[0])).not.toContain('sdk-only');
     if (approve) {
       expect(effects[0]).toEqual({
         context: 'current',

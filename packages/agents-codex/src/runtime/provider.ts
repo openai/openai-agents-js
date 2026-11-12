@@ -678,6 +678,73 @@ export interface ProviderLease {
   failOpening(error: unknown, cleanup?: boolean): Promise<never>;
 }
 
+export type HostedToolChoice =
+  | {
+      readonly type:
+        | 'web_search'
+        | 'file_search'
+        | 'code_interpreter'
+        | 'image_generation'
+        | 'computer'
+        | 'computer_use_preview'
+        | 'shell'
+        | 'apply_patch'
+        | 'tool_search';
+    }
+  | {
+      readonly type: 'mcp';
+      readonly serverLabel: string;
+      readonly name?: string;
+    };
+
+function captureHostedToolChoice(value: unknown): HostedToolChoice {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('Hosted tool choice must be a typed selector');
+  const choice = value as Record<string, unknown>;
+  const types = [
+    'web_search',
+    'file_search',
+    'code_interpreter',
+    'image_generation',
+    'computer',
+    'computer_use_preview',
+    'shell',
+    'apply_patch',
+    'tool_search',
+    'mcp',
+  ];
+  if (
+    !Object.prototype.hasOwnProperty.call(choice, 'type') ||
+    !types.includes(choice.type as string) ||
+    Object.getOwnPropertyNames(choice).some(
+      (key) =>
+        !(
+          choice.type === 'mcp' ? ['type', 'serverLabel', 'name'] : ['type']
+        ).includes(key),
+    )
+  )
+    throw new TypeError(
+      'Hosted tool choice must identify a supported provider tool',
+    );
+  if (choice.type === 'mcp') {
+    if (
+      typeof choice.serverLabel !== 'string' ||
+      !choice.serverLabel.trim() ||
+      (choice.name !== undefined &&
+        (typeof choice.name !== 'string' || !choice.name.trim()))
+    )
+      throw new TypeError(
+        'Hosted MCP choice requires a captured server and tool identity',
+      );
+    return Object.freeze({
+      type: 'mcp',
+      serverLabel: choice.serverLabel,
+      ...(choice.name === undefined ? {} : { name: choice.name }),
+    });
+  }
+  return Object.freeze({ type: choice.type }) as HostedToolChoice;
+}
+
 export interface ModelSettings {
   /** Per logical attempt, excluding retry backoff; null restores the default. */
   attemptTimeoutMs?: number | null;
@@ -692,9 +759,9 @@ export interface ModelSettings {
   reasoningSummary?: string;
   /** null clears an existing service tier override. */
   serviceTier?: string | null;
-  /** Outer choice, or a captured eager ToolRef. A named target only narrows
+  /** Outer mode, captured eager ToolRef, or explicit hosted selector. A named target only narrows
    * the current admitted catalog; null clears it to auto. */
-  toolChoice?: 'auto' | 'none' | 'required' | ToolRef | null;
+  toolChoice?: 'auto' | 'none' | 'required' | ToolRef | HostedToolChoice | null;
   /** Nonnegative safe integer for ordinary sampling; null clears the SDK override. */
   /** Full input-capability declaration for the selected model; null restores its catalogue. */
   inputModalities?: readonly ('text' | 'image' | 'audio')[] | null;
@@ -888,7 +955,9 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           throw new TypeError('metadata must be a string map');
         value = Object.freeze(Object.fromEntries(pairs));
       } else if (key === 'toolChoice') {
-        if (typeof value === 'object' && value !== null) {
+        if (typeof value === 'object' && value !== null && 'type' in value) {
+          value = captureHostedToolChoice(value);
+        } else if (typeof value === 'object' && value !== null) {
           const target = value as Partial<ToolRef>;
           if (
             Object.getOwnPropertyNames(target).some(
@@ -1196,7 +1265,18 @@ export function modelOverrides(
   }
   if (selected.toolChoice !== undefined) {
     const choice = selected.toolChoice;
-    if (typeof choice === 'object' && choice !== null) {
+    if (typeof choice === 'object' && choice !== null && 'type' in choice) {
+      overrides.tool_choice = 'required';
+      controls.named_tool_choice = null;
+      controls.hosted_tool_choice =
+        choice.type === 'mcp'
+          ? {
+              type: choice.type,
+              server_label: choice.serverLabel,
+              ...(choice.name === undefined ? {} : { name: choice.name }),
+            }
+          : { type: choice.type };
+    } else if (typeof choice === 'object' && choice !== null) {
       overrides.tool_choice = 'required';
       controls.named_tool_choice = {
         name: choice.name,

@@ -17,6 +17,7 @@ export type {
   RequestAttempts,
 } from './runtime/request-attempts';
 export { Agent, Runner } from './runtime/public-agent';
+export type { AgentAsToolOptions } from './runtime/agent-tool';
 export type {
   AgentOptions,
   AgentOutput,
@@ -51,6 +52,7 @@ export type {
 export type {
   NativeProviderOptions,
   ModelSettings,
+  HostedToolChoice,
   ProviderCompactionPolicy,
 } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
