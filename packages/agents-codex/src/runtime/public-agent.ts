@@ -2,6 +2,7 @@ import {
   captureProviderHistory,
   type ProviderHistory,
 } from './provider-history';
+import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
 import { Handoff } from './handoffs';
 import {
   ResponsesCompaction,
@@ -625,6 +626,16 @@ export class Agent<Context = undefined, Output = string> {
         'handoffs must contain native Agents or synchronous target resolvers',
       );
     this.programmaticToolCalling = options.programmaticToolCalling ?? false;
+  }
+
+  /**
+   * A configured child has been retaining its own provider, tools and guards.
+   * Pending child approvals have been requiring live replies.
+   */
+  asTool(
+    options: AgentAsToolOptions<Output>,
+  ): import('./tools').FunctionTool<Context> {
+    return createAgentTool(this, options);
   }
 
   /**

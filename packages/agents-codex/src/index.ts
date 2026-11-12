@@ -18,6 +18,7 @@ export type {
   RequestAttempts,
 } from './runtime/request-attempts';
 export { Agent, Runner } from './runtime/public-agent';
+export type { AgentAsToolOptions } from './runtime/agent-tool';
 export type {
   AgentOptions,
   AgentOutput,
