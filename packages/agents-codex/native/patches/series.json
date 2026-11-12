@@ -963,7 +963,11 @@
     {
       "path": "sdk-managed-agent-tool-code-mode.patch",
       "sha256": "0f89982ea8439b01d19639f0f90ff93658d55f1ab3cbc2c014a7616c00f4a066"
+    },
+    {
+      "path": "sdk-managed-agent-child-catalog.patch",
+      "sha256": "aa9744156b870e194d6dc7e6244e311a290332c7b453747a7440682e69cf674a"
     }
   ],
-  "result_tree": "fdd1681caa0352d8b0f0fe686ddf02714e8c357b"
+  "result_tree": "effdd74fac4cf115a137acc01da2f64c333e7007"
 }

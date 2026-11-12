@@ -139,6 +139,124 @@ it.each([true, false])(
   },
 );
 
+it('lets a native child call a declared role tool within the configured depth', async () => {
+  const executor = await startPublicExecutor();
+  const approvals: string[] = [];
+  let childRequest: JsonObject | undefined;
+  let grandchildRequest: JsonObject | undefined;
+  let childFinishRequest: JsonObject | undefined;
+  const server = new ModelServer([
+    [
+      call(
+        'delegate_review',
+        { input: 'Review the record.' },
+        { namespace: 'collaboration', callId: 'delegate-review' },
+      ),
+    ],
+    (request) => {
+      childRequest = request;
+      return [
+        call(
+          'collect_fact',
+          { input: 'Collect the requested fact.' },
+          { namespace: 'collaboration', callId: 'collect-fact' },
+        ),
+      ];
+    },
+    (request) => {
+      grandchildRequest = request;
+      return [message('collector result')];
+    },
+    (request) => {
+      childFinishRequest = request;
+      return [message('reviewer result')];
+    },
+    [message('parent final result')],
+  ]);
+  try {
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Delegate the review.',
+      model: nativeDescendantModel,
+      provider,
+      tools: [
+        new NativeAgents({
+          maxDepth: 2,
+          additionalRoles: [
+            new NativeRole({
+              name: 'reviewer',
+              description: 'Review a record.',
+              instructions: 'CATALOG_REVIEWER_ROLE',
+            }),
+            new NativeRole({
+              name: 'collector',
+              description: 'Collect a fact.',
+              instructions: 'CATALOG_COLLECTOR_ROLE',
+            }),
+          ],
+          managedTools: [
+            {
+              name: 'delegate_review',
+              role: 'reviewer',
+              description: 'Delegate a review.',
+            },
+            {
+              name: 'collect_fact',
+              role: 'collector',
+              description: 'Collect a fact.',
+            },
+          ],
+          approval(_context, request) {
+            approvals.push(request.name);
+            return true;
+          },
+        }),
+      ],
+    });
+    await using session = await agent.session({
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+    });
+    const root = await session.submit('Review the record.');
+    const result = await root.wait();
+    expect(JSON.stringify(childRequest ?? {})).toContain(
+      'CATALOG_REVIEWER_ROLE',
+    );
+    const advertised = Array.isArray(childRequest?.tools)
+      ? [...childRequest.tools]
+      : [];
+    if (Array.isArray(childRequest?.input)) {
+      for (const item of childRequest.input as JsonObject[]) {
+        if (item.type === 'additional_tools' && Array.isArray(item.tools)) {
+          advertised.push(...item.tools);
+        }
+      }
+    }
+    expect(JSON.stringify(advertised)).toContain('"collect_fact"');
+    expect(JSON.stringify(grandchildRequest)).toContain(
+      'CATALOG_COLLECTOR_ROLE',
+    );
+    expect(JSON.stringify(childFinishRequest?.input)).toContain(
+      'collector result',
+    );
+    expect(result.finalOutput).toBe('parent final result');
+    expect(approvals).toEqual(['delegate_review', 'collect_fact']);
+    server.assertExhausted();
+  } finally {
+    await executor.close();
+  }
+});
+
 it.each([true, false])(
   'runs the named role tool through Code Mode with its explicit policy (%s)',
   async (allowed) => {
