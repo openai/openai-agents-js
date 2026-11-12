@@ -7,6 +7,7 @@ import {
   Agent,
   DecisionError,
   NativeProvider,
+  TraceContext,
   telemetry,
   tool,
 } from '../../../src';
@@ -190,26 +191,131 @@ async function main() {
       ]),
       /traceProcessors/,
     );
-    await telemetry.withTrace({ name: 'before-replacement' }, async () => {});
-    assert.equal((await telemetry.forceFlush()).status, 'success');
-    for (const events of [configured, perEvent.events, added]) {
-      assert(events.some((event) => event.name === 'before-replacement'));
-    }
-    const replaced: telemetry.TraceEvent[] = [];
-    await telemetry.setTraceProcessors([
-      {
-        onEvents(events) {
-          replaced.push(...events);
-        },
+    const queued: telemetry.TraceEvent[] = [];
+    const release = Promise.withResolvers<void>();
+    await telemetry.addTraceProcessor({
+      async onEvents(events) {
+        await release.promise;
+        queued.push(...events);
       },
-    ]);
-    await telemetry.withTrace({ name: 'after-replacement' }, async () => {});
-    assert.equal((await telemetry.forceFlush()).status, 'success');
-    assert(replaced.some((event) => event.name === 'after-replacement'));
-    for (const events of [configured, perEvent.events, added]) {
-      assert(!events.some((event) => event.name === 'after-replacement'));
+    });
+    const replaced: telemetry.TraceEvent[] = [];
+    try {
+      await telemetry.withTrace({ name: 'before-replacement' }, async () => {});
+      assert.deepEqual(queued, []);
+      await telemetry.setTraceProcessors([
+        {
+          onEvents(events) {
+            replaced.push(...events);
+          },
+        },
+      ]);
+      await telemetry.withTrace({ name: 'after-replacement' }, async () => {});
+    } finally {
+      release.resolve();
     }
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    for (const events of [configured, perEvent.events, added, queued]) {
+      assert.deepEqual(
+        events.map(({ name }) => name),
+        ['before-replacement', 'before-replacement'],
+      );
+    }
+    assert.deepEqual(
+      replaced.map(({ name }) => name),
+      ['after-replacement', 'after-replacement'],
+    );
     await telemetry.shutdown();
+  } else if (mode === 'external-parent-export') {
+    const events: telemetry.TraceEvent[] = [];
+    const received: { data: { id?: string; trace_id?: string }[] }[] = [];
+    const collector = createServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      received.push(JSON.parse(Buffer.concat(chunks).toString()));
+      response.writeHead(200).end();
+    });
+    await new Promise<void>((resolve) =>
+      collector.listen(0, '127.0.0.1', resolve),
+    );
+    const address = collector.address();
+    assert(address && typeof address !== 'string');
+    const localId = '1'.repeat(32);
+    const remoteId = '2'.repeat(32);
+    const remoteParent = '3'.repeat(16);
+    try {
+      await telemetry.configure({
+        traceProcessors: [
+          { onEvent: (event) => void events.push(event) },
+          new telemetry.OpenAITraceExporter({
+            apiKey: 'synthetic-key',
+            endpoint: `http://127.0.0.1:${address.port}/v1/traces/ingest`,
+          }),
+        ],
+      });
+      try {
+        await telemetry.withTrace(
+          { name: 'local workflow', traceId: localId },
+          async () => {},
+        );
+        assert.equal((await telemetry.forceFlush()).status, 'success');
+        assert(
+          received
+            .flatMap(({ data }) => data)
+            .some(({ id }) => id === `trace_${localId}`),
+        );
+
+        const server = new ModelServer([[message('synthetic result')]]);
+        const config = await server.config();
+        const provider = new NativeProvider({
+          baseUrl: (config['model_providers.fixture'] as { base_url: string })
+            .base_url,
+          apiKey: 'synthetic-model-key',
+          supportsWebsockets: false,
+        });
+        try {
+          const result = await new Agent({
+            instructions: 'Respond.',
+            provider,
+          }).run('synthetic request', {
+            parentTrace: new TraceContext({
+              traceparent: `00-${remoteId}-${remoteParent}-01`,
+            }),
+          });
+          assert.equal(result.finalOutput, 'synthetic result');
+          server.assertExhausted();
+        } finally {
+          await provider.close();
+          await ModelServer.closeAll();
+        }
+
+        const flush = await telemetry.forceFlush();
+        assert.equal(flush.status, 'partial');
+        assert(flush.failedDeliveries > 0);
+        assert.equal(flush.droppedRecords, 0);
+        assert(
+          events.some(
+            (event) =>
+              event.trace_id === remoteId &&
+              event.parent_span_id === remoteParent &&
+              event.lifecycle === 'end',
+          ),
+        );
+        assert(
+          received
+            .flatMap(({ data }) => data)
+            .every(
+              ({ id, trace_id }) =>
+                id !== `trace_${remoteId}` && trace_id !== `trace_${remoteId}`,
+            ),
+        );
+      } finally {
+        await telemetry.shutdown();
+      }
+    } finally {
+      collector.closeAllConnections();
+      await new Promise<void>((resolve) => collector.close(() => resolve()));
+    }
   } else if (mode === 'lifecycle') {
     await assert.rejects(
       telemetry.shutdown(),
@@ -225,6 +331,198 @@ async function main() {
     await telemetry.shutdown();
     await assert.rejects(failedEngine(), /shut down or failed to initialize/);
     await assert.rejects(telemetry.configure(), { message: once });
+  } else if (
+    mode === 'restart-diagnostics-omitted' ||
+    mode === 'restart-diagnostics-null'
+  ) {
+    const operation = async (output: string) => {
+      const server = new ModelServer([[message(output)]]);
+      const config = await server.config();
+      class FixtureProvider extends NativeProvider {
+        override _acquire() {
+          const lease = super._acquire();
+          Object.assign(lease.config, config);
+          return lease;
+        }
+      }
+      const provider = new FixtureProvider({
+        apiKey: 'synthetic-diagnostics-key',
+      });
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider,
+      });
+      try {
+        const session = await agent.session();
+        try {
+          assert.equal(
+            (await (await session.submit('Synthetic input')).wait())
+              .finalOutput,
+            output,
+          );
+        } finally {
+          await session.close();
+        }
+      } finally {
+        await provider.close();
+        await ModelServer.closeAll();
+      }
+    };
+    await telemetry.configure({
+      diagnostics: {
+        level: 'trace',
+        targets: ['codex_api::sse::responses'],
+        includeFields: true,
+      },
+    });
+    await operation('DIAGNOSTICS_ENABLED_PAYLOAD');
+    await telemetry.shutdown();
+    console.log('DIAGNOSTICS_RESTART_BOUNDARY');
+    await telemetry.configure({
+      restartAfterShutdown: true,
+      ...(mode === 'restart-diagnostics-null' ? { diagnostics: null } : {}),
+    });
+    await operation('DIAGNOSTICS_DISABLED_PAYLOAD');
+    await telemetry.shutdown();
+  } else if (mode === 'restart-credentials') {
+    const authorizations: (string | undefined)[] = [];
+    const server = createServer(async (request, response) => {
+      for await (const _chunk of request) {
+        /* Drain the complete export body. */
+      }
+      authorizations.push(request.headers.authorization);
+      response.writeHead(200).end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    assert(address && typeof address !== 'string');
+    const exporter = new telemetry.OpenAITraceExporter({
+      endpoint: `http://127.0.0.1:${address.port}/v1/traces/ingest`,
+      apiKey: 'synthetic-fallback',
+    });
+    const credentials = new telemetry.TraceExportCredentials({
+      headers: { Authorization: 'Bearer synthetic-open-credential' },
+    });
+    let oldScope: telemetry.TraceSpan | undefined;
+    try {
+      await telemetry.configure({ traceProcessors: [exporter] });
+      await telemetry.withTrace(
+        { name: 'credential before restart', exportCredential: credentials },
+        async (span) => {
+          oldScope = span;
+        },
+      );
+      const reference = credentials.register(native);
+      assert.equal((await telemetry.forceFlush()).status, 'success');
+      const before = authorizations.length;
+      assert(before > 0);
+      await telemetry.shutdown();
+      await telemetry.configure({
+        restartAfterShutdown: true,
+        traceProcessors: [exporter],
+      });
+      await telemetry.withTrace(
+        { name: 'credential after restart', exportCredential: credentials },
+        async () => {},
+      );
+      assert.equal((await telemetry.forceFlush()).status, 'success');
+      assert(authorizations.length > before);
+      assert(
+        authorizations.every(
+          (value) => value === 'Bearer synthetic-open-credential',
+        ),
+      );
+      await assert.rejects(
+        telemetry.withSpan(
+          { name: 'stale credential scope', parent: oldScope },
+          async () => {},
+        ),
+        /retired telemetry provider/,
+      );
+      credentials.close();
+      await assert.rejects(
+        telemetry.withTrace(
+          { name: 'closed credential', exportCredential: credentials },
+          async () => {},
+        ),
+        /credentials are closed/,
+      );
+      assert.throws(
+        () =>
+          native.start_trace_span(
+            JSON.stringify({
+              name: 'released registration',
+              kind: 'workflow',
+              credential_ref: reference,
+            }),
+          ),
+        /unknown trace credential reference/,
+      );
+      await telemetry.shutdown();
+    } finally {
+      credentials.close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  } else if (mode === 'restart') {
+    const first: string[] = [];
+    const second: string[] = [];
+    await telemetry.configure({
+      traceProcessors: [{ onEvent: (event) => void first.push(event.name) }],
+    });
+    await assert.rejects(
+      telemetry.configure({
+        restartAfterShutdown: true,
+        traceProcessors: [{ onEvent: (event) => void second.push(event.name) }],
+      }),
+    );
+    const { handle: retiredParent } = JSON.parse(
+      native.start_trace_span(
+        JSON.stringify({ name: 'before native restart', kind: 'workflow' }),
+      ),
+    ) as { handle: string };
+    native.end_trace_span(retiredParent, JSON.stringify({ status: 'ok' }));
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    const live = await native.create_engine(
+      '{"web_search":"disabled"}',
+      '{"ephemeral":true}',
+      'synthetic-key',
+    );
+    await telemetry.shutdown();
+    await assert.rejects(
+      telemetry.configure({ restartAfterShutdown: true }),
+      /all Codex clients to close/,
+    );
+    await live.close();
+
+    await telemetry.configure({
+      restartAfterShutdown: true,
+      traceProcessors: [{ onEvent: (event) => void second.push(event.name) }],
+    });
+    assert.throws(
+      () =>
+        native.start_trace_span(
+          JSON.stringify({
+            name: 'retired child',
+            kind: 'custom',
+            parent: retiredParent,
+          }),
+        ),
+      /retired telemetry provider/,
+    );
+    native.release_trace_span(retiredParent);
+    await telemetry.withTrace({ name: 'after native restart' }, async () => {});
+    assert.equal((await telemetry.forceFlush()).status, 'success');
+    await telemetry.shutdown();
+
+    assert(first.includes('before native restart'));
+    assert(!first.includes('after native restart'));
+    assert(second.includes('after native restart'));
+    assert(!second.includes('before native restart'));
   } else if (mode === 'preclaim') {
     await assert.rejects(
       native.configure_telemetry('{"not_a_native_option":true}'),

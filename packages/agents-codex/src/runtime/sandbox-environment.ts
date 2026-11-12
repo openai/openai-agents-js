@@ -1,3 +1,13 @@
+import {
+  SandboxSkillBinding,
+  SandboxSkillLease,
+  type Skills,
+} from './sandbox-skills';
+import type { FunctionTool } from './tools';
+import {
+  captureSandboxMemory,
+  type SandboxMemoryOptions,
+} from './sandbox-memory';
 import { parseNative } from './binding';
 import {
   bindManagedWorkspaceSource,
@@ -7,6 +17,7 @@ import {
   type ManagedWorkspaceAuthorization,
 } from './managed-workspace';
 import type {
+  Entry,
   SandboxClient,
   SandboxArchiveLimits,
   SandboxConcurrencyLimits,
@@ -27,6 +38,22 @@ import {
   type EnvironmentSource,
 } from './environment-source';
 
+export type SandboxEnvironmentSource<Context = any> =
+  EnvironmentSource<Context> & {
+    readonly skillTools: readonly FunctionTool<Context>[];
+  };
+
+function exposeSkillTools<Context>(
+  source: EnvironmentSource<Context>,
+  binding?: SandboxSkillBinding<Context>,
+): SandboxEnvironmentSource<Context> {
+  Object.defineProperty(source, 'skillTools', {
+    value: binding?.tools ?? Object.freeze([]),
+    enumerable: true,
+  });
+  return source as SandboxEnvironmentSource<Context>;
+}
+
 export interface SandboxEnvironmentOptions<
   Context = any,
   Options extends SandboxClientOptions = SandboxClientOptions,
@@ -36,6 +63,9 @@ export interface SandboxEnvironmentOptions<
   client: SandboxClient<Options, State>;
   /** Application-authorized manifest; validate untrusted data before constructing it. */
   manifest: Manifest;
+  /** Resource declarations; select source.skillTools in each intended Agent catalog. */
+  /** Eager resources require an owned source; borrowed sources support prepared lazy indexes. */
+  skills?: Skills;
   /** Trusted provider options: plain data is captured; opaque handles/functions remain caller-owned. */
   options?: Options;
   /** Workspace snapshot used only for resource creation. */
@@ -64,6 +94,8 @@ export interface SandboxEnvironmentOptions<
    * the boundary. SDK-retired in-memory pairs have been retaining provenance.
    */
   authorizedResumeCheckpoint?: ManagedWorkspaceCheckpoint;
+  /** Explicit native generation; invoke Session.flushMemory after a successful text turn. */
+  memory?: SandboxMemoryOptions;
   /** Connect an authenticated native executor to this exact sandbox. */
   connect(
     sandbox: SandboxSessionLike<State>,
@@ -85,7 +117,7 @@ export function sandboxEnvironment<
   State extends SandboxSessionState = SandboxSessionState,
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
-): EnvironmentSource<Context> {
+): SandboxEnvironmentSource<Context> {
   return sandboxEnvironmentWithRuntime(options, sandboxRuntime);
 }
 
@@ -98,8 +130,96 @@ export function sandboxEnvironmentWithRuntime<
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
-): EnvironmentSource<Context> {
+): SandboxEnvironmentSource<Context> {
   return createSandboxEnvironment(options, runtime);
+}
+
+async function observeSandboxLifecycle<T>(
+  runtime: typeof sandboxRuntime,
+  name: string,
+  backendId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  const event = {
+    type: 'sandbox_operation' as const,
+    name,
+    data: { backend_id: backendId },
+  };
+  // Sink completion never controls acquisition or cleanup.
+  runtime.dispatchSandboxEvent({
+    ...event,
+    phase: 'start',
+    timestamp: new Date(startedAt).toISOString(),
+  });
+  try {
+    const result = await operation();
+    runtime.dispatchSandboxEvent({
+      ...event,
+      data: { backend_id: backendId },
+      phase: 'end',
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    runtime.dispatchSandboxEvent({
+      ...event,
+      data: { backend_id: backendId },
+      phase: 'error',
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+      error: {
+        // Provider error fields can carry credentials or invoke accessors.
+        name: 'SandboxOperationError',
+        message: 'Sandbox operation failed',
+      },
+    });
+    throw error;
+  }
+}
+
+function observeNativeSandboxOperation(
+  runtime: typeof sandboxRuntime,
+  backendId: string,
+  message: Record<string, unknown>,
+): void {
+  const { operation, phase, ok, duration_ms: durationMs } = message;
+  if (
+    operation !== 'exec' &&
+    operation !== 'write_stdin' &&
+    operation !== 'view_image'
+  )
+    return;
+  const event = {
+    type: 'sandbox_operation' as const,
+    name: `sandbox.${operation}`,
+    timestamp: new Date().toISOString(),
+    data: { backend_id: backendId },
+  };
+  if (phase === 'start') {
+    runtime.dispatchSandboxEvent({ ...event, phase: 'start' });
+  } else if (
+    phase === 'finish' &&
+    typeof ok === 'boolean' &&
+    typeof durationMs === 'number' &&
+    Number.isFinite(durationMs) &&
+    durationMs >= 0
+  ) {
+    runtime.dispatchSandboxEvent({
+      ...event,
+      phase: ok ? 'end' : 'error',
+      durationMs,
+      ...(ok
+        ? {}
+        : {
+            error: {
+              name: 'SandboxOperationError',
+              message: 'Sandbox operation failed',
+            },
+          }),
+    });
+  }
 }
 
 function createSandboxEnvironment<
@@ -110,7 +230,13 @@ function createSandboxEnvironment<
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
   inheritedManaged?: ManagedWorkspaceAuthorization,
-): EnvironmentSource<Context> {
+  inheritedSkills?: SandboxSkillBinding<Context>,
+): SandboxEnvironmentSource<Context> {
+  const skillBinding =
+    inheritedSkills ??
+    (options.skills
+      ? new SandboxSkillBinding<Context>(options.skills)
+      : undefined);
   const {
     cloneManifest,
     copySandboxStateRuntimeAuthority,
@@ -130,6 +256,12 @@ function createSandboxEnvironment<
     validateMountEnvironmentCredentialBoundaries,
   } = runtime;
   const { client, connect } = options;
+  const createMemory =
+    options.memory === undefined
+      ? undefined
+      : captureSandboxMemory(options.memory, runtime);
+  const observe = <T>(name: string, operation: () => Promise<T>) =>
+    observeSandboxLifecycle(runtime, name, client.backendId, operation);
   if (
     options.managedWorkspace !== undefined &&
     typeof options.managedWorkspace !== 'boolean'
@@ -216,9 +348,13 @@ function createSandboxEnvironment<
         },
         runtime,
         binding,
+        skillBinding,
       )(acquisition);
     };
-    return binding ? bindManagedWorkspaceSource(source, binding) : source;
+    return exposeSkillTools(
+      binding ? bindManagedWorkspaceSource(source, binding) : source,
+      skillBinding,
+    );
   }
   if (options.managedWorkspace && granted && !inheritedManaged)
     throw new TypeError(
@@ -228,6 +364,15 @@ function createSandboxEnvironment<
     inheritedManaged ?? (options.managedWorkspace ? {} : undefined);
   const create = client.create?.bind(client);
   const borrowed = options.session;
+  if (
+    borrowed &&
+    skillBinding &&
+    (skillBinding.configuration.from ||
+      skillBinding.configuration.skills.length > 0)
+  )
+    throw new TypeError(
+      'Eager Skills require an owned sandbox source; prepare borrowed resources before selecting a lazy skill index',
+    );
   const resume = options.authorizedResumeState;
   const originalResumeState = resume?.state;
   if (
@@ -257,6 +402,14 @@ function createSandboxEnvironment<
   const capturedManifest = cloneManifest(
     requireManifest(options.manifest, Manifest),
   );
+  let eagerSkillEntries: [string, Entry][] = [];
+  if (skillBinding) {
+    const existingPaths = new Set(Object.keys(capturedManifest.entries));
+    runtime.processSkillManifest(skillBinding.configuration, capturedManifest);
+    eagerSkillEntries = Object.entries(capturedManifest.entries).filter(
+      ([path]) => !existingPaths.has(path),
+    );
+  }
   const manifest =
     (borrowed || resume) && client.resolveTrustedManifestForResume
       ? client.resolveTrustedManifestForResume(
@@ -316,58 +469,72 @@ function createSandboxEnvironment<
         throw new TypeError('authorizedResumeState has already been acquired');
       resumeConsumed = true;
     }
-    let sandbox: SandboxSessionLike<State> | undefined;
+    let ownedSandbox: SandboxSessionLike<State> | undefined;
+    const acquireSandbox = (
+      name: string,
+      operation: () => Promise<SandboxSessionLike<State>>,
+    ) =>
+      observe(name, async () => {
+        const sandbox = await operation();
+        ownedSandbox = sandbox;
+        return sandbox;
+      });
     let gateway: EnvironmentAcquisition | undefined;
+    let skillLease: SandboxSkillLease | undefined;
     let disposal: Promise<void> | undefined;
     const dispose = (guard?: DisposeGuard) =>
-      (disposal ??= Promise.resolve().then(async () => {
-        const errors: unknown[] = [];
-        for (const release of [
-          // The gateway restores its own scope before reinstalling this guard.
-          () => gateway?.dispose(guard),
-          () =>
-            !borrowed &&
-            sandbox &&
-            cleanupSandboxSession(
-              sandbox,
-              { preserveOwnedSessions: false },
-              async () => {
-                if (!managed?.captureRequested) return;
-                const providerState = await serialize!(sandbox!.state, {
-                  preserveOwnedSession: false,
-                  reuseLiveSession: false,
-                  willCloseAfterSerialize: true,
-                });
-                if (
-                  sandbox!.state.snapshot?.type !== 'local' &&
-                  sandbox!.state.snapshot?.type !== 'remote'
-                )
-                  throw new TypeError(
-                    'Managed retirement produced no durable snapshot',
-                  );
-                managed.receipt = capturedWorkspaceJson({
-                  backendId: client.backendId,
-                  providerState,
-                });
-              },
-            ),
-          () => !borrowed && sandbox && deleteResource?.(sandbox.state),
-        ]) {
-          try {
-            await release();
-          } catch (error) {
-            errors.push(error);
+      (disposal ??= Promise.resolve().then(() => {
+        const sandbox = ownedSandbox;
+        skillLease?.retire();
+        if (!gateway && !sandbox) return;
+        return observe('sandbox.cleanup', async () => {
+          const errors: unknown[] = [];
+          for (const release of [
+            // The gateway restores its own scope before reinstalling this guard.
+            () => gateway?.dispose(guard),
+            () =>
+              sandbox &&
+              cleanupSandboxSession(
+                sandbox,
+                { preserveOwnedSessions: false },
+                async () => {
+                  if (!managed?.captureRequested) return;
+                  const providerState = await serialize!(sandbox!.state, {
+                    preserveOwnedSession: false,
+                    reuseLiveSession: false,
+                    willCloseAfterSerialize: true,
+                  });
+                  if (
+                    sandbox!.state.snapshot?.type !== 'local' &&
+                    sandbox!.state.snapshot?.type !== 'remote'
+                  )
+                    throw new TypeError(
+                      'Managed retirement produced no durable snapshot',
+                    );
+                  managed.receipt = capturedWorkspaceJson({
+                    backendId: client.backendId,
+                    providerState,
+                  });
+                },
+              ),
+            () => sandbox && deleteResource?.(sandbox.state),
+          ]) {
+            try {
+              await release();
+            } catch (error) {
+              errors.push(error);
+            }
           }
-        }
-        if (errors.length === 1) throw errors[0];
-        if (errors.length)
-          throw new AggregateError(
-            errors,
-            'Sandbox Environment cleanup failed',
-          );
+          if (errors.length === 1) throw errors[0];
+          if (errors.length)
+            throw new AggregateError(
+              errors,
+              'Sandbox Environment cleanup failed',
+            );
+        });
       }));
     try {
-      const open = async () => {
+      const acquireResource = async () => {
         signal.throwIfAborted();
         if (borrowed) {
           const trustedEnvironment = client.resolveTrustedEnvironment
@@ -408,6 +575,7 @@ function createSandboxEnvironment<
           providerOptions === undefined
             ? undefined
             : captureOptions(providerOptions);
+        let sandbox: SandboxSessionLike<State>;
         if (resumeState) {
           const state = captureResumeState(
             resumeState,
@@ -433,16 +601,22 @@ function createSandboxEnvironment<
             throw new TypeError(
               'provider requires fresh resource creation for this resume state',
             );
-          sandbox = await client.resume!(state, resumeOptions);
+          sandbox = await acquireSandbox('sandbox.resume_session', () => {
+            signal.throwIfAborted();
+            return client.resume!(state, resumeOptions);
+          });
         } else {
           sandbox =
             borrowed ??
-            (await create!({
-              manifest: cloneManifest(manifest),
-              options: currentOptions,
-              snapshot,
-              concurrencyLimits,
-              archiveLimits,
+            (await acquireSandbox('sandbox.create_session', () => {
+              signal.throwIfAborted();
+              return create!({
+                manifest: cloneManifest(manifest),
+                options: currentOptions,
+                snapshot,
+                concurrencyLimits,
+                archiveLimits,
+              });
             }));
         }
         if (
@@ -460,8 +634,10 @@ function createSandboxEnvironment<
         if (!borrowed && archiveLimits !== undefined)
           sandbox.setArchiveLimits?.(archiveLimits);
         if (!borrowed && sandbox.start && !(await sandbox.running?.())) {
-          signal.throwIfAborted();
-          await sandbox.start({ reason: 'native session opening' });
+          await observe('sandbox.start', () => {
+            signal.throwIfAborted();
+            return sandbox!.start!({ reason: 'native session opening' });
+          });
         }
         signal.throwIfAborted();
         if (managed && !sandbox.stop)
@@ -479,11 +655,25 @@ function createSandboxEnvironment<
             );
           retainManagedWorkspaceSnapshot(sandbox.state.snapshot as any);
         }
+        return sandbox;
+      };
+      const connectAndPublish = async (sandbox: SandboxSessionLike<State>) => {
         const created = sandbox;
         gateway = await acquireEnvironment(
           ({ signal }) => connect(created, { signal }),
           signal,
         );
+        skillLease = skillBinding
+          ? new SandboxSkillLease(
+              skillBinding,
+              sandbox,
+              gateway.environment!,
+              manifest,
+              runtime.skillWorkspaceRoot(sandbox),
+              borrowed ? undefined : !resumeState,
+            )
+          : undefined;
+        const skillInstructions = await skillLease?.activate();
         gateway.opened();
         signal.throwIfAborted();
         return createEnvironmentLease(
@@ -491,13 +681,36 @@ function createSandboxEnvironment<
           dispose,
           gateway.signal,
           managed,
-          renderWorkspaceInstructions(
-            sandbox.state.manifest,
-            gateway.environment! as Environment<Context>,
-            runtime,
+          appendSkillInstructions(
+            renderWorkspaceInstructions(
+              sandbox.state.manifest,
+              gateway.environment! as Environment<Context>,
+              runtime,
+            ),
+            skillInstructions,
           ),
+          (message) =>
+            observeNativeSandboxOperation(runtime, client.backendId, message),
+          skillLease,
+          createMemory?.(created),
         );
       };
+      // Resume inspection protects the old state. The owned provider mutation
+      // takes its own exclusive lock, so staging must follow that inspection.
+      if (originalResumeState && eagerSkillEntries.length > 0) {
+        const sandbox = await withExclusiveSandboxStateInspection(
+          originalResumeState,
+          acquireResource,
+        );
+        await skillBinding!.stageOwnedResume(
+          sandbox,
+          manifest,
+          eagerSkillEntries,
+          signal,
+        );
+        return await connectAndPublish(sandbox);
+      }
+      const open = async () => connectAndPublish(await acquireResource());
       const inspectedState = borrowed?.state ?? originalResumeState;
       return inspectedState
         ? await withExclusiveSandboxStateInspection(inspectedState, open)
@@ -515,9 +728,12 @@ function createSandboxEnvironment<
       throw error;
     }
   };
-  return managedAuthorization
-    ? bindManagedWorkspaceSource(source, managedAuthorization)
-    : source;
+  return exposeSkillTools(
+    managedAuthorization
+      ? bindManagedWorkspaceSource(source, managedAuthorization)
+      : source,
+    skillBinding,
+  );
 }
 
 /** Render only paths, access and caller descriptions, never provider config or environment values. */
@@ -732,4 +948,23 @@ function captureResumeState<State extends SandboxSessionState>(
   const captured = captureOptions(state);
   copySandboxStateRuntimeAuthority(state, captured);
   return captured;
+}
+
+// Preserve complete workspace safety guidance before filling the remaining native byte budget.
+function appendSkillInstructions(
+  workspace: string,
+  index?: string | null,
+): string {
+  if (!index) return workspace;
+  const combined = workspace + '\n\n' + index;
+  if (Buffer.byteLength(combined, 'utf8') <= 40_000) return combined;
+  const notice =
+    '\nSome skill index details have been omitted to fit the instruction limit.';
+  const available =
+    40_000 - Buffer.byteLength(workspace + '\n\n' + notice, 'utf8');
+  if (available <= 0) return workspace;
+  const bytes = Buffer.from(index, 'utf8');
+  let end = available;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return workspace + '\n\n' + bytes.subarray(0, end).toString('utf8') + notice;
 }

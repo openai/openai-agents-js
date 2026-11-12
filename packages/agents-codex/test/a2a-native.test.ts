@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,12 +68,18 @@ async function host(
   const rpc = new JsonRpcTransportHandler(
     new DefaultRequestHandler(card, store, executor),
   );
-  const client = await connectA2A(
-    { name: 'native', cardUrl: `${base}/card`, rpcUrl: `${base}/rpc` },
-    { authorization: async () => 'synthetic', limits },
-  );
+  const endpoint = {
+    name: 'native',
+    cardUrl: `${base}/card`,
+    rpcUrl: `${base}/rpc`,
+  };
+  const client = await connectA2A(endpoint, {
+    authorization: async () => 'synthetic',
+    limits,
+  });
   return {
     client,
+    endpoint,
     close: async () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -911,6 +918,115 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       }
     }, 30_000);
 
+    it('keeps cross-process A2A payloads private without erasing application state', async () => {
+      type Span = {
+        name: string;
+        traceId: string;
+        spanId: string;
+        parentSpanId?: string;
+        attributes: { key: string; value: Record<string, unknown> }[];
+      };
+      const spans: Span[] = [];
+      const payloads: unknown[] = [];
+      const collector = createServer(async (request, response) => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const payload = JSON.parse(Buffer.concat(chunks).toString());
+        payloads.push(payload);
+        for (const resource of payload.resourceSpans ?? [])
+          for (const scope of resource.scopeSpans ?? [])
+            spans.push(...scope.spans);
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end('{}');
+      });
+      collector.listen(0, '127.0.0.1');
+      await once(collector, 'listening');
+      const address = collector.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing collector');
+      try {
+        const child = spawn(
+          process.execPath,
+          [
+            '--import',
+            'tsx',
+            fileURLToPath(new URL('./fixtures/a2a-trace.ts', import.meta.url)),
+            `http://127.0.0.1:${address.port}/v1/traces`,
+            'privacy',
+          ],
+          { stdio: ['ignore', 'pipe', 'pipe'] },
+        );
+        let output = '',
+          errors = '';
+        child.stdout.on('data', (chunk) => {
+          output += String(chunk);
+        });
+        child.stderr.on('data', (chunk) => {
+          errors += String(chunk);
+        });
+        const [code] = await once(child, 'close');
+        expect(code, errors).toBe(0);
+        expect(output, errors).not.toBe('');
+        const receipt = JSON.parse(output);
+        const remote = receipt.receiver;
+        expect(receipt.pid).not.toBe(remote.pid);
+        expect(receipt.childSensitive).toBe(false);
+        expect(remote.childSensitive).toBe(false);
+        expect(remote.privateHeaderAbsent).toBe(true);
+        expect(remote.principal).toBe('synthetic-principal');
+        expect(remote.privateApplicationState).toBe(true);
+        expect(remote.received).toEqual(receipt.outgoing);
+        expect(
+          Object.keys(receipt.outgoing).every((key) =>
+            ['traceparent', 'tracestate'].includes(key),
+          ),
+        ).toBe(true);
+        expect(receipt.flush).toBe('success');
+        expect(remote.flush).toBe('success');
+        for (const canary of [
+          'PRIVATE_A2A_PROMPT_CANARY',
+          'PRIVATE_A2A_ARGUMENT_CANARY',
+          'PRIVATE_A2A_RESULT_CANARY',
+          'PRIVATE_A2A_CREDENTIAL_CANARY',
+        ]) {
+          expect(JSON.stringify(payloads)).not.toContain(canary);
+          expect(JSON.stringify(receipt.outgoing)).not.toContain(canary);
+        }
+        const attributes = (span: Span) =>
+          Object.fromEntries(
+            span.attributes.map((row) => [
+              row.key,
+              Object.values(row.value)[0],
+            ]),
+          );
+        const dispatch = spans.filter(
+          (span) =>
+            span.name.startsWith('op.dispatch.') &&
+            attributes(span)['submission.id'] === remote.remoteTurn,
+        );
+        expect(dispatch).toHaveLength(1);
+        expect(dispatch[0].traceId).toBe(
+          receipt.outgoing.traceparent.slice(3, 35),
+        );
+        expect(dispatch[0].parentSpanId).toBe(
+          receipt.outgoing.traceparent.slice(36, 52),
+        );
+        expect(
+          new Set(spans.map((span) => attributes(span)['business.service'])),
+        ).toEqual(new Set(['coordinator', 'specialist']));
+        expect(
+          spans.every(
+            (span) =>
+              attributes(span)['business.specialist'] === 'approved-specialist',
+          ),
+        ).toBe(true);
+      } finally {
+        collector.closeAllConnections();
+        await new Promise<void>((resolve) => collector.close(() => resolve()));
+      }
+    }, 60_000);
+
     it.each(
       (['before-save', 'after-save'] as const).flatMap((fault) =>
         (['completed', 'waiting'] as const).map((state) => ({ fault, state })),
@@ -921,11 +1037,21 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
         await withScriptedResponses(
           state === 'completed'
-            ? [[text('once')]]
+            ? [
+                [toolCall('record_effect', {}, { callId: 'effect-call' })],
+                [text('once')],
+              ]
             : [[toolCall('decision', {}, { callId: 'decision' })]],
           async (model) => {
             const directory = await mkdtemp(join(tmpdir(), 'a2a-publication-'));
             const path = join(directory, 'store.json');
+            const receiptPath = join(directory, 'effect.json');
+            const effectReceipt = {
+              principal: 'user',
+              order: 'synthetic-order',
+              receipt: 'receipt-1',
+            };
+            let effectCalls = 0;
             let injected = false;
             class FaultStore extends FileA2AStore {
               override async save(task: Task, callContext: ServerCallContext) {
@@ -958,7 +1084,22 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                         result: z.boolean(),
                       }),
                     ]
-                  : [],
+                  : [
+                      tool({
+                        name: 'record_effect',
+                        description: 'Record a synthetic application effect.',
+                        parameters: z.strictObject({}),
+                        execute: () => {
+                          effectCalls++;
+                          writeFileSync(
+                            receiptPath,
+                            JSON.stringify(effectReceipt),
+                            { flag: 'wx', mode: 0o600 },
+                          );
+                          return 'receipt-1';
+                        },
+                      }),
+                    ],
             });
             const native = new NativeA2AExecutor({
               store,
@@ -979,7 +1120,26 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               cancelTask: native.cancelTask,
             });
             try {
-              const created = await remote.client.sendMessage(
+              const registry = new Map([
+                ['approved-specialist', remote.endpoint],
+              ]);
+              let credentialCalls = 0;
+              const resolve = (name: string) => {
+                const endpoint = registry.get(name);
+                if (!endpoint) throw new Error('Unknown specialist');
+                return endpoint;
+              };
+              expect(() => resolve('unregistered-specialist')).toThrow(
+                'Unknown specialist',
+              );
+              expect(credentialCalls).toBe(0);
+              const client = await connectA2A(resolve('approved-specialist'), {
+                authorization: async () => {
+                  credentialCalls++;
+                  return 'synthetic';
+                },
+              });
+              const created = await client.sendMessage(
                 input([Part.fromJSON({ text: 'begin' })]),
               );
               if (!('id' in created)) throw new Error();
@@ -989,7 +1149,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               expect(errors).toHaveBeenCalled();
               const record = store.record(created.id, context)!;
               expect(record.state).toBe(state);
-              expect(model.requests).toHaveLength(1);
+              expect(model.requests).toHaveLength(
+                state === 'completed' ? 2 : 1,
+              );
               await remote.close();
               const child = spawnSync(
                 process.execPath,
@@ -1002,18 +1164,30 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
                   path,
                   created.id,
                   created.contextId,
+                  ...(state === 'completed' ? [receiptPath] : []),
                 ],
                 { encoding: 'utf8', timeout: 20_000 },
               );
               expect(child.status, child.stderr).toBe(0);
               const recovered = JSON.parse(child.stdout.trim());
               expect(recovered.executions).toBe(0);
+              expect(recovered.pid).not.toBe(process.pid);
+              expect(credentialCalls).toBeGreaterThan(0);
+              if (state === 'completed') {
+                expect(recovered.effectReceipt).toEqual(effectReceipt);
+                expect(JSON.parse(readFileSync(receiptPath, 'utf8'))).toEqual(
+                  effectReceipt,
+                );
+                expect(effectCalls).toBe(1);
+              }
               expect(recovered.task).toEqual(Task.toJSON(record.desired));
               expect(recovered.task.artifacts ?? []).toHaveLength(
                 state === 'completed' ? 1 : 0,
               );
               expect(recovered.record.state).toBe(state);
-              expect(model.requests).toHaveLength(1);
+              expect(model.requests).toHaveLength(
+                state === 'completed' ? 2 : 1,
+              );
             } finally {
               await remote.close();
               await rm(directory, { recursive: true, force: true });

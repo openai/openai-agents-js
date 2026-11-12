@@ -5,7 +5,7 @@ import {
   SandboxAgent,
   localDir,
   skills,
-} from '@openai/agents/sandbox';
+} from '@openai/agents/classic/sandbox';
 import {
   UnixLocalSandboxClient,
   localDirLazySkillSource,

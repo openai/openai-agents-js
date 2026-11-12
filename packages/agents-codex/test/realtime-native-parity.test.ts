@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { createServer } from 'node:http';
+import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
@@ -7,6 +7,7 @@ import {
   Agent,
   HttpMCP,
   NativeProvider,
+  realtimeHandoff,
   Turn,
   tool,
   type MCPResultContext,
@@ -25,14 +26,20 @@ type Frame = Record<string, any>;
 class RealtimePeer {
   readonly frames: Frame[] = [];
   readonly authorization: (string | undefined)[] = [];
+  readonly upgrades: { url: string; headers: IncomingHttpHeaders }[] = [];
   readonly pendingUpdates: Frame[] = [];
   autoAck = true;
+  sessionCreated?: Frame;
   private socket?: WebSocket;
   private readonly server = new WebSocketServer({ noServer: true });
 
   constructor(model: ModelServer) {
     model.onUpgrade((request, transport, head) => {
       this.authorization.push(request.headers.authorization);
+      this.upgrades.push({
+        url: request.url ?? '',
+        headers: { ...request.headers },
+      });
       this.server.handleUpgrade(request, transport, head, (connection) =>
         this.server.emit('connection', connection, request),
       );
@@ -61,6 +68,13 @@ class RealtimePeer {
           this.send({ type: 'response.done', response: { id } });
         }
       });
+      if (this.sessionCreated) {
+        Object.assign(state, this.sessionCreated);
+        this.send({
+          type: 'session.created',
+          session: { ...structuredClone(state), id: 'fixture-call' },
+        });
+      }
     });
   }
 
@@ -143,6 +157,105 @@ async function providerFor(model: ModelServer) {
 }
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
+
+nativeIt.each([
+  'provider',
+  'override',
+  'backend',
+  'sip-provider',
+  'sip-override',
+  'sip-backend',
+] as const)(
+  'scopes exact WebSocket routing and %s credentials to one native connection',
+  async (kind) => {
+    const model = new ModelServer([]);
+    const original = new RealtimePeer(model);
+    const gateway = new ModelServer([]);
+    const overridden = new RealtimePeer(gateway);
+    const credential = vi.fn(() => 'synthetic-connection-key');
+    const sip = kind.startsWith('sip-');
+    const override = kind.endsWith('override');
+    const backend = kind.endsWith('backend');
+    const baseUrl = `http://127.0.0.1:${await model.port()}/v1`;
+    const path =
+      '/tenant/custom-voice?route=one&route=two&model=fixture-realtime';
+    const url = `ws://127.0.0.1:${await gateway.port()}${path}`;
+    vi.stubEnv('OPENAI_API_KEY', 'synthetic-ambient-key');
+    try {
+      await using provider = new NativeProvider({
+        baseUrl,
+        apiKey: 'synthetic-provider-key',
+        headers: { 'x-provider-only': 'synthetic-provider-header' },
+        organization: 'synthetic-organization',
+        supportsWebsockets: false,
+        ...(backend
+          ? {
+              modelBackend: { complete: () => ({ output: [message('text')] }) },
+            }
+          : {}),
+      });
+      await using session = await new Agent({
+        instructions: 'Help.',
+        provider,
+      }).session();
+      if (sip)
+        overridden.sessionCreated = await session.buildRealtimeSipConfig({
+          model: 'fixture-realtime',
+        });
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        url,
+        ...(override ? { apiKey: credential } : {}),
+        ...(sip
+          ? { transport: { type: 'sip' as const, callId: 'fixture-call' } }
+          : {}),
+      });
+      expect(voice.callId).toBe(sip ? 'fixture-call' : undefined);
+      await voice.sendText('Use the scoped endpoint.');
+      await overridden.frame((frame) => frame.type === 'response.create');
+      expect(original.upgrades).toEqual([]);
+      expect(overridden.upgrades).toHaveLength(1);
+      expect(overridden.upgrades[0].url).toBe(path);
+      for (const name of [
+        ...(sip ? [] : ['x-session-id']),
+        'originator',
+        'user-agent',
+      ]) {
+        expect(overridden.upgrades[0].headers[name], name).toEqual(
+          expect.any(String),
+        );
+        expect(overridden.upgrades[0].headers[name], name).not.toBe('');
+      }
+      expect(overridden.upgrades[0].headers.authorization).toBe(
+        override ? 'Bearer synthetic-connection-key' : undefined,
+      );
+      expect(overridden.upgrades[0].headers['x-provider-only']).toBeUndefined();
+      expect(
+        overridden.upgrades[0].headers['openai-organization'],
+      ).toBeUndefined();
+      expect(credential).toHaveBeenCalledTimes(override ? 1 : 0);
+      await voice.close();
+
+      const next = await session.realtime({ model: 'fixture-realtime' });
+      expect(original.upgrades).toHaveLength(1);
+      expect(original.upgrades[0].url).toBe(
+        '/v1/realtime?model=fixture-realtime',
+      );
+      expect(original.authorization).toEqual(['Bearer synthetic-provider-key']);
+      if (!sip)
+        expect(overridden.upgrades[0].headers['x-session-id']).toBe(
+          original.upgrades[0].headers['x-session-id'],
+        );
+      expect(overridden.upgrades).toHaveLength(1);
+      await next.close();
+    } finally {
+      vi.unstubAllEnvs();
+      await Promise.all([original.close(), overridden.close()]);
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);
 
 nativeIt.each(['provider', 'environment', 'override', 'missing'] as const)(
   'keeps custom text backend credentials separate from %s Realtime credentials',
@@ -2599,9 +2712,9 @@ nativeIt.each(['conversation item', 'generic error'] as const)(
   15000,
 );
 
-nativeIt(
-  'preserves small generic conversation items and provider errors',
-  async () => {
+nativeIt.each([false, true])(
+  'preserves small generic conversation items and recovers from provider errors (raw=%s)',
+  async (includeRawProviderEvents) => {
     const model = new ModelServer([]);
     const peer = new RealtimePeer(model);
     try {
@@ -2610,7 +2723,10 @@ nativeIt(
         instructions: 'Help the caller.',
         provider,
       }).session();
-      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        includeRawProviderEvents,
+      });
       const seen: NativeRealtimeEvent[] = [];
       let failure: unknown;
       const reading = (async () => {
@@ -2637,11 +2753,39 @@ nativeIt(
             ),
           ).toBe(true),
         );
-        peer.send({ type: 'error', error: { code: 'small-provider-error' } });
-        await reading;
-        expect(String((failure as Error).cause)).toContain(
-          'small-provider-error',
+        const error = {
+          type: 'error',
+          error: {
+            code: 'small_provider_error',
+            message: 'Provider detail retained only in raw',
+          },
+        };
+        peer.send(error);
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual({
+            type: 'provider_request_error',
+            code: 'small_provider_error',
+          }),
         );
+        const rawErrors = seen.filter(
+          (event) =>
+            event.type === 'raw_provider_event' && event.event.type === 'error',
+        );
+        expect(rawErrors).toEqual(
+          includeRawProviderEvents
+            ? [{ type: 'raw_provider_event', event: error }]
+            : [],
+        );
+        await voice.requestResponse();
+        await peer.frame((frame) => frame.type === 'response.create');
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual(
+            expect.objectContaining({ type: 'response', status: 'done' }),
+          ),
+        );
+        expect(failure).toBeUndefined();
+        expect(peer.authorization).toHaveLength(1);
+        expect(model.requests).toHaveLength(0);
       } finally {
         await voice.close().catch(() => {});
         await reading;
@@ -2934,6 +3078,561 @@ nativeIt.each([false, true])(
       } finally {
         await voice.close();
       }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt.each(['continue', 'interrupt', 'close', 'speech'] as const)(
+  'keeps speech-only tool preservation separate from later %s',
+  async (retirement) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const cancelled = Promise.withResolvers<void>();
+    const audio = Promise.withResolvers<void>();
+    const stoppedAudio = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        signal = context.signal;
+        signal.addEventListener('abort', () => cancelled.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        await release.promise;
+        return 'PRESERVED_FUNCTION';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use lookup.',
+        tools: [lookup],
+        provider,
+      }).session();
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        tools: [lookup],
+        settings: {
+          turnDetection: { type: 'server_vad', interruptResponse: true },
+        },
+      });
+      const reading = (async () => {
+        for await (const event of voice.events()) {
+          if (event.type === 'audio' && event.responseId === 'speech')
+            audio.resolve();
+          if (
+            event.type === 'response' &&
+            event.responseId === 'speech' &&
+            event.status === 'done'
+          )
+            stoppedAudio.resolve();
+        }
+      })();
+      void reading.catch(() => {});
+      let stopping: Promise<void> | undefined;
+      try {
+        peer.call('lookup', {}, 'held');
+        await entered.promise;
+        if (retirement === 'continue') {
+          peer.send({ type: 'response.created', response: { id: 'speech' } });
+          peer.send({
+            type: 'response.output_audio.delta',
+            response_id: 'speech',
+            item_id: 'speech-audio',
+            content_index: 0,
+            output_index: 0,
+            delta: Buffer.alloc(4800).toString('base64'),
+          });
+          await audio.promise;
+        }
+        const start = peer.frames.length;
+        await voice.interrupt(undefined, { cancelTools: false });
+        if (retirement === 'continue') {
+          await peer.frame((frame) => frame.type === 'response.cancel', start);
+          peer.send({
+            type: 'response.done',
+            response: { id: 'speech', status: 'cancelled', output: [] },
+          });
+          await stoppedAudio.promise;
+        } else await voice.interrupt(undefined, { cancelTools: false });
+        expect(signal?.aborted).toBe(false);
+        if (retirement === 'continue') {
+          release.resolve();
+          const output = await peer.frame(
+            (frame) =>
+              frame.type === 'conversation.item.create' &&
+              frame.item?.call_id === 'held',
+            start,
+          );
+          expect(output.item.output).toBe('PRESERVED_FUNCTION');
+          await peer.frame((frame) => frame.type === 'response.create', start);
+          await voice.update({ instructions: 'Keep listening.' });
+          expect(
+            peer.frames
+              .slice(start)
+              .filter((frame) => frame.item?.call_id === 'held'),
+          ).toHaveLength(1);
+          expect(
+            peer.frames
+              .slice(start)
+              .filter((frame) => frame.type === 'response.create'),
+          ).toHaveLength(1);
+        } else {
+          let joined = false;
+          if (retirement === 'speech')
+            peer.send({
+              type: 'input_audio_buffer.speech_started',
+              item_id: 'new-user-speech',
+              audio_start_ms: 0,
+            });
+          else {
+            stopping = (
+              retirement === 'close' ? voice.close() : voice.interrupt()
+            ).then(() => {
+              joined = true;
+            });
+            void stopping.catch(() => {});
+          }
+          await cancelled.promise;
+          if (stopping) expect(joined).toBe(false);
+          release.resolve();
+          if (stopping) await stopping;
+          else await voice.update({ instructions: 'Listen to new input.' });
+          expect(
+            peer.frames.some(
+              (frame) => frame.item?.output === 'PRESERVED_FUNCTION',
+            ),
+          ).toBe(false);
+        }
+        expect(model.requests).toEqual([]);
+      } finally {
+        release.resolve();
+        await stopping?.catch(() => {});
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'keeps an admitted background delegation after speech cancellation acknowledgement',
+  async () => {
+    const model = new ModelServer([
+      [call('lookup', {}, { callId: 'backend-call' })],
+      [message('Background completed.')],
+    ]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const acknowledged = Promise.withResolvers<void>();
+    let signal: AbortSignal | undefined;
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: async (_args, context) => {
+        signal = context.signal;
+        entered.resolve();
+        await release.promise;
+        return 'PRESERVED_BACKGROUND_RESULT';
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Use lookup.',
+        tools: [lookup],
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const reading = (async () => {
+        for await (const event of voice.events())
+          if (
+            event.type === 'response' &&
+            event.status === 'done' &&
+            event.responseId === 'background-response'
+          )
+            acknowledged.resolve();
+      })();
+      void reading.catch(() => {});
+      try {
+        peer.send({
+          type: 'response.created',
+          response: { id: 'background-response' },
+        });
+        peer.send({
+          type: 'conversation.item.done',
+          response_id: 'background-response',
+          item: {
+            id: 'background-item',
+            type: 'function_call',
+            name: 'background_agent',
+            call_id: 'background',
+            arguments: JSON.stringify({ input_transcript: 'Run lookup.' }),
+          },
+        });
+        await entered.promise;
+        const start = peer.frames.length;
+        await voice.interrupt(undefined, { cancelTools: false });
+        await peer.frame((frame) => frame.type === 'response.cancel', start);
+        peer.send({
+          type: 'response.done',
+          response: {
+            id: 'background-response',
+            status: 'cancelled',
+            output: [],
+          },
+        });
+        await acknowledged.promise;
+        expect(signal?.aborted).toBe(false);
+        release.resolve();
+        const output = await peer.frame(
+          (frame) =>
+            frame.type === 'conversation.item.create' &&
+            frame.item?.call_id === 'background',
+          start,
+        );
+        expect(output.item.output).toContain('Background completed.');
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        await voice.update({ instructions: 'Keep listening.' });
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.item?.call_id === 'background'),
+        ).toHaveLength(1);
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.type === 'response.create'),
+        ).toHaveLength(1);
+      } finally {
+        release.resolve();
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'keeps the admitted handoff target ACK after speech-only interruption',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const effects: string[] = [];
+    const target = new Agent({
+      name: 'B',
+      instructions: 'Target B instructions.',
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        name: 'A',
+        instructions: 'Source A instructions.',
+        provider,
+        handoffs: [
+          realtimeHandoff(target, {
+            name: 'transfer',
+            onHandoff: async () => {
+              effects.push('entered');
+              entered.resolve();
+              await release.promise;
+              effects.push('accepted');
+            },
+          }),
+        ],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        peer.call('transfer', {}, 'transfer-call');
+        await entered.promise;
+        const start = peer.frames.length;
+        await voice.interrupt('response-transfer-call', { cancelTools: false });
+        peer.autoAck = false;
+        expect(effects).toEqual(['entered']);
+        release.resolve();
+        await peer.frame(
+          (frame) =>
+            frame.type === 'session.update' &&
+            frame.session.instructions?.includes('Target B instructions.'),
+          start,
+        );
+        expect(
+          peer.frames
+            .slice(start)
+            .some((frame) => frame.type === 'response.create'),
+        ).toBe(false);
+        peer.autoAck = true;
+        peer.acknowledge();
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(await voice.getActiveAgent()).toBe(target);
+        expect(await session.getActiveAgent()).toBe(target);
+        expect(effects).toEqual(['entered', 'accepted']);
+        expect(
+          peer.frames
+            .slice(start)
+            .find((frame) => frame.item?.call_id === 'transfer-call')?.item
+            .output,
+        ).toBe('Handoff reserved.');
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.item?.call_id === 'transfer-call'),
+        ).toHaveLength(1);
+      } finally {
+        release.resolve();
+        peer.autoAck = true;
+        while (peer.pendingUpdates.length) peer.acknowledge();
+      }
+    } finally {
+      release.resolve();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'retires a legacy request registered before its host owner',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'No unowned callback.',
+        provider,
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const seam = voice as unknown as {
+        payload(raw: unknown, input: unknown): void;
+        delegations: Map<string, unknown>;
+      };
+      const original = seam.payload.bind(voice);
+      const captured = Promise.withResolvers<void>();
+      const held: [unknown, unknown][] = [];
+      const lag = vi.spyOn(seam, 'payload').mockImplementation((raw, input) => {
+        if (raw && typeof raw === 'object' && 'HandoffRequested' in raw) {
+          held.push([raw, input]);
+          captured.resolve();
+        } else original(raw, input);
+      });
+      try {
+        peer.send({
+          type: 'response.created',
+          response: { id: 'unowned-response' },
+        });
+        peer.send({
+          type: 'conversation.item.done',
+          response_id: 'unowned-response',
+          item: {
+            id: 'unowned-item',
+            type: 'function_call',
+            name: 'background_agent',
+            call_id: 'unowned',
+            arguments: JSON.stringify({
+              input_transcript: 'No host owner yet.',
+            }),
+          },
+        });
+        await captured.promise;
+        expect(seam.delegations.size).toBe(0);
+        const start = peer.frames.length;
+        await voice.interrupt('unowned-response', { cancelTools: false });
+        peer.send({
+          type: 'response.done',
+          response: { id: 'unowned-response', status: 'cancelled', output: [] },
+        });
+        for (const [raw, input] of held) original(raw, input);
+        expect(seam.delegations.size).toBe(0);
+        await voice.sendText('A new user request.');
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(model.requests).toEqual([]);
+        expect(
+          peer.frames
+            .slice(start)
+            .some((frame) => frame.item?.call_id === 'unowned'),
+        ).toBe(false);
+      } finally {
+        lag.mockRestore();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'observes a named structured Realtime handoff through the native owner',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const callbacks: unknown[] = [];
+    const context = { tenant: 'native-handoff' };
+    const target = new Agent({
+      name: 'Billing',
+      instructions: 'Billing destination.',
+    });
+    let source: Agent<any, any>;
+    try {
+      await using provider = await providerFor(model);
+      source = new Agent({
+        name: 'Support',
+        provider,
+        instructions: 'Support source.',
+        handoffs: [
+          realtimeHandoff(target, {
+            name: 'escalate_billing',
+            description: 'Escalate with a structured billing reason.',
+            parameters: z
+              .object({ reason: z.string(), ticket: z.number().int() })
+              .strict(),
+            onHandoff: (call, input) => {
+              callbacks.push({
+                agent: call.agent,
+                context: call.context,
+                input,
+              });
+            },
+          }),
+        ],
+      });
+      await using session = await source.session({ context });
+      const reader = session.events();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        const initial = await peer.frame(
+          (frame) => frame.type === 'session.update',
+        );
+        const transfer = initial.session.tools.find(
+          (entry: Frame) => entry.name === 'escalate_billing',
+        );
+        expect(transfer.description).toBe(
+          'Escalate with a structured billing reason.',
+        );
+        expect(transfer.parameters.properties.reason.type).toBe('string');
+        expect(transfer.parameters.properties.ticket.type).toBe('integer');
+        expect(transfer.parameters.required).toEqual(['reason', 'ticket']);
+        const start = peer.frames.length;
+        peer.call(
+          'escalate_billing',
+          { reason: 'Duplicate charge', ticket: 7 },
+          'structured-transfer',
+        );
+        await peer.frame(
+          (frame) =>
+            frame.type === 'session.update' &&
+            frame.session.instructions?.includes('Billing destination.'),
+          start,
+        );
+        await peer.frame((frame) => frame.type === 'response.create', start);
+        expect(callbacks).toEqual([
+          {
+            agent: source,
+            context,
+            input: { reason: 'Duplicate charge', ticket: 7 },
+          },
+        ]);
+        expect(await voice.getActiveAgent()).toBe(target);
+        let changed;
+        for (let index = 0; index < 100; index++) {
+          const next = await reader.next();
+          expect(next.done).toBe(false);
+          if (next.value.type === 'agent_profile_changed') {
+            changed = next.value;
+            break;
+          }
+        }
+        expect(changed).toMatchObject({
+          agentName: 'Billing',
+          previousAgentName: 'Support',
+        });
+        expect(
+          peer.frames
+            .slice(start)
+            .filter((frame) => frame.item?.call_id === 'structured-transfer'),
+        ).toHaveLength(1);
+      } finally {
+        await reader.return?.();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15000,
+);
+
+nativeIt(
+  'rejects an invalid structured Realtime transfer before callback or target activation',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    let callbacks = 0;
+    try {
+      await using provider = await providerFor(model);
+      const target = new Agent({
+        name: 'Billing',
+        instructions: 'Billing destination.',
+      });
+      await using session = await new Agent({
+        name: 'Support',
+        provider,
+        instructions: 'Support source.',
+        handoffs: [
+          realtimeHandoff(target, {
+            name: 'escalate_billing',
+            parameters: z.object({ reason: z.string() }).strict(),
+            onHandoff: () => {
+              callbacks++;
+            },
+          }),
+        ],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      await peer.frame((frame) => frame.type === 'session.update');
+      const reading = (async () => {
+        for await (const _ of voice.events()) {
+          /* Native reader owns failures. */
+        }
+      })();
+      const rejected = expect(reading).rejects.toThrow('Invalid input');
+      const start = peer.frames.length;
+      peer.call('escalate_billing', { reason: 7 }, 'invalid-transfer');
+      await rejected;
+      expect(callbacks).toBe(0);
+      expect(
+        peer.frames
+          .slice(start)
+          .some(
+            (frame) =>
+              frame.type === 'session.update' &&
+              frame.session.instructions?.includes('Billing destination.'),
+          ),
+      ).toBe(false);
     } finally {
       await peer.close();
       await ModelServer.closeAll();

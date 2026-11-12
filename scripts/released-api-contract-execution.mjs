@@ -42,6 +42,7 @@ const CONVENIENCE_IDENTITY_PAIRS = [
     bundle: '@openai/agents/sandbox',
     bundleLabel: '@openai/agents/sandbox',
     owner: '@openai/agents-core/sandbox',
+    bindingOwners: { skills: '@openai/agents-codex' },
     ownerLabel: '@openai/agents-core',
   },
   {
@@ -81,6 +82,7 @@ function convenienceIdentityPairs(packages) {
     if (!exports[classicSubpath]) return [pair];
     const classic = {
       ...pair,
+      bindingOwners: undefined,
       bundle: `@openai/agents/classic${subpath}`,
       bundleLabel: pair.bundleLabel.replace(
         '@openai/agents',
@@ -162,6 +164,7 @@ export function compareConvenienceBindingIdentity(
   identityPairs,
   format,
   conditionLabel = '',
+  alternateOwners = {},
 ) {
   const errors = [];
   for (const pair of identityPairs) {
@@ -179,10 +182,17 @@ export function compareConvenienceBindingIdentity(
         errors.push(
           `${pair.bundleLabel}.${exportedName} is missing in ${format}${conditionLabel}`,
         );
-      } else if (bundle[exportedName] !== owner[exportedName]) {
-        errors.push(
-          `${pair.bundleLabel}.${exportedName} is not the ${pair.ownerLabel} runtime binding in ${format}${conditionLabel}`,
-        );
+      } else {
+        const ownerName = pair.bindingOwners?.[exportedName];
+        const expectedOwner = ownerName ? loadedModules[ownerName] : owner;
+        const expectedBindings = [expectedOwner?.[exportedName]];
+        // Node's module-sync entry shares CJS; direct ESM fallback has its own binding.
+        if (ownerName && alternateOwners[ownerName])
+          expectedBindings.push(alternateOwners[ownerName][exportedName]);
+        if (!expectedBindings.includes(bundle[exportedName]))
+          errors.push(
+            `${pair.bundleLabel}.${exportedName} is not the ${ownerName ?? pair.ownerLabel} runtime binding in ${format}${conditionLabel}`,
+          );
       }
     }
   }
@@ -297,6 +307,9 @@ console.log(JSON.stringify({
   const conditionLabel =
     conditions.length > 0 ? ` conditions ${conditions.join(',')}` : '';
   const args = [
+    ...(process.features.require_module === false
+      ? ['--no-experimental-require-module']
+      : []),
     ...conditions.map((condition) => `--conditions=${condition}`),
     ...(format === 'import' ? ['--input-type=module'] : []),
     '--eval',
@@ -494,6 +507,8 @@ export async function validateRuntime(
         loadedModules[format],
         convenienceIdentityPairs(packages),
         format,
+        '',
+        loadedModules[format === 'import' ? 'require' : 'import'],
       ),
     );
   }

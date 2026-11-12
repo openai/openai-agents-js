@@ -2363,6 +2363,46 @@ fn is_implicit_remote_policy(receipt: &Value) -> bool {
     }
 }
 
+/// Capture the named issuing turn's accepted executor grants, never opening defaults.
+pub(crate) async fn configured_child_policy(
+    owner: &codex_core_api::CodexThread,
+    thread: &codex_core_api::CodexThread,
+    turn: &str,
+) -> Result<Value> {
+    let selections = thread
+        .current_turn_environment_selections(turn)
+        .await
+        .context("Configured child parent turn is no longer active")?;
+    let [selection] = selections.as_slice() else {
+        anyhow::bail!("Configured child requires one accepted executor Environment");
+    };
+    let config = thread.config().await;
+    let local_network = local_session_network_policy(&config);
+    let receipt = codex_protocol::protocol::sdk_executor_policy_receipt(
+        selection,
+        selection.environment_id == REMOTE_ENVIRONMENT_ID,
+        local_network.as_ref(),
+    )
+    .context("Configured child executor policy is unavailable")?;
+    let trusted = owner
+        .thread_extension_data()
+        .get::<StrictExecutorWrites>()
+        .is_some_and(|strict| strict.trusted_workspace_write);
+    configured_child_policy_receipt(receipt, trusted)
+}
+
+fn configured_child_policy_receipt(receipt: Value, trusted: bool) -> Result<Value> {
+    let receipt = if trusted {
+        declared_trusted_policy(receipt).context("Invalid trusted local executor policy")?
+    } else {
+        receipt
+    };
+    Ok(serde_json::json!({
+        "cwd": receipt["cwd"],
+        "writableRoots": receipt["writable_roots"],
+    }))
+}
+
 /// The candidate of an in-place context change belongs to the same live
 /// owner. Its declaration must carry the roots currently applied by Core.
 pub(crate) async fn context_candidate_runtime(
@@ -2719,6 +2759,56 @@ mod tests {
     use codex_core_api::AbsolutePathBuf;
     use codex_exec_server::{ByteChunk, ProcessOutputChunk};
     use serde_json::json;
+
+    #[test]
+    fn configured_child_trusted_policy_omits_only_runtime_temp_grants() {
+        let path = |value: &str| PathUri::parse(value).unwrap();
+        let cwd = path("file:///workspace");
+        let extra = path("file:///declared");
+        let temporary = path("file:///private-runtime");
+        let entry = |root: PathUri| {
+            FileSystemSandboxEntry::new(
+                FileSystemPath::Path { path: root },
+                FileSystemAccessMode::Write,
+            )
+        };
+        let profile = PermissionProfile::Managed {
+            file_system: ManagedFileSystemPermissions::Restricted {
+                entries: vec![
+                    entry(cwd.clone()),
+                    entry(extra.clone()),
+                    FileSystemSandboxEntry::skip_missing_path(
+                        FileSystemPath::Path {
+                            path: temporary.clone(),
+                        },
+                        FileSystemAccessMode::Write,
+                    ),
+                ],
+                glob_scan_max_depth: None,
+            },
+            network: NetworkSandboxPolicy::Restricted,
+        };
+        let receipt = json!({
+            "transport": "local", "cwd": cwd,
+            "writable_roots": [cwd, extra, temporary], "permission_profile": profile,
+        });
+        let view = configured_child_policy_receipt(receipt.clone(), true).unwrap();
+        assert_eq!(view["writableRoots"], json!([cwd, extra]));
+        assert_eq!(view["cwd"], json!(cwd));
+        assert_eq!(
+            configured_child_policy_receipt(receipt.clone(), false).unwrap()["writableRoots"],
+            receipt["writable_roots"]
+        );
+        let mut malformed = receipt;
+        malformed["permission_profile"] = json!(PermissionProfile::Managed {
+            file_system: ManagedFileSystemPermissions::Restricted {
+                entries: vec![entry(cwd), entry(extra), entry(temporary)],
+                glob_scan_max_depth: None,
+            },
+            network: NetworkSandboxPolicy::Restricted,
+        });
+        assert!(configured_child_policy_receipt(malformed, true).is_err());
+    }
 
     #[test]
     fn explicit_environment_names_match_receiver_restrictions() {

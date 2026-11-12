@@ -1,7 +1,7 @@
 //! JSON adapters for native operations that contain Rust-only channels or values.
 use crate::config::{decode, optional};
 use crate::environment::StrictExecutorWrites;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use codex_core_api::{AbsolutePathBuf, CodexThread, WithTurnExtensionData};
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::{
@@ -281,6 +281,9 @@ pub struct StartOptions {
     turn_trigger: Option<String>,
     final_output_json_schema: Option<Value>,
     service_tier: Option<String>,
+    model_override: Option<String>,
+    model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     parent_turn_id: Option<String>,
     root_turn_id: Option<String>,
     cyber_access_program: Option<CyberAccessProgram>,
@@ -344,6 +347,9 @@ fn rejection(reason: NotSubmittedReason) -> Value {
         }
         NotSubmittedReason::ActiveTurnNotSteerable { turn_kind } => {
             json!({"type": "active_turn_not_steerable", "turn_kind": turn_kind})
+        }
+        NotSubmittedReason::ActiveTurnModelOverrideMismatch => {
+            json!({"type": "active_turn_model_override_mismatch"})
         }
         NotSubmittedReason::ActiveTurnOutputSchemaMismatch => {
             json!({"type": "active_turn_output_schema_mismatch"})
@@ -434,6 +440,32 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
         .transpose()
         .map_err(pre_admission)?;
     let mut p: TurnParams = decode(value).map_err(pre_admission)?;
+    if let Some(selection) = &selection {
+        ensure!(
+            selection.model_override == p.start.model_override
+                && selection.model_settings_override == p.start.model_settings_override,
+            "operation selection differs from the admitted run model"
+        );
+    }
+    if let Some(model) = &p.start.model_override {
+        state
+            .engine
+            .validate_hosted_search_model(model)
+            .await
+            .map_err(pre_admission)?;
+    }
+    if let Some(settings) = &p.start.model_settings_override {
+        let mut controls = model_settings(
+            serde_json::to_value(settings).map_err(|error| pre_admission(error.into()))?,
+        )
+        .map_err(pre_admission)?;
+        controls.model = p.start.model_override.clone();
+        state
+            .engine
+            .validate_request_controls(thread, &controls)
+            .await
+            .map_err(pre_admission)?;
+    }
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
     if (strict.is_some()
         || state.engine.local_checklist_store.is_some()
@@ -654,7 +686,7 @@ async fn prepare_write_selection(
 async fn continue_managed<'a>(
     state: &'a crate::engine::ThreadState,
     mutation: &mut Option<tokio::sync::MutexGuard<'a, ()>>,
-    p: TurnParams,
+    mut p: TurnParams,
 ) -> Result<Value> {
     if !(state.instructions.managed()
         && p.input.as_array().is_some_and(Vec::is_empty)
@@ -691,6 +723,23 @@ async fn continue_managed<'a>(
             tools.validate_operation(selection).map_err(pre_admission)?;
         }
     }
+    let retained_model = selection
+        .as_ref()
+        .and_then(|selection| selection.model_override.clone());
+    ensure!(
+        p.start.model_override.is_none() || p.start.model_override == retained_model,
+        "continuation cannot replace the admitted run model"
+    );
+    p.start.model_override = retained_model;
+    let retained_settings = selection
+        .as_ref()
+        .and_then(|selection| selection.model_settings_override.clone());
+    ensure!(
+        p.start.model_settings_override.is_none()
+            || p.start.model_settings_override == retained_settings,
+        "continuation cannot replace the admitted run model settings"
+    );
+    p.start.model_settings_override = retained_settings;
     init.insert(selection);
     if let Some(submission) = p.observation_submission_id {
         state
@@ -717,6 +766,10 @@ pub async fn recover_prepared(
     original_call_ids: Vec<String>,
     thread_settings: ThreadSettingsOverrides,
     final_output_json_schema: Option<Value>,
+    model_override: Option<String>,
+    model_settings_override: Option<
+        codex_protocol::model_request_controls::RunModelSettingsOverride,
+    >,
     selection: Option<crate::python_tools::OperationSelection>,
     trace: Option<W3cTraceContext>,
     observation_submission_id: Option<String>,
@@ -738,6 +791,8 @@ pub async fn recover_prepared(
         thread
             .recover_turn_if_idle(WithTurnExtensionData::new(
                 RecoverTurnRequest {
+                    model_override,
+                    model_settings_override,
                     turn_id: turn_id.clone(),
                     thread_settings,
                     final_output_json_schema,
@@ -1347,7 +1402,9 @@ pub(crate) async fn prepare_realtime(
 }
 params!(RealtimeSdkActivate {
     generation: String,
-    api_key: Option<String>
+    api_key: Option<String>,
+    #[serde(default)]
+    connection_options: RealtimeConversationConnectionOptions,
 });
 params!(RealtimeSdkUpdate {
     generation: String,
@@ -1441,7 +1498,9 @@ params!(RealtimeSdkInterrupt {
     generation: String,
     response_id: Option<String>,
     playback: Option<codex_protocol::protocol::RealtimePlaybackPosition>,
-    feedback: Option<String>
+    feedback: Option<String>,
+    cancel_tools: Option<bool>,
+    owned_handoffs: Option<Vec<(String, Option<String>, String)>>
 });
 params!(RealtimeText {
     text: String,
@@ -1658,6 +1717,7 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
             .submit(Op::RealtimeConversationActivateSdk {
                 generation: p.generation,
                 api_key: p.api_key.map(RealtimeConversationApiKey::new),
+                connection_options: p.connection_options,
                 reply,
             })
             .await?;
@@ -1672,6 +1732,8 @@ pub async fn realtime_sdk(thread: &CodexThread, operation: &str, params: Value) 
                 response_id: p.response_id,
                 playback: p.playback,
                 feedback: p.feedback,
+                cancel_tools: p.cancel_tools.unwrap_or(true),
+                owned_handoffs: p.owned_handoffs.unwrap_or_default(),
                 reply,
             })
             .await?;

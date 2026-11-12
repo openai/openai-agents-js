@@ -15,6 +15,70 @@ import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
 
+it('forwards provider item references after native history restore', async () => {
+  const references = [
+    { type: 'item_reference', id: 'msg_remote_first' },
+    { type: 'item_reference', id: 'msg_remote_second' },
+    { type: 'item_reference', id: 'msg_remote_first' },
+  ];
+  const directory = await mkdtemp(join(tmpdir(), 'provider-references-'));
+  try {
+    const storage = fileSessionStore(directory);
+    const server = new ModelServer([[message('continued')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-history',
+    });
+    const agent = new Agent({
+      instructions: 'Answer briefly.',
+      model: 'gpt-5',
+      provider,
+    });
+    let sessionId: string;
+    {
+      await using session = await agent.session({ storage });
+      sessionId = session.id;
+      const snapshot = await session.historySnapshot();
+      for (const invalid of [
+        { type: 'item_reference' },
+        { type: 'item_reference', id: 17 },
+      ]) {
+        await expect(
+          session.transactHistory({
+            expectedRevision: snapshot.revision,
+            keep: 0,
+            items: [invalid],
+          }),
+        ).rejects.toThrow('Invalid canonical history item');
+        expect((await session.historySnapshot()).revision).toBe(
+          snapshot.revision,
+        );
+      }
+      await session.transactHistory({
+        expectedRevision: snapshot.revision,
+        keep: 0,
+        items: references,
+      });
+      expect((await session.historySnapshot()).items).toEqual(references);
+    }
+    await using restored = await agent.session({ storage, resume: sessionId });
+    expect((await restored.historySnapshot()).items).toEqual(references);
+    expect(server.requests).toHaveLength(0);
+    expect((await (await restored.submit('continue')).wait()).finalOutput).toBe(
+      'continued',
+    );
+    expect(server.requests).toHaveLength(1);
+    const wire = server.requests[0]!.input as Array<{ type: string }>;
+    expect(wire.filter((item) => item.type === 'item_reference')).toEqual(
+      references,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('rejects oversized one-shot history after the run completes', async () => {
   const server = new ModelServer([[message('completed')]]);
   const config = await server.config();
@@ -621,3 +685,99 @@ it('preserves self-contained provider-hosted history and unpaired server search 
   ).toBe(true);
   server.assertExhausted();
 });
+
+function wireCall(items: readonly unknown[]): Record<string, unknown> {
+  const item = items.find(
+    (value): value is Record<string, unknown> =>
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      'type' in value &&
+      'call_id' in value &&
+      value.type === 'function_call' &&
+      value.call_id === 'wire-call',
+  );
+  if (item === undefined) throw new Error('Missing wire-call');
+  return item;
+}
+
+it.each([
+  { async: undefined, status: undefined },
+  { async: true, status: 'completed' },
+  { async: false, status: 'completed' },
+  { async: undefined, status: 'completed' },
+])(
+  'preserves function-call wire fields through acceptance and replay (async=$async, status=$status)',
+  async ({ async: asyncValue, status }) => {
+    const effects: string[] = [];
+    const item = call('lookup', { key: 'replay' }, { callId: 'wire-call' });
+    if (asyncValue !== undefined) item.async = asyncValue;
+    if (status !== undefined) item.status = status;
+    const server = new ModelServer([
+      [item],
+      [message('tool result accepted')],
+      [message('replayed')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-function-call-wire',
+    });
+    const agent = new Agent({
+      instructions: 'Use the lookup result.',
+      model: 'gpt-5',
+      provider,
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up a value.',
+          parameters: z.object({ key: z.string() }),
+          execute: ({ key }) => {
+            effects.push(key);
+            return `value:${key}`;
+          },
+        }),
+      ],
+    });
+    const source = await agent.session();
+    let snapshot;
+    try {
+      await (await source.submit('call the tool')).wait();
+      snapshot = await source.historySnapshot();
+    } finally {
+      await source.close();
+    }
+    await using target = await agent.session();
+    const initial = await target.historySnapshot();
+    await target.transactHistory({
+      expectedRevision: initial.revision,
+      keep: 0,
+      items: snapshot.items,
+    });
+    await (await target.submit('continue from the replay')).wait();
+    const value = (items: readonly unknown[]) => {
+      const item = wireCall(items);
+      return {
+        async: Object.hasOwn(item, 'async') ? item.async : 'absent',
+        status: Object.hasOwn(item, 'status') ? item.status : 'absent',
+      };
+    };
+    const observed = {
+      accepted: value(server.requests[1]!.input as unknown[]),
+      canonical: value(snapshot.items),
+      replayed: value(server.requests[2]!.input as unknown[]),
+    };
+    server.assertExhausted();
+    expect(effects).toEqual(['replay']);
+    const expected = {
+      async: asyncValue ?? 'absent',
+      status: status ?? 'absent',
+    };
+    expect(observed).toEqual({
+      accepted: expected,
+      canonical: expected,
+      replayed: expected,
+    });
+  },
+);

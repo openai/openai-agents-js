@@ -15,7 +15,7 @@ Context, environment, opening overrides, and native model requirements still nee
 The default `NativeProvider` transport has been sending model requests through Codex's built-in Responses client. Custom endpoints on this transport have been requiring the Responses protocol. The provider options have been controlling its endpoint, API key, and WebSocket policy.
 
 - For API-key authentication, `baseUrl` defaults to `https://api.openai.com/v1`. To use `OPENAI_BASE_URL`, pass `baseUrl: process.env.OPENAI_BASE_URL`.
-- A custom endpoint uses HTTP by default.
+- A custom endpoint has been using HTTP by default. At the default endpoint, eligible `agent.run()` calls have been selecting HTTP, while explicit Sessions have been allowing WebSockets. The [provider lifetime](#provider-lifetime) section has been describing reuse eligibility and explicit transport settings.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
 
 ### Use Sign in with ChatGPT
@@ -86,11 +86,61 @@ Your application owns the provider, including the default provider created by `n
 
 With the current [source build](building.md), a shared `NativeProvider` has been reusing idle engines for eligible API-key `agent.run()` calls over streaming or buffered HTTP. Eligible runs have been selecting HTTP by default, including at the default endpoint. With `supportsWebsockets` omitted, other streaming calls have been allowing WebSockets at the default endpoint, including explicit Sessions. For streaming calls, `supportsWebsockets: true` has been allowing WebSockets and disabling idle-engine reuse. Setting it to `false` has been forcing HTTP for other streaming calls, including explicit Sessions.
 
-Reuse is unavailable for runs with tools, structured output, initial messages, restored state, or a custom environment. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
+Reuse has been excluding runs with tools, structured output, initial messages, restored state, a custom environment, or `returnState: true`. Request editing, instruction files, and discovered project guidance have also been preventing idle-engine reuse. Each eligible run starts a fresh conversation with its own instructions, settings, and callbacks. Keep an explicit [Session](sessions.md#open-and-run-a-session) open to carry conversation history into later turns.
 
 Close all Sessions using a provider before calling `await provider.close()`, or `await agent.provider.close()` for the default. Without an explicit `NativeRuntime`, provider close has been releasing any retained native engine and HTTP connections. An explicit `await using provider = new NativeProvider()` scope can close it after its Sessions' disposal scopes finish. Keep a shared provider open while any Agent still needs it. A closed provider cannot open more Sessions. Create a new provider for later work.
 
 With the current [source build](building.md), providers configured with the same application-owned `NativeRuntime` have been sharing HTTP clients and retaining one eligible idle plain-run engine across provider closes. A shared runtime supports API-key HTTP only. Close all Sessions first, then their borrowing providers, then call `await runtime.close()` to release the shared resources. Runtime close has been rejecting active provider borrows. The [`NativeRuntime` example](../../../packages/agents-codex/src/runtime/native-runtime.ts) shows this order.
+
+### Per-run model selection
+
+Native runs have been accepting a string `modelOverride` on `agent.run()` and `session.submit()`. The admitted choice has been applying across configured handoff targets, native child roles, and output repair. Agents and Sessions have been retaining their default models for later runs. Overrides have been requiring a compatible approval reviewer; an implicit authority upgrade has been rejecting before sampling. Deferred Tool Search has been using the admitted model capabilities. An explicit override has been supplying the model even when a hosted prompt has been omitting its default.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
+
+async function main() {
+  const modelOverride = process.env.RUN_MODEL;
+  if (!modelOverride)
+    throw new Error('Set RUN_MODEL before running this example.');
+  await using provider = new NativeProvider();
+  const agent = new Agent({ instructions: 'Answer clearly.', provider });
+  const result = await agent.run('Compare the approaches.', { modelOverride });
+  console.log(result.finalOutput);
+}
+
+main().catch(console.error);
+```
+
+Queued submissions have been capturing the string at submission time. Manual checkpoint continuation has been retaining the admitted choice; steering and restored active runs have been rejecting replacement choices. A new run from settled history has been accepting a new override.
+
+Application `ModelProvider` backends have been resolving the effective model name, and direct `NativeModel` backends have been receiving that name in the request body. `modelOverride` has been accepting strings only.
+
+### Per-run settings selection
+
+With the current [source build](building.md), `modelSettingsOverride` has been accepting native `ModelSettings` for one new run on `agent.run()` or `session.submit()`. Supplied fields have been overriding step and profile settings across handoffs, native children, and output repair. Omitted fields have been retaining each profile's defaults; nullable fields have been applying their documented clear behavior. Agent and Session defaults have been remaining available for later independent runs. Standard Responses controls have been requiring a standard Responses model.
+
+```ts
+import { Agent, NativeProvider } from '@openai/agents';
+
+const model = process.env.RESPONSES_MODEL;
+if (!model)
+  throw new Error('Set RESPONSES_MODEL to a standard Responses model.');
+await using provider = new NativeProvider();
+const agent = new Agent({
+  instructions: 'Answer clearly.',
+  model,
+  modelSettings: { maxOutputTokens: 1024 },
+  provider,
+});
+await using session = await agent.session();
+const turn = await session.submit('Give a brief answer.', {
+  modelSettingsOverride: { maxOutputTokens: 512, metadata: null },
+});
+console.log((await turn.wait()).finalOutput);
+```
+
+Queued submissions have been capturing settings before admission. Manual checkpoints have been retaining scalar settings and retry limits, and restored active runs have been rejecting replacement overrides. Checkpoint capture has been rejecting a run-local `retry.policy` function without a durable binding; Agent-declared policies have been rebinding from the supplied Agent. With the native Responses transport, `resetToolChoice: true` has been releasing required or named forcing after an accepted tool batch on the current profile, including after manual restore.
 
 ### Supply an application model
 
@@ -115,7 +165,11 @@ console.log((await agent.run('What is a prime number?')).finalOutput);
 
 This example has been requiring Node.js 24, the matching built SDK, the `openai` package, and client credentials such as `OPENAI_API_KEY`. A custom `NativeModel` has been owning its own authentication and has not been requiring an SDK API key. Each `complete` call has been receiving detached request data, application context, IDs, and an `AbortSignal`; it has been returning `{ output, responseId?, usage? }` with complete Responses items rather than deltas. Cancellation has been joining admitted backend work and discarding late output, so backends have been needing to honor the signal and settle their work.
 
-`ChatCompletionsModel` has been requesting `stream: false` and exactly one response choice. It has been translating text, image URLs, default-namespace function tools, text tool results, and native JSON-schema output. It has been accepting completed `stop` and `tool_calls` choices, plus refusals; truncated and unsupported completions have been failing. Hosted tools, other function namespaces, other message content, and Responses-only prompt, truncation, and context-management controls have been requiring a Responses provider or a custom `NativeModel`. The adapter has been forwarding the cancellation signal to the injected client's request. Existing [classic model configuration](../../../packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) has been remaining available for staged migrations.
+The same source build has also been exporting `ResponsesModel(client, model?, options?)` for an application-owned OpenAI Responses client and `AiSdkModel(model, providerOptions?, adapterOptions?)` for an AI SDK language model with specification version `v2`, `v3`, or `v4`. Both adapters have been producing complete responses through `modelBackend`; they have been leaving the native runtime in charge of the tool loop. The language-model specification version has been naming the provider interface, rather than the `ai` package version. The [adapter source](../../../packages/agents-codex/src/runtime/models.ts) has been defining supported request fields and response conversions.
+
+`ChatCompletionsModel` has been using completed requests by default and accepting exactly one response choice. It has been translating text, image URLs, default-namespace function tools, text tool results, and native JSON-schema output. It has been accepting completed `stop` and `tool_calls` choices, plus refusals; truncated and unsupported completions have been failing. Hosted tools, other function namespaces, other message content, and Responses-only prompt, truncation, and context-management controls have been requiring a Responses provider or a custom `NativeModel`. The adapter has been forwarding the cancellation signal to the injected client's request. Existing [classic model configuration](../../../packages/agents/CLASSIC.md#choose-a-model-for-a-classic-run) has been remaining available for staged migrations.
+
+For native Chat streaming, pass `{ stream: true }` as the third argument to `ChatCompletionsModel`. Text has been reaching the turn event stream before the provider finishes, and the adapter has been requesting terminal usage by default. With `{ stream: true, includeUsage: false }`, the adapter has been omitting `stream_options` for providers that reject the field.
 
 ## Per-session configuration
 
@@ -125,6 +179,8 @@ Native `modelSettings` accepts the following fields in the current [source build
 
 | Field | Value and behavior |
 | --- | --- |
+| `retry` | `{ maxRetries?, backoff?, policy? }` for native generation retries; `null` clears the override. |
+| `attemptTimeoutMs` | Positive uint32 milliseconds per logical attempt, excluding retry backoff; `null` restores the default. |
 | `reasoningEffort` | A string selecting the model's reasoning effort. |
 | `reasoningSummary` | A string selecting the model's reasoning summary setting. |
 | `serviceTier` | Native routing normalizes `fast` to `priority` and may omit a tier under its model/catalog policy; `null` clears an inherited override. |
@@ -139,7 +195,7 @@ Native `modelSettings` accepts the following fields in the current [source build
 | `promptCacheRetention` | `'in_memory'` or `'24h'`; `null` clears the override. |
 | `promptCacheTtl` | `'30m'` or `'12h'`, independently of retention; `null` clears the override. |
 
-Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Use `maxOutputTokens` for the native output limit. Classic `maxTokens` and `retry` settings remain part of the [classic runtime](../../../packages/agents/CLASSIC.md).
+Supported values and account access depend on the model provider. Accepting a setting in the SDK does not establish that the provider accepts it. When you omit reasoning settings, native model metadata can supply defaults. For the resolved fields of a sampling call, read [passive request metadata](request-metadata.md). Use `maxOutputTokens` for the native output limit. Native `retry` has been accepting generation retry limits, backoff settings, and a policy callback; these settings have been remaining separate from [connection recovery](#connection-retries-and-errors). Classic `maxTokens` has been remaining part of the [classic runtime](../../../packages/agents/CLASSIC.md).
 
 - An opening provider or model overrides the Agent default.
 - Defined `modelSettings` keys override the matching Agent settings. Omitted or `undefined` keys inherit the defaults. An empty object inherits every default.

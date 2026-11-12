@@ -1,7 +1,24 @@
+export type { AcceptedTextChunk, AcceptText } from './runtime/accepted-text';
+export { retryPolicies } from './runtime/model-retry';
+export type {
+  RetryContext,
+  RetryDecision,
+  RetryPolicy,
+  RetryNormalizedError,
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
+  ModelRetryBackoffSettings,
+  ModelRetrySettings,
+} from './runtime/model-retry';
 export { applyDiff } from '@openai/agents-core/utils';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
+export type {
+  RequestAttemptCount,
+  RequestAttempts,
+} from './runtime/request-attempts';
 export { Agent, Runner } from './runtime/public-agent';
+export type { AgentAsToolOptions } from './runtime/agent-tool';
 export type {
   AgentOptions,
   AgentOutput,
@@ -10,7 +27,7 @@ export type {
   SessionOptions,
   RunOptions,
 } from './runtime/public-agent';
-export { RunCleanupError } from './runtime/native-error';
+export { RunCleanupError, RunDiagnosticError } from './runtime/native-error';
 export { DecisionError } from './runtime/decisions';
 export type {
   DecisionInput,
@@ -33,10 +50,16 @@ export type {
   FeatureSupport,
   CheckpointStatus,
 } from './runtime/capabilities';
-export type { NativeProviderOptions, ModelSettings } from './runtime/provider';
+export type {
+  NativeProviderOptions,
+  ModelSettings,
+  HostedToolChoice,
+  ProviderCompactionPolicy,
+} from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
 export type {
   NativeErrorOptions,
+  RunErrorDetails,
   ResponseIntegrityReason,
 } from './runtime/native-error';
 export {
@@ -51,6 +74,9 @@ export type {
   SessionUpdate,
   SessionInterruptOptions,
   Completed,
+  RawProviderUsage,
+  ProducedItem,
+  ManagedAgentToolOrigin,
   PendingRequests,
   SteeringReceipt,
   TurnNeedsAttention,
@@ -131,6 +157,9 @@ export type {
   MCPBeforeDecision,
   MCPStopDecision,
   MCPResultContext,
+  MCPApplicationDataContext,
+  MCPDiscoveryContext,
+  MCPToolDefinition,
   StdioMCPOptions,
   HttpMCPOptions,
   HostedVerificationMCPOptions,
@@ -159,6 +188,7 @@ export { NativeAgents, NativeRole } from './runtime/native-agents';
 export type {
   NativeAgentsOptions,
   NativeRoleOptions,
+  NativeRoleTool,
   NativeToolCall,
   ChildInvocation,
   ChildBeforeStepContext,
@@ -174,7 +204,11 @@ export type {
   ImageDetail,
   FunctionCallOutput,
 } from './runtime/input';
-export type { ChecklistState, SessionState } from './runtime/state';
+export type {
+  ApplicationToolOutput,
+  ChecklistState,
+  SessionState,
+} from './runtime/state';
 export { parseSessionState, readSessionInstructions } from './runtime/state';
 export type {
   TokenUsage,
@@ -185,6 +219,7 @@ export type { RunBudget } from './runtime/run-budget';
 export type {
   Observation,
   ObservationOptions,
+  OutputAccepted,
   ExecutionItemSummary,
   ObservedEvent,
   ModelRequestDispatching,
@@ -248,6 +283,7 @@ export type {
   OtelTlsConfig,
   TelemetryOptions,
   TraceOptions,
+  TracingIdGenerator,
   SpanContext,
   TraceEvent,
   TraceProcessor,
@@ -311,27 +347,52 @@ export type {
 export {
   fileSearch,
   codeInterpreter,
+  hostedShell,
+  hostedTool,
   imageGeneration,
+  toolSearch,
 } from './runtime/hosted-tools';
 export type {
   FileSearch,
   FileSearchOptions,
   CodeInterpreter,
   CodeInterpreterOptions,
+  HostedShell,
+  HostedShellEnvironment,
+  HostedShellOptions,
+  ProviderHostedTool,
   ImageGeneration,
   ImageGenerationOptions,
+  ToolSearch,
+  ToolSearchOptions,
+  ClientToolSearchExecutor,
+  ClientToolSearchExecutorArgs,
+  ClientToolSearchExecutorResult,
 } from './runtime/hosted-tools';
 export type { HostedToolItem, HostedToolStatus } from './runtime/hosted-tools';
+export { hostedMcp } from './runtime/hosted-mcp';
+export type {
+  HostedMCPApprovalArguments,
+  HostedMCPApprovalRequest,
+  HostedMCPApprovalDecision,
+  HostedMCPOptions,
+  HostedMCPFunction,
+  HostedMCPManual,
+} from './runtime/hosted-mcp';
 export type {
   HostedToolProgress,
   HostedToolItemSummary,
+  ModelOutputItemCompleted,
 } from './runtime/observation';
 
 export {
   sandboxEnvironment,
   renderStorageLayout,
 } from './runtime/sandbox-environment';
-export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';
+export type {
+  SandboxEnvironmentSource,
+  SandboxEnvironmentOptions,
+} from './runtime/sandbox-environment';
 
 export type {
   InitialMessage,
@@ -344,7 +405,10 @@ export type {
   ProbabilityToken,
   ProbabilityAlternative,
 } from './runtime/response-facts';
-export type { ResponseFactReceived } from './runtime/observation';
+export type {
+  RawProviderEvent,
+  ResponseFactReceived,
+} from './runtime/observation';
 
 export type {
   RecordedResponseFactSummary,
@@ -408,6 +472,10 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+export type {
+  HostedPromptReference,
+  HostedPromptSource,
+} from './runtime/hosted-prompts';
 
 export {
   ChatCompletionsModel,
@@ -418,12 +486,21 @@ export type {
   NativeModel,
   AiSdkLanguageModel,
   ModelAdapterOptions,
+  ChatCompletionsModelOptions,
   ModelRequestOptions,
   ModelRequestOptionsFactory,
   ModelProvider,
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
+export { shellTool } from './runtime/shell';
+export type {
+  ShellCall,
+  ShellCommandOutput,
+  ShellOutput,
+  ShellSkill,
+  ShellToolOptions,
+} from './runtime/shell';
 export { computerTool, ComputerSafetyError } from './runtime/computer';
 export type {
   Computer,
@@ -460,3 +537,34 @@ export type {
 } from './runtime/guardrails';
 
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
+
+export { Handoff, DecisionHandoff } from './runtime/handoffs';
+export {
+  ResponsesCompaction,
+  responsesCompaction,
+} from './runtime/responses-compaction';
+export type {
+  ResponsesCompactionOptions,
+  ResponsesCompactionContext,
+} from './runtime/responses-compaction';
+
+export { applyPatchBatchTool, applyPatchTool } from './runtime/apply-patch';
+export {
+  ConversationsHistory,
+  ConversationsWriteError,
+} from './runtime/conversations';
+export type {
+  ApplyPatchEditor,
+  ApplyPatchOperation,
+  ApplyPatchResult,
+} from './runtime/apply-patch';
+
+export { skills } from './runtime/sandbox-skills';
+export type {
+  Skills,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+} from './runtime/sandbox-skills';
+export type { SandboxMemoryOptions } from './runtime/sandbox-memory';

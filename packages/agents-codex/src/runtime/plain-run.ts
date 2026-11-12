@@ -227,7 +227,6 @@ export async function tryOpenPlainRun(
   const settings = options.initialModelSettings;
   if (
     lease.chatGPT ||
-    lease.websocketsAllowed ||
     !lease.apiKey ||
     options.modelBackend ||
     options.beforeComplete ||
@@ -236,7 +235,9 @@ export async function tryOpenPlainRun(
     options.agentInputGuardrails?.length ||
     options.agentOutputGuardrails?.length ||
     options.beforeCompact ||
+    options.compaction ||
     options.transformContext ||
+    options.hostedPrompt !== undefined ||
     options.tracingCapture ||
     options.parentTrace ||
     options.environment ||
@@ -462,6 +463,9 @@ export async function tryOpenPlainRun(
     ...(settings?.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: settings.reasoningEffort }),
+    ...(lease.websocketsAllowed && borrow?.refreshWebsocketTrust
+      ? { freshWebsocketConnector: true }
+      : {}),
     observationRetentionAll: options.observationRetention === 'all',
     preferBufferedResponse: setup.threadOptions._buffered_responses === true,
   });

@@ -1,0 +1,115 @@
+diff --git a/codex-rs/codex-api/src/api_bridge.rs b/codex-rs/codex-api/src/api_bridge.rs
+index c59346178a14df2f246a74eb9602c43f5d6ae57b..de08fb8e91f4b18064c8e7632146103cc2309017 100644
+--- a/codex-rs/codex-api/src/api_bridge.rs
++++ b/codex-rs/codex-api/src/api_bridge.rs
+@@ -101,7 +101,7 @@ pub(crate) fn is_http_slow_down(error: &TransportError) -> bool {
+         .is_some_and(|error| matches!(error.details(), CodexErrorDetails::RateLimitExceeded(_)))
+ }
+ 
+-fn service_unavailable_error(body: &str) -> Option<CodexErr> {
++pub(crate) fn service_unavailable_error(body: &str) -> Option<CodexErr> {
+     let value = serde_json::from_str::<Value>(body).ok()?;
+     let error = value.get("error")?;
+     match error.get("code").and_then(Value::as_str) {
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index 25452ee4cad0ad9cb2b9eff549bd56c98151ca73..756d274ca56cf905ac778c2c3ed4337f6269fc9e 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -563,15 +563,32 @@ fn sanitize_handshake_rejection(error: ApiError, url: &Url, independent: bool) -
+     match error {
+         ApiError::Transport(TransportError::Http {
+             status,
++            body,
+             retry_after,
+             ..
+-        }) => ApiError::Transport(TransportError::Http {
+-            status,
+-            url: Some(url.origin().ascii_serialization()),
+-            headers: None,
+-            body: None,
+-            retry_after,
+-        }),
++        }) => {
++            // Preserve only the allowlisted classification before discarding reflected text.
++            if status == StatusCode::SERVICE_UNAVAILABLE
++                && body
++                    .as_deref()
++                    .and_then(crate::api_bridge::service_unavailable_error)
++                    .is_some_and(|error| {
++                        matches!(
++                            error.details(),
++                            codex_protocol::error::CodexErrorDetails::ServerOverloaded
++                        )
++                    })
++            {
++                return ApiError::ServerOverloaded { retry_after };
++            }
++            ApiError::Transport(TransportError::Http {
++                status,
++                url: Some(url.origin().ascii_serialization()),
++                headers: None,
++                body: None,
++                retry_after,
++            })
++        }
+         error => error,
+     }
+ }
+@@ -1105,6 +1122,57 @@ mod tests {
+     use std::collections::HashMap;
+     use std::sync::Arc;
+ 
++    #[test]
++    fn independent_overload_keeps_typed_retry_without_reflected_details() {
++        let url = Url::parse("wss://synthetic.invalid/private-path?token=private-query").unwrap();
++        for (status, code, overloaded) in [
++            (
++                StatusCode::SERVICE_UNAVAILABLE,
++                "server_is_overloaded",
++                true,
++            ),
++            (StatusCode::SERVICE_UNAVAILABLE, "unknown", false),
++            (StatusCode::BAD_GATEWAY, "server_is_overloaded", false),
++        ] {
++            let error = sanitize_handshake_rejection(
++                ApiError::Transport(TransportError::Http {
++                    status,
++                    url: Some(url.to_string()),
++                    headers: Some(HeaderMap::from_iter([(
++                        http::header::HeaderName::from_static("x-private"),
++                        http::HeaderValue::from_static("private-header"),
++                    )])),
++                    body: Some(
++                        serde_json::json!({
++                            "error": {"code": code, "message": url.as_str()},
++                        })
++                        .to_string(),
++                    ),
++                    retry_after: RetryAfter::from_delay(Duration::from_secs(3)),
++                }),
++                &url,
++                true,
++            );
++            assert!(!format!("{error:?}").contains("private-"));
++            match error {
++                ApiError::ServerOverloaded { retry_after } if overloaded => {
++                    assert!(retry_after.is_some());
++                }
++                ApiError::Transport(TransportError::Http {
++                    status: actual,
++                    url: Some(origin),
++                    headers: None,
++                    body: None,
++                    retry_after: Some(_),
++                }) if !overloaded => {
++                    assert_eq!(actual, status);
++                    assert_eq!(origin, "wss://synthetic.invalid");
++                }
++                other => panic!("Unexpected sanitized classification: {other:?}"),
++            }
++        }
++    }
++
+     #[tokio::test]
+     async fn independent_rejected_handshake_omits_reflected_response_fields() {
+         use tokio::io::{AsyncReadExt, AsyncWriteExt};

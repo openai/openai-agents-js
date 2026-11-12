@@ -45,6 +45,7 @@ function unavailableSocket(body: Buffer, responseHeaders = headers) {
     close: vi.fn(async () => {}),
     project_response_items: unexpected,
     send_text: unexpected,
+    _send_owned_text: unexpected,
     receive: unexpected,
   } satisfies NativeModelWebSocket;
 }
@@ -207,9 +208,10 @@ it.each([
   },
 );
 
-it('delivers rejected-WebSocket retry advice to native Core before another provider attempt', async () => {
+async function verifyRejectedUpgradeRetryAdvice(route: 'session' | 'plain') {
   const attempts: Array<{ method: string; at: number }> = [];
   let adviceAt: number | undefined;
+  const rejectedUpgrades = route === 'session' ? 2 : 1;
   const frames = (id: string, generate = true) => [
     { type: 'response.created', response: { id } },
     ...(generate
@@ -243,15 +245,16 @@ it('delivers rejected-WebSocket retry advice to native Core before another provi
   server.on('upgrade', (request, socket, head) => {
     attempts.push({ method: 'GET', at: performance.now() });
     upgrades++;
-    if (upgrades <= 2) {
+    if (upgrades <= rejectedUpgrades) {
       const body = Buffer.from(
         JSON.stringify({
           error: { code: 'server_is_overloaded', message: 'retry later' },
         }),
       );
       // Reject prewarm without advice. Only the sampling rejection controls the measured retry.
-      const advice = upgrades === 2 ? 'Retry-After: 2\r\n' : '';
-      if (upgrades === 2) adviceAt = performance.now();
+      const lastRejection = upgrades === rejectedUpgrades;
+      const advice = lastRejection ? 'Retry-After: 2\r\n' : '';
+      if (lastRejection) adviceAt = performance.now();
       socket.end(
         Buffer.concat([
           Buffer.from(
@@ -279,25 +282,33 @@ it('delivers rejected-WebSocket retry advice to native Core before another provi
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     apiKey: 'synthetic',
     supportsWebsockets: true,
+    ...(route === 'plain' ? { streamMaxRetries: 0 } : {}),
   });
   const agent = new Agent({
     instructions: 'Respond with recovered.',
     model: 'gpt-5',
     provider,
   });
-  const session = await agent.session();
+  const session = route === 'session' ? await agent.session() : undefined;
   try {
-    await vi.waitFor(() => expect(upgrades).toBe(1), { timeout: 3000 });
-    expect((await (await session.submit('start')).wait()).finalOutput).toBe(
-      'recovered',
-    );
+    if (session)
+      await vi.waitFor(() => expect(upgrades).toBe(1), { timeout: 3000 });
+    const result = session
+      ? await (await session.submit('start')).wait()
+      : await agent.run('start');
+    expect(result.finalOutput).toBe('recovered');
     expect(adviceAt).toBeDefined();
     const following = attempts.filter((attempt) => attempt.at > adviceAt!);
     expect(following.length).toBeGreaterThan(0);
     // Core's local first retry backoff is shorter. A missing header must not pass on incidental startup time.
     expect(following[0].at - adviceAt!).toBeGreaterThanOrEqual(1800);
+    if (route === 'plain')
+      expect(attempts.map((attempt) => attempt.method)).toEqual([
+        'GET',
+        'POST',
+      ]);
   } finally {
-    await session.close();
+    await session?.close();
     await provider.close();
     for (const socket of sockets.clients) socket.terminate();
     sockets.close();
@@ -306,7 +317,13 @@ it('delivers rejected-WebSocket retry advice to native Core before another provi
     server.closeAllConnections();
     await closed;
   }
-}, 15000);
+}
+
+it.each(['session', 'plain'] as const)(
+  '%s run honors WSS retry advice',
+  verifyRejectedUpgradeRetryAdvice,
+  15000,
+);
 
 it('delivers sparse successful WebSocket handshake and response limit updates', async () => {
   let httpRequests = 0;

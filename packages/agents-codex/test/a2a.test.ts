@@ -1,5 +1,8 @@
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { AgentCard, Message, Part, Role, Task, TaskState } from '@a2a-js/sdk';
 import {
@@ -374,6 +377,7 @@ it.each([
 it('refuses redirects and oversized discovery before credentials', async () => {
   const remote = await peer();
   let credentials = 0;
+  const redirectModes: (RequestRedirect | undefined)[] = [];
   for (const response of [
     new Response(null, {
       status: 302,
@@ -388,10 +392,14 @@ it('refuses redirects and oversized discovery before credentials', async () => {
           return 'synthetic';
         },
         limits: { bodyBytes: 50 },
-        fetch: async () => response,
+        fetch: async (_url, init) => {
+          redirectModes.push(init?.redirect);
+          return response;
+        },
       }),
     ).rejects.toThrow('A2A');
   }
+  expect(redirectModes).toEqual(['manual', 'manual']);
   expect(credentials).toBe(0);
 });
 
@@ -965,6 +973,155 @@ it('keeps lost create acknowledgments unknown and only observes a known receipt 
     status: 'unknown',
   });
   expect(mutations).toBe(1);
+});
+
+it('reconciles an accepted lost create only through an authorized application receipt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'a2a-reconcile-'));
+  const ledger = join(directory, 'effect.json');
+  let expected: Record<string, unknown> = {};
+  let effects = 0;
+  const remote = await peer({
+    execute: async (request, bus) => {
+      expect(request.userMessage.parts[0].content).toEqual({
+        $case: 'text',
+        value: 'synthetic-order',
+      });
+      await writeFile(
+        ledger,
+        JSON.stringify({
+          ...expected,
+          taskId: request.taskId,
+          contextId: request.contextId,
+        }),
+        { flag: 'wx', mode: 0o600 },
+      );
+      effects++;
+      bus.publish(
+        AgentEvent.task({
+          ...Task.fromJSON({}),
+          id: request.taskId,
+          contextId: request.contextId,
+          status: {
+            state: TaskState.TASK_STATE_COMPLETED,
+            message: undefined,
+            timestamp: undefined,
+          },
+        }),
+      );
+      bus.finished();
+    },
+    cancelTask: async () => {},
+  });
+  let reservations = 0;
+  let allowed = true;
+  let revokeDuringCredentials = false;
+  let dropped = false;
+  const provider = new A2AJobProvider<string>({
+    endpoint: remote.endpoint,
+    authorize: async () => {
+      if (!allowed) throw new Error('Host authority revoked');
+    },
+    authorization: async () => 'synthetic',
+    reserve: async () => {
+      reservations++;
+    },
+    encode: (order) => [Part.fromJSON({ text: order })],
+    project: () => 'completed',
+    fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      if (init?.method === 'POST' && !dropped) {
+        dropped = true;
+        await response.arrayBuffer();
+        throw new Error('Synthetic accepted-create acknowledgment loss');
+      }
+      return response;
+    },
+  });
+  const current = claim();
+  expected = {
+    principal: 'synthetic-user',
+    endpoint: remote.endpoint.rpcUrl,
+    order: 'synthetic-order',
+    binding: current.binding,
+    key: current.key,
+    generation: current.generation,
+  };
+  try {
+    const unknown = await provider.start(current, 'synthetic-order', context);
+    expect(unknown).toEqual({ status: 'unknown' });
+    // A replacement host has been reading its configured application ledger independently of A2A.
+    const saved = JSON.parse(await readFile(ledger, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const reconcile = async (
+      receipt: Record<string, unknown> | undefined,
+      source = 'application-ledger',
+    ) => {
+      if (!allowed || source !== 'application-ledger' || !receipt)
+        return undefined;
+      if (
+        Object.entries(expected).some(
+          ([key, value]) =>
+            JSON.stringify(receipt[key]) !== JSON.stringify(value),
+        )
+      )
+        return undefined;
+      if (
+        typeof receipt.taskId !== 'string' ||
+        typeof receipt.contextId !== 'string' ||
+        !receipt.taskId ||
+        !receipt.contextId
+      )
+        return undefined;
+      const client = await connectA2A(remote.endpoint, {
+        current: async () => {
+          if (!allowed) throw new Error('Host authority revoked');
+        },
+        authorization: async () => {
+          if (revokeDuringCredentials) allowed = false;
+          return 'synthetic';
+        },
+      });
+      const task = await client
+        .getTask({ tenant: '', id: receipt.taskId })
+        .catch(() => undefined);
+      if (!task) return undefined;
+      if (task.id !== receipt.taskId || task.contextId !== receipt.contextId)
+        return undefined;
+      return task.status?.state;
+    };
+    expect(await reconcile(undefined)).toBeUndefined();
+    expect(await reconcile(saved, 'peer-metadata')).toBeUndefined();
+    for (const [key, value] of Object.entries({
+      principal: 'foreign-user',
+      endpoint: 'https://foreign.example/rpc',
+      order: 'other-order',
+      binding: {},
+      key: 'foreign',
+      generation: '2',
+      taskId: '',
+      contextId: '',
+    }))
+      expect(await reconcile({ ...saved, [key]: value })).toBeUndefined();
+    allowed = false;
+    expect(await reconcile(saved)).toBeUndefined();
+    expect(remote.calls).toEqual(['SendMessage']);
+    allowed = true;
+    revokeDuringCredentials = true;
+    expect(await reconcile(saved)).toBeUndefined();
+    expect(remote.calls).toEqual(['SendMessage']);
+    allowed = true;
+    revokeDuringCredentials = false;
+    expect(await reconcile(saved)).toBe(TaskState.TASK_STATE_COMPLETED);
+    expect(remote.calls).toEqual(['SendMessage', 'GetTask']);
+    expect(unknown).toEqual({ status: 'unknown' });
+    expect(JSON.parse(await readFile(ledger, 'utf8'))).toEqual(saved);
+    expect(effects).toBe(1);
+    expect(reservations).toBe(1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it('keeps auth-required out of generic input approvals', async () => {

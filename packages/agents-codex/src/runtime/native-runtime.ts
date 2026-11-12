@@ -20,7 +20,11 @@ const owners = new WeakMap<NativeRuntime, State>();
  * HTTP clients and one quiescent private plain-run Engine may remain captured,
  * including credentials, configuration, a private home and a referenced server.
  * Close all borrowing Providers, then await close() to release those resources.
- * A new Provider does not refresh captured ambient native configuration.
+ * Reusing a compatible retained Engine has been allowing its WebSocket connector
+ * and TLS trust configuration to stay captured across runs. A fresh borrowing
+ * Provider has not been guaranteeing refreshed ambient native configuration.
+ * Closing all borrowing Providers and this owner before creating a new Runtime
+ * has been providing the guaranteed trust/proxy refresh boundary.
  * Ordinary/mismatching Sessions: independent Engines. Matching admitted plain
  * runs: independent per-run lifetimes over one Engine.
  * This owner has no TTL, finalizer or implicit unref/abandonment cleanup.
@@ -45,7 +49,8 @@ const owners = new WeakMap<NativeRuntime, State>();
  * }
  * ```
  *
- * HTTP/API-key route only; no WebSockets, ChatGPT login or modelBackend.
+ * API-key HTTP and explicitly enabled WebSockets have been remaining supported.
+ * ChatGPT login and modelBackend have been remaining unsupported.
  * Owner close: rejected during active Provider borrows. Cleanup failures: retryable.
  * Node/Worker lifetime: referenced until explicit owner close.
  */

@@ -1,6 +1,6 @@
 import { summarizeResponseFactRecord } from './response-facts';
 import { ToolOutput } from './tools';
-import type { ExecutionItem, SearchItem } from './history';
+import type { ExecutionItem, ModelOutputItem, SearchItem } from './history';
 import type { JsonObject } from './binding';
 import type { HostedToolItem } from './hosted-tools';
 import type { ManualToolRequest } from './manual';
@@ -34,7 +34,7 @@ export type HostedToolItemSummary = Readonly<
 
 export type ObservationOptions = {
   after?: number;
-  /** Include tool payloads and received response-fact content for a trusted consumer. */
+  /** Include tool payloads, response-fact content and opted-in raw provider events. */
   includeExecutionDetails?: boolean;
 };
 
@@ -107,7 +107,20 @@ export type AgentProfileChanged = Event &
     parentSubmissionId?: string;
   }>;
 
+/** One successful logical root result, after typed validation and owned cleanup.
+ * Content remains on Turn.wait(); application approval and delivery stay separate.
+ * submissionId identifies the original root; turnId identifies its final native step.
+ * Passive retention can report gaps; this is not a durable delivery receipt.
+ */
+export type OutputAccepted = SubmissionEvent &
+  Readonly<{ type: 'output_accepted' }>;
+
+export type ModelOutputItemCompleted = SubmissionEvent &
+  Readonly<{ type: 'model_output_item_completed'; item: ModelOutputItem }>;
+
 export type Observation =
+  | OutputAccepted
+  | ModelOutputItemCompleted
   | AgentProfileChanged
   | HostedToolProgress
   | (HostedToolItemObservation &
@@ -115,6 +128,7 @@ export type Observation =
   | ModelRequestDispatching
   | ModelResponseLinked
   | ResponseFactReceived
+  | RawProviderEvent
   | (Event & Readonly<{ type: 'warning'; message: string }>)
   | (SubmissionEvent & Readonly<{ type: 'turn_started' }>)
   | (SubmissionEvent &
@@ -134,6 +148,14 @@ export type Observation =
   | (ExecutionObservation &
       Readonly<{ item: ExecutionItemSummary | ExecutionItem }>)
   | (SubmissionEvent & ToolIdentity & Readonly<{ type: 'tool_started' }>)
+  | (SubmissionEvent &
+      Readonly<{
+        type: 'function_approval_requested';
+        /** Display identifiers. Reply authority remains with the live request. */
+        approvalId: string;
+        callId: string;
+        name: string;
+      }>)
   | (SubmissionEvent &
       ToolIdentity &
       Readonly<{
@@ -162,6 +184,15 @@ export type ResponseFactReceived = SubmissionEvent &
     record:
       | import('./response-facts').RecordedResponseFact
       | import('./response-facts').RecordedResponseFactSummary;
+  }>;
+
+/** Provider JSON on the exact native turn observation stream. */
+export type RawProviderEvent = SubmissionEvent &
+  Readonly<{
+    type: 'raw_provider_event';
+    source: 'responses' | 'chat_completions';
+    transport: 'sse' | 'websocket' | 'json';
+    payload: JsonObject;
   }>;
 
 type RetainedObservation =
@@ -200,9 +231,12 @@ function projectObservation(
           ? new ToolOutput(
               structuredClone(event.output.contentItems),
               event.output.success,
+              event.output.applicationData,
             )
           : null,
     });
+  if (event.type === 'raw_provider_event')
+    return Object.freeze({ ...event, payload: structuredClone(event.payload) });
   if (event.type === 'response_fact')
     return Object.freeze({
       ...event,
@@ -210,6 +244,8 @@ function projectObservation(
         ? structuredClone(event.record)
         : summarizeResponseFactRecord(event.record),
     });
+  if (event.type === 'model_output_item_completed')
+    return Object.freeze({ ...event, item: structuredClone(event.item) });
   if (event.type === 'search_item_completed') {
     const item = includeExecutionDetails
       ? event.item
@@ -295,7 +331,12 @@ export class ObservationBuffer {
 
   append(value: ObservationInput): RetainedObservation | null {
     const event = this.record(value, this.sessionId);
-    if (event && this.repairParent && 'submissionId' in event) {
+    if (
+      event &&
+      this.repairParent &&
+      event.type !== 'output_accepted' &&
+      'submissionId' in event
+    ) {
       const linked = {
         ...event,
         parentSubmissionId: this.repairParent.submissionId,
@@ -374,8 +415,12 @@ export class ObservationBuffer {
           })
         : undefined;
     let payloadSize =
-      partial?.length ??
-      (searchResults === undefined ? 0 : JSON.stringify(searchResults).length);
+      event.type === 'raw_provider_event'
+        ? JSON.stringify(event.payload).length
+        : (partial?.length ??
+          (searchResults === undefined
+            ? 0
+            : JSON.stringify(searchResults).length));
     const size = Object.values(event).reduce<number>(
       (total, field) => total + (typeof field === 'string' ? field.length : 0),
       event.type === 'tool_finished' && event.output
@@ -384,6 +429,7 @@ export class ObservationBuffer {
           ? JSON.stringify(event.record).length
           : event.type === 'execution_item_completed' ||
               event.type === 'search_item_completed' ||
+              event.type === 'model_output_item_completed' ||
               event.type === 'hosted_tool_item_completed'
             ? JSON.stringify(searchSummary?.item ?? event.item).length
             : event.type === 'hosted_tool_call_progress'
@@ -465,10 +511,12 @@ export class ObservationBuffer {
   events(
     options: ObservationOptions | undefined,
     scope: TurnObservationScope,
+    startAtScope?: boolean,
   ): AsyncIterableIterator<Observation>;
   events(
     options: ObservationOptions = {},
     scope?: TurnObservationScope,
+    startAtScope = false,
   ): AsyncIterableIterator<ObservedEvent> {
     this.options.validate?.();
     let { after = 0 } = options;
@@ -498,7 +546,7 @@ export class ObservationBuffer {
         try {
           while (!closed) {
             const changed = this.changed.promise;
-            if (this.options.retention === 'all' && scope) {
+            if ((this.options.retention === 'all' || startAtScope) && scope) {
               const floor = scope.after ?? 0;
               if (floor < 0) {
                 if (scope.phase() === 'ended' || this.closed) break;
@@ -535,6 +583,11 @@ export class ObservationBuffer {
               const { event, detailsMissing } = this.records[index++];
               if (event.sequence <= after) continue;
               after = event.sequence;
+              if (
+                event.type === 'raw_provider_event' &&
+                !includeExecutionDetails
+              )
+                continue;
               if (event.type === 'gap' || !scope || scope.includes(event))
                 return {
                   done: false,

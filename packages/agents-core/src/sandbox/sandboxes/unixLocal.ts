@@ -1,5 +1,7 @@
+import { beforeGitRepoCopy } from '../internal/gitRepoCopy';
 import {
   copyRemoteSnapshotAuthority,
+  markDeserializedSandboxState,
   getRunStateSessionTrustedConfig,
   getLocalSandboxStateAuthority,
   getRemoteSnapshotStoreAuthority,
@@ -39,6 +41,7 @@ import {
 } from '../client';
 import {
   normalizeExposedPort,
+  normalizeDirectoryEntryLimit,
   recordExposedPortEndpoint,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -78,7 +81,7 @@ import {
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
   serializeMountCredentialRedactionMetadata,
-  serializeManifest,
+  serializeManifestRecord,
 } from './shared/manifestPersistence';
 import {
   assertExistingMountTopologyPreserved,
@@ -225,6 +228,10 @@ export class UnixLocalSandboxSession<
   private stopPromise?: Promise<void>;
   private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
+  readonly readFileNoFollow?: (args: ReadFileArgs) => Promise<Uint8Array>;
+  readonly [beforeGitRepoCopy] = true as const;
+  readonly removeEntryNoFollow?: (path: string) => Promise<void>;
+  readonly writeFileNoFollow?: (args: MaterializeEntryArgs) => Promise<void>;
   private readonly workspaceCleanupPath?: string;
 
   private get files(): UnixLocalFiles {
@@ -251,6 +258,11 @@ export class UnixLocalSandboxSession<
       args[preparedFileIO] === null
         ? null
         : (args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection));
+    if (this.hostFiles) {
+      this.removeEntryNoFollow = this.removeEmptyEntryWithoutLinks.bind(this);
+      this.readFileNoFollow = this.readFileWithoutLinks.bind(this);
+      this.writeFileNoFollow = this.materializeFileWithoutLinks.bind(this);
+    }
     this.state = args.state;
     // Low-level session construction is an explicit trusted host operation.
     // Keep cleanup independent of subsequent changes to the public state object.
@@ -523,8 +535,68 @@ export class UnixLocalSandboxSession<
     );
   }
 
+  private async removeEmptyEntryWithoutLinks(path: string): Promise<void> {
+    const generation = this.fileOperationGeneration;
+    await withUnixLocalFileAccess(this.state, async () => {
+      this.assertSessionUsable();
+      if (
+        this.closePromise ||
+        this.stopPromise ||
+        generation !== this.fileOperationGeneration
+      )
+        throw new UserError('UnixLocal file operation cancelled.');
+      const target = this.noFollowWorkspacePath(path, true);
+      const identity = await this.resolveFilesystemRunAs();
+      await this.files.run(
+        { operation: 'removeEmpty', path: target },
+        { identity },
+      );
+    });
+  }
+
+  private async readFileWithoutLinks(args: ReadFileArgs): Promise<Uint8Array> {
+    this.assertSessionUsable();
+    if (
+      args.maxBytes !== undefined &&
+      (!Number.isSafeInteger(args.maxBytes) || args.maxBytes < 0)
+    )
+      throw new UserError('maxBytes must be a non-negative safe integer.');
+    const path = this.noFollowWorkspacePath(args.path, false);
+    const identity = await this.resolveFilesystemRunAs(args.runAs);
+    return this.files.run(
+      {
+        operation: 'read',
+        path,
+        limit: args.maxBytes,
+        complete: true,
+      },
+      { identity },
+    );
+  }
+
+  private noFollowWorkspacePath(inputPath: string, forWrite: boolean) {
+    if (isAbsolute(inputPath))
+      throw new UserError(
+        'No-follow access requires a workspace-relative path.',
+      );
+    // Preserve provider authorization/overrides, but never use a resolved descendant for IO.
+    this.resolveSandboxPath(inputPath, { forWrite });
+    const root = this.filesystemRoot(this.state.workspaceRootPath).content;
+    const path = resolve(root, inputPath);
+    const child = relative(root, path);
+    if (
+      !child ||
+      child === '..' ||
+      child.startsWith('../') ||
+      isAbsolute(child)
+    )
+      throw new UserError('No-follow access requires a workspace descendant.');
+    return { path, accessPath: path, preserveLeaf: true, noFollow: true };
+  }
+
   async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {
     this.assertSessionUsable();
+    const limit = normalizeDirectoryEntryLimit(args.maxEntries);
     const identity = await this.resolveFilesystemRunAs(args.runAs);
     const resolved = this.resolveSandboxPathTarget(args.path);
     const logicalPath = resolved.workspaceRelativePath ?? resolved.path;
@@ -536,6 +608,7 @@ export class UnixLocalSandboxSession<
         await this.files.run(
           {
             operation: 'list',
+            ...(limit === undefined ? {} : { limit }),
             path: this.resolveFilesystemPath(args.path),
           },
           { identity },
@@ -556,8 +629,25 @@ export class UnixLocalSandboxSession<
     );
   }
 
+  private async materializeFileWithoutLinks(
+    args: MaterializeEntryArgs,
+  ): Promise<void> {
+    this.assertSessionUsable();
+    const entry = structuredClone(args.entry);
+    if (
+      entry.type !== 'file' ||
+      (typeof entry.content !== 'string' &&
+        !(entry.content instanceof Uint8Array))
+    )
+      throw new UserError('No-follow writes require a regular file entry.');
+    await withExclusiveSandboxManifestMutation(this.state, () =>
+      this.materializeEntryExclusive({ ...args, entry }, true),
+    );
+  }
+
   private async materializeEntryExclusive(
     args: MaterializeEntryArgs,
+    noFollow = false,
   ): Promise<void> {
     const logicalPath = this.resolveLogicalPath(args.path);
     const manifest = new Manifest({
@@ -569,15 +659,30 @@ export class UnixLocalSandboxSession<
     validateMountCredentialBoundaries(nextManifest);
     const runAs = await this.resolveFilesystemRunAs(args.runAs);
     const mountRoots = runAs ? this.resolveMountOwnershipRoots(manifest) : [];
-    await materializeLocalWorkspaceManifestEntry(
-      this.state.workspaceRootPath,
-      logicalPath,
-      args.entry,
-      {
-        localSourceGrants: this.state.manifest.extraPathGrants,
-        manifestRoot: manifest.root,
-      },
-    );
+    if (noFollow) {
+      const path = this.noFollowWorkspacePath(args.path, true);
+      if (
+        args.entry.type !== 'file' ||
+        (typeof args.entry.content !== 'string' &&
+          !(args.entry.content instanceof Uint8Array))
+      )
+        throw new UserError('No-follow writes require a regular file entry.');
+      await this.files.run(
+        { operation: 'write', path },
+        { input: args.entry.content, identity: runAs },
+      );
+    } else {
+      await materializeLocalWorkspaceManifestEntry(
+        this.state.workspaceRootPath,
+        logicalPath,
+        args.entry,
+        {
+          localSourceGrants: this.state.manifest.extraPathGrants,
+          manifestRoot: manifest.root,
+          [beforeGitRepoCopy]: args[beforeGitRepoCopy],
+        },
+      );
+    }
     if (runAs) {
       await this.applyOwnershipRecursive(manifest, mountRoots, runAs);
     }
@@ -1484,7 +1589,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
 
     const serialized = {
       ...serializeMountCredentialRedactionMetadata(state),
-      manifest: serializeManifest(state.manifest),
+      manifest: serializeManifestRecord(state.manifest),
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
       environment: sanitizeEnvironmentForPersistence(state),
@@ -1501,9 +1606,11 @@ export class UnixLocalSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<UnixLocalSandboxSessionState> {
-    return deserializeLocalSandboxSessionStateValues(
-      state,
-      this.options.snapshot,
+    return markDeserializedSandboxState(
+      await deserializeLocalSandboxSessionStateValues(
+        state,
+        this.options.snapshot,
+      ),
     );
   }
 

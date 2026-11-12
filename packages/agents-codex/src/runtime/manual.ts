@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
@@ -8,34 +9,57 @@ import {
 } from './binding';
 import type { ThreadOptions } from './options';
 import type { ToolCallInfo } from './call-metadata';
-import { outputOf, type ToolDeclaration, type ToolResponse } from './tools';
+import {
+  outputOf,
+  ToolOutput,
+  type ToolDeclaration,
+  type ToolResponse,
+} from './tools';
 
 // Parsed function inputs can contain opaque application values. Keep their
 // semantics while detaching ordinary containers and dates from approval views.
-function copyApprovalInput(
+/** @internal */
+export function copyApprovalInput(
   value: unknown,
+  requireDetached = false,
   copies = new Map<object, unknown>(),
 ): unknown {
+  if (requireDetached && typeof value === 'function')
+    throw new TypeError('Standard Schema tool output cannot be detached');
   if (value === null || typeof value !== 'object') return value;
   if (copies.has(value)) return copies.get(value);
-  if (value instanceof Date)
-    return new Date(Date.prototype.getTime.call(value));
-  const prototype = Object.getPrototypeOf(value);
   if (
-    !Array.isArray(value) &&
-    prototype !== Object.prototype &&
-    prototype !== null
-  )
+    value instanceof Date &&
+    (!requireDetached ||
+      (Object.getPrototypeOf(value) === Date.prototype &&
+        Reflect.ownKeys(value).length === 0))
+  ) {
+    const date = new Date(Date.prototype.getTime.call(value));
+    copies.set(value, date);
+    return date;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  const array = Array.isArray(value);
+  if (
+    array
+      ? requireDetached && prototype !== Array.prototype
+      : prototype !== Object.prototype && prototype !== null
+  ) {
+    if (requireDetached)
+      throw new TypeError('Standard Schema tool output cannot be detached');
     return value;
-  const result = Array.isArray(value)
-    ? new Array(value.length)
-    : Object.create(prototype);
+  }
+  const result = array ? new Array(value.length) : Object.create(prototype);
   copies.set(value, result);
   for (const key of Reflect.ownKeys(value)) {
-    if (Array.isArray(value) && key === 'length') continue;
+    if (array && key === 'length') continue;
     const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
     Object.defineProperty(result, key, {
-      value: copyApprovalInput(Reflect.get(value, key), copies),
+      value: copyApprovalInput(
+        Reflect.get(value, key),
+        requireDetached,
+        copies,
+      ),
       enumerable: descriptor.enumerable,
       writable: true,
       configurable: true,
@@ -78,6 +102,8 @@ export interface FunctionApprovalRequest<
   Input = unknown,
 > extends ManualToolRequest<Input, never> {
   readonly approvalRequired: true;
+  /** Opaque identifier for matching an approval event to this live request. */
+  readonly approvalId: string;
   /** Validated arguments after the pre-approval input policy.
    * Plain objects, arrays and dates are detached; opaque values retain application identity.
    */
@@ -121,10 +147,74 @@ export interface ManualTool<
 }
 
 interface RequestAuthority {
+  replyIdentity: object;
   definition: Definition;
   current(): boolean;
+  approvalInput?: unknown;
 }
 const requests = new WeakMap<object, RequestAuthority>();
+
+function copyApprovalJson(
+  value: unknown,
+  parents = new Set<object>(),
+): JsonValue {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean')
+    return value;
+  if (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    !Object.is(value, -0)
+  )
+    return value;
+  if (typeof value !== 'object' || value === null)
+    throw new TypeError('Approval input must be faithful JSON');
+  const array = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (
+    (array
+      ? prototype !== Array.prototype
+      : prototype !== Object.prototype && prototype !== null) ||
+    parents.has(value)
+  )
+    throw new TypeError('Approval input must be faithful JSON');
+  const property = (key: PropertyKey): JsonValue => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      typeof key !== 'string' ||
+      !descriptor?.enumerable ||
+      !('value' in descriptor)
+    )
+      throw new TypeError('Approval input must be faithful JSON');
+    return copyApprovalJson(descriptor.value, parents);
+  };
+  parents.add(value);
+  try {
+    const keys = Reflect.ownKeys(value);
+    if (array) {
+      const length = Object.getOwnPropertyDescriptor(value, 'length')!.value;
+      if (keys.length !== length + 1)
+        throw new TypeError('Approval input must be faithful JSON');
+      return Array.from({ length }, (_, index) => property(String(index)));
+    }
+    return Object.fromEntries(keys.map((key) => [key, property(key)]));
+  } finally {
+    parents.delete(value);
+  }
+}
+
+/** @internal Display only faithful JSON of the captured execution value. */
+export function functionApprovalInput(
+  request: FunctionApprovalRequest,
+): JsonValue | undefined {
+  const authority = requests.get(request);
+  if (authority?.current() && authority.approvalInput !== undefined) {
+    try {
+      return copyApprovalJson(authority.approvalInput);
+    } catch {
+      // Opaque values retain native approval, without a browser projection.
+    }
+  }
+}
 const replies = new WeakMap<
   object,
   {
@@ -194,8 +284,14 @@ export function manualTool<
       JSON.stringify(z.toJSONSchema(result, { io: 'input' })),
     ),
     parseInput: (args) => parameters.parse(args),
-    parseResult: (value) =>
-      outputOf(losslessJsonValueSchema.parse(result.parse(value))),
+    parseResult: (value) => {
+      const parsed = result.parse(value);
+      return outputOf(
+        parsed instanceof ToolOutput
+          ? parsed
+          : losslessJsonValueSchema.parse(parsed),
+      );
+    },
   };
   return assembleManualTool<z.output<P>, z.input<R>>(
     {
@@ -275,6 +371,7 @@ export function createManualRequest<Input, Result>(
   const replyIdentity = {};
   const definition = tool[manualDefinition];
   const authority: RequestAuthority = {
+    replyIdentity,
     definition,
     current: () => active && isCurrent(),
   };
@@ -332,6 +429,7 @@ export function createManualRequest<Input, Result>(
     setValidatedEffectiveArguments(value: unknown): void {
       checkCurrent();
       effectiveArguments = copyInput(value);
+      authority.approvalInput = effectiveArguments;
     },
     executionArguments(): ApprovedArguments | undefined {
       const approved = approvedArguments;
@@ -362,6 +460,7 @@ export function createManualRequest<Input, Result>(
         ...(managedApproval
           ? {
               approvalRequired: true as const,
+              approvalId: randomUUID(),
               approve: (options: { always?: boolean } = {}) =>
                 approvalReply(
                   true,
@@ -376,7 +475,7 @@ export function createManualRequest<Input, Result>(
         submissionId: identity.submissionId,
         subagentId: identity.subagentId,
         name: tool.name,
-        namespace: null,
+        namespace: identity.call?.tool.namespace ?? null,
         turnId: identity.turnId,
         callId: identity.callId,
         call: identity.call,
@@ -448,4 +547,21 @@ export function createManualRequest<Input, Result>(
 /** @internal Only candidates issued by this runtime carry reply authority. */
 export function isManualReply(value: unknown): value is ManualToolReply {
   return isObject(value) && replies.has(value) && !replies.get(value)!.consumed;
+}
+
+/** @internal Relays have been matching the original live grant without consuming it. */
+export function manualReplyMatchesRequest(
+  reply: unknown,
+  request: unknown,
+): boolean {
+  if (!isObject(reply) || !isObject(request)) return false;
+  const found = replies.get(reply);
+  const authority = requests.get(request);
+  return (
+    found !== undefined &&
+    !found.consumed &&
+    authority !== undefined &&
+    authority.current() &&
+    found.identity === authority.replyIdentity
+  );
 }

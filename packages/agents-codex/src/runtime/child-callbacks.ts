@@ -1,4 +1,10 @@
+import {
+  modelAttemptTerminalError,
+  releaseModelAttemptPayload,
+  type ModelAttemptState,
+} from './model-attempts';
 import type { JsonObject } from './binding';
+import type { RetryPolicy } from './model-retry';
 import type { GuardrailRecord } from './guardrails';
 import type { TokenUsage, TokenCount } from './run-events';
 import type { ObservationPhase } from './observation';
@@ -14,12 +20,15 @@ export interface ChildObservationProducer {
 
 /** Internal callback ownership for independently running native child turns. */
 export interface ChildCallbackOwner {
+  clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[];
   guardrailInput?: readonly JsonObject[];
   inputGuardrailsStarted: boolean;
   inputGuardrailsTask?: Promise<void>;
   readonly childId: string;
   rootTurnId?: string;
+  runRetryPolicyOverride?: RetryPolicy | null;
+  modelAttempts?: ModelAttemptState;
   tokenUsage: TokenUsage | null;
   requests: TokenCount;
   missingUsageRequests: TokenCount;
@@ -133,7 +142,11 @@ export class ChildCallbacks {
         owner.controller.abort(error);
         await failed().catch(() => {});
       })
-      .finally(() => owner.tasks.delete(task));
+      .finally(() => {
+        owner.tasks.delete(task);
+        if (owner.terminal && owner.tasks.size === 0)
+          owner.runRetryPolicyOverride = undefined;
+      });
     owner.tasks.add(task);
   }
   end(childId: string, incarnation: string, turnId?: string): void {
@@ -145,6 +158,7 @@ export class ChildCallbacks {
       ) {
         owner.terminal = true;
         owner.controller.abort(new Error('Native child turn ended'));
+        if (owner.tasks.size === 0) owner.runRetryPolicyOverride = undefined;
       }
     }
   }
@@ -156,7 +170,20 @@ export class ChildCallbacks {
     const owner = this.owners.get(this.key(childId, incarnation, turnId));
     if (!owner) return;
     while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
-    if (owner.failure !== undefined) throw owner.failure;
+    const terminal = modelAttemptTerminalError(owner);
+    try {
+      if (
+        terminal &&
+        (owner.failure === terminal || owner.failure === terminal.error)
+      )
+        throw terminal.error;
+      if (owner.failure !== undefined) throw owner.failure;
+    } finally {
+      if (owner.terminal) {
+        owner.runRetryPolicyOverride = undefined;
+        releaseModelAttemptPayload(owner);
+      }
+    }
   }
   forOrigins(origins: ReadonlySet<string>): readonly ChildCallbackOwner[] {
     return [...this.owners.values()].filter(
@@ -193,6 +220,7 @@ export class ChildCallbacks {
     for (const owner of this.owners.values()) {
       owner.terminal = true;
       owner.controller.abort(reason);
+      if (owner.tasks.size === 0) owner.runRetryPolicyOverride = undefined;
     }
   }
   async close(): Promise<void> {
@@ -200,6 +228,7 @@ export class ChildCallbacks {
     await Promise.all(
       [...this.owners.values()].map(async (owner) => {
         while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
+        owner.runRetryPolicyOverride = undefined;
       }),
     );
   }

@@ -3,11 +3,17 @@ import { UnixLocalSandboxClient } from '@openai/agents-core/sandbox/local';
 import { describe, expect, it, vi } from 'vitest';
 import {
   Manifest,
+  addSandboxEventSink,
+  createChainedSandboxEventSink,
+  createSandboxHttpEventSink,
+  createSandboxJsonlEventSink,
   inContainerMountStrategy,
   s3Mount,
   normalizeSandboxClientCreateArgs,
   type SandboxClient,
   type SandboxClientCreateArgs,
+  type SandboxEvent,
+  type SandboxHttpEventFetch,
   type SandboxSessionLike,
 } from '@openai/agents-core/sandbox';
 import {
@@ -69,6 +75,267 @@ function fixture() {
 }
 
 describe('native sandbox environment', () => {
+  it.each(['create', 'resume'] as const)(
+    'delivers owned %s lifecycle events to removable, independent sinks',
+    async (mode) => {
+      const f = fixture();
+      f.client.resume = vi.fn(async () => {
+        f.events.push('resume');
+        return f.resource;
+      });
+      f.resource.start = vi.fn(async () => {
+        f.events.push('start');
+      });
+      const lines: string[] = [];
+      const cancelBody = vi.fn(async () => {});
+      const post = vi.fn<SandboxHttpEventFetch>(async () => ({
+        ok: true,
+        status: 200,
+        body: { cancel: cancelBody },
+      }));
+      const remove = addSandboxEventSink(
+        createChainedSandboxEventSink(
+          createSandboxJsonlEventSink((line) => {
+            lines.push(line);
+          }),
+          createSandboxHttpEventSink({
+            endpoint: 'https://sink.invalid',
+            fetch: post,
+          }),
+          () => {
+            throw new Error('listener failure');
+          },
+        ),
+      );
+      try {
+        const source = sandboxEnvironment({
+          ...f,
+          manifest: new Manifest(),
+          ...(mode === 'resume'
+            ? {
+                authorizedResumeState: {
+                  backendId: 'fixture',
+                  state: f.resource.state,
+                },
+              }
+            : {}),
+        });
+        const lease = await source({ signal: new AbortController().signal });
+        await Promise.all([lease.close(), lease.close()]);
+        const events = lines.map((line) => JSON.parse(line) as SandboxEvent);
+        expect(events.map(({ name, phase }) => [name, phase])).toEqual([
+          [`sandbox.${mode}_session`, 'start'],
+          [`sandbox.${mode}_session`, 'end'],
+          ['sandbox.start', 'start'],
+          ['sandbox.start', 'end'],
+          ['sandbox.cleanup', 'start'],
+          ['sandbox.cleanup', 'end'],
+        ]);
+        expect(f.events).toEqual([
+          mode,
+          'start',
+          'connect',
+          'gateway',
+          'close',
+          'delete',
+        ]);
+        for (const event of events) {
+          expect(event.type).toBe('sandbox_operation');
+          expect(event.data).toEqual({ backend_id: 'fixture' });
+          if (event.phase !== 'start')
+            expect(event.durationMs).toBeGreaterThanOrEqual(0);
+        }
+        expect(post.mock.calls.map(([, request]) => request.body)).toEqual(
+          lines.map((line) => line.trimEnd()),
+        );
+        expect(cancelBody).toHaveBeenCalledTimes(6);
+        remove();
+        const next = fixture();
+        const unobserved = await sandboxEnvironment({
+          ...next,
+          manifest: new Manifest(),
+        })({ signal: new AbortController().signal });
+        await unobserved.close();
+        expect(lines).toHaveLength(6);
+      } finally {
+        remove();
+      }
+    },
+  );
+
+  it.each([
+    {
+      kind: 'metadata',
+      error: Object.assign(new Error('synthetic private provider token'), {
+        name: 'synthetic private provider token',
+        code: 'synthetic private provider token',
+        retryable: true,
+      }),
+    },
+    {
+      kind: 'property accessor',
+      error: Object.defineProperty(new Error(), 'code', {
+        get() {
+          throw new Error('unexpected error inspection');
+        },
+      }),
+    },
+  ])(
+    'keeps provider error $kind out of sandbox events',
+    async ({ error: providerError }) => {
+      const f = fixture();
+      f.client.create = vi.fn(async () => {
+        throw providerError;
+      });
+      const events: SandboxEvent[] = [];
+      const remove = addSandboxEventSink((event) => {
+        events.push(event);
+      });
+      try {
+        const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+        await expect(
+          source({ signal: new AbortController().signal }),
+        ).rejects.toBe(providerError);
+        expect(events.map((event) => [event.name, event.phase])).toEqual([
+          ['sandbox.create_session', 'start'],
+          ['sandbox.create_session', 'error'],
+        ]);
+        expect(events[1].error).toEqual({
+          name: 'SandboxOperationError',
+          message: 'Sandbox operation failed',
+        });
+        expect(JSON.stringify(events)).not.toContain(
+          'synthetic private provider token',
+        );
+        expect(f.connect).not.toHaveBeenCalled();
+      } finally {
+        remove();
+      }
+    },
+  );
+
+  it('honors cancellation from a start listener before provider creation', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const reason = new Error('cancel before provider creation');
+    const phases: string[] = [];
+    const remove = addSandboxEventSink(({ name, phase }) => {
+      if (name !== 'sandbox.create_session') return;
+      phases.push(phase);
+      if (phase === 'start') controller.abort(reason);
+    });
+    try {
+      const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+      await expect(source({ signal: controller.signal })).rejects.toBe(reason);
+      expect(phases).toEqual(['start', 'error']);
+      expect(f.events).toEqual([]);
+      expect(f.connect).not.toHaveBeenCalled();
+    } finally {
+      remove();
+    }
+  });
+
+  it('bounds stalled HTTP deliveries and aborts them on timeout and removal', async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const post = vi.fn<SandboxHttpEventFetch>(async (_endpoint, { signal }) => {
+      if (signal) signals.push(signal);
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), {
+          once: true,
+        });
+      });
+    });
+    const remove = addSandboxEventSink(
+      createSandboxHttpEventSink({
+        endpoint: 'https://sink.invalid',
+        fetch: post,
+      }),
+    );
+    const healthy = vi.fn();
+    const removeHealthy = addSandboxEventSink(healthy);
+    const openAndClose = async () => {
+      const f = fixture();
+      f.resource.start = vi.fn(async () => {});
+      const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+      const lease = await source({ signal: new AbortController().signal });
+      await lease.close();
+      expect(f.resource.close).toHaveBeenCalledOnce();
+      expect(f.client.delete).toHaveBeenCalledOnce();
+    };
+    try {
+      for (let i = 0; i < 8; i++) await openAndClose();
+      expect(healthy).toHaveBeenCalledTimes(48);
+      expect(post).toHaveBeenCalledTimes(32);
+      expect(signals).toHaveLength(32);
+      expect(signals.every((signal) => !signal.aborted)).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+      await openAndClose();
+      const remaining = signals.slice(32);
+      expect(remaining).toHaveLength(6);
+      expect(remaining.every((signal) => !signal.aborted)).toBe(true);
+      remove();
+      expect(remaining.every((signal) => signal.aborted)).toBe(true);
+    } finally {
+      remove();
+      removeHealthy();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retires an acquired session when a terminal sink stalls', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const reason = new Error('cancel after provider creation');
+    const stalled = new Promise<void>(() => {});
+    const remove = addSandboxEventSink(({ name, phase }) => {
+      if (name === 'sandbox.create_session' && phase === 'end') {
+        controller.abort(reason);
+        return stalled;
+      }
+    });
+    try {
+      const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+      const rejected = vi.fn();
+      void source({ signal: controller.signal }).catch(rejected);
+      await vi.waitFor(() => expect(rejected).toHaveBeenCalledWith(reason), {
+        timeout: 750,
+      });
+      expect(f.events).toEqual(['create', 'close', 'delete']);
+    } finally {
+      remove();
+    }
+  });
+
+  it('cleans up when a cleanup sink joins the same lease', async () => {
+    const f = fixture();
+    const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+    const lease = await source({ signal: new AbortController().signal });
+    const remove = addSandboxEventSink(({ name, phase }) => {
+      if (name === 'sandbox.cleanup' && phase === 'start') return lease.close();
+    });
+    try {
+      const settled = vi.fn();
+      const closing = lease.close();
+      void closing.then(settled, settled);
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce(), {
+        timeout: 750,
+      });
+      await closing;
+      expect(f.events).toEqual([
+        'create',
+        'connect',
+        'gateway',
+        'close',
+        'delete',
+      ]);
+    } finally {
+      remove();
+    }
+  });
+
   it('borrows a live session without starting, closing or deleting it', async () => {
     const f = fixture();
     f.resource.start = vi.fn();

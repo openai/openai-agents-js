@@ -44,6 +44,91 @@ function checkValues(
   expect(request).not.toHaveProperty('request_controls');
 }
 
+it('retains native function provider schemas across checkpoint restore', async () => {
+  const outputSchema = {
+    type: 'object',
+    properties: { found: { type: 'boolean' } },
+    required: ['found'],
+    additionalProperties: false,
+  };
+  const seen: { query: string; limit?: number }[] = [];
+  const lookup = tool({
+    name: 'lookup',
+    strict: true,
+    outputSchema,
+    parameters: z.object({ query: z.string(), limit: z.number().optional() }),
+    result: z.object({ found: z.boolean() }),
+    execute: (input) => {
+      seen.push(input);
+      return { found: true };
+    },
+  });
+  const loose = tool({
+    name: 'loose',
+    strict: false,
+    parameters: z.object({ value: z.string().default('default') }),
+    execute: ({ value }) => value,
+  });
+  outputSchema.properties.found.type = 'mutated';
+  const server = new ModelServer([
+    [
+      call(
+        'lookup',
+        { query: 'order', limit: null },
+        { callId: 'lookup-once' },
+      ),
+    ],
+    [message('finished')],
+    [message('restored')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    model: MODEL,
+    instructions: 'Look up an order.',
+    tools: [lookup, loose],
+    provider,
+  });
+  let saved;
+  {
+    await using session = await agent.session();
+    expect(
+      (await (await session.submit('Find an order')).wait()).finalOutput,
+    ).toBe('finished');
+    saved = await session.saveState();
+  }
+  {
+    await using session = await agent.session({ state: saved });
+    expect(
+      (await (await session.submit('Use the same tools')).wait()).finalOutput,
+    ).toBe('restored');
+  }
+
+  expect(seen).toEqual([{ query: 'order' }]);
+  for (const request of [server.requests[0]!, server.requests[2]!]) {
+    const tools = (request.tools as Record<string, any>[]).flatMap((spec) =>
+      spec.type === 'namespace' ? spec.tools : [spec],
+    );
+    const strict = tools.find((item) => item.name === 'lookup');
+    expect(strict).toMatchObject({
+      strict: true,
+      parameters: { additionalProperties: false },
+      output_schema: {
+        type: 'object',
+        properties: { found: { type: 'boolean' } },
+        required: ['found'],
+        additionalProperties: false,
+      },
+    });
+    expect(new Set(strict.parameters.required)).toEqual(
+      new Set(['query', 'limit']),
+    );
+    const nonStrict = tools.find((item) => item.name === 'loose');
+    expect(nonStrict.strict).toBe(false);
+    expect(nonStrict).not.toHaveProperty('output_schema');
+  }
+  server.assertExhausted();
+}, 30_000);
+
 it('captures actual wire controls, preserves sparse updates and restores values and clears', async () => {
   const server = new ModelServer(
     Array.from({ length: 5 }, () => [message('finished')]),

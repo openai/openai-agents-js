@@ -3,6 +3,7 @@ import {
   CODEX_REVISION,
   parseSessionState,
   isManualSessionState,
+  nativeCheckpoint,
 } from '../src/runtime/state';
 
 const state = (receipt: unknown) => ({
@@ -19,6 +20,54 @@ const state = (receipt: unknown) => ({
   },
   manual_context: { instructions: null, result_schemas: [], usage: null },
 });
+
+it.each(
+  [17, 18].flatMap((version) => [
+    {
+      version,
+      run_budget: { version: 1, maxRequests: 2, admittedRequests: 1 },
+    },
+    {
+      version,
+      run_budget: {
+        version: 2,
+        maxRequests: null,
+        admittedRequests: null,
+        maxTokens: 10,
+        consumedTokens: 4,
+        usageMissing: true,
+        missingUsage: 'continue',
+      },
+    },
+  ]),
+)(
+  'retains budget $run_budget.version in manual envelope $version',
+  ({ version, run_budget }) => {
+    const saved = {
+      ...state('accepted'),
+      format_version: version,
+      output_context: {
+        version: 1,
+        mode: 'plain',
+        budget: 0,
+        fingerprint: 'a'.repeat(64),
+      },
+      run_budget,
+    };
+    const parsed = parseSessionState(JSON.stringify(saved));
+    expect(isManualSessionState(parsed)).toBe(true);
+    expect(parsed.run_budget).toEqual(saved.run_budget);
+    const native = nativeCheckpoint(parsed);
+    expect(native.format_version).toBe(version === 18 ? 4 : 2);
+    expect(native).not.toHaveProperty('run_budget');
+    expect(() =>
+      parseSessionState(JSON.stringify({ ...saved, run_budget: undefined })),
+    ).toThrow();
+    expect(() =>
+      parseSessionState(JSON.stringify({ ...saved, format_version: 5 })),
+    ).toThrow();
+  },
+);
 
 it.each(['function_call_output', 'custom_tool_call_output'])(
   'retains the canonical %s envelope and handoff metadata in a manual continuation',
@@ -76,4 +125,28 @@ it('retains legacy text and bare native receipts while rejecting non-output enve
       ),
     ),
   ).toThrow();
+});
+
+it('rejects a saved hosted prompt reference in an accepted manual envelope', () => {
+  const receipt = {
+    type: 'response_item',
+    payload: {
+      type: 'function_call_output',
+      call_id: 'completed',
+      output: 'accepted',
+    },
+    metadata: {
+      sdk_agent_profile: {
+        profile_id: 'agent_0',
+        epoch: 1,
+        model: {
+          model: 'gpt-5',
+          request_controls: {
+            hosted_prompt: { reference: { id: 'pmpt_saved' } },
+          },
+        },
+      },
+    },
+  };
+  expect(() => parseSessionState(JSON.stringify(state(receipt)))).toThrow();
 });

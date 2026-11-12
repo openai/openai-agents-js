@@ -1,4 +1,4 @@
-import { projectMcpToolNames } from './mcp';
+import { projectMcpToolNames } from './mcp-names';
 import type {
   MCPToolStartObservation,
   MCPToolEndObservation,
@@ -309,7 +309,7 @@ export async function selectMcpTools<Context = unknown>(
         name: model.name,
         description: declaration.description ?? '',
         parameters,
-        async execute(args, callContext, admit) {
+        async execute(args, callContext, admit, recover) {
           const event: MCPToolStartObservation = {
             serverName,
             toolName: rawName,
@@ -326,13 +326,18 @@ export async function selectMcpTools<Context = unknown>(
           }
           await observers.onToolStart?.(detachedMcpObservation(event));
           admit();
-          const raw = fullCall
-            ? await fullCall(rawName, args, undefined, {
-                signal: callContext.signal,
-              })
-            : await legacyCall(rawName, args, undefined, {
-                signal: callContext.signal,
-              });
+          let raw;
+          try {
+            raw = fullCall
+              ? await fullCall(rawName, args, undefined, {
+                  signal: callContext.signal,
+                })
+              : await legacyCall(rawName, args, undefined, {
+                  signal: callContext.signal,
+                });
+          } catch (error) {
+            return recover(error);
+          }
           admit();
           const result = normalizeMcpResult(raw, fullCall !== undefined);
           await observers.onToolEnd?.(

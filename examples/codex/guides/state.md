@@ -6,12 +6,14 @@ Choose the record that matches your task. The application reconciles external ef
 | --- | --- |
 | Inspect conversation progress and retained usage | [Native history snapshots](#history-and-state). |
 | Original objects and revision-checked edits | [Original history reads and edits](#original-history-reads-and-edits). |
+| Replay a one-shot result with current instructions | [One-shot history capture](sessions.md#capture-one-shot-history-for-replay). |
 | Move a supported conversation to another Session | [Save or suspend a session](#save-or-suspend-a-session), then [restore its declarations](#restore-instructions-and-tools). |
 | Branch from full conversation history | [Fork a conversation](#fork-a-conversation). |
 | Inspect the settings recorded for a native turn | [Inspect effective turn settings](#inspect-effective-turn-settings). |
 | Check whether the current boundary can be captured | [Capture readiness](recovery.md#check-capture-readiness). |
 | Keep canonical snapshots in application-owned files | [File-backed custom storage](session-store.md#store-canonical-conversation-state-in-application-owned-files). |
 | Reopen a native profile with checklist or goal support | [Local native profiles](local-state.md#local-native-profiles). |
+| Find or label native stored conversations | [Stored conversation headers](local-state.md#find-and-name-stored-conversations). |
 | Confirm an external operation before continuing | [Reconcile external effects](recovery.md#reconcile-external-effects). |
 
 Conversation history and checkpoints do not replace an external service receipt. For Session opening and cleanup, start with [Agents and sessions](sessions.md#open-and-run-a-session).
@@ -43,6 +45,10 @@ A turn returned by `session.turns()` can include `responses`, an optional list o
 `usageSource: 'received'` preserves the counters the provider supplied. Missing counters remain unknown. `usageSource: 'native_normalized'` identifies a legacy normalized record; its zero fields do not prove the provider reported zero. Retained provider status is independent of SDK acceptance and the owning Turn's success.
 
 The list is not a complete log of provider attempts or charges. Read the Turn outcome for execution success, and use provider billing records for charges.
+
+With retained native attempt records, `RecordedTurn.runUsage` has been exposing token totals and request counts. `requests` has been counting model requests; `missingUsageRequests` has been counting requests without reported token usage. Repeated snapshots from one native execution have been replacing its earlier counts. Separate executions after restore have been contributing separately. Completion records without an attempt ID have also been contributing. The projection has been excluding generation copies already represented by those snapshots.
+
+Older turns without native attempt records have been omitting `runUsage`. Retries inside the borrowed client have been remaining outside these counts. Provider billing records have been remaining the source for charges.
 
 For a live Turn, the result of `await turn.wait()` exposes a separate thread usage snapshot at `result.threadUsage`. `usage_updated` events expose it at `event.usage`. Each is a nullable `TokenUsageInfo` with cumulative `totalTokenUsage` and `lastTokenUsage` for its latest reported response. These snapshots differ from the retained per-response facts in `RecordedResponse.usage`.
 
@@ -141,7 +147,7 @@ Fork retains those accepted settings too. A different model or setting on the de
 
 ### Output and checkpoint versions
 
-Treat checkpoints as opaque data for this SDK and language. The current reader retains SDK envelope versions 2 through 15, subject to each version's restore checks below, and rejects unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
+Treat checkpoints as opaque data for this SDK and language. The matching source reader has been accepting SDK envelope versions 2 through 16, subject to each version's restore checks below, and rejecting unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
 
 The destination SDK must use the exact Codex revision that saved the checkpoint. A recognized envelope does not permit another native revision. Current trusted host configuration still supplies credentials, callbacks, tool bindings, the matching output contract, and executor policy; a recognized version grants none of those permissions.
 
@@ -161,6 +167,7 @@ For a pending manual checkpoint, instructions and pending tool declarations/resu
 | v10 / v11 | Managed defaults and optional pending selection, with settled Code Mode state. |
 | v12 / v13 | Explicit network policy identity for ordinary idle/manual state, with the same optional selection data. |
 | v14 / v15 | Explicit network policy identity with settled Code Mode state and the same optional selection data. |
+| Source-only idle v16 | Settled single-agent [Sign in with ChatGPT](session-configuration.md#use-sign-in-with-chatgpt) state, without pending manual work, descendants, passive repair receipts, Code Mode, or network-policy identity. Current credentials required on restore. |
 
 Code Mode capture refuses active cells. It preserves stored JSON object keys as data, including `__proto__`, without changing object prototypes. It does not serialize JavaScript stacks, arbitrary globals, or old reply grants. The destination supplies current trusted declarations and callback implementations.
 

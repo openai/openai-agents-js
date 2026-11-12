@@ -21,6 +21,7 @@ describe('review test profile', () => {
     expect(reviewOptionalTestFiles).toEqual(
       expect.arrayContaining([
         'helpers/tests/consoleGuard.test.ts',
+        'packages/agents-codex/test/sandbox-skill-failed-write.test.ts',
         'packages/agents-core/test/sandboxes/docker.test.ts',
         'packages/agents-core/test/sandboxes/docker.materialization.test.ts',
       ]),
@@ -43,6 +44,12 @@ describe('review test profile', () => {
       'test/sandboxes/unixLocal.process.test.ts',
       'test/sandboxes/unixLocal.signals.test.ts',
     ]);
+    expect(
+      reviewOptionalFilesForRoot(
+        rootDir,
+        resolve(rootDir, 'packages/agents-codex'),
+      ),
+    ).toEqual(['test/sandbox-skill-failed-write.test.ts']);
     expect(
       reviewOptionalFilesForRoot(
         rootDir,

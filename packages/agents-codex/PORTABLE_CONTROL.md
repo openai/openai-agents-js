@@ -1,10 +1,10 @@
 # Direct Realtime sessions in JavaScript
 
-Use a portable Realtime session to run agent instructions, tools, approvals, handoffs, and guardrails in a browser, React Native app, Worker, or Node.js process. The Rust controller owns response and tool state. The application supplies credentials, callbacks, and audio I/O. Use the [native voice guide](../../examples/codex/guides/native-voice.md) for voice attached to a file-backed Node.js `Session`.
+Use a portable Realtime session to run agent instructions, tools, approvals, handoffs, and guardrails in a browser, React Native app, Worker, or Node.js process. The Rust controller tracks responses and tool calls. Your application supplies credentials, callbacks, and audio input and output. For Realtime attached to a Node.js `Session`, see the [native voice guide](../../examples/codex/guides/native-voice.md).
 
 ## Load a matching controller
 
-Use the controller artifact from the same SDK version as the JavaScript package. For a source checkout, install workspace dependencies and run `pnpm -F @openai/agents-codex native:portable`. The build verifies the pinned Rust patch series and writes the Wasm and Hermes artifacts and build receipt into both SDK packages. To use local Git repositories containing the pinned revisions, pass `--source /path/to/codex` and `--rmcp-source /path/to/rust-sdk`.
+Portable Realtime requires the current [source build](../../examples/codex/guides/building.md). Use the controller artifact from the same build as the JavaScript package. From a checkout with workspace dependencies installed, run `pnpm -F @openai/agents-codex native:portable` to build the Wasm and Hermes controllers. To use local Git repositories containing the pinned revisions, pass `--source /path/to/codex` and `--rmcp-source /path/to/rust-sdk`.
 
 For browsers, Workers, and Node.js, load `@openai/agents/voice/control.wasm` through the host's asset loader. Pass its compiled `WebAssembly.Module` to `new NativeVoiceControl(module)`. A browser bundler can expose the asset URL for `WebAssembly.compileStreaming(fetch(assetUrl))`. A Worker bundler can import the asset as a compiled module. Create a new controller for each connection.
 
@@ -66,6 +66,8 @@ export async function connectMobile<Stream extends NativeVoiceMediaStream>(
 
 Pass the acquired stream as `mediaStream`, construct the native peer in `createPeerConnection`, and handle the received stream through `onRemoteStream`. The SDK closes the peer when the session closes. Stop your microphone tracks even if connecting throws. The [React Native media example](../../examples/codex/react-native-voice.ts) shows a peer factory and stream ownership.
 
+For text-only WebRTC, set `media: { enableAudio: false, createPeerConnection }` and `agent.settings: { output_modalities: ['text'] }`. The connector uses the data channel for text, with no local or remote audio.
+
 ## Connect a Worker
 
 Pass a compiled controller module and a Worker secret. The Worker opens the provider WebSocket and executes the tool callbacks. Connect your own audio source and playback sink to the Worker.
@@ -106,18 +108,22 @@ Use `sendAudio(base64Audio)` to append audio in the configured input format. Use
 
 The connectors resolve after configuration is accepted. Use `sendText()` to send a text prompt, `updateAgent()` to change the active agent, and `session.on(type, listener)` to observe events. Call the returned function to remove the listener. Read `session.history` for the observed provider items. Pass `storeAudio: true` in the initial agent options if you need bounded audio retention.
 
-`session.usage` has been retaining the reported speech-model counts after close. Tool callbacks have been receiving those counts in their tool context. Providers can omit individual usage counters.
+`session.usage` retains the reported speech-model counts after close. Tool callbacks receive those counts in their context. Providers can omit individual usage counters.
 
-A tool callback receives validated arguments, an `AbortSignal`, and context for its exact call. Return text from the callback. Tools with `needsApproval: true` require an affirmative decision from `onApproval`. An absent handler denies approval.
+A tool callback receives validated arguments, an `AbortSignal`, and context for its exact call. Return text or another JSON value. The connector sends non-string values as JSON text. Return `backgroundResult(value)` to publish a result without requesting a model follow-up. Import it from the same entry point as the connector.
+
+Tools with `needsApproval: true` require an affirmative decision from `onApproval`. An absent handler denies approval. A tool's `before` callback can deny execution and use the denial reason as tool output. Its `after` callback can replace output or return the same value to preserve a prior `backgroundResult` decision. Use `errorFunction` to format argument and execution failures for the model. Setting it to `null` disables that recovery and lets the failure close the connection.
 
 Await `session.close()` in your end-call action or a `finally` block. Close releases owned media or the socket and aborts pending callbacks. Cooperate with each callback's cancellation signal. Invoke close from the outer application rather than from a callback that close has to join.
 
+Use `await session.sendEvent(event)` to send supported provider events through the same controller. `conversation.item.retrieve` returns the provider item. Other supported sends return `null`. Raw `session.update` applies supplied settings after provider acknowledgement. Use `updateAgent()` for model and tool catalog changes. Set `automaticallyTriggerResponseForMcpToolCalls: false` in the initial agent options to disable automatic hosted MCP follow-ups.
+
 ## Input and cancellation limits
 
-Input admission has been enforcing an 8 MiB UTF-8 limit for native commands and wire frames, plus a shared 8 MiB UTF-16 budget and 256-frame limit for outstanding transport sends. `sendAudio()` has been accepting base64 chunks up to 256 KiB. Text escaping, Unicode, image extension fields, and generated response metadata have been contributing to these limits.
+Keep each native command and wire frame within 8 MiB of UTF-8. Escaping, Unicode, extension fields, and generated response metadata count toward that limit. `sendAudio()` accepts up to 256 KiB of base64 text per call. Outstanding sends share a budget of 8 MiB of UTF-16 and 256 frames.
 
-Capacity rejection has been throwing `RangeError` before native input mutation. The session has been remaining usable for a retry after outstanding sends finish. JSON capture has been making one serialization pass over caller values and rejecting invalid Unicode before native input.
+If a send exceeds capacity, it throws `RangeError` before changing the session's input. Retry after outstanding sends finish. The SDK serializes caller values once and rejects invalid Unicode before submitting input.
 
-`cancel()` has been binding cancellation to the default response already received at the call boundary, including events still waiting for a send receipt. Cancellation has also been suppressing received default tool work awaiting terminal admission, without sending an unnecessary provider cancellation for an already completed response. The provider cancellation frame has been retaining its explicit response or guardrail target. Correlated nonfatal cancellation errors have been remaining observable provider events without closing the session.
+`cancel()` targets the default response the SDK has received when you call it, including events still waiting for a send receipt. It suppresses pending tool work for that response. The SDK sends a provider cancellation for an active response and preserves any explicit response or guardrail target. You can observe correlated nonfatal cancellation errors through `provider_event` while the session stays open.
 
-Replay fences have been retaining up to 256 recent retired response IDs and 256 recent completed response IDs, including a protected active cancellation target. Response processing has been continuing after eviction. No historical-ID deduplication guarantee outside those windows.
+The SDK tracks up to 256 retired and 256 completed response IDs, including an active cancellation target. Deduplication applies to IDs in those windows.

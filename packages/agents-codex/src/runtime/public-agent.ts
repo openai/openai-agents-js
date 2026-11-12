@@ -1,3 +1,10 @@
+import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
+import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
+import {
+  ResponsesCompaction,
+  responsesCompaction,
+  type ResponsesCompactionOptions,
+} from './responses-compaction';
 import {
   ManagedWorkspaceCheckpoint,
   managedWorkspaceRestore,
@@ -5,6 +12,7 @@ import {
 } from './managed-workspace';
 import {
   captureRealtimeConfig,
+  hasRealtimeAgentConfiguration,
   isRealtimeHandoff,
   realtimeHandoffTool,
   type RealtimeAgentConfig,
@@ -15,6 +23,11 @@ import {
   type InputGuardrail,
   type OutputGuardrail,
 } from './guardrails';
+import {
+  captureHostedPromptSource,
+  hostedPromptControls,
+  type HostedPromptSource,
+} from './hosted-prompts';
 import type {
   BeforeCompact,
   BeforeComplete,
@@ -30,7 +43,7 @@ import {
   captureProfileRuntimes,
   profileRoster,
   parseProfileReceipt,
-  checkProfileReceipt,
+  checkPortableProfileReceipt,
   type CapturedAgentProfile,
   type CapturedAgentGraph,
 } from './agent-profiles';
@@ -51,15 +64,22 @@ import {
   assertOutputState,
   sessionStateSchema,
   isManualSessionState,
+  isBudgetedManualSessionState,
   readCheckpointSelections,
 } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { tryOpenPlainRun, type PreparedPlainRun } from './plain-run';
 import { persistentSessionConfig } from './config';
 import { nativeAgentConfig } from './agent-configuration';
-import { collaborationTools } from './native-agents';
+import { collaborationToolNames } from './native-agents';
 import { isDeepStrictEqual } from 'node:util';
-import { binding, checkEncodedCapacity, type JsonObject } from './binding';
+import {
+  encode,
+  binding,
+  checkEncodedCapacity,
+  type JsonObject,
+  type JsonValue,
+} from './binding';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import {
   assertOutputRepairSupported,
@@ -67,8 +87,8 @@ import {
   type OutputSpec,
   type PreparedOutput,
 } from './output';
-import { webSearchName } from './web-search';
-import { hostedToolSpecs } from './hosted-tools';
+import { webSearchConfig, webSearchName } from './web-search';
+import { hostedToolSpecs, hostedToolType } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
@@ -100,27 +120,39 @@ import {
   mcpConfig,
   mcpToolNames,
   mcpToolSelections,
-  splitToolDeclarations,
 } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import {
   NativeProvider,
   captureModelSettings,
+  requestTransportWire,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
+import { captureOpeningModelSettings } from './opening-model-settings';
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
+import {
+  validateCustomStorageCompatibility,
+  validatePrepareRequestCompatibility,
+} from './opening-compatibility';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
+  toolDeclarationIdentity,
   isDirectFunctionTool,
   toolIdentity,
+  isClientToolSearchTool,
   type Tool,
   type SessionTool,
 } from './tools';
-import { validateMaxModelSteps, type OperationOptions } from './session';
+import {
+  validateMaxModelSteps,
+  validateModelOverride,
+  type OperationOptions,
+} from './session';
 import type {
   Session as CoreSession,
   SessionOptions as CoreSessionOptions,
@@ -129,7 +161,6 @@ import type {
 } from './session';
 
 export type AgentOptions<Context = undefined, Output = string> = {
-  instructions: string;
   realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
@@ -157,15 +188,25 @@ export type AgentOptions<Context = undefined, Output = string> = {
    */
   handoffs?: readonly (
     | Agent<Context, Output>
+    | Handoff<Context, Output>
+    | DecisionHandoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling?: boolean;
-} & (string extends Output
-  ? { outputType?: OutputSpec<Output> }
-  : { outputType: OutputSpec<Output> });
+  compaction?:
+    ResponsesCompaction<Context> | ResponsesCompactionOptions<Context>;
+} & (
+  | { instructions: string; hostedPrompt?: HostedPromptSource<Context> }
+  | { instructions?: undefined; hostedPrompt: HostedPromptSource<Context> }
+) &
+  (string extends Output
+    ? { outputType?: OutputSpec<Output> }
+    : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Restore has been requiring the original trusted limits and effective missing-usage policy. */
+  resumeBudget?: RunBudget;
   /** Format original function argument/body failures; omission preserves propagation.
    * Per-tool handlers take precedence; errorFunction:null suppresses this fallback.
    * Callback failure or undefined uses safe default text. Not persisted in state. */
@@ -174,6 +215,17 @@ export interface SessionBaseOptions<Context = undefined> {
    * Memory grows with emitted payloads until Session references are released.
    * Defaults to a bounded suffix with gap events. Not stored in checkpoints. */
   observationRetention?: 'bounded' | 'all';
+  /** Record completed assistant messages and provider reasoning summaries. */
+  includeModelOutputItems?: boolean;
+  /** Record content-free acceptance notifications for logical root results. */
+  includeOutputAccepted?: boolean;
+  /** Capture content-free native transport attempts for fresh explicit submissions. */
+  includeRequestAttempts?: boolean;
+  /**
+   * Capture Responses provider JSON in the Session's observation buffer.
+   * Use includeExecutionDetails on an observation reader to receive it.
+   */
+  includeRawProviderEvents?: boolean;
   /**
    * Seed settled user messages and assistant text without starting a model turn.
    * Requires a fresh opening without state or resume, including for []. Core
@@ -230,6 +282,13 @@ export interface SessionBaseOptions<Context = undefined> {
    * Requires a fresh opt-in when restoring; never selects an ambient project.
    */
   projectGuidance?: boolean;
+  /**
+   * Authenticate the entire saved checkpoint for the current application principal
+   * before reusing remembered tool approvals. Omit this to request fresh approval.
+   */
+  verifyRememberedApprovals?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
   /** Replace opening declarations. Omission inherits Agent.tools; [] removes them. */
   tools?: readonly Tool<Context>[];
 }
@@ -249,12 +308,20 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
-  'tools'
+  | 'tools'
+  | 'includeModelOutputItems'
+  | 'includeOutputAccepted'
+  | 'includeRequestAttempts'
+  | 'includeRawProviderEvents'
 > {
+  /** Force the model across this run, handoffs and native children. */
+  modelOverride?: string;
+  /** Sparse forced settings for this run, its handoffs and native children. */
+  modelSettingsOverride?: ModelSettings;
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
-  /** Observed budget for a new direct native run with input. See {@link RunBudget}. */
+  /** Observed budget for a new root, or the original request-only ceiling for manual restore. See {@link RunBudget}. */
   budget?: RunBudget;
   /**
    * Edit requests for a new run with input. A resumed turn cannot add an editor.
@@ -267,10 +334,32 @@ export interface RunOptions<Context = undefined> extends Omit<
   /** Capture conversation records for replay through another Session's transactHistory.
    * History above 4,096 original records or 8 MiB causes a size error after completion. */
   returnHistory?: boolean;
+  /** Return original usage from accepted Responses requests completed during this
+   * invocation, in response order. History and checkpoints omit these objects.
+   * Capture above 4,096 responses or 8 MiB raises NativeError after completion. */
+  returnRawUsage?: boolean;
+  /** Retain the assistant and tool items produced by this run. */
+  returnItems?: boolean;
+  /**
+   * Opted-in failures have been retaining RunDiagnosticError.details.
+   * Portable manual recovery has been retaining captured caller input;
+   * unavailable origins have been reporting null input and incomplete details.
+   */
+  captureErrorDetails?: boolean;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
 const implicitProviders = new WeakMap<NativeProvider, WeakSet<object>>();
+const implicitTools = Symbol('implicitTools');
+const implicitInstructions = Symbol('implicitInstructions');
+
+function capturedInstructions(agent: Agent<any, any>): string | undefined {
+  const getter = agent[implicitInstructions];
+  return getter !== undefined &&
+    Object.getOwnPropertyDescriptor(agent, 'instructions')?.get === getter
+    ? undefined
+    : agent.instructions;
+}
 const ownedRun = Symbol('ownedRun');
 const correctionOpening = Symbol('correctionOpening');
 const deferredOpening = Symbol('deferredOpening');
@@ -297,6 +386,10 @@ interface CapturedOpening {
   readonly decisions?: DecisionProvider;
   readonly maxFunctionConcurrency?: number;
   readonly observationRetention?: 'bounded' | 'all';
+  readonly includeModelOutputItems?: boolean;
+  readonly includeOutputAccepted?: boolean;
+  readonly includeRequestAttempts?: boolean;
+  readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
@@ -304,7 +397,10 @@ interface CapturedOpening {
   readonly inputGuardrails: readonly InputGuardrail<any>[];
   readonly outputGuardrails: readonly OutputGuardrail<any>[];
   readonly beforeCompact?: BeforeCompact<any>;
+  readonly compaction?: ResponsesCompaction<any>;
   readonly transformContext?: ContextTransform<any>;
+  readonly hostedPrompt?: HostedPromptSource<any>;
+  readonly hostedPromptControls?: JsonObject;
 }
 type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
   [managedWorkspaceRestore]?: true;
@@ -393,6 +489,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'update'
   | 'interrupt'
   | 'historySnapshot'
+  | 'flushMemory'
   | 'transactHistory'
   | 'modelContext'
   | 'compact'
@@ -411,6 +508,9 @@ export class Agent<Context = undefined, Output = string> {
   static readonly #canonicalPrepare = this.prototype.prepare;
   static readonly #canonicalApply = Function.prototype.apply;
   instructions: string;
+  declare [implicitInstructions]?: () => string;
+  hostedPrompt?: HostedPromptSource<Context>;
+  [implicitTools]?: readonly Tool<Context>[];
   realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
@@ -434,15 +534,46 @@ export class Agent<Context = undefined, Output = string> {
   tools: readonly Tool<Context>[];
   handoffs: readonly (
     | Agent<Context, Output>
+    | Handoff<Context, Output>
+    | DecisionHandoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
   programmaticToolCalling: boolean;
+  compaction?: ResponsesCompaction<Context>;
 
   constructor(options: AgentOptions<Context, Output>) {
-    if (typeof options.instructions !== 'string')
-      throw new TypeError('Agent instructions are required');
-    this.instructions = options.instructions;
+    const promptSource = captureHostedPromptSource(options.hostedPrompt);
+    const declaredInstructions = options.instructions;
+    if (
+      typeof declaredInstructions !== 'string' &&
+      !(declaredInstructions === undefined && promptSource !== undefined)
+    )
+      throw new TypeError(
+        'Agent instructions are required unless hostedPrompt supplies them',
+      );
+    this.instructions = declaredInstructions ?? '';
+    if (declaredInstructions === undefined) {
+      // Keep the public string property while capturing hosted omission. A later
+      // assignment, including an empty string, supplies explicit instructions.
+      let instructions = '';
+      const get = () => instructions;
+      Object.defineProperty(this, implicitInstructions, {
+        value: get,
+        writable: true,
+      });
+      Object.defineProperty(this, 'instructions', {
+        enumerable: true,
+        configurable: true,
+        get,
+        set: (value: string) => {
+          // Frozen profile declarations retain ordinary read-only field behavior.
+          this[implicitInstructions] = undefined;
+          instructions = value;
+        },
+      });
+    }
+    this.hostedPrompt = promptSource;
     this.realtime = captureRealtimeConfig(options.realtime);
     this.name = options.name;
     this.model = options.model;
@@ -462,17 +593,30 @@ export class Agent<Context = undefined, Output = string> {
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
     this.beforeCompact = options.beforeCompact;
+    this.compaction =
+      options.compaction === undefined
+        ? undefined
+        : options.compaction instanceof ResponsesCompaction
+          ? options.compaction
+          : responsesCompaction(options.compaction);
+    if (this.compaction !== undefined && this.beforeCompact !== undefined)
+      throw new TypeError(
+        'compaction and beforeCompact are mutually exclusive',
+      );
     this.transformContext = options.transformContext;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
     this.outputType = options.outputType;
     this.tools = [...(options.tools ?? [])];
+    this[implicitTools] = options.tools === undefined ? this.tools : undefined;
     this.handoffs = Object.freeze([...(options.handoffs ?? [])]);
     if (
       this.handoffs.some(
         (target) =>
           !(target instanceof Agent) &&
+          !(target instanceof Handoff) &&
+          !(target instanceof DecisionHandoff) &&
           !isRealtimeHandoff(target) &&
           typeof target !== 'function',
       )
@@ -481,6 +625,16 @@ export class Agent<Context = undefined, Output = string> {
         'handoffs must contain native Agents or synchronous target resolvers',
       );
     this.programmaticToolCalling = options.programmaticToolCalling ?? false;
+  }
+
+  /**
+   * A configured child has been retaining its own provider, tools and guards.
+   * Pending child approvals have been requiring live replies.
+   */
+  asTool(
+    options: AgentAsToolOptions<Output>,
+  ): import('./tools').FunctionTool<Context> {
+    return createAgentTool(this, options);
   }
 
   /**
@@ -587,6 +741,11 @@ export class Agent<Context = undefined, Output = string> {
       options.observationRetention !== 'all'
     )
       throw new TypeError('observationRetention must be "bounded" or "all"');
+    if (
+      options.includeRawProviderEvents !== undefined &&
+      typeof options.includeRawProviderEvents !== 'boolean'
+    )
+      throw new TypeError('includeRawProviderEvents must be a boolean');
     options.initialMessages = captureInitialMessages(
       options.initialMessages,
       options.state,
@@ -598,6 +757,11 @@ export class Agent<Context = undefined, Output = string> {
       typeof options.onInteraction !== 'function'
     )
       throw new TypeError('onInteraction must be callable');
+    if (
+      options.verifyRememberedApprovals !== undefined &&
+      typeof options.verifyRememberedApprovals !== 'function'
+    )
+      throw new TypeError('verifyRememberedApprovals must be callable');
     let tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
@@ -697,6 +861,20 @@ export class Agent<Context = undefined, Output = string> {
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
     const options = { ...(args[0] ?? {}) };
+    const modelOverride = validateModelOverride(options.modelOverride);
+    const modelSettingsOverride =
+      options.modelSettingsOverride === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettingsOverride);
+    if (
+      isManualSessionState(options.state) &&
+      modelSettingsOverride !== undefined
+    )
+      throw new TypeError(
+        'modelSettingsOverride cannot replace restored run settings',
+      );
+    if (isManualSessionState(options.state) && modelOverride !== undefined)
+      throw new TypeError('modelOverride cannot replace a restored run model');
     const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
     const initialMessages = captureInitialMessages(
       options.initialMessages,
@@ -713,6 +891,7 @@ export class Agent<Context = undefined, Output = string> {
       if (key in options)
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
+    const captureErrorDetails = options.captureErrorDetails === true;
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
     const beforeStep = options.beforeStep;
@@ -724,7 +903,11 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
       );
-    if (input === null && budget !== undefined)
+    if (
+      input === null &&
+      budget !== undefined &&
+      !isBudgetedManualSessionState(options.state)
+    )
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
@@ -747,18 +930,25 @@ export class Agent<Context = undefined, Output = string> {
         this.prepare !== Agent.#canonicalPrepare)
         ? structuredClone(input)
         : undefined;
+    const errorInput = captureErrorDetails ? structuredClone(input) : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
       ...(initialMessages === undefined ? {} : { initialMessages }),
+      ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
       observationRetention: options.observationRetention,
       context: options.context,
       onInteraction: options.onInteraction,
+      verifyRememberedApprovals: options.verifyRememberedApprovals,
       toolErrorFormatter: options.toolErrorFormatter,
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
+      resumeBudget:
+        input === null
+          ? (options.budget ?? options.resumeBudget)
+          : options.resumeBudget,
       environment: options.environment,
       instructionFiles: options.instructionFiles,
       discoverAgentsMd: options.discoverAgentsMd,
@@ -773,11 +963,13 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
+        returnItems: options.returnItems || captureErrorDetails,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
         beforeStep,
+        returnRawUsage: options.returnRawUsage,
       },
     };
     if (
@@ -789,7 +981,12 @@ export class Agent<Context = undefined, Output = string> {
       budget === undefined &&
       options.returnState !== true &&
       options.returnHistory !== true &&
+      options.returnRawUsage !== true &&
+      options.returnItems !== true &&
+      !captureErrorDetails &&
       options.prepareRequest === undefined &&
+      modelOverride === undefined &&
+      modelSettingsOverride === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -812,11 +1009,16 @@ export class Agent<Context = undefined, Output = string> {
       ])) as CoreSession<Output>;
     }
     return runOwnedSession(session, preparedInput, {
+      modelOverride,
+      modelSettingsOverride,
       guardrailInput,
+      errorInput,
       maxModelSteps,
       budget,
       returnState: options.returnState,
       returnHistory: options.returnHistory,
+      returnRawUsage: options.returnRawUsage,
+      returnItems: options.returnItems,
       signal: options.signal,
     });
   }
@@ -867,6 +1069,17 @@ export class Agent<Context = undefined, Output = string> {
       opening?.agentOutputGuardrails ??
       captureGuardrails(this.outputGuardrails);
     const beforeCompact = opening ? opening.beforeCompact : this.beforeCompact;
+    const suppliedCompaction = opening ? opening.compaction : this.compaction;
+    const compaction =
+      suppliedCompaction === undefined
+        ? undefined
+        : suppliedCompaction instanceof ResponsesCompaction
+          ? suppliedCompaction
+          : responsesCompaction(suppliedCompaction);
+    if (compaction !== undefined && beforeCompact !== undefined)
+      throw new TypeError(
+        'compaction and beforeCompact are mutually exclusive',
+      );
     const transformContext = opening
       ? opening.transformContext
       : this.transformContext;
@@ -885,6 +1098,17 @@ export class Agent<Context = undefined, Output = string> {
     const observationRetention = opening
       ? opening.observationRetention
       : options.observationRetention;
+    const includeModelOutputItems = opening
+      ? opening.includeModelOutputItems
+      : options.includeModelOutputItems;
+    const includeOutputAccepted = opening
+      ? opening.includeOutputAccepted
+      : options.includeOutputAccepted;
+    const includeRequestAttempts = opening
+      ? opening.includeRequestAttempts
+      : options.includeRequestAttempts;
+    const includeRawProviderEvents =
+      options.includeRawProviderEvents ?? opening?.includeRawProviderEvents;
     const maxFunctionConcurrency = opening
       ? opening.maxFunctionConcurrency
       : validateMaxFunctionConcurrency(options.maxFunctionConcurrency);
@@ -897,11 +1121,11 @@ export class Agent<Context = undefined, Output = string> {
         options.resume !== undefined)
     )
       throw new TypeError('Deferred opening requires a portable Session');
-    const {
-      instructions: baseInstructions,
-      name,
-      programmaticToolCalling,
-    } = opening ?? this;
+    const { name, programmaticToolCalling } = opening ?? this;
+    const declaredInstructions = opening
+      ? opening.instructions
+      : capturedInstructions(this);
+    const baseInstructions = declaredInstructions ?? '';
     const factory = opening ? opening.factory : this.session;
     const {
       provider: openingProvider,
@@ -933,15 +1157,32 @@ export class Agent<Context = undefined, Output = string> {
       ? opening.provider
       : (openingProvider ?? this.provider);
     const model = opening ? opening.model : (openingModel ?? this.model);
-    let settings = opening
+    const settings = opening
       ? opening.settings
-      : this.modelSettings && captureModelSettings(this.modelSettings);
-    if (!opening && openingSettings !== undefined) {
-      settings = captureModelSettings({
-        ...settings,
-        ...captureModelSettings(openingSettings),
-      });
-    }
+      : captureOpeningModelSettings(this.modelSettings, openingSettings);
+    const hostedPrompt = opening
+      ? opening.hostedPrompt
+      : captureHostedPromptSource(this.hostedPrompt);
+    if (declaredInstructions === undefined && hostedPrompt === undefined)
+      throw new TypeError(
+        'Agent instructions are required unless hostedPrompt supplies them',
+      );
+    const promptControls = opening
+      ? opening.hostedPromptControls
+      : hostedPromptControls(hostedPrompt, {
+          model,
+          instructions:
+            declaredInstructions === undefined &&
+            !options.instructionFiles?.length
+              ? undefined
+              : baseInstructions,
+          toolsProvided:
+            options.tools !== undefined ||
+            this[implicitTools] !== this.tools ||
+            this.tools.length > 0 ||
+            this.handoffs.length > 0,
+          extraBody: settings?.extraBody,
+        });
     const declarations = opening
       ? {
           ...opening.declarations,
@@ -973,18 +1214,12 @@ export class Agent<Context = undefined, Output = string> {
           ? undefined
           : localStoragePath(descriptor as LocalStorage);
     const persistent = descriptor !== undefined;
-    if (
-      customStore &&
-      (environmentInput !== undefined ||
-        (declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
-        declarations.checklist ||
-        declarations.nativeGoals ||
-        declarations.nativeAgents ||
-        catalog.tools.some((tool) => tool.kind === 'manual'))
-    )
-      throw new TypeError(
-        'Custom canonical storage does not support environments, standalone native search, checklists, goals, child agents, or manual tools',
-      );
+    validateCustomStorageCompatibility(
+      customStore,
+      declarations,
+      catalog,
+      environmentInput !== undefined,
+    );
     const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
     if (
       reconciledCalls !== undefined &&
@@ -996,6 +1231,20 @@ export class Agent<Context = undefined, Output = string> {
       suppliedState == null
         ? undefined
         : sessionStateSchema.safeParse(suppliedState);
+    const budgetState = stateResult?.success ? stateResult.data : undefined;
+    const restoredRunBudget = isBudgetedManualSessionState(budgetState)
+      ? RunBudgetTracker.restoreCheckpoint(
+          budgetState.run_budget,
+          options.resumeBudget,
+        )
+      : undefined;
+    if (
+      !isBudgetedManualSessionState(budgetState) &&
+      options.resumeBudget !== undefined
+    )
+      throw new TypeError(
+        'Cannot add a run budget when resuming an unbudgeted checkpoint',
+      );
     const declaredOutput = this.outputTypeFor(options);
     const outputType =
       declaredOutput &&
@@ -1048,8 +1297,13 @@ export class Agent<Context = undefined, Output = string> {
               outputGuardrails: agentOutputGuardrails,
               programmaticToolCalling,
               beforeCompact,
+              compaction,
               transformContext,
+              hostedPrompt,
             } as AgentOptions<Context, Output>),
+            true,
+            undefined,
+            promptControls,
           )
         : undefined;
 
@@ -1060,36 +1314,26 @@ export class Agent<Context = undefined, Output = string> {
       const prepareRequest = (options as OwnedSessionOptions<Context>)[
         ownedRun
       ]!.prepareRequest;
-      if (typeof prepareRequest !== 'function')
-        throw new TypeError('prepareRequest must be callable');
-      if (output.repair)
-        throw new TypeError(
-          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
-        );
-      if (
+      validatePrepareRequestCompatibility(
+        prepareRequest,
+        !!output.repair,
         provider.responseMode !== 'buffered' &&
-        (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-          false
-      )
-        throw new TypeError(
-          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
-        );
-      if (
-        programmaticToolCalling ||
-        environmentInput ||
-        declarations.nativeAgents ||
-        declarations.nativeGoals ||
-        declarations.checklist ||
-        declarations.webSearch ||
-        declarations.hostedTools.length > 0 ||
-        declarations.tools.some((tool) => tool.deferLoading) ||
-        declarations.mcp.some(
-          (tool) => tool.deferLoading || isHostedRegistration(tool),
-        )
-      )
-        throw new TypeError(
-          'prepareRequest supports only direct root eager function and ordinary MCP tools',
-        );
+          (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
+            false,
+        !!(
+          programmaticToolCalling ||
+          environmentInput ||
+          declarations.nativeAgents ||
+          declarations.nativeGoals ||
+          declarations.checklist ||
+          declarations.webSearch ||
+          declarations.hostedTools.length > 0 ||
+          declarations.tools.some((tool) => tool.deferLoading) ||
+          declarations.mcp.some(
+            (tool) => tool.deferLoading || isHostedRegistration(tool),
+          )
+        ),
+      );
     }
     const { instructions, files } =
       !opening && options.instructionFiles !== undefined
@@ -1185,12 +1429,13 @@ export class Agent<Context = undefined, Output = string> {
           instructions,
           outputGuardrails.length > 0,
           inputGuardrails.length + agentInputGuardrails.length > 0,
+          settings,
         )
       : undefined;
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
       graph && state
-        ? checkProfileReceipt(
+        ? checkPortableProfileReceipt(
             parseProfileReceipt(
               graphNative!._agent_profiles_restore_source(
                 JSON.stringify(graph.roster),
@@ -1205,7 +1450,7 @@ export class Agent<Context = undefined, Output = string> {
       graph &&
       isManualSessionState(state) &&
       readCheckpointSelections(state).operation_tools?.length
-        ? checkProfileReceipt(
+        ? checkPortableProfileReceipt(
             parseProfileReceipt(
               graphNative!._agent_profiles_operation_source(
                 JSON.stringify(graph.roster),
@@ -1249,11 +1494,14 @@ export class Agent<Context = undefined, Output = string> {
         : []),
       ...(search ? [webSearchName(search)] : []),
       ...declarations.hostedTools.map((tool) => ({
-        name: tool.kind,
+        name: hostedToolType(tool),
         namespace: 'functions',
       })),
-      ...declarations.tools.map(toolIdentity),
-      ...(deferredSchemas
+      ...declarations.tools
+        .filter((tool) => !isClientToolSearchTool(tool))
+        .map(toolIdentity),
+      ...(deferredSchemas &&
+      !declarations.hostedTools.some((tool) => tool.kind === 'tool_search')
         ? [{ name: 'tool_search', namespace: 'functions' }]
         : []),
       ...(declarations.nativeGoals
@@ -1264,7 +1512,7 @@ export class Agent<Context = undefined, Output = string> {
         ? [{ name: 'update_plan', namespace: 'functions' }]
         : []),
       ...(nativeAgents
-        ? collaborationTools.map((name) => ({
+        ? collaborationToolNames(nativeAgents).map((name) => ({
             name,
             namespace: 'collaboration',
           }))
@@ -1340,30 +1588,8 @@ export class Agent<Context = undefined, Output = string> {
             },
           }
         : {}),
-      web_search: search?.mode ?? 'disabled',
-      'features.standalone_web_search': search?.route === 'standalone',
+      ...webSearchConfig(search),
     };
-    if (search?.searchContextSize !== undefined)
-      config['tools.web_search.context_size'] = search.searchContextSize;
-    if (search?.allowedDomains !== undefined)
-      config['tools.web_search.allowed_domains'] = [...search.allowedDomains];
-    if (search?.blockedDomains !== undefined)
-      config['tools.web_search.blocked_domains'] = [...search.blockedDomains];
-    if (search?.location !== undefined)
-      config['tools.web_search.location'] = { ...search.location };
-    if (search?.searchContentTypes !== undefined)
-      config['tools.web_search.search_content_types'] = [
-        ...search.searchContentTypes,
-      ];
-    if (search?.imageSettings !== undefined)
-      config['tools.web_search.image_settings'] = {
-        ...(search.imageSettings.maxResults === undefined
-          ? {}
-          : { max_results: search.imageSettings.maxResults }),
-        ...(search.imageSettings.caption === undefined
-          ? {}
-          : { caption: search.imageSettings.caption }),
-      };
     if (settings) {
       if (settings.reasoningEffort !== undefined)
         config.model_reasoning_effort = settings.reasoningEffort;
@@ -1480,6 +1706,7 @@ export class Agent<Context = undefined, Output = string> {
           await nativeAgentConfig(nativeAgents, instructions, home.codex_home),
         );
       if (projectGuidance) config['features.view_image'] = true;
+      const startupTransport = requestTransportWire(settings);
       const setup: SessionSetup = {
         name: name ?? '',
         instructions,
@@ -1538,6 +1765,9 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          ...(startupTransport === undefined
+            ? {}
+            : { _sdk_request_transport: startupTransport }),
           ...(completedGraph
             ? {
                 _agent_profiles: {
@@ -1551,8 +1781,15 @@ export class Agent<Context = undefined, Output = string> {
             model_producer: provider.modelBackend !== undefined,
             before_compact:
               beforeCompact !== undefined ||
+              compaction !== undefined ||
               (completedGraph?.roster.some(
                 (profile) => profile.before_compact === true,
+              ) ??
+                false),
+            post_turn_compact:
+              compaction !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.post_turn_compact === true,
               ) ??
                 false),
             before_complete:
@@ -1566,13 +1803,19 @@ export class Agent<Context = undefined, Output = string> {
               ) ??
                 false),
             transform_context:
+              hostedPrompt !== undefined ||
               transformContext !== undefined ||
               (completedGraph?.roster.some(
                 (profile) => profile.transform_context === true,
               ) ??
                 false),
           },
-          _hosted_tools: hostedToolSpecs(declarations.hostedTools),
+          _hosted_tools: hostedToolSpecs(
+            declarations.hostedTools.filter(
+              (tool) =>
+                tool.kind !== 'tool_search' || tool.execution !== 'client',
+            ),
+          ),
           ...(provider.responseMode === 'buffered'
             ? { _buffered_responses: true }
             : {}),
@@ -1587,6 +1830,17 @@ export class Agent<Context = undefined, Output = string> {
                 _native_agent_roles: nativeAgents.additionalRoles.map(
                   (role) => role.name,
                 ),
+                ...(nativeAgents.managedTools.length
+                  ? {
+                      _native_agent_tools: nativeAgents.managedTools.map(
+                        ({ name, role, description }) => ({
+                          name,
+                          role,
+                          description,
+                        }),
+                      ),
+                    }
+                  : {}),
                 _native_agent_max_depth: nativeAgents.maxDepth,
                 _native_agent_before_step:
                   nativeAgents.beforeStep !== undefined ||
@@ -1622,17 +1876,23 @@ export class Agent<Context = undefined, Output = string> {
         chatGPTPlan: plan !== undefined,
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
+        includeModelOutputItems,
+        includeOutputAccepted,
+        includeRequestAttempts,
+        includeRawProviderEvents,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         decisions,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
+        restoredRunBudget,
         localStorage: persistent,
         customStore,
         localResume: resume !== undefined,
         environment,
         context,
         onInteraction: options.onInteraction,
+        verifyRememberedApprovals: options.verifyRememberedApprovals,
         toolErrorFormatter,
         applicationAgent: this,
         realtimeDeclaration:
@@ -1651,6 +1911,7 @@ export class Agent<Context = undefined, Output = string> {
         agentInputGuardrails,
         agentOutputGuardrails,
         beforeCompact,
+        compaction,
         transformContext,
         contextTransformPurpose,
         agentGraph: completedGraph,
@@ -1662,6 +1923,8 @@ export class Agent<Context = undefined, Output = string> {
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
+        hostedPrompt,
+        hostedPromptControls: promptControls,
         checklist: declarations.checklist,
         websocketsAllowed: lease.websocketsAllowed,
         onClose: lease.release,
@@ -1702,6 +1965,9 @@ export class Agent<Context = undefined, Output = string> {
               });
               const correctionOptions: OwnedSessionOptions<undefined> = {
                 parentTrace,
+                includeModelOutputItems,
+                includeOutputAccepted,
+                includeRawProviderEvents,
                 [correctionOpening]: {
                   apiKey: lease.realtimeApiKey,
                   retainOpening,
@@ -1713,7 +1979,7 @@ export class Agent<Context = undefined, Output = string> {
             },
       };
       const captured: CapturedOpening = opening
-        ? Object.freeze({ ...opening, decisions })
+        ? Object.freeze({ ...opening, decisions, includeRawProviderEvents })
         : Object.freeze({
             agent: this,
             profiles,
@@ -1741,9 +2007,16 @@ export class Agent<Context = undefined, Output = string> {
             toolErrorFormatter,
             maxFunctionConcurrency,
             observationRetention,
+            includeModelOutputItems,
+            includeOutputAccepted,
+            includeRequestAttempts,
+            includeRawProviderEvents,
             contextTransformPurpose,
             beforeCompact,
+            compaction,
             transformContext,
+            hostedPrompt,
+            hostedPromptControls: promptControls,
           });
       // HTTP reopening needs captured auth; custom producers use text admission.
       if (lease.apiKey !== undefined) {
@@ -1752,15 +2025,20 @@ export class Agent<Context = undefined, Output = string> {
           active,
           outputOverride,
           parentTrace,
+          resumeBudget,
         ) => {
           let owned: CoreSession<any, any> | undefined;
           try {
+            const sealed = encode(state);
             const restoredOptions: OwnedSessionOptions<any> = {
               parentTrace,
               context: captured.context,
               onInteraction: captured.onInteraction,
               toolErrorFormatter: captured.toolErrorFormatter,
               state,
+              verifyRememberedApprovals: (checkpoint) =>
+                encode(checkpoint) === sealed,
+              resumeBudget,
               [deferredOpening]: {
                 opening: captured,
                 restoredOutput: { output: active, outputOverride },
@@ -1824,6 +2102,8 @@ export function captureAgentProfiles<Context, Output>(
   rootDeclaration: Agent<Context, Output> = root,
   captureProvider = true,
   idPrefix = 'agent_',
+  rootPromptControls?: JsonObject,
+  realtimeGraph = hasRealtimeAgentConfiguration(rootDeclaration),
 ): readonly CapturedAgentProfile<Context, Output>[] {
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
@@ -1855,7 +2135,16 @@ export function captureAgentProfiles<Context, Output>(
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
-    const declarations = splitToolDeclarations(source.tools);
+    const handoffBindings = new Set(
+      source.handoffs
+        .filter((reference) => reference instanceof Handoff)
+        .map((reference) => toolDeclarationIdentity(reference.callback)),
+    );
+    const sourceTools = source.tools.filter(
+      (tool) =>
+        !handoffBindings.has(toolDeclarationIdentity(tool as SessionTool)),
+    );
+    const declarations = splitToolDeclarations(sourceTools);
     const plain = declarations.tools;
     const capturedTools = captureTools(plain).tools;
     assertUniqueToolIdentities([
@@ -1870,7 +2159,7 @@ export function captureAgentProfiles<Context, Output>(
         ? Object.freeze({ ...source.outputType })
         : source.outputType;
     const declaration = new Agent<Context, Output>({
-      instructions: source.instructions,
+      instructions: capturedInstructions(source),
       realtime: source.realtime,
       name: source.name,
       model: source.model,
@@ -1878,16 +2167,21 @@ export function captureAgentProfiles<Context, Output>(
       modelSettings: source.modelSettings,
       provider: captureProvider ? rootDeclaration.provider : undefined,
       outputType,
-      tools: source.tools.map(
-        (tool) => replacements.get(tool as SessionTool) ?? tool,
-      ),
+      tools:
+        source[implicitTools] === source.tools && source.tools.length === 0
+          ? undefined
+          : sourceTools.map(
+              (tool) => replacements.get(tool as SessionTool) ?? tool,
+            ),
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
+      compaction: source.compaction,
       transformContext: source.transformContext,
+      hostedPrompt: source.hostedPrompt,
     } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)
       throw new TypeError(
@@ -1908,14 +2202,58 @@ export function captureAgentProfiles<Context, Output>(
       );
     const targets: Record<string, string> = Object.create(null);
     const handoffCallbacks: Record<string, number> = Object.create(null);
+    const decisionHandoffs: Record<
+      string,
+      Readonly<{ slot: number; targets: readonly string[] }>
+    > = Object.create(null);
     const handoffOptions: Record<
       string,
       RealtimeHandoff<Context>
     > = Object.create(null);
     const callbackTools: import('./tools').FunctionTool<Context>[] = [];
     for (const reference of declaration.handoffs) {
+      if (reference instanceof DecisionHandoff) {
+        if (realtimeGraph || hasRealtimeAgentConfiguration(declaration))
+          throw new TypeError(
+            'DecisionHandoff supports text Agents; use realtimeHandoff for Realtime routing',
+          );
+        const name = reference.name;
+        if (
+          Object.hasOwn(targets, name) ||
+          Object.hasOwn(decisionHandoffs, name) ||
+          capturedTools.some(
+            (entry) =>
+              toolIdentity(entry).namespace === 'functions' &&
+              entry.name === name,
+          )
+        )
+          throw new TypeError('Duplicate or conflicting DecisionHandoff name');
+        const roster: Record<string, string> = Object.create(null);
+        for (const [choice, candidate] of Object.entries(reference.targets)) {
+          if (!(candidate instanceof Agent))
+            throw new TypeError(
+              'DecisionHandoff targets must be native Agents',
+            );
+          let targetIndex = indices.get(candidate);
+          if (targetIndex === undefined) {
+            targetIndex = agents.length;
+            indices.set(candidate, targetIndex);
+            agents.push(candidate);
+          }
+          roster[choice] = `${idPrefix}${targetIndex}`;
+        }
+        decisionHandoffs[name] = Object.freeze({
+          slot: capturedTools.length + callbackTools.length,
+          targets: Object.freeze([...new Set(Object.values(roster))]),
+        });
+        callbackTools.push(
+          decisionHandoffTool(reference, Object.freeze(roster)),
+        );
+        continue;
+      }
       let target: Agent<Context, Output>;
-      if (isRealtimeHandoff(reference)) target = reference.agent;
+      if (reference instanceof Handoff) target = reference.target;
+      else if (isRealtimeHandoff(reference)) target = reference.agent;
       else if (reference instanceof Agent) target = reference;
       else {
         if (typeof reference !== 'function')
@@ -1938,17 +2276,22 @@ export function captureAgentProfiles<Context, Output>(
         }
       }
       if (
+        !(reference instanceof Handoff) &&
         (!isRealtimeHandoff(reference) || reference.name === undefined) &&
         !target.name?.trim()
       )
         throw new TypeError('A handoff target requires a nonempty Agent.name');
       const name =
-        isRealtimeHandoff(reference) && reference.name !== undefined
-          ? reference.name
-          : `transfer_to_${target.name}`
-              .replace(/[^a-zA-Z0-9_-]/g, '_')
-              .toLowerCase()
-              .slice(0, 64);
+        reference instanceof Handoff
+          ? reference.callback.name
+          : isRealtimeHandoff(reference) && reference.name !== undefined
+            ? reference.name
+            : `transfer_to_${target.name}`
+                .replace(/[^a-zA-Z0-9_-]/g, '_')
+                .toLowerCase()
+                .slice(0, 64);
+      if (Object.hasOwn(decisionHandoffs, name))
+        throw new TypeError('Duplicate or conflicting DecisionHandoff name');
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name))
         throw new TypeError('Invalid Realtime handoff name');
       let index = indices.get(target);
@@ -1958,9 +2301,19 @@ export function captureAgentProfiles<Context, Output>(
         agents.push(target);
       }
       const id = `${idPrefix}${index}`;
+      if (reference instanceof Handoff && targets[name] === id) {
+        const slot = handoffCallbacks[name];
+        if (
+          slot !== undefined &&
+          callbackTools[slot - capturedTools.length] === reference.callback
+        )
+          continue;
+      }
       if (
         targets[name] !== undefined &&
-        (targets[name] !== id || isRealtimeHandoff(reference))
+        (targets[name] !== id ||
+          reference instanceof Handoff ||
+          isRealtimeHandoff(reference))
       )
         throw new TypeError(
           `Duplicate handoff name in Agent ${agent.name ?? 'root'}: ${name}`,
@@ -1975,13 +2328,24 @@ export function captureAgentProfiles<Context, Output>(
           `Handoff name conflicts with declared tool: ${name}`,
         );
       targets[name] = id;
-      if (isRealtimeHandoff(reference)) {
-        handoffOptions[name] = reference;
+      if (reference instanceof Handoff || isRealtimeHandoff(reference)) {
+        if (isRealtimeHandoff(reference)) handoffOptions[name] = reference;
         handoffCallbacks[name] = capturedTools.length + callbackTools.length;
-        callbackTools.push(realtimeHandoffTool(reference, agent, name));
+        callbackTools.push(
+          reference instanceof Handoff
+            ? reference.callback
+            : realtimeHandoffTool(reference, agent, name),
+        );
       }
     }
+    const omittedTools =
+      declaration[implicitTools] === declaration.tools ||
+      (agent === root && rootPromptControls?.omit_tools === true);
     declaration.tools = [...declaration.tools, ...callbackTools];
+    declaration[implicitTools] =
+      omittedTools && declaration.tools.length === 0
+        ? declaration.tools
+        : undefined;
     Object.freeze(declaration.modelSettings);
     Object.freeze(declaration.tools);
     Object.freeze(declaration);
@@ -1992,8 +2356,21 @@ export function captureAgentProfiles<Context, Output>(
         declaration,
         handoffs: Object.freeze(targets),
         handoffCallbacks: Object.freeze(handoffCallbacks),
+        decisionHandoffs: Object.freeze(decisionHandoffs),
         handoffOptions: Object.freeze(handoffOptions),
         callbackTools: Object.freeze(callbackTools),
+        hostedPromptControls:
+          agent === root && rootPromptControls !== undefined
+            ? rootPromptControls
+            : hostedPromptControls(declaration.hostedPrompt, {
+                model: declaration.model,
+                instructions: capturedInstructions(source),
+                toolsProvided:
+                  source[implicitTools] !== source.tools ||
+                  source.tools.length > 0 ||
+                  source.handoffs.length > 0,
+                extraBody: declaration.modelSettings?.extraBody,
+              }),
       }),
     );
   }
@@ -2045,11 +2422,43 @@ export function captureRealtimeAgentGraph(
     throw new TypeError(
       'A Realtime Agent cannot change fixed native runtime tools',
     );
-  const declaration = new Agent({ ...candidate, provider: opening.provider });
-  const profiles = captureAgentProfiles(candidate, declaration, true, idPrefix);
+  if (capturedInstructions(candidate) === undefined)
+    throw new TypeError('Realtime Agents require explicit instructions');
+  const declaration = new Agent({
+    ...candidate,
+    instructions: candidate.instructions,
+    provider: opening.provider,
+  });
+  const profiles = captureAgentProfiles(
+    candidate,
+    declaration,
+    true,
+    idPrefix,
+    undefined,
+    true,
+  );
   return captureProfileRuntimes(
     profiles,
     captureTools(splitToolDeclarations(declaration.tools).tools),
-    declaration.instructions,
+    declaration.instructions ?? '',
   );
+}
+
+/** @internal Existing one-shot opening for the Conversations history owner. */
+export function openOwnedHistorySession<Context, Output>(
+  agent: Agent<Context, Output>,
+  input: JsonValue[],
+  ...args: SessionArguments<Context>
+): Promise<CoreSession<Output, Context>> {
+  const options = {
+    ...args[0],
+    [ownedRun]: {
+      input,
+      decisions: captureDecisionProvider(agent.decisions),
+      beforeComplete: agent.beforeComplete,
+    },
+  } as OwnedSessionOptions<Context>;
+  return agent.session(...([options] as SessionArguments<Context>)) as Promise<
+    CoreSession<Output, Context>
+  >;
 }

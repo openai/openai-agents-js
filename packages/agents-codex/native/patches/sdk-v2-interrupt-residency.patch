@@ -1,0 +1,464 @@
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index 8870ad3..67dbd7c 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -57,6 +57,8 @@ use std::sync::Weak;
+ use tracing::warn;
+ use uuid::Uuid;
+
++#[cfg(test)]
++pub(crate) use self::residency::V2EvictionAfterShutdownGate;
+ pub(crate) use self::runtime::AgentControlInit;
+ pub(crate) use self::runtime::AgentTreeMembership;
+ pub(crate) use self::runtime::AgentTreeShutdownState;
+diff --git a/codex-rs/core/src/agent/control/residency.rs b/codex-rs/core/src/agent/control/residency.rs
+index 5f773ce..e9d2b52 100644
+--- a/codex-rs/core/src/agent/control/residency.rs
++++ b/codex-rs/core/src/agent/control/residency.rs
+@@ -88,6 +88,13 @@ impl LocalAgentRuntime {
+         if !is_resident_candidate(thread) {
+             return Ok(None);
+         }
++        #[cfg(test)]
++        if let Some(gate) = thread
++            .thread_extension_data()
++            .get::<Arc<V2EvictionAfterShutdownGate>>()
++        {
++            gate.pin_entered.notify_one();
++        }
+         let guard = Arc::clone(&thread.residency_gate).read_owned().await;
+         let thread_id = thread.session.thread_id;
+         if !Arc::ptr_eq(thread, &state.get_thread(thread_id).await?) {
+@@ -193,6 +200,14 @@ impl V2Residency {
+                     teardown.complete();
+                     return false;
+                 }
++                #[cfg(test)]
++                if let Some(gate) = candidate_thread
++                    .thread_extension_data()
++                    .get::<Arc<V2EvictionAfterShutdownGate>>()
++                {
++                    gate.entered.notify_one();
++                    gate.release.notified().await;
++                }
+                 // The submission loop has stopped and the residency guard excludes senders.
+                 // Preserve unread queue-only mail before dropping the session that held it.
+                 let mail = candidate_thread
+@@ -308,3 +323,12 @@ async fn is_unloadable(thread: &CodexThread) -> bool {
+ #[cfg(test)]
+ #[path = "residency_tests.rs"]
+ mod tests;
++
++// Holds the real, joined shutdown before identity-map handoff in race regressions.
++#[cfg(test)]
++#[derive(Default)]
++pub(crate) struct V2EvictionAfterShutdownGate {
++    pub(crate) entered: tokio::sync::Notify,
++    pub(crate) pin_entered: tokio::sync::Notify,
++    pub(crate) release: tokio::sync::Notify,
++}
+diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
+index 77612df..9a48000 100644
+--- a/codex-rs/core/src/thread_manager.rs
++++ b/codex-rs/core/src/thread_manager.rs
+@@ -1745,7 +1745,7 @@ impl ThreadManagerState {
+         root_turn_id: Option<String>,
+     ) -> CodexResult<String> {
+         let thread = self.get_thread(thread_id).await?;
+-        let residency_guard = if matches!(op, Op::InterAgentCommunication { .. }) {
++        let residency_guard = if matches!(op, Op::InterAgentCommunication { .. } | Op::Interrupt) {
+             thread
+                 .session
+                 .services
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+index 8860cfb..62f2aab 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents_tests.rs
+@@ -3970,6 +3970,9 @@ async fn multi_agent_v2_interrupt_agent_accepts_task_name_target() {
+     );
+ }
+
++#[path = "multi_agents_v2_eviction_interrupt_tests.rs"]
++mod eviction_interrupt_tests;
++
+ #[tokio::test]
+ async fn multi_agent_v2_interrupt_agent_accepts_unloaded_task_name_target() {
+     let (mut session, mut turn) = make_session_and_context().await;
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents_v2_eviction_interrupt_tests.rs b/codex-rs/core/src/tools/handlers/multi_agents_v2_eviction_interrupt_tests.rs
+new file mode 100644
+index 0000000..4eeb458
+--- /dev/null
++++ b/codex-rs/core/src/tools/handlers/multi_agents_v2_eviction_interrupt_tests.rs
+@@ -0,0 +1,372 @@
++use super::*;
++use crate::agent::control::V2EvictionAfterShutdownGate;
++use core_test_support::responses::ev_assistant_message;
++use core_test_support::responses::ev_completed;
++use core_test_support::responses::ev_function_call_with_namespace;
++use core_test_support::responses::ev_response_created;
++use core_test_support::responses::mount_sse_once_match;
++use core_test_support::responses::sse;
++use core_test_support::responses::sse_response;
++use core_test_support::responses::start_mock_server;
++use pretty_assertions::assert_eq;
++use wiremock::matchers::method;
++use wiremock::matchers::path_regex;
++
++async fn wait_until_completed(thread: &crate::CodexThread) {
++    timeout(Duration::from_secs(10), async {
++        loop {
++            let event = thread.next_event().await.expect("child event stream");
++            assert!(!matches!(event.msg, EventMsg::Error(_)), "{event:?}");
++            if matches!(event.msg, EventMsg::TurnComplete(_)) {
++                break;
++            }
++        }
++        while thread.session.active_turn.lock().await.is_some() {
++            tokio::task::yield_now().await;
++        }
++    })
++    .await
++    .expect("child should finish its actual model turn");
++}
++
++#[tokio::test]
++async fn multi_agent_v2_interrupt_during_joined_eviction_preserves_followup() {
++    const PRIVATE_MAIL: &str = "receiver-only unread mail retained through eviction";
++    let server = start_mock_server().await;
++    wiremock::Mock::given(method("POST"))
++        .and(path_regex(".*/responses$"))
++        .respond_with(sse_response(sse(vec![
++            ev_response_created("worker-response"),
++            ev_assistant_message("worker-result", "done"),
++            ev_completed("worker-response"),
++        ])))
++        .with_priority(10)
++        .mount(&server)
++        .await;
++    let home = tempfile::tempdir().expect("fixture home");
++    let mut config = crate::config::test_config().await;
++    config.codex_home = home
++        .path()
++        .to_path_buf()
++        .try_into()
++        .expect("absolute fixture home");
++    config.cwd = home
++        .path()
++        .to_path_buf()
++        .try_into()
++        .expect("absolute fixture cwd");
++    config.multi_agent_v2.max_concurrent_threads_per_session = 2;
++    config.model_provider.base_url = Some(format!("{}/v1", server.uri()));
++    config.model_provider.requires_openai_auth = false;
++    config.model_provider.supports_websockets = false;
++    config.model_provider_id = "eviction-loopback".into();
++    config.model_providers.insert(
++        config.model_provider_id.clone(),
++        config.model_provider.clone(),
++    );
++    config.model = Some("gpt-5.6-sol".into());
++    for feature in [Feature::MultiAgentV2, Feature::Collab, Feature::Sqlite] {
++        config.features.enable(feature).expect("test feature");
++    }
++    let state_db = init_state_db(&config).await.expect("sqlite state");
++    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
++        CodexAuth::from_api_key("dummy"),
++        config.model_provider.clone(),
++        config.codex_home.to_path_buf(),
++        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
++        Some(state_db.clone()),
++    )
++    .with_sdk_child_trace_privacy();
++    let root = manager
++        .start_thread(StartThreadOptions::new(config.clone()))
++        .await
++        .expect("root thread");
++    // Every helper and model-issued call shares the actual root's runtime graph.
++    let session = Arc::clone(&root.thread.session);
++    let turn = session.new_default_turn().await;
++    assert_eq!(
++        turn.multi_agent_version,
++        codex_protocol::protocol::MultiAgentVersion::V2
++    );
++    assert_eq!(turn.model_info().slug, "gpt-5.6-sol");
++    let loopback_url = format!("{}/v1", server.uri());
++    assert_eq!(
++        turn.provider.info().base_url.as_deref(),
++        Some(loopback_url.as_str())
++    );
++    SpawnAgentHandlerV2::default()
++        .handle(invocation(
++            session.clone(),
++            turn.clone(),
++            "spawn_agent",
++            function_payload(json!({
++                "message": "finish the first task", "task_name": "worker", "fork_turns": "none"
++            })),
++        ))
++        .await
++        .expect("spawn first worker");
++    let worker_id = session
++        .services
++        .local_agent_runtime
++        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
++        .await
++        .expect("worker identity");
++    let old_worker = manager
++        .get_thread(worker_id)
++        .await
++        .expect("resident worker");
++    wait_until_completed(&old_worker).await;
++    old_worker
++        .thread_extension_data()
++        .insert(codex_otel::sdk_trace::ScopeRestriction::Disabled);
++    assert!(matches!(
++        old_worker.session.child_creation_trace_restriction(),
++        Some(codex_otel::sdk_trace::ScopeRestriction::Disabled),
++    ));
++    let output = SendMessageHandlerV2
++        .handle(invocation(
++            session.clone(),
++            turn.clone(),
++            "send_message",
++            function_payload(json!({"target": "worker", "message": PRIVATE_MAIL})),
++        ))
++        .await
++        .expect("queue private unread mail");
++    assert!(!expect_text_output(output).0.contains(PRIVATE_MAIL));
++
++    let gate = Arc::new(V2EvictionAfterShutdownGate::default());
++    old_worker.thread_extension_data().insert(gate.clone());
++    let evict = tokio::spawn({
++        let session = session.clone();
++        let turn = turn.clone();
++        async move {
++            SpawnAgentHandlerV2::default()
++                .handle(invocation(
++                    session,
++                    turn,
++                    "spawn_agent",
++                    function_payload(json!({
++                        "message": "finish replacement task", "task_name": "replacement", "fork_turns": "none"
++                    })),
++                ))
++                .await
++        }
++    });
++    timeout(Duration::from_secs(10), gate.entered.notified())
++        .await
++        .expect("eviction must join shutdown before map handoff");
++    assert!(Arc::ptr_eq(
++        &manager.get_thread(worker_id).await.expect("old map entry"),
++        &old_worker,
++    ));
++    // This has already joined the genuine shutdown; the submission receiver is closed.
++    old_worker.wait_until_terminated().await;
++
++    // Cancelling the caller leaves the detached eviction holding runtime ownership.
++    // A later root turn can then issue another serialized collaboration tool.
++    evict.abort();
++    assert!(evict.await.is_err_and(|error| error.is_cancelled()));
++    let root_id = root.thread_id.to_string();
++    let initial_root_id = root_id.clone();
++    mount_sse_once_match(
++        &server,
++        move |request: &wiremock::Request| {
++            request
++                .headers
++                .get("thread-id")
++                .and_then(|value| value.to_str().ok())
++                == Some(initial_root_id.as_str())
++                && String::from_utf8_lossy(&request.body).contains("interrupt the evicting worker")
++        },
++        sse(vec![
++            ev_response_created("interrupt-response"),
++            ev_function_call_with_namespace(
++                "held-interrupt",
++                "collaboration",
++                "interrupt_agent",
++                &json!({"target": "worker"}).to_string(),
++            ),
++            ev_completed("interrupt-response"),
++        ]),
++    )
++    .await;
++    let interrupt_receipt = mount_sse_once_match(
++        &server,
++        move |request: &wiremock::Request| {
++            request
++                .headers
++                .get("thread-id")
++                .and_then(|value| value.to_str().ok())
++                == Some(root_id.as_str())
++                && serde_json::from_slice::<serde_json::Value>(&request.body)
++                    .ok()
++                    .and_then(|body| {
++                        body.get("input")
++                            .and_then(|input| input.as_array())
++                            .cloned()
++                    })
++                    .is_some_and(|input| {
++                        input.iter().any(|item| {
++                            item["type"] == "function_call_output"
++                                && item["call_id"] == "held-interrupt"
++                        })
++                    })
++        },
++        sse(vec![
++            ev_response_created("interrupt-result-response"),
++            ev_assistant_message("interrupt-result", "interrupted"),
++            ev_completed("interrupt-result-response"),
++        ]),
++    )
++    .await;
++    timeout(Duration::from_secs(10), async {
++        while root.thread.session.active_turn.lock().await.is_some() {
++            tokio::task::yield_now().await;
++        }
++    })
++    .await
++    .expect("root notification turn should settle before interruption");
++    let submission = root
++        .thread
++        .start_or_steer_turn(crate::TurnInputRequest::user_input(vec![UserInput::Text {
++            text: "interrupt the evicting worker".into(),
++            text_elements: Vec::new(),
++        }]))
++        .await
++        .expect("model-issued interrupt turn");
++    let crate::TurnInputSubmission::Started { turn_id } = submission else {
++        panic!("interrupt must start a new root turn");
++    };
++    let interrupt_turn = async {
++        loop {
++            let event = root.thread.next_event().await.expect("root event stream");
++            assert!(!matches!(event.msg, EventMsg::Error(_)), "{event:?}");
++            if matches!(event.msg, EventMsg::TurnComplete(ref complete) if complete.turn_id == turn_id)
++            {
++                break;
++            }
++        }
++    };
++    tokio::pin!(interrupt_turn);
++    // Each branch proves the model-issued interrupt has reached admission. The old
++    // path finishes against the closed receiver; the fixed path waits on this exact Arc.
++    let completed_while_held = timeout(Duration::from_secs(10), async {
++        tokio::select! {
++            _ = gate.pin_entered.notified() => false,
++            _ = &mut interrupt_turn => true,
++        }
++    })
++    .await
++    .expect("interrupt must reach the held runtime");
++    gate.release.notify_one();
++    // Joining the eviction's write gate proves the identity-map handoff has finished,
++    // even when the baseline interrupt already completed and removed its stale entry.
++    drop(
++        timeout(Duration::from_secs(10), old_worker.residency_gate.read())
++            .await
++            .expect("detached eviction must release runtime ownership"),
++    );
++    if !completed_while_held {
++        timeout(Duration::from_secs(10), interrupt_turn)
++            .await
++            .expect("interrupt completion");
++    }
++    let interrupt_result = interrupt_receipt
++        .function_call_output_text("held-interrupt")
++        .expect("model must receive the actual interrupt tool result");
++    let _: InterruptAgentResult = serde_json::from_str(&interrupt_result)
++        .unwrap_or_else(|error| panic!("interrupt must return its successful structured result: {error}; actual result: {interrupt_result}"));
++    assert!(!interrupt_result.contains(PRIVATE_MAIL));
++    SpawnAgentHandlerV2::default()
++        .handle(invocation(
++            session.clone(), turn.clone(), "spawn_agent",
++            function_payload(json!({
++                "message": "finish replacement task", "task_name": "replacement", "fork_turns": "none"
++            })),
++        ))
++        .await
++        .expect("retry replacement after cancelled eviction caller");
++
++    let replacement_id = session
++        .services
++        .local_agent_runtime
++        .resolve_agent_reference(session.thread_id, &turn.session_source, "replacement")
++        .await
++        .expect("replacement identity");
++    let replacement = manager
++        .get_thread(replacement_id)
++        .await
++        .expect("replacement");
++    wait_until_completed(&replacement).await;
++    let followup = FollowupTaskHandlerV2
++        .handle(invocation(
++            session.clone(),
++            turn.clone(),
++            "followup_task",
++            function_payload(json!({"target": "worker", "message": "resume original worker"})),
++        ))
++        .await
++        .expect("interrupt during eviction must preserve the original worker for followup");
++    assert!(!expect_text_output(followup).0.contains(PRIVATE_MAIL));
++    assert_eq!(
++        session
++            .services
++            .local_agent_runtime
++            .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
++            .await
++            .expect("same worker path"),
++        worker_id,
++    );
++    let reloaded = manager
++        .get_thread(worker_id)
++        .await
++        .expect("reloaded original");
++    assert!(!Arc::ptr_eq(&old_worker, &reloaded));
++    assert!(Arc::ptr_eq(
++        &reloaded,
++        &manager
++            .get_thread(worker_id)
++            .await
++            .expect("current exact Arc"),
++    ));
++    assert!(matches!(
++        reloaded.session.child_creation_trace_restriction(),
++        Some(codex_otel::sdk_trace::ScopeRestriction::Disabled),
++    ));
++    wait_until_completed(&reloaded).await;
++    let requests = server.received_requests().await.expect("provider requests");
++    let private_requests = requests
++        .iter()
++        .filter(|request| String::from_utf8_lossy(&request.body).contains(PRIVATE_MAIL))
++        .collect::<Vec<_>>();
++    assert_eq!(
++        private_requests.len(),
++        1,
++        "unread mail must reach the receiver once"
++    );
++    assert_eq!(
++        private_requests[0]
++            .headers
++            .get("thread-id")
++            .expect("receiver id")
++            .to_str()
++            .expect("thread id header"),
++        worker_id.to_string(),
++    );
++    assert_eq!(
++        state_db
++            .list_thread_spawn_children_with_status(
++                root.thread_id,
++                DirectionalThreadSpawnEdgeStatus::Open
++            )
++            .await
++            .expect("open children")
++            .into_iter()
++            .filter(|id| *id == worker_id)
++            .count(),
++        1,
++    );
++    manager
++        .shutdown_all_threads_bounded(Duration::from_secs(5))
++        .await;
++}

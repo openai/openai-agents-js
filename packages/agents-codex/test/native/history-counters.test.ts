@@ -172,6 +172,40 @@ describe('exact observational counters', () => {
     ).toEqual({ cachedTokens: 0, cacheWriteTokens: 3 });
   });
 
+  it('retains distinct native ledger owners across a restored turn start', () => {
+    const fact = (id: string, tokens: number): ThreadHistory => [
+      {
+        type: 'event_msg',
+        payload: {
+          type: '_sdk_model_attempt',
+          turn_id: 't',
+          data: {
+            owner_attempt_id: id,
+            terminal_attempt_id: null,
+            usage: {
+              requests: 1,
+              requests_without_token_usage: 0,
+              token_usage: {
+                input_tokens: tokens,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: tokens,
+              },
+            },
+          },
+        },
+      },
+    ];
+    const turn = project([
+      ...fact('prior', 7),
+      ...start,
+      ...fact('current', 3),
+    ]);
+    expect(turn.usage?.totalTokens).toBe(10);
+    expect(turn.runUsage?.requests).toBe(2);
+  });
+
   it('discards incomplete response accounting when history rolls back', () => {
     expect(
       project([
@@ -466,6 +500,21 @@ describe('recorded response observations', () => {
       turn_token_usage: { input_tokens: 14, total_tokens: 18 },
       ...(link ? { response_observation_id: link } : {}),
     },
+  });
+
+  it('retains normalized zero cache writes across an application completion boundary', () => {
+    const normalized = accounting('application-completion');
+    normalized.payload.usage = { cache_write_input_tokens: 0 };
+    normalized.payload.turn_token_usage = { cache_write_input_tokens: 0 };
+    const turn = project([
+      observed('application-completion', null, { response_id: null }),
+      normalized,
+    ]);
+
+    expect(turn.usage?.inputTokensDetails.cacheWriteTokens).toBe(0);
+    expect(turn.responses).toMatchObject([
+      { responseId: null, status: 'completed', usage: null },
+    ]);
   });
 
   it('keeps received cache-write availability through normalized totals and portable history', () => {

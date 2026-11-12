@@ -1,3 +1,10 @@
+import { projectWebSearchCall, webSearchSourcesSchema } from './web-search';
+import type { WebSearchAction } from './web-search';
+export type { WebSearchAction, WebSearchSource } from './web-search';
+import {
+  captureModelAttemptSnapshot,
+  type CapturedModelAttempt,
+} from './model-attempts';
 import { responseContent } from './input';
 import { z } from 'zod';
 import {
@@ -13,6 +20,11 @@ import {
 } from './turn-receipt';
 import {
   addTokenCounts,
+  addRunUsage,
+  mergeRunUsage,
+  runUsageSnapshot,
+  runUsageToWire,
+  type RunUsage,
   nonnegativeTokenCountWireSchema,
   parseTokenCount,
   tokenCountToWire,
@@ -26,10 +38,15 @@ import {
   type JsonValue,
 } from './binding';
 
+const stringSchema = z.string();
+const nullableStringSchema = stringSchema.nullable();
+const optionalStringSchema = stringSchema.optional();
+const optionalNullableStringSchema = nullableStringSchema.optional();
+
 export const threadHistorySchema = z.array(
   z
     .object({
-      type: z.string(),
+      type: stringSchema,
       payload: jsonObject,
     })
     .catchall(jsonValue),
@@ -120,6 +137,8 @@ export type HistoryTurn = {
   completedAt: number | null;
   error: Failure | null;
   usage: RecordedTokenUsage | null;
+  /** Retained native-attempt totals; unavailable without native attempt records. */
+  runUsage?: RunUsage;
   /** Retained observations, not complete provider-attempt or charge coverage. */
   responses?: RecordedResponse[];
   responseFacts?: RecordedResponseFact[];
@@ -132,9 +151,10 @@ export type RecordedTurn = HistoryTurn & {
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
 export type RecordedTurnWire = Omit<
   RecordedTurn,
-  'usage' | 'responses' | 'receipt'
+  'usage' | 'responses' | 'receipt' | 'runUsage'
 > & {
   usage: RecordedTokenUsageWire | null;
+  runUsage?: { readonly [Key in keyof RunUsage]: TokenCountWire };
   responses?: RecordedResponseWire[];
   receipt?: z.infer<typeof repairTurnReceiptSchema>;
 };
@@ -146,43 +166,37 @@ export type RepairTurnWire = RecordedTurnWire & {
   parentSessionId: string;
   parentTurnId: string;
 };
-const receivedUsageWireSchema = z
-  .object({
-    inputTokens: nonnegativeTokenCountWireSchema.optional(),
-    inputTokensDetails: z
-      .object({
-        cachedTokens: nonnegativeTokenCountWireSchema.optional(),
-        cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
-      })
-      .strict()
-      .optional(),
-    outputTokens: nonnegativeTokenCountWireSchema.optional(),
-    outputTokensDetails: z
-      .object({
-        reasoningTokens: nonnegativeTokenCountWireSchema.optional(),
-      })
-      .strict()
-      .optional(),
-    totalTokens: nonnegativeTokenCountWireSchema.optional(),
-  })
-  .strict();
-const recordedResponseWireSchema = z
-  .object({
-    id: z.string().min(1).nullable(),
-    threadId: z.string().min(1),
-    turnId: z.string().min(1),
-    responseId: z.string().nullable(),
-    upstreamRequestId: z.string().optional(),
-    status: z.enum(['completed', 'incomplete', 'failed']).optional(),
-    incompleteReason: z
-      .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
-      .optional(),
-    usageSource: z.enum(['received', 'native_normalized']),
-    usage: receivedUsageWireSchema.nullable(),
-  })
-  .strict();
+const receivedUsageWireSchema = z.strictObject({
+  inputTokens: nonnegativeTokenCountWireSchema.optional(),
+  inputTokensDetails: z
+    .strictObject({
+      cachedTokens: nonnegativeTokenCountWireSchema.optional(),
+      cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+    })
+    .optional(),
+  outputTokens: nonnegativeTokenCountWireSchema.optional(),
+  outputTokensDetails: z
+    .strictObject({
+      reasoningTokens: nonnegativeTokenCountWireSchema.optional(),
+    })
+    .optional(),
+  totalTokens: nonnegativeTokenCountWireSchema.optional(),
+});
+const recordedResponseWireSchema = z.strictObject({
+  id: z.string().min(1).nullable(),
+  threadId: z.string().min(1),
+  turnId: z.string().min(1),
+  responseId: nullableStringSchema,
+  upstreamRequestId: optionalStringSchema,
+  status: z.enum(['completed', 'incomplete', 'failed']).optional(),
+  incompleteReason: z
+    .enum(['content_filter', 'max_output_tokens', 'interrupted', 'unknown'])
+    .optional(),
+  usageSource: z.enum(['received', 'native_normalized']),
+  usage: receivedUsageWireSchema.nullable(),
+});
 export const repairTurnWireSchema = z
-  .object({
+  .strictObject({
     id: z.string().min(1),
     object: z.literal('agent.session.turn'),
     sessionId: z.string().min(1),
@@ -192,37 +206,44 @@ export const repairTurnWireSchema = z
     startedAt: z.number().nullable(),
     completedAt: z.number().nullable(),
     error: z
-      .object({
-        code: z.string(),
-        message: z.string().nullable(),
+      .strictObject({
+        code: stringSchema,
+        message: nullableStringSchema,
         httpStatusCode: z.number().optional(),
       })
-      .strict()
       .nullable(),
     usage: z
-      .object({
+      .strictObject({
         inputTokens: nonnegativeTokenCountWireSchema,
-        inputTokensDetails: z
-          .object({
-            cachedTokens: nonnegativeTokenCountWireSchema,
-            cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
-          })
-          .strict(),
+        inputTokensDetails: z.strictObject({
+          cachedTokens: nonnegativeTokenCountWireSchema,
+          cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+        }),
         outputTokens: nonnegativeTokenCountWireSchema,
-        outputTokensDetails: z
-          .object({ reasoningTokens: nonnegativeTokenCountWireSchema })
-          .strict(),
+        outputTokensDetails: z.strictObject({
+          reasoningTokens: nonnegativeTokenCountWireSchema,
+        }),
         totalTokens: nonnegativeTokenCountWireSchema,
       })
-      .strict()
       .nullable(),
+    runUsage: z
+      .strictObject({
+        requests: nonnegativeTokenCountWireSchema,
+        missingUsageRequests: nonnegativeTokenCountWireSchema,
+        inputTokens: nonnegativeTokenCountWireSchema,
+        cachedInputTokens: nonnegativeTokenCountWireSchema,
+        cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
+        outputTokens: nonnegativeTokenCountWireSchema,
+        reasoningOutputTokens: nonnegativeTokenCountWireSchema,
+        totalTokens: nonnegativeTokenCountWireSchema,
+      })
+      .optional(),
     responses: z.array(recordedResponseWireSchema).optional(),
     responseFacts: z.array(responseFactRecordSchema).optional(),
     receipt: repairTurnReceiptSchema.optional(),
     parentSessionId: z.string().min(1),
     parentTurnId: z.string().min(1),
   })
-  .strict()
   .refine(
     (turn) =>
       turn.receipt === undefined ||
@@ -236,20 +257,18 @@ export const repairTurnWireSchema = z
       turn.responses.every((response) => response.turnId === turn.id),
     'Repair response identity must match its recorded turn',
   ) satisfies z.ZodType<RepairTurnWire>;
-export const repairItemWireSchema = z
-  .object({
-    parentSessionId: z.string().min(1),
-    parentTurnId: z.string().min(1),
-    sessionId: z.string().min(1),
-    item: z
-      .object({
-        id: z.string().min(1),
-        turnId: z.string().min(1),
-        type: z.string().min(1),
-      })
-      .catchall(jsonValue),
-  })
-  .strict();
+export const repairItemWireSchema = z.strictObject({
+  parentSessionId: z.string().min(1),
+  parentTurnId: z.string().min(1),
+  sessionId: z.string().min(1),
+  item: z
+    .object({
+      id: z.string().min(1),
+      turnId: z.string().min(1),
+      type: z.string().min(1),
+    })
+    .catchall(jsonValue),
+});
 export type RepairItemWire = z.infer<typeof repairItemWireSchema>;
 
 function mapRecordedUsage<T>(
@@ -325,9 +344,20 @@ function mapReceivedUsage<T>(
 }
 
 export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
-  const { responses, receipt, ...rest } = turn;
+  const { responses, receipt, runUsage, ...rest } = turn;
   return {
     ...rest,
+    ...(runUsage === undefined
+      ? {}
+      : {
+          runUsage: {
+            ...runUsageToWire(runUsage),
+            requests: tokenCountToWire(runUsage.requests),
+            missingUsageRequests: tokenCountToWire(
+              runUsage.missingUsageRequests,
+            ),
+          },
+        }),
     ...(responses === undefined
       ? {}
       : {
@@ -359,9 +389,25 @@ export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
 }
 
 export function recordedTurnFromWire(turn: RecordedTurnWire): RecordedTurn {
-  const { responses, ...rest } = turn;
+  const { responses, runUsage, ...rest } = turn;
   return {
     ...rest,
+    ...(runUsage === undefined
+      ? {}
+      : {
+          runUsage: runUsageSnapshot(
+            addRunUsage(null, {
+              input_tokens: runUsage.inputTokens,
+              cached_input_tokens: runUsage.cachedInputTokens,
+              cache_write_input_tokens: runUsage.cacheWriteInputTokens,
+              output_tokens: runUsage.outputTokens,
+              reasoning_output_tokens: runUsage.reasoningOutputTokens,
+              total_tokens: runUsage.totalTokens,
+            }),
+            parseTokenCount(runUsage.requests),
+            parseTokenCount(runUsage.missingUsageRequests),
+          ),
+        }),
     ...(responses === undefined
       ? {}
       : {
@@ -384,7 +430,7 @@ export type ItemStatus = 'in_progress' | 'completed' | 'failed' | 'incomplete';
 type ItemIdentity = { id: string; turnId: string };
 const outputTextPartSchema = z.object({
   type: z.literal('output_text'),
-  text: z.string(),
+  text: stringSchema,
   annotations: jsonValue.optional(),
 });
 /** Provider annotations use offsets into this part's original text. */
@@ -393,43 +439,28 @@ type InputTextPart = { type: 'input_text'; text: string };
 // History is passive canonical JSON, not a new user-input capability. Preserve
 // provider fields without requiring callers to construct these observed DTOs.
 const historyAudioPartSchema = z
-  .object({ type: z.literal('input_audio'), audio_url: z.string() })
+  .object({ type: z.literal('input_audio'), audio_url: stringSchema })
   .catchall(jsonValue);
 const historyImagePartSchema = z
   .object({
     type: z.literal('input_image'),
-    image_url: z.string().optional(),
-    file_id: z.string().optional(),
+    image_url: optionalStringSchema,
+    file_id: optionalStringSchema,
     detail: z.enum(['auto', 'low', 'high', 'original']).nullable().optional(),
   })
   .catchall(jsonValue);
 const historyFilePartSchema = z
   .object({
     type: z.literal('input_file'),
-    file_id: z.string().optional(),
-    file_data: z.string().optional(),
-    file_url: z.string().optional(),
-    filename: z.string().nullable().optional(),
+    file_id: optionalStringSchema,
+    file_data: optionalStringSchema,
+    file_url: optionalStringSchema,
+    filename: optionalNullableStringSchema,
   })
   .catchall(jsonValue);
 type AudioPart = z.infer<typeof historyAudioPartSchema>;
 type ImagePart = z.infer<typeof historyImagePartSchema>;
 type FilePart = z.infer<typeof historyFilePartSchema>;
-const webSearchSourcesSchema = z.array(
-  z.object({ type: z.literal('url'), url: z.string() }),
-);
-export type WebSearchSource = z.infer<typeof webSearchSourcesSchema>[number];
-export type WebSearchAction =
-  | {
-      type: 'search';
-      query: string | null;
-      queries: string[] | null;
-      /** URLs reported by the provider, when available. */
-      sources?: WebSearchSource[];
-    }
-  | { type: 'open_page'; url: string | null }
-  | { type: 'find_in_page'; url: string | null; pattern: string | null }
-  | { type: 'other' };
 
 export type SessionItem = ItemIdentity &
   (
@@ -466,9 +497,29 @@ export type SessionItem = ItemIdentity &
         error: string | null;
       }
     | {
+        type: 'local_shell_call';
+        callId: string | null;
+        action: JsonObject;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_call';
+        callId: string | null;
+        execution: string;
+        arguments: JsonValue;
+        status: ItemStatus;
+      }
+    | {
+        type: 'tool_search_output';
+        callId: string | null;
+        execution: string;
+        tools: JsonValue[];
+        status: ItemStatus;
+      }
+    | {
         type: 'mcp_call';
         threadId?: string;
-        callId?: string;
+        callId?: string | null;
         serverLabel: string;
         name: string;
         arguments: JsonValue;
@@ -532,15 +583,15 @@ export type SearchItem = Extract<
   { type: 'web_search_call' | 'message' }
 >;
 const patchContentChanges = [
-  z.object({ type: z.literal('add'), content: z.string() }),
-  z.object({ type: z.literal('delete'), content: z.string() }),
+  z.object({ type: z.literal('add'), content: stringSchema }),
+  z.object({ type: z.literal('delete'), content: stringSchema }),
 ] as const;
 const patchChangeSchema = z.discriminatedUnion('type', [
   ...patchContentChanges,
   z.object({
     type: z.literal('update'),
-    unifiedDiff: z.string(),
-    movePath: z.string().nullable(),
+    unifiedDiff: stringSchema,
+    movePath: nullableStringSchema,
   }),
 ]);
 const nativePatchChangeSchema = z
@@ -548,8 +599,8 @@ const nativePatchChangeSchema = z
     ...patchContentChanges,
     z.object({
       type: z.literal('update'),
-      unified_diff: z.string(),
-      move_path: z.string().nullable(),
+      unified_diff: stringSchema,
+      move_path: nullableStringSchema,
     }),
   ])
   .transform((change) =>
@@ -585,6 +636,7 @@ const hostedToolStatusSchema = z.enum([
   'incomplete',
   'failed',
 ]);
+const shellToolStatusSchema = hostedToolStatusSchema.or(z.literal('unknown'));
 const repairItemProjectionSchema = z.intersection(
   z.object({ id: z.string().min(1), turnId: z.string().min(1) }),
   z.discriminatedUnion('type', [
@@ -592,13 +644,13 @@ const repairItemProjectionSchema = z.intersection(
       type: z.literal('message'),
       role: z.enum(['user', 'assistant']),
       status: repairItemStatusSchema,
-      phase: z.string().nullable(),
-      displayText: z.string().optional(),
+      phase: nullableStringSchema,
+      displayText: optionalStringSchema,
       content: z.array(
         z.discriminatedUnion('type', [
           z.object({
             type: z.literal('input_text'),
-            text: z.string(),
+            text: stringSchema,
           }),
           outputTextPartSchema,
           historyAudioPartSchema,
@@ -610,81 +662,108 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('reasoning'),
       summary: z.array(
-        z.object({ type: z.literal('summary_text'), text: z.string() }),
+        z.object({ type: z.literal('summary_text'), text: stringSchema }),
       ),
       status: repairItemStatusSchema.nullable(),
     }),
     z.object({
       type: z.literal('function_call'),
-      callId: z.string(),
-      name: z.string(),
+      callId: stringSchema,
+      name: stringSchema,
       arguments: jsonValue,
       status: repairItemStatusSchema,
     }),
     z.object({
       type: z.literal('function_call_output'),
-      callId: z.string(),
+      callId: stringSchema,
       reconciliation: z.enum(['applied', 'not_applied']).optional(),
       status: repairItemStatusSchema,
       output: jsonValue,
-      error: z.string().nullable(),
+      error: nullableStringSchema,
     }),
     z.object({
       type: z.literal('mcp_call'),
-      threadId: z.string().optional(),
-      callId: z.string().optional(),
-      serverLabel: z.string(),
-      name: z.string(),
+      threadId: optionalStringSchema,
+      callId: optionalNullableStringSchema,
+      serverLabel: stringSchema,
+      name: stringSchema,
       arguments: jsonValue,
       status: repairItemStatusSchema,
       output: jsonValue,
       error: jsonValue,
+      turn_id: optionalStringSchema,
+      provider_data: jsonObject.optional(),
+    }),
+    z.object({
+      type: z.literal('mcp_list_tools'),
+      turn_id: stringSchema,
+      status: hostedToolStatusSchema,
+      provider_data: jsonObject,
+      server_label: stringSchema,
+      tools: jsonValue,
+      error: jsonValue,
     }),
     z.object({
       type: z.literal('command_execution'),
-      threadId: z.string().optional(),
-      callId: z.string().optional(),
-      argv: z.array(z.string()).optional(),
-      command: z.string(),
-      cwd: z.string().nullable(),
+      threadId: optionalStringSchema,
+      callId: optionalStringSchema,
+      argv: z.array(stringSchema).optional(),
+      command: stringSchema,
+      cwd: nullableStringSchema,
       status: repairItemStatusSchema,
-      output: z.string().nullable(),
+      output: nullableStringSchema,
       exitCode: z.number().nullable(),
       durationMs: z.number().nullable(),
     }),
     z.object({
       type: z.literal('file_change'),
-      threadId: z.string(),
-      callId: z.string(),
+      threadId: stringSchema,
+      callId: stringSchema,
       status: repairItemStatusSchema,
-      changes: z.record(z.string(), patchChangeSchema),
-      stdout: z.string().nullable(),
-      stderr: z.string().nullable(),
+      changes: z.record(stringSchema, patchChangeSchema),
+      stdout: nullableStringSchema,
+      stderr: nullableStringSchema,
     }),
     z.object({
       type: z.literal('file_search_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      queries: z.array(z.string()),
+      queries: z.array(stringSchema),
       results: jsonValue,
     }),
     z.object({
       type: z.literal('code_interpreter_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      container_id: z.string(),
-      code: z.string().nullable(),
+      container_id: stringSchema,
+      code: nullableStringSchema,
       outputs: jsonValue,
     }),
     z.object({
       type: z.literal('image_generation_call'),
-      turn_id: z.string(),
+      turn_id: stringSchema,
       status: hostedToolStatusSchema,
       provider_data: jsonObject,
-      result: z.string().nullable(),
-      revised_prompt: z.string().nullable(),
+      result: nullableStringSchema,
+      revised_prompt: nullableStringSchema,
+    }),
+    z.object({
+      type: z.literal('shell_call'),
+      turn_id: stringSchema,
+      status: shellToolStatusSchema,
+      provider_data: jsonObject,
+      call_id: stringSchema,
+      action: jsonValue,
+    }),
+    z.object({
+      type: z.literal('shell_call_output'),
+      turn_id: stringSchema,
+      status: shellToolStatusSchema,
+      provider_data: jsonObject,
+      call_id: stringSchema,
+      output: jsonValue,
     }),
     z.object({
       type: z.literal('web_search_call'),
@@ -694,18 +773,18 @@ const repairItemProjectionSchema = z.intersection(
         .discriminatedUnion('type', [
           z.object({
             type: z.literal('search'),
-            query: z.string().nullable(),
-            queries: z.array(z.string()).nullable(),
+            query: nullableStringSchema,
+            queries: z.array(stringSchema).nullable(),
             sources: webSearchSourcesSchema.optional(),
           }),
           z.object({
             type: z.literal('open_page'),
-            url: z.string().nullable(),
+            url: nullableStringSchema,
           }),
           z.object({
             type: z.literal('find_in_page'),
-            url: z.string().nullable(),
-            pattern: z.string().nullable(),
+            url: nullableStringSchema,
+            pattern: nullableStringSchema,
           }),
           z.object({ type: z.literal('other') }),
         ])
@@ -714,13 +793,13 @@ const repairItemProjectionSchema = z.intersection(
     z.object({
       type: z.literal('create_subagent_call'),
       status: repairItemStatusSchema,
-      agentId: z.string(),
-      subagentId: z.string().nullable(),
+      agentId: stringSchema,
+      subagentId: nullableStringSchema,
     }),
     z.object({
       type: z.literal('wait_for_subagents_call'),
       status: repairItemStatusSchema,
-      senderAgentId: z.string(),
+      senderAgentId: stringSchema,
     }),
     z.object({
       type: z.enum([
@@ -730,8 +809,8 @@ const repairItemProjectionSchema = z.intersection(
         'close_subagent_call',
       ]),
       status: repairItemStatusSchema,
-      senderAgentId: z.string(),
-      recipientAgentId: z.string(),
+      senderAgentId: stringSchema,
+      recipientAgentId: stringSchema,
     }),
   ]),
 ) satisfies z.ZodType<SessionItem>;
@@ -907,45 +986,12 @@ function failure(raw: JsonObject): Failure {
       : {}),
   };
 }
-function webAction(raw: JsonObject): WebSearchAction | null {
-  const action = object(raw.action);
-  if (!action)
-    return typeof raw.query === 'string'
-      ? { type: 'search', query: raw.query, queries: null }
-      : null;
-  switch (action.type) {
-    case 'search': {
-      const sources = webSearchSourcesSchema.safeParse(action.sources);
-      return {
-        type: 'search',
-        query: text(action.query),
-        queries: Array.isArray(action.queries)
-          ? action.queries.filter(
-              (value): value is string => typeof value === 'string',
-            )
-          : null,
-        ...(sources.success ? { sources: sources.data } : {}),
-      };
-    }
-    case 'open_page':
-    case 'openPage':
-      return { type: 'open_page', url: text(action.url) };
-    case 'find_in_page':
-    case 'findInPage':
-      return {
-        type: 'find_in_page',
-        url: text(action.url),
-        pattern: text(action.pattern),
-      };
-    default:
-      return { type: 'other' };
-  }
-}
 function reconciliationOutcome(raw: JsonObject) {
   if (
     raw.type !== 'function_call_output' &&
     raw.type !== 'custom_tool_call_output' &&
-    raw.type !== 'computer_call_output'
+    raw.type !== 'computer_call_output' &&
+    raw.type !== 'apply_patch_call_output'
   )
     return undefined;
   const kinds = object(
@@ -960,11 +1006,18 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   const output =
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
-    raw.type === 'computer_call_output';
+    raw.type === 'computer_call_output' ||
+    raw.type === 'apply_patch_call_output' ||
+    raw.type === 'shell_call_output' ||
+    raw.type === 'tool_search_output';
   const call =
     raw.type === 'function_call' ||
     raw.type === 'custom_tool_call' ||
-    raw.type === 'computer_call';
+    raw.type === 'computer_call' ||
+    raw.type === 'apply_patch_call' ||
+    raw.type === 'local_shell_call' ||
+    raw.type === 'shell_call' ||
+    raw.type === 'tool_search_call';
   const id =
     text(raw.id) ??
     ((call || output) && typeof raw.call_id === 'string'
@@ -995,6 +1048,32 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       )[],
     };
   }
+  if (raw.type === 'local_shell_call' && object(raw.action))
+    return {
+      ...common,
+      type: 'local_shell_call',
+      callId: text(raw.call_id),
+      action: object(raw.action)!,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_call' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_call',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      arguments: raw.arguments ?? null,
+      status: status(raw.status, false),
+    };
+  if (raw.type === 'tool_search_output' && typeof raw.execution === 'string')
+    return {
+      ...common,
+      type: 'tool_search_output',
+      callId: text(raw.call_id),
+      execution: raw.execution,
+      tools: Array.isArray(raw.tools) ? raw.tools : [],
+      status: status(raw.status, true),
+    };
   if (raw.type === 'reasoning')
     return {
       ...common,
@@ -1005,20 +1084,24 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   if (
     call &&
     typeof raw.call_id === 'string' &&
-    (raw.type === 'computer_call' || typeof raw.name === 'string')
+    (raw.type === 'computer_call' ||
+      raw.type === 'apply_patch_call' ||
+      typeof raw.name === 'string')
   )
     return {
       ...common,
       type: 'function_call',
       callId: raw.call_id,
       name:
-        raw.type === 'computer_call'
-          ? 'computer'
-          : raw.namespace
-            ? `${raw.namespace}.${raw.name}`
-            : String(raw.name),
+        raw.type === 'apply_patch_call'
+          ? 'apply_patch'
+          : raw.type === 'computer_call'
+            ? 'computer'
+            : raw.namespace
+              ? `${raw.namespace}.${raw.name}`
+              : String(raw.name),
       arguments:
-        raw.type === 'computer_call'
+        raw.type === 'computer_call' || raw.type === 'apply_patch_call'
           ? raw
           : (raw.arguments ?? raw.input ?? null),
       status: 'in_progress',
@@ -1029,14 +1112,24 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       ...common,
       type: 'function_call_output',
       callId: raw.call_id,
-      status: reconciliation === 'not_applied' ? 'failed' : 'completed',
+      status:
+        reconciliation === 'not_applied' ||
+        (raw.type === 'apply_patch_call_output' && raw.status === 'failed')
+          ? 'failed'
+          : 'completed',
       output:
-        raw.type === 'computer_call_output'
+        raw.type === 'apply_patch_call_output'
           ? {
-              output: raw.output ?? null,
-              acknowledged_safety_checks: raw.acknowledged_safety_checks ?? [],
+              status: raw.status,
+              ...(raw.output === undefined ? {} : { output: raw.output }),
             }
-          : (raw.output ?? null),
+          : raw.type === 'computer_call_output'
+            ? {
+                output: raw.output ?? null,
+                acknowledged_safety_checks:
+                  raw.acknowledged_safety_checks ?? [],
+              }
+            : (raw.output ?? null),
       error: null,
       ...(reconciliation === undefined ? {} : { reconciliation }),
     };
@@ -1044,10 +1137,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
   if (raw.type === 'web_search_call')
     return {
       ...common,
-      type: 'web_search_call',
-      status: 'completed',
-      action: webAction(raw),
-      ...(raw.results == null ? {} : { results: raw.results as JsonValue[] }),
+      ...projectWebSearchCall(raw, 'completed'),
     };
   return null;
 }
@@ -1240,12 +1330,7 @@ function nativeItems(
       return [
         {
           ...common,
-          type: 'web_search_call',
-          status: done ? 'completed' : 'in_progress',
-          action: webAction(raw),
-          ...(raw.results == null
-            ? {}
-            : { results: raw.results as JsonValue[] }),
+          ...projectWebSearchCall(raw, done ? 'completed' : 'in_progress'),
         },
       ];
     case 'Extension':
@@ -1253,12 +1338,7 @@ function nativeItems(
         ? [
             {
               ...common,
-              type: 'web_search_call',
-              status: done ? 'completed' : 'in_progress',
-              action: webAction(raw),
-              ...(raw.results == null
-                ? {}
-                : { results: raw.results as JsonValue[] }),
+              ...projectWebSearchCall(raw, done ? 'completed' : 'in_progress'),
             },
           ]
         : [];
@@ -1325,6 +1405,25 @@ function nativeItems(
   }
 }
 
+export type ModelOutputItem = Extract<
+  SessionItem,
+  { type: 'message' | 'reasoning' }
+>;
+
+export function projectModelOutputItem(
+  value: JsonValue | undefined,
+  turnId: string,
+  threadId: string,
+): ModelOutputItem | undefined {
+  const raw = object(value);
+  if (raw?.type !== 'AgentMessage' && raw?.type !== 'Reasoning') return;
+  const [item] = nativeItems(raw, true, turnId, threadId);
+  if (item?.type === 'message' || item?.type === 'reasoning') {
+    const { data: _data, ...projected } = item;
+    return projected;
+  }
+}
+
 /** Project completed native items carrying hosted search evidence for live consumers. */
 export function projectSearchItem(
   value: JsonValue | undefined,
@@ -1354,6 +1453,7 @@ export function projectHistory(
   history: ThreadHistory,
   sessionId: string,
   subagentId?: string,
+  itemRecordIndexes?: Map<HistoryItem, number>,
 ) {
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
@@ -1369,8 +1469,19 @@ export function projectHistory(
     entries.push(response);
     target.set(id, entries);
   }
-  const responseUsage = new Map<string, JsonObject>();
+  const responseUsage = new Map<
+    string,
+    {
+      tokens: JsonObject | null;
+      requests: TokenCount;
+      missing: TokenCount;
+    }
+  >();
   const incompleteCacheWriteUsage = new Set<string>();
+  const modelAttemptUsage = new Map<
+    string,
+    Map<string | null, CapturedModelAttempt>
+  >();
   const failures = new Map<string, Failure>();
   let items: HistoryOccurrence[] = [];
   const identities = new Map<string, HistoryOccurrence>();
@@ -1381,11 +1492,16 @@ export function projectHistory(
   let pendingUser: HistoryOccurrence | undefined;
   const userAliases = new Set<HistoryOccurrence>();
   function remember(item: HistoryItem, native: boolean, recordedId = true) {
-    const output = item.type === 'function_call_output';
+    const output =
+      item.type === 'function_call_output' ||
+      item.type === 'tool_search_output';
     const key = JSON.stringify([item.turnId, item.type, recordedId, item.id]);
     const callKey = JSON.stringify([
       item.turnId,
-      'callId' in item ? item.callId : item.id,
+      item.type === 'tool_search_call' || item.type === 'tool_search_output'
+        ? 'tool_search'
+        : 'function',
+      ('callId' in item ? item.callId : undefined) ?? item.id,
     ]);
     const call = latestCalls.get(callKey);
     let occurrence = identities.get(key);
@@ -1409,12 +1525,21 @@ export function projectHistory(
       occurrence.item.data = item.data;
     }
     identities.set(key, occurrence);
-    if (item.type === 'function_call') latestCalls.set(callKey, occurrence);
-    else if (output && call) call.output = occurrence;
+    if (item.type === 'function_call' || item.type === 'tool_search_call')
+      latestCalls.set(callKey, occurrence);
+    else if (output && call) {
+      call.output = occurrence;
+      if (
+        call.item.type === 'tool_search_call' &&
+        item.type === 'tool_search_output'
+      )
+        call.item.status = item.status;
+    }
     return occurrence;
   }
   const receipts = new Map<string, TurnReceipt>();
-  for (const { type, payload, metadata: recordedMetadata } of history) {
+  for (const [recordIndex, record] of history.entries()) {
+    const { type, payload, metadata: recordedMetadata } = record;
     if (type === 'compacted' || type === 'session_meta')
       pendingUser = undefined;
     if (type === 'turn_context' && typeof payload.turn_id === 'string') {
@@ -1497,12 +1622,18 @@ export function projectHistory(
           'function_call_output',
           'custom_tool_call_output',
           'computer_call_output',
+          'apply_patch_call_output',
         ].includes(String(payload.type)) &&
         metadata?.turn_id === aborted &&
-        latestCalls.has(JSON.stringify([aborted, payload.call_id]))
+        latestCalls.has(JSON.stringify([aborted, 'function', payload.call_id]))
       )
         turn = aborted;
       if (turn) {
+        if (
+          payload.type === 'apply_patch_call' &&
+          object(recordedMetadata)?.sdk_application_tool !== 'apply_patch'
+        )
+          continue;
         const item = responseItem(payload, turn);
         if (item) {
           if (item.type === 'function_call_output' && item.reconciliation) {
@@ -1515,6 +1646,7 @@ export function projectHistory(
             false,
             typeof payload.id === 'string',
           );
+          itemRecordIndexes?.set(item, recordIndex);
           const inputOrder = object(recordedMetadata)?.user_input_order;
           const kinds = metadata?.content_item_kinds;
           if (
@@ -1554,6 +1686,7 @@ export function projectHistory(
           observations.delete(id);
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
+          modelAttemptUsage.delete(id);
           failures.delete(id);
         }
         items = items.filter(({ item }) => !removed.has(item.turnId));
@@ -1597,16 +1730,37 @@ export function projectHistory(
       if (!order.includes(id)) order.push(id);
       if (payload.type === 'error' && !failures.has(id))
         failures.set(id, failure(payload));
-      if (payload.type === 'raw_response_completed') {
+      const attemptSnapshot =
+        payload.type === '_sdk_model_attempt'
+          ? payload.data
+          : payload.model_attempt;
+      if (attemptSnapshot !== undefined) {
+        const captured = captureModelAttemptSnapshot(attemptSnapshot);
+        const owners = modelAttemptUsage.get(id) ?? new Map();
+        owners.set(captured.ownerAttemptId, captured);
+        modelAttemptUsage.set(id, owners);
+      }
+      if (
+        payload.type === 'raw_response_completed' &&
+        typeof payload.model_attempt_id !== 'string'
+      ) {
         const report = object(payload.token_usage);
+        const observed = responseUsage.get(id) ?? {
+          tokens: null,
+          requests: 0,
+          missing: 0,
+        };
+        observed.requests = addTokenCounts(observed.requests, 1);
+        if (!report) observed.missing = addTokenCounts(observed.missing, 1);
+        responseUsage.set(id, observed);
         if (report?.cache_write_input_tokens === undefined)
           incompleteCacheWriteUsage.add(id);
         if (incompleteCacheWriteUsage.has(id)) {
-          const total = responseUsage.get(id);
+          const total = observed.tokens;
           if (total) delete total.cache_write_input_tokens;
         }
         if (report) {
-          const total = responseUsage.get(id) ?? {};
+          const total = observed.tokens ?? {};
           for (const key of usageFields) {
             const count = usageCount(report, key);
             if (
@@ -1617,7 +1771,7 @@ export function projectHistory(
             const sum = addTokenCounts(usageCount(total, key), count);
             total[key] = tokenCountToWire(sum);
           }
-          responseUsage.set(id, total);
+          observed.tokens = total;
         }
       }
 
@@ -1649,11 +1803,11 @@ export function projectHistory(
         payload.type === 'turn_aborted';
       if (started || completed) {
         pendingUser = undefined;
-        if (started) {
-          failures.delete(id);
+        if (started && !modelAttemptUsage.has(id)) {
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
         }
+        if (started) failures.delete(id);
         const error =
           failures.get(id) ??
           (object(payload.error) ? failure(object(payload.error)!) : null);
@@ -1695,8 +1849,43 @@ export function projectHistory(
   for (const [id, turn] of turns) {
     const receipt = receipts.get(id);
     if (receipt) turn.receipt = receipt;
-    const total = responseUsage.get(id);
-    turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    const observed = responseUsage.get(id);
+    const total = observed?.tokens ?? undefined;
+    const nativeOwners = modelAttemptUsage.get(id);
+    if (nativeOwners) {
+      // A restored ledger can retain the turn ID; only its own latest snapshot replaces it.
+      let measured: JsonObject | null = total ? { ...total } : null;
+      let cacheWriteKnown = !incompleteCacheWriteUsage.has(id);
+      let runMeasured = runUsageSnapshot(
+        total ? addRunUsage(null, total) : null,
+        observed?.requests ?? 0,
+        observed?.missing ?? 0,
+      );
+      for (const captured of nativeOwners.values()) {
+        runMeasured = mergeRunUsage(runMeasured, captured.usage);
+        const snapshot = captured.wire;
+        const report = snapshot.usage.token_usage;
+        if (report === null) {
+          if (BigInt(snapshot.usage.requests) !== 0n) cacheWriteKnown = false;
+          continue;
+        }
+        if (report.cache_write_input_tokens === undefined)
+          cacheWriteKnown = false;
+        measured ??= {};
+        for (const key of usageFields) {
+          if (key === 'cache_write_input_tokens' && !cacheWriteKnown) continue;
+          measured[key] = tokenCountToWire(
+            addTokenCounts(usageCount(measured, key), usageCount(report, key)),
+          );
+        }
+      }
+      if (measured && !cacheWriteKnown)
+        delete measured.cache_write_input_tokens;
+      turn.usage = measured ? recordedUsage(measured) : null;
+      turn.runUsage = runMeasured;
+    } else {
+      turn.usage = usage.get(id) ?? (total ? recordedUsage(total) : null);
+    }
     const accountedIds = new Set(
       (responses.get(id) ?? [])
         .filter(
@@ -1721,11 +1910,14 @@ export function projectHistory(
     });
     // Core defaults an omitted cache-write field to zero in accounting totals.
     // A partial received total remains unknown even when its known peers are nonzero.
+    // A received completion linked to accounting has a response body ID.
+    // The application completion boundary without one supplies no original usage.
     if (
       turn.usage &&
       retained.some(
         (response) =>
           response.usageSource === 'received' &&
+          response.responseId !== null &&
           response.id !== null &&
           accountedIds.has(response.id) &&
           response.usage?.inputTokensDetails?.cacheWriteTokens === undefined,
@@ -1753,7 +1945,9 @@ export function projectHistory(
     }
     if (item.type === 'function_call') {
       const original = item.data;
-      const computerCall = original.type === 'computer_call';
+      const computerCall =
+        original.type === 'computer_call' ||
+        original.type === 'apply_patch_call';
       if (computerCall) item.arguments = original;
       const output = occurrence.output?.item;
       if (output?.type === 'function_call_output' && output.reconciliation)
@@ -1791,17 +1985,59 @@ export function projectHostedToolItem(
   turnId: string,
 ): HostedToolItem | undefined {
   const raw = object(value);
-  if (!raw || typeof raw.id !== 'string') return;
-  const status = hostedToolStatusSchema.safeParse(raw.status);
+  if (!raw) return;
+  const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
+  const id =
+    text(raw.id) ??
+    (shell && typeof raw.call_id === 'string'
+      ? raw.call_id + (raw.type === 'shell_call_output' ? ':output' : '')
+      : null);
+  if (!id) return;
+  const identity = {
+    id,
+    turnId,
+    turn_id: turnId,
+  };
+  if (shell) {
+    const status = shellToolStatusSchema.safeParse(raw.status ?? 'unknown');
+    if (!status.success || typeof raw.call_id !== 'string') return;
+    const {
+      internal_chat_message_metadata_passthrough: _coreMetadata,
+      ...provider
+    } = raw;
+    const common = {
+      ...identity,
+      status: status.data,
+      call_id: raw.call_id,
+      provider_data: structuredClone(provider),
+    };
+    return raw.type === 'shell_call'
+      ? { ...common, type: raw.type, action: raw.action ?? null }
+      : { ...common, type: 'shell_call_output', output: raw.output ?? null };
+  }
+  const status = hostedToolStatusSchema.safeParse(
+    (raw.type === 'mcp_list_tools' || raw.type === 'mcp_call') &&
+      raw.status === undefined
+      ? raw.error == null
+        ? 'completed'
+        : 'failed'
+      : raw.status,
+  );
   if (!status.success) return;
+  if (
+    raw.type !== 'file_search_call' &&
+    raw.type !== 'code_interpreter_call' &&
+    raw.type !== 'image_generation_call' &&
+    raw.type !== 'mcp_list_tools' &&
+    raw.type !== 'mcp_call'
+  )
+    return;
   const {
     internal_chat_message_metadata_passthrough: _coreMetadata,
     ...provider
   } = raw;
   const common = {
-    id: raw.id,
-    turnId,
-    turn_id: turnId,
+    ...identity,
     status: status.data,
     provider_data: structuredClone(provider),
   };
@@ -1831,6 +2067,25 @@ export function projectHostedToolItem(
         type: raw.type,
         result: text(raw.result),
         revised_prompt: text(raw.revised_prompt),
+      };
+    case 'mcp_list_tools':
+      return {
+        ...common,
+        type: raw.type,
+        server_label: text(raw.server_label) ?? '',
+        tools: raw.tools ?? [],
+        error: raw.error ?? null,
+      };
+    case 'mcp_call':
+      return {
+        ...common,
+        type: raw.type,
+        serverLabel: text(raw.server_label) ?? '',
+        callId: null,
+        name: text(raw.name) ?? '',
+        arguments: text(raw.arguments) ?? '',
+        output: raw.output ?? null,
+        error: raw.error ?? null,
       };
   }
 }

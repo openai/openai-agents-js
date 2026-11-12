@@ -95,9 +95,6 @@ async function main() {
     deserializeSessionState: (
       state: Record<string, unknown>,
     ) => Promise<typeof initialSession.state>;
-    resume: (
-      state: typeof initialSession.state,
-    ) => Promise<typeof initialSession>;
   };
 
   const agent = new SandboxAgent({
@@ -109,8 +106,7 @@ async function main() {
     capabilities: [filesystem(), shell(), memory({ generate: false })],
   });
 
-  let resumedSession:
-    Awaited<ReturnType<typeof resumableClient.resume>> | undefined;
+  let resumedSession: Awaited<ReturnType<typeof client.resume>> | undefined;
 
   try {
     const first = await run(agent, FIRST_PROMPT, {
@@ -121,8 +117,21 @@ async function main() {
     const serializedState = await resumableClient.serializeSessionState(
       initialSession.state,
     );
-    resumedSession = await resumableClient.resume(
+    resumedSession = await client.resume(
       await resumableClient.deserializeSessionState(serializedState),
+      {
+        clientOptions: {
+          // Keep trusted host bindings separate from serialized state.
+          resumeAuthority: {
+            workspaceRootPath: initialSession.state.workspaceRootPath,
+            workspaceRootOwned: initialSession.state.workspaceRootOwned,
+            localSnapshotPath:
+              initialSession.state.snapshot?.type === 'local'
+                ? initialSession.state.snapshot.path
+                : undefined,
+          },
+        },
+      },
     );
 
     const second = await run(agent, SECOND_PROMPT, {

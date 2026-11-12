@@ -629,6 +629,17 @@ impl DirectTurn {
     }
 }
 
+// Reuse the exact captured publication owner for final MCP assignment.
+pub(crate) fn publish_mcp_result(
+    thread: &ExtensionData,
+    turn: &ExtensionData,
+    publish: impl FnOnce(),
+) {
+    if let (Some(control), Some(owner)) = (thread.get::<Control>(), turn.get::<DirectTurn>()) {
+        let _ = control.publish_result(&owner, &control.stopped, true, None, publish);
+    }
+}
+
 // Stop only the captured task. Its existing host stop/join owner retains
 // physical settlement; joining here would wait on this very MCP hook.
 pub(crate) fn expire_mcp_result(
@@ -865,6 +876,7 @@ pub struct Control {
     pub(crate) settlement: std::sync::OnceLock<Weak<crate::turn_settlement::Settlement>>,
     sentinel_provider: std::sync::OnceLock<(String, bool)>,
     collaboration_namespace: std::sync::OnceLock<Option<String>>,
+    websocket_drivers: Mutex<Option<tokio_util::task::TaskTracker>>,
     stdin_admission: std::sync::OnceLock<()>,
     command_tty: std::sync::OnceLock<bool>,
     sentinel_request: Mutex<SentinelState>,
@@ -874,7 +886,10 @@ pub struct Control {
 // One bounded callback owner per explicit root. Native ThreadSpawn ancestry
 // may share it, but never the parent's turn or thread-stop lifetime.
 struct Channel {
+    observe_raw_provider_events: AtomicBool,
     state: Mutex<State>,
+    raw_usage: Mutex<Option<Arc<codex_core::SdkRawUsageLink>>>,
+    request_attempts: Mutex<Option<Arc<codex_core::SdkRequestAttemptsLink>>>,
     graph: crate::graph_stop::Graph,
     // At most MAX_PENDING live requests. Cancellation messages must not be
     // dropped when that bound is full, hence the unbounded control channel.
@@ -901,6 +916,45 @@ enum CodeImportState {
 }
 
 impl Control {
+    pub(crate) fn seal_request_attempts(&self, turn_id: &str) {
+        if self.root {
+            if let Some(capture) = self
+                .channel
+                .request_attempts
+                .lock()
+                .expect("request attempts link poisoned")
+                .as_ref()
+            {
+                capture.seal(turn_id);
+            }
+        }
+    }
+
+    pub(crate) fn bind_request_attempts(&self, link: codex_core::SdkRequestAttemptsLink) {
+        *self
+            .channel
+            .request_attempts
+            .lock()
+            .expect("request attempts link poisoned") = Some(Arc::new(link));
+    }
+
+    pub(crate) fn raw_usage_active(&self) -> bool {
+        self.channel
+            .raw_usage
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(|link| link.is_active())
+    }
+
+    pub(crate) fn bind_raw_usage(&self, link: codex_core::SdkRawUsageLink) {
+        *self
+            .channel
+            .raw_usage
+            .lock()
+            .expect("raw usage link poisoned") = Some(Arc::new(link));
+    }
+
     pub(crate) fn bind_context_tools(&self, tools: &Arc<crate::python_tools::PythonTools>) {
         let _ = self.context_tools.set(Arc::downgrade(tools));
     }
@@ -1014,6 +1068,24 @@ impl Control {
         &self.stopped
     }
 
+    pub(crate) fn track_websocket_driver(
+        &self,
+        driver: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+        let mut slot = self.websocket_drivers.lock().expect("websocket drivers poisoned");
+        anyhow::ensure!(!self.is_stopped(), "Native thread ended");
+        let tasks = slot.get_or_insert_with(tokio_util::task::TaskTracker::new);
+        Ok(tasks.spawn(driver))
+    }
+
+    async fn join_websocket_drivers(&self) {
+        let tasks = self.websocket_drivers.lock().expect("websocket drivers poisoned").clone();
+        if let Some(tasks) = tasks {
+            tasks.close();
+            tasks.wait().await;
+        }
+    }
+
     pub(crate) fn new(id: String, root: bool) -> Self {
         Self::with_budget(id, root, MAX_PAYLOAD_BYTES)
     }
@@ -1044,10 +1116,14 @@ impl Control {
             settlement: std::sync::OnceLock::new(),
             sentinel_provider: std::sync::OnceLock::new(),
             collaboration_namespace: std::sync::OnceLock::new(),
+            websocket_drivers: Mutex::default(),
             stdin_admission: std::sync::OnceLock::new(),
             command_tty: std::sync::OnceLock::new(),
             sentinel_request: Mutex::new(SentinelState::default()),
             channel: Arc::new(Channel {
+                raw_usage: Mutex::new(None),
+                request_attempts: Mutex::new(None),
+                observe_raw_provider_events: AtomicBool::new(false),
                 graph: crate::graph_stop::Graph::default(),
                 state: Mutex::new(State {
                     timeout: None,
@@ -1064,6 +1140,12 @@ impl Control {
                 bytes: Arc::new(Semaphore::new(bytes)),
             }),
         }
+    }
+
+    pub(crate) fn enable_raw_provider_events(&self) {
+        self.channel
+            .observe_raw_provider_events
+            .store(true, Ordering::Release);
     }
 
     fn descendant(id: String, parent: &Arc<Control>) -> Self {
@@ -1091,6 +1173,7 @@ impl Control {
             settlement: std::sync::OnceLock::new(),
             sentinel_provider: std::sync::OnceLock::new(),
             collaboration_namespace: std::sync::OnceLock::new(),
+            websocket_drivers: Mutex::default(),
             stdin_admission: std::sync::OnceLock::new(),
             command_tty: std::sync::OnceLock::new(),
             sentinel_request: Mutex::new(SentinelState::default()),
@@ -3022,6 +3105,7 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                     }
                 }
                 control.revoke();
+                control.join_websocket_drivers().await;
                 control.graph().changed.send_replace(());
                 self.finish_numeric_forks(&control, None, None);
                 self.starts
@@ -3041,6 +3125,36 @@ impl TurnLifecycleContributor for Boundary {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(control) = input.thread_store.get::<Control>() {
+                if !control.root {
+                    if let Some(link) = control
+                        .channel
+                        .request_attempts
+                        .lock()
+                        .expect("request attempts link poisoned")
+                        .as_ref()
+                    {
+                        link.attach(input.thread_store);
+                    }
+                    if let Some(link) = control
+                        .channel
+                        .raw_usage
+                        .lock()
+                        .expect("raw usage link poisoned")
+                        .as_ref()
+                    {
+                        link.attach(input.thread_store);
+                    }
+                }
+                if !control.stopped.is_cancelled()
+                    && control
+                        .channel
+                        .observe_raw_provider_events
+                        .load(Ordering::Acquire)
+                {
+                    input
+                        .thread_store
+                        .insert(codex_core::ObserveRawProviderEvents);
+                }
                 let settlement = input
                     .turn_store
                     .get::<crate::turn_settlement::Turn>()
@@ -3150,6 +3264,65 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn model_attempt(&self, input: codex_extension_api::ModelAttemptInput) -> Result<(), String> {
+        let Some(tools) = input
+            .admission
+            .turn_store()
+            .get::<Weak<crate::python_tools::PythonTools>>()
+            .and_then(|tools| tools.upgrade())
+        else {
+            return Ok(());
+        };
+        tools
+            .publish_model_attempt(input)
+            .map_err(|error| error.to_string())
+    }
+    fn retire_model_attempt(
+        &self,
+        admission: Arc<dyn ModelToolAdmission>,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let Some(attempt) = admission.model_attempt() else {
+                return Ok(());
+            };
+            if let Some(tools) = admission
+                .turn_store()
+                .get::<Weak<crate::python_tools::PythonTools>>()
+                .and_then(|tools| tools.upgrade())
+            {
+                tools
+                    .retire_model_attempt_callbacks(&attempt)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    }
+    fn decide_model_retry(
+        &self,
+        input: codex_extension_api::ModelRetryInput,
+    ) -> Option<
+        futures_util::future::BoxFuture<
+            '_,
+            Result<codex_protocol::model_retry::ModelRetryResolution, String>,
+        >,
+    > {
+        let tools = input
+            .admission
+            .turn_store()
+            .get::<Weak<crate::python_tools::PythonTools>>()
+            .and_then(|tools| tools.upgrade())?;
+        if !input.context.policy_enabled && !tools.produces_model_response() {
+            return None;
+        }
+        Some(Box::pin(async move {
+            tools
+                .decide_model_retry(input)
+                .await
+                .map_err(|_| "Model retry callback failed".to_owned())
+        }))
+    }
+
     fn uses_chatgpt_plan(&self) -> bool {
         self.engine
             .get()
@@ -3161,10 +3334,33 @@ impl ModelRequestContributor for Boundary {
         self.context_tools(thread_id)
             .is_some_and(|tools| tools.customizes_compaction())
     }
-    fn before_compact<'a>(
+    fn schedules_post_turn_compaction(
+        &self,
+        thread_id: &str,
+        step_store: &codex_extension_api::ExtensionData,
+    ) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.schedules_post_turn_compaction(step_store))
+    }
+    fn post_turn_compaction<'a>(
         &'a self,
         input: codex_extension_api::CompactionInput<'a>,
-    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+    ) -> ExtensionFuture<'a, std::result::Result<Option<bool>, String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired compaction policy owner")?
+                .post_turn_compaction(input)
+                .await
+                .map_err(|_| "Compaction policy callback failed".to_owned())
+        })
+    }
+    fn before_compact_result<'a>(
+        &'a self,
+        input: codex_extension_api::CompactionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::CompactionResult>, String>,
+    > {
         Box::pin(async move {
             if self.uses_chatgpt_plan() {
                 return Err("Sign in with ChatGPT does not support beforeCompact callbacks".into());
@@ -3228,6 +3424,24 @@ impl ModelRequestContributor for Boundary {
         })
     }
 
+    fn preserves_provider_request_window(&self, url: &str) -> bool {
+        // This exact native route validates the provider/grant/one-use ticket,
+        // restores tool schemas, and sends input/model/store through Reqwest.
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|engine| {
+                engine
+                    .sentinel
+                    .read()
+                    .expect("sentinel poisoned")
+                    .as_ref()
+                    .is_some_and(|(base, _, _)| {
+                        url.starts_with(&format!("{}/p-", base.trim_end_matches('/')))
+                    })
+            })
+    }
+
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
         let engine = self.engine.get()?.upgrade()?;
         let base = engine
@@ -3244,7 +3458,7 @@ impl ModelRequestContributor for Boundary {
         }
         let expected_url = url.to_owned();
         let engine = Arc::downgrade(&engine);
-        Some(Arc::new(move |request| {
+        Some(Arc::new(move |request, request_transport| {
             let engine = engine.clone();
             let expected_url = expected_url.clone();
             Box::pin(async move {
@@ -3258,7 +3472,55 @@ impl ModelRequestContributor for Boundary {
                             body: Some(String::new()),
                             retry_after: None,
                         })?;
-                crate::direct_sentinel_stream(&engine, &expected_url, request).await
+                crate::direct_sentinel_stream(
+                    &engine,
+                    &expected_url,
+                    request,
+                    request_transport.as_ref(),
+                )
+                .await
+            })
+        }))
+    }
+
+    fn websocket_connect(
+        &self,
+        url: &str,
+        thread_id: &str,
+    ) -> Option<codex_api::ResponsesWebsocketConnect> {
+        let engine = self.engine.get()?.upgrade()?;
+        if engine.plan_authorization.is_some()
+            || engine.manager.auth_manager().auth_mode()
+                != Some(codex_protocol::auth::AuthMode::ApiKey)
+        {
+            return None;
+        }
+        let private_origin = {
+            let binding = engine.sentinel.read().expect("sentinel poisoned");
+            let (base, _, excluded) = binding.as_ref()?;
+            if excluded.is_some() {
+                return None;
+            }
+            base.strip_prefix("http://127.0.0.1:")?.trim_end_matches('/').to_owned()
+        };
+        if !url.starts_with(&format!("ws://127.0.0.1:{private_origin}/p-")) {
+            return None;
+        }
+        let control = self.threads.lock().expect("interception index poisoned")
+            .get(thread_id)?.upgrade()?;
+        control.sentinel_provider.get()?;
+        let control = Arc::downgrade(&control);
+        let engine = Arc::downgrade(&engine);
+        let expected_url = url.to_owned();
+        Some(Arc::new(move |request| {
+            let control = control.clone();
+            let engine = engine.clone();
+            let expected_url = expected_url.clone();
+            Box::pin(async move {
+                let retired = || codex_api::ApiError::Stream("Native WebSocket owner ended".into());
+                let control = control.upgrade().ok_or_else(retired)?;
+                let engine = engine.upgrade().ok_or_else(retired)?;
+                crate::model_websocket_bridge::connect(engine, control, expected_url, request).await
             })
         }))
     }
@@ -3295,9 +3557,11 @@ impl ModelRequestContributor for Boundary {
         });
         if control.sentinel_provider.get().is_some() {
             let ticket = Arc::new(SentinelTicket {
+                attempts: input.attempts.clone(),
                 nonce: codex_protocol::ThreadId::new().to_string(),
                 kind: input.kind,
                 model: input.model.to_owned(),
+                model_omitted: input.model_omitted,
                 admitted: AtomicBool::new(false),
                 owner,
                 failure: Mutex::new(None),
@@ -3360,9 +3624,11 @@ impl ModelRequestContributor for Boundary {
 }
 
 struct SentinelTicket {
+    attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
     nonce: String,
     kind: ModelRequestKind,
     model: String,
+    model_omitted: bool,
     admitted: AtomicBool,
     owner: Option<Arc<DirectTurn>>,
     failure: Mutex<Option<SentinelFailure>>,
@@ -3375,7 +3641,7 @@ pub(crate) enum SentinelFailure {
 }
 
 impl SentinelFailure {
-    fn into_response_error(self) -> ModelResponseError {
+    pub(crate) fn into_response_error(self) -> ModelResponseError {
         match self {
             Self::Transport(error) => ModelResponseError::Transport(error),
             Self::WebSocket { oversized } => ModelResponseError::InvalidRequest {
@@ -3419,7 +3685,7 @@ impl Drop for SentinelRequest {
 }
 
 impl SentinelRequest {
-    fn take_failure(&self) -> Option<ModelResponseError> {
+    fn take_failure(&self, decoded_integrity: bool) -> Option<ModelResponseError> {
         {
             let state = self
                 .control
@@ -3442,7 +3708,7 @@ impl SentinelRequest {
                 .lock()
                 .expect("sentinel failure poisoned")
                 .take()
-                .map(|error| {
+                .and_then(|error| {
                     if self.ticket.admitted.load(Ordering::Acquire)
                         && !state.revoked
                         && !self.control.stopped.is_cancelled()
@@ -3456,9 +3722,19 @@ impl SentinelRequest {
                                     && turn.as_ref().is_some_and(|now| Arc::ptr_eq(now, owner))
                             }))
                     {
-                        error.into_response_error()
+                        match error {
+                            // An admitted, decoded protocol error stays terminal even
+                            // if the local WebSocket receiver closes before its poll.
+                            SentinelFailure::WebSocket { oversized: false }
+                                if decoded_integrity
+                                    && self.ticket.kind == ModelRequestKind::Generation =>
+                            {
+                                None
+                            }
+                            error => Some(error.into_response_error()),
+                        }
                     } else {
-                        rejected()
+                        Some(rejected())
                     }
                 })
         }
@@ -3466,6 +3742,12 @@ impl SentinelRequest {
 }
 
 impl ModelResponseInterceptor for SentinelRequest {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Admission may edit tool calls, but passes messages, reasoning and
+        // the physical response ID unchanged. Core excludes tool output here.
+        true
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -3476,7 +3758,7 @@ impl ModelResponseInterceptor for SentinelRequest {
     }
 
     fn intercept(self: Box<Self>, upstream: ModelResponseStream) -> ModelResponseStream {
-        if let Some(error) = self.take_failure() {
+        if let Some(error) = self.take_failure(false) {
             drop(upstream);
             return Box::pin(futures_util::stream::once(async move {
                 let _guard = self;
@@ -3504,7 +3786,11 @@ impl ModelResponseInterceptor for SentinelRequest {
                 // A WebSocket opens its response stream before it receives
                 // the provider's terminal. The issued ticket may fail while
                 // this poll is pending; apply that decision before Core retries.
-                let next = match guard.take_failure() {
+                let decoded_integrity = matches!(
+                    &next,
+                    Some(Err(ModelResponseError::ResponseIntegrity { .. }))
+                );
+                let next = match guard.take_failure(decoded_integrity) {
                     Some(error) => Err(error),
                     None => next?,
                 };
@@ -3697,13 +3983,18 @@ pub(crate) async fn sentinel_admit(
             }))
         })
         .transpose()?;
-    Ok(serde_json::to_string(&json!({
+    let mut receipt = json!({
         "control": control.incarnation,
         "kind": if ticket.kind == ModelRequestKind::Warmup { "warmup" } else { "generation" },
         "model": ticket.model,
+        "model_omitted": ticket.model_omitted,
         "content_item_kinds": content_item_kinds,
         "completion": completion,
-    }))?)
+    });
+    if ticket.attempts.is_some() {
+        receipt["request_attempts"] = Value::Bool(true);
+    }
+    Ok(serde_json::to_string(&receipt)?)
 }
 
 pub(crate) async fn sentinel_restore_schemas(
@@ -3788,7 +4079,10 @@ pub(crate) fn sentinel_http_turn(
     engine: &crate::engine::EngineState,
     provider_id: &str,
     meta: &Value,
-) -> Result<Option<Arc<crate::turn_settlement::Turn>>> {
+) -> Result<(
+    Option<Arc<crate::turn_settlement::Turn>>,
+    Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
+)> {
     let id = meta["sdk_sentinel_thread"]
         .as_str()
         .context("Missing sentinel owner")?;
@@ -3817,9 +4111,10 @@ pub(crate) fn sentinel_http_turn(
         .owner
         .as_ref()
         .and_then(|owner| owner.settlement.as_ref());
-    settlement
+    let turn = settlement
         .map(|turn| turn.upgrade().context("Native sentinel turn ended"))
-        .transpose()
+        .transpose()?;
+    Ok((turn, ticket.attempts.clone()))
 }
 
 // Only the originally admitted native request may retain its settled error.
@@ -4258,6 +4553,12 @@ fn valid_stdin_arguments(arguments: &str) -> bool {
 }
 
 impl ModelResponseInterceptor for DirectRequest {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Admission may edit tool calls, but passes messages, reasoning and
+        // the physical response ID unchanged. Core excludes tool output here.
+        true
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -5717,6 +6018,9 @@ enum Projected {
     Json(Value),
 }
 impl<'call> ToolExecutor<ToolCall<'call>> for Executor {
+    fn is_native_environment_tool(&self) -> bool {
+        self.inner.is_native_environment_tool()
+    }
     fn tool_name(&self) -> ToolName {
         self.inner.tool_name()
     }
@@ -5945,6 +6249,36 @@ fn test_tool_admission(
         turn_store,
         selected,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn test_mcp_result_owner(
+    thread: &ExtensionData,
+    turn: &ExtensionData,
+    ended: bool,
+) -> impl FnOnce() {
+    let control = thread.get_or_init(|| Control::new(thread.level_id().into(), true));
+    let owner = turn.get_or_init(|| DirectTurn {
+        policy_stopped: AtomicBool::new(false),
+        id: turn.level_id().into(),
+        model: Mutex::new(None),
+        command_admission: Mutex::new(None),
+        cancelled: CancellationToken::new(),
+        settlement: None,
+        core_task: None,
+        mcp_calls: Mutex::default(),
+    });
+    if ended {
+        owner.cancelled.cancel();
+    }
+    move || {
+        let _state = control
+            .channel
+            .state
+            .lock()
+            .expect("interception control poisoned");
+        owner.policy_stopped.store(true, Ordering::Release);
+    }
 }
 
 #[cfg(test)]
@@ -7743,6 +8077,7 @@ mod tests {
                 .native_agents
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
+                    managed_tools: Vec::new(),
                     max_depth: 1,
                     inherited_instructions: None,
                     allowed: Default::default(),
@@ -7777,10 +8112,12 @@ mod tests {
         let issue = |kind, client_metadata: &mut Option<_>| {
             boundary
                 .request(ModelRequestInput {
+                    attempts: None,
                     kind,
                     thread_id: &control.id,
                     client_metadata,
                     model: "test-model",
+                    model_omitted: false,
                 })
                 .unwrap()
         };
@@ -7818,6 +8155,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admitted_websocket_failure_keeps_already_decoded_integrity() {
+        use codex_protocol::error::ResponseIntegrityReason;
+
+        for (kind, decoded, retains_integrity) in [
+            (ModelRequestKind::Generation, false, false),
+            (ModelRequestKind::Generation, true, true),
+            (ModelRequestKind::Warmup, true, false),
+        ] {
+            let control = Arc::new(Control::new("root".into(), true));
+            let owner = (kind == ModelRequestKind::Generation)
+                .then(|| direct_request(control.clone(), "turn").owner);
+            *control.direct_turn.lock().unwrap() = owner.clone();
+            let ticket = Arc::new(SentinelTicket {
+                attempts: None,
+                nonce: "ticket".into(),
+                kind,
+                model: "model".into(),
+                model_omitted: false,
+                admitted: AtomicBool::new(true),
+                owner,
+                failure: Mutex::new(None),
+                command_admission: None,
+            });
+            control.sentinel_request.lock().unwrap().request = Some(ticket.clone());
+            let request = Box::new(SentinelRequest {
+                control,
+                ticket: ticket.clone(),
+                tool_admission: None,
+            });
+            let upstream = Box::pin(stream::once(async move {
+                *ticket.failure.lock().unwrap() =
+                    Some(SentinelFailure::WebSocket { oversized: false });
+                if decoded {
+                    Err(ModelResponseError::ResponseIntegrity {
+                        reason: ResponseIntegrityReason::UndecodableOutputItem,
+                    })
+                } else {
+                    Err(ModelResponseError::Stream("disconnected".into()))
+                }
+            }));
+            let error = request.intercept(upstream).next().await;
+            if retains_integrity {
+                assert!(matches!(
+                    error,
+                    Some(Err(ModelResponseError::ResponseIntegrity {
+                        reason: ResponseIntegrityReason::UndecodableOutputItem,
+                    }))
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    Some(Err(ModelResponseError::InvalidRequest { message }))
+                        if message.contains("it will not be replayed")
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn sentinel_and_direct_wrappers_keep_the_exact_bound_request_router() {
         for sentinel in [false, true] {
             let control = Arc::new(Control::new("root".into(), true));
@@ -7846,9 +8242,11 @@ mod tests {
                     control: control.clone(),
                     tool_admission: None,
                     ticket: Arc::new(SentinelTicket {
+                        attempts: None,
                         nonce: "ticket".into(),
                         kind: ModelRequestKind::Generation,
                         model: "issuing-model".into(),
+                        model_omitted: false,
                         admitted: AtomicBool::new(false),
                         owner: Some(owner),
                         failure: Mutex::new(None),
@@ -9102,6 +9500,7 @@ mod mcp_policy_tests {
             root.native_agents
                 .set(Arc::new(crate::native_agents::Policy {
                     roles: Vec::new(),
+                    managed_tools: Vec::new(),
                     max_depth: 1,
                     inherited_instructions: None,
                     allowed: Default::default(),
@@ -9472,10 +9871,13 @@ impl ModelRequestContributor for ModelProducerBoundary {
         if !tools.produces_model_response() {
             return None;
         }
-        Some(Box::new(ModelProducerRequest(tools)))
+        Some(Box::new(ModelProducerRequest(
+            tools,
+            input.model.to_owned(),
+        )))
     }
 }
-struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>);
+struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>, String);
 impl ModelResponseInterceptor for ModelProducerRequest {
     fn produces_response(&self) -> bool {
         true
@@ -9486,10 +9888,11 @@ impl ModelResponseInterceptor for ModelProducerRequest {
         admission: Option<Arc<dyn ModelToolAdmission>>,
     ) -> Option<futures_util::future::BoxFuture<'a, Result<ModelResponseStream, String>>> {
         let tools = self.0.clone();
+        let model = self.1.clone();
         Some(Box::pin(async move {
             let admission = admission.ok_or("Native model producer requires request admission")?;
             tools
-                .produce_model_response(request, admission)
+                .produce_model_response(&model, request, admission)
                 .await
                 .map_err(|_| "Native model producer failed or was cancelled".to_owned())
         }))

@@ -56,6 +56,7 @@ export type {
   MountCredentialExposureDecision,
   MountCredentialFileReference,
 } from './mountSecurity';
+export { dispatchSandboxEvent } from './events';
 export { stableJsonStringify } from './shared/stableJson';
 export {
   BOUNDED_FILE_READ_STATUS_BYTES,
@@ -147,3 +148,48 @@ export {
 export { retainManagedWorkspaceSnapshot } from './sandboxes/shared/localSnapshots';
 
 export { renderRemoteMountPolicyInstructions } from './runtime/prompts';
+
+// Resource-only skill operations; no Classic capability or agent runtime.
+export {
+  createSkillConfiguration,
+  processSkillManifest,
+  resolveSkillRuntimeMetadata,
+  resolveSkillsMetadata,
+  renderSkillsDiscoveryInstructions,
+  renderSkillsInstructions,
+  resolveLazySkillEntry,
+  joinRelativePaths,
+} from './skillResources';
+export type {
+  SkillConfiguration,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+} from './skillResources';
+
+export { modelWorkspaceResourcePath } from './workspacePaths';
+
+export { skillWorkspaceRoot } from './skillResources';
+
+export {
+  getSandboxStateIdentity,
+  getLocalSandboxStateAuthority,
+  isDeserializedSandboxState,
+} from './internal/sessionStateTrust';
+
+export { SandboxMemoryStorage } from './memory/storage';
+export { memory } from './capabilities/memory';
+export {
+  RolloutExtractionArtifactsSchema,
+  validateRolloutArtifacts,
+  formatRawMemory,
+  formatRolloutSummary,
+} from './memory/artifacts';
+
+export { beforeGitRepoCopy } from './internal/gitRepoCopy';
+
+export {
+  exceptionName as sandboxMemoryExceptionName,
+  exceptionMessage as sandboxMemoryExceptionMessage,
+} from './memory/rollouts';

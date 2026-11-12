@@ -21,11 +21,35 @@ const turn = await session.submit('Summarize the results.');
 return vercelResponse(turn, session);
 ```
 
-The application has been owning the Session and provider. Reader cancellation has been releasing only the response reader while the Turn has been continuing. The application has been keeping the worker and Session alive until completion and closing the Session before its provider. Each response has been representing a fresh view; it has not been resuming an existing transcript or spanning steering boundaries.
+The application has been owning the Session and provider. Reader cancellation has been releasing only the response reader while the Turn has been continuing. The application has been keeping the worker and Session alive until completion and closing the Session before its provider. Each response has been representing a fresh view unless the application has been continuing an approval as described below. Arbitrary transcript resumption and steering across native turns have been remaining unsupported.
 
 The adapter has been omitting sensitive tool data by default. Explicit `{ includeToolData: true }` as the third argument has been enabling complete retained function/MCP arguments and results at settlement, keyed by canonical call ID. The application has been authorizing disclosure before opting in; remote bytes omitted by native retention limits have been remaining unavailable. Missing observations have been producing `resync_required`, with authorized history recovery remaining application-owned.
 
+The packaged adapter has been limiting each text view to 256 parts and 1,048,576 UTF-8 bytes. Opted-in tool data and reasoning summaries have been sharing a separate 1,048,576-byte limit, with at most 256 calls, 256 results, and 256 nonempty summaries. Exceeding a limit has been producing `resync_required`. The copyable recipes below have been counting text in UTF-16 code units instead, so non-ASCII text has been reaching their text limit at a different point.
+
 The copyable owning-response and AG-UI recipes below have been remaining available for their separate ownership and protocol contracts.
+
+### Select packaged stream content
+
+`vercelMessageStream(turn, session, options)` has been returning the same projection as a `ReadableStream<VercelMessageChunk>` for an application-owned transport. `vercelResponse` has been encoding those chunks as SSE. Both exports have been accepting the same options from `@openai/agents/ui`.
+
+The `includeReasoningSummaries: true` option has been including retained provider summaries at settlement. It has not been exposing encrypted reasoning. Both summaries and complete tool data have been remaining opt-in disclosures.
+
+For raw observed text, `textStream(turn)` from `@openai/agents/ui` has been returning a `ReadableStream<string>`. It has been reading text deltas without the Vercel adapter's final history comparison. A relevant observation gap has been failing that stream. The application has been using `turn.wait()` separately to observe validated completion or execution failure; an ended text stream has not been establishing success. Cancelling its reader has been leaving the Turn running.
+
+### Continue a managed approval
+
+With `{ includeToolApprovals: true }`, the packaged adapters have been displaying the next live [managed function approval](../guides/tools.md#managed-function-approvals-preview-source). This option has been disclosing the validated execution input even with `includeToolData: false`. The adapter has been withholding inputs that it cannot represent faithfully as JSON and returning `resync_required` instead.
+
+The application has been following this sequence while retaining the original Turn and Session:
+
+1. The client has been receiving `tool-input-available` and `tool-approval-request`, followed by `finish` with `finishReason: 'tool-calls'`. The SSE response has also been ending with `[DONE]`. This finish has been closing the reader while the Turn has been waiting for a decision.
+2. The server has been matching the displayed `approvalId` against `session.pendingInteractions()`, narrowing with `isFunctionApprovalRequest` from `@openai/agents`, and checking the original Turn's `submissionId`. It has been applying its own authenticated user decision through `session.respond(request.approve())` or `session.respond(request.reject(reason))`.
+3. After confirmed delivery, the server has been appending that displayed ID to `afterApprovals` in display order and opening `vercelResponse(turn, session, { includeToolApprovals: true, afterApprovals })` for the same issued Turn. The client has been retaining its prior UI message, marking the approval response, and applying the continuation to that message. The continuation has been skipping already displayed text and completing earlier approval parts.
+
+An approval part's `toolCallId` has been using the unique `approvalId`, rather than the provider call ID. Copied browser IDs have not been granting reply authority. An unresolved or mismatched ID in `afterApprovals` has been producing `resync_required`; an uncertain delivery has been requiring reconciliation against the live Session before continuation. Without the tool-data opt-in, completed approval outputs have been carrying `null` and errors have been carrying generic text.
+
+This flow has been handling managed function approvals only. It has not been handling executor approvals, MCP questions, or portable restoration. The local Vercel recipe below has been retaining its text-only contract.
 
 ## Run the example
 

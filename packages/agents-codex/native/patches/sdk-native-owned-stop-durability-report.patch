@@ -1,0 +1,19 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 70185e22337ab77f0b3a73ce5e653fbc052f9df9..c532406c878818561c0ca926abfaa4591ec6a8a4 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -4790,7 +4790,13 @@ async fn try_run_sampling_request(
+     tool_cleanup?;
+ 
+     // Tool effects have completed. Save their results before any dependent work.
+-    sess.ensure_rollout_durable().await?;
++    if let Err(error) = sess.ensure_rollout_durable().await {
++        if input_owner.stopping() {
++            // The captured stop owns the terminal persistence error.
++            return Err(CodexErr::TurnAborted);
++        }
++        return Err(error);
++    }
+ 
+     if should_emit_token_count {
+         // A tool call such as request_user_input can intentionally pause the turn. Emit token

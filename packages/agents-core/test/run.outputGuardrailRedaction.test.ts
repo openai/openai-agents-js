@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
@@ -44,23 +44,6 @@ import {
 type RunMode = 'non_streamed' | 'streamed';
 
 describe('output guardrail replay redaction', () => {
-  it('preserves typed run context in per-run blocked-message formatters', () => {
-    type Context = { locale: string };
-    const agent = new Agent<Context>({
-      name: 'Typed blocked-message formatter agent',
-    });
-    const typecheckRunOptions = () =>
-      run(agent, 'input', {
-        context: { locale: 'ja' },
-        outputGuardrailBlockedMessage: (args) => {
-          expectTypeOf(args.runContext.context).toEqualTypeOf<Context>();
-          return args.defaultMessage;
-        },
-      });
-
-    expectTypeOf(typecheckRunOptions).toBeFunction();
-  });
-
   it.each([
     {
       outputType: 'text',

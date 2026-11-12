@@ -1,0 +1,364 @@
+diff --git a/codex-rs/codex-api/src/endpoint/mod.rs b/codex-rs/codex-api/src/endpoint/mod.rs
+index 355d67e..462c435 100644
+--- a/codex-rs/codex-api/src/endpoint/mod.rs
++++ b/codex-rs/codex-api/src/endpoint/mod.rs
+@@ -37,7 +37,10 @@ pub use responses::ResponsesClient;
+ pub use responses::ResponsesOptions;
+ pub use responses_websocket::ResponsesWebsocketClient;
+ pub use responses_websocket::ResponsesWebsocketClose;
++pub use responses_websocket::ResponsesWebsocketCommand;
++pub use responses_websocket::ResponsesWebsocketConnect;
+ pub use responses_websocket::ResponsesWebsocketConnection;
++pub use responses_websocket::ResponsesWebsocketMessageTransport;
+ pub use responses_websocket::ResponsesWebsocketProbe;
+ pub use search::SearchClient;
+ 
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index 5a51526..fb26a94 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -24,6 +24,7 @@ use codex_websocket_client::WebSocketConnector;
+ use futures::FutureExt;
+ use futures::SinkExt;
+ use futures::StreamExt;
++use futures::future::BoxFuture;
+ use http::HeaderMap;
+ use http::StatusCode;
+ use serde::Deserialize;
+@@ -51,14 +52,32 @@ use tungstenite::extensions::compression::deflate::DeflateConfig;
+ use tungstenite::protocol::WebSocketConfig;
+ use url::Url;
+ 
++/// A host-owned connection for a selected internal Responses route.
++pub type ResponsesWebsocketConnect = Arc<
++    dyn Fn(http::Request<()>)
++            -> BoxFuture<'static, Result<ResponsesWebsocketMessageTransport, ApiError>>
++        + Send
++        + Sync,
++>;
++
++/// The host driver owns physical transport, framing and joined cleanup.
++/// It must close its connection after commands end or the host revokes it.
++pub struct ResponsesWebsocketMessageTransport {
++    pub commands: mpsc::Sender<ResponsesWebsocketCommand>,
++    pub messages: mpsc::UnboundedReceiver<Result<Message, WsError>>,
++    pub driver: tokio::task::JoinHandle<()>,
++    pub headers: HeaderMap,
++}
++
+ struct WsStream {
+-    tx_command: mpsc::Sender<WsCommand>,
++    tx_command: mpsc::Sender<ResponsesWebsocketCommand>,
+     rx_message: mpsc::UnboundedReceiver<Result<Message, WsError>>,
+     pump_task: tokio::task::JoinHandle<()>,
++    abort_on_drop: bool,
+     upgrade_rate_limits: Option<ApiRateLimits>,
+ }
+ 
+-enum WsCommand {
++pub enum ResponsesWebsocketCommand {
+     Send {
+         message: Message,
+         tx_result: oneshot::Sender<Result<(), WsError>>,
+@@ -67,7 +86,7 @@ enum WsCommand {
+ 
+ impl WsStream {
+     fn new(inner: WebSocketConnection, upgrade_rate_limits: Option<ApiRateLimits>) -> Self {
+-        let (tx_command, mut rx_command) = mpsc::channel::<WsCommand>(32);
++        let (tx_command, mut rx_command) = mpsc::channel::<ResponsesWebsocketCommand>(32);
+         let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
+ 
+         let pump_task = tokio::spawn(async move {
+@@ -79,7 +98,7 @@ impl WsStream {
+                             break;
+                         };
+                         match command {
+-                            WsCommand::Send { message, tx_result } => {
++                            ResponsesWebsocketCommand::Send { message, tx_result } => {
+                                 let result = inner.send(message).await;
+                                 let should_break = result.is_err();
+                                 let _ = tx_result.send(result);
+@@ -127,13 +146,14 @@ impl WsStream {
+             tx_command,
+             rx_message,
+             pump_task,
++            abort_on_drop: true,
+             upgrade_rate_limits,
+         }
+     }
+ 
+     async fn request(
+         &mut self,
+-        make_command: impl FnOnce(oneshot::Sender<Result<(), WsError>>) -> WsCommand,
++        make_command: impl FnOnce(oneshot::Sender<Result<(), WsError>>) -> ResponsesWebsocketCommand,
+     ) -> Result<(), WsError> {
+         let (tx_result, rx_result) = oneshot::channel();
+         if self.tx_command.send(make_command(tx_result)).await.is_ok()
+@@ -148,7 +168,7 @@ impl WsStream {
+     }
+ 
+     async fn send(&mut self, message: Message) -> Result<(), WsError> {
+-        self.request(|tx_result| WsCommand::Send { message, tx_result })
++        self.request(|tx_result| ResponsesWebsocketCommand::Send { message, tx_result })
+             .await
+     }
+ 
+@@ -159,7 +179,9 @@ impl WsStream {
+ 
+ impl Drop for WsStream {
+     fn drop(&mut self) {
+-        self.pump_task.abort();
++        if self.abort_on_drop {
++            self.pump_task.abort();
++        }
+     }
+ }
+ 
+@@ -374,6 +396,7 @@ impl ResponsesWebsocketConnection {
+ pub struct ResponsesWebsocketClient {
+     provider: Provider,
+     auth: SharedAuthProvider,
++    host_connect: Option<ResponsesWebsocketConnect>,
+ }
+ 
+ /// Close frame information captured by a handshake probe.
+@@ -403,7 +426,16 @@ pub struct ResponsesWebsocketProbe {
+ impl ResponsesWebsocketClient {
+     /// Creates a Responses WebSocket client for an already-resolved provider and auth source.
+     pub fn new(provider: Provider, auth: SharedAuthProvider) -> Self {
+-        Self { provider, auth }
++        Self {
++            provider,
++            auth,
++            host_connect: None,
++        }
++    }
++
++    pub fn with_host_connect(mut self, connect: Option<ResponsesWebsocketConnect>) -> Self {
++        self.host_connect = connect;
++        self
+     }
+ 
+     #[instrument(
+@@ -429,8 +461,14 @@ impl ResponsesWebsocketClient {
+             merge_request_headers(&self.provider.headers, extra_headers, default_headers);
+         self.auth.add_auth_headers(&mut headers);
+ 
+-        let (stream, _status, server_reasoning_included, server_model) =
+-            connect_websocket(ws_url, headers, http_client_factory, turn_state.clone()).await?;
++        let (stream, _status, server_reasoning_included, server_model) = connect_websocket(
++            ws_url,
++            headers,
++            http_client_factory,
++            turn_state,
++            self.host_connect.as_ref(),
++        )
++        .await?;
+         Ok(ResponsesWebsocketConnection::new(
+             stream,
+             self.provider.stream_idle_timeout,
+@@ -468,6 +506,7 @@ impl ResponsesWebsocketClient {
+             headers,
+             http_client_factory,
+             /*turn_state*/ None,
++            /*host_connect*/ None,
+         )
+         .await?;
+         let immediate_close = tokio::time::timeout(immediate_close_timeout, stream.next())
+@@ -522,6 +561,7 @@ async fn connect_websocket(
+     headers: HeaderMap,
+     http_client_factory: &HttpClientFactory,
+     turn_state: Option<Arc<OnceLock<String>>>,
++    host_connect: Option<&ResponsesWebsocketConnect>,
+ ) -> Result<(WsStream, StatusCode, bool, Option<String>), ApiError> {
+     info!("connecting to websocket: {url}");
+ 
+@@ -531,41 +571,47 @@ async fn connect_websocket(
+         .map_err(|err| ApiError::Stream(format!("failed to build websocket request: {err}")))?;
+     request.headers_mut().extend(headers);
+ 
+-    let connector = WebSocketConnector::new(http_client_factory)
+-        .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
+-    let response = connector.connect(request, websocket_config()).await;
+-
+-    let (stream, response) = match response {
+-        Ok((stream, response)) => {
+-            info!("successfully connected to websocket: {url}");
+-            (stream, response)
+-        }
+-        Err(err) => {
+-            error!("failed to connect to websocket: {err}, url: {url}");
+-            return Err(map_ws_error(err, &url));
+-        }
++    let (stream, status, headers) = if let Some(connect) = host_connect {
++        let transport = connect(request).await?;
++        let stream = WsStream {
++            tx_command: transport.commands,
++            rx_message: transport.messages,
++            pump_task: transport.driver,
++            abort_on_drop: false,
++            upgrade_rate_limits: parse_api_rate_limits(&transport.headers),
++        };
++        (stream, StatusCode::SWITCHING_PROTOCOLS, transport.headers)
++    } else {
++        let connector = WebSocketConnector::new(http_client_factory)
++            .map_err(|err| ApiError::Stream(format!("failed to configure websocket TLS: {err}")))?;
++        let (socket, response) = match connector.connect(request, websocket_config()).await {
++            Ok((socket, response)) => {
++                info!("successfully connected to websocket: {url}");
++                (socket, response)
++            }
++            Err(err) => {
++                error!("failed to connect to websocket: {err}, url: {url}");
++                return Err(map_ws_error(err, &url));
++            }
++        };
++        let (parts, _) = response.into_parts();
++        let stream = WsStream::new(socket, parse_api_rate_limits(&parts.headers));
++        (stream, parts.status, parts.headers)
+     };
+ 
+-    let reasoning_included = response.headers().contains_key(X_REASONING_INCLUDED_HEADER);
+-    let server_model = response
+-        .headers()
++    let reasoning_included = headers.contains_key(X_REASONING_INCLUDED_HEADER);
++    let server_model = headers
+         .get(OPENAI_MODEL_HEADER)
+         .and_then(|value| value.to_str().ok())
+         .map(ToString::to_string);
+     if let Some(turn_state) = turn_state
+-        && let Some(header_value) = response
+-            .headers()
++        && let Some(header_value) = headers
+             .get(X_CODEX_TURN_STATE_HEADER)
+             .and_then(|value| value.to_str().ok())
+     {
+         let _ = turn_state.set(header_value.to_string());
+     }
+-    Ok((
+-        WsStream::new(stream, parse_api_rate_limits(response.headers())),
+-        response.status(),
+-        reasoning_included,
+-        server_model,
+-    ))
++    Ok((stream, status, reasoning_included, server_model))
+ }
+ 
+ fn websocket_config() -> WebSocketConfig {
+@@ -1017,6 +1063,7 @@ mod tests {
+             tx_command,
+             rx_message,
+             pump_task: tokio::spawn(std::future::pending::<()>()),
++            abort_on_drop: true,
+             upgrade_rate_limits: None,
+         };
+         let connection =
+@@ -1072,7 +1119,7 @@ mod tests {
+         let (tx_message, rx_message) = mpsc::unbounded_channel();
+         let pump_task =
+             tokio::spawn(async move {
+-                let Some(WsCommand::Send { message, tx_result }) = rx_command.recv().await else {
++                let Some(ResponsesWebsocketCommand::Send { message, tx_result }) = rx_command.recv().await else {
+                     panic!("missing response.create");
+                 };
+                 assert!(matches!(message, Message::Text(_)));
+@@ -1088,6 +1135,7 @@ mod tests {
+             tx_command,
+             rx_message,
+             pump_task,
++            abort_on_drop: true,
+             upgrade_rate_limits: None,
+         };
+         let (tx_event, mut rx_event) = mpsc::channel(8);
+@@ -1209,7 +1257,7 @@ mod tests {
+             let (tx_message, rx_message) = mpsc::unbounded_channel();
+             let pump_task =
+                 tokio::spawn(async move {
+-                    let Some(WsCommand::Send { tx_result, .. }) = rx_command.recv().await else {
++                    let Some(ResponsesWebsocketCommand::Send { tx_result, .. }) = rx_command.recv().await else {
+                         panic!("missing response.create");
+                     };
+                     tx_result.send(Ok(())).unwrap();
+@@ -1226,6 +1274,7 @@ mod tests {
+                 tx_command,
+                 rx_message,
+                 pump_task,
++                abort_on_drop: true,
+                 upgrade_rate_limits: None,
+             };
+             let (tx_event, mut rx_event) = mpsc::channel(8);
+diff --git a/codex-rs/codex-api/src/lib.rs b/codex-rs/codex-api/src/lib.rs
+index 8756512..0b4af4b 100644
+--- a/codex-rs/codex-api/src/lib.rs
++++ b/codex-rs/codex-api/src/lib.rs
+@@ -84,7 +84,10 @@ pub use crate::endpoint::ResponsesClient;
+ pub use crate::endpoint::ResponsesOptions;
+ pub use crate::endpoint::ResponsesWebsocketClient;
+ pub use crate::endpoint::ResponsesWebsocketClose;
++pub use crate::endpoint::ResponsesWebsocketCommand;
++pub use crate::endpoint::ResponsesWebsocketConnect;
+ pub use crate::endpoint::ResponsesWebsocketConnection;
++pub use crate::endpoint::ResponsesWebsocketMessageTransport;
+ pub use crate::endpoint::ResponsesWebsocketProbe;
+ pub use crate::endpoint::SearchClient;
+ pub use crate::endpoint::charge_realtime_json_storage;
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 24102fa..6f4c6a4 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1567,16 +1567,27 @@ impl ModelClient {
+             self.state.auth_env_telemetry.clone(),
+         );
+         let websocket_connect_timeout = self.state.provider.info().websocket_connect_timeout();
++        let thread_id = self.state.thread_id.to_string();
++        let host_connect = api_provider
++            .websocket_url_for_path("/responses")
++            .ok()
++            .and_then(|url| {
++                self.request_contributors
++                    .iter()
++                    .find_map(|contributor| contributor.websocket_connect(url.as_str(), &thread_id))
++            });
+         let start = Instant::now();
+         let result = match tokio::time::timeout(
+             websocket_connect_timeout,
+-            ApiWebSocketResponsesClient::new(api_provider, api_auth).connect(
+-                &self.http_client_factory,
+-                headers,
+-                codex_login::default_client::default_headers(),
+-                /*turn_state*/ None,
+-                Some(websocket_telemetry),
+-            ),
++            ApiWebSocketResponsesClient::new(api_provider, api_auth)
++                .with_host_connect(host_connect)
++                .connect(
++                    &self.http_client_factory,
++                    headers,
++                    codex_login::default_client::default_headers(),
++                    /*turn_state*/ None,
++                    Some(websocket_telemetry),
++                ),
+         )
+         .await
+         {
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index ba3ffa1..e00ac13 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -199,6 +199,16 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
+         None
+     }
+ 
++    /// Select a host-owned in-process WebSocket connection before dialing.
++    /// A selected connection owns its transport outcome.
++    fn websocket_connect(
++        &self,
++        _url: &str,
++        _thread_id: &str,
++    ) -> Option<codex_api::ResponsesWebsocketConnect> {
++        None
++    }
++
+     /// Whether this exact operation opted into prepared-request editing.
+     /// Keep this captured marker true through retirement; it is not an owner-liveness check.
+     /// Hosts must reject unsupported operation settings before starting work.

@@ -27,6 +27,8 @@ For an offline run, try the [scripted classic example](https://github.com/openai
 | Sandbox APIs and local clients | `@openai/agents/classic/sandbox` or `@openai/agents/classic/sandbox/local` |
 | Classic utilities | `@openai/agents/classic/utils` |
 
+The current source build also exposes Classic Realtime as the `realtime` namespace on `@openai/agents`.
+
 The [classic SDK guides](https://openai.github.io/openai-agents-js/) describe these features. When a guide's application code imports from the package root or `@openai/agents/realtime`, use the corresponding classic path in the table. The [testing guide](https://github.com/openai/openai-agents-js/blob/feat/codex-harness/packages/agents-codex/TESTING.md) shows how to use the scripted helpers. SDK-backed classic MCP clients require the optional `@modelcontextprotocol/client` dependency, version `2.4.0` in the matching core package.
 
 Application import changes do not update third-party adapters. Check the adapter's SDK versions and Classic support; an adapter that requires the v0 root API may need a compatible released v0 SDK in a separate installation.

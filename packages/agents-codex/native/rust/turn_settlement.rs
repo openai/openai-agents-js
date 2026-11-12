@@ -37,6 +37,9 @@ enum Admission {
 
 pub(crate) struct Turn {
     pub(crate) tracing: Option<Arc<codex_otel::sdk_trace::ContextLease>>,
+    pub(crate) model_override: Option<String>,
+    pub(crate) model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     id: String,
     accepted: AtomicBool,
     delivered: AtomicBool,
@@ -52,7 +55,10 @@ pub(crate) struct Turn {
     local_exec_cancel_failed: AtomicBool,
     born_fenced: bool,
     same_id_recovery: bool,
+    pub(crate) client_search_catalogs:
+        Mutex<Vec<Arc<crate::python_tools::ClientToolSearchCatalog>>>,
     pub(crate) tool_proposal: Mutex<Option<crate::python_tools::TerminalProposal>>,
+    model_attempt: Mutex<Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>>,
     provider_error: Mutex<
         Option<(
             codex_protocol::protocol::CodexErrorInfo,
@@ -70,6 +76,28 @@ struct Steering {
 }
 
 impl Turn {
+    pub(crate) fn retain_model_attempt(
+        &self,
+        attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+    ) {
+        *self
+            .model_attempt
+            .lock()
+            .expect("Model attempt mirror poisoned") = attempt;
+    }
+    pub(crate) fn model_attempt_snapshot(
+        &self,
+    ) -> anyhow::Result<Option<codex_protocol::model_retry::ModelAttemptSnapshot>> {
+        let attempt = self
+            .model_attempt
+            .lock()
+            .expect("Model attempt mirror poisoned")
+            .clone();
+        attempt
+            .map(|attempt| attempt.snapshot().map_err(anyhow::Error::msg))
+            .transpose()
+    }
+
     pub(crate) fn tool_failure_ready(&self) -> bool {
         *self.admission.borrow() == Admission::Ready
     }
@@ -718,6 +746,14 @@ impl TurnLifecycleContributor for Contributor {
             // Even same-ID recovery receives a new native lifecycle receipt.
             input.turn_store.insert(Turn {
                 tracing: tracing.context.clone(),
+                model_settings_override: input
+                    .turn_store
+                    .get::<codex_extension_api::CapturedRunModelSettingsOverride>()
+                    .map(|settings| settings.0.clone()),
+                model_override: input
+                    .turn_store
+                    .get::<codex_extension_api::CapturedRunModelOverride>()
+                    .map(|model| model.0.clone()),
                 id: input.turn_id.to_owned(),
                 accepted: AtomicBool::new(false),
                 delivered: AtomicBool::new(false),
@@ -733,8 +769,10 @@ impl TurnLifecycleContributor for Contributor {
                 local_exec_cancel_failed: AtomicBool::new(false),
                 born_fenced,
                 same_id_recovery,
+                model_attempt: Mutex::default(),
                 provider_error: Mutex::default(),
                 tool_proposal: Mutex::default(),
+                client_search_catalogs: Mutex::default(),
             });
             let turn = input
                 .turn_store
@@ -849,6 +887,7 @@ fn terminal(
             turn.release_callback_ownership();
         }
         if let Some(owner) = thread_store.get::<crate::native_interception::Control>() {
+            owner.seal_request_attempts(&turn.id);
             owner.graph().changed.send_replace(());
         }
     }
@@ -1157,7 +1196,7 @@ mod provider_error_tests {
         let started = settlement.observe();
         assert!(started.active);
         assert!(Arc::ptr_eq(started.receipt.as_ref().unwrap(), &receipt));
-        terminal(&thread, &store, false);
+        terminal(&thread, &store, false, false);
         assert!(receipt.terminal());
         // Terminal delivery alone cannot settle an unaccepted pending receipt.
         assert!(settlement.observe().active);
@@ -1184,12 +1223,12 @@ mod provider_error_tests {
         let original = {
             let store = ExtensionData::new("original");
             let receipt = start(&thread, &store, "original").await;
-            terminal(&thread, &store, true);
+            terminal(&thread, &store, true, true);
             receipt
         };
         let replacement_store = ExtensionData::new("replacement");
         let replacement = start(&thread, &replacement_store, "replacement").await;
-        terminal(&thread, &replacement_store, false);
+        terminal(&thread, &replacement_store, false, false);
 
         let settlement = thread.get::<Settlement>().unwrap();
         assert!(settlement.is_current(&replacement));

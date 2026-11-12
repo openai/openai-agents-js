@@ -216,6 +216,8 @@ pub struct ThreadOptions {
     pub(crate) sdk_reconciled_calls: Vec<crate::local_reconciliation::Receipt>,
     #[serde(rename = "_native_agent_roles")]
     native_agent_roles: Option<Vec<String>>,
+    #[serde(rename = "_native_agent_tools")]
+    native_agent_tools: Vec<codex_core::ManagedAgentToolSpec>,
     #[serde(rename = "_native_agent_before_step")]
     native_agent_before_step: bool,
     #[serde(rename = "_native_agent_max_depth")]
@@ -225,6 +227,9 @@ pub struct ThreadOptions {
     managed_instructions: bool,
     #[serde(rename = "_sdk_instruction_files")]
     instruction_files: Vec<Value>,
+    #[serde(rename = "_sdk_request_transport")]
+    sdk_request_transport:
+        Option<codex_protocol::model_request_transport::RequestTransportOverrides>,
     config: Map<String, Value>,
     runtime: Map<String, Value>,
     instructions: Option<String>,
@@ -356,7 +361,15 @@ impl ThreadOptions {
         }
         let runtime = merged(base_runtime, self.runtime)?;
         let source = merged(base_config, self.config)?;
-        let configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
+        let mut configuration = config::load(&source, &runtime, Some(cloud)).await?.0;
+        if let Some(transport) = self.sdk_request_transport {
+            let controls = codex_protocol::model_request_controls::ModelRequestControls {
+                request_transport: Some(Some(transport)),
+                ..Default::default()
+            };
+            controls.validate_shape().map_err(anyhow::Error::msg)?;
+            configuration.sdk_request_controls.apply_patch(&controls);
+        }
         let mut options = StartThreadOptions::new(configuration);
         options.thread_extension_init.insert(self.context_callbacks);
         options
@@ -372,6 +385,10 @@ impl ThreadOptions {
         anyhow::ensure!(
             !self.native_agent_before_step || self.native_agent_roles.is_some(),
             "Child step selection requires NativeAgents roles"
+        );
+        anyhow::ensure!(
+            self.native_agent_tools.is_empty() || self.native_agent_roles.is_some(),
+            "Native role tools require NativeAgents roles"
         );
         if self.native_agent_before_step {
             options
@@ -407,10 +424,21 @@ impl ThreadOptions {
                 .thread_extension_init
                 .insert(crate::native_agents::Policy {
                     roles,
+                    managed_tools: self
+                        .native_agent_tools
+                        .iter()
+                        .map(|tool| tool.name.clone())
+                        .collect(),
                     max_depth,
                     inherited_instructions,
                     allowed: Default::default(),
                 });
+            if !self.native_agent_tools.is_empty() {
+                options.thread_extension_init.insert(
+                    codex_core::ManagedAgentToolCatalog::new(self.native_agent_tools)
+                        .map_err(anyhow::Error::msg)?,
+                );
+            }
         }
 
         let profile_files = self

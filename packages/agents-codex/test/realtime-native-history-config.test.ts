@@ -1081,9 +1081,15 @@ nativeIt.each([true, false])(
   },
 );
 
-nativeIt(
-  'continues after a correlated provider request rejection',
-  async () => {
+nativeIt.each(
+  (['invalid_request_error', 'server_error'] as const).flatMap((errorType) =>
+    [undefined, 'unrelated-event'].map(
+      (eventId) => [errorType, eventId] as const,
+    ),
+  ),
+)(
+  'releases only the matching response create after provider rejection (%s, %s)',
+  async (errorType, unrelatedId) => {
     const model = new ModelServer([]);
     const peer = new HistoryPeer(model);
     try {
@@ -1094,19 +1100,45 @@ nativeIt(
       }).session();
       await using voice = await session.realtime({ model: 'fixture-realtime' });
       const seen: NativeRealtimeEvent[] = [];
+      let failure: unknown;
       const reading = (async () => {
         for await (const event of voice.events()) seen.push(event);
-      })();
+      })().catch((error: unknown) => {
+        failure = error;
+      });
       try {
         await voice.requestResponse();
         const first = await peer.frame('response.create');
         expect(first.event_id).toEqual(expect.any(String));
-        await voice.requestResponse();
         const secondIndex = peer.frames.indexOf(first) + 1;
         peer.send({
           type: 'error',
           error: {
-            type: 'invalid_request_error',
+            type: errorType,
+            code: 'small_provider_error',
+            ...(unrelatedId === undefined ? {} : { event_id: unrelatedId }),
+          },
+        });
+        await vi.waitFor(() =>
+          expect(seen).toContainEqual({
+            type: 'provider_request_error',
+            code: 'small_provider_error',
+            ...(unrelatedId === undefined ? {} : { eventId: unrelatedId }),
+          }),
+        );
+        await voice.requestResponse();
+        // The peer observes this writer barrier after the queued create command.
+        await voice.sendEvent({ type: 'fixture.barrier' });
+        await peer.frame('fixture.barrier', secondIndex);
+        expect(
+          peer.frames
+            .slice(secondIndex)
+            .some((frame) => frame.type === 'response.create'),
+        ).toBe(false);
+        peer.send({
+          type: 'error',
+          error: {
+            type: errorType,
             code: 'invalid_value',
             event_id: first.event_id,
           },
@@ -1134,6 +1166,7 @@ nativeIt(
             }),
           );
         });
+        expect(failure).toBeUndefined();
         expect(peer.models).toEqual(['fixture-realtime']);
       } finally {
         await voice.close();
@@ -1685,6 +1718,8 @@ nativeIt.each(['pcm16', 'g711_ulaw', 'g711_alaw'] as const)(
       await using voice = await session.realtime({
         model: 'fixture-realtime',
         settings: { outputFormat: 'pcm16', outputVoice: 'marin' },
+        historyStoreAudio: true,
+        includeRawProviderEvents: true,
       });
       const seen: NativeRealtimeEvent[] = [];
       const reading = (async () => {
@@ -1714,6 +1749,51 @@ nativeIt.each(['pcm16', 'g711_ulaw', 'g711_alaw'] as const)(
           type: 'response.created',
           response: { id: responseId, metadata: create.response.metadata },
         });
+        const embeddedId = `embedded-${format}`;
+        const embedded = Buffer.alloc(64, 7);
+        const completedItem = {
+          type: 'response.output_item.done',
+          response_id: responseId,
+          output_index: 0,
+          item: {
+            id: embeddedId,
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              { type: 'output_audio', audio: embedded.toString('base64') },
+            ],
+          },
+        };
+        peer.send(completedItem);
+        const retainedItem = () =>
+          voice.providerHistory().find((item) => item.id === embeddedId);
+        await vi.waitFor(() => {
+          expect(retainedItem()).toMatchObject({
+            content: completedItem.item.content,
+          });
+          expect(seen).toContainEqual({
+            type: 'raw_provider_event',
+            event: completedItem,
+          });
+        });
+        peer.send({
+          type: 'conversation.item.truncated',
+          item_id: embeddedId,
+          content_index: 0,
+          audio_end_ms: 1,
+        });
+        const bytesAtOneMs = format === 'pcm16' ? 48 : 8;
+        await vi.waitFor(() =>
+          expect(retainedItem()).toMatchObject({
+            content: [
+              {
+                type: 'output_audio',
+                audio: embedded.subarray(0, bytesAtOneMs).toString('base64'),
+              },
+            ],
+          }),
+        );
         const data = Buffer.from([1, 2, 3, 4]);
         peer.send({
           type: 'response.output_audio.delta',
@@ -4012,6 +4092,92 @@ nativeIt(
         await voice.close();
         await reading;
       }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt.each(['server_vad', 'semantic_vad'] as const)(
+  'preserves %s provider VAD data for SIP, text startup, and live updates',
+  async (type) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Reply with text.',
+      }).session();
+      const options = {
+        model: 'fixture-realtime',
+        outputModality: 'text' as const,
+        settings: {
+          turnDetection: {
+            type,
+            providerData: { vendor_tuning: { enabled: false, delay_ms: 0 } },
+          },
+        },
+      };
+      const config = await session.buildRealtimeSipConfig(options);
+      expect(config).toMatchObject({
+        output_modalities: ['text'],
+        audio: {
+          input: {
+            turn_detection: {
+              type,
+              vendor_tuning: { enabled: false, delay_ms: 0 },
+            },
+          },
+        },
+      });
+      expect(peer.frames).toEqual([]);
+      expect(peer.models).toEqual([]);
+      await using voice = await session.realtime(options);
+      const initial = await peer.frame('session.update');
+      const expected = { model: peer.models[0], ...initial.session };
+      delete expected.id;
+      expect(config).toEqual(expected);
+      const after = peer.frames.length;
+      await voice.update({
+        turnDetection: {
+          type,
+          providerData: { vendor_tuning: { delay_ms: 5 } },
+        },
+      });
+      const update = await peer.frame('session.update', after);
+      expect(update.session).toMatchObject({
+        audio: {
+          input: {
+            turn_detection: { type, vendor_tuning: { delay_ms: 5 } },
+          },
+        },
+      });
+      for (const providerData of [{}, null]) {
+        const after = peer.frames.length;
+        await voice.update({ turnDetection: { type, providerData } });
+        const frame = await peer.frame('session.update', after);
+        expect(frame.session.audio.input.turn_detection).toEqual({ type });
+      }
+      const sparseAfter = peer.frames.length;
+      await voice.update({ outputSpeed: 1.25 });
+      const sparse = await peer.frame('session.update', sparseAfter);
+      expect(sparse.session.audio.input?.turn_detection ?? { type }).toEqual({
+        type,
+      });
+      const rejectedAfter = peer.frames.length;
+      await expect(
+        voice.update({
+          turnDetection: { type, providerData: { threshold: 0 } },
+        }),
+      ).rejects.toThrow('cannot override typed');
+      expect(peer.frames).toHaveLength(rejectedAfter);
+      await voice.update({ turnDetection: null });
+      const disabled = await peer.frame('session.update', rejectedAfter);
+      expect(disabled.session.audio.input.turn_detection).toBeNull();
+      expect(model.requests).toEqual([]);
     } finally {
       await peer.close();
       await ModelServer.closeAll();

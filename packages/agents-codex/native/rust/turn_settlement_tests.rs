@@ -488,9 +488,11 @@ async fn completed_steering_ids_cannot_credit_a_later_generation_or_recovery() {
         let request = |kind| {
             let mut metadata = None;
             engine.interception.request(ModelRequestInput {
+                attempts: None,
                 kind,
                 thread_id: &state.id.to_string(),
                 model: "gpt-5.1-codex",
+                model_omitted: false,
                 client_metadata: &mut metadata,
             });
         };
@@ -702,6 +704,7 @@ async fn child_submit_waits_for_its_passive_native_turn_to_release_the_slot() {
             let (mut startup, _) = engine.build_startup(options).await.unwrap();
             startup.thread_extension_init.insert(crate::native_agents::Policy {
                 roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                managed_tools: Vec::new(),
                 allowed: Default::default(),
             });
             // The parent remains the only SDK event owner for this native child.
@@ -1834,6 +1837,7 @@ async fn raw_child_steering_and_retained_continuation_case() {
             let (mut startup, instructions) = engine.build_startup(serde_json::from_value(json!({"_managed_instructions":true})).unwrap()).await.unwrap();
             startup.thread_extension_init.insert(crate::native_agents::Policy {
                 roles: Vec::new(), max_depth: 1, inherited_instructions: None,
+                managed_tools: Vec::new(),
                 allowed: Default::default(),
             });
             let parent = engine.start_prepared(startup, instructions, None).await.unwrap();
@@ -1866,6 +1870,7 @@ async fn raw_child_steering_and_retained_continuation_case() {
             });
             *store.completion_flush_hold.lock().unwrap() = Some(hold.clone());
             let mut initial = request("initial child input");
+            initial.start.model_override = Some("retained-model-fixture".into());
             initial.trace = child.thread.thread_extension_data()
                 .get::<crate::native_interception::Control>().unwrap().creation_trace().unwrap();
             initial.start.final_output_json_schema = Some(json!({
@@ -1927,6 +1932,8 @@ async fn raw_child_steering_and_retained_continuation_case() {
                 let metadata: Value = serde_json::from_str(request["client_metadata"]["x-codex-turn-metadata"].as_str().unwrap()).unwrap();
                 metadata["thread_id"] == child_id.to_string()
             }).collect();
+            assert_eq!(requests[0]["model"], "retained-model-fixture");
+            assert_eq!(requests[1]["model"], "retained-model-fixture");
             assert!(!requests[0]["input"].to_string().contains("RAW_RETAINED_AFTER_LAST_SAMPLE"));
             assert!(requests[1]["input"].to_string().contains("RAW_RETAINED_AFTER_LAST_SAMPLE"));
             }

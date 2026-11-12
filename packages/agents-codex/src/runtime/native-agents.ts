@@ -42,6 +42,8 @@ export interface NativeToolCall {
   readonly runtimeToolCallId?: string | null;
 }
 
+const builtInRoles = ['default', 'explorer', 'worker'];
+
 export interface NativeRoleOptions {
   name: string;
   instructions: string;
@@ -60,7 +62,7 @@ export class NativeRole {
   constructor(options: NativeRoleOptions) {
     if (
       !/^[A-Za-z0-9_-]{1,64}$/.test(options.name) ||
-      ['default', 'explorer', 'worker'].includes(options.name)
+      builtInRoles.includes(options.name)
     )
       throw new TypeError('Choose a distinct native role name');
     for (const value of [
@@ -90,8 +92,16 @@ export class NativeRole {
   }
 }
 
+/** A collaboration tool that returns the result of a selected native role. */
+export interface NativeRoleTool {
+  readonly name: string;
+  readonly role: string;
+  readonly description: string;
+}
+
 export interface NativeAgentsOptions<Context = unknown> {
   additionalRoles?: readonly NativeRole[];
+  managedTools?: readonly NativeRoleTool[];
   maxChildren?: number;
   maxDepth?: number;
   /** Permit owned child questions through the Session's interaction API. */
@@ -115,6 +125,7 @@ export interface NativeAgentsOptions<Context = unknown> {
 export class NativeAgents<Context = unknown> {
   readonly kind = 'native_agents' as const;
   readonly additionalRoles: readonly NativeRole[];
+  readonly managedTools: readonly NativeRoleTool[];
   readonly maxChildren?: number;
   readonly maxDepth: number;
   readonly interactions: boolean;
@@ -130,6 +141,32 @@ export class NativeAgents<Context = unknown> {
       throw new TypeError(
         'Additional roles must have distinct NativeRole declarations',
       );
+    const roleNames = new Set([
+      ...builtInRoles,
+      ...roles.map((role) => role.name),
+    ]);
+    const names = new Set<string>();
+    const managedTools = (options.managedTools ?? []).map((tool) => {
+      if (
+        !tool ||
+        typeof tool.name !== 'string' ||
+        !/^[a-z][a-z0-9_]{0,63}$/.test(tool.name) ||
+        tool.name === 'close_agent' ||
+        collaborationTools.some((name) => name === tool.name) ||
+        names.has(tool.name)
+      )
+        throw new TypeError('Choose a distinct native role tool name');
+      if (!roleNames.has(tool.role))
+        throw new TypeError('Native role tools must reference a declared role');
+      if (typeof tool.description !== 'string' || !tool.description.trim())
+        throw new TypeError('Native role tool descriptions must not be blank');
+      names.add(tool.name);
+      return Object.freeze({
+        name: tool.name,
+        role: tool.role,
+        description: tool.description,
+      });
+    });
     for (const value of [options.maxChildren, options.maxDepth])
       if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
         throw new TypeError('Native child limits must be positive integers');
@@ -149,6 +186,7 @@ export class NativeAgents<Context = unknown> {
     )
       throw new TypeError('Native child approval must be callable');
     this.additionalRoles = Object.freeze(roles);
+    this.managedTools = Object.freeze(managedTools);
     this.maxChildren = options.maxChildren;
     this.maxDepth = options.maxDepth ?? 1;
     this.interactions = options.interactions ?? false;
@@ -168,12 +206,22 @@ export const collaborationTools = Object.freeze([
   'list_agents',
 ] as const);
 
+/** @internal Include application-configured native role tools in the same namespace. */
+export function collaborationToolNames(
+  declaration: Pick<NativeAgents, 'managedTools'>,
+): string[] {
+  return [
+    ...collaborationTools,
+    ...declaration.managedTools.map((tool) => tool.name),
+  ];
+}
+
 /** @internal Approval covers root and descendant collaboration dispatch. */
 export function nativeAgentsPolicyRules(
   declaration: NativeAgents,
 ): JsonObject[] {
   return declaration.approval
-    ? collaborationTools.map((name) => ({
+    ? collaborationToolNames(declaration).map((name) => ({
         name,
         namespace: 'collaboration',
         timeout: null,
@@ -196,10 +244,13 @@ export async function applyNativeAgentsApproval<Context>(
     !declaration.approval ||
     request.phase !== 'before' ||
     tool.namespace !== 'collaboration' ||
-    !collaborationTools.some((name) => name === tool.name)
+    !collaborationToolNames(declaration).some((name) => name === tool.name)
   )
     return { action: 'continue' };
-  if (request.call_id == null) return { action: 'deny' };
+  const callbackId =
+    request.call_id ??
+    (request.route === 'code_mode' ? request.runtime_tool_call_id : null);
+  if (typeof callbackId !== 'string') return { action: 'deny' };
   try {
     signal.throwIfAborted();
     const call: NativeToolCall = Object.freeze({
@@ -236,7 +287,7 @@ export async function applyNativeAgentsApproval<Context>(
         call: interceptedCallInfo(submission, request),
         threadId: call.threadId,
         turnId: call.turnId,
-        callId: call.callId!,
+        callId: callbackId,
         signal,
         originalArguments: Object.freeze({}),
         effectiveArguments: Object.freeze({}),

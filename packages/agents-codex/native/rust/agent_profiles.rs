@@ -1,6 +1,6 @@
 //! Captured Agent declarations; Core alone owns the committed active profile.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{Context, Result, ensure};
@@ -12,6 +12,7 @@ use codex_extension_api::{
 };
 use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::dynamic_tools::{DynamicToolFunctionSpec, DynamicToolSpec};
+use codex_protocol::model_request_transport::RequestTransportOverrides;
 use codex_tools::{
     FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolName,
     ToolOutput, ToolSpec, dynamic_tool_to_responses_api_tool,
@@ -43,16 +44,22 @@ pub(crate) struct ProfileSpec {
     manual_slots: Vec<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     terminal_slots: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    input_error_slots: Vec<usize>,
     #[serde(default)]
     step_defaults: Option<Vec<usize>>,
     #[serde(default)]
     handoffs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     handoff_callbacks: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    decision_handoffs: BTreeMap<String, DecisionHandoffSpec>,
     #[serde(default)]
     transform_context: bool,
     #[serde(default)]
     before_compact: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    post_turn_compact: bool,
     #[serde(default)]
     before_complete: bool,
     #[serde(default)]
@@ -64,8 +71,116 @@ pub(crate) struct ProfileSpec {
     mcp_result_tools: BTreeMap<String, BTreeMap<String, f64>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     mcp_metadata_tools: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    mcp_discovery_tools: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     mcp_tools: BTreeMap<String, McpToolDeclaration>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionHandoffSpec {
+    slot: usize,
+    targets: Vec<String>,
+}
+
+/// A selection belongs only to the admitted callback executor and its wrapper.
+pub(crate) struct DecisionHandoffSelection {
+    targets: Vec<String>,
+    selected: Mutex<HashMap<(String, String), String>>,
+}
+
+impl DecisionHandoffSelection {
+    pub(crate) fn record(
+        &self,
+        turn: &str,
+        call: &str,
+        target: Option<String>,
+        success: bool,
+    ) -> Result<()> {
+        if !success {
+            ensure!(
+                target.is_none(),
+                "Failed Decision handoff cannot select a target"
+            );
+            return Ok(());
+        }
+        let target = target.context("Decision handoff requires a target")?;
+        ensure!(
+            self.targets.contains(&target),
+            "Decision handoff target is outside its captured declaration"
+        );
+        let mut selected = self
+            .selected
+            .lock()
+            .expect("Decision handoff selection poisoned");
+        ensure!(
+            !selected.contains_key(&(turn.into(), call.into())),
+            "Repeated Decision handoff selection"
+        );
+        selected.insert((turn.into(), call.into()), target);
+        Ok(())
+    }
+
+    fn take(&self, turn: &str, call: &str) -> Option<String> {
+        self.selected
+            .lock()
+            .expect("Decision handoff selection poisoned")
+            .remove(&(turn.into(), call.into()))
+    }
+}
+
+pub(crate) fn decision_handoff_selection(
+    thread: &ExtensionData,
+    source: Option<&AgentProfileReceipt>,
+    slot: usize,
+) -> Option<Arc<DecisionHandoffSelection>> {
+    let source = source?;
+    let profiles = thread.get::<Arc<AgentProfiles>>()?;
+    let profile = profiles.profiles.get(&source.profile_id)?;
+    let declaration = profile
+        .declaration
+        .decision_handoffs
+        .values()
+        .find(|declaration| declaration.slot == slot)?;
+    Some(Arc::new(DecisionHandoffSelection {
+        targets: declaration.targets.clone(),
+        selected: Mutex::new(HashMap::new()),
+    }))
+}
+
+impl ProfileSpec {
+    fn admits_handoff(&self, name: &ToolName, target: &str) -> bool {
+        let name = name.clone().with_default_namespace();
+        self.handoffs.iter().any(|(declared, destination)| {
+            ToolName::new(None, declared.clone()).with_default_namespace() == name
+                && destination == target
+        }) || self
+            .decision_handoffs
+            .iter()
+            .any(|(declared, declaration)| {
+                ToolName::new(None, declared.clone()).with_default_namespace() == name
+                    && declaration
+                        .targets
+                        .iter()
+                        .any(|destination| destination == target)
+            })
+    }
+
+    fn decision_tools(&self) -> codex_extension_api::AgentProfileDecisionHandoffTools {
+        codex_extension_api::AgentProfileDecisionHandoffTools {
+            targets: self
+                .decision_handoffs
+                .iter()
+                .map(|(name, declaration)| {
+                    (
+                        ToolName::new(None, name.clone()).with_default_namespace(),
+                        declaration.targets.clone(),
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -100,10 +215,36 @@ impl OpeningProfiles {
             .collect()
     }
 
+    /// A serialized pending source can only claim permissions the fresh graph
+    /// grants without running a callback.
+    pub(crate) fn validate_pending_source(&self, source: &AgentProfileReceipt) -> Result<()> {
+        let mut candidates = vec![self.root_id.as_str()];
+        let mut visited = HashSet::new();
+        while let Some(id) = candidates.pop() {
+            if id == source.profile_id {
+                return Ok(());
+            }
+            if !visited.insert(id) {
+                continue;
+            }
+            if let Some(profile) = self.roster.iter().find(|profile| profile.id == id) {
+                candidates.extend(
+                    profile
+                        .handoffs
+                        .iter()
+                        .filter(|(name, _)| !profile.handoff_callbacks.contains_key(*name))
+                        .map(|(_, target)| target.as_str()),
+                );
+            }
+        }
+        anyhow::bail!("Restored pending Agent profile requires live callback acceptance")
+    }
+
     pub(crate) fn validate_restored_handoff(
         &self,
         tool_name: &ToolName,
         receipt: &codex_protocol::agent_profile::AgentProfileHandoff,
+        pending: bool,
     ) -> Result<()> {
         let source = self
             .roster
@@ -111,12 +252,15 @@ impl OpeningProfiles {
             .find(|profile| profile.id == receipt.source.profile_id)
             .context("Restored handoff source is outside the declared graph")?;
         ensure!(
-            source.handoffs.iter().any(|(name, target)| {
-                ToolName::new(None, name.clone()).with_default_namespace()
-                    == tool_name.clone().with_default_namespace()
-                    && target == &receipt.target_profile_id
-            }),
+            source.admits_handoff(tool_name, &receipt.target_profile_id),
             "Restored handoff is outside its source declaration"
+        );
+        // Checkpoints cannot authorize a callback for the current turn.
+        ensure!(
+            !pending
+                || (!source.handoff_callbacks.contains_key(&tool_name.name)
+                    && !source.decision_handoffs.contains_key(&tool_name.name)),
+            "Pending callback-backed Agent handoffs require live acceptance"
         );
         Ok(())
     }
@@ -168,12 +312,13 @@ impl OpeningProfiles {
         Ok((saved, slots))
     }
 
-    pub(crate) fn capabilities(&self) -> [bool; 4] {
+    pub(crate) fn capabilities(&self) -> [bool; 5] {
         [
             self.roster.iter().any(|profile| profile.selecting_steps),
             self.roster.iter().any(|profile| profile.transform_context),
             self.roster.iter().any(|profile| profile.before_compact),
             self.roster.iter().any(|profile| profile.before_complete),
+            self.roster.iter().any(|profile| profile.post_turn_compact),
         ]
     }
 }
@@ -202,6 +347,8 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
                 continue;
             }
             all_declarations.push(DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                strict: false,
+                output_schema: None,
                 name: name.clone(),
                 description: "Native handoff".into(),
                 input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
@@ -216,6 +363,22 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
                     && !profile.manual_slots.contains(slot)
                     && !profile.terminal_slots.contains(slot),
                 "Handoff callback must name its exact automatic catalog slot"
+            );
+        }
+        for (name, declaration) in &profile.decision_handoffs {
+            ensure!(
+                !profile.handoffs.contains_key(name)
+                    && matches!(profile.tools.get(declaration.slot), Some(DynamicToolSpec::Function(spec)) if spec.name == *name)
+                    && !profile.manual_slots.contains(&declaration.slot)
+                    && !profile.terminal_slots.contains(&declaration.slot)
+                    && !declaration.targets.is_empty()
+                    && declaration
+                        .targets
+                        .iter()
+                        .all(|target| ids.contains(target.as_str()))
+                    && declaration.targets.iter().collect::<HashSet<_>>().len()
+                        == declaration.targets.len(),
+                "Decision handoff must name an exact automatic slot and distinct captured targets"
             );
         }
         for (name, target) in &profile.handoffs {
@@ -239,6 +402,7 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
         .iter()
         .map(|profile| {
             let mut descriptor = serde_json::to_value(profile)?;
+            descriptor["model"] = serde_json::to_value(profile.model.for_persistence())?;
             // Endpoint credentials, process configuration and refreshed policies are not
             // declaration compatibility. Their fresh native owners remain authority.
             descriptor["mcp_servers"] = json!(profile.mcp_servers.keys().collect::<Vec<_>>());
@@ -312,20 +476,17 @@ fn restored_envelope<'a>(
     opening: &OpeningProfiles,
     history: &'a [RolloutItem],
 ) -> Result<Option<(&'a ResponseItemEnvelope, PersistedProfile)>> {
-    let latest = history
-        .iter()
-        .filter_map(|item| match item {
-            RolloutItem::ResponseItem(envelope)
-                if envelope
-                    .metadata
-                    .as_ref()
-                    .is_some_and(|metadata| metadata.sdk_agent_profile.is_some()) =>
-            {
-                Some(envelope)
-            }
-            _ => None,
-        })
-        .last();
+    let latest = history.iter().rev().find_map(|item| match item {
+        RolloutItem::ResponseItem(envelope)
+            if envelope
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.sdk_agent_profile.is_some()) =>
+        {
+            Some(envelope)
+        }
+        _ => None,
+    });
     let Some(envelope) = latest else {
         return Ok(None);
     };
@@ -354,6 +515,16 @@ fn restored_envelope<'a>(
     ensure!(
         !receipt.model.model.is_empty(),
         "Invalid restored Agent settings"
+    );
+    ensure!(
+        receipt
+            .model
+            .request_controls
+            .hosted_prompt
+            .as_ref()
+            .and_then(|prompt| prompt.as_ref())
+            .is_none_or(|prompt| prompt.reference.is_none()),
+        "Stored hosted prompt references require current declarations"
     );
     Ok(Some((envelope, receipt)))
 }
@@ -457,6 +628,20 @@ pub(crate) fn validate_restored(
     Ok(accepted)
 }
 
+pub(crate) fn restored_request_transport(
+    opening: &OpeningProfiles,
+    history: &[RolloutItem],
+) -> Result<Option<Option<RequestTransportOverrides>>> {
+    let (_, source) = restored_envelope(opening, history)?
+        .context("Managed Agent checkpoint has no source receipt")?;
+    let profile = opening
+        .roster
+        .iter()
+        .find(|profile| profile.id == source.profile_id)
+        .context("Restored Agent is outside the captured graph")?;
+    Ok(profile.model.request_controls.request_transport.clone())
+}
+
 #[derive(Clone)]
 struct PreparedProfile {
     declaration: ProfileSpec,
@@ -501,6 +686,19 @@ struct VoiceGraphAdmission {
     previous_registry: Option<VoiceProfileRegistry>,
 }
 
+fn rebind_restored_controls(
+    model: &mut AgentProfileModelSettings,
+    current: &AgentProfileModelSettings,
+) {
+    model.invocation_timeout_ms = current.invocation_timeout_ms;
+    model.request_controls.retry = current.request_controls.retry.clone();
+    model.request_controls.attempt_timeout_ms = current.request_controls.attempt_timeout_ms;
+    model
+        .request_controls
+        .request_transport
+        .clone_from(&current.request_controls.request_transport);
+}
+
 async fn prepare_profile(
     thread: &CodexThread,
     tools: &PythonTools,
@@ -518,12 +716,14 @@ async fn prepare_profile(
         descriptor.transform_context,
         descriptor.before_compact,
         descriptor.before_complete,
+        descriptor.post_turn_compact,
     ];
     let catalog = if voice {
         tools.voice_profile_catalog(
             descriptor.tools.clone(),
             &descriptor.manual_slots,
             &descriptor.terminal_slots,
+            &descriptor.input_error_slots,
             descriptor.step_defaults.as_deref(),
             flags,
         )?
@@ -532,6 +732,7 @@ async fn prepare_profile(
             descriptor.tools.clone(),
             &descriptor.manual_slots,
             &descriptor.terminal_slots,
+            &descriptor.input_error_slots,
             descriptor.step_defaults.as_deref(),
             flags,
             startup,
@@ -541,6 +742,7 @@ async fn prepare_profile(
     let result_selection: crate::mcp_result_control::Selection = serde_json::from_value(json!({
         "generation": catalog.generation.id, "servers": descriptor.mcp_result_tools,
         "metadata_servers": descriptor.mcp_metadata_tools,
+        "discovery_servers": descriptor.mcp_discovery_tools,
     }))?;
     result_selection.validate(&servers)?;
     let (mcp, plugins) = thread.prepare_agent_profile_mcp(servers).await?;
@@ -841,6 +1043,7 @@ impl AgentProfiles {
         data.insert(accepted);
         data.insert(prepared.catalog.clone());
         data.insert(prepared.plugins.clone());
+        data.insert(prepared.declaration.decision_tools());
         data.insert(codex_extension_api::AgentProfileHandoffTools {
             targets: prepared
                 .declaration
@@ -971,11 +1174,14 @@ pub(crate) async fn configure(
     });
     let mut profiles = BTreeMap::new();
     for descriptor in &opening.roster {
-        let model = if descriptor.id == opening.root_id {
+        let mut model = if descriptor.id == opening.root_id {
             opening_model.clone()
         } else {
             descriptor.model.clone()
         };
+        if restored {
+            rebind_restored_controls(&mut model, &descriptor.model);
+        }
         profiles.insert(
             descriptor.id.clone(),
             prepare_profile(
@@ -1011,6 +1217,7 @@ pub(crate) async fn configure(
                 prepared.catalog.transform_context,
                 prepared.catalog.before_compact,
                 prepared.catalog.before_complete,
+                prepared.catalog.post_turn_compact,
             ],
             &prepared.catalog,
         )?;
@@ -1021,6 +1228,7 @@ pub(crate) async fn configure(
         });
         data.insert(accepted);
         data.insert(catalog);
+        data.insert(prepared.declaration.decision_tools());
         data.insert(codex_extension_api::AgentProfileHandoffTools {
             targets: prepared
                 .declaration
@@ -1034,9 +1242,14 @@ pub(crate) async fn configure(
                 })
                 .collect(),
         });
+        let mut model = receipt.model;
+        model
+            .request_controls
+            .request_transport
+            .clone_from(&prepared.model.request_controls.request_transport);
         let mut target = AgentProfile {
             profile_id: receipt.profile_id,
-            model: receipt.model,
+            model,
             application_instructions: envelope.clone(),
             data,
             mcp: prepared.mcp.clone(),
@@ -1084,6 +1297,29 @@ pub(crate) async fn update_instructions(thread: &CodexThread, text: &str) -> Res
     update_active(thread, None, Some((text, accepted.files.clone())), None).await
 }
 
+pub(crate) async fn update_instructions_with_settings(
+    thread: &CodexThread,
+    text: &str,
+    settings: Option<&codex_protocol::protocol::ThreadSettingsOverrides>,
+) -> Result<bool> {
+    if thread
+        .thread_extension_data()
+        .get::<Arc<AgentProfiles>>()
+        .is_none()
+    {
+        return Ok(false);
+    }
+    let Some(captured) = thread.captured_agent_profile().await? else {
+        return Ok(false);
+    };
+    let accepted = captured
+        .profile
+        .data
+        .get::<Accepted>()
+        .context("Managed Agent instructions are absent")?;
+    update_active(thread, settings, Some((text, accepted.files.clone())), None).await
+}
+
 pub(crate) async fn update_active(
     thread: &CodexThread,
     settings: Option<&codex_protocol::protocol::ThreadSettingsOverrides>,
@@ -1127,9 +1363,23 @@ async fn update_active_inner(
         catalog
     };
     let mut target = (*captured.profile).clone();
+    if catalog.is_some() && !refresh_mcp {
+        if let Some(Some(prompt)) = &mut target.model.request_controls.hosted_prompt {
+            prompt.omit_tools = false;
+        }
+    }
     if let Some(settings) = settings {
         if let Some(model) = &settings.model {
             target.model.model = model.clone();
+            if settings
+                .request_controls
+                .as_ref()
+                .is_none_or(|controls| controls.hosted_prompt.is_none())
+            {
+                if let Some(Some(prompt)) = &mut target.model.request_controls.hosted_prompt {
+                    prompt.omit_model = false;
+                }
+            }
         }
         if let Some(effort) = &settings.effort {
             target.model.reasoning_effort = effort.clone();
@@ -1143,6 +1393,7 @@ async fn update_active_inner(
         if let Some(choice) = settings.tool_choice {
             target.model.tool_choice = Some(choice);
             target.model.request_controls.named_tool_choice = Some(None);
+            target.model.request_controls.hosted_tool_choice = Some(None);
         }
         if let Some(timeout) = settings.invocation_timeout_ms {
             target.model.invocation_timeout_ms = timeout;
@@ -1244,6 +1495,7 @@ pub(crate) async fn replace_tools(
     specs: Vec<DynamicToolSpec>,
     defaults: Option<Vec<usize>>,
     terminal_slots: &[usize],
+    input_error_slots: &[usize],
 ) -> Result<Option<u64>> {
     let Some(profiles) = thread.thread_extension_data().get::<Arc<AgentProfiles>>() else {
         return Ok(None);
@@ -1262,12 +1514,14 @@ pub(crate) async fn replace_tools(
         specs,
         &[],
         terminal_slots,
+        input_error_slots,
         defaults.as_deref(),
         [
             previous.selecting_steps,
             previous.transform_context,
             previous.before_compact,
             previous.before_complete,
+            previous.post_turn_compact,
         ],
         false,
     )?;
@@ -1301,7 +1555,17 @@ pub(crate) fn restore_handoff(
         declarations
             .targets
             .get(&tool_name.clone().with_default_namespace())
-            == Some(&receipt.target_profile_id),
+            == Some(&receipt.target_profile_id)
+            || captured
+                .profile
+                .data
+                .get::<codex_extension_api::AgentProfileDecisionHandoffTools>()
+                .is_some_and(|tools| {
+                    tools
+                        .targets
+                        .get(&tool_name.clone().with_default_namespace())
+                        .is_some_and(|targets| targets.contains(&receipt.target_profile_id))
+                }),
         "Restored handoff is outside its source declaration"
     );
     let profiles = state
@@ -1403,6 +1667,11 @@ impl TurnLifecycleContributor for Contributor {
                 .handoffs
                 .values()
                 .any(|target| target == &target_id)
+                && !source
+                    .declaration
+                    .decision_handoffs
+                    .values()
+                    .any(|declaration| declaration.targets.contains(&target_id))
             {
                 return Err("Accepted handoff target is outside its source declaration".into());
             }
@@ -1423,8 +1692,43 @@ struct HandoffExecutor {
     source: AgentProfileReceipt,
     name: String,
     target: String,
+    decision_selection: Option<Arc<DecisionHandoffSelection>>,
     spec: ToolSpec,
     callback: Option<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>>,
+}
+
+/// A callback failure retires only its own provisional reservation. Accepted or
+/// still-running siblings retain their original native reservation owner.
+struct ProvisionalHandoff<'a> {
+    executor: &'a HandoffExecutor,
+    turn: String,
+    call: String,
+    keep: bool,
+}
+
+impl Drop for ProvisionalHandoff<'_> {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        let mut pending = self
+            .executor
+            .profiles
+            .reservation
+            .lock()
+            .expect("Agent reservation poisoned");
+        if let Some(reservation) = pending.as_mut() {
+            if reservation.turn == self.turn
+                && reservation.expected == self.executor.source
+                && reservation.target == self.executor.target
+            {
+                reservation.calls.remove(&self.call);
+                if reservation.calls.is_empty() && !reservation.accepted {
+                    *pending = None;
+                }
+            }
+        }
+    }
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
@@ -1446,6 +1750,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
         call_id: &str,
         result: &dyn ToolOutput,
     ) -> codex_tools::AcceptedToolOutcome {
+        let mut outcome = self
+            .callback
+            .as_ref()
+            .map_or_else(Default::default, |callback| {
+                callback.on_result_accepted(turn_id, call_id, result)
+            });
         let handoff = (|| {
             if !result.success_for_logging() {
                 return None;
@@ -1458,7 +1768,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
             let pending = pending.as_mut()?;
             if pending.turn != turn_id
                 || pending.expected != self.source
-                || pending.target != self.target
+                || (self.decision_selection.is_none() && pending.target != self.target)
                 || !pending.calls.contains(call_id)
             {
                 return None;
@@ -1466,28 +1776,63 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
             pending.accepted = true;
             Some(codex_protocol::agent_profile::AgentProfileHandoff {
                 source: self.source.clone(),
-                target_profile_id: self.target.clone(),
+                target_profile_id: pending.target.clone(),
                 call_id: call_id.into(),
             })
         })();
-        codex_tools::AcceptedToolOutcome {
-            handoff,
-            ..Default::default()
-        }
+        // This wrapper alone owns the transfer receipt; retain other accepted metadata.
+        outcome.handoff = handoff;
+        outcome
     }
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
     where
         ToolCall<'call>: 'a,
     {
         Box::pin(async move {
-            let turn_id = call.turn_id.to_owned();
-            let call_id = call.call_id.clone();
-            if let Some(callback) = &self.callback {
-                let output = callback.handle(call).await?;
+            if let Some(selection) = &self.decision_selection {
+                let turn = call.turn_id.to_owned();
+                let call_id = call.call_id.clone();
+                let output = self
+                    .callback
+                    .as_ref()
+                    .expect("Decision handoff callback")
+                    .handle(call)
+                    .await?;
+                let target = selection.take(&turn, &call_id);
                 if !output.success_for_logging() {
                     return Ok(output);
                 }
-            } else {
+                let target = target.ok_or_else(|| {
+                    FunctionCallError::RespondToModel("Decision handoff requires a target".into())
+                })?;
+                let mut pending = self
+                    .profiles
+                    .reservation
+                    .lock()
+                    .expect("Agent reservation poisoned");
+                if let Some(previous) = pending.as_mut() {
+                    if previous.turn != turn
+                        || previous.expected != self.source
+                        || previous.target != target
+                    {
+                        return Err(FunctionCallError::RespondToModel(
+                            "Conflicting Agent handoffs in one tool batch".into(),
+                        ));
+                    }
+                    previous.calls.insert(call_id);
+                } else {
+                    *pending = Some(Reservation {
+                        turn,
+                        expected: self.source.clone(),
+                        target,
+                        calls: HashSet::from([call_id]),
+                        accepted: false,
+                        restored: false,
+                    });
+                }
+                return Ok(output);
+            }
+            if self.callback.is_none() {
                 let arguments: Value =
                     serde_json::from_str(call.function_arguments()?).map_err(|_| {
                         FunctionCallError::RespondToModel("Invalid handoff arguments".into())
@@ -1501,43 +1846,57 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
                     ));
                 }
             }
-            let mut pending = self
-                .profiles
-                .reservation
-                .lock()
-                .expect("Agent reservation poisoned");
-            if pending
-                .as_ref()
-                .is_some_and(|previous| previous.turn != turn_id)
             {
-                *pending = None;
-            }
-            if let Some(previous) = pending.as_mut() {
-                if previous.turn != turn_id
-                    || previous.expected != self.source
-                    || previous.target != self.target
+                let mut pending = self
+                    .profiles
+                    .reservation
+                    .lock()
+                    .expect("Agent reservation poisoned");
+                if pending
+                    .as_ref()
+                    .is_some_and(|previous| previous.turn != call.turn_id)
                 {
-                    return Err(FunctionCallError::RespondToModel(
-                        "Conflicting Agent handoffs in one tool batch".into(),
-                    ));
+                    *pending = None;
                 }
-                previous.calls.insert(call_id.clone());
-            } else {
-                *pending = Some(Reservation {
-                    turn: turn_id,
-                    expected: self.source.clone(),
-                    target: self.target.clone(),
-                    calls: HashSet::from([call_id]),
-                    accepted: false,
-                    restored: false,
-                });
+                if let Some(previous) = pending.as_mut() {
+                    if previous.turn != call.turn_id
+                        || previous.expected != self.source
+                        || previous.target != self.target
+                    {
+                        return Err(FunctionCallError::RespondToModel(
+                            "Conflicting Agent handoffs in one tool batch".into(),
+                        ));
+                    }
+                    previous.calls.insert(call.call_id.clone());
+                } else {
+                    *pending = Some(Reservation {
+                        turn: call.turn_id.to_owned(),
+                        expected: self.source.clone(),
+                        target: self.target.clone(),
+                        calls: HashSet::from([call.call_id.clone()]),
+                        accepted: false,
+                        restored: false,
+                    });
+                }
             }
-            Ok(Box::new(crate::python_tools::PythonOutput(
+            let mut reservation = ProvisionalHandoff {
+                executor: self,
+                turn: call.turn_id.to_owned(),
+                call: call.call_id.clone(),
+                keep: false,
+            };
+            let output = if let Some(callback) = &self.callback {
+                callback.handle(call).await?
+            } else {
+                Box::new(crate::python_tools::PythonOutput(
                 codex_protocol::dynamic_tools::DynamicToolResponse {
                     content_items: vec![codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text: "Handoff reserved.".into() }],
                     success: true,
                 },
-            )) as Box<dyn ToolOutput>)
+                )) as Box<dyn ToolOutput>
+            };
+            reservation.keep = output.success_for_logging();
+            Ok(output)
         })
     }
 }
@@ -1546,8 +1905,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
 pub(crate) fn wrap_handoff_callback(
     thread: &ExtensionData,
     source: Option<&AgentProfileReceipt>,
-    slot: usize,
     callback: Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>,
+    decision_selection: Option<Arc<DecisionHandoffSelection>>,
 ) -> Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>> {
     let Some(source) = source else {
         return callback;
@@ -1558,11 +1917,35 @@ pub(crate) fn wrap_handoff_callback(
     let Some(profile) = profiles.profiles.get(&source.profile_id) else {
         return callback;
     };
+    let callback_name = callback.tool_name().with_default_namespace();
+    if let Some(selection) = decision_selection {
+        if let Some((name, _)) = profile
+            .declaration
+            .decision_handoffs
+            .iter()
+            .find(|(name, _)| {
+                ToolName::new(None, name.to_string()).with_default_namespace() == callback_name
+            })
+        {
+            return Arc::new(HandoffExecutor {
+                profiles: profiles.as_ref().clone(),
+                source: source.clone(),
+                name: name.clone(),
+                target: String::new(),
+                decision_selection: Some(selection),
+                spec: callback.spec(),
+                callback: Some(callback),
+            });
+        }
+    }
+
     let Some((name, _)) = profile
         .declaration
         .handoff_callbacks
         .iter()
-        .find(|(_, candidate)| **candidate == slot)
+        .find(|(name, _)| {
+            ToolName::new(None, name.to_string()).with_default_namespace() == callback_name
+        })
     else {
         return callback;
     };
@@ -1574,6 +1957,7 @@ pub(crate) fn wrap_handoff_callback(
         source: source.clone(),
         name: name.clone(),
         target: target.clone(),
+        decision_selection: None,
         spec: callback.spec(),
         callback: Some(callback),
     })
@@ -1581,6 +1965,8 @@ pub(crate) fn wrap_handoff_callback(
 
 fn handoff_declaration(name: &str, target: &str) -> DynamicToolFunctionSpec {
     DynamicToolFunctionSpec {
+        strict: false,
+        output_schema: None,
         name: name.to_owned(),
         description: format!("Transfer this conversation to captured Agent {target}."),
         input_schema: json!({"type":"object","properties":{},"required":[],"additionalProperties":false}),
@@ -1675,6 +2061,7 @@ impl ToolContributor for Contributor {
                     source: source.receipt.clone(),
                     name: name.clone(),
                     target: target.clone(),
+                    decision_selection: None,
                     spec,
                     callback: None,
                 })
@@ -1721,6 +2108,136 @@ mod tests {
                 "service_tier":null,"tool_choice":null,"personality":null},
                 "instructions":"Destination","tools":[],"output_fingerprint":"output-b"}
         ])
+    }
+
+    #[test]
+    fn decision_handoff_selection_requires_a_captured_call_target() {
+        let selection = DecisionHandoffSelection {
+            targets: vec!["a".into(), "b".into()],
+            selected: Mutex::new(HashMap::new()),
+        };
+        assert!(selection.record("turn", "call", None, true).is_err());
+        assert!(
+            selection
+                .record("turn", "call", Some("outside".into()), true)
+                .is_err()
+        );
+        assert!(
+            selection
+                .record("turn", "call", Some("b".into()), false)
+                .is_err()
+        );
+        selection
+            .record("turn", "call", Some("b".into()), true)
+            .unwrap();
+        assert_eq!(selection.take("other-turn", "call"), None);
+        assert_eq!(selection.take("turn", "other-call"), None);
+        assert_eq!(selection.take("turn", "call"), Some("b".into()));
+        assert_eq!(selection.take("turn", "call"), None);
+    }
+
+    #[test]
+    fn decision_handoff_roster_preserves_identity_and_restore_authority() {
+        let mut raw = roster();
+        raw[0]["handoffs"] = json!({});
+        raw[0]["decision_handoffs"] = json!({"lookup":{"slot":0,"targets":["a","b"]}});
+        let fingerprint = fingerprint(&raw.to_string(), "a").unwrap();
+        let opening = OpeningProfiles {
+            root_id: "a".into(),
+            roster: decode_roster(&raw.to_string()).unwrap(),
+            fingerprint: fingerprint.clone(),
+        };
+        let name = ToolName::new(None, "lookup");
+        let saved = codex_protocol::agent_profile::AgentProfileHandoff {
+            source: AgentProfileReceipt {
+                profile_id: "a".into(),
+                epoch: 0,
+            },
+            target_profile_id: "b".into(),
+            call_id: "saved-call".into(),
+        };
+        opening
+            .validate_restored_handoff(&name, &saved, false)
+            .unwrap();
+        assert!(
+            opening
+                .validate_restored_handoff(&name, &saved, true)
+                .is_err()
+        );
+        assert!(
+            opening
+                .validate_restored_handoff(&ToolName::new(None, "other"), &saved, false)
+                .is_err()
+        );
+        assert!(
+            opening
+                .validate_pending_source(&AgentProfileReceipt {
+                    profile_id: "b".into(),
+                    epoch: 1
+                })
+                .is_err()
+        );
+        raw[0]["decision_handoffs"]["lookup"]["targets"] = json!(["a"]);
+        assert_ne!(
+            super::fingerprint(&raw.to_string(), "a").unwrap(),
+            fingerprint
+        );
+        raw[0]["decision_handoffs"]["lookup"]["targets"] = json!(["outside"]);
+        assert!(super::fingerprint(&raw.to_string(), "a").is_err());
+        raw[0]["decision_handoffs"]["lookup"]["targets"] = json!(["a", "a"]);
+        assert!(super::fingerprint(&raw.to_string(), "a").is_err());
+        raw[0]["decision_handoffs"]["lookup"]["targets"] = json!(["b"]);
+        raw[0]["manual_slots"] = json!([0]);
+        assert!(super::fingerprint(&raw.to_string(), "a").is_err());
+    }
+
+    #[test]
+    fn pending_handoff_restore_requires_live_callback_acceptance() {
+        let open = |raw: Value| {
+            let raw = raw.to_string();
+            OpeningProfiles {
+                root_id: "a".into(),
+                roster: serde_json::from_str(&raw).unwrap(),
+                fingerprint: fingerprint(&raw, "a").unwrap(),
+            }
+        };
+        let mut raw = roster();
+        let builtin = open(raw.clone());
+        raw[0]["tools"].as_array_mut().unwrap().push(json!({
+            "type":"function", "name":"transfer_to_b", "description":"Authorize transfer",
+            "inputSchema":{"type":"object","properties":{"reason":{"type":"string"}},
+                "required":["reason"],"additionalProperties":false},
+            "deferLoading":false,
+        }));
+        raw[0]["handoff_callbacks"] = json!({"transfer_to_b":1});
+        let callback = open(raw);
+        let destination = AgentProfileReceipt {
+            profile_id: "b".into(),
+            epoch: 1,
+        };
+        builtin.validate_pending_source(&destination).unwrap();
+        let error = callback.validate_pending_source(&destination).unwrap_err();
+        assert!(error.to_string().contains("live callback acceptance"));
+        let name = ToolName::new(None, "transfer_to_b");
+        let saved = codex_protocol::agent_profile::AgentProfileHandoff {
+            source: AgentProfileReceipt {
+                profile_id: "a".into(),
+                epoch: 0,
+            },
+            target_profile_id: "b".into(),
+            call_id: "saved-call".into(),
+        };
+        callback.validate_pending_source(&saved.source).unwrap();
+        builtin
+            .validate_restored_handoff(&name, &saved, true)
+            .unwrap();
+        callback
+            .validate_restored_handoff(&name, &saved, false)
+            .unwrap();
+        let error = callback
+            .validate_restored_handoff(&name, &saved, true)
+            .unwrap_err();
+        assert!(error.to_string().contains("live acceptance"));
     }
 
     #[test]

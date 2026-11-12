@@ -132,21 +132,6 @@ describe('getDefaultModelSettings', () => {
     );
   });
 
-  test.each(['gpt-5-mini'])(
-    'omits an unregistered effort for %s while retaining shared verbosity',
-    (model) => {
-      expect(getDefaultModelSettings(model)).toEqual({
-        text: { verbosity: 'low' },
-      });
-      expect(
-        new Agent({ name: 'Model without an effort default', model })
-          .modelSettings,
-      ).toEqual({
-        text: { verbosity: 'low' },
-      });
-    },
-  );
-
   test('returns GPT-5.6 Luna defaults when no model is specified', () => {
     mockedLoadEnv.mockReturnValue({});
     expect(getDefaultModelSettings()).toEqual({

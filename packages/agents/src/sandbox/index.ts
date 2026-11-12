@@ -1,7 +1,17 @@
 export * from '@openai/agents-core/sandbox';
 export {
   sandboxEnvironment,
+  skills,
   renderStorageLayout,
   ManagedWorkspaceCheckpoint,
 } from '@openai/agents-codex';
-export type { SandboxEnvironmentOptions } from '@openai/agents-codex';
+export type {
+  SandboxEnvironmentSource,
+  SandboxEnvironmentOptions,
+  Skills,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+  SandboxMemoryOptions,
+} from '@openai/agents-codex';

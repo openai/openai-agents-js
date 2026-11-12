@@ -85,7 +85,9 @@ def checked_path(spec):
     path = spec["accessPath"]
     if "rootTarget" in spec and str(Path(path).resolve(strict=True)) != spec["rootTarget"]:
         raise OSError(errno.ELOOP, "Sandbox root changed during file validation", path)
-    if spec["preserveLeaf"]:
+    if spec.get("noFollow", False):
+        resolved = os.path.abspath(path)
+    elif spec["preserveLeaf"]:
         resolved = str(Path(path).parent.resolve(strict=True) / Path(path).name)
     else:
         existing = Path(path)
@@ -408,6 +410,19 @@ def run(request):
     if operation == "create":
         write_new(path)
         return
+    if operation == "write":
+        write_destination(path)
+        return
+    if operation == "removeEmpty":
+        with parent(path) as (directory, name):
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                os.rmdir(name, dir_fd=directory)
+            elif stat.S_ISREG(info.st_mode):
+                os.unlink(name, dir_fd=directory)
+            else:
+                raise OSError(errno.EINVAL, "Sandbox cleanup requires a regular file or empty directory", path)
+        return
     if operation == "delete":
         with parent(path) as (directory, name):
             os.unlink(name, dir_fd=directory)
@@ -439,7 +454,12 @@ def run(request):
             fd = os.open(name, DIRECTORY, dir_fd=directory)
         try:
             with os.scandir(fd) as entries:
-                result = [{"name": entry.name, "type": "dir" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"} for entry in entries]
+                result = []
+                limit = request.get("limit")
+                for entry in entries:
+                    if limit is not None and len(result) >= limit:
+                        raise OSError(errno.E2BIG, "Directory listing exceeds its entry limit", path)
+                    result.append({"name": entry.name, "type": "dir" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"})
             sys.stdout.write(json.dumps(result))
         finally:
             close(fd)
@@ -450,9 +470,10 @@ def run(request):
         try:
             info = regular(fd, path)
             limit = request.get("limit")
-            if operation == "image" and limit is not None and info.st_size > limit:
-                raise OSError(errno.EFBIG, "Image file exceeds the 10 MB limit", path)
-            output_file(fd, limit, operation == "read" and limit is not None)
+            complete = request.get("complete", False)
+            if (operation == "image" or complete) and limit is not None and info.st_size > limit:
+                raise OSError(errno.EFBIG, "File exceeds the bounded read limit" if complete else "Image file exceeds the 10 MB limit", path)
+            output_file(fd, limit, operation == "read" and limit is not None and not complete)
         finally:
             close(fd)
         return

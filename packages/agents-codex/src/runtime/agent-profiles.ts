@@ -1,14 +1,14 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { Agent } from './public-agent';
-import { managedApproval, captureTools, type ToolCatalog } from './tools';
 import {
-  splitToolDeclarations,
-  HttpMCP,
-  StdioMCP,
-  mcpConfig,
-  mcpPolicies,
-  type McpTool,
-} from './mcp';
+  supportsInputErrorRecovery,
+  managedApproval,
+  captureTools,
+  toolDeclarationIdentity,
+  type ToolCatalog,
+} from './tools';
+import { HttpMCP, StdioMCP, mcpConfig, mcpPolicies, type McpTool } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import { prepareOutput, type PreparedOutput } from './output';
 import type { Environment } from './environment';
 import type { JsonObject } from './binding';
@@ -21,10 +21,14 @@ export interface CapturedAgentProfile<Context, Output> {
   readonly declaration: Agent<Context, Output>;
   readonly handoffs: Readonly<Record<string, string>>;
   readonly handoffCallbacks?: Readonly<Record<string, number>>;
+  readonly decisionHandoffs?: Readonly<
+    Record<string, Readonly<{ slot: number; targets: readonly string[] }>>
+  >;
   readonly handoffOptions?: Readonly<
     Record<string, import('./realtime-agent-config').RealtimeHandoff<Context>>
   >;
   readonly callbackTools?: readonly import('./tools').FunctionTool<Context>[];
+  readonly hostedPromptControls?: JsonObject;
 }
 
 export interface AgentProfileRuntime {
@@ -115,6 +119,32 @@ export function checkProfileReceipt(
     epoch: profileInteger(value.epoch),
   });
 }
+/** Portable history cannot grant a callback-backed profile transition. */
+export function checkPortableProfileReceipt(
+  value: unknown,
+  graph: CapturedAgentGraph,
+): AgentProfileReceipt {
+  const receipt = checkProfileReceipt(value, graph);
+  const candidates = [graph.rootId];
+  const visited = new Set<string>();
+  while (candidates.length) {
+    const id = candidates.pop()!;
+    if (id === receipt.profile_id) return receipt;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const profile = graph.profiles.get(id)!.profile;
+    for (const [name, target] of Object.entries(profile.handoffs))
+      if (
+        !profile.handoffCallbacks ||
+        !Object.hasOwn(profile.handoffCallbacks, name)
+      )
+        candidates.push(target);
+  }
+  throw new TypeError(
+    'Restored Agent profile requires live callback acceptance',
+  );
+}
+
 export function encodeProfileReceipt(receipt: AgentProfileReceipt): string {
   return JSON.stringify({
     profile_id: receipt.profile_id,
@@ -129,24 +159,49 @@ export function captureProfileRuntimes(
   rootInstructions: string,
   outputGuardrails = false,
   inputGuardrails = false,
+  rootModelSettings = profiles[0]?.declaration.modelSettings,
 ): CapturedAgentGraph {
   if (!profiles.length)
     throw new TypeError('A native Agent graph requires its root');
   const captured = new Map<string, AgentProfileRuntime>();
+  const usesHostedPrompts = profiles.some(
+    (profile) => profile.hostedPromptControls !== undefined,
+  );
   const roster: JsonObject[] = [];
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
     const { tools, mcp } = splitToolDeclarations(declaration.tools);
+    const callbackOwners = new Set(
+      profile.callbackTools?.map(toolDeclarationIdentity) ?? [],
+    );
     const catalog =
       index === 0
         ? profile.callbackTools?.length
-          ? captureTools([...rootCatalog.tools, ...profile.callbackTools])
+          ? captureTools([
+              ...rootCatalog.tools.filter(
+                (tool) => !callbackOwners.has(toolDeclarationIdentity(tool)),
+              ),
+              ...profile.callbackTools,
+            ])
           : rootCatalog
         : captureTools(tools);
     const output = prepareOutput(declaration.outputType);
     const instructions =
-      index === 0 ? rootInstructions : declaration.instructions;
-    const model = modelOverrides(declaration.model, declaration.modelSettings);
+      index === 0 ? rootInstructions : (declaration.instructions ?? '');
+    const model = modelOverrides(
+      declaration.model,
+      declaration.modelSettings,
+      usesHostedPrompts ? (profile.hostedPromptControls ?? null) : undefined,
+    );
+    const retryPolicy = (
+      index === 0 ? rootModelSettings : declaration.modelSettings
+    )?.retry?.policy;
+    const controls = (model.request_controls ??= {}) as JsonObject;
+    if (controls.retry !== null)
+      controls.retry = {
+        ...((controls.retry ?? {}) as JsonObject),
+        has_policy: retryPolicy !== undefined,
+      };
     const policies = JSON.parse(mcpPolicies(mcp, 0n));
     captured.set(
       profile.id,
@@ -175,6 +230,9 @@ export function captureProfileRuntimes(
       manual_slots: catalog.tools.flatMap((tool, slot) =>
         tool.kind === 'manual' ? [slot] : [],
       ),
+      input_error_slots: catalog.tools.flatMap((tool, slot) =>
+        supportsInputErrorRecovery(tool) ? [slot] : [],
+      ),
       terminal_slots: catalog.tools.flatMap((tool, slot) =>
         (tool.kind !== 'manual' && tool.finishTurn) ||
         managedApproval(tool)?.function.finishTurn
@@ -183,11 +241,24 @@ export function captureProfileRuntimes(
       ),
       step_defaults: catalog.tools.map((_, index) => index),
       handoffs: { ...profile.handoffs },
+      ...(Object.keys(profile.decisionHandoffs ?? {}).length
+        ? {
+            decision_handoffs:
+              profile.decisionHandoffs as unknown as JsonObject,
+          }
+        : {}),
       ...(Object.keys(profile.handoffCallbacks ?? {}).length
         ? { handoff_callbacks: { ...profile.handoffCallbacks } }
         : {}),
-      transform_context: declaration.transformContext !== undefined,
-      before_compact: declaration.beforeCompact !== undefined,
+      transform_context:
+        declaration.transformContext !== undefined ||
+        declaration.hostedPrompt !== undefined,
+      before_compact:
+        declaration.beforeCompact !== undefined ||
+        declaration.compaction !== undefined,
+      ...(declaration.compaction !== undefined
+        ? { post_turn_compact: true }
+        : {}),
       before_complete:
         declaration.beforeComplete !== undefined ||
         declaration.outputGuardrails.length > 0 ||
@@ -201,6 +272,9 @@ export function captureProfileRuntimes(
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
       mcp_result_tools: policies.servers,
       mcp_metadata_tools: policies.metadata_servers,
+      ...(policies.discovery_servers === undefined
+        ? {}
+        : { mcp_discovery_tools: policies.discovery_servers }),
       mcp_tools: Object.fromEntries(
         mcp.map((server) => [
           server.name,

@@ -1,3 +1,5 @@
+import { modelAttemptSnapshotSchema } from './model-attempts';
+import { nativeInput, type UserInput } from './input';
 import { captureFile, captureImage, mediaRecord } from './media';
 import { z } from 'zod';
 import type { OutputIdentity } from './output';
@@ -12,6 +14,7 @@ import {
   type RepairItemWire,
 } from './history';
 import { nonnegativeTokenCountWireSchema } from './run-events';
+import { runBudgetCheckpointSchema } from './run-budget';
 import {
   binding,
   losslessJsonObjectSchema,
@@ -24,32 +27,36 @@ import {
   jsonObject,
   parseNative,
 } from './binding';
-const goalSnapshotSchema = z
-  .object({
-    thread_id: z.string().min(1),
-    // Codex trims Unicode White_Space before counting Rust chars(), rather
-    // than JS UTF-16 code units. Keep imported goal intent under that limit.
-    objective: z.string().refine((value) => {
-      const length = [
-        ...value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ''),
-      ].length;
-      return length > 0 && length <= 4000;
-    }, 'goal objective must contain 1 to 4000 characters'),
-    status: z.enum(['paused', 'complete']),
-    token_budget: z.number().int().positive().safe().nullable().optional(),
-    tokens_used: z.number().int().nonnegative().safe().optional(),
-    time_used_seconds: z.number().int().nonnegative().safe().optional(),
-    created_at: z.number().int().nonnegative().safe().nullable().optional(),
-    updated_at: z.number().int().nonnegative().safe().nullable().optional(),
-  })
-  .strict();
+
+const stringSchema = z.string();
+const nullableStringSchema = stringSchema.nullable();
+const optionalStringSchema = stringSchema.optional();
+const optionalNullableStringSchema = nullableStringSchema.optional();
+
+const goalSnapshotSchema = z.strictObject({
+  thread_id: z.string().min(1),
+  // Codex trims Unicode White_Space before counting Rust chars(), rather
+  // than JS UTF-16 code units. Keep imported goal intent under that limit.
+  objective: z.string().refine((value) => {
+    const length = [
+      ...value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ''),
+    ].length;
+    return length > 0 && length <= 4000;
+  }, 'goal objective must contain 1 to 4000 characters'),
+  status: z.enum(['paused', 'complete']),
+  token_budget: z.number().int().positive().safe().nullable().optional(),
+  tokens_used: z.number().int().nonnegative().safe().optional(),
+  time_used_seconds: z.number().int().nonnegative().safe().optional(),
+  created_at: z.number().int().nonnegative().safe().nullable().optional(),
+  updated_at: z.number().int().nonnegative().safe().nullable().optional(),
+});
 const checklistSchema = z.object({
-  thread_id: z.string(),
-  turn_id: z.string(),
-  explanation: z.string().nullable().optional(),
+  thread_id: stringSchema,
+  turn_id: stringSchema,
+  explanation: optionalNullableStringSchema,
   plan: z.array(
     z.object({
-      step: z.string(),
+      step: stringSchema,
       status: z.enum(['pending', 'in_progress', 'completed']),
     }),
   ),
@@ -108,77 +115,54 @@ const snapshotImageSchema = z.unknown().transform((value, context) => {
   }
 });
 const cellOutputSchema = z.union([
-  z.object({ File: z.object({ file: snapshotFileSchema }).strict() }).strict(),
-  z
-    .object({
-      RichImage: z
-        .object({
-          image: snapshotImageSchema,
-          detail: z
-            .enum(['Auto', 'Low', 'High', 'Original'])
-            .nullable()
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z.object({ Text: z.object({ text: z.string() }).strict() }).strict(),
-  z
-    .object({
-      Image: z
-        .object({
-          image_url: z.string(),
-          detail: z
-            .enum(['Auto', 'Low', 'High', 'Original'])
-            .nullable()
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z.object({ Audio: z.object({ audio_url: z.string() }).strict() }).strict(),
+  z.strictObject({ File: z.strictObject({ file: snapshotFileSchema }) }),
+  z.strictObject({
+    RichImage: z.strictObject({
+      image: snapshotImageSchema,
+      detail: z.enum(['Auto', 'Low', 'High', 'Original']).nullable().optional(),
+    }),
+  }),
+  z.strictObject({ Text: z.strictObject({ text: stringSchema }) }),
+  z.strictObject({
+    Image: z.strictObject({
+      image_url: stringSchema,
+      detail: z.enum(['Auto', 'Low', 'High', 'Original']).nullable().optional(),
+    }),
+  }),
+  z.strictObject({ Audio: z.strictObject({ audio_url: stringSchema }) }),
 ]);
 const codeModeSnapshotSchema = z
-  .object({
+  .strictObject({
     format_version: z.literal(1),
     // Like native reply IDs, counters retain their exact decimal text in JS.
     next_cell_id: z.string().refine(isCellNumber, 'Invalid next cell ID'),
     stored_values: losslessJsonObjectSchema,
     completed_cells: codeModeCellKeysSchema.pipe(
       z.record(
-        z.string(),
-        z
-          .object({
-            public_cell_id: z.string().nullable().optional(),
-            pending_initial_yield_items: z
-              .array(cellOutputSchema)
-              .nullable()
-              .optional(),
-            event: z.union([
-              z
-                .object({
-                  Completed: z
-                    .object({
-                      content_items: z.array(cellOutputSchema),
-                      error_text: z.string().nullable().optional(),
-                    })
-                    .strict(),
-                })
-                .strict(),
-              z
-                .object({
-                  Terminated: z
-                    .object({ content_items: z.array(cellOutputSchema) })
-                    .strict(),
-                })
-                .strict(),
-            ]),
-          })
-          .strict(),
+        stringSchema,
+        z.strictObject({
+          public_cell_id: optionalNullableStringSchema,
+          pending_initial_yield_items: z
+            .array(cellOutputSchema)
+            .nullable()
+            .optional(),
+          event: z.union([
+            z.strictObject({
+              Completed: z.strictObject({
+                content_items: z.array(cellOutputSchema),
+                error_text: optionalNullableStringSchema,
+              }),
+            }),
+            z.strictObject({
+              Terminated: z.strictObject({
+                content_items: z.array(cellOutputSchema),
+              }),
+            }),
+          ]),
+        }),
       ),
     ),
   })
-  .strict()
   .superRefine((snapshot, ctx) => {
     for (const [id, cell] of Object.entries(snapshot.completed_cells)) {
       const publicId = cell.public_cell_id;
@@ -209,8 +193,8 @@ const codeModeSnapshotSchema = z
 const childStateSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('active'),
-    thread_id: z.string(),
-    parent_thread_id: z.string(),
+    thread_id: stringSchema,
+    parent_thread_id: stringSchema,
     closed_at: z.null().optional(),
     metadata: jsonObject,
     history: z.array(losslessJsonObjectSchema),
@@ -221,8 +205,8 @@ const childStateSchema = z.discriminatedUnion('status', [
   }),
   z.object({
     status: z.literal('closed'),
-    thread_id: z.string(),
-    parent_thread_id: z.string(),
+    thread_id: stringSchema,
+    parent_thread_id: stringSchema,
     closed_at: z.number().nonnegative().nullable().optional(),
     metadata: jsonObject,
     history: z.array(losslessJsonObjectSchema),
@@ -244,7 +228,7 @@ const rootState = {
   pending_actions: z.array(losslessJsonObjectSchema).default([]),
   recovery: z
     .object({
-      interrupted_thread_ids: z.array(z.string()),
+      interrupted_thread_ids: z.array(stringSchema),
       expired_actions: z.array(losslessJsonObjectSchema),
     })
     .nullable()
@@ -256,10 +240,10 @@ const treeState = {
   root_checklist: checklistSchema.nullable().optional(),
   root_goal: goalSnapshotSchema.nullable().optional(),
   descendants: z.array(childStateSchema).default([]),
-  interrupted_thread_ids: z.array(z.string()).default([]),
+  interrupted_thread_ids: z.array(stringSchema).default([]),
   root_tool_origins: z
     .record(
-      z.string(),
+      stringSchema,
       z.object({
         turn_id: z.string().min(1),
         originating_item_id: z.string().min(1),
@@ -275,7 +259,30 @@ const treeState = {
     .nullable()
     .optional(),
 };
+const manualNativeReceiptSchema = z.union([
+  z
+    .object({
+      type: z.enum([
+        'function_call_output',
+        'custom_tool_call_output',
+        'shell_call_output',
+      ]),
+      call_id: z.string().min(1),
+      output: jsonValue,
+    })
+    .catchall(jsonValue),
+  z
+    .object({
+      type: z.literal('apply_patch_call_output'),
+      call_id: z.string().min(1),
+      status: z.enum(['completed', 'failed']),
+      output: stringSchema.optional(),
+    })
+    .catchall(jsonValue),
+]);
 const manualContinuationSchema = z.object({
+  model_override: z.string().min(1).optional(),
+  model_settings_override: losslessJsonObjectSchema.optional(),
   // Outcome metadata remains ordinary data; native restore validates its
   // original completed-response anchor and binds fresh callback receipts.
   tool_outcomes: z
@@ -291,29 +298,17 @@ const manualContinuationSchema = z.object({
   // Legacy format3 stored text function outputs; new checked receipts retain
   // native content and custom output without another JS transform.
   accepted_replies: z.record(
-    z.string(),
+    stringSchema,
     z.union([
-      z.string(),
+      stringSchema,
       z
         .object({
           type: z.literal('response_item'),
-          payload: z
-            .object({
-              type: z.enum(['function_call_output', 'custom_tool_call_output']),
-              call_id: z.string().min(1),
-              output: jsonValue,
-            })
-            .catchall(jsonValue),
+          payload: manualNativeReceiptSchema,
           metadata: jsonObject.optional(),
         })
         .catchall(jsonValue),
-      z
-        .object({
-          type: z.enum(['function_call_output', 'custom_tool_call_output']),
-          call_id: z.string().min(1),
-          output: jsonValue,
-        })
-        .catchall(jsonValue),
+      manualNativeReceiptSchema,
     ]),
   ),
   pending_manual: z
@@ -321,49 +316,149 @@ const manualContinuationSchema = z.object({
       z.object({
         call_id: z.string().min(1),
         name: z.string().min(1),
-        namespace: z.string().optional(),
-        arguments: z.string(),
+        namespace: optionalStringSchema,
+        arguments: stringSchema,
+        shell: z.boolean().optional(),
+        patch: z.boolean().optional(),
         approval_required: z.boolean().optional(),
-        effective_arguments: z.string().optional(),
+        effective_arguments: optionalStringSchema,
       }),
     )
     .min(1),
 });
+const manualUsageSchema = z.object({
+  requests: nonnegativeTokenCountWireSchema.optional(),
+  missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
+  inputTokens: nonnegativeTokenCountWireSchema,
+  cachedInputTokens: nonnegativeTokenCountWireSchema,
+  cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
+  outputTokens: nonnegativeTokenCountWireSchema,
+  reasoningOutputTokens: nonnegativeTokenCountWireSchema,
+  totalTokens: nonnegativeTokenCountWireSchema,
+});
+/** @internal Validate the durable diagnostic snapshot before native sealing. */
+export const guardrailCheckpointSchema = z.object({
+  kind: z.enum(['input', 'output']),
+  name: stringSchema,
+  agent_profile: nullableStringSchema,
+  session_id: stringSchema,
+  turn_id: stringSchema,
+  subagent_id: optionalStringSchema,
+  result: z.object({
+    tripwireTriggered: z.boolean(),
+    outputInfo: jsonValue.optional(),
+  }),
+  tool_call: z
+    .object({
+      tool: z.object({ name: stringSchema, namespace: nullableStringSchema }),
+      sessionId: stringSchema,
+      turnId: stringSchema,
+      callId: nullableStringSchema,
+      childId: nullableStringSchema,
+      childIncarnation: nullableStringSchema,
+      role: nullableStringSchema,
+      model: nullableStringSchema,
+      route: z.enum(['direct', 'code']),
+      outerCallId: nullableStringSchema,
+      cellId: nullableStringSchema,
+      nestedCallId: nullableStringSchema,
+    })
+    .optional(),
+});
+const originalInputSchema = jsonValue.transform((value, context) => {
+  try {
+    nativeInput(value as UserInput);
+    return value as UserInput & JsonValue;
+  } catch {
+    context.addIssue({ code: 'custom', message: 'Invalid original run input' });
+    return z.NEVER;
+  }
+});
 const manualContextSchema = z.object({
+  guardrail_results: z.array(guardrailCheckpointSchema).optional(),
+  original_input: originalInputSchema.optional(),
+  continuation_trace_id: z
+    .string()
+    .regex(/^[0-9a-f]{32}$/)
+    .refine((id) => id !== '0'.repeat(32))
+    .optional(),
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
-  instructions: z.string().nullable(),
+  instructions: nullableStringSchema,
   result_schemas: z.array(
     z.object({
-      name: z.string(),
-      namespace: z.string().optional(),
+      name: stringSchema,
+      namespace: optionalStringSchema,
       schema: jsonValue,
     }),
   ),
-  usage: z
-    .object({
-      requests: nonnegativeTokenCountWireSchema.optional(),
-      missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
-      inputTokens: nonnegativeTokenCountWireSchema,
-      cachedInputTokens: nonnegativeTokenCountWireSchema,
-      cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
-      outputTokens: nonnegativeTokenCountWireSchema,
-      reasoningOutputTokens: nonnegativeTokenCountWireSchema,
-      totalTokens: nonnegativeTokenCountWireSchema,
-    })
-    .nullable(),
+  usage: manualUsageSchema.nullable(),
+  model_attempt: modelAttemptSnapshotSchema.optional(),
+  model_usage_offset: manualUsageSchema.optional(),
 });
-const outputContextSchema = z
-  .object({
-    version: z.literal(1),
-    mode: z.enum(['plain', 'native', 'prompted']),
-    budget: z.number().int().nonnegative().safe().default(0),
-    fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
-  })
-  .strict();
+const outputContextSchema = z.strictObject({
+  version: z.literal(1),
+  mode: z.enum(['plain', 'native', 'prompted']),
+  budget: z.number().int().nonnegative().safe().default(0),
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+});
+const applicationToolOutputSchema = z.strictObject({
+  submissionId: stringSchema,
+  turnId: stringSchema,
+  callId: stringSchema,
+  name: stringSchema,
+  namespace: nullableStringSchema,
+  rootTurnId: optionalStringSchema,
+  applicationData: losslessJsonObjectSchema,
+});
+
+/** Passive accepted tool data. Display identities never authorize tool execution. */
+export type ApplicationToolOutput = z.infer<typeof applicationToolOutputSchema>;
+
+const rememberedApprovalSchema = z.strictObject({
+  profile_id: nullableStringSchema,
+  profile: z.string().regex(/^[0-9a-f]{64}$/),
+  key: z.string().min(1),
+  signature: z.string().regex(/^[0-9a-f]{64}$/),
+  approve: z.boolean(),
+  reason: nullableStringSchema,
+});
+/** @internal Application-keyed future policy, never a native invocation grant. */
+export type RememberedApproval = z.infer<typeof rememberedApprovalSchema>;
+
 const sdkOutputState = {
+  remembered_approvals: z
+    .array(rememberedApprovalSchema)
+    .superRefine((records, ctx) => {
+      const keys = records.map((record) =>
+        JSON.stringify([record.profile_id, record.key, record.signature]),
+      );
+      if (new Set(keys).size !== keys.length)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Remembered approvals must identify distinct declarations',
+        });
+    })
+    .optional(),
   output_context: outputContextSchema,
   repair_turns: z.array(repairTurnWireSchema).default([]),
   repair_items: z.array(repairItemWireSchema).default([]),
+  application_tool_outputs: z.array(applicationToolOutputSchema).optional(),
+  pending_application_tool_outputs: z
+    .array(applicationToolOutputSchema)
+    .superRefine((outputs, ctx) => {
+      const seen = new Set<string>();
+      outputs.forEach((output, index) => {
+        const key = JSON.stringify([output.turnId, output.callId]);
+        if (seen.has(key))
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Duplicate pending application tool output',
+            path: [index],
+          });
+        seen.add(key);
+      });
+    })
+    .optional(),
 };
 const checkpointTreeSchema = z.object({ ...rootState, ...treeState });
 const planProviderPrefix = 'native_agent_siwc_v1_';
@@ -403,8 +498,12 @@ const nativeCheckpointSchema = checkpointTreeSchema
         'output_context',
         'repair_turns',
         'repair_items',
+        'application_tool_outputs',
+        'remembered_approvals',
+        'pending_application_tool_outputs',
         'manual_continuation',
         'manual_context',
+        'run_budget',
         'operation_tools',
         'default_tools',
         'default_resource_servers',
@@ -436,6 +535,38 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
 
 export const sessionStateSchema = z
   .discriminatedUnion('format_version', [
+    z
+      .object({
+        format_version: z.literal(17),
+        ...rootState,
+        ...treeState,
+        ...sdkOutputState,
+        ...checkpointSelectionFields,
+        network_policy_digest: z
+          .string()
+          .regex(/^sha256:v1:[a-f0-9]{64}$/)
+          .optional(),
+        manual_continuation: manualContinuationSchema,
+        manual_context: manualContextSchema,
+        run_budget: runBudgetCheckpointSchema,
+      })
+      .catchall(jsonValue),
+    z
+      .object({
+        format_version: z.literal(18),
+        ...rootState,
+        ...treeState,
+        ...sdkOutputState,
+        ...checkpointSelectionFields,
+        network_policy_digest: z
+          .string()
+          .regex(/^sha256:v1:[a-f0-9]{64}$/)
+          .optional(),
+        manual_continuation: manualContinuationSchema,
+        manual_context: manualContextSchema,
+        run_budget: runBudgetCheckpointSchema,
+      })
+      .catchall(jsonValue),
     z
       .object({
         format_version: z.literal(16),
@@ -584,6 +715,12 @@ export const sessionStateSchema = z
   ])
   .superRefine((state, ctx) => {
     const aware = state.format_version !== 2 && state.format_version !== 3;
+    const budgeted = state.format_version === 17 || state.format_version === 18;
+    if (budgeted !== 'run_budget' in state)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Request budgets require a budgeted manual checkpoint format',
+      });
     const plan = state.format_version === 16;
     const network = state.format_version >= 12 && !plan;
     validatePlanCheckpointFormat(state.root_metadata.model_provider, plan, ctx);
@@ -636,6 +773,7 @@ export const sessionStateSchema = z
       state.format_version !== 11 &&
       state.format_version !== 14 &&
       state.format_version !== 15 &&
+      state.format_version !== 18 &&
       (state.root_code_mode != null ||
         state.descendants.some((child) => child.code_mode != null))
     )
@@ -695,6 +833,8 @@ export const sessionStateSchema = z
       state.format_version !== 11 &&
       state.format_version !== 13 &&
       state.format_version !== 15 &&
+      state.format_version !== 17 &&
+      state.format_version !== 18 &&
       ('manual_continuation' in state || 'manual_context' in state)
     ) {
       ctx.addIssue({
@@ -709,7 +849,9 @@ export const sessionStateSchema = z
       state.format_version === 9 ||
       state.format_version === 11 ||
       state.format_version === 13 ||
-      state.format_version === 15
+      state.format_version === 15 ||
+      state.format_version === 17 ||
+      state.format_version === 18
     ) {
       const continuation = state.manual_continuation;
       const pending = continuation.pending_manual.map((call) => call.call_id);
@@ -746,10 +888,76 @@ export const sessionStateSchema = z
     }
     validateCheckpointTree(state, ctx);
   });
+// Saved histories cannot authorize a hosted prompt. Live declarations travel
+// separately; the native serializer deliberately omits their references.
+function checkpointRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+function validateStoredPromptControls(
+  state: z.infer<typeof checkpointTreeSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const check = (controls: unknown, path: (string | number)[]) => {
+    if (
+      checkpointRecord(checkpointRecord(controls)?.hosted_prompt)?.reference !=
+      null
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path,
+        message: 'Stored hosted prompt references are not authorized',
+      });
+  };
+  const metadata = (value: unknown, path: (string | number)[]) => {
+    const profile = checkpointRecord(
+      checkpointRecord(value)?.sdk_agent_profile,
+    );
+    check(checkpointRecord(profile?.model)?.request_controls, path);
+  };
+  const row = (value: unknown, path: (string | number)[]) => {
+    const item = checkpointRecord(value);
+    const payload = checkpointRecord(item?.payload);
+    if (item?.type === 'response_item') metadata(item.metadata, path);
+    if (
+      item?.type === 'event_msg' &&
+      payload?.type === 'thread_settings_applied'
+    )
+      check(checkpointRecord(payload.thread_settings)?.request_controls, path);
+    if (
+      item?.type === 'compacted' &&
+      Array.isArray(payload?.replacement_history_metadata)
+    )
+      payload.replacement_history_metadata.forEach((entry, i) =>
+        metadata(entry, [
+          ...path,
+          'payload',
+          'replacement_history_metadata',
+          i,
+        ]),
+      );
+  };
+  state.history.forEach((value, i) => row(value, ['history', i]));
+  state.descendants?.forEach((child, i) =>
+    child.history.forEach((value, j) =>
+      row(value, ['descendants', i, 'history', j]),
+    ),
+  );
+  const accepted = checkpointRecord(
+    checkpointRecord(checkpointRecord(state)?.manual_continuation)
+      ?.accepted_replies,
+  );
+  if (accepted)
+    for (const [id, value] of Object.entries(accepted))
+      row(value, ['manual_continuation', 'accepted_replies', id]);
+}
+
 function validateCheckpointTree(
   state: z.infer<typeof checkpointTreeSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  validateStoredPromptControls(state, ctx);
   if (
     state.root_checklist &&
     state.root_checklist.thread_id !== state.source_session_id
@@ -821,10 +1029,16 @@ function validateCheckpointTree(
 }
 export type SessionState = z.infer<typeof sessionStateSchema>;
 
+export function isBudgetedManualSessionState(
+  state: SessionState | null | undefined,
+): state is Extract<SessionState, { format_version: 17 | 18 }> {
+  return state?.format_version === 17 || state?.format_version === 18;
+}
+
 /** Existing manual owner, with or without an SDK output envelope. */
 export type ManualSessionState = Extract<
   SessionState,
-  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 }
+  { format_version: 3 | 5 | 7 | 9 | 11 | 13 | 15 | 17 | 18 }
 >;
 export function isManualSessionState(
   state: SessionState | null | undefined,
@@ -836,14 +1050,19 @@ export function isManualSessionState(
     state?.format_version === 9 ||
     state?.format_version === 11 ||
     state?.format_version === 13 ||
-    state?.format_version === 15
+    state?.format_version === 15 ||
+    state?.format_version === 17 ||
+    state?.format_version === 18
   );
 }
 export function isOutputAwareState(
   state: SessionState | null | undefined,
 ): state is Extract<
   SessionState,
-  { format_version: 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 }
+  {
+    format_version:
+      4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
+  }
 > {
   return (
     state?.format_version === 4 ||
@@ -858,7 +1077,9 @@ export function isOutputAwareState(
     state?.format_version === 13 ||
     state?.format_version === 14 ||
     state?.format_version === 15 ||
-    state?.format_version === 16
+    state?.format_version === 16 ||
+    state?.format_version === 17 ||
+    state?.format_version === 18
   );
 }
 /** @internal Read static SDK overlays only after the versioned state validator. */
@@ -874,7 +1095,9 @@ export function readCheckpointSelections(
     state?.format_version === 13 ||
     state?.format_version === 14 ||
     state?.format_version === 15 ||
-    state?.format_version === 16
+    state?.format_version === 16 ||
+    state?.format_version === 17 ||
+    state?.format_version === 18
   )
     return {
       ...(state.default_resource_servers === undefined
@@ -910,10 +1133,7 @@ export function withOutputState(
   state: SessionState,
   identity: OutputIdentity,
   prior?: SessionState | null,
-  repairs?: {
-    readonly turns: readonly RepairTurnWire[];
-    readonly items: readonly RepairItemWire[];
-  },
+  repairs?: OutputRepairs,
 ): SessionState {
   const receipts = isOutputAwareState(prior)
     ? prior
@@ -939,6 +1159,8 @@ export function withOutputState(
 type OutputRepairs = {
   readonly turns: readonly RepairTurnWire[];
   readonly items: readonly RepairItemWire[];
+  readonly applicationToolOutputs?: readonly ApplicationToolOutput[];
+  readonly pendingApplicationToolOutputs?: readonly ApplicationToolOutput[];
 };
 function outputStateFields(
   sessionId: string,
@@ -948,13 +1170,26 @@ function outputStateFields(
         SessionState,
         {
           format_version:
-            4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+            4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18;
         }
       >
     | undefined,
   repairs: OutputRepairs | undefined,
 ) {
+  const applicationOutputs =
+    repairs?.applicationToolOutputs ?? receipts?.application_tool_outputs;
+  const pendingApplicationOutputs =
+    repairs?.pendingApplicationToolOutputs ??
+    receipts?.pending_application_tool_outputs;
   return {
+    ...(pendingApplicationOutputs !== undefined &&
+    (pendingApplicationOutputs.length ||
+      receipts?.pending_application_tool_outputs !== undefined)
+      ? { pending_application_tool_outputs: pendingApplicationOutputs }
+      : {}),
+    ...(applicationOutputs?.length
+      ? { application_tool_outputs: applicationOutputs }
+      : {}),
     output_context: identity,
     repair_turns: (repairs?.turns ?? receipts?.repair_turns ?? []).map(
       (turn) => ({ ...turn, parentSessionId: sessionId }),
@@ -971,7 +1206,11 @@ export function fromNativeCheckpoint(
   identity: OutputIdentity,
   prior?: SessionState | null,
   repairs?: OutputRepairs,
-  manual?: { manual_continuation: unknown; manual_context: unknown },
+  manual?: {
+    manual_continuation: unknown;
+    manual_context: unknown;
+    run_budget?: unknown;
+  },
   selection: CheckpointSelections = {},
   networkPolicy: string | undefined = undefined,
   executorReadOnly = false,
@@ -982,17 +1221,21 @@ export function fromNativeCheckpoint(
     ...selection,
     ...(executorReadOnly ? { executor_read_only: true } : {}),
     format_version:
-      state.format_version === 5
-        ? 16
-        : networkPolicy === undefined
-          ? (state.format_version === 4 ? 6 : 4) +
-            (manual ? 1 : 0) +
-            (selection.operation_tools !== undefined ||
-            selection.default_tools !== undefined ||
-            selection.default_resource_servers !== undefined
-              ? 4
-              : 0)
-          : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
+      manual?.run_budget !== undefined
+        ? state.format_version === 4
+          ? 18
+          : 17
+        : state.format_version === 5
+          ? 16
+          : networkPolicy === undefined
+            ? (state.format_version === 4 ? 6 : 4) +
+              (manual ? 1 : 0) +
+              (selection.operation_tools !== undefined ||
+              selection.default_tools !== undefined ||
+              selection.default_resource_servers !== undefined
+                ? 4
+                : 0)
+            : (state.format_version === 4 ? 14 : 12) + (manual ? 1 : 0),
     ...(networkPolicy === undefined
       ? {}
       : { network_policy_digest: networkPolicy }),
@@ -1009,6 +1252,7 @@ export function nativeCheckpoint(state: SessionState) {
   const {
     manual_continuation: _continuation,
     manual_context: _context,
+    run_budget: _budget,
     output_context: _output,
     operation_tools: _operation,
     default_tools: _defaults,
@@ -1017,6 +1261,9 @@ export function nativeCheckpoint(state: SessionState) {
     executor_read_only: _readOnly,
     repair_turns: _turns,
     repair_items: _items,
+    application_tool_outputs: _applicationOutputs,
+    remembered_approvals: _rememberedApprovals,
+    pending_application_tool_outputs: _pendingApplicationOutputs,
     ...checkpoint
   } = state;
   return {
@@ -1029,7 +1276,8 @@ export function nativeCheckpoint(state: SessionState) {
             state.format_version === 10 ||
             state.format_version === 11 ||
             state.format_version === 14 ||
-            state.format_version === 15
+            state.format_version === 15 ||
+            state.format_version === 18
           ? 4
           : 2,
   };

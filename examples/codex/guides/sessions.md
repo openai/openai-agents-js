@@ -57,6 +57,22 @@ console.log((await turn.wait()).finalOutput);
 
 Opening validates and records the entire batch without requesting a model response. User messages can include the [image and file parts](tools.md#input-tools-and-output) accepted by ordinary input; assistant messages contain settled text. Tool history and other roles reject. `agent.run()` accepts the same option. Choose either initial history or `state`/resume; they cannot be combined. Restore retains the recorded items without seeding them again.
 
+### Capture one-shot history for replay
+
+With the current [source build](building.md), pass `returnHistory: true` to `agent.run()` or `Runner.run()` to capture original conversation records. Replay the returned `history` through another Session's `transactHistory()`. Use `returnState: true` to capture a portable checkpoint. You can request both independently.
+
+The [one-shot history replay example](../../classic/docs/native/history-replay.mts) captures a scripted answer and replays its original records into a new Session. It requires Node.js 24, [matching built packages and native runtime](building.md), and direct loopback routing for the scripted provider. It needs no model credentials or external service. Run it from the repository root:
+
+```sh
+pnpm exec tsx examples/classic/docs/native/history-replay.mts
+```
+
+The command prints `continued record` and checks both final answers, exactly two model requests, and the earlier input and answer in the replay request. The new Session uses the application's current Agent instructions and declarations.
+
+The capture excludes system and developer messages. Replay uses the destination Session's provider credentials and tool grants. Retained tool calls and results provide context without executing those calls again. See [original history reads and edits](state.md#original-history-reads-and-edits) for replay validation and replacement.
+
+One-shot capture allows up to 4,096 original records and 8 MiB of serialized history. The SDK reports a size error after the task finishes, so retrying can repeat tool effects. For larger histories, open a Session and use [bounded history reads](state.md#original-history-reads-and-edits).
+
 ### Choose a cancellation lifetime
 
 Use the signal or control that owns the work you want to stop:
@@ -82,6 +98,44 @@ Cancellation cannot undo completed effects or preempt synchronous JavaScript. En
 An idle Session can update one category at a time: instructions, model and settings, or tools. Tool updates can remove, restore, or replace opening declarations within their original names. A Session opened with `NativeAgents` keeps its instructions and model settings fixed from the start.
 
 The current source build also supports captured Agent handoff graphs. Declare reachable Agents through `Agent.handoffs` before opening. While idle, call `await session.update({ agent: target })` to activate one of those original Agent objects, separately from other updates. The target supplies its captured declaration defaults. `await session.getActiveAgent()` returns the currently active Agent. A same-named replacement object is not an admitted target. See [live Agent and voice settings](native-voice.md#settings-tools-and-live-agents) for tool-selection and restore constraints.
+
+### Callback-backed handoffs
+
+The current source build has been accepting `new Handoff(target, callback)` for a custom tool name, description, typed arguments and acknowledgement. The callback has been using the ordinary `tool()` validation and tool hooks. This example has been using the [installation setup](installation.md), including `OPENAI_API_KEY`, and has been printing the final answer and the selected Agent identity:
+
+```ts
+import { Agent, Handoff, NativeProvider, tool } from '@openai/agents';
+import { z } from 'zod';
+
+const routeIssue = tool({
+  name: 'route_issue',
+  description: 'Route an issue by its ticket number.',
+  parameters: z.object({ ticket: z.number().int() }),
+  execute: ({ ticket }) => `Accepted ticket ${ticket}`,
+});
+
+await using provider = new NativeProvider();
+const specialist = new Agent({
+  model: 'gpt-5.5',
+  provider,
+  instructions: 'Resolve the routed ticket using the conversation.',
+});
+const triage = new Agent({
+  model: 'gpt-5.5',
+  provider,
+  instructions: 'Route ticket requests with route_issue.',
+  handoffs: [new Handoff(specialist, routeIssue)],
+});
+await using session = await triage.session();
+console.log(
+  (await (await session.submit('Route ticket 7.')).wait()).finalOutput,
+);
+console.log((await session.getActiveAgent()) === specialist);
+```
+
+The native tool owner has been awaiting the callback and its cleanup before publishing an accepted target. Failed, denied or cancelled callbacks have not been activating that target. The callback has been supplying a tool acknowledgement; the target Agent has been producing the conversation's final answer.
+
+`Handoff` has been requiring an automatic callback in the default function namespace, with `finishTurn: false`. Callback identity has been staying captured across tool updates; a same-key replacement has not been acquiring handoff authority. [Function tool cancellation](tools.md#function-tools) has been retaining its ordinary cleanup rules. Plain Agent targets and synchronous target resolvers have been remaining available for handoffs without custom callbacks.
 
 ## Observations and interruption
 

@@ -1,0 +1,333 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -233,6 +233,8 @@
+     pub hosted_tools: Vec<Value>,
+     #[serde(default)]
+     pub profile_id: u64,
++    #[serde(default = "default_true")]
++    pub hosted_mcp_auto_response: bool,
+ }
+ #[derive(Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+@@ -305,10 +307,14 @@
+     Approve {
+         call_id: String,
+         approved: bool,
++        #[serde(default)]
++        output: Option<String>,
+     },
+     ToolResult {
+         call_id: String,
+         output: String,
++        #[serde(default)]
++        background: bool,
+     },
+     Sent {
+         id: u64,
+@@ -395,6 +401,7 @@
+     claim: CallClaim,
+     needs_approval: bool,
+     output: Option<String>,
++    background: bool,
+ }
+ struct HostedApproval {
+     response_id: String,
+@@ -437,6 +444,7 @@
+ struct Batch {
+     calls: Vec<String>,
+     hosted: Vec<String>,
++    completed_hosted_call: bool,
+     out_of_band: bool,
+     continued: bool,
+ }
+@@ -487,6 +495,7 @@
+     completed_response_order: VecDeque<String>,
+     cancel_before_created: bool,
+     cancel_waiting: Option<String>,
++    hosted_mcp_auto_response: bool,
+     guardrail_output: Option<String>,
+ }
+ struct DefaultCancelScope {
+@@ -542,6 +551,7 @@
+             completed_response_order: VecDeque::new(),
+             cancel_before_created: false,
+             cancel_waiting: None,
++            hosted_mcp_auto_response: true,
+             guardrail_output: None,
+         }
+     }
+@@ -777,6 +787,7 @@
+                 if self.phase != Phase::New {
+                     return Err("Realtime control already started".into());
+                 }
++                self.hosted_mcp_auto_response = config.hosted_mcp_auto_response;
+                 self.configure(config, false, &mut effects)?;
+                 self.clear_output_audio_on_interrupt = clear_output_audio_on_interrupt;
+             }
+@@ -1001,7 +1012,11 @@
+                     self.incoming_bytes += bytes;
+                 }
+             }
+-            Command::Approve { call_id, approved } => {
++            Command::Approve {
++                call_id,
++                approved,
++                output,
++            } => {
+                 self.require_ready()?;
+                 let call = self.calls.get_mut(&call_id).ok_or("Unknown approval")?;
+                 if call.phase != CallPhase::Approval {
+@@ -1013,12 +1028,17 @@
+                 } else {
+                     self.publish(
+                         &call_id,
+-                        "Tool execution was not approved.".into(),
++                        output.unwrap_or_else(|| "Tool execution was not approved.".into()),
++                        false,
+                         &mut effects,
+                     )?;
+                 }
+             }
+-            Command::ToolResult { call_id, output } => {
++            Command::ToolResult {
++                call_id,
++                output,
++                background,
++            } => {
+                 self.require_ready()?;
+                 if self
+                     .calls
+@@ -1027,7 +1047,7 @@
+                 {
+                     return Err("Tool result has no live execution claim".into());
+                 }
+-                self.publish(&call_id, output, &mut effects)?;
++                self.publish(&call_id, output, background, &mut effects)?;
+             }
+             Command::Text { text } => {
+                 self.require_ready()?;
+@@ -2290,6 +2310,23 @@
+                 }) {
+                     return Err("Completed response omitted a hosted MCP approval".into());
+                 }
++                let hosted = if managed_detached {
++                    &self.detached[&id].scope.as_ref().unwrap().hosted
++                } else {
++                    &self.response_hosted
++                };
++                let completed_hosted_call = self.hosted_mcp_auto_response
++                    && output.iter().any(|item| {
++                        matches!(item["type"].as_str(), Some("mcp_call" | "mcp_tool_call"))
++                            && item["server_label"]
++                                .as_str()
++                                .is_some_and(|label| hosted.contains_key(label))
++                            && (matches!(
++                                item["status"].as_str(),
++                                Some("completed" | "failed" | "incomplete")
++                            ) || (item["status"].is_null()
++                                && (!item["output"].is_null() || !item["error"].is_null())))
++                    });
+                 let deferred_create = if managed_detached {
+                     let owner = self.detached.get_mut(&id).unwrap();
+                     owner.active = false;
+@@ -2312,7 +2349,7 @@
+                         self.responses.mark_finished().is_some()
+                     }
+                 };
+-                if !ids.is_empty() || !hosted_ids.is_empty() {
++                if !ids.is_empty() || !hosted_ids.is_empty() || completed_hosted_call {
+                     if self.batches.contains_key(&id) {
+                         return Err("Response batch already admitted".into());
+                     }
+@@ -2321,6 +2358,7 @@
+                         Batch {
+                             calls: ids.clone(),
+                             hosted: hosted_ids.clone(),
++                            completed_hosted_call,
+                             out_of_band: managed_detached,
+                             continued: false,
+                         },
+@@ -2411,6 +2449,7 @@
+                 claim: CallClaim::default(),
+                 needs_approval,
+                 output: None,
++                background: false,
+             },
+         );
+         Ok(())
+@@ -2419,24 +2458,26 @@
+         &mut self,
+         call_id: &str,
+         output: String,
++        background: bool,
+         effects: &mut Vec<Effect>,
+     ) -> Result<(), String> {
+         if output.len() > MAX_CALL_BYTES {
+             return Err("Tool output exceeds capacity".into());
+         }
+-        if self
+-            .calls
+-            .get(call_id)
+-            .and_then(|call| call.request.response_id.as_ref())
++        let call = self.calls.get_mut(call_id).ok_or("Unknown function")?;
++        call.background = background;
++        if call
++            .request
++            .response_id
++            .as_ref()
+             .is_some_and(|id| self.detached.contains_key(id))
+         {
+-            let call = self.calls.get_mut(call_id).unwrap();
+             call.output = Some(output);
+             call.phase = CallPhase::Published;
+             return Ok(());
+         }
+         let id = self.send(json!({"type":"conversation.item.create","item":{"type":"function_call_output","call_id":call_id,"output":output}}), effects);
+-        self.calls.get_mut(call_id).ok_or("Unknown function")?.phase = CallPhase::Publishing(id);
++        self.calls.get_mut(call_id).unwrap().phase = CallPhase::Publishing(id);
+         Ok(())
+     }
+     fn continue_batches(&mut self, effects: &mut Vec<Effect>) -> Result<(), String> {
+@@ -2462,7 +2503,19 @@
+             .map(|(id, _)| id.clone())
+             .collect();
+         for id in ready {
+-            if self.batches[&id].out_of_band {
++            let batch = &self.batches[&id];
++            if !batch.completed_hosted_call
++                && batch.hosted.is_empty()
++                && batch.calls.iter().all(|id| self.calls[id].background)
++            {
++                let default = !batch.out_of_band;
++                self.batches.get_mut(&id).unwrap().continued = true;
++                if default && self.responses.pending_create {
++                    self.request_response(effects);
++                }
++                continue;
++            }
++            if batch.out_of_band {
+                 if self.pending_detached.is_some() {
+                     continue;
+                 }
+@@ -2608,6 +2661,120 @@
+             json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":[item()]}}}),
+         )
+     }
++    #[test]
++    fn only_foreground_tool_results_request_a_continuation() {
++        for (background, explicit_create, mixed) in [
++            (true, false, false),
++            (true, true, false),
++            (true, false, true),
++            (false, false, false),
++        ] {
++            let mut control = ready();
++            request(&mut control);
++            let mut items = vec![item()];
++            if mixed {
++                let mut second = item();
++                second["id"] = json!("item-2");
++                second["call_id"] = json!("call-2");
++                items.push(second);
++            }
++            command(
++                &mut control,
++                json!({"type":"provider","event":{"type":"response.done","response":{"id":"response-1","status":"completed","output":items}}}),
++            );
++            if explicit_create {
++                let deferred = command(&mut control, json!({"type":"create_response"}));
++                assert_eq!(deferred["effects"], json!([]));
++            }
++            for (index, item) in items.iter().enumerate() {
++                let call_id = &item["call_id"];
++                command(
++                    &mut control,
++                    json!({"type":"approve","call_id":call_id,"approved":true}),
++                );
++                let result = command(
++                    &mut control,
++                    json!({"type":"tool_result","call_id":call_id,"output":"{\"value\":7}","background":background && index == 0}),
++                );
++                assert_eq!(
++                    result["effects"][0]["event"]["item"],
++                    json!({
++                        "type":"function_call_output", "call_id":call_id, "output":"{\"value\":7}"
++                    })
++                );
++                let receipt = command(
++                    &mut control,
++                    json!({"type":"sent","id":result["effects"][0]["id"]}),
++                );
++                let continuation = receipt["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .any(|effect| effect["event"]["type"] == "response.create");
++                assert_eq!(
++                    continuation,
++                    index + 1 == items.len() && (!background || explicit_create || mixed),
++                    "{receipt}"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn accepted_hosted_mcp_completion_respects_followup_option() {
++        for enabled in [true, false] {
++            let mut control = Control::default();
++            let start = command(
++                &mut control,
++                json!({"type":"start","config":{
++                    "model":"test-realtime", "instructions":"Help.",
++                    "hosted_mcp_auto_response":enabled,
++                    "hosted_tools":[{"type":"mcp","server_label":"docs","server_url":"https://example.com/mcp"}]
++                }}),
++            );
++            command(
++                &mut control,
++                json!({"type":"sent","id":start["effects"][0]["id"]}),
++            );
++            command(
++                &mut control,
++                json!({"type":"provider","event":{
++                    "type":"session.updated","session":start["effects"][0]["event"]["session"]
++                }}),
++            );
++            let created = command(
++                &mut control,
++                json!({"type":"provider","event":{
++                    "type":"response.created","response":{"id":"response-1"}
++                }}),
++            );
++            assert!(created.get("error").is_none(), "{created}");
++            let terminal = json!({"type":"provider","event":{"type":"response.done","response":{
++                "id":"response-1","status":"completed","output":[
++                    {"id":"mcp-1","type":"mcp_call","server_label":"docs","name":"search","arguments":"{}","output":"seven","status":"completed"}
++                ]
++            }}});
++            let completed = command(&mut control, terminal.clone());
++            let creates = |out: &Value| {
++                assert!(out.get("error").is_none(), "{out}");
++                out["effects"]
++                    .as_array()
++                    .unwrap()
++                    .iter()
++                    .filter(|effect| effect["event"]["type"] == "response.create")
++                    .count()
++            };
++            assert_eq!(creates(&completed), usize::from(enabled));
++            if enabled {
++                command(
++                    &mut control,
++                    json!({"type":"sent","id":completed["effects"].as_array().unwrap().iter().find(|effect| effect["type"] == "send").unwrap()["id"]}),
++                );
++            }
++            assert_eq!(creates(&command(&mut control, terminal)), 0);
++        }
++    }
++
+     #[test]
+     fn queued_text_waits_for_batch_approval_and_physical_output() {
+         for before_completion in [true, false] {

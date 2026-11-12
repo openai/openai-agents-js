@@ -1,8 +1,15 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  InteractionRequired,
   NativeProvider,
+  fileSessionStore,
+  isFunctionApprovalRequest,
+  localStorage,
   manualTool,
   parseSessionState,
   tool,
@@ -24,6 +31,92 @@ async function providerFor(server: ModelServer) {
 
 const exceeded = { code: 'run_budget_exceeded', retryable: false };
 const missing = { code: 'run_budget_usage_unavailable', retryable: false };
+
+it.each([1, 2])(
+  'keeps a budget of %i through live managed approval',
+  async (maxRequests) => {
+    const effects: string[] = [];
+    const record = tool({
+      name: 'record',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: () => {
+        effects.push('accepted');
+        return 'recorded';
+      },
+    });
+    const server = new ModelServer([
+      [call('record', {}, { callId: 'approved-effect' })],
+      ...(maxRequests === 2 ? [[message('Done')]] : []),
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Record and answer.',
+      provider,
+      tools: [record],
+    });
+    await using session = await agent.session();
+    const turn = await session.submit('begin', {
+      budget: { maxRequests, maxTokens: 1000, missingUsage: 'continue' },
+    });
+    let approved = false;
+    for await (const event of session.interactions()) {
+      if (!isFunctionApprovalRequest(event)) continue;
+      expect(effects).toEqual([]);
+      await session.respond(event.approve());
+      approved = true;
+      break;
+    }
+    expect(approved).toBe(true);
+    if (maxRequests === 1)
+      await expect(turn.wait()).rejects.toMatchObject(exceeded);
+    else
+      await expect(turn.wait()).resolves.toMatchObject({ finalOutput: 'Done' });
+    expect(effects).toEqual(['accepted']);
+    expect(server.requests).toHaveLength(maxRequests);
+    server.assertExhausted();
+  },
+);
+
+it.each(['local', 'custom'])(
+  'starts a fresh budget after settled %s store reopen',
+  async (backend) => {
+    const directory = await mkdtemp(join(tmpdir(), 'native-budget-reopen-'));
+    try {
+      const storage =
+        backend === 'local'
+          ? localStorage(join(directory, 'profile'))
+          : fileSessionStore(directory);
+      const server = new ModelServer([[message('First')], [message('Second')]]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({ instructions: 'Answer.', provider });
+      const session = await agent.session({ storage });
+      const identity = session.id;
+      try {
+        await expect(
+          (
+            await session.submit('first', { budget: { maxRequests: 1 } })
+          ).wait(),
+        ).resolves.toMatchObject({ finalOutput: 'First' });
+        await expect(session.saveState()).rejects.toThrow('Persistent storage');
+      } finally {
+        await session.close();
+      }
+      await using reopened = await agent.session({ storage, resume: identity });
+      expect(reopened.id).toBe(identity);
+      await expect(
+        (
+          await reopened.submit('second', { budget: { maxRequests: 1 } })
+        ).wait(),
+      ).resolves.toMatchObject({ finalOutput: 'Second' });
+      expect(server.requests).toHaveLength(2);
+      expect(JSON.stringify(server.requests[1]!.input)).toContain('First');
+      server.assertExhausted();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
 
 function reported(total: number): string {
   return JSON.stringify({
@@ -328,14 +421,15 @@ it('preserves the budget through a warm reply, refuses active capture, and reset
     provider,
     tools: [decision],
   });
-  const budget = { maxRequests: 1 };
+  const budget = { maxRequests: 1, maxEstimatedCostMicros: 1000 };
   await using session = await agent.session();
   const turn = await session.submit('go', { budget });
   const batch = await turn.wait({ until: 'manual_tool' });
   if (!('requests' in batch)) throw new Error('Expected a manual request');
   const request = decision.match(batch.requests[0]);
   if (!request) throw new Error('Expected the decision request');
-  const reason = 'Cannot capture an active run with a budget';
+  const reason =
+    'Cannot capture an active run with estimated-cost budget limits';
   expect(await session.checkpointStatus({ kind: 'manualWait' })).toEqual({
     status: 'notReady',
     reasons: [reason],
@@ -378,11 +472,13 @@ it('refuses automatic active capture from a one-shot run without a handler', asy
     tools: [decision],
   });
   await expect(
-    agent.run('go', { budget: { maxRequests: 2 } }),
+    agent.run('go', {
+      budget: { maxRequests: 2, maxEstimatedCostMicros: 1000 },
+    }),
   ).rejects.toMatchObject({
     name: 'InteractionRequired',
     cause: expect.objectContaining({
-      message: 'Cannot capture an active run with a budget',
+      message: 'Cannot capture an active run with estimated-cost budget limits',
     }),
   });
   server.assertExhausted();
@@ -444,6 +540,246 @@ it.each([1, 2])(
       await expect(turn.wait()).resolves.toMatchObject({
         finalOutput: { count: 2 },
       });
+    server.assertExhausted();
+  },
+);
+
+it.each(
+  [1, 2].flatMap((maxRequests) =>
+    [false, true].map((approval) => ({ maxRequests, approval })),
+  ),
+)(
+  'retains the same-turn request budget after portable restart ($maxRequests, approval=$approval)',
+  async ({ maxRequests, approval }) => {
+    const effects: string[] = [];
+    const accepted = tool({
+      name: 'accepted',
+      parameters: z.object({}),
+      execute: () => {
+        effects.push('sibling');
+        return 'recorded sibling';
+      },
+    });
+    const approved = tool({
+      name: 'approved',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: () => {
+        effects.push('approved');
+        return 'recorded approval';
+      },
+    });
+    const lookup = manualTool({
+      name: 'lookup',
+      description: 'Read a record.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const server = new ModelServer([
+      [
+        call('accepted', {}, { callId: 'sibling' }),
+        call(approval ? 'approved' : 'lookup', {}, { callId: 'pending' }),
+      ],
+      ...(maxRequests === 2 ? [[message('Done')]] : []),
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use tools and answer.',
+      provider,
+      tools: [accepted, approved, lookup],
+    });
+    const source = await agent.session();
+    let saved;
+    try {
+      await source.submit('begin', { budget: { maxRequests } });
+      for await (const event of source.interactions()) {
+        if (
+          approval
+            ? isFunctionApprovalRequest(event)
+            : lookup.match(event) !== undefined
+        )
+          break;
+      }
+      saved = await source.suspend();
+      expect(await source.suspend()).toEqual(saved);
+    } finally {
+      await source.close();
+    }
+    expect(saved.format_version).toBe(17);
+    expect(saved.run_budget).toEqual({
+      version: 1,
+      maxRequests,
+      admittedRequests: 1,
+    });
+    expect(effects).toEqual(['sibling']);
+    for (const resumeBudget of [
+      undefined,
+      { maxRequests: maxRequests + 1 },
+      { maxRequests, maxTokens: 1000 },
+    ])
+      await expect(
+        agent.session({ state: saved, resumeBudget }),
+      ).rejects.toThrow();
+    expect(server.requests).toHaveLength(1);
+    await using restored = await agent.session({
+      state: parseSessionState(JSON.stringify(saved)),
+      resumeBudget: { maxRequests },
+    });
+    for await (const event of restored.interactions()) {
+      if (approval && isFunctionApprovalRequest(event)) {
+        await restored.respond(event.approve());
+        break;
+      }
+      const request = lookup.match(event);
+      if (!approval && request) {
+        await restored.respond(request.reply('live result'));
+        break;
+      }
+    }
+    if (maxRequests === 1)
+      await expect(restored.restoredTurn!.wait()).rejects.toMatchObject(
+        exceeded,
+      );
+    else
+      await expect(restored.restoredTurn!.wait()).resolves.toMatchObject({
+        finalOutput: 'Done',
+      });
+    expect(effects).toEqual(approval ? ['sibling', 'approved'] : ['sibling']);
+    expect(server.requests).toHaveLength(maxRequests);
+    server.assertExhausted();
+  },
+);
+
+it('requires the original request ceiling for one-shot manual resume', async () => {
+  const lookup = manualTool({
+    name: 'lookup',
+    description: 'Read.',
+    parameters: z.object({}),
+    result: z.string(),
+  });
+  const server = new ModelServer([
+    [call('lookup', {}, { callId: 'manual' })],
+    [message('Done')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    instructions: 'Use lookup.',
+    provider,
+    tools: [lookup],
+  });
+  let pending: unknown;
+  try {
+    await agent.run('begin', { budget: { maxRequests: 2 } });
+  } catch (error) {
+    pending = error;
+  }
+  expect(pending).toBeInstanceOf(InteractionRequired);
+  if (!(pending instanceof InteractionRequired) || !pending.state)
+    throw new Error('Expected a checkpoint');
+  await expect(
+    agent.run(null, {
+      state: pending.state,
+      budget: { maxRequests: 2 },
+      onInteraction: (event) => lookup.match(event)!.reply('result'),
+    }),
+  ).resolves.toMatchObject({ finalOutput: 'Done' });
+  server.assertExhausted();
+});
+
+it.each([
+  { maxTokens: 10, reported: true, missingUsage: 'stop', code: undefined },
+  {
+    maxTokens: 4,
+    reported: true,
+    missingUsage: 'stop',
+    code: 'run_budget_exceeded',
+  },
+  {
+    maxTokens: 10,
+    reported: false,
+    missingUsage: 'stop',
+    code: 'run_budget_usage_unavailable',
+  },
+  { maxTokens: 10, reported: false, missingUsage: 'continue', code: undefined },
+] as const)(
+  'preserves token admission through portable approval: %j',
+  async ({ maxTokens, reported, missingUsage, code }) => {
+    const effects: string[] = [];
+    const approved = tool({
+      name: 'approved',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: () => {
+        effects.push('approved');
+        return 'recorded';
+      },
+    });
+    const server = new ModelServer(
+      [
+        [call('approved', {}, { callId: 'pending' })],
+        ...(code ? [] : [[message('Done')]]),
+      ],
+      reported ? { input_tokens: 3, output_tokens: 1, total_tokens: 4 } : [],
+    );
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use the tool and answer.',
+      provider,
+      tools: [approved],
+    });
+    const budget = { maxTokens, maxRequests: 2, missingUsage };
+    const source = await agent.session();
+    let saved;
+    try {
+      await source.submit('begin', { budget });
+      for await (const event of source.interactions())
+        if (isFunctionApprovalRequest(event)) break;
+      saved = await source.suspend();
+    } finally {
+      await source.close();
+    }
+    expect(saved.format_version).toBe(17);
+    expect(saved.run_budget).toEqual({
+      version: 2,
+      maxTokens,
+      consumedTokens: reported ? 4 : 0,
+      usageMissing: !reported,
+      missingUsage,
+      maxRequests: 2,
+      admittedRequests: 1,
+    });
+    for (const resumeBudget of [
+      undefined,
+      { ...budget, maxTokens: maxTokens + 1 },
+      {
+        ...budget,
+        missingUsage:
+          missingUsage === 'stop' ? ('continue' as const) : ('stop' as const),
+      },
+    ])
+      await expect(
+        agent.session({ state: saved, resumeBudget }),
+      ).rejects.toThrow();
+    expect(server.requests).toHaveLength(1);
+    await using restored = await agent.session({
+      state: parseSessionState(JSON.stringify(saved)),
+      resumeBudget: budget,
+    });
+    for await (const event of restored.interactions())
+      if (isFunctionApprovalRequest(event)) {
+        await restored.respond(event.approve());
+        break;
+      }
+    if (code)
+      await expect(restored.restoredTurn!.wait()).rejects.toMatchObject({
+        code,
+      });
+    else
+      await expect(restored.restoredTurn!.wait()).resolves.toMatchObject({
+        finalOutput: 'Done',
+      });
+    expect(effects).toEqual(['approved']);
+    expect(server.requests).toHaveLength(code ? 1 : 2);
     server.assertExhausted();
   },
 );

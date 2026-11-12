@@ -1,4 +1,5 @@
 import { types } from 'node:util';
+import { z } from 'zod';
 import type { JsonObject } from './binding';
 import { NativeError } from './native-error';
 import { addRunUsage, parseTokenCount, type TokenUsage } from './run-events';
@@ -6,7 +7,11 @@ import { addRunUsage, parseTokenCount, type TokenUsage } from './run-events';
 /**
  * Limits for direct native Agent runs and Session submissions. A new root
  * starts fresh. Live manual replies, retained steering, and SDK output
- * corrections share the root budget. Active portable checkpoints are unavailable.
+ * corrections share the root budget. Request-only limits have been retaining
+ * admissions through supported manual checkpoints with the original current
+ * ceiling supplied again on restore. Token limits have been retaining observed
+ * usage and the effective missing-usage policy. Cost limits have been rejecting
+ * active portable capture.
  *
  * Supply at least one nonnegative safe integer limit. Zero blocks the first
  * preparation. A request already admitted can exceed a usage or cost limit and
@@ -45,6 +50,45 @@ export interface RunBudget {
    */
   missingUsage?: 'stop' | 'continue';
 }
+
+export const requestRunBudgetCheckpointSchema = z
+  .object({
+    version: z.literal(1),
+    maxRequests: z.number().int().nonnegative().safe(),
+    admittedRequests: z.number().int().nonnegative().safe(),
+  })
+  .strict()
+  .refine((value) => value.admittedRequests <= value.maxRequests, {
+    message: 'Admitted requests cannot exceed the saved request limit',
+  });
+
+const tokenRunBudgetCheckpointSchema = z
+  .object({
+    version: z.literal(2),
+    maxTokens: z.number().int().nonnegative().safe(),
+    consumedTokens: z.number().int().nonnegative().safe(),
+    usageMissing: z.boolean(),
+    missingUsage: z.enum(['stop', 'continue']),
+    maxRequests: z.number().int().nonnegative().safe().nullable(),
+    admittedRequests: z.number().int().nonnegative().safe().nullable(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.consumedTokens <= value.maxTokens &&
+      (value.maxRequests === null
+        ? value.admittedRequests === null
+        : value.admittedRequests !== null &&
+          value.admittedRequests <= value.maxRequests),
+    { message: 'Invalid saved run budget consumption' },
+  );
+
+export const runBudgetCheckpointSchema = z.union([
+  requestRunBudgetCheckpointSchema,
+  tokenRunBudgetCheckpointSchema,
+]);
+
+type RunBudgetCheckpoint = z.infer<typeof runBudgetCheckpointSchema>;
 
 /** The live operation owns this tracker, including any correction Sessions. */
 export class RunBudgetTracker {
@@ -95,6 +139,74 @@ export class RunBudgetTracker {
       estimateCostMicros,
       missingUsage,
     );
+  }
+
+  /** Capture current application authority before an SDK-owned reopen. */
+  portableLimits(): RunBudget {
+    if (this.maxEstimatedCostMicros !== undefined)
+      throw new TypeError(
+        'Estimated-cost run budgets do not support portable checkpoints',
+      );
+    return {
+      ...(this.maxRequests === undefined
+        ? {}
+        : { maxRequests: this.maxRequests }),
+      ...(this.maxTokens === undefined
+        ? {}
+        : { maxTokens: this.maxTokens, missingUsage: this.missingUsage }),
+    };
+  }
+
+  checkpoint(): RunBudgetCheckpoint {
+    this.portableLimits();
+    if (this.maxTokens !== undefined)
+      return tokenRunBudgetCheckpointSchema.parse({
+        version: 2,
+        maxTokens: this.maxTokens,
+        consumedTokens: Number(
+          this.tokens > BigInt(this.maxTokens)
+            ? BigInt(this.maxTokens)
+            : this.tokens,
+        ),
+        usageMissing: this.missing,
+        missingUsage: this.missingUsage,
+        maxRequests: this.maxRequests ?? null,
+        admittedRequests:
+          this.maxRequests === undefined ? null : Number(this.requests),
+      });
+    return requestRunBudgetCheckpointSchema.parse({
+      version: 1,
+      maxRequests: this.maxRequests,
+      admittedRequests: Number(this.requests),
+    });
+  }
+
+  static restoreCheckpoint(
+    source: unknown,
+    current: RunBudget | undefined,
+  ): RunBudgetTracker {
+    const saved = runBudgetCheckpointSchema.parse(source);
+    const tracker = RunBudgetTracker.capture(current);
+    const mismatch =
+      saved.version === 1
+        ? 'Restored run budget requires the original request limit'
+        : 'Restored run budget requires the original limits and missing-usage policy';
+    if (!tracker) throw new TypeError(mismatch);
+    const limits = tracker.portableLimits();
+    if (
+      limits.maxRequests !== (saved.maxRequests ?? undefined) ||
+      (saved.version === 1
+        ? limits.maxTokens !== undefined
+        : limits.maxTokens !== saved.maxTokens ||
+          limits.missingUsage !== saved.missingUsage)
+    )
+      throw new TypeError(mismatch);
+    tracker.requests = BigInt(saved.admittedRequests ?? 0);
+    if (saved.version === 2) {
+      tracker.tokens = BigInt(saved.consumedTokens);
+      tracker.missing = saved.usageMissing;
+    }
+    return tracker;
   }
 
   observe(raw: JsonObject | undefined): void {

@@ -6,7 +6,7 @@ The Responses model and MCP server are synthetic loopback fixtures. No API key o
 
 ## Run
 
-Use the source checkout prepared by [CONTRIBUTING.md](../../../CONTRIBUTING.md), with the native addon and SDK packages built from this source. You need Node 22 or later and the repository's pinned pnpm setup. This example uses the new `@openai/agents/ui` and `@openai/agents/mcp-apps` exports.
+Use the source checkout prepared by [CONTRIBUTING.md](../../../CONTRIBUTING.md), with the native addon and SDK packages built from this source. This native example has been requiring Node.js 24 and the repository's pinned pnpm setup. This example uses the new `@openai/agents/ui` and `@openai/agents/mcp-apps` exports.
 
 Run from the repository root after the contributor setup and package build:
 

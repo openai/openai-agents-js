@@ -1,3 +1,5 @@
+import OpenAI from 'openai';
+import { responsesCompaction } from '../src/runtime/responses-compaction';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as nativeBinding from '../src/runtime/binding';
 import type { SessionSetup } from '../src/runtime/agent';
@@ -335,6 +337,33 @@ function retained(concurrent = false) {
 
 // This fixture isolates native admission; the native suite uses a real Provider.
 describe('plain entry admission', () => {
+  it.each([
+    { websocketsAllowed: true, refreshWebsocketTrust: true, expected: true },
+    { websocketsAllowed: true, refreshWebsocketTrust: false, expected: false },
+    {
+      websocketsAllowed: true,
+      refreshWebsocketTrust: undefined,
+      expected: false,
+    },
+    { websocketsAllowed: false, refreshWebsocketTrust: true, expected: false },
+  ])(
+    'selects per-run WSS trust only for its explicit private policy: %j',
+    async ({ websocketsAllowed, refreshWebsocketTrust, expected }) => {
+      const p = retained();
+      const lease = {
+        ...p.lease,
+        websocketsAllowed,
+        privateRuntime: { ...p.lease.privateRuntime!, refreshWebsocketTrust },
+      };
+      const owner = await tryOpenPlainRun(p.setup, {}, lease, 'input');
+      lease.openingSucceeded();
+      await owner!.run();
+      const payload = JSON.parse(p.engine._plain_run.mock.calls[0]![0]);
+      expect(Object.hasOwn(payload, 'freshWebsocketConnector')).toBe(expected);
+      if (expected) expect(payload.freshWebsocketConnector).toBe(true);
+    },
+  );
+
   it('admits identical retained calls once and readmits a replacement entry', async () => {
     const p = retained();
     expect((await p.run()).finalOutput).toBe('answer');
@@ -518,4 +547,18 @@ describe('declared input modalities retain ordinary native session opening', () 
       expect(p.release).not.toHaveBeenCalled();
     },
   );
+});
+
+it('keeps configured compaction on the Session callback path', async () => {
+  const p = prepared();
+  const compaction = responsesCompaction({
+    client: new OpenAI({ apiKey: 'synthetic-compaction-fast-path' }),
+    shouldCompact: () => true,
+  });
+  expect(
+    await tryOpenPlainRun(p.setup, { compaction }, p.lease, 'input'),
+  ).toBeUndefined();
+  expect(nativeBinding.binding).not.toHaveBeenCalled();
+  expect(p.engine._plain_run).not.toHaveBeenCalled();
+  expect(p.release).not.toHaveBeenCalled();
 });

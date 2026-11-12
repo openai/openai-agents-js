@@ -1,9 +1,11 @@
 //! Owned one-shot ModelClient execution for the SDK's private plain-run route.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use anyhow::{Result, ensure};
+use codex_api::{ApiError, ResponsesWebsocketConnect};
 use codex_client::{HttpTransport as _, TransportError};
 use codex_core::{ModelClient, ResponseEvent, sdk_plain_run};
 use codex_core_api::Feature;
@@ -27,12 +29,15 @@ use codex_protocol::{
     protocol::SessionSource,
 };
 use codex_utils_stream_parser::strip_citations;
-use futures_util::StreamExt as _;
+use futures_util::{FutureExt as _, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+
+use crate::engine::EngineState;
+use crate::plain_websocket::PlainWebSocket;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,6 +52,8 @@ pub(crate) struct Request {
     observation_retention_all: bool,
     #[serde(default)]
     prefer_buffered_response: bool,
+    #[serde(default)]
+    fresh_websocket_connector: bool,
 }
 
 #[derive(Clone)]
@@ -151,7 +158,6 @@ fn supported_configuration(engine: &crate::engine::EngineState) -> bool {
     crate::telemetry::plain_run_trace_off()
         && engine.manager.auth_manager().auth_mode() == Some(AuthMode::ApiKey)
         && config.base_instructions.is_some()
-        && !config.model_provider.supports_websockets
         && !config.model_provider.is_amazon_bedrock()
         && !config.features.enabled(Feature::ApiKeyModelDiscovery)
         && !config.features.enabled(Feature::UseAgentIdentity)
@@ -284,18 +290,54 @@ impl ModelToolAdmission for Admission {
 #[derive(Debug)]
 struct Route {
     endpoint: String,
+    websocket: Option<WebSocketRoute>,
     transport: codex_http_client::ReqwestTransport,
     stop: Arc<TurnSamplingStop>,
     cancel: CancellationToken,
 }
 
+#[derive(Debug)]
+struct WebSocketRoute {
+    endpoint: String,
+    thread_id: String,
+    engine: Weak<EngineState>,
+    owner: Arc<PlainWebSocket>,
+}
+
 impl ModelRequestContributor for Route {
+    fn websocket_connect(&self, url: &str, thread_id: &str) -> Option<ResponsesWebsocketConnect> {
+        let route = self.websocket.as_ref()?;
+        let matches = route.endpoint == url && route.thread_id == thread_id;
+        let endpoint = route.endpoint.clone();
+        let engine = route.engine.clone();
+        let owner = Arc::clone(&route.owner);
+        let stop = Arc::clone(&self.stop);
+        let cancel = self.cancel.clone();
+        Some(Arc::new(move |request| {
+            let (endpoint, engine, owner, stop, cancel) = (
+                endpoint.clone(),
+                engine.clone(),
+                Arc::clone(&owner),
+                Arc::clone(&stop),
+                cancel.clone(),
+            );
+            Box::pin(async move {
+                if !matches {
+                    return Err(ApiError::Transport(TransportError::Build(
+                        "Plain WebSocket request route mismatch".into(),
+                    )));
+                }
+                owner.connect(engine, endpoint, request, stop, cancel).await
+            })
+        }))
+    }
+
     fn http_stream(&self, _url: &str) -> Option<ModelHttpStream> {
         let endpoint = self.endpoint.clone();
         let transport = self.transport.clone();
         let stop = self.stop.clone();
         let cancel = self.cancel.clone();
-        Some(Arc::new(move |request| {
+        Some(Arc::new(move |mut request, request_transport| {
             let (endpoint, transport, stop, cancel) = (
                 endpoint.clone(),
                 transport.clone(),
@@ -307,6 +349,9 @@ impl ModelRequestContributor for Route {
                 if request.url != endpoint || request.method != http::Method::POST {
                     return Err(TransportError::Build("Plain request route mismatch".into()));
                 }
+                codex_api::prepare_request_transport(&request.url, request_transport.as_ref())
+                    .map_err(|error| TransportError::Build(error.to_string()))?
+                    .apply(&mut request);
                 let send = stop
                     .try_commit(|| transport.stream(request))
                     .ok_or_else(|| {
@@ -324,7 +369,7 @@ impl ModelRequestContributor for Route {
     }
 
     fn request(&self, _input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
-        None
+        self.websocket.as_ref()?.owner.interceptor()
     }
 }
 
@@ -424,17 +469,41 @@ fn error_json(error: &anyhow::Error) -> Value {
 }
 
 async fn execute(
-    engine: Arc<crate::engine::EngineState>,
+    engine: Arc<EngineState>,
     request: Request,
     cancel: CancellationToken,
     stop: Arc<TurnSamplingStop>,
 ) -> Outcome {
     let mut state = Settlement::new(request.observation_retention_all);
-    let (result, cleanup_error) =
-        match prepare_and_collect(&engine, request, &cancel, stop, &mut state).await {
-            Ok(outcome) => outcome,
-            Err(error) => (Err(error), None),
-        };
+    let websocket = engine
+        .service_config
+        .model_provider
+        .supports_websockets
+        .then(|| Arc::new(PlainWebSocket::new(request.fresh_websocket_connector)));
+    let collecting = prepare_and_collect(
+        &engine,
+        request,
+        &cancel,
+        stop,
+        websocket.as_ref(),
+        &mut state,
+    );
+    let (collected, websocket_cleanup_error) = if let Some(websocket) = &websocket {
+        let result = AssertUnwindSafe(collecting).catch_unwind().await;
+        // The collection future owns the ModelClient and its cached socket.
+        let cleanup_error = websocket.join().await.err();
+        match result {
+            Ok(result) => (result, cleanup_error),
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    } else {
+        (collecting.await, None)
+    };
+    let (result, cleanup_error) = match collected {
+        Ok(outcome) => outcome,
+        Err(error) => (Err(error), None),
+    };
+    let cleanup_error = cleanup_error.or(websocket_cleanup_error);
     let error = result.err().map(|error| error_json(&error));
     let journal = state
         .journal
@@ -461,10 +530,11 @@ async fn execute(
 }
 
 async fn prepare_and_collect(
-    engine: &crate::engine::EngineState,
+    engine: &Arc<EngineState>,
     request: Request,
     cancel: &CancellationToken,
     stop: Arc<TurnSamplingStop>,
+    websocket: Option<&Arc<PlainWebSocket>>,
     state: &mut Settlement,
 ) -> Result<(Result<()>, Option<String>)> {
     let config = &engine.service_config;
@@ -490,14 +560,26 @@ async fn prepare_and_collect(
     let (transport, _) = engine
         .responses_transport(no_redirects)
         .map_err(|error| anyhow::anyhow!(error.reason))?;
+    let thread_id = state.session_id.to_string();
+    let websocket_route = if let Some(owner) = websocket {
+        Some(WebSocketRoute {
+            endpoint: api.websocket_url_for_path("/responses")?.to_string(),
+            thread_id: thread_id.clone(),
+            engine: Arc::downgrade(engine),
+            owner: Arc::clone(owner),
+        })
+    } else {
+        None
+    };
     let route = Arc::new(Route {
         endpoint: api.url_for_path("/responses"),
+        websocket: websocket_route,
         transport,
         stop: stop.clone(),
         cancel: cancel.clone(),
     });
     let admission = Arc::new(Admission {
-        thread_id: state.session_id.to_string(),
+        thread_id,
         turn: ExtensionData::new(state.turn_id.clone()),
     });
     admission
@@ -655,25 +737,36 @@ async fn prepare_and_collect(
             stop.request();
             return Ok((Err(error), None));
         };
+        let retry_after = native.retry_after().map(|advice| advice.deadline());
         if retries >= max_retries {
-            stop.request();
-            return Ok((Err(error), None));
-        }
-        retries = next_retry;
-        let now = tokio::time::Instant::now();
-        let retry_at = native
-            .retry_after()
-            .map(|advice| advice.deadline())
-            .unwrap_or(now + delay);
-        codex_client::record_retry!(
-            retries,
-            retry_at.saturating_duration_since(now),
-            codex_client::RetryOperation::Sampling
-        );
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => { stop.request(); return Err(CodexErr::TurnAborted.into()); }
-            _ = tokio::time::sleep_until(retry_at) => {}
+            if let Some(websocket) = websocket
+                && sdk_plain_run::switch_to_http(&mut session, &telemetry, &model)
+            {
+                websocket.clear_dispatch();
+            } else {
+                stop.request();
+                return Ok((Err(error), None));
+            }
+            if let Some(retry_at) = retry_after {
+                wait_for_retry(retry_at, cancel, &stop).await?;
+            }
+            state.journal.push(
+                "warning",
+                json!({
+                    "message": format!("Falling back from WebSockets to HTTPS transport. {native:#}")
+                }),
+            );
+            retries = 0;
+        } else {
+            retries = next_retry;
+            let now = tokio::time::Instant::now();
+            let retry_at = retry_after.unwrap_or(now + delay);
+            codex_client::record_retry!(
+                retries,
+                retry_at.saturating_duration_since(now),
+                codex_client::RetryOperation::Sampling
+            );
+            wait_for_retry(retry_at, cancel, &stop).await?;
         }
         state.active_item = None;
         state.final_output = None;
@@ -683,6 +776,21 @@ async fn prepare_and_collect(
         state.usage = Value::Null;
         state.usage_metadata = Value::Null;
         state.completed = false;
+    }
+}
+
+async fn wait_for_retry(
+    deadline: tokio::time::Instant,
+    cancel: &CancellationToken,
+    stop: &TurnSamplingStop,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            stop.request();
+            Err(CodexErr::TurnAborted.into())
+        }
+        _ = tokio::time::sleep_until(deadline) => Ok(()),
     }
 }
 

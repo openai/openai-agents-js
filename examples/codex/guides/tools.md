@@ -18,9 +18,32 @@ The default `timeoutBehavior: 'raise_exception'` fails the owning turn with `Too
 
 Both modes abort the callback signal at the deadline and wait for entered callback work and cleanup to settle. A callback that ignores cancellation can therefore delay completion. Result mode runs its formatter after cleanup, using the parent tool context. Timeout results bypass the normal `result` schema and `after` hook, as local tool denial does. Formatter errors propagate normally. Parent cancellation or expired invocation authority prevents publication. With no `callbackTimeout`, the policy and formatter are inactive. A timeout never rolls back effects or makes a retry safe. See [the scripted callback timeout example](../tool-timeout-policy.ts).
 
+### Recover invalid original arguments
+
+The matching native source build has been exposing `inputErrorFunction` for initial JSON syntax and Zod validation failures. The formatter has been receiving an unvalidated call context, the error, and the original input. Native syntax failures have been supplying `SyntaxError` and the exact raw JSON string. Zod failures have been supplying detached JSON values, including scalars and arrays.
+
+```ts
+import { tool } from '@openai/agents';
+import { z } from 'zod';
+
+const lookup = tool({
+  name: 'lookup',
+  parameters: z.object({ key: z.string() }),
+  inputErrorFunction(_context, error, _original) {
+    if (error instanceof SyntaxError) {
+      return 'Retry lookup with a complete JSON object containing a string key.';
+    }
+    return error.issues.map((issue) => issue.message).join('; ');
+  },
+  execute: ({ key }) => key,
+});
+```
+
+The returned text has been becoming a failed tool result before approval, input policy, or execution, allowing native continuation. Replacement and restored approval arguments, output validation, and arbitrary application exceptions have been remaining outside this formatter. Without a formatter, schema validation has been failing the owning turn; malformed native JSON has been retaining the default failed response.
+
 ### Recover from callback-body errors
 
-With `errorFunction(context, error)`, the SDK has been publishing the returned string as a failed tool result and continuing the model turn. The formatter has been receiving the captured `ToolContext`, including the original and effective arguments. Omitting both the per-tool formatter and the session formatter has been preserving the existing turn failure.
+With the current [source build](building.md), `errorFunction(context, error)` has been converting a callback-body exception into a failed textual tool result and allowing the model turn to continue. The callback has been receiving the captured `ToolContext`, including original and effective arguments. Without a per-tool or session formatter, callback-body exceptions have been failing the turn.
 
 ```ts
 import { tool } from '@openai/agents';
@@ -36,11 +59,11 @@ const lookup = tool({
 });
 ```
 
-This handler has been covering callback-body exceptions only. Cancellation, callback deadlines, approval and input policies, argument/result validation, and cleanup failures have been retaining their existing handling. Formatted failures have been bypassing the `result` schema and `after` hook, and have not been completing a `finishTurn` tool. Formatter exceptions and non-string returns have been failing the turn. Formatting has been remaining outside `callbackTimeout`, under the turn's cancellation and admission checks. Neither failure formatting nor cancellation has been undoing earlier external effects.
+This per-tool formatter has been covering callback-body exceptions only. Its own exceptions and non-string returns have been failing the turn. Cancellation, callback deadlines, policies, argument/result validation, and cleanup failures have been retaining their existing handling.
 
 ### Session defaults for function errors
 
-With the current [source build](building.md), `Agent.session({ toolErrorFormatter })` and `Agent.run(input, { toolErrorFormatter })` have been applying a default to original function argument validation and callback-body failures. Each callback has been receiving `ToolErrorContext`: application `context`, observed `call` metadata, the invocation's `signal`, `phase` (`'arguments'` or `'execution'`), `defaultMessage`, and the original local `error`.
+With the current [source build](building.md), `Agent.session({ toolErrorFormatter })` and `Agent.run(input, { toolErrorFormatter })` have been supplying a default formatter for initial function argument validation and callback-body failures. The formatter has been receiving a `ToolErrorContext` with application `context`, observed `call` metadata, invocation `signal`, `phase` (`'arguments'` or `'execution'`), safe `defaultMessage`, and original local `error`.
 
 ```ts
 import { Agent, tool } from '@openai/agents';
@@ -65,11 +88,13 @@ const result = await (await session.submit('Find a record.')).wait();
 console.log(result.finalOutput);
 ```
 
-Per-tool `inputErrorFunction` and `errorFunction` callbacks have been taking precedence for their respective phases. `errorFunction: null` has been suppressing the session default for both phases. An explicit body formatter has been leaving session argument formatting available. Each session opening, including state restoration, has been capturing a fresh caller-supplied formatter; saved state has not been retaining callbacks.
+Per-tool `inputErrorFunction` and `errorFunction` callbacks have been overriding their respective phases. `errorFunction: null` has been disabling the session default for both phases while preserving an explicit `inputErrorFunction`. An explicit body formatter has been leaving session argument formatting available. Each opening, including restore, has been capturing the caller's current formatter; saved state has not been retaining callbacks.
 
-Global callback exceptions, `undefined`, and non-string returns have been selecting safe default text while the invocation has been remaining active. The default text has been naming the function without including the exception message. An empty string has been remaining a valid failed result. These results have been bypassing output validation and `after`, and have not been finishing a `finishTurn` tool. Async formatters have been receiving the invocation signal for cancellable requests. Cancellation has been joining entered formatting and preventing late publication; cancellation cleanup exceptions have been retaining their original owners.
+Session formatter exceptions, `undefined`, and non-string returns have been selecting safe default text while the invocation has been remaining active. That text has been naming the function without its private exception message. An empty string has been remaining a valid failed result.
 
-The session default has been covering initial host validation before managed approval. Rewritten arguments, approval policies, callback deadlines, output validation and `after` failures have been retaining their existing handling. Missing function names, malformed JSON handled before host entry, native MCP failures and executor failures have been remaining Core-owned and outside this formatter.
+The session default has been handling initial host validation before managed approval. Rewritten arguments, approval policies, callback deadlines, output validation, and `after` failures have been retaining their existing handling. Missing function names, malformed JSON before host entry, native MCP failures, and executor failures have been remaining Core-owned.
+
+Both formatter routes have been bypassing the `result` schema and `after` hook, without completing a `finishTurn` tool. Formatting has been running outside `callbackTimeout`, under invocation cancellation and admission checks. Async formatters have been receiving the invocation signal; cancellation has been joining entered formatting and preventing late publication. Cancellation cleanup exceptions have been retaining their original owners. Formatting has not been undoing earlier external effects.
 
 ### Finish a turn from a function tool
 
@@ -255,7 +280,7 @@ The SDK has been checking limits before the next preparation. An admitted reques
 
 With the default `missingUsage: 'stop'`, missing token usage or a missing estimate for a limited metric has been blocking the next preparation. An absent estimator has been counting as missing data for a cost limit. `missingUsage: 'continue'` has been skipping missing data; reported zero usage has been remaining known data. Request-only limits have not been requiring usage.
 
-Budget failures have been rejecting with `NativeError.code` of `run_budget_exceeded`, `run_budget_usage_unavailable`, or `run_budget_invalid_estimate`. Active portable checkpoint capture has been rejecting a root with a budget, including manual suspension; the live allowance has not been becoming resumable state. The separate `maxModelSteps` checkpoint behavior above has been remaining available.
+Budget failures have been rejecting with `NativeError.code` of `run_budget_exceeded`, `run_budget_usage_unavailable`, or `run_budget_invalid_estimate`. Request and token budgets have been retaining their consumed allowance across supported portable manual or managed function approval checkpoints. Restore has been requiring the original limits and, for token budgets, the same effective `missingUsage` policy. The SDK has been rejecting active portable capture for estimated-cost budgets. [Budgeted recovery](recovery.md#budgets-while-waiting-and-recovering) has been describing the restore calls and trusted-state requirements. The separate `maxModelSteps` checkpoint behavior above has been remaining available.
 
 ### Select tools before a model step
 
@@ -341,6 +366,8 @@ The bundled host itself grants no shell tools or workspace access. Supply an [En
 
 ## Computer tools
 
+The [scripted computer example](../../../packages/agents-codex/TESTING.md#script-a-computer-call) has been exercising the native action and screenshot continuation with a synthetic driver and no desktop access or model credentials.
+
 These computer APIs require a [current source build](building.md). Use `computerTool()` to connect an application-supplied computer driver. This fragment assumes an existing `driver` implementing `Computer` and [configured provider credentials](session-configuration.md):
 
 ```ts
@@ -380,6 +407,42 @@ The default declaration uses `computer`. For preview, set `toolType: 'computer_u
 A factory without a disposer returns a borrowed driver. Its first call runs the policies before creation, then runs them again under the resolved device's shared gate before any action or screenshot. Policies must allow both checks. Later calls run them once under that gate. Separate factories and direct declarations that return the same driver share the gate.
 
 These live callbacks do not create a durable approval to resume after a restart. Saved state carries no driver or permission grant; restore with the current trusted declaration. [Unknown effects require explicit reconciliation](recovery.md#reconcile-external-effects). A computer reconciliation result must contain an actual `computer_screenshot` and all full original safety checks approved by your application, for either outcome. Text-only function receipts cannot settle a computer call.
+
+## Provider-hosted tool compatibility
+
+### Model and protocol reference
+
+OpenAI has been documenting the following combinations for the Responses API. The model references' Markdown pages have been supplying the tool lists. The [file search](https://developers.openai.com/api/docs/guides/tools-file-search), [Code Interpreter](https://developers.openai.com/api/docs/guides/tools-code-interpreter), [image generation](https://developers.openai.com/api/docs/guides/image-generation), and [shell](https://developers.openai.com/api/docs/guides/tools-shell) guides have been describing the Responses integration.
+
+| Agent model | Protocol | File search | Code Interpreter | Image generation | Hosted shell |
+| --- | --- | --- | --- | --- | --- |
+| [`gpt-6.1-sol`](https://developers.openai.com/api/docs/models/gpt-6.1-sol.md) | Responses | Provider-documented | Provider-documented | Provider-documented | Provider-documented |
+| [`gpt-5.2`](https://developers.openai.com/api/docs/models/gpt-5.2.md) | Responses | Provider-documented | Provider-documented | Provider-documented | Provider-documented |
+| [`gpt-4.1` (deprecated)](https://developers.openai.com/api/docs/models/gpt-4.1.md) | Responses | Provider-documented | Provider-documented | Provider-documented | Not documented in this model reference |
+| Any model | Responses Lite | SDK-rejected | SDK-rejected | SDK-rejected | SDK-rejected |
+
+`Provider-documented` has been identifying an explicit entry in the linked model reference, rather than a successful live request. `Not documented` has been identifying missing evidence, rather than a provider rejection. These references have been describing model capabilities without establishing account access, Azure deployment support, or support through another provider. These tables have been serving as a documentation reference rather than an SDK model allowlist.
+
+The image-generation column has been describing the agent model's ability to call the tool. The tool's own `model` field has been selecting the image generator separately. The shell guide has been documenting hosted containers through Responses and excluding Chat Completions. A model's support for the Chat Completions endpoint has not been establishing hosted-tool compatibility.
+
+The SDK's bundled native model catalog has been selecting Responses Lite for `gpt-6.1-sol`. The SDK has been rejecting these hosted declarations on that route, despite the provider's documented support through direct Responses. The `gpt-5.2` hosted-tool examples have been showing the standard Responses SDK configuration. Local fixtures have been verifying that route without proving live account access.
+
+### SDK and transport evidence
+
+The current [source build](building.md) has been exposing `fileSearch()`, `codeInterpreter()`, `imageGeneration()`, and `hostedShell()` through an API-key `NativeProvider`. The published stable SDK has not been providing these native declarations. The following coverage has been describing local synthetic peers, without live OpenAI calls.
+
+| Declaration | Responses over streaming HTTP: fixture coverage | Other transport evidence |
+| --- | --- | --- |
+| `fileSearch()` | Request fields, results, citations, and idle saved-state restore | Buffered HTTP and WebSocket fixtures: request fields, completed provider data, and saved history |
+| `codeInterpreter()` | Container options, completed outputs, and idle saved-state restore | No tool-specific buffered HTTP or WebSocket fixture evidence |
+| `imageGeneration()` | Generation, inline-image editing, partial events, and idle saved-state restore | No tool-specific buffered HTTP or WebSocket fixture evidence |
+| `hostedShell()` | Managed-container request, shell-only completion, output history, and continuation | No tool-specific buffered HTTP or WebSocket fixture evidence |
+
+The [native hosted-tool fixtures](../../../packages/agents-codex/test/native/hosted-tools-native.test.ts) have been covering these cases. The buffered HTTP and WebSocket probes have been using file search as a representative hosted tool. They have not been verifying every tool on those transports. Responses Lite has been rejecting hosted declarations before a provider request. A refused Lite model update has been preserving the original model for continuation. `hostedShell()` has been accepting `container_auto` and `container_reference`. A local environment has been raising `Hosted shell requires a managed container environment`.
+
+Idle restore has been requiring current declarations and credentials. Saved history has not been granting tools or extending provider resource lifetimes. Checkpoints awaiting manual tool results have not been supporting these hosted tools. The Python native SDK's current source has also been exposing `HostedShell`. Its `0.24.0-alpha.7` preview has not been providing that declaration.
+
+Live model and account verification has been remaining outstanding for every row. Codex login, Azure deployments, and other providers have been remaining outside this fixture evidence. No live request, uploaded resource, or customer runtime has been contributing verification to these tables. The [hosted-tool example](../hosted-tools/README.md) has been explaining resource ownership, image inputs, and detailed observations.
 
 ## Native web search
 

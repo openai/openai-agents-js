@@ -171,6 +171,22 @@ try {
 
 Native root ownership and original JSON types; no credential readback or saved live context. Detached spans: their own root metadata. Restored work under a new workflow: that workflow's metadata. Python equivalents: `SpanContext.trace_metadata` and `TraceScope.trace_metadata`, with a runnable [Python example](https://github.com/openai/openai-agents-python/blob/feat/codex-harness/examples/codex/observability/trace_context.py).
 
+## Supply trace context storage
+
+With the current [source build](building.md), use `telemetry.setTraceContextStorage(storage)` to supply your application's asynchronous context storage. The adapter supplies `getStore()` and `run(span, callback)`. It must accept an `undefined` span so the SDK can clear ambient context. The example uses Node.js `AsyncLocalStorage` without model or export credentials.
+
+The [trace context storage example](../../classic/docs/native/trace-context-storage.mts) preserves the current span across an asynchronous callback. It requires Node.js 24 and [matching built packages and native runtime](building.md). Run it from the repository root in a fresh process:
+
+```sh
+pnpm exec tsx examples/classic/docs/native/trace-context-storage.mts
+```
+
+The command prints `true` twice, resets custom storage, and shuts down telemetry.
+
+Call `setTraceContextStorage()` without an argument to restore built-in storage for new scopes. Existing scopes and admitted operations keep their adapter across asynchronous callbacks, queued work, and native child callbacks. Manual reply validation uses the adapter captured by the request, even when the reply caller uses another scope.
+
+This adapter stores JavaScript span scope. Use [`TraceContext`](telemetry.md#carry-a-w3c-parent-across-services) to pass context across services and [telemetry configuration](telemetry.md) to select exporters.
+
 ## Choose initial and later routes
 
 Call `telemetry.configure({ traceProcessors: [...] })` before constructing an engine or opening a Session. A nonempty initial list enables a custom-only trace pipeline even when `traces` is omitted. To use both callbacks and built-in OTLP export, also configure `traces` as shown in the example.
@@ -182,7 +198,7 @@ Register processors through the SDK instance that successfully configured teleme
 
 ## Consume and flush records
 
-The runtime calls `onEvent(event)` serially with immutable snapshots. Read `lifecycle` (`start` or `end`), `trace_id`, `span_id`, and `parent_span_id` for identity. This is a lifecycle-record API, not the OTLP payload format received by a collector. Do not mutate snapshots or assume undocumented extra attributes always exist.
+The runtime has been calling `onEvent(event)` serially with immutable snapshots. Matching source builds have also been accepting batch-only processors with `onEvents(events)`. For a processor with both methods, delivery has been preferring `onEvents` and passing a frozen array of immutable snapshots. Each lifecycle record has been exposing `lifecycle` (`start` or `end`), `trace_id`, `span_id`, and `parent_span_id` for identity. This is a lifecycle-record API, not the OTLP payload format received by a collector. Do not mutate snapshots or assume undocumented extra attributes always exist.
 
 A callback can return a Promise. Keep it bounded: a slow callback delays the shared delivery path, and the SDK cannot preempt synchronous application code. A callback exception counts as a failed delivery rather than failing the agent operation. Processor callbacks and their asynchronous descendants suppress SDK tracing to avoid tracing the export work recursively.
 

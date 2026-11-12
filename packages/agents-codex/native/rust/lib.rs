@@ -24,18 +24,22 @@ mod environment;
 mod extensions;
 mod goals;
 mod graph_stop;
+mod hosted_prompt;
 mod initial_messages;
 mod local_reconciliation;
 mod local_storage;
 mod mcp_result_control;
 mod mcp_roster;
 mod model_websocket;
+mod model_websocket_bridge;
+mod model_websocket_prefix;
 mod native_agents;
 mod native_interception;
 mod node_runtime;
 mod ops;
 mod options;
 mod plain_run;
+mod plain_websocket;
 mod plan_usage;
 mod project_search;
 mod provider_error;
@@ -557,7 +561,15 @@ impl Engine {
         (async move {
             let _permit = inner.operation(false).map_err(native_error)?;
             let route = inner.sentinel_route(&provider_id, &headers)?;
-            model_websocket::sentinel_open(route, &headers).await
+            model_websocket::sentinel_open(
+                route,
+                &headers,
+                Arc::downgrade(&inner),
+                provider_id,
+                None,
+                None,
+            )
+            .await
         })
         .await
     }
@@ -605,6 +617,7 @@ impl Engine {
                 body.into(),
                 &ticket,
                 None,
+                None,
             )
             .await?;
             Ok(NativeModelResponse {
@@ -643,32 +656,17 @@ impl Engine {
 
         let inner = self.current()?;
         let raw = checkpoint_wire_value(payload_json).map_err(native_error)?;
-        let mut options: options::ThreadOptions =
-            config::decode(serde_json::from_str(options_json).map_err(native_error)?)
-                .map_err(native_error)?;
-        options
-            .validate_instruction_json(&raw["history"])
-            .map_err(native_error)?;
-        let specs = specs_json
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(native_error)?;
-        let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
-        let payload = serde_json::from_value(raw).map_err(native_error)?;
-        Box::pin(async move {
-            let _context_operation = inner.operation(false).map_err(native_error)?;
-            checkpoint::restore(
-                &inner,
-                payload,
-                options,
-                specs,
-                fresh_manual.unwrap_or(false),
-            )
-            .await
-            .map_err(native_error)
-        })
+        restore_checkpoint_value(
+            inner,
+            raw,
+            options_json,
+            specs_json,
+            fresh_manual.unwrap_or(false),
+            None,
+        )
         .await
     }
+
     #[napi(getter, js_name = "startup_warnings")]
     pub fn startup_warnings(&self) -> Vec<String> {
         self.startup_warnings.clone()
@@ -777,6 +775,17 @@ impl Engine {
     pub async fn _close_report_defer_saved_login(&self) -> napi::Result<Option<String>> {
         Self::close_owner(Arc::clone(&self.inner), true).await
     }
+
+    #[napi(js_name = "_retained_storage_failure")]
+    pub fn _retained_storage_failure(&self) -> napi::Result<Option<String>> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(native_error)?
+            .close_report
+            .retained_storage_failure
+            .clone())
+    }
 }
 
 impl Engine {
@@ -854,6 +863,7 @@ struct NativeThreadOwner {
     mcp_result_reader: tokio_util::sync::CancellationToken,
     resources: ResourceRequests,
     plan_usage_reader: Option<plan_usage::PlanUsageReader>,
+    request_attempts: Option<codex_core::SdkRequestAttemptsLink>,
 }
 
 #[derive(Clone, Default)]
@@ -980,6 +990,7 @@ impl NativeThread {
             mcp_result_reader: tokio_util::sync::CancellationToken::new(),
             resources: ResourceRequests::default(),
             plan_usage_reader: None,
+            request_attempts: None,
         }));
         state.engine.register_native_thread(&inner);
         Self {
@@ -1084,12 +1095,42 @@ impl NativeThread {
     }
 }
 
+async fn restore_checkpoint_value(
+    inner: RuntimeOwned<engine::EngineState>,
+    raw: serde_json::Value,
+    options_json: &str,
+    specs_json: Option<&str>,
+    fresh_manual: bool,
+    source: Option<&context::Change>,
+) -> napi::Result<NativeThread> {
+    let mut options: options::ThreadOptions =
+        config::decode(serde_json::from_str(options_json).map_err(native_error)?)
+            .map_err(native_error)?;
+    options
+        .validate_instruction_json(&raw["history"])
+        .map_err(native_error)?;
+    let specs = specs_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(native_error)?;
+    let specs = checkpoint::restore_specs(&raw, &mut options, specs).map_err(input_error)?;
+    let payload = serde_json::from_value(raw).map_err(native_error)?;
+    Box::pin(async move {
+        let _context_operation = inner.operation(false).map_err(native_error)?;
+        checkpoint::restore(&inner, payload, options, specs, fresh_manual, source)
+            .await
+            .map_err(native_error)
+    })
+    .await
+}
+
 // A prospective replacement remains owned before native construction starts.
 #[napi(js_name = "_ContextChange")]
 pub struct ContextChange {
     change: tokio::sync::Mutex<Option<RuntimeOwned<context::Change>>>,
     source_resources: ResourceRequests,
     candidate: std::sync::Mutex<Option<Arc<std::sync::Mutex<EngineOwner>>>>,
+    prepared: tokio::sync::Mutex<Option<serde_json::Value>>,
     prospective: std::sync::Mutex<Option<RuntimeOwned<codex_core_api::EnvironmentManager>>>,
     remote_drain: std::sync::Mutex<
         Option<tokio::sync::watch::Receiver<codex_exec_server::EnvironmentConnectionState>>,
@@ -1144,8 +1185,45 @@ impl ContextChange {
             .ok_or_else(|| native_error("context change is released"))?
             .prepare(&summary, retained_indices)
             .map_err(native_error)?;
+        let native_checkpoint = checkpoint.clone();
         usage::checkpoint_to_wire(&mut checkpoint).map_err(native_error)?;
-        serde_json::to_string(&checkpoint).map_err(native_error)
+        let result = serde_json::to_string(&checkpoint).map_err(native_error)?;
+        *self.prepared.lock().await = Some(native_checkpoint);
+        Ok(result)
+    }
+
+    #[napi(js_name = "restoreCandidate")]
+    pub async fn restore_candidate(
+        &self,
+        options_json: String,
+        specs_json: Option<String>,
+    ) -> napi::Result<NativeThread> {
+        let change = self.change.lock().await;
+        let source = change
+            .as_ref()
+            .ok_or_else(|| native_error("context change is released"))?;
+        let owner = self
+            .candidate
+            .lock()
+            .map_err(native_error)?
+            .clone()
+            .ok_or_else(|| native_error("context candidate has not been created"))?;
+        let inner = Engine::current_owner(&owner)?;
+        let raw = self
+            .prepared
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| native_error("context compaction has not been prepared"))?;
+        restore_checkpoint_value(
+            inner,
+            raw,
+            &options_json,
+            specs_json.as_deref(),
+            false,
+            Some(source),
+        )
+        .await
     }
 
     #[napi(js_name = "createCandidateEngine")]
@@ -1271,6 +1349,7 @@ impl ContextChange {
     #[napi]
     pub async fn release(&self) {
         self.change.lock().await.take();
+        self.prepared.lock().await.take();
     }
 
     #[napi(js_name = "publishCandidateMcpServers")]
@@ -1569,6 +1648,7 @@ impl NativeThread {
             change: tokio::sync::Mutex::new(Some(RuntimeOwned::new(Arc::new(change)))),
             source_resources: self.inner.lock().map_err(native_error)?.resources.clone(),
             candidate: std::sync::Mutex::new(None),
+            prepared: tokio::sync::Mutex::new(None),
             prospective: std::sync::Mutex::new(None),
             remote_drain: std::sync::Mutex::new(None),
             creation_started: std::sync::atomic::AtomicBool::new(false),
@@ -1839,6 +1919,28 @@ impl NativeThread {
             .is_some_and(|owner| owner.resolve(nonce, turn_id, call_id, reply)))
     }
 
+    #[napi(js_name = "_resolve_native_mcp_result_with_assignment")]
+    pub async fn _resolve_native_mcp_result_with_assignment(
+        &self,
+        nonce: String,
+        turn_id: String,
+        call_id: String,
+        reply: String,
+    ) -> napi::Result<Vec<bool>> {
+        let receiver = {
+            let inner = self.current()?;
+            let _operation = inner.engine.operation(false).map_err(native_error)?;
+            let nonce = crate::native_id(&nonce)?;
+            self.mcp_result_control()?
+                .and_then(|control| control.owner(nonce))
+                .and_then(|owner| owner.resolve_with_assignment(nonce, &turn_id, &call_id, &reply))
+        };
+        let Some(receiver) = receiver else {
+            return Ok(vec![false, false]);
+        };
+        Ok(vec![true, receiver.await.is_ok()])
+    }
+
     #[napi(js_name = "_check_native_mcp_result")]
     pub fn _check_native_mcp_result(
         &self,
@@ -2015,8 +2117,19 @@ impl NativeThread {
         self.python_callback_operation(&receipt_json, "cancelled")
     }
     #[napi(js_name = "_release_python_callback")]
-    pub fn release_python_callback(&self, receipt_json: String) -> bool {
-        self.python_callback_operation(&receipt_json, "release")
+    pub fn release_python_callback(
+        &self,
+        receipt_json: String,
+        cleanup_failed: Option<bool>,
+    ) -> bool {
+        self.python_callback_operation(
+            &receipt_json,
+            if cleanup_failed.unwrap_or(false) {
+                "release_failed"
+            } else {
+                "release"
+            },
+        )
     }
 
     // Recheck after caller-owned checkpoint storage has settled, immediately
@@ -2063,6 +2176,58 @@ impl NativeThread {
             .ok_or_else(|| native_error("managed child tool owner has expired"))?;
         owner
             .admit_callback(&key.reply.thread, &key)
+            .map_err(native_error)
+    }
+    #[napi(js_name = "_load_client_tool_search")]
+    pub fn _load_client_tool_search(
+        &self,
+        request_json: String,
+        paths_json: Option<String>,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Client tool search owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Client tool search owner has expired"))?;
+        let paths = paths_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(native_error)?;
+        serde_json::to_string(
+            &owner
+                .load_client_search(&key.reply.thread, &key, paths)
+                .map_err(native_error)?,
+        )
+        .map_err(native_error)
+    }
+    #[napi(js_name = "_capture_client_tool_search")]
+    pub fn _capture_client_tool_search(
+        &self,
+        request_json: String,
+        specs_json: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Client tool search owner is unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Client tool search owner has expired"))?;
+        owner
+            .capture_client_search(&key.reply.thread, &key, &specs_json)
+            .map(|id| id.to_string())
             .map_err(native_error)
     }
     #[napi(js_name = "_native_question_pending")]
@@ -2236,6 +2401,23 @@ impl NativeThread {
     #[napi(js_name = "call")]
     pub async fn call(&self, operation: String, params_json: String) -> napi::Result<String> {
         let params: Value = serde_json::from_str(&params_json).map_err(native_error)?;
+        match operation.as_str() {
+            "append_rollout_items" => {
+                let items: Vec<codex_history::RolloutItem> =
+                    serde_json::from_value(params.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(native_error)?;
+                checkpoint::validate_external_mcp_approvals(&items).map_err(native_error)?;
+            }
+            "inject_response_items" | "inject_if_running" => {
+                let items: Vec<codex_protocol::models::ResponseItem> =
+                    serde_json::from_value(params.get("items").cloned().unwrap_or(Value::Null))
+                        .map_err(native_error)?;
+                for item in &items {
+                    checkpoint::validate_external_response_item(item).map_err(native_error)?;
+                }
+            }
+            _ => {}
+        }
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         // Preparation reserves the immutable config/declaration source while
@@ -2505,7 +2687,7 @@ impl NativeThread {
                         ));
                     }
                 }
-                application_instructions::publish(
+                application_instructions::publish_explicit(
                     &inner.thread,
                     value.instructions.unwrap_or_default(),
                 )
@@ -3058,6 +3240,111 @@ impl NativeThread {
         owner.reply_step(&thread, response).map_err(input_error)
     }
 
+    #[napi(js_name = "_report_model_attempt_usage")]
+    pub fn report_model_attempt_usage(
+        &self,
+        owner_json: String,
+        usage_json: String,
+    ) -> napi::Result<bool> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Owner {
+            attempt_id: String,
+            callback: Value,
+        }
+        let owner: Owner = serde_json::from_str(&owner_json)
+            .map_err(|_| input_error("Invalid model usage owner"))?;
+        let usage: codex_protocol::protocol::TokenUsage = serde_json::from_str(&usage_json)
+            .map_err(|_| input_error("Invalid model token usage"))?;
+        let Some(inner) = self.live()? else {
+            return Ok(false);
+        };
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+        else {
+            return Ok(false);
+        };
+        tools
+            .report_model_attempt_usage(
+                &inner.id.to_string(),
+                &owner.attempt_id,
+                &owner.callback,
+                usage,
+            )
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_model_retry")]
+    pub fn reply_model_retry(&self, response_json: String) -> napi::Result<()> {
+        let response: python_tools::context_callbacks::ModelRetryReply =
+            serde_json::from_str(&response_json)
+                .map_err(|_| input_error("Invalid model retry reply"))?;
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner.reply_model_retry(response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_start_model_producer")]
+    pub fn _start_model_producer(
+        &self,
+        owner_json: String,
+        chat_stream: Option<bool>,
+    ) -> napi::Result<()> {
+        let inner = self.current()?;
+        let response: python_tools::StepReply =
+            serde_json::from_str(&owner_json).map_err(input_error)?;
+        let store = inner.thread.thread_extension_data();
+        let tools = store
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        let observe_raw = store
+            .get::<codex_core::ObserveRawProviderEvents>()
+            .is_some();
+        owner
+            .start_model_producer_stream(&response, observe_raw, chat_stream.unwrap_or(false))
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_push_model_producer")]
+    pub async fn _push_model_producer(
+        &self,
+        owner_json: String,
+        event_json: String,
+        raw_chat_chunk: Option<bool>,
+    ) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let response: python_tools::StepReply =
+            serde_json::from_str(&owner_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .push_model_producer_event(&response, &event_json, raw_chat_chunk.unwrap_or(false))
+            .await
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_model_producer")]
     pub fn _reply_model_producer(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -3445,6 +3732,55 @@ impl NativeThread {
         }
     }
 
+    #[napi(js_name = "_configured_child_policy")]
+    pub async fn _configured_child_policy(&self, request_json: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _admission = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(input_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("managed tools unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Configured child callback owner has retired"))?;
+        owner
+            .check_pending(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        let thread = if key.reply.thread == inner.id.to_string() {
+            Arc::clone(&inner.thread)
+        } else {
+            let id =
+                codex_protocol::ThreadId::from_string(&key.reply.thread).map_err(input_error)?;
+            inner
+                .engine
+                .manager
+                .get_thread(id)
+                .await
+                .map_err(native_error)?
+        };
+        if !thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .is_some_and(|current| Arc::ptr_eq(&current, &owner))
+        {
+            return Err(native_error("Configured child callback owner has changed"));
+        }
+        let executor_tools = owner
+            .configured_child_executor_tools(&key)
+            .map_err(native_error)?;
+        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
+            .await
+            .map_err(native_error)?;
+        owner
+            .check_pending(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        policy["tools"] = serde_json::json!(executor_tools);
+        serde_json::to_string(&policy).map_err(native_error)
+    }
+
     #[napi(js_name = "_cancel_child_callback")]
     pub async fn _cancel_child_callback(&self, request_json: String) -> napi::Result<bool> {
         let _admission_state = self.current()?;
@@ -3498,11 +3834,21 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_respond_python_tool")]
-    pub async fn _respond_python_tool(&self, response_json: String) -> napi::Result<bool> {
+    pub async fn _respond_python_tool(
+        &self,
+        response_json: String,
+        wait_for_acceptance: Option<bool>,
+    ) -> napi::Result<bool> {
         let response: python_tools::Reply =
             serde_json::from_str(&response_json).map_err(native_error)?;
         let inner = self.current()?;
-        (async move {
+        let (acceptance, accepted) = if wait_for_acceptance == Some(true) {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        let delivered = (async move {
             let _context_operation = inner.engine.operation(false).map_err(native_error)?;
             // Suspension cannot seal while an acknowledged real receipt is
             // still in flight between removal from pending and writer flush.
@@ -3512,12 +3858,13 @@ impl NativeThread {
                 .thread_extension_data()
                 .get::<python_tools::PythonTools>()
             else {
-                return Ok(false);
+                return Ok::<bool, napi::Error>(false);
             };
             let python_tools::Reply {
                 request,
                 response,
                 start_response,
+                handoff_target_profile_id,
             } = response;
             {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
@@ -3553,6 +3900,7 @@ impl NativeThread {
                 // could wake Core before that fatal failure is recorded.
                 let receipt = if inner.engine.local_checklist_store.is_some()
                     || inner.engine.custom_store.is_some()
+                    || request.reply.manual_grant.is_some()
                 {
                     let Some(receipt) = tools
                         .response_receipt(&request, response.clone())
@@ -3587,7 +3935,10 @@ impl NativeThread {
                     let id = codex_protocol::ThreadId::from_string(&request.reply.thread)
                         .map_err(native_error)?;
                     store
-                        .receipt(id, receipt.expect("selected durable callback receipt"))
+                        .receipt(
+                            id,
+                            receipt.clone().expect("selected durable callback receipt"),
+                        )
                         .await
                         .map_err(native_error)?;
                 }
@@ -3595,15 +3946,22 @@ impl NativeThread {
                     .send(python_tools::ToolReply {
                         response: response.clone(),
                         start_response,
+                        acceptance,
+                        handoff_target_profile_id,
                     })
                     .is_ok();
                 if sent {
-                    tools.record_manual_receipt(&request, response);
+                    tools.record_manual_receipt(&request, response, receipt);
                 }
                 Ok(sent)
             }
         })
-        .await
+        .await?;
+        // The delivery future releases writer leases before Core acceptance joins.
+        if delivered && let Some(accepted) = accepted {
+            return Ok(accepted.await.is_ok());
+        }
+        Ok(delivered)
     }
 
     #[napi(js_name = "_require_tool_approval")]
@@ -3803,9 +4161,12 @@ impl NativeThread {
         else {
             return Ok(false);
         };
-        let saved = checkpoint::export(&inner, (!tools.has_restored_manual()).then_some(&first))
-            .await
-            .map_err(native_error)?;
+        let saved = if tools.has_restored_manual() {
+            checkpoint::export_restored_manual(&inner).await
+        } else {
+            checkpoint::export(&inner, Some(&first)).await
+        }
+        .map_err(native_error)?;
         // Run the frame validator first. Permanent invalid/duplicate history
         // must fail even while another unrelated callback is not ready.
         let checked = tools
@@ -3868,6 +4229,19 @@ impl NativeThread {
             let first = keys
                 .first()
                 .ok_or_else(|| native_error("no pending manual requests"))?;
+            // Restored grants can be sealed again before Core resumes sampling.
+            let usage_owner = if restored {
+                None
+            } else {
+                inner
+                    .thread
+                    .thread_extension_data()
+                    .get::<turn_settlement::Settlement>()
+                    .ok_or_else(|| native_error("Manual turn owner missing"))?
+                    .admission_ready(&first.turn)
+                    .map_err(native_error)?
+            };
+            let usage_turn = first.turn.clone();
             let first = serde_json::to_value(first).map_err(native_error)?;
             let history = checkpoint::capture(&inner.engine, inner.id, &mut Vec::new())
                 .await
@@ -3964,6 +4338,15 @@ impl NativeThread {
                         )) => Some(turn_id.as_str()),
                         _ => None,
                     };
+                    if let Some(turn_id) = suspended {
+                        if let Some(owner) = inner
+                            .thread
+                            .thread_extension_data()
+                            .get::<native_interception::Control>()
+                        {
+                            owner.seal_request_attempts(turn_id);
+                        }
+                    }
                     // Finish on every native outcome before inspecting success.
                     let committed = store.finish_manual_capture(inner.id, suspended).await;
                     let valid = committed.map_err(native_error)?;
@@ -4005,9 +4388,24 @@ impl NativeThread {
                 saved["history"] = serde_json::to_value(history).map_err(native_error)?;
                 saved["agent_options"] = serde_json::json!({});
                 usage::checkpoint_to_wire(&mut saved).map_err(native_error)?;
-                serde_json::to_string(
-                    &serde_json::json!({"checkpoint":saved, "manual_continuation":frame}),
-                )
+                serde_json::to_string(&{
+                    if usage_turn != frame.turn_id {
+                        return Err(native_error("Manual model usage owner changed"));
+                    }
+                    let mut value =
+                        serde_json::json!({"checkpoint":saved, "manual_continuation":frame});
+                    if let Some(owner) = &usage_owner {
+                        if let Some(snapshot) =
+                            owner.model_attempt_snapshot().map_err(native_error)?
+                        {
+                            let mut snapshot =
+                                serde_json::to_value(snapshot).map_err(native_error)?;
+                            usage::model_attempt_to_wire(&mut snapshot).map_err(native_error)?;
+                            value["model_attempt"] = snapshot;
+                        }
+                    }
+                    value
+                })
                 .map_err(native_error)
             }
             .await;
@@ -4171,27 +4569,47 @@ impl NativeThread {
             let saved = checkpoint::export_restored_manual(&inner)
                 .await
                 .map_err(native_error)?;
-            let (mut frame, items, settings) = tools
+            let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
+            if let Some(selection) = &selection {
+                if selection.model_override != frame.model_override
+                    || selection.model_settings_override != frame.model_settings_override
+                {
+                    return Err(native_error(
+                        "manual continuation cannot replace the admitted run model",
+                    ));
+                }
+            }
             if !items.is_empty() {
                 // Update Core's live model context as well as its rollout. A raw
                 // writer append alone would let prompt normalization invent "aborted".
                 inner
                     .thread
-                    .inject_response_item_envelopes(items)
+                    .inject_sdk_response_item_envelopes(items, Some(&frame.turn_id))
                     .await
                     .map_err(native_error)?;
             }
+            let mut controls = inner
+                .thread
+                .thread_settings_snapshot()
+                .await
+                .request_controls;
+            if let Some(settings) = &frame.model_settings_override {
+                controls.apply_patch(&settings.request_controls);
+            }
+            let reset_tool_choice = controls.reset_tool_choice.flatten() == Some(true);
             let terminal = frame
-                .terminal_seed(&saved["history"])
+                .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
-            let result = ops::recover_prepared(
+            let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
                 frame.reply_order,
                 settings,
                 output_schema,
+                frame.model_override,
+                frame.model_settings_override,
                 selection,
                 trace,
                 observation_submission_id,
@@ -4201,6 +4619,7 @@ impl NativeThread {
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
                 tools.retire_manual();
+                result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
             }
             serde_json::to_string(&result).map_err(native_error)
         })
@@ -4261,6 +4680,18 @@ impl NativeThread {
         serde_json::to_string(&result).map_err(native_error)
     }
 
+    #[napi(js_name = "_enable_raw_provider_events")]
+    pub fn enable_raw_provider_events(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let store = inner.thread.thread_extension_data();
+        store.insert(codex_core::ObserveRawProviderEvents);
+        if let Some(control) = store.get::<crate::native_interception::Control>() {
+            control.enable_raw_provider_events();
+        }
+        Ok(())
+    }
+
     #[napi(js_name = "_canonical_history")]
     pub async fn canonical_history(
         &self,
@@ -4268,10 +4699,30 @@ impl NativeThread {
         for_replay: Option<bool>,
     ) -> napi::Result<String> {
         let inner = self.current()?;
-        let value =
-            canonical_history::snapshot(&inner, limit.map(|n| n as usize), for_replay.unwrap_or(false))
-                .await
-                .map_err(native_error)?;
+        let value = canonical_history::snapshot(
+            &inner,
+            limit.map(|n| n as usize),
+            for_replay.unwrap_or(false),
+        )
+        .await
+        .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_record_memory_input_admission")]
+    pub async fn record_memory_input_admission(&self, turn_id: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        canonical_history::record_memory_input_admission(&inner, &turn_id)
+            .await
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_memory_history")]
+    pub async fn memory_history(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::memory_snapshot(&inner, &turn_id)
+            .await
+            .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
@@ -4323,6 +4774,98 @@ impl NativeThread {
             .await
             .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_request_attempts")]
+    pub fn start_request_attempts(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = inner.thread.sdk_start_request_attempts();
+        self.inner.lock().map_err(native_error)?.request_attempts = Some(link.clone());
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_request_attempts(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_request_attempts")]
+    pub fn take_request_attempts(&self, turn_id: String) -> napi::Result<String> {
+        let mut owner = self.inner.lock().map_err(native_error)?;
+        let report = owner
+            .request_attempts
+            .as_ref()
+            .ok_or_else(|| native_error("Request attempt capture was not started"))?
+            .read(&turn_id)
+            .map_err(native_error)?;
+        owner.request_attempts.take();
+        Ok(report)
+    }
+
+    #[napi(js_name = "_start_raw_usage")]
+    pub fn start_raw_usage(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = inner.thread.sdk_start_raw_usage();
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_attach_raw_usage")]
+    pub fn attach_raw_usage(&self, parent: &NativeThread) -> napi::Result<()> {
+        let inner = self.current()?;
+        let parent = parent.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let link = parent
+            .thread
+            .sdk_raw_usage_link()
+            .ok_or_else(|| native_error("Provider usage capture was not started"))?;
+        link.attach(inner.thread.thread_extension_data());
+        if let Some(control) = inner
+            .thread
+            .thread_extension_data()
+            .get::<native_interception::Control>()
+        {
+            control.bind_raw_usage(link);
+        }
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_raw_usage")]
+    pub fn take_raw_usage(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .thread
+            .sdk_take_raw_usage(&turn_id)
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_start_produced_items")]
+    pub fn start_produced_items(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner.thread.sdk_start_produced_items();
+        Ok(())
+    }
+
+    #[napi(js_name = "_take_produced_items")]
+    pub fn take_produced_items(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .thread
+            .sdk_take_produced_items(&turn_id)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "read_thread_history")]
@@ -4413,6 +4956,18 @@ impl NativeThread {
                 started: false,
             }))),
         })
+    }
+
+    #[napi(js_name = "_enable_sandbox_operations")]
+    pub fn enable_sandbox_operations(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Sandbox observations require managed tools"))?;
+        tools.enable_sandbox_operations();
+        Ok(())
     }
 
     #[napi(js_name = "_next_session_events")]
@@ -4895,6 +5450,7 @@ async fn direct_sentinel_stream(
     inner: &engine::EngineState,
     expected_url: &str,
     request: codex_client::Request,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> Result<codex_client::StreamResponse, TransportError> {
     use base64::Engine as _;
     use futures_util::StreamExt as _;
@@ -4995,9 +5551,16 @@ async fn direct_sentinel_stream(
         .await
         .map_err(|_| invalid())?;
     let receipt: serde_json::Value = serde_json::from_str(&receipt).map_err(|_| invalid())?;
-    if receipt.get("model") != body.get("model")
-        || !matches!(receipt["kind"].as_str(), Some("generation" | "warmup"))
+    let model_matches = if receipt
+        .get("model_omitted")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
     {
+        body.get("model").is_none()
+    } else {
+        receipt.get("model") == body.get("model")
+    };
+    if !model_matches || !matches!(receipt["kind"].as_str(), Some("generation" | "warmup")) {
         return Err(invalid());
     }
     let mut metadata = metadata.as_object().cloned().ok_or_else(invalid)?;
@@ -5034,6 +5597,7 @@ async fn direct_sentinel_stream(
         body.into(),
         &ticket,
         request.response_body_limit_bytes,
+        request_transport,
     )
     .await
     .map_err(|_| invalid())?;
@@ -5141,16 +5705,20 @@ async fn sentinel_stream_dispatch(
     body: bytes::Bytes,
     ticket: &serde_json::Value,
     response_body_limit_bytes: Option<usize>,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
-    let turn = native_interception::sentinel_http_turn(inner, provider_id, ticket)
+    let (turn, attempts) = native_interception::sentinel_http_turn(inner, provider_id, ticket)
         .map_err(native_error)?;
     let provider = route.provider.api_provider().await.map_err(native_error)?;
     let mut request = provider
         .build_request("POST".parse().map_err(native_error)?, "responses")
         .with_raw_body(body.clone());
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    codex_api::prepare_request_transport(&request.url, request_transport)
+        .map_err(native_error)?
+        .apply(&mut request);
     if let Some(authorization) = &inner.plan_authorization {
         let body: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|_| input_error("Invalid Sign in with ChatGPT request body"))?;
@@ -5190,6 +5758,9 @@ async fn sentinel_stream_dispatch(
                     {
                         // Keep the owning interrupt responsible for settlement.
                         std::future::pending::<()>().await;
+                    }
+                    if let Some(attempts) = &attempts {
+                        attempts.send_started(codex_extension_api::ModelRequestTransport::HttpSse);
                     }
                     route
                         .transport
@@ -5526,6 +6097,13 @@ fn telemetry_error(error: anyhow::Error) -> napi::Error {
         | "Configure telemetry before creating any Codex clients"
         | "A Rust tracing subscriber is already installed; Codex telemetry cannot replace it"
         | "Configure telemetry successfully before shutdown"
+        | "Console diagnostics are configured with the initial telemetry subscriber"
+        | "Telemetry restart requires successful shutdown"
+        | "Telemetry restart requires all Codex clients to close"
+        | "Telemetry restart requires all recording spans to end"
+        | "Telemetry restart requires retired trace delivery"
+        | "Telemetry shutdown is in progress"
+        | "Telemetry restart is in progress"
         | "Configure native telemetry before starting traces; shutdown is terminal"
         | "Configure a trace exporter or trace processors before starting native traces"
         | "Telemetry timeout must be between 1 and 60000 milliseconds"
@@ -5565,6 +6143,22 @@ pub fn end_trace_span(handle: String, outcome_json: String) -> napi::Result<()> 
 #[napi(js_name = "retain_trace_context")]
 pub fn retain_trace_context(handle: String) -> napi::Result<String> {
     codex_otel::sdk_trace::retain_trace_context(&handle).map_err(native_error)
+}
+
+#[napi(js_name = "borrow_trace_context")]
+pub fn borrow_trace_context(
+    parent: String,
+    restrictions_parent: Option<String>,
+    disabled: bool,
+    include_sensitive_data: bool,
+) -> napi::Result<String> {
+    codex_otel::sdk_trace::borrow_trace_context(
+        &parent,
+        restrictions_parent.as_deref(),
+        disabled,
+        include_sensitive_data,
+    )
+    .map_err(native_error)
 }
 
 #[napi(js_name = "_retain_callback_dispatch_context")]
@@ -5649,6 +6243,13 @@ pub async fn force_flush_telemetry(timeout_ms: Option<u32>) -> napi::Result<Stri
 #[napi(js_name = "drain_trace_events")]
 pub async fn drain_trace_events(max_count: u32) -> napi::Result<String> {
     codex_otel::sdk_trace_routes::drain_trace_events(max_count as usize).map_err(native_error)
+}
+
+#[napi(js_name = "dispatch_trace_event")]
+pub async fn dispatch_trace_event(encoded: String) -> napi::Result<()> {
+    codex_otel::sdk_trace_routes::dispatch_trace_event(&encoded)
+        .await
+        .map_err(native_error)
 }
 
 #[derive(Debug)]

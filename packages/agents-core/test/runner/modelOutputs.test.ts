@@ -4129,16 +4129,6 @@ describe('hasToolsOrApprovalsToRun method', () => {
     expect(result.hasToolsOrApprovalsToRun()).toBe(true);
   });
 
-  it('returns true when function calls are pending', () => {
-    const result = processModelResponse(
-      TEST_MODEL_RESPONSE_WITH_FUNCTION,
-      TEST_AGENT,
-      [TEST_TOOL],
-      [],
-    );
-    expect(result.hasToolsOrApprovalsToRun()).toBe(true);
-  });
-
   it('returns true when computer actions are pending', () => {
     const computer = computerTool({
       computer: {

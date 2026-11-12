@@ -1,3 +1,8 @@
+import {
+  captureModelRetrySettings,
+  retrySettingsToNative,
+  type ModelRetrySettings,
+} from './model-retry';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,6 +18,7 @@ import {
   type PrivateRuntimeSlot,
 } from './private-engine-reuse';
 import { NativeError } from './native-error';
+import { z } from 'zod';
 import {
   borrowNativeRuntime,
   validateNativeRuntime,
@@ -24,14 +30,37 @@ import {
   type SignInWithChatGPT,
 } from './sign-in-with-chatgpt';
 
+const compactionTokenThreshold = z
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER);
+const providerCompactionPolicySchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('static'),
+    threshold: compactionTokenThreshold,
+  }),
+  z.strictObject({
+    type: z.literal('dynamic'),
+    thresholdRatio: z.number().min(0).max(1).optional(),
+    fallbackThreshold: compactionTokenThreshold.optional(),
+  }),
+]);
+
+export type ProviderCompactionPolicy = z.input<
+  typeof providerCompactionPolicySchema
+>;
+
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
-  /** Share HTTP clients and quiescent private plain-run Engines until runtime.close(). */
+  /** Share native clients and eligible plain-run Engines until runtime.close(). */
   runtime?: NativeRuntime;
   /** Native phase timeouts in integer milliseconds; zero expires immediately. */
   streamIdleTimeoutMs?: number;
   websocketConnectTimeoutMs?: number;
   baseUrl?: string;
+  /** Base URL for Responses WebSockets when that transport is allowed. */
+  websocketBaseUrl?: string;
   apiKey?: string;
   /** Use the file-backed ChatGPT login saved by the Codex CLI for Responses. */
   codexLogin?: {
@@ -44,6 +73,7 @@ export interface NativeProviderOptions {
    * Set true to allow WebSockets on every streaming call. When omitted, eligible
    * stateless Agent.run calls use HTTP; other calls allow WebSockets only when
    * baseUrl is omitted.
+   * With runtime, omitted support has been preserving HTTP; true has been enabling WebSockets.
    */
   supportsWebsockets?: boolean;
   /** Read one complete Responses JSON body over API-key HTTP. */
@@ -87,11 +117,20 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
  * env values stay omitted. Routing options reject same/cross-origin redirects.
  * Native auth/protocol/private-hop headers remain reserved. A new provider
  * refreshes the captured routing values.
+ * Without runtime, compatible adjacent one-shot API-key WebSocket calls have
+ * been allowing this Provider to retain an Engine. Each run has been preparing
+ * a fresh WebSocket connector and TLS trust configuration, including when its
+ * Engine has been staying retained. Proxy routing has been continuing through
+ * the existing per-dial resolver and its platform cache.
  * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
  * state until close. Without runtime, a new Provider forces fresh
  * physical clients. With it, captured native configuration, credentials, private
  * homes and referenced carriers can outlive Providers until runtime.close().
- * A new borrowing Provider does not imply refreshed ambient native configuration.
+ * With runtime, a compatible retained Engine has been allowing its WebSocket
+ * connector and TLS trust configuration to stay captured across runs. A fresh
+ * borrowing Provider has not been guaranteeing refreshed ambient native configuration.
+ * Closing all borrowing Providers and the runtime before creating a new owner
+ * has been providing the guaranteed refresh boundary.
  */
 export class NativeProvider {
   #options: Readonly<NativeProviderOptions>;
@@ -121,6 +160,7 @@ export class NativeProvider {
         options.chatGPT !== undefined ||
         options.modelBackend !== undefined ||
         options.baseUrl !== undefined ||
+        options.websocketBaseUrl !== undefined ||
         options.queryParams !== undefined ||
         options.headers !== undefined ||
         options.envHeaders !== undefined ||
@@ -169,6 +209,27 @@ export class NativeProvider {
       )
         throw new TypeError(`${key} must be a non-empty string`);
     }
+    if (options.websocketBaseUrl !== undefined) {
+      const error =
+        'websocketBaseUrl must be an absolute HTTP(S) or WS(S) URL without userinfo or fragment';
+      const endpoint = options.websocketBaseUrl;
+      if (typeof endpoint !== 'string') throw new TypeError(error);
+      let base: URL;
+      try {
+        base = new URL(endpoint);
+      } catch {
+        throw new TypeError(error);
+      }
+      const authority = /^(?:https?|wss?):\/\/([^/?#]+)/i.exec(endpoint)?.[1];
+      if (
+        !authority ||
+        authority.includes('@') ||
+        !base.hostname ||
+        /\s/.test(endpoint) ||
+        base.href.includes('#')
+      )
+        throw new TypeError(error);
+    }
     if (
       options.supportsWebsockets !== undefined &&
       typeof options.supportsWebsockets !== 'boolean'
@@ -192,8 +253,7 @@ export class NativeProvider {
     const captured = { ...options, ...routing.options };
     if (
       runtime !== undefined &&
-      (captured.supportsWebsockets === true ||
-        captured.modelBackend !== undefined ||
+      (captured.modelBackend !== undefined ||
         captured.chatGPT !== undefined ||
         captured.codexLogin !== undefined ||
         captured.signInWithChatGPT !== undefined ||
@@ -201,13 +261,15 @@ export class NativeProvider {
         this.#getPlanCredential !== undefined)
     )
       throw new TypeError(
-        'runtime requires API-key HTTP without a model backend or ChatGPT authentication',
+        'runtime requires API-key inference without a model backend or ChatGPT authentication',
       );
     this.#options = Object.freeze({
       ...captured,
       runtime,
       supportsWebsockets:
-        runtime === undefined ? captured.supportsWebsockets : false,
+        runtime === undefined
+          ? captured.supportsWebsockets
+          : captured.supportsWebsockets === true,
       chatGPT: captureChatGPTAuth(captured.chatGPT),
       codexLogin,
     });
@@ -317,8 +379,7 @@ export class NativeProvider {
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
         (options.baseUrl === undefined && !privateCandidate));
-    const eligible = privateCandidate && !websocketsAllowed;
-    let slot = eligible
+    let slot = privateCandidate
       ? this.#nativeRuntimeBorrow
         ? this.#nativeRuntimeBorrow.reserve(token)
         : (this.#runtime ??= {})
@@ -359,10 +420,15 @@ export class NativeProvider {
       reserved && !privateDone && slot!.entry
         ? Promise.resolve()
         : releaseLease();
+    const refreshWebsocketTrust =
+      websocketsAllowed && this.#nativeRuntimeBorrow === undefined;
+    const plainOnly =
+      this.#nativeRuntimeBorrow !== undefined || refreshWebsocketTrust;
     const borrow: PrivateRuntimeBorrow | undefined = !reserved
       ? undefined
       : {
-          plainOnly: this.#nativeRuntimeBorrow !== undefined,
+          plainOnly,
+          refreshWebsocketTrust,
           concurrent: slot!.runs !== undefined,
           invalidate: () => {
             if (!privateDone && ownsReservation() && slot!.runs && slot!.entry)
@@ -423,7 +489,7 @@ export class NativeProvider {
               const canKeep =
                 keep &&
                 !slot!.retiring &&
-                (!this.#nativeRuntimeBorrow || plain) &&
+                (!plainOnly || plain) &&
                 !token.failed &&
                 !this.#closed &&
                 entry !== undefined &&
@@ -488,6 +554,7 @@ export class NativeProvider {
           ...this.#routing,
           ...Object.fromEntries(
             Object.entries({
+              websocket_base_url: options.websocketBaseUrl,
               request_max_retries: getPlanCredential
                 ? 0
                 : options.requestMaxRetries,
@@ -611,7 +678,78 @@ export interface ProviderLease {
   failOpening(error: unknown, cleanup?: boolean): Promise<never>;
 }
 
+export type HostedToolChoice =
+  | {
+      readonly type:
+        | 'web_search'
+        | 'file_search'
+        | 'code_interpreter'
+        | 'image_generation'
+        | 'computer'
+        | 'computer_use_preview'
+        | 'shell'
+        | 'apply_patch'
+        | 'tool_search';
+    }
+  | {
+      readonly type: 'mcp';
+      readonly serverLabel: string;
+      readonly name?: string;
+    };
+
+function captureHostedToolChoice(value: unknown): HostedToolChoice {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('Hosted tool choice must be a typed selector');
+  const choice = value as Record<string, unknown>;
+  const types = [
+    'web_search',
+    'file_search',
+    'code_interpreter',
+    'image_generation',
+    'computer',
+    'computer_use_preview',
+    'shell',
+    'apply_patch',
+    'tool_search',
+    'mcp',
+  ];
+  if (
+    !Object.prototype.hasOwnProperty.call(choice, 'type') ||
+    !types.includes(choice.type as string) ||
+    Object.getOwnPropertyNames(choice).some(
+      (key) =>
+        !(
+          choice.type === 'mcp' ? ['type', 'serverLabel', 'name'] : ['type']
+        ).includes(key),
+    )
+  )
+    throw new TypeError(
+      'Hosted tool choice must identify a supported provider tool',
+    );
+  if (choice.type === 'mcp') {
+    if (
+      typeof choice.serverLabel !== 'string' ||
+      !choice.serverLabel.trim() ||
+      (choice.name !== undefined &&
+        (typeof choice.name !== 'string' || !choice.name.trim()))
+    )
+      throw new TypeError(
+        'Hosted MCP choice requires a captured server and tool identity',
+      );
+    return Object.freeze({
+      type: 'mcp',
+      serverLabel: choice.serverLabel,
+      ...(choice.name === undefined ? {} : { name: choice.name }),
+    });
+  }
+  return Object.freeze({ type: choice.type }) as HostedToolChoice;
+}
+
 export interface ModelSettings {
+  /** Per logical attempt, excluding retry backoff; null restores the default. */
+  attemptTimeoutMs?: number | null;
+  /** Native generation retry settings; null clears, omission preserves. */
+  retry?: ModelRetrySettings | null;
   /** One local model invocation deadline in positive uint32 milliseconds; null clears.
    * Includes internal request waits and retries. Cleanup can finish after expiry;
    * accepted terminal responses disarm the clock before result settlement.
@@ -621,9 +759,9 @@ export interface ModelSettings {
   reasoningSummary?: string;
   /** null clears an existing service tier override. */
   serviceTier?: string | null;
-  /** Outer choice, or a captured eager ToolRef. A named target only narrows
+  /** Outer mode, captured eager ToolRef, or explicit hosted selector. A named target only narrows
    * the current admitted catalog; null clears it to auto. */
-  toolChoice?: 'auto' | 'none' | 'required' | ToolRef | null;
+  toolChoice?: 'auto' | 'none' | 'required' | ToolRef | HostedToolChoice | null;
   /** Nonnegative safe integer for ordinary sampling; null clears the SDK override. */
   /** Full input-capability declaration for the selected model; null restores its catalogue. */
   inputModalities?: readonly ('text' | 'image' | 'audio')[] | null;
@@ -643,7 +781,95 @@ export interface ModelSettings {
   /** Additional response fields; native replay and hosted-tool includes remain enabled. */
   include?: readonly string[] | null;
   contextManagement?: readonly JsonObject[] | null;
+  /** Standard Responses compaction threshold. Explicit contextManagement takes precedence. */
+  providerCompaction?: ProviderCompactionPolicy | null;
   extraBody?: JsonObject | null;
+  /** Request headers; a null value omits a provider default. Native auth stays provider-owned. */
+  extraHeaders?: Readonly<Record<string, string | null>> | null;
+  /** Request-local JSON query values; null clears the query override. */
+  extraQuery?: Readonly<JsonObject> | null;
+  /**
+   * Ordinary text sampling only: opt-in release of required/named forcing after an
+   * accepted tool batch on this profile.
+   * Omitted/false/null: persistent forcing. New runs and incoming profiles: their own
+   * declared first choice. No change to toolChoice: 'none'.
+   */
+  resetToolChoice?: boolean | null;
+}
+
+const protectedTransportHeaders = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'host',
+  'connection',
+  'upgrade',
+  'content-length',
+  'transfer-encoding',
+  'te',
+  'trailer',
+  'keep-alive',
+  'proxy-connection',
+  'content-type',
+  'accept',
+  'accept-encoding',
+  'user-agent',
+  'openai-beta',
+  'originator',
+  'session_id',
+  'x-client-request-id',
+  'x-request-id',
+  'chatgpt-account-id',
+  'openai-organization',
+  'openai-project',
+  'x-responsesapi-include-timing-metrics',
+  'x-sdk-sentinel-grant',
+]);
+
+function invalidTransportHeaderName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+    protectedTransportHeaders.has(lower) ||
+    ['sec-websocket-', 'x-codex-', 'x-openai-'].some((prefix) =>
+      lower.startsWith(prefix),
+    )
+  );
+}
+
+function captureRequestHeaders(
+  value: unknown,
+): Readonly<Record<string, string | null>> {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  )
+    throw new TypeError('extraHeaders must be a header map or null');
+  const captured: Record<string, string | null> = {};
+  const seen = new Set<string>();
+  for (const [name, header] of Object.entries(value)) {
+    const lower = name.toLowerCase();
+    if (
+      invalidTransportHeaderName(name) ||
+      lower === 'api-key' ||
+      seen.has(lower)
+    )
+      throw new TypeError(
+        'Request header name is invalid, duplicated, or owned by native transport/auth',
+      );
+    if (
+      header !== null &&
+      (typeof header !== 'string' || /[^\x20-\x7e]/.test(header))
+    )
+      throw new TypeError(
+        'Request header values must contain printable ASCII or null',
+      );
+    seen.add(lower);
+    Object.defineProperty(captured, lower, { value: header, enumerable: true });
+  }
+  return Object.freeze(captured);
 }
 
 /** @internal Capture nested settings before opening can await. */
@@ -658,6 +884,9 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'serviceTier',
     'toolChoice',
     'invocationTimeoutMs',
+    'attemptTimeoutMs',
+    'retry',
+    'resetToolChoice',
     'inputModalities',
     'maxOutputTokens',
     'temperature',
@@ -672,7 +901,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'truncation',
     'include',
     'contextManagement',
+    'providerCompaction',
     'extraBody',
+    'extraHeaders',
+    'extraQuery',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!allowed.has(key))
@@ -680,7 +912,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     let value = (source as unknown as Record<string, unknown>)[key];
     if (value === undefined) continue;
     if (value !== null) {
-      if (key === 'invocationTimeoutMs') {
+      if (key === 'invocationTimeoutMs' || key === 'attemptTimeoutMs') {
         if (
           typeof value !== 'number' ||
           !Number.isInteger(value) ||
@@ -688,8 +920,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           value > 4294967295
         )
           throw new TypeError(
-            'invocationTimeoutMs must be an integer in the range 1..4294967295 or null',
+            `${key} must be an integer in the range 1..4294967295 or null`,
           );
+      } else if (key === 'retry') {
+        value = captureModelRetrySettings(value as ModelRetrySettings);
       } else if (key === 'inputModalities') {
         if (
           !Array.isArray(value) ||
@@ -718,7 +952,11 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       } else if (key === 'temperature' || key === 'topP') {
         if (typeof value !== 'number' || !Number.isFinite(value))
           throw new TypeError(`${key} must be a finite number or null`);
-      } else if (key === 'parallelToolCalls' || key === 'store') {
+      } else if (
+        key === 'parallelToolCalls' ||
+        key === 'store' ||
+        key === 'resetToolChoice'
+      ) {
         if (typeof value !== 'boolean')
           throw new TypeError(`${key} must be boolean or null`);
       } else if (key === 'truncation') {
@@ -731,6 +969,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         )
           throw new TypeError('include must be an array of strings');
         value = [...value];
+      } else if (key === 'providerCompaction') {
+        value = providerCompactionPolicySchema.parse(value);
       } else if (key === 'contextManagement' || key === 'extraBody') {
         if (key === 'contextManagement') {
           if (
@@ -788,6 +1028,18 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
             'extraBody cannot replace native request fields; use the corresponding model setting',
           );
         value = copyJsonValue(value);
+      } else if (key === 'extraHeaders') {
+        value = captureRequestHeaders(value);
+      } else if (key === 'extraQuery') {
+        if (
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
+          Object.keys(value).some((name) => !name)
+        )
+          throw new TypeError(
+            'extraQuery must be a JSON object with nonempty keys',
+          );
+        value = copyJsonValue(value);
       } else if (key === 'metadata') {
         if (typeof value !== 'object' || Array.isArray(value))
           throw new TypeError('metadata must be a string map');
@@ -796,7 +1048,9 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           throw new TypeError('metadata must be a string map');
         value = Object.freeze(Object.fromEntries(pairs));
       } else if (key === 'toolChoice') {
-        if (typeof value === 'object' && value !== null) {
+        if (typeof value === 'object' && value !== null && 'type' in value) {
+          value = captureHostedToolChoice(value);
+        } else if (typeof value === 'object' && value !== null) {
           const target = value as Partial<ToolRef>;
           if (
             Object.getOwnPropertyNames(target).some(
@@ -824,8 +1078,12 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       ![
         'serviceTier',
         'inputModalities',
+        'resetToolChoice',
+        'reset_tool_choice',
         'toolChoice',
         'invocationTimeoutMs',
+        'attemptTimeoutMs',
+        'retry',
         'maxOutputTokens',
         'temperature',
         'topP',
@@ -839,7 +1097,10 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'truncation',
         'include',
         'contextManagement',
+        'providerCompaction',
         'extraBody',
+        'extraHeaders',
+        'extraQuery',
       ].includes(key)
     ) {
       throw new TypeError(`Invalid null model setting: ${key}`);
@@ -873,6 +1134,7 @@ function captureCodexLogin(options: NativeProviderOptions) {
     options.apiKey !== undefined ||
     options.modelBackend !== undefined ||
     options.baseUrl !== undefined ||
+    options.websocketBaseUrl !== undefined ||
     options.supportsWebsockets === true ||
     options.responseMode === 'buffered' ||
     options.headers !== undefined ||
@@ -937,46 +1199,12 @@ function captureProviderRouting(options: NativeProviderOptions) {
       copied[name] = Object.freeze(Object.fromEntries(Object.entries(value)));
     }
   }
-  const protectedNames = new Set([
-    'authorization',
-    'proxy-authorization',
-    'cookie',
-    'host',
-    'connection',
-    'upgrade',
-    'content-length',
-    'transfer-encoding',
-    'te',
-    'trailer',
-    'keep-alive',
-    'proxy-connection',
-    'content-type',
-    'accept',
-    'accept-encoding',
-    'user-agent',
-    'openai-beta',
-    'originator',
-    'session_id',
-    'x-client-request-id',
-    'x-request-id',
-    'chatgpt-account-id',
-    'openai-organization',
-    'openai-project',
-    'x-responsesapi-include-timing-metrics',
-    'x-sdk-sentinel-grant',
-  ]);
   const headers: Record<string, string> = {};
   const seen = new Set<string>();
   for (const name of ['headers', 'envHeaders'] as const) {
     for (const [key, original] of Object.entries(copied[name] ?? {})) {
       const lower = key.toLowerCase();
-      if (
-        !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key) ||
-        protectedNames.has(lower) ||
-        ['sec-websocket-', 'x-codex-', 'x-openai-'].some((prefix) =>
-          lower.startsWith(prefix),
-        )
-      )
+      if (invalidTransportHeaderName(key))
         throw new TypeError(
           'Provider header name is invalid or belongs to native transport/auth',
         );
@@ -1034,16 +1262,38 @@ function captureProviderRouting(options: NativeProviderOptions) {
   return { options: copied, config: Object.freeze(config) };
 }
 
+/** @internal The same detached transport settings are used during startup and sampling. */
+export function requestTransportWire(
+  settings?: ModelSettings,
+): JsonObject | undefined {
+  const transport: JsonObject = {};
+  if (settings?.extraHeaders !== undefined)
+    transport.headers = copyJsonValue(settings.extraHeaders);
+  if (settings?.extraQuery !== undefined) {
+    transport.query = copyJsonValue(settings.extraQuery);
+    transport.query_nulls_as_empty = true;
+  }
+  return Object.keys(transport).length ? transport : undefined;
+}
+
 /** @internal Shared projection for Session updates and captured Agent profiles. */
 export function modelOverrides(
   model?: string,
   settings?: ModelSettings,
+  hostedPrompt?: JsonObject | null,
 ): JsonObject {
   const selected = captureModelSettings(settings);
   const overrides: JsonObject = {};
   if (selected.invocationTimeoutMs !== undefined)
     overrides.invocation_timeout_ms = selected.invocationTimeoutMs;
   const controls: JsonObject = {};
+  if (hostedPrompt !== undefined)
+    controls.hosted_prompt = copyJsonValue(hostedPrompt);
+  if (selected.attemptTimeoutMs !== undefined)
+    controls.attempt_timeout_ms = selected.attemptTimeoutMs;
+  if (selected.retry !== undefined)
+    controls.retry =
+      selected.retry === null ? null : retrySettingsToNative(selected.retry);
   if (model !== undefined) {
     if (typeof model !== 'string' || !model.trim())
       throw new TypeError('model must be a nonempty string');
@@ -1057,6 +1307,7 @@ export function modelOverrides(
     overrides.service_tier = selected.serviceTier;
   const names = {
     inputModalities: 'input_modalities',
+    resetToolChoice: 'reset_tool_choice',
     maxOutputTokens: 'max_output_tokens',
     temperature: 'temperature',
     topP: 'top_p',
@@ -1076,9 +1327,33 @@ export function modelOverrides(
     const value = selected[key as keyof typeof names];
     if (value !== undefined) controls[wire] = copyJsonValue(value);
   }
+  const transport = requestTransportWire(selected);
+  if (transport !== undefined) controls.request_transport = transport;
+  if (selected.providerCompaction !== undefined) {
+    const policy = selected.providerCompaction;
+    controls.provider_compaction =
+      policy?.type === 'dynamic'
+        ? {
+            type: 'dynamic',
+            threshold_ratio: policy.thresholdRatio ?? 0.9,
+            fallback_threshold: policy.fallbackThreshold ?? 240_000,
+          }
+        : policy;
+  }
   if (selected.toolChoice !== undefined) {
     const choice = selected.toolChoice;
-    if (typeof choice === 'object' && choice !== null) {
+    if (typeof choice === 'object' && choice !== null && 'type' in choice) {
+      overrides.tool_choice = 'required';
+      controls.named_tool_choice = null;
+      controls.hosted_tool_choice =
+        choice.type === 'mcp'
+          ? {
+              type: choice.type,
+              server_label: choice.serverLabel,
+              ...(choice.name === undefined ? {} : { name: choice.name }),
+            }
+          : { type: choice.type };
+    } else if (typeof choice === 'object' && choice !== null) {
       overrides.tool_choice = 'required';
       controls.named_tool_choice = {
         name: choice.name,

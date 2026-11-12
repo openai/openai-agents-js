@@ -1,6 +1,7 @@
 /** Native scope ownership shared by public telemetry and Session admission. */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { isAsyncFunction } from 'node:util/types';
 import { binding, copyJsonValue } from './binding';
 import type { SpanContext, TraceOptions } from './telemetry';
 type Native = Awaited<ReturnType<typeof binding>>;
@@ -99,6 +100,74 @@ const processorSuppressed = new AsyncLocalStorage<boolean>();
 let tracingDisabled = false;
 let sensitiveDataLoggingEnabled = true;
 
+/** Generate an ID for grouping workflow traces. */
+export function generateGroupId(): string {
+  return `group_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+}
+
+/** Synchronous ID policy for newly admitted SDK scopes, excluding engine spans. */
+export interface TracingIdGenerator {
+  /** Return a nonzero 32-digit hexadecimal ID. */
+  readonly generateTraceId?: () => string;
+  /** Return a nonzero 16-digit hexadecimal ID. */
+  readonly generateSpanId?: () => string;
+}
+
+let tracingIdGenerator: TracingIdGenerator = Object.freeze({});
+
+/** Replace future SDK scope policy; omission restores native generation. */
+export function setTracingIdGenerator(
+  generator: TracingIdGenerator = {},
+): void {
+  if (!generator || typeof generator !== 'object' || Array.isArray(generator))
+    throw new TypeError('Tracing ID generator must be an object');
+  const { generateTraceId, generateSpanId } = generator;
+  for (const callback of [generateTraceId, generateSpanId])
+    if (
+      callback !== undefined &&
+      (typeof callback !== 'function' || isAsyncFunction(callback))
+    )
+      throw new TypeError(
+        'Tracing ID generators must be synchronous functions',
+      );
+  tracingIdGenerator = Object.freeze({
+    generateTraceId: generateTraceId?.bind(generator),
+    generateSpanId: generateSpanId?.bind(generator),
+  });
+}
+
+function generatedId(callback: () => string, digits: number): string {
+  const value = callback();
+  if (typeof value !== 'string')
+    throw new TypeError('Tracing ID generators must return strings');
+  if (
+    value.length !== digits ||
+    !/^[0-9a-f]+$/i.test(value) ||
+    /^0+$/.test(value)
+  )
+    throw new TypeError('Tracing ID generator returned an invalid identifier');
+  return value;
+}
+
+function generatedScopeIds(
+  generator: TracingIdGenerator,
+  options: Pick<TraceOptions, 'traceId' | 'spanId'>,
+  hasParent: boolean,
+  disabled: boolean,
+): { trace_id?: string; span_id?: string } {
+  const ids = options.spanId === undefined ? {} : { span_id: options.spanId };
+  if (disabled || processorSuppressed.getStore()) return ids;
+  return processorSuppressed.run(true, () => ({
+    ...ids,
+    ...(options.traceId === undefined && !hasParent && generator.generateTraceId
+      ? { trace_id: generatedId(generator.generateTraceId, 32) }
+      : {}),
+    ...(options.spanId === undefined && generator.generateSpanId
+      ? { span_id: generatedId(generator.generateSpanId, 16) }
+      : {}),
+  }));
+}
+
 /** Set capture policy for new scopes and operations; admitted work retains its policy. */
 export function setTracingDisabled(disabled: boolean): void {
   if (typeof disabled !== 'boolean')
@@ -154,6 +223,11 @@ export function inTraceProcessor(): boolean {
   return processorSuppressed.getStore() === true;
 }
 
+/** @internal Observation delivery under the current SDK disable switches. */
+export function traceDispatchDisabled(): boolean {
+  return tracingDisabled || ambient.getStore()?.context.disabled === true;
+}
+
 /** Native-owned span. Close ends recording; its parent context lasts while this object is reachable. */
 export class TraceSpan {
   readonly context: SpanContext;
@@ -169,6 +243,7 @@ export class TraceSpan {
     /** @internal */ readonly workflow?: TraceSpan,
   ) {
     this.context = Object.freeze(context);
+    this.ended = kind === 'context';
     let token: string | undefined;
     try {
       token = native.retain_trace_context(handle);
@@ -236,6 +311,12 @@ export class TraceSpan {
           name: 'host.output_validation',
           kind: 'validation',
           parent: this.#contextToken,
+          ...generatedScopeIds(
+            tracingIdGenerator,
+            {},
+            true,
+            this.context.disabled,
+          ),
         }),
       ),
     );
@@ -284,16 +365,37 @@ export function captureTraceValidation():
 export function captureTracing(
   options?: TraceOptions,
   opening?: TraceCapture,
+  continuationTraceId?: string,
 ): TraceCapture | undefined {
+  const hasCallerScope =
+    options !== undefined || ambient.getStore() !== undefined;
+  const hasCurrentScope =
+    hasCallerScope || (opening !== undefined && !opening.policyOnly);
   if (
-    options === undefined &&
-    ambient.getStore() === undefined &&
+    !hasCurrentScope &&
     opening === undefined &&
+    continuationTraceId === undefined &&
     Object.keys(admissionPolicy()).length === 0
   )
     return undefined;
   const storage = currentTraceStorage();
-  return new TraceCapture(start(options ?? {}, 'operation', opening), storage);
+  const traceOptions =
+    !hasCurrentScope && continuationTraceId !== undefined
+      ? {
+          traceId: continuationTraceId,
+          includeSensitiveData: false,
+          detached: opening !== undefined,
+        }
+      : (options ?? {});
+  const policyOnly =
+    !hasCallerScope &&
+    opening === undefined &&
+    continuationTraceId === undefined;
+  return new TraceCapture(
+    start(traceOptions, 'operation', opening),
+    storage,
+    policyOnly,
+  );
 }
 /** @internal One captured native operation; settlement releases every host lease. */
 export class TraceCapture {
@@ -303,6 +405,7 @@ export class TraceCapture {
   constructor(
     readonly ready: Promise<TraceSpan>,
     private readonly storage: TraceContextStorage | undefined,
+    readonly policyOnly: boolean,
   ) {
     void ready.then(
       (span) => {
@@ -314,6 +417,11 @@ export class TraceCapture {
   /** @internal Workflow metadata only; native callback carriers own ancestry. */
   get workflow(): TraceSpan | undefined {
     return this.span?.kind === 'workflow' ? this.span : this.span?.workflow;
+  }
+  /** @internal Historical correlation for a settled checkpoint. */
+  get correlationId(): string | undefined {
+    const context = this.span?.context;
+    return context?.disabled === false ? context.traceId : undefined;
   }
   /** @internal Retain synchronously when ready; otherwise reserve before closing. */
   retain(): Promise<{ token: string; span: TraceSpan }> {
@@ -443,6 +551,7 @@ async function start(
   const parentToken = parent?.retain();
   const restrictionToken = current?.retain();
   const snapshot = { ...options, metadata, ...admissionPolicy() };
+  const generator = tracingIdGenerator;
   const openingLease = opening?.retain();
   let inherited: Awaited<ReturnType<TraceCapture['retain']>> | undefined;
   try {
@@ -479,6 +588,17 @@ async function start(
               ? { include_sensitive_data: false }
               : {}
             : { include_sensitive_data: snapshot.includeSensitiveData }),
+          ...generatedScopeIds(
+            generator,
+            snapshot,
+            !snapshot.detached &&
+              (parent !== undefined ||
+                (snapshot.parent === undefined && inherited !== undefined)),
+            snapshot.disabled === true ||
+              current?.context.disabled === true ||
+              parent?.context.disabled === true ||
+              inherited?.span.context.disabled === true,
+          ),
           credential_ref: snapshot.exportCredential?.register(native) ?? null,
         }),
       ),
@@ -495,6 +615,51 @@ export function startTrace(options: TraceOptions = {}): Promise<TraceSpan> {
 }
 export function startSpan(options: TraceOptions = {}): Promise<TraceSpan> {
   return start(options, 'custom');
+}
+
+/** Retained local ancestry without trace lifecycle events or portable owner lookup. */
+export async function withTraceContext<T>(
+  source: TraceSpan,
+  callback: () => T | Promise<T>,
+): Promise<T> {
+  const current = ambient.getStore();
+  const parent = source.retain();
+  let restriction: string | undefined;
+  const policy = admissionPolicy();
+  try {
+    restriction = current?.retain();
+    const native = await binding();
+    const handle = native.borrow_trace_context(
+      parent,
+      restriction ?? null,
+      policy.disabled ?? false,
+      policy.includeSensitiveData ?? true,
+    );
+    try {
+      const context = JSON.parse(
+        native.trace_span_context(handle),
+      ) as WireSpanContext;
+      const span = new TraceSpan(
+        native,
+        handle,
+        'context',
+        {
+          traceId: context.trace_id,
+          spanId: context.span_id,
+          parentSpanId: context.parent_span_id,
+          disabled: context.disabled,
+          includeSensitiveData: context.include_sensitive_data,
+        },
+        source.kind === 'workflow' ? source : source.workflow,
+      );
+      return await ambient.run(span, callback);
+    } finally {
+      native.release_trace_context(handle);
+    }
+  } finally {
+    if (restriction) current!.releaseContext(restriction);
+    source.releaseContext(parent);
+  }
 }
 async function scoped<T>(
   options: TraceOptions,
@@ -536,6 +701,7 @@ export async function withNativeCallbackContext<T>(
   callbackStorages?: CallbackTraceStorages,
 ): Promise<T> {
   if (context === undefined) return callback();
+  const generator = tracingIdGenerator;
   const native = await binding();
   const wire: WireSpanContext = JSON.parse(
     native.start_trace_span(
@@ -543,6 +709,12 @@ export async function withNativeCallbackContext<T>(
         name: 'host.callback',
         kind: 'callback',
         parent: context,
+        ...generatedScopeIds(
+          generator,
+          {},
+          true,
+          JSON.parse(native.trace_span_context(context)).disabled,
+        ),
       }),
     ),
   );

@@ -1,0 +1,13 @@
+diff --git a/codex-rs/core/src/session/sdk_produced_items.rs b/codex-rs/core/src/session/sdk_produced_items.rs
+index ee7071e2a7c02a4e1e6475068479f7fbc174fa90..1fdf6ea24cb402e2c654e13c9a424fe01c2e82b1 100644
+--- a/codex-rs/core/src/session/sdk_produced_items.rs
++++ b/codex-rs/core/src/session/sdk_produced_items.rs
+@@ -139,6 +139,8 @@ fn is_produced_response(item: &ResponseItem) -> bool {
+         | ResponseItem::WebSearchCall { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
++        | ResponseItem::ShellCall { .. }
++        | ResponseItem::ShellCallOutput { .. }
+         | ResponseItem::ImageGenerationCall { .. } => true,
+         _ => false,
+     }

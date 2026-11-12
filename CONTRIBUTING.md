@@ -34,7 +34,7 @@ The repository also contains these directories:
 
 - Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later
 - The pnpm version pinned in the root `package.json` `packageManager` field
-- Rustup, which installs the pinned Rust toolchain and WebAssembly target when building the portable native voice asset
+- Rust 1.95 through rustup; the portable Realtime prebuild has been adding the `wasm32-unknown-unknown` target
 
 ### Setup
 
@@ -55,7 +55,7 @@ pnpm -r build-check
 pnpm test
 ```
 
-Run either command from the repository root.
+The commands above have been using the repository root as their working directory. The package build has also been compiling portable Realtime assets from the pinned native source through rustup and Cargo; it has been requiring the [native source prerequisites](examples/codex/guides/building.md#build-from-source), including for classic-only development.
 
 - Set `OPENAI_API_KEY`, then run `pnpm examples:basic` to try a classic agent handoff.
 - Run `pnpm docs:dev` to serve the documentation locally.

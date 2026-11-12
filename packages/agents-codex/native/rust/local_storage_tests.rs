@@ -172,7 +172,7 @@ async fn native_local_json_create_tool_receipt_close_and_reopen() {
             assert_ne!(event["msg"]["type"], "error", "{event}");
         };
         assert!(request["_sdk_python_tool"]["manual_grant"].is_string());
-        assert!(native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"unique committed lookup result"}],"success":true}}).to_string()).await.unwrap());
+        assert!(native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"unique committed lookup result"}],"success":true}}).to_string(), None).await.unwrap());
         terminal(&native).await;
         let owned = native.current().unwrap();
         let history = owned.engine.local_checklist_store.as_ref().unwrap().load_owned_history(owned.id).await.unwrap();
@@ -356,7 +356,7 @@ async fn native_local_json_failed_flush_never_acknowledges_a_tool_result() {
         };
         let local = engine.current().unwrap().local_checklist_store.as_ref().unwrap().clone();
         local.fail_receipt_flush.store(true, std::sync::atomic::Ordering::SeqCst);
-        let failure = native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"real effect result"}],"success":true}}).to_string()).await.unwrap_err();
+        let failure = native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"real effect result"}],"success":true}}).to_string(), None).await.unwrap_err();
         assert!(failure.reason.contains("injected receipt flush failure"), "{}", failure.reason);
         let close = native.close().await.unwrap_err();
         assert!(close.reason.contains("injected receipt flush failure"), "{}", close.reason);
@@ -1001,7 +1001,7 @@ async fn native_local_close_report_completed_error_releases_owners() {
         };
         let local = owned.engine.local_checklist_store.as_ref().unwrap().clone();
         local.fail_receipt_flush.store(true, std::sync::atomic::Ordering::SeqCst);
-        native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"real result"}],"success":true}}).to_string()).await.unwrap_err();
+        native._respond_python_tool(json!({"request":request,"response":{"contentItems":[{"type":"inputText","text":"real result"}],"success":true}}).to_string(), None).await.unwrap_err();
         let diagnostic = native._close_report().await.unwrap().unwrap();
         assert!(diagnostic.contains("injected receipt flush failure"));
         assert!(native.live().unwrap().is_none());
@@ -1072,6 +1072,7 @@ async fn native_local_close_report_remote_drain_retains_diagnostic_on_retry() {
             remote_drain: Some(receiver),
             close_report: engine::EngineCloseReport {
                 diagnostic: Some("original completed persistence failure".to_owned()),
+                retained_storage_failure: Some("original completed persistence failure".to_owned()),
                 saved_login_refresh: Some("Saved Codex login refresh failed."),
             },
         })),

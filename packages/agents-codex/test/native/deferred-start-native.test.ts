@@ -8,9 +8,12 @@ import {
   InteractionRequired,
   NativeProvider,
   manualTool,
+  isFunctionApprovalRequest,
+  tool as functionTool,
   webSearch,
   type ActionRequested,
   type Session,
+  type RunBudget,
 } from '../../src';
 import {
   DeferredTools,
@@ -65,6 +68,12 @@ async function nextAction(session: Session<unknown>): Promise<ActionRequested> {
   throw new Error('Expected a live deferred request');
 }
 
+async function nextFunctionApproval(session: Session<unknown>) {
+  for await (const event of session.interactions())
+    if (isFunctionApprovalRequest(event)) return event;
+  throw new Error('Expected a live function approval');
+}
+
 async function fixture(
   options: {
     observationRetention?: 'all';
@@ -72,6 +81,7 @@ async function fixture(
     beforeComplete?: Agent['beforeComplete'];
     pending?: boolean;
     twoStarts?: boolean;
+    rememberedApproval?: boolean;
     promptedOverride?: boolean;
     laterPlain?: boolean;
     envKey?: boolean;
@@ -83,6 +93,9 @@ async function fixture(
     repair?: boolean;
     repairGate?: ReturnType<typeof gate>;
     changedSession?: 'tools' | 'instructions';
+    maxRequests?: number;
+    budget?: RunBudget;
+    reportedUsage?: boolean;
   } = {},
 ) {
   const tool = deferredTool({
@@ -92,6 +105,17 @@ async function fixture(
       parameters: builder.strictObject({ id: builder.string() }),
       result: builder.string(),
     }),
+  });
+  const rememberedEffects: string[] = [];
+  const risky = functionTool({
+    name: 'risky',
+    parameters: z.object({ value: z.string() }),
+    needsApproval: true,
+    approvalKey: 'deferred.risky.v1',
+    execute: ({ value }) => {
+      rememberedEffects.push(value);
+      return value;
+    },
   });
   const retained = message('x'.repeat(350));
   const retainedEvents = [
@@ -112,10 +136,19 @@ async function fixture(
     { type: 'response.completed', response: { id: 'retained-response' } },
   ];
   const responses = [
+    ...(options.rememberedApproval === undefined
+      ? []
+      : [
+          [call('risky', { value: 'before' }, { callId: 'approval-before' })],
+          [message('remembered')],
+        ]),
     [call('job', { id: 'one' }, { callId: 'job-call' })],
     ...(options.twoStarts
       ? [[call('job', { id: 'two' }, { callId: 'job-call-two' })]]
       : []),
+    ...(options.rememberedApproval === undefined
+      ? []
+      : [[call('risky', { value: 'after' }, { callId: 'approval-after' })]]),
     ...(options.observationRetention
       ? [
           {
@@ -156,7 +189,9 @@ async function fixture(
           '{"input_tokens":5,"output_tokens":2,"total_tokens":7}',
           '{"input_tokens":8,"output_tokens":3,"total_tokens":11}',
         ]
-      : [],
+      : options.reportedUsage
+        ? { input_tokens: 3, output_tokens: 1, total_tokens: 4 }
+        : [],
   );
   const config = await model.config();
   let modelCalls = 0;
@@ -278,6 +313,7 @@ async function fixture(
       ? []
       : [
           tool,
+          ...(options.rememberedApproval === undefined ? [] : [risky]),
           ...(options.hostedSearch
             ? [webSearch({ mode: 'cached', route: 'hosted' })]
             : []),
@@ -329,6 +365,18 @@ async function fixture(
       await session.update({ instructions: 'Updated Session instructions.' });
     if (options.changedSession === 'tools')
       await session.update({ tools: [tool] });
+    if (options.rememberedApproval !== undefined) {
+      const approvalTurn = await session.submit(
+        'Remember the current decision.',
+      );
+      const approval = await nextFunctionApproval(session);
+      await session.respond(
+        options.rememberedApproval
+          ? approval.approve({ always: true })
+          : approval.reject(undefined, { always: true }),
+      );
+      await approvalTurn.wait();
+    }
     const turn = options.promptedOverride
       ? await session.submit('ASK', {
           outputType: {
@@ -337,7 +385,13 @@ async function fixture(
             ...(options.repair ? { maxRetries: 1 } : {}),
           },
         })
-      : await session.submit('ASK');
+      : await session.submit('ASK', {
+          ...(options.budget !== undefined
+            ? { budget: options.budget }
+            : options.maxRequests === undefined
+              ? {}
+              : { budget: { maxRequests: options.maxRequests } }),
+        });
     const completion = turn.wait().catch((error: unknown) => error);
     const request = await nextAction(session);
     return {
@@ -352,6 +406,7 @@ async function fixture(
       turn,
       request,
       completion,
+      rememberedEffects,
       persisted: () => ({ stateJson, bindings }),
       async [Symbol.asyncDispose]() {
         agent.holdRestore?.release.resolve();
@@ -382,6 +437,86 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'private deferred start ownership',
   () => {
+    it.each([
+      {
+        maxTokens: 10,
+        reportedUsage: true,
+        missingUsage: 'stop',
+        code: undefined,
+      },
+      {
+        maxTokens: 4,
+        reportedUsage: true,
+        missingUsage: 'stop',
+        code: 'run_budget_exceeded',
+      },
+      {
+        maxTokens: 10,
+        reportedUsage: false,
+        missingUsage: 'stop',
+        code: 'run_budget_usage_unavailable',
+      },
+      {
+        maxTokens: 10,
+        reportedUsage: false,
+        missingUsage: 'continue',
+        code: undefined,
+      },
+    ] as const)(
+      'preserves token policy through deferred reopening: %j',
+      async ({ maxTokens, reportedUsage, missingUsage, code }) => {
+        await using f = await fixture({
+          budget: { maxTokens, missingUsage },
+          reportedUsage,
+        });
+        await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
+          expect(outcome.status).toBe('continued');
+          if (outcome.status !== 'continued')
+            throw new Error('Expected continuation');
+          if (code)
+            await expect(outcome.turn.wait()).rejects.toMatchObject({ code });
+          else
+            await expect(outcome.turn.wait()).resolves.toMatchObject({
+              finalOutput: 'done',
+            });
+        });
+        expect(f.backend.start).toHaveBeenCalledTimes(1);
+        expect(await f.completion).toBeInstanceOf(InteractionRequired);
+        expect(f.model.requests).toHaveLength(code ? 1 : 2);
+        if (!code) f.model.assertExhausted();
+      },
+      20_000,
+    );
+
+    it.each([1, 2])(
+      'preserves a request budget of %i through the deferred reopening',
+      async (maxRequests) => {
+        await using f = await fixture({ maxRequests });
+        let callbacks = 0;
+        await f.jobs.start(f.session, f.request, {}, async ({ outcome }) => {
+          callbacks++;
+          expect(outcome.status).toBe('continued');
+          if (outcome.status !== 'continued')
+            throw new Error('Expected continuation');
+          if (maxRequests === 1)
+            await expect(outcome.turn.wait()).rejects.toMatchObject({
+              code: 'run_budget_exceeded',
+              retryable: false,
+            });
+          else
+            await expect(outcome.turn.wait()).resolves.toMatchObject({
+              finalOutput: 'done',
+            });
+        });
+        expect(callbacks).toBe(1);
+        expect(f.backend.start).toHaveBeenCalledTimes(1);
+        expect(await f.completion).toBeInstanceOf(InteractionRequired);
+        expect(f.model.requests).toHaveLength(maxRequests);
+        if (maxRequests === 2) f.model.assertExhausted();
+      },
+      20_000,
+    );
+
     it('preserves complete observations and captured Decisions in a deferred borrowed opening', async () => {
       const getDecision = vi.fn(async () => ({ value: true }));
       const replacement = vi.fn(async () => ({ value: false }));
@@ -970,5 +1105,23 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       expect(value).toBe('callback-completed');
       expect(f.backend.start).toHaveBeenCalledTimes(1);
     }, 20_000);
+  },
+);
+
+it.each([true, false])(
+  'reopens a deferred job with its sealed remembered decision (approve=%s)',
+  async (approve) => {
+    await using f = await fixture({ rememberedApproval: approve });
+    const result = await f.jobs.start(f.session, f.request, {}, ({ session }) =>
+      Promise.race([
+        session.restoredTurn!.wait(),
+        nextFunctionApproval(session).then(() => {
+          throw new Error('Deferred reopening requested a fresh approval');
+        }),
+      ]),
+    );
+    expect(result.finalOutput).toBe('done');
+    expect(f.rememberedEffects).toEqual(approve ? ['before', 'after'] : []);
+    f.model.assertExhausted();
   },
 );

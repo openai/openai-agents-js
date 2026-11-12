@@ -38,6 +38,7 @@ pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub(crate) struct EngineCloseReport {
     pub(crate) diagnostic: Option<String>,
+    pub(crate) retained_storage_failure: Option<String>,
     pub(crate) saved_login_refresh: Option<&'static str>,
 }
 
@@ -69,6 +70,7 @@ pub struct EngineState {
     pub goals: Option<goals::GoalBackend>,
     sdk_user_input_enabled: Option<bool>,
     telemetry: Option<crate::telemetry::EmissionSettings>,
+    telemetry_lease: crate::telemetry::EngineLease,
     pub(crate) config_json: String,
     pub(crate) runtime_json: String,
     trusted_command_temp: std::sync::Mutex<Option<tempfile::TempDir>>,
@@ -167,6 +169,7 @@ impl EngineState {
         let mut controls = current.request_controls;
         if settings.tool_choice.is_some() {
             controls.named_tool_choice = Some(None);
+            controls.hosted_tool_choice = Some(None);
         }
         if let Some(patch) = &settings.request_controls {
             controls.apply_patch(patch);
@@ -624,7 +627,7 @@ impl EngineState {
         if let Some(environment) = &environment_options {
             environment.check_trusted_write_policy()?;
         }
-        let telemetry = crate::telemetry::engine_starting().await?;
+        let (telemetry_lease, telemetry) = crate::telemetry::engine_starting().await?;
         let saved_login = config::saved_codex_login(&runtime_json)?;
         ensure!(
             !chatgpt_plan || (saved_login.is_none() && inherited_saved_login.is_none()),
@@ -970,7 +973,8 @@ impl EngineState {
                 installation_id.clone(),
                 None,
                 None,
-            );
+            )
+            .with_sdk_child_trace_privacy();
             match code_mode {
                 Some(provider) => manager.with_code_mode_session_provider(Arc::new(
                     crate::native_interception::Provider {
@@ -991,6 +995,7 @@ impl EngineState {
             goals,
             sdk_user_input_enabled,
             telemetry,
+            telemetry_lease,
             config_json,
             runtime_json,
             trusted_command_temp: std::sync::Mutex::new(trusted_command_temp),
@@ -1160,6 +1165,9 @@ impl EngineState {
                         .thread_extension_init
                         .get::<crate::agent_profiles::OpeningProfiles>(
                     ) {
+                        let source =
+                            crate::agent_profiles::restore_source(&opening, &history.history)?;
+                        opening.validate_pending_source(&source)?;
                         Some(crate::agent_profiles::validate_restored(
                             &opening,
                             &history.history,
@@ -1575,7 +1583,7 @@ impl EngineState {
         startup.config.sdk_tool_choice = settings.tool_choice;
         startup.config.sdk_request_controls = settings.request_controls.clone();
         startup.config.mcp_servers.set(HashMap::new())?;
-        let prepared = if let Some(boundary) = boundary {
+        let mut prepared = if let Some(boundary) = boundary {
             source.thread.ensure_rollout_materialized().await;
             source.thread.flush_rollout().await?;
             Some(
@@ -1589,7 +1597,8 @@ impl EngineState {
         } else {
             None
         };
-        let history = if let Some(prepared) = &prepared {
+        let history = if let Some(prepared) = &mut prepared {
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut prepared.model_context);
             InitialHistory::Resumed(ResumedHistory {
                 conversation_id: prepared.source_thread_id,
                 history: Arc::clone(&prepared.model_context),
@@ -1597,7 +1606,13 @@ impl EngineState {
                 rollout_path: None,
             })
         } else {
-            self.history(source.id).await?
+            let mut history = self.history(source.id).await?;
+            if let InitialHistory::Resumed(resumed) = &mut history
+                && crate::checkpoint::remove_replayed_mcp_approvals(&mut resumed.history)
+            {
+                resumed.history_revision = None;
+            }
+            history
         };
         startup.initial_history = history.clone();
         crate::python_tools::PythonTools::install(
@@ -1909,7 +1924,11 @@ impl EngineState {
     pub(crate) async fn close_report(&self) -> anyhow::Result<EngineCloseReport> {
         let _guard = self.lifecycle.lock().await;
         let _observations = self.manual_observations.write().await;
-        self.close_locked().await
+        let report = self.close_locked().await?;
+        if report.diagnostic.is_none() {
+            self.telemetry_lease.retire();
+        }
+        Ok(report)
     }
 
     async fn saved_login_refresh_report(&self) -> anyhow::Result<Option<&'static str>> {
@@ -1941,17 +1960,19 @@ impl EngineState {
                     diagnostics.push(error.to_string());
                 }
             }
-            let canonical = if let Some(store) = &self.custom_store {
-                store.close_all().await?
+            let (canonical, retained_storage_failure) = if let Some(store) = &self.custom_store {
+                let report = store.close_all().await?;
+                (report.diagnostic, report.retained_storage_failure)
             } else {
-                match &self.local_checklist_store {
+                let failure = match &self.local_checklist_store {
                     Some(store) => store
                         .check_failure(None)
                         .await
                         .err()
                         .map(|error| error.to_string()),
                     None => None,
-                }
+                };
+                (failure.clone(), failure)
             };
             diagnostics.extend(canonical);
             if diagnostics.is_empty() {
@@ -1959,6 +1980,7 @@ impl EngineState {
             }
             return Ok(EngineCloseReport {
                 diagnostic: (!diagnostics.is_empty()).then(|| diagnostics.join("; ")),
+                retained_storage_failure,
                 saved_login_refresh: self.saved_login_refresh_report().await?,
             });
         }
@@ -2043,10 +2065,11 @@ impl EngineState {
             fork_diagnostics.push(diagnostic);
         }
         let saved_login_refresh = self.saved_login_refresh_report().await?;
+        let mut retained_storage_failure = None;
         if let Some(store) = &self.custom_store {
-            if let Some(diagnostic) = store.close_all().await? {
-                fork_diagnostics.push(diagnostic);
-            }
+            let report = store.close_all().await?;
+            fork_diagnostics.extend(report.diagnostic);
+            retained_storage_failure = report.retained_storage_failure;
         }
         let diagnostic = if let Some(store) = &self.local_checklist_store {
             store.close_database().await?;
@@ -2061,6 +2084,7 @@ impl EngineState {
             }
             None
         };
+        retained_storage_failure = retained_storage_failure.or(diagnostic.clone());
         if let Some(diagnostic) = diagnostic {
             fork_diagnostics.push(diagnostic);
         }
@@ -2070,6 +2094,7 @@ impl EngineState {
         self.closed.store(true, Ordering::Release);
         Ok(EngineCloseReport {
             diagnostic: (!fork_diagnostics.is_empty()).then(|| fork_diagnostics.join("; ")),
+            retained_storage_failure,
             saved_login_refresh,
         })
     }
@@ -2503,6 +2528,8 @@ impl EngineState {
                         base.trim_end_matches('/'),
                         URL_SAFE_NO_PAD.encode(id.as_bytes())
                     ));
+                    // The original provider owns the upstream WebSocket route.
+                    info.websocket_base_url = None;
                     info.query_params = None;
                     // Only the private hop has no request retry budget.
                     // The original provider's native transport owns that
@@ -3140,8 +3167,9 @@ async fn read_child(
     ((id, reader.instance), event, terminal_error, question)
 }
 
-fn retired_realtime_output(event: &Event) -> bool {
-    matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
+fn skip_live_native_event(event: &Event) -> bool {
+    matches!(&event.msg, EventMsg::SdkModelAttempt(_))
+        || matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
         if realtime.payload.is_output_retired())
 }
 
@@ -3149,7 +3177,7 @@ fn native_event(
     source: Option<(ThreadId, u64)>,
     event: &Event,
 ) -> anyhow::Result<serde_json::Value> {
-    let mut value = serde_json::to_value(event)?;
+    let mut value = event.sdk_json()?;
     crate::usage::event_to_wire(&mut value["msg"])?;
     if let EventMsg::RealtimeConversationRealtime(realtime) = &event.msg
         && let codex_protocol::protocol::RealtimeEvent::HandoffRequested(handoff) =
@@ -4042,7 +4070,7 @@ impl ThreadState {
                 return graph_event(event);
             }
             if let Some((source, event)) = events.pending.pop_front() {
-                if retired_realtime_output(&event) {
+                if skip_live_native_event(&event) {
                     continue;
                 }
                 return self.child_event(source, event, None, None);
@@ -4155,7 +4183,7 @@ impl ThreadState {
                     events.native_dequeued.store(false, Ordering::Release);
                     events.native = Some(next_native_event(self.thread.clone(), events.native_dequeued.clone()));
                     let (event, question) = event?;
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     if let Some(tools) = &python_tools {
                         tools.observe_manual_event(&event);
                     }
@@ -4187,7 +4215,7 @@ impl ThreadState {
                     if let Some(prefix) = &mut events.publication_prefix {
                         prefix.consume_child(source)?;
                     }
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     return self.child_event(source, event, error, question);
                 },
                 Some(event) = graph.recv(), if !bounded => {
@@ -4208,7 +4236,7 @@ impl ThreadState {
                             .context("Native publication extension prefix was exhausted")?;
                     }
                     let (target, event) = event?;
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     if target.is_empty() || target == self.id.to_string() {
                         return self.root_event(event, None);
                     }
@@ -4473,6 +4501,7 @@ mod question_lifecycle_tests {
         let canceled = Event {
             id: "transport-id".to_owned(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                model_attempt: None,
                 turn_id: Some("original-turn".to_owned()),
                 reason: TurnAbortReason::Interrupted,
                 error: None,

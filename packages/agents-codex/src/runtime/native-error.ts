@@ -1,5 +1,9 @@
 import type { SessionStoreCleanup } from './custom-thread-store';
-import { encode } from './binding';
+import { encode, type JsonObject } from './binding';
+import type { GuardrailRecord } from './guardrails';
+import type { UserInput } from './input';
+import type { Agent } from './public-agent';
+import type { Completed, ProducedItem } from './session';
 
 /**
  * A one-shot run and its owned resource cleanup failed.
@@ -8,6 +12,8 @@ import { encode } from './binding';
  * The original failure remains in cause and both failures remain in errors.
  */
 export class RunCleanupError extends AggregateError {
+  /** An owning wrapper has been retaining its completed result here. */
+  declare result?: Completed<unknown>;
   readonly cleanup: { close(): Promise<void> };
 
   constructor(
@@ -19,6 +25,33 @@ export class RunCleanupError extends AggregateError {
     super(errors, message, options);
     this.name = new.target.name;
     this.cleanup = Object.freeze({ close });
+  }
+}
+
+/** Evidence retained before a failed one-shot submission closes. */
+export interface RunErrorDetails {
+  readonly input: UserInput | null;
+  readonly lastAgent: Agent<any, any> | null;
+  readonly items: readonly ProducedItem[];
+  /** Detached client JSON from retained provider observations. */
+  readonly rawResponses: readonly JsonObject[];
+  readonly guardrailResults: readonly GuardrailRecord[];
+  /** Gaps in the available native evidence. */
+  readonly incomplete: boolean;
+}
+
+/** An opted-in native run failure, with the original value as its cause. */
+export class RunDiagnosticError extends Error {
+  readonly #details: RunErrorDetails;
+
+  constructor(details: RunErrorDetails, cause: unknown) {
+    super('Native run failed', { cause });
+    this.name = new.target.name;
+    this.#details = details;
+  }
+
+  get details(): RunErrorDetails {
+    return this.#details;
   }
 }
 

@@ -1,5 +1,6 @@
 //! Application-owned canonical snapshots with a disposable native projection.
-use codex_history::RolloutItem;
+use codex_history::sdk_originals::SdkOriginalHistoryCheckpoint;
+use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::{
     ThreadId, dynamic_tools::DynamicToolResponse, models::ResponseItem, protocol::EventMsg,
 };
@@ -13,6 +14,56 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Mutex;
+
+fn validate_saved_prompt_history(history: &[RolloutItem]) -> anyhow::Result<()> {
+    let check_envelope = |envelope: &ResponseItemEnvelope| -> anyhow::Result<()> {
+        anyhow::ensure!(
+            envelope
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.sdk_agent_profile.as_ref())
+                .and_then(
+                    |profile| profile.pointer("/model/request_controls/hosted_prompt/reference")
+                )
+                .is_none_or(serde_json::Value::is_null),
+            "Stored hosted prompt references require current declarations"
+        );
+        Ok(())
+    };
+    for item in history {
+        match item {
+            RolloutItem::ResponseItem(envelope) => check_envelope(envelope)?,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => anyhow::ensure!(
+                event
+                    .thread_settings
+                    .request_controls
+                    .hosted_prompt
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_none_or(|prompt| prompt.reference.is_none()),
+                "Stored hosted prompt references require current declarations"
+            ),
+            RolloutItem::Compacted(compacted) => {
+                for envelope in compacted.replacement_history.iter().flatten() {
+                    check_envelope(envelope)?;
+                }
+                if let Some(SdkOriginalHistoryCheckpoint::Replace(originals)) =
+                    &compacted.sdk_originals
+                {
+                    for envelope in originals
+                        .items
+                        .iter()
+                        .filter_map(|item| item.projection.as_ref())
+                    {
+                        check_envelope(envelope)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 pub type Callback = ThreadsafeFunction<String, Promise<String>, String, napi::Status, false>;
 #[derive(Clone, Serialize, Deserialize)]
@@ -41,20 +92,48 @@ pub(crate) struct ReceiptStore(pub Arc<CustomThreadStore>);
 struct Writer {
     fence: String,
     snapshot: Snapshot,
-    failure: Option<String>,
+    failure: Option<RetainedFailure>,
     managed: HashSet<(String, String)>,
+}
+pub(crate) struct CustomStoreCloseReport {
+    pub(crate) diagnostic: Option<String>,
+    pub(crate) retained_storage_failure: Option<String>,
 }
 pub struct CustomThreadStore {
     callback: Arc<Callback>,
     plan_provider: Option<String>,
     projection: crate::storage::MemoryThreadStore,
     writers: Mutex<HashMap<ThreadId, Writer>>,
-    failures: Mutex<HashMap<ThreadId, String>>,
+    failures: Mutex<HashMap<ThreadId, RetainedFailure>>,
     release_failures: Mutex<HashMap<ThreadId, String>>,
 }
 fn error(message: impl ToString) -> ThreadStoreError {
     ThreadStoreError::Internal {
         message: message.to_string(),
+    }
+}
+#[derive(Clone)]
+enum RetainedFailure {
+    Internal(String),
+    Diagnostic(String),
+}
+impl RetainedFailure {
+    fn capture(failure: &ThreadStoreError) -> Self {
+        match failure {
+            ThreadStoreError::Internal { message } => Self::Internal(message.clone()),
+            _ => Self::Diagnostic(failure.to_string()),
+        }
+    }
+    fn replay(&self) -> ThreadStoreError {
+        match self {
+            Self::Internal(message) | Self::Diagnostic(message) => error(message),
+        }
+    }
+    fn diagnostic(&self) -> String {
+        match self {
+            Self::Internal(message) => error(message).to_string(),
+            Self::Diagnostic(message) => message.clone(),
+        }
     }
 }
 fn backend_error(_: impl std::fmt::Display) -> ThreadStoreError {
@@ -72,33 +151,56 @@ fn identities(
     for item in items {
         match item {
             RolloutItem::EventMsg(EventMsg::TurnStarted(start)) => turn = start.turn_id.clone(),
-            RolloutItem::ResponseItem(row) => match &row.item {
-                ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. }
-                | ResponseItem::ComputerCall { call_id, .. } => {
+            RolloutItem::ResponseItem(row) => {
+                let call_id = match &row.item {
+                    ResponseItem::ShellCall {
+                        provider_fields, ..
+                    } if crate::local_reconciliation::is_application_shell_call(row) => {
+                        provider_fields.get("call_id").and_then(Value::as_str)
+                    }
+                    ResponseItem::ApplyPatchCall { call_id, .. }
+                        if crate::local_reconciliation::owns_application_patch(row) =>
+                    {
+                        Some(call_id.as_str())
+                    }
+                    item => crate::local_reconciliation::invocation_id(item),
+                };
+                if let Some(call_id) = call_id {
                     let identity = (
                         row.item.turn_id().unwrap_or(&turn).to_owned(),
-                        call_id.clone(),
+                        call_id.to_owned(),
                     );
                     if let Some(previous) = calls.get(&identity)
-                        && (matches!(previous, ResponseItem::ComputerCall { .. })
-                            || matches!(row.item, ResponseItem::ComputerCall { .. }))
+                        && (matches!(previous, ResponseItem::McpApprovalRequest { .. })
+                            || matches!(row.item, ResponseItem::McpApprovalRequest { .. }))
                     {
-                        return Err(error("ambiguous original computer call identity"));
+                        return Err(error("ambiguous original Hosted MCP approval identity"));
+                    }
+                    if let Some(previous) = calls.get(&identity)
+                        && (matches!(
+                            previous,
+                            ResponseItem::ComputerCall { .. }
+                                | ResponseItem::ShellCall { .. }
+                                | ResponseItem::ApplyPatchCall { .. }
+                        ) || matches!(
+                            row.item,
+                            ResponseItem::ComputerCall { .. }
+                                | ResponseItem::ShellCall { .. }
+                                | ResponseItem::ApplyPatchCall { .. }
+                        ))
+                    {
+                        return Err(error("ambiguous original local tool call identity"));
                     }
                     calls.insert(identity, row.item.clone());
+                } else if let Some((call, owner)) =
+                    crate::local_reconciliation::output_identity(&row.item)
+                {
+                    outputs.insert(
+                        (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
+                        row.item.clone(),
+                    );
                 }
-                _ => {
-                    if let Some((call, owner)) =
-                        crate::local_reconciliation::output_identity(&row.item)
-                    {
-                        outputs.insert(
-                            (owner.unwrap_or(&turn).to_owned(), call.to_owned()),
-                            row.item.clone(),
-                        );
-                    }
-                }
-            },
+            }
             _ => {}
         }
     }
@@ -232,7 +334,7 @@ impl CustomThreadStore {
             return writer
                 .failure
                 .as_ref()
-                .map_or(Ok(()), |failure| Err(error(failure)));
+                .map_or(Ok(()), |failure| Err(failure.replay()));
         }
         let fence = self
             .call(json!({"operation":"acquire","threadId":id}))
@@ -289,6 +391,9 @@ impl CustomThreadStore {
                         }
                     }
                     self.check_mutation(mutation)?;
+                    if let Mutation::Append { items } = mutation {
+                        validate_saved_prompt_history(items).map_err(error)?;
+                    }
                 }
                 for mutation in &snapshot.mutations {
                     self.apply(id, mutation.clone()).await?;
@@ -343,7 +448,7 @@ impl CustomThreadStore {
                                     revision: 0,
                                     mutations: Vec::new(),
                                 },
-                                failure: Some(primary.to_string()),
+                                failure: Some(RetainedFailure::capture(&primary)),
                                 managed: HashSet::new(),
                             },
                         );
@@ -370,7 +475,7 @@ impl CustomThreadStore {
             .get_mut(&id)
             .ok_or_else(|| error("canonical writer not acquired"))?;
         if let Some(failure) = &writer.failure {
-            return Err(error(failure));
+            return Err(failure.replay());
         }
         if let Mutation::Append { items } = &mut mutation {
             if !real_receipt {
@@ -429,31 +534,31 @@ impl CustomThreadStore {
                 .await
                 .is_ok_and(|saved| saved.as_str() == Some(snapshot.as_str()));
             if !accepted {
-                writer.failure = Some(failure.to_string());
+                writer.failure = Some(RetainedFailure::capture(&failure));
                 return Err(failure);
             }
             // Readback can observe a rename whose final durability barrier failed.
             // Confirm the same logical write; a successful idempotent commit must
             // establish the backend's complete durable-acknowledgment boundary.
             if let Err(confirmation) = self.call(request).await {
-                writer.failure = Some(confirmation.to_string());
+                writer.failure = Some(RetainedFailure::capture(&confirmation));
                 return Err(confirmation);
             }
         }
         writer.snapshot = next;
         if let Err(failure) = self.apply(id, mutation).await {
-            writer.failure = Some(failure.to_string());
+            writer.failure = Some(RetainedFailure::capture(&failure));
             return Err(failure);
         }
         Ok(())
     }
     pub async fn check(&self, id: ThreadId) -> ThreadStoreResult<()> {
         if let Some(failure) = self.failures.lock().await.get(&id) {
-            return Err(error(failure));
+            return Err(failure.replay());
         }
         let writers = self.writers.lock().await;
         if let Some(failure) = writers.get(&id).and_then(|w| w.failure.as_ref()) {
-            return Err(error(failure));
+            return Err(failure.replay());
         }
         Ok(())
     }
@@ -492,7 +597,7 @@ impl CustomThreadStore {
         if active != Some(turn) || !writer.managed.insert((turn.to_owned(), call.to_owned())) {
             let failure =
                 "SDK call does not belong to an unused active canonical turn/call identity";
-            writer.failure = Some(failure.into());
+            writer.failure = Some(RetainedFailure::Diagnostic(failure.into()));
             return Err(error(failure));
         }
         Ok(())
@@ -536,7 +641,7 @@ impl CustomThreadStore {
                 .call(json!({"operation":"flush","threadId":id,"fence":writer.fence}))
                 .await
             {
-                writer.failure = Some(failure.to_string());
+                writer.failure = Some(RetainedFailure::capture(&failure));
                 return Err(failure);
             }
         }
@@ -545,7 +650,7 @@ impl CustomThreadStore {
     pub async fn take_release_failure(&self, id: ThreadId) -> Option<String> {
         self.release_failures.lock().await.remove(&id)
     }
-    pub async fn close_all(&self) -> ThreadStoreResult<Option<String>> {
+    pub(crate) async fn close_all(&self) -> ThreadStoreResult<CustomStoreCloseReport> {
         let ids: Vec<_> = self.writers.lock().await.keys().copied().collect();
         let mut first = None;
         for id in ids {
@@ -556,7 +661,13 @@ impl CustomThreadStore {
         if !self.writers.lock().await.is_empty() {
             return Err(first.unwrap_or_else(|| error("canonical writer cleanup incomplete")));
         }
-        let retained = self.failures.lock().await.values().next().cloned();
+        let retained = self
+            .failures
+            .lock()
+            .await
+            .values()
+            .next()
+            .map(RetainedFailure::diagnostic);
         let release_failure = self
             .release_failures
             .lock()
@@ -564,10 +675,13 @@ impl CustomThreadStore {
             .drain()
             .next()
             .map(|(_, failure)| failure);
-        Ok(first
-            .map(|failure| failure.to_string())
-            .or(retained)
-            .or(release_failure))
+        Ok(CustomStoreCloseReport {
+            diagnostic: first
+                .map(|failure| failure.to_string())
+                .or(retained.clone())
+                .or(release_failure),
+            retained_storage_failure: retained,
+        })
     }
     pub async fn reconcile(
         &self,
@@ -594,9 +708,22 @@ impl CustomThreadStore {
                 "canonical reconciliation requires an unresolved call",
             ));
         }
+        if matches!(original, ResponseItem::ApplyPatchCall { .. }) {
+            let item =
+                crate::local_reconciliation::application_patch_receipt(original, result, &turn)
+                    .map_err(|_| {
+                        error("Application patch reconciliation requires a typed result")
+                    })?;
+            return self.receipt(id, item).await;
+        }
         if matches!(original, ResponseItem::ComputerCall { .. }) {
             let item = crate::local_reconciliation::computer_receipt(original, result, &turn)
                 .map_err(|_| error("Computer reconciliation requires a valid screenshot and safety acknowledgements"))?;
+            return self.receipt(id, item).await;
+        }
+        if matches!(original, ResponseItem::ShellCall { .. }) {
+            let item = crate::local_reconciliation::shell_receipt(original, result, &turn)
+                .map_err(|_| error("Shell reconciliation requires its original local call and valid structured output"))?;
             return self.receipt(id, item).await;
         }
         let mut item: ResponseItem = crate::python_tools::PythonOutput(result)
@@ -622,13 +749,14 @@ impl CustomThreadStore {
         self.receipt(id, item).await
     }
     async fn release(&self, id: ThreadId) -> ThreadStoreResult<()> {
-        self.release_writer(id)
-            .await?
-            .map_or(Ok(()), |failure| Err(error(failure)))
+        self.release_writer(id).await?.map_or(Ok(()), Err)
     }
     // Standalone reconciliation retains the receipt failure separately from
     // physical writer cleanup. Session callers still receive sticky failures.
-    pub(crate) async fn release_writer(&self, id: ThreadId) -> ThreadStoreResult<Option<String>> {
+    pub(crate) async fn release_writer(
+        &self,
+        id: ThreadId,
+    ) -> ThreadStoreResult<Option<ThreadStoreError>> {
         let mut writers = self.writers.lock().await;
         let Some(writer) = writers.get(&id) else {
             return Ok(None);
@@ -652,7 +780,7 @@ impl CustomThreadStore {
         }
         writers.remove(&id);
         self.projection.shutdown_thread(id).await?;
-        Ok(failure)
+        Ok(failure.map(|failure| failure.replay()))
     }
 }
 impl ThreadStore for CustomThreadStore {
@@ -687,7 +815,9 @@ impl ThreadStore for CustomThreadStore {
             self.check_provider(Some(&params.metadata.model_provider))?;
             self.open(params.thread_id, true).await?;
             params.history = None;
-            self.projection.resume_thread(params).await
+            let mut history = self.projection.resume_thread(params).await?;
+            crate::checkpoint::remove_replayed_mcp_approvals(&mut history);
+            Ok(history)
         })
     }
     fn append_items(&self, params: AppendThreadItemsParams) -> ThreadStoreFuture<'_, ()> {
@@ -713,6 +843,58 @@ impl ThreadStore for CustomThreadStore {
     fn discard_thread(&self, id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(self.release(id))
     }
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+        native_cancellation: bool,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or_else(|| error("canonical writer not acquired"))?;
+            if let Some(failure) = &writer.failure {
+                return Err(failure.replay());
+            }
+            if !writer.managed.contains(&(turn.to_owned(), call.to_owned())) {
+                return Ok(None);
+            }
+            let accepted = writer.snapshot.mutations.iter().rev().find_map(|mutation| {
+                if let Mutation::Append { items } = mutation {
+                    items.iter().rev().find_map(|row| {
+                        if let RolloutItem::ResponseItem(envelope) = row
+                            && crate::local_reconciliation::output_identity(&envelope.item)
+                                == Some((call, Some(turn)))
+                        {
+                            Some(envelope.item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+            if accepted.as_ref().is_some_and(|accepted| {
+                !crate::local_reconciliation::matches_acknowledged_output(
+                    accepted,
+                    output,
+                    native_cancellation,
+                )
+            }) {
+                let message = "Core drain changed an acknowledged SDK receipt";
+                writer.failure = Some(RetainedFailure::Diagnostic(message.into()));
+                return Err(error(message));
+            }
+            Ok(accepted)
+        })
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,

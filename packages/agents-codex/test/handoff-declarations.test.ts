@@ -1,0 +1,197 @@
+import { expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { Handoff } from '../src/runtime/handoffs';
+import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
+import { captureTools, tool } from '../src/runtime/tools';
+import { NativeProvider } from '../src/runtime/provider';
+import { realtimeHandoff } from '../src/runtime/realtime-agent-config';
+
+it('captures an unnamed target and a single callback with its declared schema', () => {
+  const route = tool({
+    name: 'route_issue',
+    description: 'Issue routing',
+    parameters: z.object({ ticket: z.number() }),
+    execute: ({ ticket }) => `ticket=${ticket}`,
+  });
+  const target = new Agent({ instructions: 'Resolve the issue' });
+  const transfer = new Handoff(target, route);
+  const source = new Agent({
+    instructions: 'Route',
+    tools: [route],
+    handoffs: [transfer, transfer],
+  });
+  const profiles = captureAgentProfiles(source);
+  expect(source.tools).toHaveLength(1);
+  expect(profiles).toHaveLength(2);
+  expect({ ...profiles[0].handoffs }).toEqual({ route_issue: 'agent_1' });
+  expect(Object.keys(profiles[0].handoffCallbacks ?? {})).toEqual([
+    'route_issue',
+  ]);
+  expect(profiles[1].agent).toBe(target);
+  const catalog = captureTools(profiles[0].callbackTools!);
+  const [spec] = JSON.parse(catalog.specsJson);
+  expect(spec.name).toBe('route_issue');
+  expect(spec.description).toBe('Issue routing');
+  expect(spec.inputSchema.properties.ticket.type).toBe('number');
+  expect(Object.isFrozen(transfer)).toBe(true);
+});
+
+it.each([
+  [{ needsApproval: true }, 'without a managed approval'],
+  [{ finishTurn: true }, 'cannot finish the turn'],
+  [{ namespace: 'other' }, 'default function namespace'],
+] as const)(
+  'rejects incompatible transfer callback options %o',
+  (options, message) => {
+    const route = tool({
+      name: 'route',
+      parameters: z.object({ ticket: z.number() }),
+      execute: ({ ticket }) => String(ticket),
+      ...options,
+    });
+    expect(
+      () => new Handoff(new Agent({ instructions: 'Resolve' }), route),
+    ).toThrow(message);
+  },
+);
+
+it('retains the existing graph output wire requirement', () => {
+  const route = tool({
+    name: 'route',
+    parameters: z.object({}),
+    execute: () => 'routed',
+  });
+  const target = new Agent({ instructions: 'Number', outputType: z.number() });
+  const source = new Agent({
+    instructions: 'Text',
+    handoffs: [new Handoff(target, route) as never],
+  });
+  expect(() => captureAgentProfiles(source)).toThrow('share output mode');
+});
+
+it('retains the generated plain handoff name without a callback', () => {
+  const source = new Agent({
+    instructions: 'Route',
+    handoffs: [new Agent({ instructions: 'Resolve', name: 'Billing' })],
+  });
+  const [profile] = captureAgentProfiles(source);
+  expect({ ...profile.handoffs }).toEqual({ transfer_to_billing: 'agent_1' });
+  expect({ ...profile.handoffCallbacks }).toEqual({});
+  expect(source.tools).toHaveLength(0);
+});
+
+it('captures two callbacks to the same ordinary target without duplicating the target profile', () => {
+  const target = new Agent({ name: 'shared', instructions: 'Resolve.' });
+  const first = new Handoff(
+    target,
+    tool({
+      name: 'route_first',
+      parameters: z.object({}),
+      execute: () => 'first',
+    }),
+  );
+  const second = new Handoff(
+    target,
+    tool({
+      name: 'route_second',
+      parameters: z.object({}),
+      execute: () => 'second',
+    }),
+  );
+  const source = new Agent({
+    instructions: 'Route.',
+    handoffs: [target, first, second, first],
+  });
+  const profiles = captureAgentProfiles(source);
+  expect(profiles).toHaveLength(2);
+  expect({ ...profiles[0].handoffs }).toEqual({
+    transfer_to_shared: 'agent_1',
+    route_first: 'agent_1',
+    route_second: 'agent_1',
+  });
+  expect({ ...profiles[0].handoffCallbacks }).toEqual({
+    route_first: 0,
+    route_second: 1,
+  });
+});
+
+it('captures a Decisions handoff as one callback and an exact immutable target roster', async () => {
+  const { DecisionHandoff } = await import('../src/runtime/handoffs');
+  const billing = new Agent({ instructions: 'Billing' });
+  const technical = new Agent({ instructions: 'Technical' });
+  const targets = { billing, technical };
+  const handoff = new DecisionHandoff({
+    name: 'route_issue',
+    description: 'Choose a specialist',
+    question: 'Which specialist?',
+    targets,
+  });
+  const source = new Agent({ instructions: 'Route', handoffs: [handoff] });
+  targets.billing = technical;
+  const profiles = captureAgentProfiles(source);
+  expect(profiles).toHaveLength(3);
+  expect(profiles[0].handoffs).toEqual({});
+  expect(profiles[0].decisionHandoffs).toEqual({
+    route_issue: { slot: 0, targets: ['agent_1', 'agent_2'] },
+  });
+  expect(profiles[1].agent).toBe(billing);
+  expect(profiles[0].callbackTools).toHaveLength(1);
+  const spec = JSON.parse(
+    captureTools(profiles[0].callbackTools!).specsJson,
+  )[0];
+  expect(spec.name).toBe('route_issue');
+  expect(spec.inputSchema.properties.input.maxLength).toBe(8192);
+});
+
+it('rejects Decisions handoffs for realtime configuration and conflicting names before native acquisition', async () => {
+  const { DecisionHandoff } = await import('../src/runtime/handoffs');
+  const handoff = new DecisionHandoff({
+    name: 'route',
+    description: 'Route',
+    question: 'Where?',
+    targets: { one: new Agent({ instructions: 'One' }) },
+  });
+  expect(() =>
+    captureAgentProfiles(
+      new Agent({ instructions: 'Route', realtime: {}, handoffs: [handoff] }),
+    ),
+  ).toThrow('supports text Agents');
+  const route = tool({
+    name: 'route',
+    parameters: z.object({}),
+    execute: () => '',
+  });
+  expect(() =>
+    captureAgentProfiles(
+      new Agent({ instructions: 'Route', tools: [route], handoffs: [handoff] }),
+    ),
+  ).toThrow('conflicting');
+});
+
+it('rejects nested Decisions handoffs throughout a Realtime graph before native acquisition', async () => {
+  const { DecisionHandoff } = await import('../src/runtime/handoffs');
+  await using provider = new NativeProvider({ apiKey: 'synthetic' });
+  const acquire = vi.spyOn(provider, '_acquire').mockImplementation(() => {
+    throw new Error('Unexpected native acquisition');
+  });
+  const nested = new Agent({
+    name: 'Nested router',
+    instructions: 'Route',
+    handoffs: [
+      new DecisionHandoff({
+        name: 'route',
+        description: 'Route',
+        question: 'Where?',
+        targets: { one: new Agent({ instructions: 'One' }) },
+      }),
+    ],
+  });
+  const root = new Agent({
+    instructions: 'Realtime root',
+    realtime: {},
+    provider,
+    handoffs: [realtimeHandoff(nested)],
+  });
+  await expect(root.session()).rejects.toThrow('supports text Agents');
+  expect(acquire).not.toHaveBeenCalled();
+});

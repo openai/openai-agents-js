@@ -1,3 +1,6 @@
+#[path = "sandbox_events.rs"]
+mod sandbox_events;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -6,15 +9,15 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, Config, Feature, StartThreadOptions, ThreadManager};
 use codex_extension_api::{
-    ContextContributor, ExtensionData, ExtensionFuture, ThreadIdleInput,
+    ContextContributor, ExtensionData, ExtensionFuture, FinalStepBuiltinTools, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStartInput, ThreadStopInput, ToolCallOutcome,
     ToolContributor, ToolFinishInput, ToolLifecycleContributor, ToolLifecycleFuture, ToolPolicy,
-    TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
+    ToolStartInput, TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
     WorldStateContributionInput, WorldStateSectionContribution,
 };
 use codex_protocol::dynamic_tools::{
-    DynamicToolFunctionSpec, DynamicToolNamespaceSpec, DynamicToolNamespaceTool,
-    DynamicToolResponse, DynamicToolSpec,
+    DynamicToolCallOutputContentItem, DynamicToolFunctionSpec, DynamicToolNamespaceSpec,
+    DynamicToolNamespaceTool, DynamicToolResponse, DynamicToolSpec,
 };
 use codex_protocol::models::{
     FunctionCallOutputBody, FunctionCallOutputContentItem, FunctionCallOutputPayload,
@@ -68,6 +71,7 @@ pub(crate) struct Generation {
     specs: Vec<DynamicToolSpec>,
     defaults: Vec<usize>,
     terminal_slots: HashSet<usize>,
+    input_error_slots: HashSet<usize>,
 }
 
 /// Exact manual classification from the same retained declaration capture.
@@ -85,6 +89,7 @@ pub(crate) struct ProfileCatalog {
     pub(crate) transform_context: bool,
     pub(crate) before_compact: bool,
     pub(crate) before_complete: bool,
+    pub(crate) post_turn_compact: bool,
 }
 impl ProfileCatalog {
     pub(crate) fn slot_specs(&self) -> Result<Value> {
@@ -149,20 +154,47 @@ pub(crate) struct NativeMediaContext {
 /// Physical callback ownership attached to an existing native pending entry.
 struct CallbackRelease {
     receipt: Value,
+    model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
     entered: std::sync::atomic::AtomicBool,
     cancelled: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
+    cleanup_failed: std::sync::atomic::AtomicBool,
     changed: tokio::sync::Notify,
 }
 impl CallbackRelease {
     fn new(receipt: Value) -> Arc<Self> {
+        Self::with_model_attempt(receipt, None)
+    }
+    fn with_model_attempt(
+        receipt: Value,
+        model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             receipt,
+            model_attempt,
             entered: std::sync::atomic::AtomicBool::new(false),
             cancelled: std::sync::atomic::AtomicBool::new(false),
             released: std::sync::atomic::AtomicBool::new(false),
+            cleanup_failed: std::sync::atomic::AtomicBool::new(false),
             changed: tokio::sync::Notify::new(),
         })
+    }
+    fn admits_reply(&self) -> bool {
+        !self.cancelled.load(Ordering::Acquire)
+            && !self.released.load(Ordering::Acquire)
+            && self.model_attempt.as_ref().is_none_or(|attempt| {
+                !attempt.cancellation().is_cancelled() && !attempt.sampling_stop().requested()
+            })
+    }
+    fn retains_failed_attempt(&self) -> bool {
+        self.model_attempt.is_some() && self.cleanup_failed.load(Ordering::Acquire)
+    }
+    fn release_failed(&self) -> bool {
+        if !self.entered.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            return false;
+        }
+        self.cleanup_failed.store(true, Ordering::Release);
+        self.release()
     }
     fn release(&self) -> bool {
         let first = !self.released.swap(true, Ordering::AcqRel);
@@ -187,9 +219,68 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
     sender
 }
 
+#[derive(Deserialize)]
+struct ClientToolSearchCapture {
+    specs: Vec<DynamicToolSpec>,
+    manual_slots: Vec<usize>,
+    terminal_slots: Vec<usize>,
+    #[serde(default)]
+    input_error_slots: Vec<usize>,
+}
+
+struct ClientToolSearchWork {
+    call: codex_tools::ClientToolSearchCall,
+    generation: Arc<Generation>,
+    profile: Option<codex_extension_api::AgentProfileReceipt>,
+    turn_owner: Weak<crate::turn_settlement::Turn>,
+    turn: String,
+    call_id: String,
+    candidate: Mutex<Option<Arc<ClientToolSearchCatalog>>>,
+}
+
+pub(crate) struct ClientToolSearchCatalog {
+    source: Arc<Generation>,
+    profile: Option<codex_extension_api::AgentProfileReceipt>,
+    turn: String,
+    call_id: String,
+    generation: Arc<Generation>,
+    bytes: usize,
+    expected: Mutex<Option<[u8; 32]>>,
+    accepted: AtomicBool,
+}
+
+fn client_search_output_digest(output: &dyn ToolOutput, call_id: &str) -> Option<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let payload = ToolPayload::ClientToolSearch(codex_tools::ClientToolSearchCall {
+        arguments: Value::Null,
+        catalog: Vec::new(),
+    });
+    serde_json::to_vec(&output.to_response_item(call_id, &payload))
+        .ok()
+        .map(|bytes| Sha256::digest(bytes).into())
+}
+
+impl ClientToolSearchWork {
+    fn additional_entries(generation: &Generation) -> Vec<codex_tools::ClientToolSearchEntry> {
+        generation
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                Some(codex_tools::ClientToolSearchEntry {
+                    name: entry.name.clone(),
+                    deferred: true,
+                    info: ToolSearchInfo::from_tool_spec(entry.spec.clone(), None)?,
+                })
+            })
+            .collect()
+    }
+}
+
 struct PendingCall {
+    executor_tools: Option<Vec<String>>,
+    client_search: Option<Arc<ClientToolSearchWork>>,
     // Captured by native enqueue, never reconstructed from a host reply.
-    computer_arguments: Option<String>,
+    original_payload: Option<ToolPayload>,
     media: Option<NativeMediaContext>,
     deadline: Option<Arc<codex_extension_api::ModelInvocationDeadlineState>>,
     invocation: u64,
@@ -210,6 +301,7 @@ pub(crate) struct ContextCallbacks {
     pub(crate) before_compact: bool,
     pub(crate) transform_context: bool,
     pub(crate) before_complete: bool,
+    pub(crate) post_turn_compact: bool,
 }
 
 #[derive(Clone)]
@@ -248,15 +340,16 @@ pub struct PythonTools {
 
 // The family inbox transports requests; reply authority stays with each issuer.
 enum FamilyRequest {
+    SandboxOperation(sandbox_events::Notice),
     Step(Weak<PythonTools>, u64, Value),
     Completion(Weak<PythonTools>, u64, Value),
     CompletionFailed(Weak<PythonTools>, Weak<crate::turn_settlement::Turn>, Value),
-    Prepared(Weak<prepared_requests::Owner>, u64, Value),
     Call(Weak<PythonTools>, PendingKey, Value),
     Callback(Value),
     Retired { thread: String, instance: String },
 }
 struct Family {
+    sandbox_operations: OnceLock<Arc<tokio::sync::Semaphore>>,
     members: RwLock<HashMap<String, Weak<PythonTools>>>,
     requests: mpsc::UnboundedSender<FamilyRequest>,
     receiver: AsyncMutex<mpsc::UnboundedReceiver<FamilyRequest>>,
@@ -267,6 +360,7 @@ impl Default for Family {
     fn default() -> Self {
         let (requests, receiver) = mpsc::unbounded_channel();
         Self {
+            sandbox_operations: OnceLock::new(),
             members: RwLock::default(),
             requests,
             receiver: AsyncMutex::new(receiver),
@@ -282,6 +376,8 @@ pub(crate) struct Reply {
     pub(crate) response: DynamicToolResponse,
     #[serde(default = "request_response_by_default")]
     pub(crate) start_response: bool,
+    #[serde(default)]
+    pub(crate) handoff_target_profile_id: Option<String>,
 }
 
 fn request_response_by_default() -> bool {
@@ -292,12 +388,16 @@ fn request_response_by_default() -> bool {
 pub(crate) struct ToolReply {
     pub(crate) response: DynamicToolResponse,
     pub(crate) start_response: bool,
+    pub(crate) acceptance: Option<oneshot::Sender<()>>,
+    pub(crate) handoff_target_profile_id: Option<String>,
 }
 impl From<DynamicToolResponse> for ToolReply {
     fn from(response: DynamicToolResponse) -> Self {
         Self {
             response,
             start_response: true,
+            acceptance: None,
+            handoff_target_profile_id: None,
         }
     }
 }
@@ -305,19 +405,44 @@ impl From<DynamicToolResponse> for ToolReply {
 fn functions(
     specs: &[DynamicToolSpec],
 ) -> Vec<(
-    Option<&DynamicToolNamespaceSpec>,
+    Option<Cow<'_, DynamicToolNamespaceSpec>>,
     Cow<'_, DynamicToolFunctionSpec>,
 )> {
     let mut functions = Vec::new();
     for spec in specs {
         match spec {
             DynamicToolSpec::Function(tool) => functions.push((None, Cow::Borrowed(tool))),
+            DynamicToolSpec::ApplyPatch => functions.push((
+                None,
+                Cow::Owned(DynamicToolFunctionSpec {
+                    strict: false,
+                    output_schema: None,
+                    name: "apply_patch".into(),
+                    description: "Native application patch callback".into(),
+                    input_schema: json!({"type":"object"}),
+                    defer_loading: false,
+                }),
+            )),
+            DynamicToolSpec::ToolSearch(tool) => {
+                functions.push((None, Cow::Owned(tool.callback_spec())))
+            }
             DynamicToolSpec::Computer(tool) => {
+                functions.push((None, Cow::Owned(tool.callback_spec())))
+            }
+            DynamicToolSpec::HostedMcp(tool) => functions.push((
+                Some(Cow::Owned(DynamicToolNamespaceSpec {
+                    name: "hosted_mcp".into(),
+                    description: String::new(),
+                    tools: Vec::new(),
+                })),
+                Cow::Owned(tool.callback_spec()),
+            )),
+            DynamicToolSpec::Shell(tool) => {
                 functions.push((None, Cow::Owned(tool.callback_spec())))
             }
             DynamicToolSpec::Namespace(namespace) => {
                 for DynamicToolNamespaceTool::Function(tool) in &namespace.tools {
-                    functions.push((Some(namespace), Cow::Borrowed(tool)));
+                    functions.push((Some(Cow::Borrowed(namespace)), Cow::Borrowed(tool)));
                 }
             }
         }
@@ -325,10 +450,32 @@ fn functions(
     functions
 }
 
+fn original_tool_payload(spec: &ToolSpec, arguments: &Value) -> Option<ToolPayload> {
+    match spec {
+        ToolSpec::ApplyPatch {} => Some(ToolPayload::ApplyPatch {
+            arguments: arguments.to_string(),
+        }),
+        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {
+            Some(ToolPayload::Computer {
+                arguments: arguments.to_string(),
+            })
+        }
+        ToolSpec::ApplicationShell { .. } => Some(ToolPayload::Shell {
+            arguments: arguments.to_string(),
+        }),
+        _ => None,
+    }
+}
+
 fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
     ensure!(
         specs.iter().all(|spec| match spec {
-            DynamicToolSpec::Function(_) | DynamicToolSpec::Computer(_) => true,
+            DynamicToolSpec::Function(_)
+            | DynamicToolSpec::ApplyPatch
+            | DynamicToolSpec::Computer(_)
+            | DynamicToolSpec::ToolSearch(_)
+            | DynamicToolSpec::HostedMcp(_)
+            | DynamicToolSpec::Shell(_) => true,
             DynamicToolSpec::Namespace(ns) => ns.tools.len() == 1,
         }),
         "invalid JavaScript tool slot projection"
@@ -340,24 +487,41 @@ fn validate_slots(specs: &[DynamicToolSpec]) -> Result<()> {
 pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
     validate_slots(specs)?;
     for declaration in specs {
+        if let DynamicToolSpec::ToolSearch(search) = declaration {
+            codex_tools::client_tool_search_spec(search).map_err(anyhow::Error::msg)?;
+        }
         if let DynamicToolSpec::Computer(computer) = declaration {
             codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?;
         }
     }
     let mut seen = HashSet::new();
-    for (namespace, tool) in functions(specs) {
-        let key = ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone())
-            .with_default_namespace();
+    for (declaration, (namespace, tool)) in specs.iter().zip(functions(specs)) {
+        let key = ToolName::new(
+            namespace.as_ref().map(|ns| ns.name.clone()),
+            tool.name.clone(),
+        )
+        .with_default_namespace();
         ensure!(seen.insert(key.clone()), "Duplicate JavaScript tool: {key}");
         ensure!(
+            !key.is_default_namespace()
+                || key.name != "tool_search"
+                || matches!(
+                    specs
+                        .iter()
+                        .find(|spec| matches!(spec, DynamicToolSpec::ToolSearch(_))),
+                    Some(_)
+                ),
+            "JavaScript tool uses a reserved name"
+        );
+        ensure!(
             !(key.is_default_namespace()
+                && !matches!(declaration, DynamicToolSpec::ApplyPatch)
                 && matches!(
                     key.name.as_str(),
                     "exec_command"
                         | "shell_command"
                         | "exec"
                         | "wait"
-                        | "tool_search"
                         | "apply_patch"
                         | "write_stdin"
                 ))
@@ -406,8 +570,11 @@ pub(crate) fn tool_names(specs: &[DynamicToolSpec]) -> HashSet<ToolName> {
     functions(specs)
         .into_iter()
         .map(|(namespace, tool)| {
-            ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone())
-                .with_default_namespace()
+            ToolName::new(
+                namespace.as_ref().map(|ns| ns.name.clone()),
+                tool.name.clone(),
+            )
+            .with_default_namespace()
         })
         .collect()
 }
@@ -445,20 +612,108 @@ fn preparation_callback_claim(
         "enter" => {
             !closed
                 && !cancelled
-                && !callback.cancelled.load(Ordering::Acquire)
-                && !callback.released.load(Ordering::Acquire)
+                && callback.admits_reply()
                 && callback
                     .entered
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
         }
-        "cancelled" => cancelled || callback.cancelled.load(Ordering::Acquire),
+        "cancelled" => cancelled || !callback.admits_reply(),
         "release" => callback.release(),
+        "release_failed" => callback.release_failed(),
         _ => false,
     }
 }
 
 impl PythonTools {
+    pub(crate) fn report_model_attempt_usage(
+        self: &Arc<Self>,
+        root: &str,
+        attempt_id: &str,
+        receipt: &Value,
+        usage: codex_protocol::protocol::TokenUsage,
+    ) -> Result<bool> {
+        if receipt.get("kind").and_then(Value::as_str) != Some("preparation") {
+            return Ok(false);
+        }
+        let Some(thread) = receipt.get("thread").and_then(Value::as_str) else {
+            return Ok(false);
+        };
+        let instance = receipt
+            .get("instance")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(id) = receipt
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            return Ok(false);
+        };
+        let Some(owner) = self.exact_owner(root, thread, &instance) else {
+            return Ok(false);
+        };
+        let replies = owner.step_replies.lock().expect("Step replies poisoned");
+        let Some(callback) = replies
+            .get(&id)
+            .and_then(|pending| pending.callback.as_ref())
+        else {
+            return Ok(false);
+        };
+        if callback.receipt != *receipt
+            || !callback.entered.load(Ordering::Acquire)
+            || callback.released.load(Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        let Some(attempt) = &callback.model_attempt else {
+            return Ok(false);
+        };
+        if attempt.id() != attempt_id {
+            return Ok(false);
+        }
+        attempt.report_usage(usage).map_err(anyhow::Error::msg)?;
+        Ok(true)
+    }
+
+    pub(crate) async fn retire_model_attempt_callbacks(
+        &self,
+        attempt: &Arc<dyn codex_extension_api::ModelAttemptAdmission>,
+    ) -> Result<()> {
+        let callbacks = {
+            let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+            replies
+                .iter_mut()
+                .filter_map(|(id, pending)| {
+                    let callback = pending.callback.as_ref()?;
+                    if !callback
+                        .model_attempt
+                        .as_ref()
+                        .is_some_and(|captured| Arc::ptr_eq(captured, attempt))
+                    {
+                        return None;
+                    }
+                    let callback = Arc::clone(callback);
+                    drop(std::mem::replace(&mut pending.reply, closed_step_sender()));
+                    self.cancel_step_callback(&pending.turn, &callback);
+                    Some((*id, callback))
+                })
+                .collect::<Vec<_>>()
+        };
+        // Never hold the pending mutex while waiting for application finally blocks.
+        let mut cleanup_failed = false;
+        for (id, callback) in callbacks {
+            callback.wait().await;
+            cleanup_failed |= callback.cleanup_failed.load(Ordering::Acquire);
+            self.step_replies
+                .lock()
+                .expect("Step replies poisoned")
+                .remove(&id);
+        }
+        ensure!(!cleanup_failed, "Model callback cleanup failed");
+        Ok(())
+    }
+
     fn preparation_callback_operation(
         self: &Arc<Self>,
         root: &str,
@@ -614,8 +869,12 @@ impl PythonTools {
                     .is_ok()
             }
             "cancelled" => callback.cancelled.load(Ordering::Acquire),
-            "release" => {
-                let released = callback.release();
+            "release" | "release_failed" => {
+                let released = if operation == "release_failed" {
+                    callback.release_failed()
+                } else {
+                    callback.release()
+                };
                 // A restored approval owns a synthetic waiter, not a live Core
                 // PendingReply. Retire it after receipt and physical callback release.
                 if call._approval_receiver.is_some() && call.sender.is_closed() {
@@ -756,11 +1015,20 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
         terminal_slots: &[usize],
+        input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 4],
+        flags: [bool; 5],
         _reuse_initial: bool,
     ) -> Result<ProfileCatalog> {
-        self.allocate_profile_catalog(specs, manual_slots, terminal_slots, defaults, flags, true)
+        self.allocate_profile_catalog(
+            specs,
+            manual_slots,
+            terminal_slots,
+            input_error_slots,
+            defaults,
+            flags,
+            true,
+        )
     }
 
     pub(crate) fn voice_profile_catalog(
@@ -768,10 +1036,19 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
         terminal_slots: &[usize],
+        input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 4],
+        flags: [bool; 5],
     ) -> Result<ProfileCatalog> {
-        self.allocate_profile_catalog(specs, manual_slots, terminal_slots, defaults, flags, false)
+        self.allocate_profile_catalog(
+            specs,
+            manual_slots,
+            terminal_slots,
+            input_error_slots,
+            defaults,
+            flags,
+            false,
+        )
     }
 
     fn allocate_profile_catalog(
@@ -779,13 +1056,14 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
         terminal_slots: &[usize],
+        input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 4],
+        flags: [bool; 5],
         durable: bool,
     ) -> Result<ProfileCatalog> {
         let id = self.allocate_generation()?;
-        // An explicitly admitted voice Agent supplies its own callback catalog.
-        // The opening policy still governs all durable profiles and turns.
+        // The opening policy governs durable profiles. Voice agents and client
+        // search candidates have separate, operation-scoped admission checks.
         let policy = durable.then_some(self.policy.as_ref());
         let mut generation = self.prepare_catalog(id, specs, policy)?;
         let mut manual = HashSet::new();
@@ -800,6 +1078,12 @@ impl PythonTools {
             ensure!(
                 slot < generation.entries.len() && generation.terminal_slots.insert(slot),
                 "Invalid or duplicate terminal tool slot"
+            );
+        }
+        for &slot in input_error_slots {
+            ensure!(
+                slot < generation.entries.len() && generation.input_error_slots.insert(slot),
+                "Invalid or duplicate input recovery slot"
             );
         }
         generation.defaults = defaults
@@ -831,12 +1115,13 @@ impl PythonTools {
             transform_context: flags[1],
             before_compact: flags[2],
             before_complete: flags[3],
+            post_turn_compact: flags[4],
         })
     }
 
     pub(crate) fn startup_profile_catalog(
         &self,
-        flags: [bool; 4],
+        flags: [bool; 5],
         source: &ProfileCatalog,
     ) -> Result<ProfileCatalog> {
         let generation = self.snapshot();
@@ -868,10 +1153,12 @@ impl PythonTools {
             .map(&rebind)
             .unwrap_or_default();
         let terminal = rebind(&source.generation.terminal_slots);
+        let input_errors = rebind(&source.generation.input_error_slots);
         self.profile_catalog(
             generation.specs.clone(),
             &manual,
             &terminal,
+            &input_errors,
             Some(&generation.defaults),
             flags,
             false,
@@ -909,6 +1196,7 @@ impl PythonTools {
             generation,
             selecting_steps: false,
             transform_context: false,
+            post_turn_compact: false,
             before_compact: false,
             before_complete: false,
         })
@@ -1072,17 +1360,38 @@ impl PythonTools {
                     .tools
                     .iter()
                     .map(|tool| {
-                        ToolName::plain(match tool {
-                            codex_tools::HostedToolSpec::FileSearch(_) => "file_search",
-                            codex_tools::HostedToolSpec::CodeInterpreter(_) => "code_interpreter",
-                            codex_tools::HostedToolSpec::ImageGeneration(_) => "image_generation",
-                        })
+                        match tool {
+                            codex_tools::HostedToolSpec::Mcp(tool) => {
+                                ToolName::new(Some("hosted_mcp".into()), tool.server_label.clone())
+                            }
+                            codex_tools::HostedToolSpec::FileSearch(_) => {
+                                ToolName::plain("file_search")
+                            }
+                            codex_tools::HostedToolSpec::CodeInterpreter(_) => {
+                                ToolName::plain("code_interpreter")
+                            }
+                            codex_tools::HostedToolSpec::Shell(_) => ToolName::plain("shell"),
+                            codex_tools::HostedToolSpec::ImageGeneration(_) => {
+                                ToolName::plain("image_generation")
+                            }
+                            codex_tools::HostedToolSpec::ToolSearch(_) => {
+                                ToolName::plain("tool_search")
+                            }
+                            codex_tools::HostedToolSpec::ProviderOnly { definition } => {
+                                ToolName::plain(definition.tool_type())
+                            }
+                        }
                         .with_default_namespace()
                     })
                     .collect()
             })
             .unwrap_or_default();
-        fixed.extend(hosted_names.iter().cloned());
+        fixed.extend(
+            hosted_names
+                .iter()
+                .filter(|name| name.namespace.as_deref() != Some("hosted_mcp"))
+                .cloned(),
+        );
         let policy = startup
             .thread_extension_init
             .get::<ToolPolicy>()
@@ -1195,6 +1504,7 @@ impl PythonTools {
                 specs: Vec::new(),
                 defaults: Vec::new(),
                 terminal_slots: HashSet::new(),
+                input_error_slots: HashSet::new(),
             })),
             generation_high_water: AtomicU64::new(0),
             profile_catalogs: RwLock::new(HashMap::new()),
@@ -1321,6 +1631,7 @@ impl PythonTools {
             child.prepare(parent_generation.id, parent_generation.specs.clone())?;
         generation.defaults = parent_generation.defaults.clone();
         generation.terminal_slots = parent_generation.terminal_slots.clone();
+        generation.input_error_slots = parent_generation.input_error_slots.clone();
         generation.manual_slots = parent_generation.manual_slots.clone();
         let generation = Arc::new(generation);
         child.schema_receipts.register(&generation);
@@ -1348,22 +1659,42 @@ impl PythonTools {
         key: &PendingKey,
         response: DynamicToolResponse,
     ) -> Result<Option<ResponseItem>> {
-        let arguments = {
+        let payload = {
             let pending = self.pending.lock().expect("tool replies poisoned");
             let Some(call) = pending.get(key) else {
                 return Ok(None);
             };
-            call.computer_arguments.clone()
+            call.original_payload.clone()
         };
-        let Some(arguments) = arguments else {
+        let Some(payload) = payload else {
             return Ok(Some(PythonOutput(response).receipt(key)));
         };
-        let output = codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
-            .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?;
-        let mut item: ResponseItem = output
-            .to_response_item(&key.call, &ToolPayload::Computer { arguments })
-            .into();
+        let output: Box<dyn ToolOutput> = match &payload {
+            ToolPayload::ApplyPatch { arguments } => Box::new(
+                codex_tools::ApplyPatchToolOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native application patch response"))?,
+            ),
+            ToolPayload::Computer { arguments } => Box::new(
+                codex_tools::ComputerToolOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native computer response"))?,
+            ),
+            ToolPayload::HostedMcpApproval { .. } => Box::new(hosted_mcp_output(response)?),
+            ToolPayload::Shell { arguments } => Box::new(
+                codex_tools::ApplicationShellOutput::from_dynamic_response(arguments, response)
+                    .map_err(|_| anyhow::anyhow!("Invalid native shell response"))?,
+            ),
+            _ => return Ok(Some(PythonOutput(response).receipt(key))),
+        };
+        let mut item: ResponseItem = output.to_response_item(&key.call, &payload).into();
         if let ResponseItem::ComputerCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        }
+        | ResponseItem::ApplyPatchCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        }
+        | ResponseItem::ShellCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
         } = &mut item
@@ -1374,6 +1705,8 @@ impl PythonTools {
                     ..Default::default()
                 },
             );
+        } else {
+            item.set_turn_id_if_missing(&key.turn);
         }
         Ok(Some(item))
     }
@@ -1394,27 +1727,47 @@ impl PythonTools {
             .then(|| codex_protocol::ThreadId::new().to_string());
         validate_declarations(&specs)?;
         for (declaration, (namespace, tool)) in specs.iter().zip(functions(&specs)) {
-            let name = ToolName::new(namespace.map(|ns| ns.name.clone()), tool.name.clone());
+            let name = ToolName::new(
+                namespace.as_ref().map(|ns| ns.name.clone()),
+                tool.name.clone(),
+            );
             let key = name.clone().with_default_namespace();
             ensure!(
-                !self.fixed.contains(&key),
+                !self.fixed.contains(&key) || matches!(declaration, DynamicToolSpec::ApplyPatch),
                 "JavaScript tool collides with fixed tool: {key}"
             );
             ensure!(
                 policy.is_none_or(|policy| policy.allows(&key)),
                 "JavaScript tool is excluded by ToolPolicy: {key}"
             );
+            if let DynamicToolSpec::ToolSearch(search) = declaration {
+                entries.push(Entry {
+                    name,
+                    spec: codex_tools::client_tool_search_spec(search)
+                        .map_err(anyhow::Error::msg)?,
+                    exposure: ToolExposure::DirectModelOnly,
+                });
+                continue;
+            }
             let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
             function.defer_loading = None;
-            function.strict = false;
             if let Some(token) = &schema_token {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
             }
-            let spec = if let DynamicToolSpec::Computer(computer) = declaration {
+            let spec = if matches!(declaration, DynamicToolSpec::ApplyPatch) {
+                ToolSpec::ApplyPatch {}
+            } else if let DynamicToolSpec::Computer(computer) = declaration {
                 codex_tools::computer_tool_spec(computer).map_err(anyhow::Error::msg)?
+            } else if let DynamicToolSpec::HostedMcp(mcp) = declaration {
+                ToolSpec::Mcp(codex_tools::HostedMcpTool {
+                    server_label: mcp.server_label.clone(),
+                    provider_data: serde_json::Map::new(),
+                })
+            } else if let DynamicToolSpec::Shell(shell) = declaration {
+                codex_tools::application_shell_spec(shell)
             } else {
-                match namespace.filter(|_| !key.is_default_namespace()) {
+                match namespace.as_ref().filter(|_| !key.is_default_namespace()) {
                     None => ToolSpec::Function(function),
                     Some(ns) => ToolSpec::Namespace(ResponsesApiNamespace {
                         name: ns.name.clone(),
@@ -1430,7 +1783,14 @@ impl PythonTools {
             entries.push(Entry {
                 name,
                 spec,
-                exposure: if matches!(declaration, DynamicToolSpec::Computer(_)) {
+                exposure: if matches!(declaration, DynamicToolSpec::HostedMcp(_)) {
+                    ToolExposure::Hidden
+                } else if matches!(
+                    declaration,
+                    DynamicToolSpec::ApplyPatch
+                        | DynamicToolSpec::Computer(_)
+                        | DynamicToolSpec::Shell(_)
+                ) {
                     ToolExposure::DirectModelOnly
                 } else if tool.defer_loading {
                     ToolExposure::Deferred
@@ -1447,6 +1807,7 @@ impl PythonTools {
             entries,
             specs,
             terminal_slots: HashSet::new(),
+            input_error_slots: HashSet::new(),
         })
     }
 
@@ -1482,6 +1843,7 @@ impl PythonTools {
         let mut seed = self.prepare(original.id, current.specs.clone())?;
         seed.defaults = original.defaults.clone();
         seed.terminal_slots = current.terminal_slots.clone();
+        seed.input_error_slots = current.input_error_slots.clone();
         let seed = Arc::new(seed);
         self.schema_receipts.register(&seed);
         *current = seed;
@@ -1536,14 +1898,14 @@ impl PythonTools {
         } else {
             id
         };
-        let terminal_slots = if let Some(config) = terminal {
+        let (terminal_slots, input_error_slots) = if let Some(config) = terminal {
             ensure!(
                 config.generation == id.to_string(),
                 "Expired terminal replacement generation"
             );
-            config.slots
+            (config.slots, config.input_error_slots)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         if let Some(id) = crate::agent_profiles::replace_tools(
             thread,
@@ -1551,6 +1913,7 @@ impl PythonTools {
             specs.clone(),
             defaults.clone(),
             &terminal_slots,
+            &input_error_slots,
         )
         .await?
         {
@@ -1563,6 +1926,12 @@ impl PythonTools {
                 "Invalid terminal tool slot"
             );
         }
+        for slot in input_error_slots {
+            ensure!(
+                slot < candidate.entries.len() && candidate.input_error_slots.insert(slot),
+                "Invalid input recovery slot"
+            );
+        }
         if let Some(defaults) = defaults {
             validate_selection(&defaults, &(0..candidate.entries.len()).collect::<Vec<_>>())?;
             candidate.defaults = defaults;
@@ -1573,7 +1942,9 @@ impl PythonTools {
             id == self.allocate_generation()?,
             "JavaScript tool generation is out of sequence"
         );
-        self.publish(candidate)
+        let generation = self.publish(candidate)?;
+        crate::hosted_prompt::explicit_root_tools(thread).await?;
+        Ok(generation)
     }
 
     fn publish(&self, candidate: Generation) -> Result<u64> {
@@ -1631,6 +2002,165 @@ impl PythonTools {
 
     // An automatic checkpoint is the one busy snapshot admitted by the SDK.
     // Do not accept a name, a past generation, or an expired reply as authority.
+    fn pending_client_search(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+    ) -> Result<Arc<ClientToolSearchWork>> {
+        ensure!(
+            self.admit_callback(owner, key)?,
+            "Expired client tool search callback"
+        );
+        self.pending
+            .lock()
+            .expect("JavaScript replies poisoned")
+            .get(key)
+            .and_then(|call| call.client_search.clone())
+            .context("Request is not a client tool search")
+    }
+
+    pub(crate) fn load_client_search(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+        paths: Option<Vec<String>>,
+    ) -> Result<Value> {
+        let work = self.pending_client_search(owner, key)?;
+        let refs = paths
+            .as_deref()
+            .map(|paths| work.call.load_default(paths))
+            .transpose()
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let catalog: Vec<_> = work.call.catalog.iter().map(|entry| json!({"name":entry.name.name,"namespace":entry.name.namespace,"deferred":entry.deferred})).collect();
+        ensure!(
+            self.admit_callback(owner, key)?,
+            "Expired client tool search callback"
+        );
+        Ok(json!({"catalog":catalog,"tool_refs":refs}))
+    }
+
+    pub(crate) fn capture_client_search(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+        specs_json: &str,
+    ) -> Result<u64> {
+        const MAX_TOOLS: usize = 4096;
+        const MAX_BYTES: usize = 8 * 1024 * 1024;
+        ensure!(
+            specs_json.len() <= MAX_BYTES,
+            "Client tool search catalog exceeds its limit"
+        );
+        let work = self.pending_client_search(owner, key)?;
+        let turn = work
+            .turn_owner
+            .upgrade()
+            .context("Client tool search turn has expired")?;
+        let mut candidate = work
+            .candidate
+            .lock()
+            .expect("client search candidate poisoned");
+        ensure!(
+            candidate.is_none(),
+            "Client tool search already captured a catalog"
+        );
+        let ClientToolSearchCapture {
+            mut specs,
+            manual_slots,
+            terminal_slots,
+            input_error_slots,
+        } = serde_json::from_str(specs_json)?;
+        ensure!(
+            specs.len() <= MAX_TOOLS,
+            "Client tool search catalog exceeds its limit"
+        );
+        for spec in &mut specs {
+            match spec {
+                DynamicToolSpec::Function(function) => function.defer_loading = true,
+                DynamicToolSpec::Namespace(namespace) => {
+                    for DynamicToolNamespaceTool::Function(function) in &mut namespace.tools {
+                        function.defer_loading = true;
+                    }
+                }
+                _ => anyhow::bail!("Client tool search can admit new function tools only"),
+            }
+        }
+        let mut catalogs = turn
+            .client_search_catalogs
+            .lock()
+            .expect("client search catalogs poisoned");
+        ensure!(
+            catalogs
+                .iter()
+                .map(|catalog| catalog.generation.entries.len())
+                .sum::<usize>()
+                + specs.len()
+                <= MAX_TOOLS
+                && catalogs.iter().map(|catalog| catalog.bytes).sum::<usize>() + specs_json.len()
+                    <= MAX_BYTES,
+            "Client tool search catalog exceeds its limit"
+        );
+        let generation = self
+            .allocate_profile_catalog(
+                specs,
+                &manual_slots,
+                &terminal_slots,
+                &input_error_slots,
+                None,
+                Default::default(),
+                false,
+            )?
+            .generation;
+        let id = generation.id;
+        let added = ClientToolSearchWork::additional_entries(&generation);
+        let captured_names: HashSet<_> = work
+            .generation
+            .entries
+            .iter()
+            .chain(
+                catalogs
+                    .iter()
+                    .filter(|catalog| {
+                        Arc::ptr_eq(&catalog.source, &work.generation)
+                            && catalog.profile == work.profile
+                    })
+                    .flat_map(|catalog| catalog.generation.entries.iter()),
+            )
+            .map(|entry| entry.name.clone().with_default_namespace())
+            .collect();
+        ensure!(
+            added
+                .iter()
+                .all(|entry| !captured_names.contains(&entry.name.clone().with_default_namespace())),
+            "Client tool search cannot replace a captured tool"
+        );
+        codex_tools::ClientToolSearchSelection {
+            tool_refs: added.iter().map(|entry| entry.name.clone()).collect(),
+            catalog_generation: None,
+        }
+        .resolve(&work.call.catalog, &added)
+        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        self.schema_receipts.register(&generation);
+        self.register_generation(&generation)?;
+        ensure!(
+            self.admit_callback(owner, key)?,
+            "Expired client tool search callback"
+        );
+        let catalog = Arc::new(ClientToolSearchCatalog {
+            source: work.generation.clone(),
+            profile: work.profile.clone(),
+            turn: work.turn.clone(),
+            call_id: work.call_id.clone(),
+            generation,
+            bytes: specs_json.len(),
+            expected: Mutex::default(),
+            accepted: AtomicBool::new(false),
+        });
+        catalogs.push(catalog.clone());
+        *candidate = Some(catalog);
+        Ok(id)
+    }
+
     pub fn check_pending(&self, owner: &str, key: &PendingKey) -> Result<()> {
         ensure!(
             key.reply.thread == owner
@@ -1645,6 +2175,16 @@ impl PythonTools {
             "Expired or invalid managed JavaScript tool request"
         );
         Ok(())
+    }
+
+    pub(crate) fn configured_child_executor_tools(&self, key: &PendingKey) -> Result<Vec<String>> {
+        self.check_pending(&key.reply.thread, key)?;
+        self.pending
+            .lock()
+            .expect("JavaScript replies poisoned")
+            .get(key)
+            .and_then(|call| call.executor_tools.clone())
+            .context("Configured child executor selection is unavailable")
     }
 
     // Private callback delivery/admission may deny ended work. Strict checkpoint checks above remain unchanged.
@@ -1703,11 +2243,7 @@ impl PythonTools {
                     }
                 }
                 Some(FamilyRequest::Callback(request)) => return request,
-                Some(FamilyRequest::Prepared(owner, id, request)) => {
-                    if owner.upgrade().is_some_and(|owner| owner.queued(id)) {
-                        return request;
-                    }
-                }
+                Some(FamilyRequest::SandboxOperation(notice)) => return notice.payload,
                 Some(FamilyRequest::Step(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|tools| {
                         if tools.instance.is_some() {
@@ -1819,8 +2355,8 @@ impl PythonTools {
         admission: Option<Arc<crate::turn_settlement::Turn>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
-            thread, generation, slot, turn, call, arguments, source, model, media, admission, None,
-            None, None,
+            thread, generation, slot, turn, call, arguments, None, None, source, model, media,
+            admission, None, None, None, None, None,
         )
     }
 
@@ -1832,6 +2368,8 @@ impl PythonTools {
         turn: &str,
         call: &str,
         arguments: Value,
+        argument_error: Option<String>,
+        raw_function_arguments: Option<&str>,
         source: &ToolCallSource,
         model: &str,
         media: Option<NativeMediaContext>,
@@ -1839,6 +2377,8 @@ impl PythonTools {
         profile: Option<&codex_extension_api::AgentProfileReceipt>,
         manual: Option<bool>,
         realtime_tool_call: Option<Value>,
+        client_search: Option<Arc<ClientToolSearchWork>>,
+        executor_tools: Option<Vec<String>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -1896,6 +2436,12 @@ impl PythonTools {
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
+        if let Some(error) = argument_error {
+            request["msg"]["_sdk_argument_error"] = json!(error);
+        }
+        if let Some(arguments) = raw_function_arguments {
+            request["msg"]["_sdk_raw_function_arguments"] = json!(arguments);
+        }
         if let Some(callback) = &callback {
             request["msg"]["_sdk_callback"] = callback.receipt.clone();
         }
@@ -1920,11 +2466,14 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
-                    computer_arguments: matches!(
-                        entry.spec,
-                        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. }
-                    )
-                    .then(|| request["msg"]["arguments"].to_string()),
+                    executor_tools,
+                    client_search,
+                    original_payload: match &entry.spec {
+                        ToolSpec::Mcp(_) => Some(ToolPayload::HostedMcpApproval {
+                            request: serde_json::from_value(request["msg"]["arguments"].clone())?,
+                        }),
+                        _ => original_tool_payload(&entry.spec, &request["msg"]["arguments"]),
+                    },
                     media,
                     invocation,
                     retired: false,
@@ -2105,6 +2654,10 @@ impl ThreadLifecycleContributor<Config> for PythonContributor {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperationSelection {
+    #[serde(default)]
+    pub model_override: Option<String>,
+    pub model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     pub generation: String,
     // Omitted slots preserve opening defaults; an explicit empty list clears JS tools.
     pub slots: Option<Vec<usize>>,
@@ -2118,6 +2671,9 @@ pub(crate) struct OperationSelection {
 }
 #[derive(Clone)]
 struct ActiveSelection {
+    model_override: Option<String>,
+    model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     turn: String,
     generation: Arc<Generation>,
     slots: Option<Vec<usize>>,
@@ -2174,6 +2730,32 @@ struct StepCatalog {
     generation: Arc<Generation>,
     use_deferred_specs: bool,
     slots: Vec<usize>,
+}
+fn admitted_client_generations(
+    thread: &ExtensionData,
+    source: &Arc<Generation>,
+    profile: &Option<codex_extension_api::AgentProfileReceipt>,
+) -> Vec<Arc<Generation>> {
+    let Some(turn) = thread
+        .get::<ModelPresentation>()
+        .and_then(|state| state.admission.clone())
+    else {
+        return Vec::new();
+    };
+    let catalogs = turn
+        .client_search_catalogs
+        .lock()
+        .expect("client search catalogs poisoned")
+        .clone();
+    catalogs
+        .iter()
+        .filter(|catalog| {
+            catalog.accepted.load(Ordering::Acquire)
+                && Arc::ptr_eq(&catalog.source, source)
+                && &catalog.profile == profile
+        })
+        .map(|catalog| catalog.generation.clone())
+        .collect()
 }
 fn validate_selection(slots: &[usize], allowed: &[usize]) -> Result<()> {
     let mut seen = HashSet::new();
@@ -2269,7 +2851,7 @@ impl PythonTools {
                 if let Some(callback) = &pending.callback {
                     drop(std::mem::replace(&mut pending.reply, closed_step_sender()));
                     self.cancel_step_callback(&pending.turn, callback);
-                    !callback.released.load(Ordering::Acquire)
+                    !callback.released.load(Ordering::Acquire) || callback.retains_failed_attempt()
                 } else {
                     false
                 }
@@ -2283,6 +2865,8 @@ impl PythonTools {
             .as_ref()
             .filter(|selection| selection.turn == previous)
             .map(|selection| OperationSelection {
+                model_override: selection.model_override.clone(),
+                model_settings_override: selection.model_settings_override.clone(),
                 generation: selection.generation.id.to_string(),
                 slots: selection.slots.clone(),
                 names: selection.names.clone(),
@@ -2328,6 +2912,10 @@ impl PythonTools {
             && response.generation == pending.generation.to_string()
             && self.resolve_generation(pending.generation).is_some()
             && !pending.reply.is_closed()
+            && pending
+                .callback
+                .as_ref()
+                .is_none_or(|callback| callback.admits_reply())
             && if let Some(cancellation) = &pending.source_cancellation {
                 !cancellation.is_cancelled()
                     && (active.is_none()
@@ -2425,9 +3013,12 @@ impl PythonTools {
         &self,
         turn: &str,
         operation: Option<&OperationSelection>,
+        mcp_discovery: bool,
     ) -> Option<ActiveSelection> {
         if self.instance.is_some() {
-            return self.child_before_step.then(|| ActiveSelection {
+            return (self.child_before_step || mcp_discovery).then(|| ActiveSelection {
+                model_override: None,
+                model_settings_override: None,
                 turn: turn.to_owned(),
                 generation: self.snapshot(),
                 slots: None,
@@ -2439,6 +3030,8 @@ impl PythonTools {
         }
         operation.and_then(|selection| {
             Some(ActiveSelection {
+                model_override: selection.model_override.clone(),
+                model_settings_override: selection.model_settings_override.clone(),
                 turn: turn.to_owned(),
                 generation: selection
                     .generation
@@ -2546,12 +3139,25 @@ impl PythonContributor {
         receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
         profile: Option<codex_extension_api::AgentProfileReceipt>,
         manual: Option<Arc<CapturedManualTools>>,
+        wrap_profile_handoffs: bool,
+        executor_tools: Option<Arc<FinalStepBuiltinTools>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
             .copied()
             .map(|slot| {
+                let decision_selection = wrap_profile_handoffs
+                    .then(|| {
+                        crate::agent_profiles::decision_handoff_selection(
+                            thread,
+                            profile.as_ref(),
+                            slot,
+                        )
+                    })
+                    .flatten();
                 let callback = Arc::new(PythonExecutor {
+                    executor_tools: executor_tools.clone(),
+                    decision_selection: decision_selection.clone(),
                     admission: thread
                         .get::<ModelPresentation>()
                         .and_then(|state| state.admission.clone()),
@@ -2566,12 +3172,16 @@ impl PythonContributor {
                     code_mode_enabled: self.code_mode_enabled,
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>;
-                crate::agent_profiles::wrap_handoff_callback(
-                    thread,
-                    profile.as_ref(),
-                    slot,
-                    callback,
-                )
+                if wrap_profile_handoffs {
+                    crate::agent_profiles::wrap_handoff_callback(
+                        thread,
+                        profile.as_ref(),
+                        callback,
+                        decision_selection,
+                    )
+                } else {
+                    callback
+                }
             })
             .collect()
     }
@@ -2640,14 +3250,17 @@ impl ToolContributor for PythonContributor {
                     .as_ref()
                     .is_some_and(|names| !names.contains(&entry.name))
                 || !allows(&entry.name)
-                || entry.exposure == ToolExposure::Deferred
+                || matches!(
+                    entry.exposure,
+                    ToolExposure::Deferred | ToolExposure::Hidden
+                )
             {
                 continue;
             }
             declarations.push(codex_extension_api::RealtimeToolDeclaration {
                 native_name: entry.name.clone(),
                 spec: codex_extension_api::PreparedToolPresentation {
-                    namespace: namespace.map(|namespace| namespace.name.clone()),
+                    namespace: namespace.as_ref().map(|namespace| namespace.name.clone()),
                     name: raw.name.clone(),
                     kind: "function".into(),
                     strict: match &entry.spec {
@@ -2682,6 +3295,11 @@ impl ToolContributor for PythonContributor {
             );
         }
         if let Some(binding) = input.mcp {
+            let discovery = input.retained_execution_data.and_then(|data| {
+                data.get::<crate::native_interception::ProfileMcpSource>()
+                    .and_then(|source| source.result_selection.clone())
+                    .or_else(|| data.get::<crate::mcp_result_control::Selection>())
+            });
             for info in binding.tools() {
                 let native_name = info.canonical_tool_name();
                 let admitted = voice
@@ -2693,7 +3311,12 @@ impl ToolContributor for PythonContributor {
                         }),
                         None => tools.policy.allows(&native_name),
                     };
-                if !admitted {
+                // Realtime declaration capture has no text step to evaluate a discovery callback.
+                if !admitted
+                    || discovery.as_ref().is_some_and(|selection| {
+                        selection.filters_server_discovery(&info.server_name)
+                    })
+                {
                     continue;
                 }
                 let server = binding
@@ -2922,6 +3545,8 @@ impl ToolContributor for PythonContributor {
             None,
             None,
             None,
+            true,
+            None,
         )
     }
 
@@ -3022,16 +3647,34 @@ impl ToolContributor for PythonContributor {
         {
             return Vec::new();
         }
-        self.executors(
+        let mut executors = self.executors(
             thread,
-            tools,
+            tools.clone(),
             snapshot.generation.clone(),
             snapshot.use_deferred_specs,
             &snapshot.slots,
             Some(snapshot.receipts.clone()),
-            profile,
+            profile.clone(),
             manual,
-        )
+            true,
+            Some(step.get_or_init(FinalStepBuiltinTools::default)),
+        );
+        for generation in admitted_client_generations(thread, &snapshot.generation, &profile) {
+            let slots: Vec<_> = (0..generation.entries.len()).collect();
+            executors.extend(self.executors(
+                thread,
+                tools.clone(),
+                generation,
+                true,
+                &slots,
+                Some(snapshot.receipts.clone()),
+                profile.clone(),
+                None,
+                false,
+                Some(step.get_or_init(FinalStepBuiltinTools::default)),
+            ));
+        }
+        executors
     }
 
     fn select_tools_for_step<'a>(
@@ -3068,17 +3711,51 @@ impl ToolContributor for PythonContributor {
                 && step.get::<ProfileCatalog>().is_some_and(|catalog| {
                     catalog.selecting_steps || (profile.is_some() && resolves_mcp_names)
                 });
+            let captured_mcp = thread
+                .get::<codex_extension_api::HostedModelTools>()
+                .map(|hosted| {
+                    hosted
+                        .tools
+                        .iter()
+                        .filter_map(|tool| match tool {
+                            codex_tools::HostedToolSpec::Mcp(tool) => Some(
+                                ToolName::new(Some("hosted_mcp".into()), tool.server_label.clone())
+                                    .with_default_namespace(),
+                            ),
+                            _ => None,
+                        })
+                        .collect::<HashSet<_>>()
+                })
+                .unwrap_or_default();
             if let Some(active) = &active {
                 if active.turn != turn.level_id() || !tools.admits_generation(&active.generation) {
                     return Err("Expired step selection owner or generation".into());
                 }
-            } else if !source_owned && profile.is_none() {
+            } else if !source_owned && profile.is_none() && captured_mcp.is_empty() {
                 return Ok(None);
             }
             let catalog = step.get::<StepCatalog>().ok_or("Missing step catalog")?;
             if !Arc::ptr_eq(&catalog.generation, &generation) {
                 return Err("Expired step catalog generation".into());
             }
+            let admitted_mcp = catalog
+                .slots
+                .iter()
+                .filter_map(|slot| generation.entries.get(*slot))
+                .filter(|entry| matches!(entry.spec, ToolSpec::Mcp(_)))
+                .map(|entry| entry.name.clone().with_default_namespace())
+                .collect::<HashSet<_>>();
+            let mut seen = HashSet::new();
+            let retained_candidates = candidates
+                .iter()
+                .filter(|name| {
+                    let name = (*name).clone().with_default_namespace();
+                    (!captured_mcp.contains(&name) || admitted_mcp.contains(&name))
+                        && seen.insert(name)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let candidates = retained_candidates.as_slice();
             let allowed = if profile.is_some() {
                 candidates.to_vec()
             } else if let Some(names) = active.as_ref().and_then(|active| active.names.as_ref()) {
@@ -3187,8 +3864,17 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
-            let mcp_names = step
-                .get::<Arc<codex_mcp::McpBinding>>()
+            let mcp_binding = step.get::<Arc<codex_mcp::McpBinding>>();
+            let discovery_selection = if mcp_binding
+                .as_ref()
+                .is_some_and(|binding| !binding.tools().is_empty())
+            {
+                crate::mcp_result_control::discovery_selection(thread, step)
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
+            };
+            let mcp_names = mcp_binding
                 .map(|binding| {
                     binding
                         .tools()
@@ -3196,10 +3882,19 @@ impl ToolContributor for PythonContributor {
                         .filter_map(|tool| {
                             let name = tool.canonical_tool_name();
                             allowed.contains(&name).then(|| {
-                                json!({
+                                let mut projected = json!({
                                     "server": tool.server_name, "tool": tool.tool.name,
                                     "namespace": name.namespace, "name": name.name,
-                                })
+                                });
+                                if discovery_selection.as_ref().is_some_and(|selection| {
+                                    selection.filters_discovery(
+                                        &tool.server_name,
+                                        tool.tool.name.as_ref(),
+                                    )
+                                }) {
+                                    projected["definition"] = json!(&tool.tool);
+                                }
+                                projected
                             })
                         })
                         .collect::<Vec<_>>()
@@ -3319,6 +4014,8 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    executor_tools: Option<Arc<FinalStepBuiltinTools>>,
+    decision_selection: Option<Arc<crate::agent_profiles::DecisionHandoffSelection>>,
     admission: Option<Arc<crate::turn_settlement::Turn>>,
     manual: Option<Arc<CapturedManualTools>>,
     profile: Option<codex_extension_api::AgentProfileReceipt>,
@@ -3353,6 +4050,23 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         }
     }
 
+    fn client_search_source(&self) -> Option<ToolName> {
+        let turn = self.admission.as_ref()?;
+        let catalogs = turn
+            .client_search_catalogs
+            .lock()
+            .expect("client search catalogs poisoned");
+        let catalog = catalogs.iter().find(|catalog| {
+            catalog.accepted.load(Ordering::Acquire)
+                && Arc::ptr_eq(&catalog.generation, &self.generation)
+                && catalog.profile == self.profile
+        })?;
+        catalog.source.entries.iter().find_map(|entry| {
+            matches!(&entry.spec, ToolSpec::ProviderToolSearch(search) if !search.searches_on_provider())
+                .then(|| entry.name.clone())
+        })
+    }
+
     fn supports_parallel_tool_calls(&self) -> bool {
         // Core admits each callback independently. A waiting callback must not
         // prevent an automatic or manual sibling from producing its result.
@@ -3379,10 +4093,33 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
 
     fn on_result_accepted(
         &self,
-        _: &str,
-        _: &str,
+        turn_id: &str,
+        call_id: &str,
         result: &dyn ToolOutput,
     ) -> codex_tools::AcceptedToolOutcome {
+        if let Some(turn) = &self.admission {
+            for catalog in turn
+                .client_search_catalogs
+                .lock()
+                .expect("client search catalogs poisoned")
+                .iter()
+            {
+                if catalog.turn == turn_id
+                    && catalog.call_id == call_id
+                    && Arc::ptr_eq(&catalog.source, &self.generation)
+                {
+                    let expected = *catalog
+                        .expected
+                        .lock()
+                        .expect("client search receipt poisoned");
+                    if expected.is_some()
+                        && expected == client_search_output_digest(result, call_id)
+                    {
+                        catalog.accepted.store(true, Ordering::Release);
+                    }
+                }
+            }
+        }
         codex_tools::AcceptedToolOutcome {
             start_response: result.realtime_response_requested(),
             ..Default::default()
@@ -3394,8 +4131,53 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         ToolCall<'call>: 'a,
     {
         Box::pin(async move {
-            let arguments: Value = serde_json::from_str(call.function_arguments()?)
-                .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+            if matches!(self.spec(), ToolSpec::ApplyPatch {})
+                && (!matches!(call.payload, ToolPayload::ApplyPatch { .. })
+                    || call.source != ToolCallSource::Direct)
+            {
+                return Err(FunctionCallError::Fatal(
+                    "Application patch requires its native direct call payload".into(),
+                ));
+            }
+
+            let client_search = if let ToolPayload::ClientToolSearch(search) = &call.payload {
+                Some(Arc::new(ClientToolSearchWork {
+                    call: search.clone(),
+                    generation: self.generation.clone(),
+                    profile: self.profile.clone(),
+                    turn_owner: self
+                        .admission
+                        .as_ref()
+                        .map(Arc::downgrade)
+                        .unwrap_or_default(),
+                    turn: call.turn_id.clone(),
+                    call_id: call.call_id.clone(),
+                    candidate: Mutex::default(),
+                }))
+            } else {
+                None
+            };
+            let (arguments, argument_error) = match &client_search {
+                Some(search) => (search.call.arguments.clone(), None),
+                None => {
+                    let raw = match &call.payload {
+                        ToolPayload::HostedMcpApproval { request } => Cow::Owned(
+                            serde_json::to_string(request)
+                                .map_err(|error| FunctionCallError::Fatal(error.to_string()))?,
+                        ),
+                        _ => Cow::Borrowed(call.function_arguments()?),
+                    };
+                    match serde_json::from_str::<Value>(&raw) {
+                        Ok(value) => (value, None),
+                        Err(error) if self.generation.input_error_slots.contains(&self.slot) => {
+                            (Value::String(raw.into_owned()), Some(error.to_string()))
+                        }
+                        Err(error) => {
+                            return Err(FunctionCallError::RespondToModel(error.to_string()));
+                        }
+                    }
+                }
+            };
             if let Some(store) = &self.tools.local_store {
                 let id = codex_protocol::ThreadId::from_string(&self.thread)
                     .map_err(|_| FunctionCallError::Fatal("invalid local tool thread".into()))?;
@@ -3412,6 +4194,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .await
                     .map_err(|e| FunctionCallError::Fatal(e.to_string()))?;
             }
+            let raw_function_arguments = match (&call.source, &call.payload) {
+                (ToolCallSource::Direct, ToolPayload::Function { arguments })
+                    if client_search.is_none() =>
+                {
+                    Some(arguments.as_str())
+                }
+                _ => None,
+            };
             let (key, receiver) = self
                 .tools
                 .enqueue_profile(
@@ -3421,6 +4211,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     &call.turn_id,
                     &call.call_id,
                     arguments,
+                    argument_error,
+                    raw_function_arguments,
                     &call.source,
                     &call.model,
                     Some(NativeMediaContext {
@@ -3435,6 +4227,35 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .as_ref()
                         .map(|manual| manual.slots.contains(&self.slot)),
                     call.conversation_history.realtime_tool_call().cloned(),
+                    client_search.clone(),
+                    self.executor_tools
+                        .as_ref()
+                        .and_then(|selection| selection.names())
+                        .map(|names| {
+                            let mut names = names
+                                .iter()
+                                .filter_map(|name| {
+                                    if name
+                                        .namespace
+                                        .as_deref()
+                                        .is_some_and(|namespace| namespace != "functions")
+                                    {
+                                        return None;
+                                    }
+                                    match name.name.as_str() {
+                                        "exec_command" | "shell_command" => {
+                                            Some("exec_command".to_string())
+                                        }
+                                        "write_stdin" | "apply_patch" | "project_glob"
+                                        | "project_grep" => Some(name.name.clone()),
+                                        _ => None,
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            names.sort_unstable();
+                            names.dedup();
+                            names
+                        }),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
@@ -3454,9 +4275,16 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     reply_guard.completed = true;
                     response
                 }
-                Err(_) if matches!(call.payload, ToolPayload::Computer { .. }) => {
+                Err(_)
+                    if matches!(
+                        call.payload,
+                        ToolPayload::ApplyPatch { .. }
+                            | ToolPayload::Computer { .. }
+                            | ToolPayload::Shell { .. }
+                    ) =>
+                {
                     return Err(FunctionCallError::Fatal(
-                        "Computer call cancelled before reply".into(),
+                        "Native local tool call cancelled before reply".into(),
                     ));
                 }
                 Err(_) if self.tools.local_store.is_some() || self.tools.custom_store.is_some() => {
@@ -3471,6 +4299,25 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     ));
                 }
             };
+            if let Some(selection) = &self.decision_selection {
+                if !self.tools.admits_generation(&self.generation) {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Expired Decision handoff source catalog".into(),
+                    ));
+                }
+                selection
+                    .record(
+                        &call.turn_id,
+                        &call.call_id,
+                        response.handoff_target_profile_id,
+                        response.response.success,
+                    )
+                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+            } else if response.handoff_target_profile_id.is_some() {
+                return Err(FunctionCallError::RespondToModel(
+                    "Only Decision handoffs may select a target".into(),
+                ));
+            }
             if response.response.success
                 && call.source == ToolCallSource::Direct
                 && self.tools.admits_generation(&self.generation)
@@ -3482,17 +4329,76 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .expect("JavaScript completion receipts poisoned")
                     .insert(key);
             }
-            if let ToolPayload::Computer { arguments } = &call.payload {
-                return Ok(
-                    Box::new(codex_tools::ComputerToolOutput::from_dynamic_response(
+            if let ToolPayload::ApplyPatch { arguments } = &call.payload {
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ApplyPatchToolOutput::from_dynamic_response(
                         arguments,
                         response.response,
-                    )?) as Box<dyn ToolOutput>,
-                );
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
+            }
+            if let Some(search) = client_search {
+                let selection =
+                    codex_tools::ClientToolSearchSelection::from_response(&response.response)?;
+                let candidate = search
+                    .candidate
+                    .lock()
+                    .expect("client search candidate poisoned")
+                    .clone();
+                let added = match (&selection.catalog_generation, &candidate) {
+                    (None, None) => Vec::new(),
+                    (Some(id), Some(catalog)) if id == &catalog.generation.id.to_string() => {
+                        ClientToolSearchWork::additional_entries(&catalog.generation)
+                    }
+                    _ => {
+                        return Err(FunctionCallError::RespondToModel(
+                            "Client tool search catalog does not belong to this call".into(),
+                        ));
+                    }
+                };
+                let output = selection.resolve(&search.call.catalog, &added)?;
+                if let Some(catalog) = candidate {
+                    *catalog
+                        .expected
+                        .lock()
+                        .expect("client search receipt poisoned") =
+                        client_search_output_digest(&output, &call.call_id);
+                }
+                return Ok(Box::new(output) as Box<dyn ToolOutput>);
+            }
+            if let ToolPayload::Computer { arguments } = &call.payload {
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ComputerToolOutput::from_dynamic_response(
+                        arguments,
+                        response.response,
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
+            }
+            if let ToolPayload::Shell { arguments } = &call.payload {
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ApplicationShellOutput::from_dynamic_response(
+                        arguments,
+                        response.response,
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
+            }
+            if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: hosted_mcp_output(response.response)?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
             }
             Ok(Box::new(RealtimeToolOutput {
                 output: PythonOutput(response.response),
                 start_response: response.start_response,
+                acceptance: response.acceptance,
             }) as Box<dyn ToolOutput>)
         })
     }
@@ -3500,16 +4406,38 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
 
 pub(crate) struct PythonOutput(pub(crate) DynamicToolResponse);
 
-struct RealtimeToolOutput {
-    output: PythonOutput,
-    start_response: bool,
+fn hosted_mcp_output(
+    response: DynamicToolResponse,
+) -> std::result::Result<codex_tools::HostedMcpApprovalDecision, FunctionCallError> {
+    if !response.success {
+        return Err(FunctionCallError::Fatal(
+            "Hosted MCP approval callback failed".into(),
+        ));
+    }
+    let [DynamicToolCallOutputContentItem::InputText { text }] = response.content_items.as_slice()
+    else {
+        return Err(FunctionCallError::Fatal(
+            "Invalid Hosted MCP approval decision".into(),
+        ));
+    };
+    serde_json::from_str(text)
+        .map_err(|_| FunctionCallError::Fatal("Invalid Hosted MCP approval decision".into()))
 }
-impl ToolOutput for RealtimeToolOutput {
+
+struct RealtimeToolOutput<T: ToolOutput> {
+    output: T,
+    start_response: bool,
+    acceptance: Option<oneshot::Sender<()>>,
+}
+impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
     fn log_output(&self) -> String {
         self.output.log_output()
     }
     fn success_for_logging(&self) -> bool {
         self.output.success_for_logging()
+    }
+    fn contains_external_context(&self) -> bool {
+        self.output.contains_external_context()
     }
     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
         self.output.to_response_item(call_id, payload)
@@ -3517,11 +4445,22 @@ impl ToolOutput for RealtimeToolOutput {
     fn realtime_response_requested(&self) -> bool {
         self.start_response
     }
+    fn mark_accepted(&mut self) {
+        self.output.mark_accepted();
+        if let Some(acceptance) = self.acceptance.take() {
+            let _ = acceptance.send(());
+        }
+    }
 }
 
 impl ToolLifecycleContributor for PythonContributor {
+    fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+        Box::pin(async move { sandbox_events::on_start(&input) })
+    }
+
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
+            sandbox_events::on_finish(&input);
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 // A rejected duplicate shares a call ID, not the original invocation.
                 // PendingReply already retires and cancels its exact owner on drop.
@@ -3577,7 +4516,14 @@ impl TurnLifecycleContributor for PythonContributor {
             }
 
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
-                if tools.instance.is_some() && tools.child_before_step {
+                // The original turn keeps provenance without keeping the thread owner alive.
+                input.turn_store.insert(Arc::downgrade(&tools));
+                let child_mcp_discovery = tools.instance.is_some()
+                    && input
+                        .thread_store
+                        .get::<crate::mcp_result_control::McpResultControl>()
+                        .is_some_and(|control| control.has_discovery_filter());
+                if tools.instance.is_some() && (tools.child_before_step || child_mcp_discovery) {
                     input
                         .turn_store
                         .get_or_init(codex_extension_api::InitialTurnInput::default);
@@ -3588,10 +4534,17 @@ impl TurnLifecycleContributor for PythonContributor {
                     .entries
                     .iter()
                     .any(|entry| entry.exposure == ToolExposure::Deferred);
+                let run_model = input
+                    .turn_store
+                    .get::<codex_extension_api::CapturedRunModelOverride>();
+                let model_name = run_model.as_ref().map_or_else(
+                    || input.collaboration_mode.model(),
+                    |model| model.0.as_str(),
+                );
                 let use_deferred_specs = if deferred && let Some(manager) = self.manager.upgrade() {
                     let model = manager
                         .get_models_manager()
-                        .get_model_info(input.collaboration_mode.model(), &self.models_config)
+                        .get_model_info(model_name, &self.models_config)
                         .await;
                     model.supports_search_tool
                         && (self.code_mode_enabled
@@ -3604,8 +4557,11 @@ impl TurnLifecycleContributor for PythonContributor {
                     use_deferred_specs,
                 });
                 let operation = input.turn_store.get::<Option<OperationSelection>>();
-                let selection = tools
-                    .turn_selection(input.turn_id, operation.as_deref().and_then(Option::as_ref));
+                let selection = tools.turn_selection(
+                    input.turn_id,
+                    operation.as_deref().and_then(Option::as_ref),
+                    child_mcp_discovery,
+                );
                 *tools
                     .selection
                     .lock()
@@ -3714,6 +4670,26 @@ mod pending_tests {
     use super::*;
 
     #[test]
+    fn computer_output_preserves_external_context_and_acceptance() {
+        let arguments = json!({"type":"computer_call","call_id":"computer-data","actions":[{"type":"screenshot"}],"pending_safety_checks":[]}).to_string();
+        let response = serde_json::from_value(json!({"success":true,"contentItems":[{"type":"inputText","text":json!({"output":{"type":"computer_screenshot","image_url":"data:image/png;base64,aA=="},"acknowledged_safety_checks":[]}).to_string()}]})).unwrap();
+        let (acceptance, mut accepted) = oneshot::channel();
+        let mut output = RealtimeToolOutput {
+            output: codex_tools::ComputerToolOutput::from_dynamic_response(&arguments, response)
+                .unwrap(),
+            start_response: true,
+            acceptance: Some(acceptance),
+        };
+        assert!(output.contains_external_context());
+        assert!(matches!(
+            accepted.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        output.mark_accepted();
+        assert_eq!(accepted.try_recv(), Ok(()));
+    }
+
+    #[test]
     fn response_scheduling_flag_stays_out_of_user_content() {
         let request = json!({"_sdk_python_tool":{"thread":"root","generation":0,"slot":0},"turnId":"turn","callId":"call"});
         let response = json!({"contentItems":[{"type":"inputText","text":"{\"start_response\":false}"}],"success":true});
@@ -3727,6 +4703,7 @@ mod pending_tests {
         let output = RealtimeToolOutput {
             output: PythonOutput(background.response),
             start_response: background.start_response,
+            acceptance: None,
         };
         assert!(!output.realtime_response_requested());
         assert_eq!(output.log_output(), "{\"start_response\":false}");
@@ -3743,6 +4720,8 @@ mod pending_tests {
         let raw_schema = json!({"type":"object","properties":{"email":{"type":"string","format":"email","examples":["a@example.com"]}},"required":["email"],"additionalProperties":false});
         let declaration = |name: &str, deferred: bool| {
             DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                strict: false,
+                output_schema: None,
                 name: name.into(),
                 description: "Original clean description".into(),
                 input_schema: raw_schema.clone(),
@@ -3871,12 +4850,16 @@ mod pending_tests {
                 "turn",
                 "captured-manual",
                 json!({}),
+                None,
+                None,
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
                 None,
                 None,
                 Some(manual.slots.contains(&0)),
+                None,
+                None,
                 None,
             )
             .unwrap();
@@ -3916,6 +4899,7 @@ mod pending_tests {
                 specs: Vec::new(),
                 defaults: Vec::new(),
                 terminal_slots: HashSet::new(),
+                input_error_slots: HashSet::new(),
             })),
             generation_high_water: AtomicU64::new(0),
             profile_catalogs: RwLock::new(HashMap::new()),
@@ -3937,6 +4921,8 @@ mod pending_tests {
             completion_replies: Mutex::default(),
         });
         let specs = vec![DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            strict: false,
+            output_schema: None,
             name: "decision".into(),
             description: "Choose.".into(),
             input_schema: json!({"type":"object","properties":{}}),
@@ -4105,6 +5091,9 @@ mod pending_tests {
         ] {
             PythonContributor::default()
                 .on_tool_finish(ToolFinishInput {
+                    builtin_sandbox_operation: None,
+                    builtin_sandbox_duration: None,
+                    builtin_sandbox_exit_code: None,
                     session_store: &session,
                     thread_store: &thread,
                     turn_store: &turn,
@@ -4208,6 +5197,7 @@ mod pending_tests {
                     defaults: None,
                     selecting_steps: true,
                     transform_context: false,
+                    post_turn_compact: false,
                     before_compact: false,
                     before_complete: false,
                 });
@@ -4540,6 +5530,8 @@ mod pending_tests {
             Err(_) => panic!("unexpected fixture owner"),
         });
         *tools.selection.lock().unwrap() = Some(ActiveSelection {
+            model_override: None,
+            model_settings_override: None,
             turn: "turn".into(),
             generation: tools.snapshot(),
             slots: None,
@@ -4564,6 +5556,8 @@ mod pending_tests {
             .unwrap()
             .insert("child".into(), Arc::downgrade(&child));
         let root_operation = OperationSelection {
+            model_override: None,
+            model_settings_override: None,
             generation: "0".into(),
             slots: Some(Vec::new()),
             names: None,
@@ -4572,7 +5566,7 @@ mod pending_tests {
             operation_declaration_source: None,
         };
         *child.selection.lock().unwrap() =
-            child.turn_selection("child-turn", Some(&root_operation));
+            child.turn_selection("child-turn", Some(&root_operation), false);
         (root, thread, child)
     }
 
@@ -4595,7 +5589,7 @@ mod pending_tests {
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         let disabled =
             PythonTools::descendant(&tools(), "disabled".into(), Arc::default(), None).unwrap();
-        assert!(disabled.turn_selection("turn", None).is_none());
+        assert!(disabled.turn_selection("turn", None, false).is_none());
         assert!(root.selection.lock().unwrap().is_none());
     }
 
@@ -4864,6 +5858,8 @@ mod pending_tests {
         let executors = contributor.tools_for_step(&session, &thread, &original);
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         *tools.selection.lock().unwrap() = Some(ActiveSelection {
+            model_override: None,
+            model_settings_override: None,
             turn: "successor".into(),
             generation: tools.snapshot(),
             slots: Some(Vec::new()),
@@ -4948,6 +5944,8 @@ mod pending_tests {
         // A registered but non-default tool must not leak into an omitted roster.
         let mut specs = tools.snapshot().specs.clone();
         specs.push(DynamicToolSpec::Function(DynamicToolFunctionSpec {
+            strict: false,
+            output_schema: None,
             name: "hidden".into(),
             description: "Optional tool.".into(),
             input_schema: json!({"type":"object","properties":{}}),
@@ -4994,6 +5992,8 @@ mod pending_tests {
             let operation: OperationSelection = serde_json::from_value(wire).unwrap();
             tools.validate_operation(&operation).unwrap();
             *tools.selection.lock().unwrap() = Some(ActiveSelection {
+                model_override: None,
+                model_settings_override: None,
                 turn: "turn".into(),
                 generation: tools.snapshot(),
                 slots: operation.slots,
@@ -5384,8 +6384,9 @@ mod pending_tests {
                 tools.snapshot().specs.clone(),
                 &[],
                 &[],
+                &[],
                 None,
-                [false; 4],
+                [false; 5],
                 false,
             )
             .unwrap();
@@ -5425,8 +6426,9 @@ mod pending_tests {
                 tools.snapshot().specs.clone(),
                 &[],
                 &[0],
+                &[],
                 None,
-                [false; 4],
+                [false; 5],
                 false,
             )
             .unwrap();
@@ -5435,6 +6437,7 @@ mod pending_tests {
             .configure_terminal(TerminalSlots {
                 generation: source.generation.id.to_string(),
                 slots: vec![0],
+                input_error_slots: Vec::new(),
             })
             .unwrap();
         assert!(Arc::ptr_eq(&default, &tools.snapshot()));
@@ -5443,6 +6446,7 @@ mod pending_tests {
                 .configure_terminal(TerminalSlots {
                     generation: source.generation.id.to_string(),
                     slots: vec![],
+                    input_error_slots: Vec::new(),
                 })
                 .is_err()
         );
@@ -5452,10 +6456,11 @@ mod pending_tests {
             .configure_terminal(TerminalSlots {
                 generation: source.generation.id.to_string(),
                 slots: vec![0],
+                input_error_slots: Vec::new(),
             })
             .unwrap();
         assert!(Arc::ptr_eq(&source.generation, &tools.snapshot()));
-        let startup = tools.startup_profile_catalog([false; 4], &source).unwrap();
+        let startup = tools.startup_profile_catalog([false; 5], &source).unwrap();
         assert_eq!(startup.generation.terminal_slots, HashSet::from([0]));
         assert!(
             tools
@@ -5463,8 +6468,9 @@ mod pending_tests {
                     tools.snapshot().specs.clone(),
                     &[],
                     &[1],
+                    &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false
                 )
                 .is_err()
@@ -5475,8 +6481,9 @@ mod pending_tests {
                     tools.snapshot().specs.clone(),
                     &[],
                     &[0, 0],
+                    &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false
                 )
                 .is_err()

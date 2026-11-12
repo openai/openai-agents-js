@@ -213,3 +213,19 @@ Public reads, lists, subscriptions, cancellation, and follow-ups must all enforc
 ### Recover without re-executing
 
 After the prior execution owner and all its official event consumers have stopped, the host calls `executor.recover(binding, currentContext)`. Recovery saves the retained desired snapshot through the same official store. It never invokes the Agent factory or native execution. Crashed `running` and `claimed` records become `unknown` outcomes, represented as failed public Tasks with `agents.a2a.outcome: 'unknown'`. Recovery does not claim to reverse side effects.
+
+## Trusted registry and receiver restart reference
+
+The source-build [official-handler recovery cases](test/a2a-native.test.ts) named `reports $state publication failure and recovers after an official handler $fault fault` have been combining a host-owned specialist registry, caller-owned credentials, and a saved task snapshot. The completed-task cases have been selecting `approved-specialist` through `connectA2A`, rejecting an unknown name before acquiring credentials, and creating one private application receipt through a native function tool.
+
+With the [source-build prerequisites](../../examples/codex/guides/building.md) and native test executor configured, this focused command from the checkout root has been exercising the reference without an API key:
+
+```sh
+OPENAI_AGENTS_NATIVE_TESTS=1 pnpm exec vitest run packages/agents-codex/test/a2a-native.test.ts -t 'reports .* publication failure and recovers'
+```
+
+After stopping the original receiver and official handler, the cases have been starting a fresh process against the saved file store. Recovery has been republishing the exact committed snapshot with zero Agent factory calls, while the new process has been reading the same effect receipt. Exclusive receipt-file creation itself has been serving as the synthetic business action. A real downstream action has been requiring its own atomic receipt or idempotency contract; this fixture has not been establishing exactly-once delivery under an uncertain acknowledgment.
+
+The existing [recovery cases](test/a2a-recovery.test.ts) named `records crashed %s execution as unknown without replay` and [provider case](test/a2a.test.ts) named `keeps lost create acknowledgments unknown and only observes a known receipt after restart` have been covering unknown execution or mutation outcomes separately. The official-handler cases named `cancels a settled manual request through the retained official bus` have been covering cancellation. The host has been owning reconciliation against an authoritative business receipt, current authorization, and recovery scheduling. The JSON file store has been demonstrating supervised sequential worker replacement, with the previous owner and handler stopped; it has not been providing cross-process leases, production authentication, power-loss recovery, or subscription reconnection.
+
+The provider case named `reconciles an accepted lost create only through an authorized application receipt` has been exercising that host reconciliation. The receiver has been committing the effect and its task ID before the create acknowledgment disappears. The host has been verifying the receipt against the current specialist, endpoint, caller, operation, and generation. A fresh connection has then been using `getTask` for the verified ID. An absent receipt or a changed binding has been leaving the outcome unknown without a new create.

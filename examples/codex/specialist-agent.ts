@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { Agent, tool, type ToolContext } from '@openai/agents';
+import {
+  Agent,
+  tool,
+  type ToolContext,
+  type TraceContext,
+} from '@openai/agents';
 import { text, toolCall, withScriptedResponses } from '@openai/agents/testing';
 import { z } from 'zod';
 
@@ -24,10 +29,14 @@ export const readCatalog = tool({
 export async function consultSpecialist(
   { specialist, catalog }: Consultation,
   signal: AbortSignal,
+  parentTrace?: TraceContext,
 ): Promise<Summary> {
   signal.throwIfAborted();
   // Opening has no public abort option. Await it even if the outer tool stops.
-  const session = await specialist.session({ context: catalog });
+  const session = await specialist.session({
+    context: catalog,
+    ...(parentTrace ? { parentTrace } : {}),
+  });
   let closing: Promise<void> | undefined;
   const close = () => {
     if (!closing) {
@@ -63,8 +72,10 @@ export const consult = tool({
   description: 'Ask the catalog specialist for a typed summary.',
   parameters: z.strictObject({}),
   result: summarySchema,
-  execute: (_args, { context, signal }: ToolContext<Consultation>) =>
-    consultSpecialist(context, signal),
+  execute: (
+    _args,
+    { context, signal, traceContext }: ToolContext<Consultation>,
+  ) => consultSpecialist(context, signal, traceContext),
 });
 
 /** Run two real Agents with independent scripted providers and no API key. */

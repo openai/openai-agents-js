@@ -5,12 +5,13 @@ import {
   privateRuntime,
   finishPrivateRuntime,
 } from './private-engine-reuse';
-import { RunCleanupError } from './native-error';
+import { RunCleanupError, RunDiagnosticError } from './native-error';
 import { captureInitialMessages } from './initial-messages';
 import { projectProfileCatalog } from './agent-profiles';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
+import { hostedMcpConfigurations } from './hosted-mcp-binding';
 import { assertCheckpointNetworkPolicy } from './state';
 import {
   assertCheckpointSelections,
@@ -43,6 +44,7 @@ import {
 import {
   sessionStateSchema,
   isManualSessionState,
+  isOutputAwareState,
   nativeCheckpoint,
 } from './state';
 import { environmentConfig, projectSearchRuntime } from './environment';
@@ -75,7 +77,14 @@ export async function openSession(
   oneShot?: OneShotOptions,
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
-  const { initialMessages, ...liveOptions } = options;
+  const hostedMcp = hostedMcpConfigurations([
+    ...catalog.tools,
+    ...[...(options.agentGraph?.profiles.values() ?? [])].flatMap(
+      (profile) => profile.catalog.tools,
+    ),
+  ]);
+  const { initialMessages, verifyRememberedApprovals, ...liveOptions } =
+    options;
   const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
     initialMessages,
@@ -125,6 +134,32 @@ export async function openSession(
     throw new TypeError(
       'Checkpoint and Environment must agree on read-only execution',
     );
+  const authenticatedHistory = options[managedWorkspaceRestore] === true;
+  if (isOutputAwareState(saved) && saved.remembered_approvals?.length) {
+    const verified = await verifyRememberedApprovals?.(structuredClone(saved));
+    options.environmentOwner?.signal.throwIfAborted();
+    if (verified !== true) {
+      delete saved.remembered_approvals;
+    }
+  }
+  if (saved && !authenticatedHistory) {
+    // Imported history has been remaining usable without granting memory admission.
+    for (const thread of [saved, ...saved.descendants]) {
+      for (const item of thread.history) {
+        const payload = item.payload;
+        if (
+          item.type !== 'turn_context' ||
+          !payload ||
+          typeof payload !== 'object' ||
+          Array.isArray(payload)
+        )
+          continue;
+        const receipt = payload.sdk_receipt;
+        if (receipt && typeof receipt === 'object' && !Array.isArray(receipt))
+          delete receipt.sandbox_memory_input_admitted;
+      }
+    }
+  }
   const native = await binding();
   const restoredSource = saved && options.agentGraph?.restoredSource;
   if (restoredSource) {
@@ -155,6 +190,14 @@ export async function openSession(
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
+    ...(hostedMcp.length
+      ? {
+          _hosted_tools: [
+            ...(capturedThreadOptions._hosted_tools ?? []),
+            ...hostedMcp,
+          ],
+        }
+      : {}),
     ...(options.environmentOwner?.workspaceInstructions === undefined
       ? {}
       : {
@@ -245,8 +288,12 @@ export async function openSession(
     const current = decode(z.array(jsonObject), catalog.specsJson);
     for (const call of pending) {
       const select = (specs: typeof prior) =>
-        specs.find(
-          (spec) => spec.type === 'function' && spec.name === call.name,
+        specs.find((spec) =>
+          call.shell
+            ? call.name === 'shell' && spec.type === 'shell'
+            : call.patch
+              ? call.name === 'apply_patch' && spec.type === 'applyPatch'
+              : spec.type === 'function' && spec.name === call.name,
         );
       const oldSpec = select(prior);
       const currentSpec = select(current);
@@ -325,8 +372,8 @@ export async function openSession(
     );
     if (completedFailure) throw completedFailure;
   });
-  // The explicit runtime parks plain executions only. An ordinary fallback
-  // receives a fresh Engine/home and cannot inherit a previously parked kernel.
+  // Plain-only owners have been parking direct executions only. A fallback has
+  // been receiving a fresh Engine/home instead of inheriting the parked kernel.
   if (borrow?.plainOnly && idle) {
     const home = await borrow.reset();
     runtime = { ...runtime, ...home };
@@ -473,6 +520,8 @@ export async function openSession(
   );
   options.environmentOwner?.attachSession(session);
   options.environmentOwner?.signal.throwIfAborted();
+  if (oneShot?.returnRawUsage) session._startRawUsage();
+  if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
   if (isManualSessionState(saved))
     await session._restoreManualContinuation(saved);
@@ -488,9 +537,14 @@ async function closePrivateOwnedRuntime(
 }
 
 interface OwnedRunOptions {
+  modelOverride?: string;
+  modelSettingsOverride?: import('./provider').ModelSettings;
   guardrailInput?: import('./input').UserInput;
+  errorInput?: import('./input').UserInput | null;
   returnState?: boolean;
   returnHistory?: boolean;
+  returnRawUsage?: boolean;
+  returnItems?: boolean;
   signal?: AbortSignal;
   maxModelSteps?: number;
   budget?: import('./run-budget').RunBudgetTracker;
@@ -560,21 +614,37 @@ async function completeOwnedSession<Output>(
     }
     throw options.signal.reason;
   }
-  const pending =
-    input == null
-      ? session.wait()
-      : session
-          ._run(
-            input,
-            options.signal,
-            options.maxModelSteps,
-            options.budget,
-            options.guardrailInput,
-          )
-          .then(() => session.wait());
+  const pending = (async () => {
+    if (options.returnRawUsage) session._startRawUsage();
+    if (options.returnItems || options.errorInput !== undefined)
+      session._startProducedItems();
+    if (input != null) {
+      await session._run(
+        input,
+        options.signal,
+        options.maxModelSteps,
+        options.budget,
+        options.guardrailInput,
+        options.errorInput ?? undefined,
+        options.modelOverride,
+        options.modelSettingsOverride,
+      );
+    }
+    return session.wait();
+  })();
   delete options.guardrailInput;
   const result = await pending.catch(async (error) => {
-    const primary = originalFailure(error);
+    let primary = originalFailure(error);
+    if (options.errorInput !== undefined && !options.signal?.aborted) {
+      try {
+        const details = await session._captureRunErrorDetails(
+          options.errorInput,
+        );
+        if (details) primary = new RunDiagnosticError(details, primary);
+      } catch {
+        // Preserve the original failure when evidence capture throws.
+      }
+    }
     try {
       await closeOwned();
     } catch (cleanupError) {
@@ -590,7 +660,10 @@ async function completeOwnedSession<Output>(
   try {
     options.signal?.throwIfAborted();
     const completed =
-      options.returnState || options.returnHistory
+      options.returnState ||
+      options.returnHistory ||
+      options.returnRawUsage ||
+      options.returnItems
         ? Object.freeze({
             ...result,
             ...(options.returnState
@@ -598,6 +671,12 @@ async function completeOwnedSession<Output>(
               : {}),
             ...(options.returnHistory
               ? { history: await captureRunHistory(session) }
+              : {}),
+            ...(options.returnRawUsage
+              ? { rawUsage: session._takeRawUsage(result.turn.turnId) }
+              : {}),
+            ...(options.returnItems
+              ? { items: session._takeProducedItems(result.turn.turnId) }
               : {}),
           })
         : result;
