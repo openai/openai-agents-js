@@ -49,18 +49,32 @@ nativeIt(
       },
       {
         type: 'reasoning',
-        id: 'rs_foreign',
+        id: '__fake_id__',
         summary: [
           { type: 'summary_text', text: 'SYNTHETIC_FOREIGN_REASONING' },
         ],
         encrypted_content: 'synthetic-foreign-provider-state',
-        provider_data: { foreign_reasoning: true },
+        provider_data: {
+          thinking_blocks: [
+            {
+              type: 'thinking',
+              thinking: 'SYNTHETIC_FOREIGN_REASONING',
+              signature: 'synthetic-foreign-provider-state',
+            },
+          ],
+        },
       },
       {
         type: 'reasoning',
         id: 'rs_portable',
         summary: [{ type: 'summary_text', text: 'Portable provider summary.' }],
         encrypted_content: 'synthetic-current-provider-state',
+        provider_data: {
+          type: 'reasoning',
+          id: 'rs_portable',
+          encrypted_content: 'synthetic-current-provider-state',
+          fixture_note: 'SYNTHETIC_CURRENT_PROVIDER_METADATA',
+        },
       },
     ];
 
@@ -84,6 +98,12 @@ nativeIt(
       foreignReasoning: input.includes('SYNTHETIC_FOREIGN_REASONING'),
       foreignEncryptedState: input.includes('synthetic-foreign-provider-state'),
       portableReasoning: input.includes('Portable provider summary.'),
+      portableEncryptedState: input.includes(
+        'synthetic-current-provider-state',
+      ),
+      portableItemMetadata: input.includes(
+        'SYNTHETIC_CURRENT_PROVIDER_METADATA',
+      ),
     }).toEqual({
       portableText: true,
       fakeId: false,
@@ -91,6 +111,8 @@ nativeIt(
       foreignReasoning: false,
       foreignEncryptedState: false,
       portableReasoning: true,
+      portableEncryptedState: true,
+      portableItemMetadata: false,
     });
   },
   20_000,

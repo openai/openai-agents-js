@@ -931,7 +931,11 @@
     {
       "path": "sdk-run-model-override.patch",
       "sha256": "3c902abc5f5cc738441217e53fec59914ea63058576d578d1f7d09abd201c13b"
+    },
+    {
+      "path": "sdk-preserve-native-reasoning-provider-metadata.patch",
+      "sha256": "dd2c6016c3fe79373b2ba5d16953008eed810266a9bd669fb23d74e4544812bd"
     }
   ],
-  "result_tree": "5ead71d9c0e681b3f0739bb0d47da76b814805e0"
+  "result_tree": "a0e8472148be2f38bc0de8e9ccea32b2e5eb87b2"
 }
