@@ -15,8 +15,8 @@ import {
   mcpConfig,
   resourceMcpBinding,
   transformMcpResult,
-  splitToolDeclarations as splitResourceDeclarations,
 } from '../../src/runtime/mcp';
+import { splitToolDeclarations as splitResourceDeclarations } from '../../src/runtime/tool-declarations';
 import type {
   JsonObject,
   Engine,

@@ -52,6 +52,8 @@ pub(crate) struct Request {
     observation_retention_all: bool,
     #[serde(default)]
     prefer_buffered_response: bool,
+    #[serde(default)]
+    fresh_websocket_connector: bool,
 }
 
 #[derive(Clone)]
@@ -474,7 +476,7 @@ async fn execute(
         .service_config
         .model_provider
         .supports_websockets
-        .then(|| Arc::new(PlainWebSocket::new()));
+        .then(|| Arc::new(PlainWebSocket::new(request.fresh_websocket_connector)));
     let collecting = prepare_and_collect(
         &engine,
         request,

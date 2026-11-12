@@ -282,6 +282,8 @@ pub struct StartOptions {
     final_output_json_schema: Option<Value>,
     service_tier: Option<String>,
     model_override: Option<String>,
+    model_settings_override:
+        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
     parent_turn_id: Option<String>,
     root_turn_id: Option<String>,
     cyber_access_program: Option<CyberAccessProgram>,
@@ -440,9 +442,29 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
     let mut p: TurnParams = decode(value).map_err(pre_admission)?;
     if let Some(selection) = &selection {
         ensure!(
-            selection.model_override == p.start.model_override,
+            selection.model_override == p.start.model_override
+                && selection.model_settings_override == p.start.model_settings_override,
             "operation selection differs from the admitted run model"
         );
+    }
+    if let Some(model) = &p.start.model_override {
+        state
+            .engine
+            .validate_hosted_search_model(model)
+            .await
+            .map_err(pre_admission)?;
+    }
+    if let Some(settings) = &p.start.model_settings_override {
+        let mut controls = model_settings(
+            serde_json::to_value(settings).map_err(|error| pre_admission(error.into()))?,
+        )
+        .map_err(pre_admission)?;
+        controls.model = p.start.model_override.clone();
+        state
+            .engine
+            .validate_request_controls(thread, &controls)
+            .await
+            .map_err(pre_admission)?;
     }
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
     if (strict.is_some()
@@ -709,6 +731,15 @@ async fn continue_managed<'a>(
         "continuation cannot replace the admitted run model"
     );
     p.start.model_override = retained_model;
+    let retained_settings = selection
+        .as_ref()
+        .and_then(|selection| selection.model_settings_override.clone());
+    ensure!(
+        p.start.model_settings_override.is_none()
+            || p.start.model_settings_override == retained_settings,
+        "continuation cannot replace the admitted run model settings"
+    );
+    p.start.model_settings_override = retained_settings;
     init.insert(selection);
     if let Some(submission) = p.observation_submission_id {
         state
@@ -736,6 +767,9 @@ pub async fn recover_prepared(
     thread_settings: ThreadSettingsOverrides,
     final_output_json_schema: Option<Value>,
     model_override: Option<String>,
+    model_settings_override: Option<
+        codex_protocol::model_request_controls::RunModelSettingsOverride,
+    >,
     selection: Option<crate::python_tools::OperationSelection>,
     trace: Option<W3cTraceContext>,
     observation_submission_id: Option<String>,
@@ -758,6 +792,7 @@ pub async fn recover_prepared(
             .recover_turn_if_idle(WithTurnExtensionData::new(
                 RecoverTurnRequest {
                     model_override,
+                    model_settings_override,
                     turn_id: turn_id.clone(),
                     thread_settings,
                     final_output_json_schema,

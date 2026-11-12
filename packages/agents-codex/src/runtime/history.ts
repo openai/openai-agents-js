@@ -1978,11 +1978,14 @@ export function projectHistory(
     });
     // Core defaults an omitted cache-write field to zero in accounting totals.
     // A partial received total remains unknown even when its known peers are nonzero.
+    // A received completion linked to accounting has a response body ID.
+    // The application completion boundary without one supplies no original usage.
     if (
       turn.usage &&
       retained.some(
         (response) =>
           response.usageSource === 'received' &&
+          response.responseId !== null &&
           response.id !== null &&
           accountedIds.has(response.id) &&
           response.usage?.inputTokensDetails?.cacheWriteTokens === undefined,

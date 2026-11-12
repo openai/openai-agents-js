@@ -7,7 +7,7 @@ import {
   toolSearch,
   type ToolSearchOptions,
 } from '../src/runtime/hosted-tools';
-import { splitToolDeclarations } from '../src/runtime/mcp';
+import { splitToolDeclarations } from '../src/runtime/tool-declarations';
 import { captureTools, tool } from '../src/runtime/tools';
 
 it('captures the client callback separately from detached provider configuration', () => {

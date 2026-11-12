@@ -1050,6 +1050,7 @@ pub async fn continue_retained(
         ),
     )));
     request.start.model_override = receipt.model_override.clone();
+    request.start.model_settings_override = receipt.model_settings_override.clone();
     request.trace = receipt
         .tracing
         .as_ref()

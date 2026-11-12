@@ -280,6 +280,7 @@ const treeState = {
 };
 const manualContinuationSchema = z.object({
   model_override: z.string().min(1).optional(),
+  model_settings_override: losslessJsonObjectSchema.optional(),
   // Outcome metadata remains ordinary data; native restore validates its
   // original completed-response anchor and binds fresh callback receipts.
   tool_outcomes: z

@@ -7,14 +7,8 @@ import {
   toolDeclarationIdentity,
   type ToolCatalog,
 } from './tools';
-import {
-  splitToolDeclarations,
-  HttpMCP,
-  StdioMCP,
-  mcpConfig,
-  mcpPolicies,
-  type McpTool,
-} from './mcp';
+import { HttpMCP, StdioMCP, mcpConfig, mcpPolicies, type McpTool } from './mcp';
+import { splitToolDeclarations } from './tool-declarations';
 import { prepareOutput, type PreparedOutput } from './output';
 import type { Environment } from './environment';
 import type { JsonObject } from './binding';
