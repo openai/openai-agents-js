@@ -10,7 +10,7 @@ import { ModelServer, message } from './fixtures/model-server';
 it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1').each([
   ['workspace-write', 'user'],
   ['danger-full-access', 'user'],
-  ['workspace-write', 'guardian'],
+  ['workspace-write', 'auto_review'],
 ] as const)(
   'keeps run overrides within admitted approval authority (%s, %s)',
   async (sandbox, reviewer) => {
@@ -74,7 +74,7 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1').each([
         return engine;
       });
     const server = new ModelServer(
-      reviewer === 'guardian'
+      reviewer === 'auto_review'
         ? [[message('forced model')], [message('default model')]]
         : [[message('default model')]],
     );

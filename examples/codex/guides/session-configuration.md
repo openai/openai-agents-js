@@ -94,7 +94,7 @@ With the current [source build](building.md), providers configured with the same
 
 ### Per-run model selection
 
-Native runs have been accepting a string `modelOverride` on `agent.run()` and `session.submit()`. The admitted choice has been applying across configured handoff targets, native child roles, and output repair. Agents and Sessions have been retaining their default models for later runs.
+Native runs have been accepting a string `modelOverride` on `agent.run()` and `session.submit()`. The admitted choice has been applying across configured handoff targets, native child roles, and output repair. Agents and Sessions have been retaining their default models for later runs. Overrides have been requiring a compatible approval reviewer; an implicit authority upgrade has been rejecting before sampling. Deferred Tool Search has been using the admitted model capabilities. An explicit override has been supplying the model even when a hosted prompt has been omitting its default.
 
 ```ts
 import { Agent, NativeProvider } from '@openai/agents';

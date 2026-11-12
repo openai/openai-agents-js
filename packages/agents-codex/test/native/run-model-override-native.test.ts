@@ -474,8 +474,8 @@ nativeIt(
           : [spec],
       ),
     );
-    expect(functions[0]).toContainEqual(
-      expect.objectContaining({ name: 'lookup', defer_loading: true }),
+    expect(functions[0]).not.toContainEqual(
+      expect.objectContaining({ name: 'lookup' }),
     );
     expect(functions[1]).toContainEqual(
       expect.objectContaining({ name: 'lookup' }),
