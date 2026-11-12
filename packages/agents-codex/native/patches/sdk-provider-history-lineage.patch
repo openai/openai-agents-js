@@ -428,7 +428,7 @@ index de6dc8318..ec9e5a911 100644
                          request_controls: Default::default(),
                          tool_choice: None,
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index f6860933f..34db3a2cc 100644
+index f6860933f..c74c5c9b0 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -34,6 +34,7 @@ use std::sync::atomic::Ordering;
@@ -705,7 +705,7 @@ index f6860933f..34db3a2cc 100644
              let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
              options.extra_headers.extend(responses_headers);
              let interceptors = crate::model_request::prepare_with_attempts(
-@@ -2442,6 +2559,52 @@ impl ModelClientSession {
+@@ -2442,6 +2559,53 @@ impl ModelClientSession {
                              as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
                      }),
              );
@@ -735,6 +735,7 @@ index f6860933f..34db3a2cc 100644
 +                logical_history_input = cursor.prepare_on_provider(
 +                    &mut request, &client_setup, history_route.transport,
 +                    history_route.headers, &history_route.provider,
++                    prompt.request_controls.request_transport.as_ref().and_then(Option::as_ref),
 +                ).await?;
 +                client_setup.api_provider.retry.max_attempts = 0;
 +                if let Some(attempt) = prompt.tool_admission.as_ref().and_then(|admission| admission.model_attempt()) {
@@ -758,7 +759,7 @@ index f6860933f..34db3a2cc 100644
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
-@@ -2450,7 +2613,13 @@ impl ModelClientSession {
+@@ -2450,7 +2614,13 @@ impl ModelClientSession {
                  }
                  request.input = input;
              }
@@ -773,7 +774,7 @@ index f6860933f..34db3a2cc 100644
              let client = ApiResponsesClient::new(
                  transport,
                  client_setup.api_provider,
-@@ -2543,6 +2712,15 @@ impl ModelClientSession {
+@@ -2543,6 +2713,15 @@ impl ModelClientSession {
  
              match stream_result {
                  Ok((request_id, interrupt, events, producer_task, producer_stop)) => {
@@ -789,7 +790,7 @@ index f6860933f..34db3a2cc 100644
                      let (mut stream, response) = map_response_events(
                          request_id,
                          crate::model_request::intercept_stream(events, interceptors),
-@@ -2559,8 +2737,13 @@ impl ModelClientSession {
+@@ -2559,8 +2738,13 @@ impl ModelClientSession {
                      stream.producer_task = producer_task;
                      stream.producer_stop = producer_stop;
                      stream.request_observation = request_observation;
@@ -805,7 +806,7 @@ index f6860933f..34db3a2cc 100644
                      return Ok(stream);
                  }
                  Err(ApiError::Transport(unauthorized_transport))
-@@ -2578,6 +2761,7 @@ impl ModelClientSession {
+@@ -2578,6 +2762,7 @@ impl ModelClientSession {
                          response_debug_context.request_id.as_deref(),
                          /*output_items*/ &[],
                      );
@@ -813,7 +814,7 @@ index f6860933f..34db3a2cc 100644
                      auth_recovery.pending_retry = PendingUnauthorizedRetry::from_recovery(
                          handle_unauthorized(
                              unauthorized_transport,
-@@ -2594,6 +2778,11 @@ impl ModelClientSession {
+@@ -2594,6 +2779,11 @@ impl ModelClientSession {
                      continue;
                  }
                  Err(err) => {
@@ -825,7 +826,7 @@ index f6860933f..34db3a2cc 100644
                      let response_debug_context =
                          extract_response_debug_context_from_api_error(&err);
                      let err = if chatgpt_plan {
-@@ -2641,6 +2830,9 @@ impl ModelClientSession {
+@@ -2641,6 +2831,9 @@ impl ModelClientSession {
          inference_trace: &InferenceTraceContext,
          auth_recovery: &mut RequestAuthRecovery,
      ) -> Result<WebsocketStreamOutcome> {
@@ -835,7 +836,7 @@ index f6860933f..34db3a2cc 100644
          let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
          let provider = Arc::clone(&self.client.state.provider);
          loop {
-@@ -2673,6 +2865,7 @@ impl ModelClientSession {
+@@ -2673,6 +2866,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -843,7 +844,7 @@ index f6860933f..34db3a2cc 100644
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2781,7 +2974,11 @@ impl ModelClientSession {
+@@ -2781,7 +2975,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -856,7 +857,7 @@ index f6860933f..34db3a2cc 100644
              let (mode, reason) = if continuation.is_some() {
                  ("incremental", "incremental")
              } else {
-@@ -3043,6 +3240,10 @@ impl ModelClientSession {
+@@ -3043,6 +3241,10 @@ impl ModelClientSession {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<()> {
@@ -869,10 +870,10 @@ index f6860933f..34db3a2cc 100644
          // ordinary request run the awaited context policy before sending input.
 diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
 new file mode 100644
-index 000000000..c6732fe2e
+index 000000000..d686fb60d
 --- /dev/null
 +++ b/codex-rs/core/src/client/provider_history.rs
-@@ -0,0 +1,863 @@
+@@ -0,0 +1,873 @@
 +use super::*;
 +use codex_protocol::provider_history::{
 +    ProviderHistoryInputBoundary, ProviderHistoryReference, ProviderHistorySelection,
@@ -1289,9 +1290,19 @@ index 000000000..c6732fe2e
 +        setup: &CurrentClientSetup,
 +        transport: ReqwestTransport,
 +        headers: HeaderMap,
++        request_transport: Option<
++            &codex_protocol::model_request_transport::RequestTransportOverrides,
++        >,
 +    ) -> Result<Option<Vec<ResponseItem>>> {
-+        self.prepare_on_provider(request, setup, transport, headers, &setup.api_provider)
-+            .await
++        self.prepare_on_provider(
++            request,
++            setup,
++            transport,
++            headers,
++            &setup.api_provider,
++            request_transport,
++        )
++        .await
 +    }
 +
 +    pub(crate) async fn prepare_on_provider(
@@ -1301,6 +1312,9 @@ index 000000000..c6732fe2e
 +        transport: ReqwestTransport,
 +        headers: HeaderMap,
 +        provider: &codex_api::Provider,
++        request_transport: Option<
++            &codex_protocol::model_request_transport::RequestTransportOverrides,
++        >,
 +    ) -> Result<Option<Vec<ResponseItem>>> {
 +        let canonical_input = request
 +            .request_controls
@@ -1310,11 +1324,8 @@ index 000000000..c6732fe2e
 +        let mut auth_headers = provider.headers.clone();
 +        setup.api_auth.add_auth_headers(&mut auth_headers);
 +        let mut effective_url = provider.url_for_path("/responses");
-+        let prepared = codex_api::prepare_request_transport(
-+            &effective_url,
-+            request.request_controls.request_transport.as_ref(),
-+        )
-+        .map_err(self_error)?;
++        let prepared = codex_api::prepare_request_transport(&effective_url, request_transport)
++            .map_err(self_error)?;
 +        prepared.apply_parts(&mut effective_url, &mut auth_headers);
 +        let scope = Scope {
 +            generation: setup.auth_owner_generation,
@@ -1413,7 +1424,7 @@ index 000000000..c6732fe2e
 +            )
 +        {
 +            ApiResponsesClient::new(transport, provider.clone(), setup.api_auth.clone())
-+                .with_request_transport(request.request_controls.request_transport.clone())
++                .with_request_transport(request_transport.cloned())
 +                .verify_history_anchor(&saved.selection, saved.stored_response, headers)
 +                .await
 +                .map_err(|error| self_error(error))?;
