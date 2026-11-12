@@ -971,7 +971,11 @@
     {
       "path": "sdk-managed-agent-tool-origin.patch",
       "sha256": "e2433bd08574744b4ee7eed17904c2bf1f58a80f7b825e31134194d9b3abd338"
+    },
+    {
+      "path": "sdk-managed-agent-tool-failure-origin.patch",
+      "sha256": "4b674bd762e33b35a0c623c8feba652911d10f2ea5395f01ee6b9569dd405f04"
     }
   ],
-  "result_tree": "e828866c98f03e935c02e433e4562cf3e7b44cd3"
+  "result_tree": "63534278da54b3090223d2f1c5a0032adb022040"
 }
