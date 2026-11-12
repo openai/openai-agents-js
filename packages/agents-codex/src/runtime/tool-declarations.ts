@@ -17,6 +17,7 @@ import {
   captureHostedTool,
   getClientToolSearchExecutor,
   hostedToolSpecs,
+  hostedToolType,
   type HostedTool,
 } from './hosted-tools';
 import { NativeAgents } from './native-agents';
@@ -53,11 +54,16 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
         tool.kind === 'code_interpreter' ||
         tool.kind === 'image_generation' ||
         tool.kind === 'shell' ||
-        tool.kind === 'tool_search')
+        tool.kind === 'tool_search' ||
+        tool.kind === 'provider_hosted')
     ) {
-      if (hostedTools.some((prior) => prior.kind === tool.kind))
-        throw new TypeError(`Declare ${tool.kind} only once`);
       const captured = captureHostedTool(tool);
+      if (
+        hostedTools.some(
+          (prior) => hostedToolType(prior) === hostedToolType(captured),
+        )
+      )
+        throw new TypeError(`Declare ${hostedToolType(captured)} only once`);
       hostedTools.push(captured);
       if (captured.kind === 'tool_search' && captured.execution === 'client')
         functions.push(
@@ -116,11 +122,16 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
         if (isClientToolSearchTool(tool)) return false;
         const identity = toolIdentity(tool);
         return (
-          identity.namespace === 'functions' && identity.name === hosted.kind
+          identity.namespace === 'functions' &&
+          (identity.name === hostedToolType(hosted) ||
+            (hosted.kind === 'provider_hosted' &&
+              identity.name === hosted.providerData.name))
         );
       })
     )
-      throw new TypeError(`Hosted tool reserves the tool name ${hosted.kind}`);
+      throw new TypeError(
+        `Hosted tool reserves the tool name ${hostedToolType(hosted)}`,
+      );
   if (
     nativeGoals &&
     functions.some((tool) => {
