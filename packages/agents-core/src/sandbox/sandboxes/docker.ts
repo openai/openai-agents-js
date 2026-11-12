@@ -1,4 +1,8 @@
 import {
+  beforeGitRepoCopy,
+  type BeforeGitRepoCopy,
+} from '../internal/gitRepoCopy';
+import {
   BOUNDED_FILE_READ_STATUS_BYTES,
   boundedFileReadCommand,
   decodeBoundedFileRead,
@@ -397,6 +401,9 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         const permissions = await this.copyEntryIntoContainer(
           logicalPath,
           entry,
+          this.state.manifest.extraPathGrants,
+          undefined,
+          args[beforeGitRepoCopy],
         );
         await this.applyContainerCopyPermissions(permissions);
         recordLiveMountCredentialAuthority(nextManifest, this.state.manifest);
@@ -419,6 +426,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     entry: Entry,
     localSourceGrants = this.state.manifest.extraPathGrants,
     budget = new DockerResourceCopyBudget(this.archiveLimits),
+    beforeCopy?: BeforeGitRepoCopy,
   ): Promise<{ path: string; mode: number }[]> {
     const destination = this.resolveContainerFilesystemPath(logicalPath, {
       forWrite: true,
@@ -430,7 +438,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       : undefined;
     const archive = this.readContainerCopyArchive(
       destination,
-      readLocalWorkspaceEntry(entry, localSourceGrants, gitSourceRoot),
+      readLocalWorkspaceEntry(
+        entry,
+        localSourceGrants,
+        gitSourceRoot,
+        beforeCopy,
+      ),
       execArgs,
       permissions,
       budget,

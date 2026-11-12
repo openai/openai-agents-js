@@ -186,3 +186,6 @@ export {
   formatRawMemory,
   formatRolloutSummary,
 } from './memory/artifacts';
+
+export { beforeGitRepoCopy } from './internal/gitRepoCopy';
+export { gitRepoCopiesTree } from './sandboxes/shared/localWorkspace';

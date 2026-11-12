@@ -1,3 +1,4 @@
+import { beforeGitRepoCopy } from '../internal/gitRepoCopy';
 import {
   copyRemoteSnapshotAuthority,
   markDeserializedSandboxState,
@@ -228,6 +229,7 @@ export class UnixLocalSandboxSession<
   private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
   readonly readFileNoFollow?: (args: ReadFileArgs) => Promise<Uint8Array>;
+  readonly [beforeGitRepoCopy] = true as const;
   readonly removeEntryNoFollow?: (path: string) => Promise<void>;
   readonly writeFileNoFollow?: (args: MaterializeEntryArgs) => Promise<void>;
   private readonly workspaceCleanupPath?: string;
@@ -677,6 +679,7 @@ export class UnixLocalSandboxSession<
         {
           localSourceGrants: this.state.manifest.extraPathGrants,
           manifestRoot: manifest.root,
+          [beforeGitRepoCopy]: args[beforeGitRepoCopy],
         },
       );
     }

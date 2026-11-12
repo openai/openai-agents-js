@@ -738,10 +738,14 @@ nativeIt.each([
   { kind: 'from', savedSkills: true, conflict: 'none' },
   { kind: 'from', savedSkills: true, conflict: 'missing-sentinel' },
   { kind: 'from', savedSkills: true, conflict: 'directory-to-file' },
+  { kind: 'git-repo', savedSkills: true, conflict: 'missing-sentinel' },
   { kind: 'git-repo', savedSkills: true, conflict: 'directory-to-file' },
 ] as const)(
   'stages $kind eager skills on an authorized cold resume with savedSkills=$savedSkills and conflict=$conflict',
   async ({ kind, savedSkills, conflict }) => {
+    const replaceDirectory =
+      conflict === 'directory-to-file' ||
+      (kind === 'git-repo' && conflict === 'missing-sentinel');
     const client = new UnixLocalSandboxClient();
     const archiveBase = await mkdtemp(
       join(tmpdir(), 'skills-resume-snapshot-'),
@@ -764,7 +768,7 @@ nativeIt.each([
                             }),
                           }),
                       'removed.sh': file({ content: 'obsolete member' }),
-                      ...(conflict === 'directory-to-file'
+                      ...(replaceDirectory
                         ? {
                             replaced: dir({
                               children: {
@@ -781,6 +785,11 @@ nativeIt.each([
                         content:
                           '---\nname: retired\ndescription: RETIRED_OLD_INDEX\n---\n',
                       }),
+                    },
+                  }),
+                  unrelated: dir({
+                    children: {
+                      'config.txt': file({ content: 'unrelated directory' }),
                     },
                   }),
                   'keep.txt': file({ content: 'unrelated namespace file' }),
@@ -936,7 +945,7 @@ nativeIt.each([
         await expect(
           access(join(resumedRoot, '.agents/report/removed.sh')),
         ).rejects.toMatchObject({ code: 'ENOENT' });
-        if (conflict === 'directory-to-file') {
+        if (replaceDirectory) {
           expect(
             await readFile(
               join(resumedRoot, '.agents/report/replaced'),
@@ -947,6 +956,12 @@ nativeIt.each([
         expect(
           await readFile(join(resumedRoot, '.agents/keep.txt'), 'utf8'),
         ).toBe('unrelated namespace file');
+        expect(
+          await readFile(
+            join(resumedRoot, '.agents/unrelated/config.txt'),
+            'utf8',
+          ),
+        ).toBe('unrelated directory');
         expect(await readFile(join(resumedRoot, 'workspace.txt'), 'utf8')).toBe(
           'unrelated workspace file',
         );

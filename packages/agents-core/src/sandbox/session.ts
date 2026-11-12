@@ -1,3 +1,7 @@
+import {
+  beforeGitRepoCopy,
+  type BeforeGitRepoCopy,
+} from './internal/gitRepoCopy';
 import type { Editor } from '../editor';
 import { UserError } from '../errors';
 import type { ToolOutputImage } from '../tool';
@@ -117,6 +121,7 @@ export type SandboxDirectoryEntry = {
 };
 
 export type MaterializeEntryArgs = {
+  [beforeGitRepoCopy]?: BeforeGitRepoCopy;
   path: string;
   entry: Entry;
   runAs?: string;
@@ -202,6 +207,7 @@ export function urlForExposedPort(
 export interface SandboxSession<
   TState extends SandboxSessionState = SandboxSessionState,
 > {
+  readonly [beforeGitRepoCopy]?: true;
   state: TState;
   start?(options?: SandboxSessionLifecycleOptions): Promise<void>;
   running?(): Promise<boolean>;

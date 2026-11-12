@@ -2,6 +2,8 @@ import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import {
   createSkillConfiguration,
+  beforeGitRepoCopy,
+  gitRepoCopiesTree,
   getSandboxStateIdentity,
   getLocalSandboxStateAuthority,
   isDeserializedSandboxState,
@@ -254,46 +256,83 @@ export class SandboxSkillBinding<Context = any> {
     const expectedGrants = grantStamp(trustedManifest);
     if (grantStamp(sandbox.state.manifest) !== expectedGrants)
       throw new Error('Sandbox skill grants do not match the current manifest');
-    const stale = await this.restoredEagerSkillFiles(
-      sandbox,
-      entries.flatMap(([path, entry]) =>
-        path === this.configuration.skillsPath && entry.type === 'dir'
-          ? Object.keys(entry.children ?? {}).map((name) =>
-              joinRelativePaths(path, name),
-            )
-          : [path],
-      ),
-      signal,
-    );
-    if (stale.length) {
-      const remove = sandbox.removeEntryNoFollow?.bind(sandbox);
-      const editor = remove ? undefined : sandbox.createEditor?.();
-      if (!remove && (stale.some(({ directory }) => directory) || !editor))
-        throw new Error(
-          'Restored eager Skills require confined empty-directory removal',
-        );
-      for (const { path } of stale) {
-        signal.throwIfAborted();
-        if (grantStamp(sandbox.state.manifest) !== expectedGrants)
-          throw new Error('Sandbox skill grants changed before cleanup');
-        if (remove) await remove(path);
-        else {
-          const result = await editor!.deleteFile({
-            type: 'delete_file',
-            path,
-          });
-          if (result?.status === 'failed')
-            throw new Error('Could not remove a restored eager skill file');
+    const cleanRestored = async (declaredPaths: readonly string[]) => {
+      const stale = await this.restoredEagerSkillFiles(
+        sandbox,
+        declaredPaths,
+        signal,
+      );
+      if (stale.length) {
+        const remove = sandbox.removeEntryNoFollow?.bind(sandbox);
+        const editor = remove ? undefined : sandbox.createEditor?.();
+        if (!remove && (stale.some(({ directory }) => directory) || !editor))
+          throw new Error(
+            'Restored eager Skills require confined empty-directory removal',
+          );
+        for (const { path } of stale) {
+          signal.throwIfAborted();
+          if (grantStamp(sandbox.state.manifest) !== expectedGrants)
+            throw new Error('Sandbox skill grants changed before cleanup');
+          if (remove) await remove(path);
+          else {
+            const result = await editor!.deleteFile({
+              type: 'delete_file',
+              path,
+            });
+            if (result?.status === 'failed')
+              throw new Error('Could not remove a restored eager skill file');
+          }
         }
       }
-    }
+    };
+    const copiedGitRoot = entries.find(
+      ([path, entry]) =>
+        path === this.configuration.skillsPath &&
+        entry.type === 'git_repo' &&
+        gitRepoCopiesTree(entry),
+    );
+    if (copiedGitRoot && !sandbox[beforeGitRepoCopy])
+      throw new Error(
+        'Restored eager Git Skills require source preparation support',
+      );
+    if (!copiedGitRoot)
+      await cleanRestored(
+        entries.flatMap(([path, entry]) =>
+          path === this.configuration.skillsPath && entry.type === 'dir'
+            ? Object.keys(entry.children ?? {}).map((name) =>
+                joinRelativePaths(path, name),
+              )
+            : [path],
+        ),
+      );
     for (const [path, entry] of entries) {
       signal.throwIfAborted();
       if (grantStamp(sandbox.state.manifest) !== expectedGrants)
         throw new Error(
           'Sandbox skill grants do not match the current manifest',
         );
-      await sandbox.materializeEntry({ path, entry });
+      let prepared = false;
+      const prepare =
+        copiedGitRoot?.[1] === entry
+          ? async (children: readonly string[]) => {
+              if (prepared)
+                throw new Error('Git skill source was prepared more than once');
+              prepared = true;
+              await cleanRestored([
+                path,
+                ...children.map((name) => joinRelativePaths(path, name)),
+              ]);
+            }
+          : undefined;
+      await sandbox.materializeEntry({
+        path,
+        entry,
+        [beforeGitRepoCopy]: prepare,
+      });
+      if (prepare && !prepared)
+        throw new Error(
+          'Restored eager Git Skills require source preparation support',
+        );
       signal.throwIfAborted();
       if (grantStamp(sandbox.state.manifest) !== expectedGrants)
         throw new Error('Sandbox skill grants changed during materialization');
