@@ -227,8 +227,12 @@ export class NativeProviderRoutes {
     const receipt = losslessJsonObjectSchema.parse(
       parseNative(await engine._sentinel_admit(provider, encode(metadata))),
     );
+    const modelMatches =
+      receipt.model_omitted === true
+        ? !Object.hasOwn(body, 'model')
+        : receipt.model === body.model;
     if (
-      receipt.model !== body.model ||
+      !modelMatches ||
       !['generation', 'warmup'].includes(String(receipt.kind))
     ) {
       throw new NativeError('Invalid native model admission');

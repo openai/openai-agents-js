@@ -3209,6 +3209,65 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn model_attempt(&self, input: codex_extension_api::ModelAttemptInput) -> Result<(), String> {
+        let Some(tools) = input
+            .admission
+            .turn_store()
+            .get::<Weak<crate::python_tools::PythonTools>>()
+            .and_then(|tools| tools.upgrade())
+        else {
+            return Ok(());
+        };
+        tools
+            .publish_model_attempt(input)
+            .map_err(|error| error.to_string())
+    }
+    fn retire_model_attempt(
+        &self,
+        admission: Arc<dyn ModelToolAdmission>,
+    ) -> futures_util::future::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let Some(attempt) = admission.model_attempt() else {
+                return Ok(());
+            };
+            if let Some(tools) = admission
+                .turn_store()
+                .get::<Weak<crate::python_tools::PythonTools>>()
+                .and_then(|tools| tools.upgrade())
+            {
+                tools
+                    .retire_model_attempt_callbacks(&attempt)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+    }
+    fn decide_model_retry(
+        &self,
+        input: codex_extension_api::ModelRetryInput,
+    ) -> Option<
+        futures_util::future::BoxFuture<
+            '_,
+            Result<codex_protocol::model_retry::ModelRetryResolution, String>,
+        >,
+    > {
+        let tools = input
+            .admission
+            .turn_store()
+            .get::<Weak<crate::python_tools::PythonTools>>()
+            .and_then(|tools| tools.upgrade())?;
+        if !input.context.policy_enabled && !tools.produces_model_response() {
+            return None;
+        }
+        Some(Box::pin(async move {
+            tools
+                .decide_model_retry(input)
+                .await
+                .map_err(|_| "Model retry callback failed".to_owned())
+        }))
+    }
+
     fn uses_chatgpt_plan(&self) -> bool {
         self.engine
             .get()
@@ -3220,10 +3279,33 @@ impl ModelRequestContributor for Boundary {
         self.context_tools(thread_id)
             .is_some_and(|tools| tools.customizes_compaction())
     }
-    fn before_compact<'a>(
+    fn schedules_post_turn_compaction(
+        &self,
+        thread_id: &str,
+        step_store: &codex_extension_api::ExtensionData,
+    ) -> bool {
+        self.context_tools(thread_id)
+            .is_some_and(|tools| tools.schedules_post_turn_compaction(step_store))
+    }
+    fn post_turn_compaction<'a>(
         &'a self,
         input: codex_extension_api::CompactionInput<'a>,
-    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, String>> {
+    ) -> ExtensionFuture<'a, std::result::Result<Option<bool>, String>> {
+        Box::pin(async move {
+            self.context_tools(input.thread_id)
+                .ok_or("Expired compaction policy owner")?
+                .post_turn_compaction(input)
+                .await
+                .map_err(|_| "Compaction policy callback failed".to_owned())
+        })
+    }
+    fn before_compact_result<'a>(
+        &'a self,
+        input: codex_extension_api::CompactionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::CompactionResult>, String>,
+    > {
         Box::pin(async move {
             if self.uses_chatgpt_plan() {
                 return Err("Sign in with ChatGPT does not support beforeCompact callbacks".into());
@@ -3357,6 +3439,7 @@ impl ModelRequestContributor for Boundary {
                 nonce: codex_protocol::ThreadId::new().to_string(),
                 kind: input.kind,
                 model: input.model.to_owned(),
+                model_omitted: input.model_omitted,
                 admitted: AtomicBool::new(false),
                 owner,
                 failure: Mutex::new(None),
@@ -3422,6 +3505,7 @@ struct SentinelTicket {
     nonce: String,
     kind: ModelRequestKind,
     model: String,
+    model_omitted: bool,
     admitted: AtomicBool,
     owner: Option<Arc<DirectTurn>>,
     failure: Mutex<Option<SentinelFailure>>,
@@ -3760,6 +3844,7 @@ pub(crate) async fn sentinel_admit(
         "control": control.incarnation,
         "kind": if ticket.kind == ModelRequestKind::Warmup { "warmup" } else { "generation" },
         "model": ticket.model,
+        "model_omitted": ticket.model_omitted,
         "content_item_kinds": content_item_kinds,
         "completion": completion,
     }))?)
@@ -7870,6 +7955,7 @@ mod tests {
                     thread_id: &control.id,
                     client_metadata,
                     model: "test-model",
+                    model_omitted: false,
                 })
                 .unwrap()
         };
@@ -7938,6 +8024,7 @@ mod tests {
                         nonce: "ticket".into(),
                         kind: ModelRequestKind::Generation,
                         model: "issuing-model".into(),
+                        model_omitted: false,
                         admitted: AtomicBool::new(false),
                         owner: Some(owner),
                         failure: Mutex::new(None),
@@ -9561,10 +9648,13 @@ impl ModelRequestContributor for ModelProducerBoundary {
         if !tools.produces_model_response() {
             return None;
         }
-        Some(Box::new(ModelProducerRequest(tools)))
+        Some(Box::new(ModelProducerRequest(
+            tools,
+            input.model.to_owned(),
+        )))
     }
 }
-struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>);
+struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>, String);
 impl ModelResponseInterceptor for ModelProducerRequest {
     fn produces_response(&self) -> bool {
         true
@@ -9575,10 +9665,11 @@ impl ModelResponseInterceptor for ModelProducerRequest {
         admission: Option<Arc<dyn ModelToolAdmission>>,
     ) -> Option<futures_util::future::BoxFuture<'a, Result<ModelResponseStream, String>>> {
         let tools = self.0.clone();
+        let model = self.1.clone();
         Some(Box::pin(async move {
             let admission = admission.ok_or("Native model producer requires request admission")?;
             tools
-                .produce_model_response(request, admission)
+                .produce_model_response(&model, request, admission)
                 .await
                 .map_err(|_| "Native model producer failed or was cancelled".to_owned())
         }))

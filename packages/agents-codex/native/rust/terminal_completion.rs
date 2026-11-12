@@ -7,6 +7,8 @@ use codex_extension_api::{ToolCompletionDecision, ToolCompletionInput};
 pub(crate) struct TerminalSlots {
     pub(super) generation: String,
     pub(super) slots: Vec<usize>,
+    #[serde(default)]
+    pub(super) input_error_slots: Vec<usize>,
 }
 
 #[derive(Deserialize)]
@@ -152,7 +154,14 @@ impl PythonTools {
                 "Invalid terminal tool slot"
             );
         }
-        if configured.terminal_slots == slots {
+        let mut input_errors = HashSet::new();
+        for slot in config.input_error_slots {
+            ensure!(
+                slot < configured.entries.len() && input_errors.insert(slot),
+                "Invalid input recovery slot"
+            );
+        }
+        if configured.terminal_slots == slots && configured.input_error_slots == input_errors {
             return Ok(());
         }
         // Captured profiles are immutable; replacement creates a new registered catalog.
@@ -162,6 +171,7 @@ impl PythonTools {
         );
         let mut generation = (*current).clone();
         generation.terminal_slots = slots;
+        generation.input_error_slots = input_errors;
         let generation = Arc::new(generation);
         self.schema_receipts.register(&generation);
         let mut live = self.current.write().expect("JavaScript catalog poisoned");
@@ -756,8 +766,9 @@ mod tests {
                 tools.snapshot().specs.clone(),
                 &[],
                 &[0],
+                &[],
                 None,
-                [false; 4],
+                [false; 5],
                 false,
             )
             .unwrap();
@@ -826,8 +837,9 @@ mod tests {
                     tools.snapshot().specs.clone(),
                     &[],
                     &[0],
+                    &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false,
                 )
                 .unwrap();
@@ -838,6 +850,7 @@ mod tests {
                 .configure_terminal(TerminalSlots {
                     generation: "0".into(),
                     slots: vec![0],
+                    input_error_slots: Vec::new(),
                 })
                 .unwrap();
         }
@@ -925,8 +938,9 @@ mod tests {
                     tools.snapshot().specs.clone(),
                     &[],
                     &[0],
+                    &[],
                     None,
-                    [false; 4],
+                    [false; 5],
                     false,
                 )
                 .unwrap()
@@ -989,6 +1003,7 @@ mod tests {
             .configure_terminal(TerminalSlots {
                 generation: "0".into(),
                 slots: vec![0],
+                input_error_slots: Vec::new(),
             })
             .unwrap();
         assert_eq!(tools.current_specs().unwrap(), specs);
@@ -999,7 +1014,8 @@ mod tests {
             tools
                 .configure_terminal(TerminalSlots {
                     generation: "1".into(),
-                    slots: vec![0]
+                    slots: vec![0],
+                    input_error_slots: Vec::new(),
                 })
                 .is_err()
         );
@@ -1007,7 +1023,8 @@ mod tests {
             tools
                 .configure_terminal(TerminalSlots {
                     generation: "0".into(),
-                    slots: vec![1]
+                    slots: vec![1],
+                    input_error_slots: Vec::new(),
                 })
                 .is_err()
         );
@@ -1015,7 +1032,8 @@ mod tests {
             tools
                 .configure_terminal(TerminalSlots {
                     generation: "0".into(),
-                    slots: vec![0, 0]
+                    slots: vec![0, 0],
+                    input_error_slots: Vec::new(),
                 })
                 .is_err()
         );

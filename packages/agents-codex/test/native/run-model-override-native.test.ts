@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +10,9 @@ import {
   InteractionRequired,
   NativeProvider,
   manualTool,
+  ResponsesModel,
+  tool,
+  toolSearch,
   type ModelRequest,
   type ModelResponse,
 } from '../../src';
@@ -402,4 +406,138 @@ nativeIt(
     await agent.run('default');
     expect(seen).toEqual([firstModel, secondModel, initial]);
   },
+);
+
+nativeIt(
+  'uses admitted model capabilities for deferred Tool Search without changing later defaults',
+  async () => {
+    const catalog = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../native/.upstream/reviewed-codex/codex-rs/models-manager/models.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    ) as {
+      models: {
+        slug: string;
+        supported_in_api: boolean;
+        supports_search_tool?: boolean;
+        tool_mode?: string;
+      }[];
+    };
+    const initial = 'unlisted-run-default';
+    const forced = catalog.models.find(
+      (model) =>
+        model.supported_in_api &&
+        model.supports_search_tool &&
+        model.tool_mode !== 'code_mode_only',
+    )?.slug;
+    if (!initial || !forced)
+      throw new Error('Expected both search capability classes');
+    const server = new ModelServer([[message('forced')], [message('default')]]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-key',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      provider,
+      model: initial,
+      instructions: 'Answer.',
+      tools: [
+        toolSearch({ execution: 'client' }),
+        tool({
+          name: 'lookup',
+          parameters: z.object({}),
+          deferLoading: true,
+          execute: () => 'found',
+        }),
+      ],
+    }).session();
+    await (await session.submit('forced', { modelOverride: forced })).wait();
+    await (await session.submit('default')).wait();
+    expect(server.requests.map((request) => request.model)).toEqual([
+      forced,
+      initial,
+    ]);
+    expect(server.requests[0].tools).toContainEqual(
+      expect.objectContaining({ type: 'tool_search', execution: 'client' }),
+    );
+    const functions = server.requests.map((request) =>
+      (request.tools as JsonObject[]).flatMap((spec) =>
+        spec.type === 'namespace' && Array.isArray(spec.tools)
+          ? spec.tools
+          : [spec],
+      ),
+    );
+    expect(functions[0]).toContainEqual(
+      expect.objectContaining({ name: 'lookup', defer_loading: true }),
+    );
+    expect(functions[1]).toContainEqual(
+      expect.objectContaining({ name: 'lookup' }),
+    );
+    expect(functions[1]).not.toContainEqual(
+      expect.objectContaining({ name: 'lookup', defer_loading: true }),
+    );
+    server.assertExhausted();
+  },
+  30_000,
+);
+
+nativeIt.each(['native-http', 'borrowed-responses'] as const)(
+  'makes an explicit override win over hosted model omission without changing defaults (%s)',
+  async (route) => {
+    const [, forced] = models();
+    const outputs = [[message('forced')], [message('default')]];
+    const server = new ModelServer(
+      route === 'native-http'
+        ? outputs
+        : outputs.map((output, index) => ({
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              id: `hosted-override-${index}`,
+              object: 'response',
+              status: 'completed',
+              output,
+              usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            }),
+          })),
+    );
+    const config = await server.config();
+    const baseUrl = (config['model_providers.fixture'] as { base_url: string })
+      .base_url;
+    const client = new OpenAI({
+      baseURL: baseUrl,
+      apiKey: 'synthetic-key',
+      maxRetries: 0,
+    });
+    await using provider = new NativeProvider({
+      baseUrl,
+      apiKey: 'synthetic-key',
+      supportsWebsockets: false,
+      ...(route === 'borrowed-responses'
+        ? { modelBackend: new ResponsesModel(client) }
+        : {}),
+    });
+    await using session = await new Agent({
+      provider,
+      hostedPrompt: { id: 'pmpt_run_override' },
+    }).session();
+    await (await session.submit('forced', { modelOverride: forced })).wait();
+    await (await session.submit('default')).wait();
+    expect(server.requests[0].model).toBe(forced);
+    expect(server.requests[1]).not.toHaveProperty('model');
+    for (const request of server.requests) {
+      expect(request.prompt).toEqual({ id: 'pmpt_run_override' });
+      expect(request).not.toHaveProperty('instructions');
+      expect(request).not.toHaveProperty('tools');
+    }
+    server.assertExhausted();
+  },
+  30_000,
 );

@@ -1,3 +1,4 @@
+import { modelAttemptSnapshotSchema } from './model-attempts';
 import { captureFile, captureImage, mediaRecord } from './media';
 import { z } from 'zod';
 import type { OutputIdentity } from './output';
@@ -330,7 +331,47 @@ const manualContinuationSchema = z.object({
     )
     .min(1),
 });
+const manualUsageSchema = z.object({
+  requests: nonnegativeTokenCountWireSchema.optional(),
+  missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
+  inputTokens: nonnegativeTokenCountWireSchema,
+  cachedInputTokens: nonnegativeTokenCountWireSchema,
+  cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
+  outputTokens: nonnegativeTokenCountWireSchema,
+  reasoningOutputTokens: nonnegativeTokenCountWireSchema,
+  totalTokens: nonnegativeTokenCountWireSchema,
+});
+/** @internal Validate the durable diagnostic snapshot before native sealing. */
+export const guardrailCheckpointSchema = z.object({
+  kind: z.enum(['input', 'output']),
+  name: z.string(),
+  agent_profile: z.string().nullable(),
+  session_id: z.string(),
+  turn_id: z.string(),
+  subagent_id: z.string().optional(),
+  result: z.object({
+    tripwireTriggered: z.boolean(),
+    outputInfo: jsonValue.optional(),
+  }),
+  tool_call: z
+    .object({
+      tool: z.object({ name: z.string(), namespace: z.string().nullable() }),
+      sessionId: z.string(),
+      turnId: z.string(),
+      callId: z.string().nullable(),
+      childId: z.string().nullable(),
+      childIncarnation: z.string().nullable(),
+      role: z.string().nullable(),
+      model: z.string().nullable(),
+      route: z.enum(['direct', 'code']),
+      outerCallId: z.string().nullable(),
+      cellId: z.string().nullable(),
+      nestedCallId: z.string().nullable(),
+    })
+    .optional(),
+});
 const manualContextSchema = z.object({
+  guardrail_results: z.array(guardrailCheckpointSchema).optional(),
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: z.string().nullable(),
   result_schemas: z.array(
@@ -340,18 +381,9 @@ const manualContextSchema = z.object({
       schema: jsonValue,
     }),
   ),
-  usage: z
-    .object({
-      requests: nonnegativeTokenCountWireSchema.optional(),
-      missingUsageRequests: nonnegativeTokenCountWireSchema.optional(),
-      inputTokens: nonnegativeTokenCountWireSchema,
-      cachedInputTokens: nonnegativeTokenCountWireSchema,
-      cacheWriteInputTokens: nonnegativeTokenCountWireSchema,
-      outputTokens: nonnegativeTokenCountWireSchema,
-      reasoningOutputTokens: nonnegativeTokenCountWireSchema,
-      totalTokens: nonnegativeTokenCountWireSchema,
-    })
-    .nullable(),
+  usage: manualUsageSchema.nullable(),
+  model_attempt: modelAttemptSnapshotSchema.optional(),
+  model_usage_offset: manualUsageSchema.optional(),
 });
 const outputContextSchema = z
   .object({
@@ -781,10 +813,76 @@ export const sessionStateSchema = z
     }
     validateCheckpointTree(state, ctx);
   });
+// Saved histories cannot authorize a hosted prompt. Live declarations travel
+// separately; the native serializer deliberately omits their references.
+function checkpointRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+function validateStoredPromptControls(
+  state: z.infer<typeof checkpointTreeSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  const check = (controls: unknown, path: (string | number)[]) => {
+    if (
+      checkpointRecord(checkpointRecord(controls)?.hosted_prompt)?.reference !=
+      null
+    )
+      ctx.addIssue({
+        code: 'custom',
+        path,
+        message: 'Stored hosted prompt references are not authorized',
+      });
+  };
+  const metadata = (value: unknown, path: (string | number)[]) => {
+    const profile = checkpointRecord(
+      checkpointRecord(value)?.sdk_agent_profile,
+    );
+    check(checkpointRecord(profile?.model)?.request_controls, path);
+  };
+  const row = (value: unknown, path: (string | number)[]) => {
+    const item = checkpointRecord(value);
+    const payload = checkpointRecord(item?.payload);
+    if (item?.type === 'response_item') metadata(item.metadata, path);
+    if (
+      item?.type === 'event_msg' &&
+      payload?.type === 'thread_settings_applied'
+    )
+      check(checkpointRecord(payload.thread_settings)?.request_controls, path);
+    if (
+      item?.type === 'compacted' &&
+      Array.isArray(payload?.replacement_history_metadata)
+    )
+      payload.replacement_history_metadata.forEach((entry, i) =>
+        metadata(entry, [
+          ...path,
+          'payload',
+          'replacement_history_metadata',
+          i,
+        ]),
+      );
+  };
+  state.history.forEach((value, i) => row(value, ['history', i]));
+  state.descendants?.forEach((child, i) =>
+    child.history.forEach((value, j) =>
+      row(value, ['descendants', i, 'history', j]),
+    ),
+  );
+  const accepted = checkpointRecord(
+    checkpointRecord(checkpointRecord(state)?.manual_continuation)
+      ?.accepted_replies,
+  );
+  if (accepted)
+    for (const [id, value] of Object.entries(accepted))
+      row(value, ['manual_continuation', 'accepted_replies', id]);
+}
+
 function validateCheckpointTree(
   state: z.infer<typeof checkpointTreeSchema>,
   ctx: z.RefinementCtx,
 ): void {
+  validateStoredPromptControls(state, ctx);
   if (
     state.root_checklist &&
     state.root_checklist.thread_id !== state.source_session_id

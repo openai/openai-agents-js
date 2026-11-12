@@ -1,5 +1,6 @@
 //! Application-owned canonical snapshots with a disposable native projection.
-use codex_history::RolloutItem;
+use codex_history::sdk_originals::SdkOriginalHistoryCheckpoint;
+use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::{
     ThreadId, dynamic_tools::DynamicToolResponse, models::ResponseItem, protocol::EventMsg,
 };
@@ -13,6 +14,56 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Mutex;
+
+fn validate_saved_prompt_history(history: &[RolloutItem]) -> anyhow::Result<()> {
+    let check_envelope = |envelope: &ResponseItemEnvelope| -> anyhow::Result<()> {
+        anyhow::ensure!(
+            envelope
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.sdk_agent_profile.as_ref())
+                .and_then(
+                    |profile| profile.pointer("/model/request_controls/hosted_prompt/reference")
+                )
+                .is_none_or(serde_json::Value::is_null),
+            "Stored hosted prompt references require current declarations"
+        );
+        Ok(())
+    };
+    for item in history {
+        match item {
+            RolloutItem::ResponseItem(envelope) => check_envelope(envelope)?,
+            RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(event)) => anyhow::ensure!(
+                event
+                    .thread_settings
+                    .request_controls
+                    .hosted_prompt
+                    .as_ref()
+                    .and_then(Option::as_ref)
+                    .is_none_or(|prompt| prompt.reference.is_none()),
+                "Stored hosted prompt references require current declarations"
+            ),
+            RolloutItem::Compacted(compacted) => {
+                for envelope in compacted.replacement_history.iter().flatten() {
+                    check_envelope(envelope)?;
+                }
+                if let Some(SdkOriginalHistoryCheckpoint::Replace(originals)) =
+                    &compacted.sdk_originals
+                {
+                    for envelope in originals
+                        .items
+                        .iter()
+                        .filter_map(|item| item.projection.as_ref())
+                    {
+                        check_envelope(envelope)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
 
 pub type Callback = ThreadsafeFunction<String, Promise<String>, String, napi::Status, false>;
 #[derive(Clone, Serialize, Deserialize)]
@@ -300,6 +351,9 @@ impl CustomThreadStore {
                         }
                     }
                     self.check_mutation(mutation)?;
+                    if let Mutation::Append { items } = mutation {
+                        validate_saved_prompt_history(items).map_err(error)?;
+                    }
                 }
                 for mutation in &snapshot.mutations {
                     self.apply(id, mutation.clone()).await?;
@@ -729,6 +783,58 @@ impl ThreadStore for CustomThreadStore {
     fn discard_thread(&self, id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(self.release(id))
     }
+    fn canonical_tool_output<'a>(
+        &'a self,
+        thread_id: ThreadId,
+        output: &'a ResponseItem,
+        native_cancellation: bool,
+    ) -> ThreadStoreFuture<'a, Option<ResponseItem>> {
+        Box::pin(async move {
+            let Some((call, Some(turn))) = crate::local_reconciliation::output_identity(output)
+            else {
+                return Ok(None);
+            };
+            let mut writers = self.writers.lock().await;
+            let writer = writers
+                .get_mut(&thread_id)
+                .ok_or_else(|| error("canonical writer not acquired"))?;
+            if let Some(failure) = &writer.failure {
+                return Err(error(failure));
+            }
+            if !writer.managed.contains(&(turn.to_owned(), call.to_owned())) {
+                return Ok(None);
+            }
+            let accepted = writer.snapshot.mutations.iter().rev().find_map(|mutation| {
+                if let Mutation::Append { items } = mutation {
+                    items.iter().rev().find_map(|row| {
+                        if let RolloutItem::ResponseItem(envelope) = row
+                            && crate::local_reconciliation::output_identity(&envelope.item)
+                                == Some((call, Some(turn)))
+                        {
+                            Some(envelope.item.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                }
+            });
+            if accepted.as_ref().is_some_and(|accepted| {
+                !crate::local_reconciliation::matches_acknowledged_output(
+                    accepted,
+                    output,
+                    native_cancellation,
+                )
+            }) {
+                let message = "Core drain changed an acknowledged SDK receipt";
+                writer.failure = Some(message.into());
+                return Err(error(message));
+            }
+            Ok(accepted)
+        })
+    }
+
     fn load_history(
         &self,
         params: LoadThreadHistoryParams,

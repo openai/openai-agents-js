@@ -1,3 +1,33 @@
+import {
+  captureHostedPromptReference,
+  type HostedPromptSource,
+} from './hosted-prompts';
+import {
+  captureModelRetryAdvice,
+  isModelCallbackAbort,
+  modelRetryFailureToNative,
+  retryAdviceToNative,
+  retryContextFromNative,
+  retryDecisionToNative,
+  type RetryPolicy,
+} from './model-retry';
+import {
+  addModelReportedUsage,
+  attachModelUsageSource,
+  modelAttemptUsage,
+  modelAttemptUsageJson,
+  retainModelAttemptFailure,
+  modelAttemptState,
+  modelAttemptOriginalError,
+  applyModelAttemptFact,
+  applyModelAttemptSnapshot,
+  modelAttemptSnapshotSchema,
+  modelAttemptTerminalError,
+  releaseModelAttemptPayload,
+  restoreModelUsageOffset,
+  type ModelAttemptState,
+} from './model-attempts';
+import type { ResponsesCompaction } from './responses-compaction';
 import { audioInputByteLimit } from './media';
 import {
   ManagedWorkspaceCheckpoint,
@@ -22,6 +52,7 @@ import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
   type NativeModel,
+  type ModelRequest,
   type ModelProvider,
 } from './models';
 import {
@@ -104,7 +135,7 @@ import {
   checkpointResourceServers,
   type CheckpointSelections,
 } from './selection-state';
-import { readCheckpointSelections } from './state';
+import { guardrailCheckpointSchema, readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import {
@@ -184,6 +215,7 @@ import {
 } from './native-agents';
 import {
   modelOverrides,
+  captureModelSettings,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
@@ -255,7 +287,6 @@ import {
 import {
   tokenUsageInfo,
   addRunUsage,
-  addTokenCounts,
   parseTokenCount,
   captureUsageReport,
   usageReportBinding,
@@ -319,6 +350,7 @@ import {
 } from './environment';
 import {
   managedApproval,
+  supportsInputErrorRecovery,
   ToolOutput,
   toolOutputSchema,
   toolApplicationData,
@@ -406,6 +438,7 @@ export interface SessionOptions {
   /** @internal Captured root declaration; profile declarations own child guards. */
   agentOutputGuardrails?: readonly OutputGuardrail<any>[];
   beforeCompact?: BeforeCompact<any>;
+  compaction?: ResponsesCompaction<any>;
   transformContext?: ContextTransform<any>;
   contextTransformPurpose?: 'turn' | 'output_repair';
   /** @internal Detached fresh-opening data; removed before Session construction. */
@@ -431,6 +464,10 @@ export interface SessionOptions {
   agentGraph?: CapturedAgentGraph & { readonly fingerprint: string };
   context?: unknown;
   initialModelSettings?: ModelSettings;
+  /** @internal Captured authorized prompt source; never serialized as a callback. */
+  hostedPrompt?: HostedPromptSource<any>;
+  /** @internal Opening declaration presence, separate from native model defaults. */
+  hostedPromptControls?: JsonObject;
   webSearch?: WebSearch;
   hostedTools?: readonly HostedTool[];
   mcpTools?: readonly McpTool[];
@@ -1224,6 +1261,7 @@ class NativeTurn {
   preparation?: AbortController;
   id: string | null = null;
   usage: JsonValue | null = null;
+  modelAttempts?: ModelAttemptState;
   tokenUsage: TokenUsage | null = null;
   requests: TokenCount = 0;
   missingUsageRequests: TokenCount = 0;
@@ -1232,20 +1270,15 @@ class NativeTurn {
     requests: TokenCount = 1,
     missing: TokenCount = 0,
   ): void {
-    this.tokenUsage = addRunUsage(this.tokenUsage, raw);
-    this.requests = addTokenCounts(this.requests, requests);
-    this.missingUsageRequests = addTokenCounts(
-      this.missingUsageRequests,
-      missing,
-    );
-    this.usageParent?.addUsage(raw, requests, missing);
+    addModelReportedUsage(this, raw, requests, missing);
   }
   failure: unknown;
   nativeFailure?: NativeError;
   constructor(
     private readonly beforeWait: () => void,
-    private readonly usageParent?: NativeTurn,
+    usageParent?: NativeTurn,
   ) {
+    if (usageParent) attachModelUsageSource(usageParent, this);
     this.accepted.promise.catch(() => {});
     this.completion.promise.catch(() => {});
   }
@@ -2321,6 +2354,9 @@ export class Session<OutputT = string, Context = unknown> {
           request,
           encode({
             specs: JSON.parse(captured.specsJson) as JsonValue,
+            input_error_slots: captured.tools.flatMap((tool, slot) =>
+              supportsInputErrorRecovery(tool) ? [slot] : [],
+            ),
             manual_slots: captured.tools.flatMap((tool, slot) =>
               tool.kind === 'manual' ? [slot] : [],
             ),
@@ -3056,16 +3092,34 @@ export class Session<OutputT = string, Context = unknown> {
         this.options.hostedTools?.length
       )
         await this.#native._validate_hosted_search_model();
-      if (this.options.initialModelSettings && !this.restored) {
+      if (
+        (this.options.initialModelSettings ||
+          this.options.hostedPromptControls) &&
+        !this.restored
+      ) {
         const settings = modelOverrides(
           undefined,
           this.options.initialModelSettings,
+          this.options.hostedPromptControls,
         );
         if (
           Object.keys(settings).length &&
           (await this.#native._update_model_settings(encode(settings))) !== true
         )
           throw new NativeError('Native model settings were not acknowledged');
+      }
+      if (
+        this.restored ||
+        this.threadOptions._sdk_resume_thread_id !== undefined
+      ) {
+        const graph = this.options.agentGraph;
+        const source = graph?.restoredSource;
+        const settings =
+          source && source.profile_id !== graph!.rootId
+            ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+                .modelSettings
+            : this.options.initialModelSettings;
+        await this.restoreModelControls(settings);
       }
       this.configureNative(this.#native);
       if (
@@ -3089,7 +3143,10 @@ export class Session<OutputT = string, Context = unknown> {
         this.environment !== null && hasExecutorPolicy(this.environment);
       if (
         this.catalog.tools.some(
-          (tool) => tool.kind === 'manual' || tool.finishTurn,
+          (tool) =>
+            tool.kind === 'manual' ||
+            tool.finishTurn ||
+            supportsInputErrorRecovery(tool),
         )
       )
         await this.configureManualTools();
@@ -3183,6 +3240,13 @@ export class Session<OutputT = string, Context = unknown> {
           ),
           allocated.activeCatalog,
         );
+        this.profileStepMcp.set(
+          this.profileKey(
+            allocated.active.profile_id,
+            allocated.activeCatalog.generation,
+          ),
+          this.profileRuntimes.get(allocated.active.profile_id)!.mcp,
+        );
         if (this.options.agentGraph?.restoredSource) {
           this.catalog = allocated.activeCatalog;
           this.profileCurrent = allocated.active;
@@ -3193,6 +3257,21 @@ export class Session<OutputT = string, Context = unknown> {
           this.rememberProfileBindings();
           await this.commitProfile(allocated.active, true);
         } else await this.commitProfile(allocated.active, false);
+      }
+      if (
+        this.options.agentGraph &&
+        (this.restored ||
+          this.threadOptions._sdk_resume_thread_id !== undefined) &&
+        (!this.restored || !isManualSessionState(this.restored))
+      ) {
+        const source = this.profileCurrent!;
+        const settings =
+          source.profile_id === this.options.agentGraph.rootId
+            ? this.options.initialModelSettings
+            : this.profileRuntimes.get(source.profile_id)!.profile.declaration
+                .modelSettings;
+        await this.restoreModelControls(settings);
+        await this.acknowledgeProfilePublication();
       }
       if (startup.cause) throw startup.cause.value;
       this.starting = undefined;
@@ -3219,6 +3298,28 @@ export class Session<OutputT = string, Context = unknown> {
       if (this.starting) this.failStartup(error);
       else this.readerFailed(error);
     });
+  }
+
+  private async restoreModelControls(
+    settings: ModelSettings | undefined,
+  ): Promise<void> {
+    // Native merges retry patches field by field. Clear the checkpoint's
+    // retry settings before applying the current declaration.
+    const patches = [
+      modelOverrides(undefined, {
+        invocationTimeoutMs: settings?.invocationTimeoutMs ?? null,
+        attemptTimeoutMs: settings?.attemptTimeoutMs ?? null,
+        retry: null,
+      }),
+    ];
+    if (settings?.retry != null)
+      patches.push(modelOverrides(undefined, { retry: settings.retry }));
+    for (const patch of patches) {
+      if ((await this.#native._update_model_settings(encode(patch))) !== true)
+        throw new NativeError(
+          'Restored retry declaration was not acknowledged',
+        );
+    }
   }
 
   private configureNative(native: NativeThread): void {
@@ -4384,29 +4485,26 @@ export class Session<OutputT = string, Context = unknown> {
   private owns(run: NativeTurn): boolean {
     return this.lifecycle.kind === 'turn' && this.lifecycle.run === run;
   }
-  private runUsage(run: NativeTurn): RunUsage {
-    let total = runUsageSnapshot(null);
-    const origins = new Set<string>();
-    for (const step of this.rootSteps(this.rootRun(run))) {
-      if (step.id) origins.add(step.id);
-      total = mergeRunUsage(
-        total,
-        runUsageSnapshot(
-          step.tokenUsage,
-          step.requests,
-          step.missingUsageRequests,
-        ),
-      );
+  private attachChildUsage(owner: ChildCallbackOwner): void {
+    if (!owner.rootTurnId) return;
+    for (const reference of this.runs) {
+      const run = reference.deref();
+      if (run?.id === owner.rootTurnId) {
+        attachModelUsageSource(run, owner);
+        return;
+      }
     }
+  }
+  private runUsage(run: NativeTurn): RunUsage {
+    const steps = [...this.rootSteps(this.rootRun(run))];
+    const origins = new Set(
+      steps.flatMap((step) => (step.id === null ? [] : [step.id])),
+    );
     for (const child of this.childCallbacks.forOrigins(origins))
-      total = mergeRunUsage(
-        total,
-        runUsageSnapshot(
-          child.tokenUsage,
-          child.requests,
-          child.missingUsageRequests,
-        ),
-      );
+      this.attachChildUsage(child);
+    let total = runUsageSnapshot(null);
+    for (const step of steps)
+      total = mergeRunUsage(total, modelAttemptUsage(step));
     return total;
   }
 
@@ -4421,17 +4519,16 @@ export class Session<OutputT = string, Context = unknown> {
       const captured = captureUsageReport(usage, options?.requests);
       if (!check())
         throw new NativeError('Usage report invocation is no longer admitted');
-      if (owner instanceof NativeTurn)
-        owner.addUsage(captured.raw, captured.requests, captured.missing);
-      else {
-        owner.tokenUsage = addRunUsage(owner.tokenUsage, captured.raw);
-        owner.requests = addTokenCounts(owner.requests, captured.requests);
-        owner.missingUsageRequests = addTokenCounts(
-          owner.missingUsageRequests,
-          captured.missing,
-        );
-      }
+      this.addOwnerUsage(owner, captured);
     };
+  }
+
+  private addOwnerUsage(
+    owner: NativeTurn | ChildCallbackOwner,
+    report: ReturnType<typeof captureUsageReport>,
+  ): void {
+    if (!(owner instanceof NativeTurn)) this.attachChildUsage(owner);
+    addModelReportedUsage(owner, report.raw, report.requests, report.missing);
   }
 
   private rootRun(run: NativeTurn): NativeTurn {
@@ -4478,6 +4575,7 @@ export class Session<OutputT = string, Context = unknown> {
 
   private finishObservation(run: NativeTurn): void {
     run.guardrailInput = undefined;
+    releaseModelAttemptPayload(run);
     submissions.get(run)!.observation = 'ended';
     this.observations.notify();
   }
@@ -6433,8 +6531,14 @@ export class Session<OutputT = string, Context = unknown> {
                 : 'failed',
           errorType: error instanceof Error ? error.name : null,
         });
-      const settlementError = error ?? predecessorValidationError;
-      if (settlementError !== undefined) {
+      const terminalModel = modelAttemptTerminalError(run);
+      const originalModelFailure =
+        terminalModel !== undefined &&
+        (error === terminalModel || error === terminalModel.error);
+      const settlementError = originalModelFailure
+        ? terminalModel.error
+        : (error ?? predecessorValidationError);
+      if (originalModelFailure || settlementError !== undefined) {
         run.accepted.reject(settlementError);
         run.completion.reject(settlementError);
       } else if (run.id !== null) {
@@ -6479,9 +6583,12 @@ export class Session<OutputT = string, Context = unknown> {
     if (event) this.callbackEvents.set(event, delivery);
     return delivery;
   }
-  private releaseCallbackDelivery(delivery: NativeCallbackDelivery): void {
+  private releaseCallbackDelivery(
+    delivery: NativeCallbackDelivery,
+    cleanupFailed = false,
+  ): void {
     if (delivery.released) return;
-    delivery.native._release_python_callback(delivery.wire);
+    delivery.native._release_python_callback(delivery.wire, cleanupFailed);
     delivery.released = true;
     if (this.callbackDeliveries.get(delivery.wire) === delivery)
       this.callbackDeliveries.delete(delivery.wire);
@@ -6575,15 +6682,11 @@ export class Session<OutputT = string, Context = unknown> {
       )
         await callback(signal, delivery);
     } catch (error) {
-      if (!(
-        delivery.retired &&
-        signal.aborted &&
-        Object.is(error, signal.reason)
-      ))
+      if (!(signal.aborted && Object.is(error, signal.reason)))
         primary = { error };
     } finally {
       try {
-        this.releaseCallbackDelivery(delivery);
+        this.releaseCallbackDelivery(delivery, primary !== undefined);
       } catch (error) {
         primary ??= { error };
       }
@@ -6807,6 +6910,7 @@ export class Session<OutputT = string, Context = unknown> {
           if (this.manualSealing) {
             if (
               msg.type === 'raw_response_completed' ||
+              msg.type === '_sdk_model_attempt' ||
               msg.type === 'token_count'
             )
               this.process(run, event);
@@ -7062,22 +7166,32 @@ export class Session<OutputT = string, Context = unknown> {
       }
       this.observations.notify();
     }
+    this.attachChildUsage(owner);
     owner.instanceId ??= event.subagent_instance_id;
     if (msg.type === 'raw_response_item')
       this.releaseTerminalObservation(owner, msg.item);
 
-    if (msg.type === 'raw_response_completed' && event.id === owner.turnId) {
+    if (msg.type === '_sdk_model_attempt') {
+      if (msg.thread !== id) return;
+      if (
+        owner.rootTurnId === undefined &&
+        typeof msg.root_turn_id === 'string'
+      )
+        owner.rootTurnId = msg.root_turn_id;
+      this.observeModelAttempt(owner, msg.data);
+      return;
+    }
+    if (
+      msg.type === 'raw_response_completed' &&
+      event.id === owner.turnId &&
+      typeof msg.model_attempt_id !== 'string'
+    ) {
       const raw = msg.token_usage;
       const usage =
         raw !== null && typeof raw === 'object' && !Array.isArray(raw)
           ? raw
           : undefined;
-      owner.tokenUsage = addRunUsage(owner.tokenUsage, usage ?? {});
-      owner.requests = addTokenCounts(owner.requests, 1);
-      owner.missingUsageRequests = addTokenCounts(
-        owner.missingUsageRequests,
-        usage ? 0 : 1,
-      );
+      addModelReportedUsage(owner, usage ?? {}, 1, usage ? 0 : 1);
     }
     if (msg.type === 'token_count')
       this.observeTokenCount(event, turnId, submissionId);
@@ -7128,6 +7242,8 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === 'task_complete' ||
       msg.type === 'turn_aborted'
     ) {
+      if (msg.model_attempt !== undefined)
+        this.observeModelAttempt(owner, msg.model_attempt, false);
       if (owner.observationPhase !== 'open') return;
       owner.observationPhase = 'finishing';
       const completed = toolCompletionSchema.safeParse(msg.tool_completion);
@@ -7235,8 +7351,10 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     if (
+      msg.type === '_sdk_model_retry' ||
       msg.type === '_sdk_model_produce' ||
       msg.type === '_sdk_before_compact' ||
+      msg.type === '_sdk_before_compact_policy' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -7594,14 +7712,26 @@ export class Session<OutputT = string, Context = unknown> {
       void this.proposeToolCompletion(run, event, this.#native).catch(() => {});
       return;
     }
+    if (
+      kind === '_sdk_model_attempt' &&
+      msg.turn_id === run.id &&
+      msg.thread === this.id
+    ) {
+      this.observeModelAttempt(run, msg.data);
+      this.notifyManualProgress();
+      this.maybeSealManual(run);
+      return;
+    }
     if (kind === '_sdk_prepare_request') {
       if (msg.turn_id !== run.id) return;
       this.track(run, this.prepareRequest(run, event));
       return;
     }
     if (
+      kind === '_sdk_model_retry' ||
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
+      kind === '_sdk_before_compact_policy' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -7779,7 +7909,8 @@ export class Session<OutputT = string, Context = unknown> {
         raw !== null && typeof raw === 'object' && !Array.isArray(raw)
           ? raw
           : undefined;
-      run.addUsage(usage ?? {}, 1, usage ? 0 : 1);
+      if (typeof msg.model_attempt_id !== 'string')
+        run.addUsage(usage ?? {}, 1, usage ? 0 : 1);
       run.selection?.budget?.observe(usage);
       this.notifyManualProgress();
       this.maybeSealManual(run);
@@ -7804,6 +7935,8 @@ export class Session<OutputT = string, Context = unknown> {
       kind === 'turn_complete' ||
       kind === 'turn_aborted'
     ) {
+      if (msg.model_attempt !== undefined)
+        this.observeModelAttempt(run, msg.model_attempt, false);
       this.notifyManualProgress();
       let error = run.failure;
       if (
@@ -8556,15 +8689,48 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
+  private capturedRetryPolicy(profileId?: string): RetryPolicy | undefined {
+    return profileId && profileId !== this.options.agentGraph?.rootId
+      ? this.profileRuntimes.get(profileId)!.profile.declaration.modelSettings
+          ?.retry?.policy
+      : this.options.initialModelSettings?.retry?.policy;
+  }
+  private observeModelAttempt(
+    owner: NativeTurn | ChildCallbackOwner,
+    data: unknown,
+    fact = true,
+  ): void {
+    if (!(owner instanceof NativeTurn)) this.attachChildUsage(owner);
+    if (fact) applyModelAttemptFact(owner, data);
+    else applyModelAttemptSnapshot(owner, data);
+    const terminal = modelAttemptTerminalError(owner);
+    if (
+      terminal &&
+      !owner.controller.signal.aborted &&
+      (owner.failure === undefined ||
+        (owner instanceof NativeTurn && owner.failure === owner.nativeFailure))
+    )
+      owner.failure = terminal.error ?? terminal;
+  }
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
     beforeCompact?: BeforeCompact<any>;
+    compaction?: ResponsesCompaction<any>;
     transformContext?: ContextTransform<any>;
+    hostedPrompt?: HostedPromptSource<any>;
+    hostedPromptControls?: JsonObject;
   } {
     const source = this.messageProfile(message);
-    return source
-      ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
-      : this.options;
+    if (!source) return this.options;
+    const captured = this.profileRuntimes.get(source.profile_id)!.profile;
+    return {
+      beforeComplete: captured.declaration.beforeComplete,
+      beforeCompact: captured.declaration.beforeCompact,
+      compaction: captured.declaration.compaction,
+      transformContext: captured.declaration.transformContext,
+      hostedPrompt: captured.declaration.hostedPrompt,
+      hostedPromptControls: captured.hostedPromptControls,
+    };
   }
 
   private modelCallback(
@@ -8589,14 +8755,21 @@ export class Session<OutputT = string, Context = unknown> {
             request_id: msg.request_id,
           };
           const contextEdit = msg.type === '_sdk_transform_context';
-          const compact = msg.type === '_sdk_before_compact';
+          const compactPolicy = msg.type === '_sdk_before_compact_policy';
+          const compact = compactPolicy || msg.type === '_sdk_before_compact';
           const produce = msg.type === '_sdk_model_produce';
+          const retry = msg.type === '_sdk_model_retry';
           const sourceCatalog = this.sourceCatalog(
             msg,
             z.string().parse(msg.generation),
           );
-          const { beforeComplete, beforeCompact, transformContext } =
-            this.sourceModelCallbacks(msg);
+          const {
+            beforeComplete,
+            beforeCompact,
+            transformContext,
+            hostedPrompt,
+            compaction,
+          } = this.sourceModelCallbacks(msg);
           let replied = false;
           const reply = (result: Record<string, unknown>, failed = false) => {
             if (replied) return;
@@ -8604,7 +8777,8 @@ export class Session<OutputT = string, Context = unknown> {
             const data = contextEdit
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
-            if (produce) sourceNative._reply_model_producer(data);
+            if (retry) sourceNative._reply_model_retry(data);
+            else if (produce) sourceNative._reply_model_producer(data);
             else if (compact) sourceNative._reply_compaction(data);
             else if (contextEdit) sourceNative._reply_model_context(data);
             else sourceNative._reply_natural_completion(data);
@@ -8629,7 +8803,10 @@ export class Session<OutputT = string, Context = unknown> {
                 sourceCatalog ||
               !sourceNative._check_step(encode(receipt))
             )
-              throw new NativeError('Expired model callback owner');
+              this.callbackAuthorityFailed(
+                delivery,
+                new NativeError('Expired model callback owner'),
+              );
           };
           signal.addEventListener('abort', reject, { once: true });
           try {
@@ -8640,15 +8817,84 @@ export class Session<OutputT = string, Context = unknown> {
                   ? (owner as ChildCallbackOwner)
                   : this.rootRun(owner as NativeTurn),
               );
+            const failedAttempt = owner.modelAttempts?.failure;
+            const originalId = (msg.data as JsonObject)
+              ?.original_error_attempt_id;
+            const originalError = modelAttemptOriginalError(owner, originalId);
+            const retryCaptured = retry
+              ? retryContextFromNative(msg.data, signal, originalError?.error)
+              : undefined;
             const base = {
               context: this.options.context,
               sessionId: this.id,
               turnId: z.string().parse(receipt.turn_id),
               ...(child ? { subagentId: owner.childId } : {}),
-              model: z.string().parse(msg.model),
+              model:
+                retryCaptured?.context.model ?? z.string().parse(msg.model),
               signal,
             };
-            if (produce) {
+            if (retry) {
+              const captured = retryCaptured!;
+              if (
+                captured.context.threadId !== receipt.thread ||
+                captured.context.turnId !== receipt.turn_id
+              )
+                throw new NativeError(
+                  'Retry context does not match its admitted owner',
+                );
+              const failed =
+                failedAttempt?.attemptId === captured.context.attemptId
+                  ? failedAttempt
+                  : undefined;
+              let context = captured.context;
+              const advice = failed?.advice
+                ? captureModelRetryAdvice(
+                    await failed.advice.call(failed.model, {
+                      request: failed.request,
+                      error: failed.error,
+                      attemptId: captured.context.attemptId,
+                      attempt: captured.context.attempt,
+                      signal,
+                    }),
+                  )
+                : undefined;
+              check();
+              if (advice !== undefined)
+                context = Object.freeze({
+                  ...context,
+                  providerAdvice: Object.freeze({
+                    ...context.providerAdvice,
+                    ...advice,
+                  }),
+                  normalizedError: Object.freeze({
+                    ...context.normalizedError,
+                    ...(advice.retryAfterMs === undefined
+                      ? {}
+                      : { retryAfterMs: advice.retryAfterMs }),
+                  }),
+                });
+              const policy = failed
+                ? failed.policy
+                : this.capturedRetryPolicy(
+                    this.messageProfile(msg)?.profile_id,
+                  );
+              if (captured.policyEnabled && !policy)
+                throw new NativeError(
+                  'Retry policy has no captured authorized declaration',
+                );
+              const decision = captured.policyEnabled
+                ? retryDecisionToNative(await policy!(context))
+                : null;
+              check();
+              reply({
+                data: {
+                  decision,
+                  ...(advice === undefined
+                    ? {}
+                    : { provider_advice: retryAdviceToNative(advice) }),
+                },
+              });
+            } else if (produce) {
               if (!this.options.modelBackend)
                 throw new NativeError(
                   'Native model producer has no application backend',
@@ -8658,87 +8904,313 @@ export class Session<OutputT = string, Context = unknown> {
                   ? this.options.modelBackend
                   : this.options.modelBackend.getModel(base.model);
               check();
-              const request = {
+              const attemptId =
+                typeof msg.attempt_id === 'string' ? msg.attempt_id : undefined;
+              const usageOwner =
+                attemptId !== undefined && delivery
+                  ? encode({
+                      attempt_id: attemptId,
+                      callback: parseNative(delivery.wire),
+                    })
+                  : undefined;
+              const request: ModelRequest = Object.freeze({
                 ...base,
                 body: losslessJsonObjectSchema.parse(msg.data),
-              };
-              if (backend.stream) {
-                const stream = await backend.stream(request);
-                const iterator = stream[Symbol.asyncIterator]();
-                let finished = false;
-                try {
-                  check();
-                  const streamOwner = encode(receipt);
-                  sourceNative._start_model_producer(streamOwner);
-                  while (true) {
-                    check();
-                    const next = await iterator.next();
-                    check();
-                    if (next.done) {
-                      finished = true;
-                      break;
-                    }
-                    const continuing = await sourceNative._push_model_producer(
-                      streamOwner,
-                      JSON.stringify(
-                        losslessJsonObjectSchema.parse(next.value),
-                      ),
-                    );
-                    check();
-                    if (!continuing) break;
-                  }
-                } finally {
-                  if (!finished) await iterator.return?.();
-                }
-                check();
-                reply({});
-              } else {
-                const returned = await backend.complete(request);
-                check();
-                const data = captureModelResponse(
-                  returned,
-                  msg.capture_raw_usage === true,
+                ...(attemptId === undefined
+                  ? {}
+                  : {
+                      attemptId,
+                      attempt: z
+                        .number()
+                        .int()
+                        .positive()
+                        .safe()
+                        .parse(msg.attempt),
+                      disableProviderRetries: z
+                        .boolean()
+                        .parse(msg.disable_provider_retries),
+                      ...(usageOwner === undefined
+                        ? {}
+                        : {
+                            reportUsage: (usage: TokenUsage) => {
+                              if (
+                                !sourceNative._report_model_attempt_usage(
+                                  usageOwner,
+                                  modelAttemptUsageJson(usage),
+                                )
+                              )
+                                throw new NativeError(
+                                  'Model usage report is no longer admitted',
+                                );
+                            },
+                          }),
+                    }),
+              });
+              const advice = backend.getRetryAdvice;
+              if (advice !== undefined && typeof advice !== 'function')
+                throw new TypeError(
+                  'NativeModel.getRetryAdvice must be callable',
                 );
-                check();
-                reply({ data });
+              const policy = this.capturedRetryPolicy(
+                this.messageProfile(msg)?.profile_id,
+              );
+              const failed = (error: unknown) => {
+                if (
+                  attemptId === undefined ||
+                  !this.current(owner) ||
+                  owner.controller.signal.aborted
+                )
+                  throw error;
+                const failure = {
+                  attemptId,
+                  error,
+                  request: Object.freeze({
+                    ...request,
+                    body: losslessJsonObjectSchema.parse(msg.data),
+                  }),
+                  model: backend,
+                  advice,
+                  policy,
+                };
+                if (signal.aborted) {
+                  if (
+                    Object.is(error, signal.reason) ||
+                    isModelCallbackAbort(error)
+                  ) {
+                    // Advice retains the actual aborted request; native timeout identity stays authoritative.
+                    modelAttemptState(owner).failure = failure;
+                    throw signal.reason;
+                  }
+                  throw error;
+                }
+                try {
+                  reply(
+                    {
+                      failure: {
+                        attempt_id: attemptId,
+                        normalized: modelRetryFailureToNative(error),
+                      },
+                    },
+                    true,
+                  );
+                  retainModelAttemptFailure(owner, failure);
+                } catch (replyError) {
+                  this.callbackAuthorityFailed(delivery, replyError);
+                }
+              };
+              try {
+                if (backend.stream) {
+                  const stream = await backend.stream(request);
+                  const iterator = stream[Symbol.asyncIterator]();
+                  let finished = false;
+                  try {
+                    check();
+                    const streamOwner = encode(receipt);
+                    sourceNative._start_model_producer(streamOwner);
+                    while (true) {
+                      check();
+                      const next = await iterator.next();
+                      check();
+                      if (next.done) {
+                        finished = true;
+                        break;
+                      }
+                      const continuing =
+                        await sourceNative._push_model_producer(
+                          streamOwner,
+                          JSON.stringify(
+                            losslessJsonObjectSchema.parse(next.value),
+                          ),
+                        );
+                      check();
+                      if (!continuing) break;
+                    }
+                  } finally {
+                    if (!finished) await iterator.return?.();
+                  }
+                  check();
+                  reply({});
+                } else {
+                  const returned = await backend.complete(request);
+                  check();
+                  const data = captureModelResponse(
+                    returned,
+                    msg.capture_raw_usage === true,
+                  );
+                  check();
+                  reply({ data });
+                }
+              } catch (error) {
+                failed(error);
+                return;
               }
             } else if (compact) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
-              const returned = beforeCompact?.(
-                Object.freeze({
-                  ...base,
-                  items: Object.freeze(items),
-                  requestId: z.string().parse(msg.request_id),
-                  automatic: z.boolean().parse(msg.automatic),
-                }),
-              );
-              const settled =
-                returned &&
-                typeof (returned as Promise<unknown>).then === 'function'
-                  ? await returned
-                  : returned;
-              if (
-                settled !== undefined &&
-                (typeof settled !== 'string' || !settled.trim())
-              )
-                throw new TypeError(
-                  'beforeCompact must return a nonempty summary or undefined',
-                );
-              check();
-              reply(settled === undefined ? {} : { summary: settled });
+              const context = Object.freeze({
+                ...base,
+                items: Object.freeze(items),
+                requestId: z.string().parse(msg.request_id),
+                automatic: z.boolean().parse(msg.automatic),
+              });
+              if (compaction !== undefined) {
+                const budget =
+                  owner instanceof NativeTurn
+                    ? owner.selection?.budget
+                    : undefined;
+                try {
+                  const providerResponse =
+                    msg.provider_response == null
+                      ? undefined
+                      : z
+                          .object({
+                            response_id: z.string().trim().min(1),
+                            model: z.string().trim().min(1).optional(),
+                          })
+                          .strict()
+                          .parse(msg.provider_response);
+                  const prepared = compaction.prepareContext(
+                    context,
+                    z
+                      .array(z.number().int().nonnegative())
+                      .parse(msg.candidate_indexes),
+                    providerResponse,
+                    z.boolean().parse(msg.model_omitted),
+                  );
+                  if (compactPolicy) {
+                    const admitted =
+                      compaction.shouldCompact === undefined
+                        ? prepared.candidates.length >= 10
+                        : await compaction.shouldCompact(prepared);
+                    if (typeof admitted !== 'boolean')
+                      throw new TypeError(
+                        'shouldCompact must return a boolean',
+                      );
+                    check();
+                    reply({ admitted });
+                  } else {
+                    let canonicalItems: typeof prepared.items | undefined;
+                    let requestContext = prepared;
+                    if (prepared.mode === 'input' && transformContext) {
+                      canonicalItems = JSON.parse(
+                        JSON.stringify(
+                          prepared.items.filter(
+                            (item) =>
+                              item.type === 'message' &&
+                              (item.role === 'developer' ||
+                                item.role === 'system'),
+                          ),
+                        ),
+                      ) as typeof prepared.items;
+                      const replacement = await transformContext(
+                        Object.freeze({
+                          ...base,
+                          model: prepared.model,
+                          items: prepared.items,
+                          requestId: prepared.requestId,
+                          purpose: 'compaction' as const,
+                        }),
+                      );
+                      check();
+                      if (replacement !== undefined)
+                        requestContext = Object.freeze({
+                          ...prepared,
+                          items: Object.freeze(
+                            z
+                              .array(losslessJsonObjectSchema)
+                              .parse(replacement),
+                          ),
+                        });
+                    }
+                    const window = await compaction.requestWindow(
+                      requestContext,
+                      providerResponse,
+                      (usage) => {
+                        const report = captureUsageReport(usage);
+                        this.addOwnerUsage(owner, report);
+                        budget?.observe(
+                          usage === null ? undefined : report.raw,
+                        );
+                      },
+                      canonicalItems,
+                    );
+                    check();
+                    reply({ window });
+                  }
+                } catch (error) {
+                  check();
+                  if (!compactPolicy && msg.optional !== true) throw error;
+                  // Failed optional work never changes the accepted answer.
+                  reply({}, true);
+                }
+              } else if (compactPolicy) {
+                reply({});
+              } else {
+                const settled = await beforeCompact?.(context);
+                if (
+                  settled !== undefined &&
+                  (typeof settled !== 'string' || !settled.trim())
+                )
+                  throw new TypeError(
+                    'beforeCompact must return a nonempty summary or undefined',
+                  );
+                check();
+                reply(settled === undefined ? {} : { summary: settled });
+              }
             } else if (contextEdit) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
-              const returned = transformContext?.(
-                Object.freeze({
-                  ...base,
-                  items: Object.freeze(items),
-                  requestId: z.string().parse(msg.request_id),
-                  purpose:
-                    msg.compaction === true
-                      ? 'compaction'
-                      : (this.options.contextTransformPurpose ?? 'turn'),
-                }),
-              );
+              const requestContext = Object.freeze({
+                ...base,
+                items: Object.freeze(items),
+                requestId: z.string().parse(msg.request_id),
+                purpose:
+                  msg.compaction === true
+                    ? ('compaction' as const)
+                    : (this.options.contextTransformPurpose ?? 'turn'),
+              });
+              if (hostedPrompt !== undefined && msg.hosted_prompt !== true)
+                throw new TypeError(
+                  'Hosted prompt ownership differs from the restored request',
+                );
+              const declaredPrompt =
+                this.sourceModelCallbacks(msg).hostedPromptControls;
+              if (msg.hosted_prompt === true && declaredPrompt) {
+                const retained = z
+                  .record(z.string(), z.unknown())
+                  .parse(msg.hosted_prompt_omissions);
+                for (const field of [
+                  'omit_model',
+                  'omit_instructions',
+                  'omit_tools',
+                ])
+                  if (
+                    declaredPrompt[field] === false &&
+                    retained[field] === true
+                  )
+                    throw new TypeError(
+                      'Explicit hosted prompt settings differ from the restored request',
+                    );
+              }
+              const activePrompt =
+                msg.hosted_prompt === true ? hostedPrompt : undefined;
+              if (msg.hosted_prompt === true && activePrompt === undefined)
+                throw new TypeError(
+                  'Missing captured hosted prompt declaration',
+                );
+              const returnedPrompt =
+                typeof activePrompt === 'function'
+                  ? activePrompt(requestContext)
+                  : activePrompt;
+              const resolvedPrompt =
+                returnedPrompt &&
+                typeof (returnedPrompt as Promise<unknown>).then === 'function'
+                  ? await returnedPrompt
+                  : returnedPrompt;
+              check();
+              const promptReference =
+                activePrompt === undefined
+                  ? undefined
+                  : captureHostedPromptReference(resolvedPrompt);
+              const returned = transformContext?.(requestContext);
               const settled =
                 returned &&
                 typeof (returned as Promise<unknown>).then === 'function'
@@ -8749,7 +9221,18 @@ export class Session<OutputT = string, Context = unknown> {
                   ? undefined
                   : z.array(losslessJsonObjectSchema).parse(settled);
               check();
-              reply(replacement === undefined ? {} : { items: replacement });
+              reply({
+                ...(replacement === undefined ? {} : { items: replacement }),
+                ...(promptReference === undefined
+                  ? {}
+                  : {
+                      hosted_prompt: promptReference,
+                      explicit_tools:
+                        owner instanceof NativeTurn &&
+                        (owner.selection?.names !== undefined ||
+                          owner.selection?.beforeStep !== undefined),
+                    }),
+              });
             } else {
               const invoke = async (text: string | null) => {
                 const scope = this.decisionScope(event.msg, signal);
@@ -8870,7 +9353,8 @@ export class Session<OutputT = string, Context = unknown> {
           } catch (error) {
             if (!child) this.decodedOutputs.delete(owner);
             reject();
-            owner.failure ??= error;
+            if (!(signal.aborted && Object.is(error, signal.reason)))
+              owner.failure ??= error;
             throw error;
           } finally {
             signal.removeEventListener('abort', reject);
@@ -10002,7 +10486,8 @@ export class Session<OutputT = string, Context = unknown> {
         }
         if (!this.current(run) || !this.manualCurrent(event)) return;
         const args =
-          typeof msg.arguments === 'string'
+          typeof msg.arguments === 'string' &&
+          typeof msg._sdk_argument_error !== 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
             : losslessJsonValueSchema.parse(msg.arguments);
         const withApprovalContext = async <T>(
@@ -10056,7 +10541,14 @@ export class Session<OutputT = string, Context = unknown> {
           msg._sdk_restored_approval !== true &&
           msg._sdk_effective_arguments === undefined
             ? await withApprovalContext((context, check) =>
-                approval.prepareOriginalInput!(args, context, check),
+                approval.prepareOriginalInput!(
+                  args,
+                  context,
+                  check,
+                  typeof msg._sdk_argument_error === 'string'
+                    ? msg._sdk_argument_error
+                    : undefined,
+                ),
               )
             : undefined;
         if (initialInput && 'failure' in initialInput) {
@@ -10836,6 +11328,9 @@ export class Session<OutputT = string, Context = unknown> {
               : losslessJsonValueSchema.parse(call.event.msg.arguments),
         })),
       );
+      const guardrailRecords = z
+        .array(guardrailCheckpointSchema)
+        .parse(this.checkpointGuardrailRecords(run));
       signal?.throwIfAborted();
       if (
         this.manualProgress !== progress ||
@@ -10869,6 +11364,7 @@ export class Session<OutputT = string, Context = unknown> {
             z.object({
               checkpoint: z.unknown(),
               manual_continuation: losslessJsonObjectSchema,
+              model_attempt: modelAttemptSnapshotSchema.optional(),
             }),
           ])
           .parse(parseNative(wire));
@@ -10886,6 +11382,8 @@ export class Session<OutputT = string, Context = unknown> {
         if (!this.manualRestoring) await this.readers[0];
         if (!this.current(run))
           throw new TurnAborted('Manual checkpoint cancelled');
+        if (result.model_attempt !== undefined)
+          this.observeModelAttempt(run, result.model_attempt, false);
         const measuredUsage = this.runUsage(run);
         const state = fromNativeCheckpoint(
           this.checkpointCatalog(
@@ -10905,6 +11403,7 @@ export class Session<OutputT = string, Context = unknown> {
           {
             manual_continuation: result.manual_continuation,
             manual_context: {
+              guardrail_results: guardrailRecords,
               ...(run.selection?.maxModelSteps === undefined
                 ? {}
                 : {
@@ -10920,6 +11419,16 @@ export class Session<OutputT = string, Context = unknown> {
                   name: tool.name,
                   schema: manualResultSchema(tool),
                 })),
+              ...(run.modelAttempts?.native
+                ? {
+                    model_attempt: run.modelAttempts.native.wire,
+                    model_usage_offset: runUsageToWire(
+                      measuredUsage,
+                      measuredUsage.requests,
+                      measuredUsage.missingUsageRequests,
+                    ),
+                  }
+                : {}),
               usage:
                 run.tokenUsage === null
                   ? null
@@ -10959,8 +11468,86 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** @internal Restore original pending calls with new native and JavaScript reply authority. */
+  private checkpointGuardrailRecords(run: NativeTurn) {
+    const runtimes = new Map(this.profileRuntimes);
+    for (const [id, graph] of this.voiceProfileGraphs) {
+      const runtime = graph.profiles.get(id);
+      if (runtime) runtimes.set(id, runtime);
+    }
+    const profiles = new Map(
+      [...runtimes].map(
+        ([id, runtime]) => [runtime.profile.agent, id] as const,
+      ),
+    );
+    return [...this.rootSteps(this.rootRun(run))]
+      .flatMap((step) => step.guardrailResults)
+      .map((record) => {
+        const outputInfo = losslessJsonValueSchema.safeParse(
+          record.result.outputInfo,
+        );
+        const profile =
+          record.agent === this.options.applicationAgent
+            ? null
+            : profiles.get(record.agent);
+        if (profile === undefined)
+          throw new NativeError(
+            'Guardrail checkpoint has no captured source Agent',
+          );
+        return {
+          kind: record.kind,
+          name: record.name,
+          agent_profile: profile,
+          session_id: record.sessionId,
+          turn_id: record.turnId,
+          ...(record.subagentId === undefined
+            ? {}
+            : { subagent_id: record.subagentId }),
+          result: {
+            tripwireTriggered: record.result.tripwireTriggered,
+            ...(outputInfo.success ? { outputInfo: outputInfo.data } : {}),
+          },
+          ...(record.toolCall === undefined
+            ? {}
+            : { tool_call: record.toolCall }),
+        };
+      });
+  }
+  private restoreGuardrailRecords(
+    state: ManualSessionState,
+  ): readonly GuardrailRecord[] {
+    return (state.manual_context.guardrail_results ?? []).map((record) => {
+      const agent =
+        record.agent_profile === null
+          ? this.options.applicationAgent
+          : this.callbackProfileRuntime(record.agent_profile)?.profile.agent;
+      if (!agent)
+        throw new NativeError(
+          'Guardrail checkpoint source Agent is unavailable',
+        );
+      return Object.freeze({
+        kind: record.kind,
+        name: record.name,
+        agent,
+        sessionId: record.session_id,
+        turnId: record.turn_id,
+        ...(record.subagent_id === undefined
+          ? {}
+          : { subagentId: record.subagent_id }),
+        result: Object.freeze({ ...record.result }),
+        ...(record.tool_call === undefined
+          ? {}
+          : {
+              toolCall: Object.freeze({
+                ...record.tool_call,
+                tool: Object.freeze({ ...record.tool_call.tool }),
+              }),
+            }),
+      });
+    });
+  }
   async _restoreManualContinuation(state: ManualSessionState): Promise<void> {
     this.idle('restore manual continuation');
+    const guardrailRecords = this.restoreGuardrailRecords(state);
     const tracing = this.captureRootTracing();
     let requests: JsonObject[];
     try {
@@ -10984,6 +11571,7 @@ export class Session<OutputT = string, Context = unknown> {
       restoredOutput.output,
       restoredOutput.outputOverride,
     );
+    run.guardrailResults.push(...guardrailRecords);
     run.tracing = tracing;
 
     run.parentTrace = this.options.parentTrace;
@@ -11027,19 +11615,25 @@ export class Session<OutputT = string, Context = unknown> {
     this.#turnFor(run);
     run.accepted.resolve({ status: 'started', turn_id: run.id });
     const usage = state.manual_context.usage;
-    if (usage)
-      run.addUsage(
-        {
-          input_tokens: usage.inputTokens,
-          cached_input_tokens: usage.cachedInputTokens,
-          cache_write_input_tokens: usage.cacheWriteInputTokens,
-          output_tokens: usage.outputTokens,
-          reasoning_output_tokens: usage.reasoningOutputTokens,
-          total_tokens: usage.totalTokens,
-        },
-        parseTokenCount(usage.requests ?? 0),
-        parseTokenCount(usage.missingUsageRequests ?? 0),
+    const historicalUsage = state.manual_context.model_usage_offset ?? usage;
+    if (historicalUsage) {
+      const raw = {
+        input_tokens: historicalUsage.inputTokens,
+        cached_input_tokens: historicalUsage.cachedInputTokens,
+        cache_write_input_tokens: historicalUsage.cacheWriteInputTokens,
+        output_tokens: historicalUsage.outputTokens,
+        reasoning_output_tokens: historicalUsage.reasoningOutputTokens,
+        total_tokens: historicalUsage.totalTokens,
+      };
+      restoreModelUsageOffset(
+        run,
+        runUsageSnapshot(
+          addRunUsage(null, raw),
+          parseTokenCount(historicalUsage.requests ?? 0),
+          parseTokenCount(historicalUsage.missingUsageRequests ?? 0),
+        ),
       );
+    }
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
     this.manualCheckpointRun = run;
@@ -11310,7 +11904,8 @@ export class Session<OutputT = string, Context = unknown> {
         }
         if (!check()) return;
         const args =
-          typeof msg.arguments === 'string'
+          typeof msg.arguments === 'string' &&
+          typeof msg._sdk_argument_error !== 'string'
             ? decode(losslessJsonValueSchema, msg.arguments)
             : losslessJsonValueSchema.parse(msg.arguments);
         const approved =
@@ -11352,6 +11947,9 @@ export class Session<OutputT = string, Context = unknown> {
             ? undefined
             : losslessJsonValueSchema.parse(msg._sdk_effective_arguments),
           approved,
+          typeof msg._sdk_argument_error === 'string'
+            ? msg._sdk_argument_error
+            : undefined,
           () =>
             this.realtimeFunctionEnabled(owner, msg, tool.name, signal, true),
           () =>
@@ -12024,7 +12622,20 @@ export class Session<OutputT = string, Context = unknown> {
         await this.realtimeOwner?._syncProfile(true);
       });
     }
-    const settings = modelOverrides(options.model, options.modelSettings);
+    const capturedSettings =
+      options.modelSettings === undefined
+        ? undefined
+        : captureModelSettings(options.modelSettings);
+    const requestedPolicy = capturedSettings?.retry?.policy;
+    if (
+      requestedPolicy !== undefined &&
+      requestedPolicy !==
+        this.capturedRetryPolicy(this.profileCurrent?.profile_id)
+    )
+      throw new TypeError(
+        'Retry policy is fixed by the captured declaration; open a new Session to replace it',
+      );
+    const settings = modelOverrides(options.model, capturedSettings);
     if (
       this.options.nativeAgents &&
       (options.instructions !== undefined || Object.keys(settings).length)
@@ -12113,6 +12724,23 @@ export class Session<OutputT = string, Context = unknown> {
             'Updated MCP tools must have been declared when the Session opened',
           );
       const replacements = captureTools(next.tools);
+      const callbackBindings = this.profileCurrent
+        ? this.profileRuntimes.get(this.profileCurrent.profile_id)?.profile
+            .callbackTools
+        : undefined;
+      const callbacks = new Map(
+        (callbackBindings ?? []).map(
+          (tool) => [JSON.stringify(toolIdentity(tool)), tool] as const,
+        ),
+      );
+      for (const tool of replacements.tools) {
+        const expected = callbacks.get(JSON.stringify(toolIdentity(tool)));
+        if (
+          expected !== undefined &&
+          toolDeclarationIdentity(tool) !== toolDeclarationIdentity(expected)
+        )
+          throw new TypeError('A captured handoff callback cannot be replaced');
+      }
       if (
         this.options.customStore &&
         replacements.tools.some((tool) => tool.kind === 'manual')
@@ -12372,6 +13000,9 @@ export class Session<OutputT = string, Context = unknown> {
   private terminalSlots(catalog: ToolCatalog = this.catalog): string {
     return encode({
       generation: catalog.generation.toString(),
+      input_error_slots: catalog.tools.flatMap((tool, slot) =>
+        supportsInputErrorRecovery(tool) ? [slot] : [],
+      ),
       slots: catalog.tools.flatMap((tool, slot) =>
         (tool.kind !== 'manual' && tool.finishTurn) ||
         managedApproval(tool)?.function.finishTurn
@@ -13190,13 +13821,29 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** Core has been closing this Session before deleting its stored conversation.
-   * LocalStorage only; native writer/reference exclusion and sidecar cleanup.
+   * LocalStorage only. Default: physical deletion with native reference checks.
+   * preserveDescendants: logical owner retirement; exact shared journal paths and
+   * prior descendant checkpoints retained. Retired source admission/discovery
+   * in this LocalStorage: rejected. Portable exports: valid independent memory copies.
+   * No secure erasure, cross-version revocation or source ID reuse.
    * Explicit rejection after a concurrent prior close; no silent success. */
-  async deleteStored(): Promise<void> {
-    return this.closeStoredHistory({ kind: 'delete' });
+  async deleteStored(
+    options: { preserveDescendants?: boolean } = {},
+  ): Promise<void> {
+    if (!options || typeof options !== 'object' || Array.isArray(options))
+      throw new TypeError('deleteStored options must be an object');
+    const { preserveDescendants = false } = options;
+    if (typeof preserveDescendants !== 'boolean')
+      throw new TypeError('preserveDescendants must be a boolean');
+    return this.closeStoredHistory({
+      kind: 'delete',
+      preserve_descendants: preserveDescendants,
+    });
   }
 
-  private closeStoredHistory(action: Record<string, string>): Promise<void> {
+  private closeStoredHistory(
+    action: Record<string, string | boolean>,
+  ): Promise<void> {
     this.checkCallbackOperation('change stored history while closing');
     this.idle('change stored history while closing');
     this.storedHistoryClose = this.#native._stored_history_close_action(

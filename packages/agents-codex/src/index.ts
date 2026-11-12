@@ -1,3 +1,14 @@
+export { retryPolicies } from './runtime/model-retry';
+export type {
+  RetryContext,
+  RetryDecision,
+  RetryPolicy,
+  RetryNormalizedError,
+  ModelRetryAdvice,
+  ModelRetryAdviceRequest,
+  ModelRetryBackoffSettings,
+  ModelRetrySettings,
+} from './runtime/model-retry';
 export { applyDiff } from '@openai/agents-core/utils';
 export { TraceContext } from './runtime/trace-context';
 export type { TraceContextHeaders } from './runtime/trace-context';
@@ -431,6 +442,10 @@ export type {
   CompactionContext,
   ContextTransform,
 } from './runtime/model-callbacks';
+export type {
+  HostedPromptReference,
+  HostedPromptSource,
+} from './runtime/hosted-prompts';
 
 export {
   ChatCompletionsModel,
@@ -491,3 +506,13 @@ export type {
 } from './runtime/guardrails';
 
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
+
+export { Handoff } from './runtime/handoffs';
+export {
+  ResponsesCompaction,
+  responsesCompaction,
+} from './runtime/responses-compaction';
+export type {
+  ResponsesCompactionOptions,
+  ResponsesCompactionContext,
+} from './runtime/responses-compaction';
