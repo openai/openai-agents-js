@@ -1,4 +1,5 @@
 import { modelAttemptSnapshotSchema } from './model-attempts';
+import { nativeInput, type UserInput } from './input';
 import { captureFile, captureImage, mediaRecord } from './media';
 import { z } from 'zod';
 import type { OutputIdentity } from './output';
@@ -369,8 +370,18 @@ export const guardrailCheckpointSchema = z.object({
     })
     .optional(),
 });
+const originalInputSchema = jsonValue.transform((value, context) => {
+  try {
+    nativeInput(value as UserInput);
+    return value as UserInput & JsonValue;
+  } catch {
+    context.addIssue({ code: 'custom', message: 'Invalid original run input' });
+    return z.NEVER;
+  }
+});
 const manualContextSchema = z.object({
   guardrail_results: z.array(guardrailCheckpointSchema).optional(),
+  original_input: originalInputSchema.optional(),
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
   instructions: z.string().nullable(),
   result_schemas: z.array(

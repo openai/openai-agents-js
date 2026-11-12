@@ -923,7 +923,11 @@
     {
       "path": "sdk-trace-flush-worker-completion.patch",
       "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
+    },
+    {
+      "path": "sdk-v2-interrupt-residency.patch",
+      "sha256": "cbc37c09cca0012ceccca17cf8f8e45cc41f642725acaf450bc90e59fcdb6326"
     }
   ],
-  "result_tree": "fe092b8bff6bd0b7d35a2d3a9947cfe2dafc2edc"
+  "result_tree": "759f89b140b79a3cb9bc6a73b79e8cab53fc2976"
 }
