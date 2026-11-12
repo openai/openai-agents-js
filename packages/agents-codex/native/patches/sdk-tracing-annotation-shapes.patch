@@ -270,7 +270,7 @@ index acad86aa..91626c7f 100644
          assert!(
              metadata_attribute_value(
 diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
-index 36b78d1e..1728429e 100644
+index 36b78d1e..656ec8c1 100644
 --- a/codex-rs/otel/src/sdk_trace_routes.rs
 +++ b/codex-rs/otel/src/sdk_trace_routes.rs
 @@ -295,11 +295,38 @@ pub fn set_trace_routes(input: &str) -> Result<u64, String> {
@@ -336,7 +336,7 @@ index 36b78d1e..1728429e 100644
 +        0
 +    } else {
 +        serde_json::to_vec(&projected).map_or(0, |encoded| encoded.len())
-+            + annotations.as_ref().map_or(0, |value| value.to_string().len())
++            + annotations.as_ref().map_or(0, |value| value.to_string().len() + "\"__sdk_annotations\":,".len())
 +    };
 +    projected.extend(attrs);
 +    (projected, projection_bytes, annotations)
@@ -456,7 +456,7 @@ index 36b78d1e..1728429e 100644
 +    Ok(serde_json::to_vec(&projected)
 +        .map_err(|_| "Invalid SDK annotation receipt")?
 +        .len()
-+        + annotations.to_string().len())
++        + annotations.to_string().len() + "\"__sdk_annotations\":,".len())
 +}
 +
 +// Detached observations carry data, never a native policy or credential capability.
