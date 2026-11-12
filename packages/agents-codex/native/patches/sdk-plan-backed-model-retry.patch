@@ -1,0 +1,79 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 50139a73360fd72496b90dd20417361febc014ce..731fbe6d7c3a5fd32b526b29c587b8d33472ed6e 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1801,6 +1801,10 @@ impl Drop for ModelClientSession {
+ }
+ 
+ impl ModelClientSession {
++    pub(crate) fn uses_chatgpt_plan(&self) -> bool {
++        self.client.uses_chatgpt_plan()
++    }
++
+     pub(crate) fn saved_login_limits_need_attention(&self) -> bool {
+         let source = &self.client.state.session_source;
+         // ThreadSpawn children expose the same attention API as root turns.
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index c11347cc43443b1ba396eb78d8e6909f11a91e89..1ac18a45fc3fb39240c1650ae6f0e8ff4f596bb0 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2030,7 +2030,7 @@ async fn run_sampling_request(
+         Arc::clone(&turn_diff_tracker),
+     );
+     let max_retries = turn_context.provider.info().stream_max_retries();
+-    let stop_at_rate_limit = client_session.saved_login_limits_need_attention();
++    let stop_at_saved_login_limit = client_session.saved_login_limits_need_attention();
+     let mut retry_state = ResponsesStreamRetryState::default();
+     let mut recovery_attempt = 0;
+     let mut initial_input = Some(input);
+@@ -2326,17 +2326,6 @@ async fn run_sampling_request(
+                     if let Some(snapshot) = err.api_rate_limits().cloned() {
+                         sess.emit_api_rate_limits(&turn_context, snapshot).await;
+                     }
+-                    let rate_limited = match err.details() {
+-                        CodexErrorDetails::RateLimitExceeded(_) => true,
+-                        CodexErrorDetails::RetryLimit(error) => {
+-                            error.status == http::StatusCode::TOO_MANY_REQUESTS
+-                        }
+-                        _ => false,
+-                    };
+-                    if rate_limited && stop_at_rate_limit {
+-                        // SDK callers decide when to resubmit after saved-login throttling.
+-                        return Err(err);
+-                    }
+                     match err.details() {
+                         CodexErrorDetails::ContextWindowExceeded => {
+                             sess.set_total_tokens_full(&turn_context, &step_context.settings)
+@@ -2412,7 +2401,21 @@ async fn run_sampling_request(
+                 || failure.is_some()
+                 || attempt_deadline.expired()
+                 || context.normalized.error_code.as_deref() == Some("conversation_locked");
+-            let hard_veto = permanently_stopped
++            // Registered plan inference allows one physical attempt per model step.
++            // SDK callers decide when to resubmit after saved-login quota or throttling.
++            let saved_login_limit = stop_at_saved_login_limit
++                && match err.details() {
++                    CodexErrorDetails::RateLimitExceeded(_) | CodexErrorDetails::QuotaExceeded => {
++                        true
++                    }
++                    CodexErrorDetails::RetryLimit(error) => {
++                        error.status == http::StatusCode::TOO_MANY_REQUESTS
++                    }
++                    _ => false,
++                };
++            let stop_at_plan_error = client_session.uses_chatgpt_plan() || saved_login_limit;
++            let hard_veto = stop_at_plan_error
++                || permanently_stopped
+                 || retirement_failed
+                 || attempt
+                     .provider_effects
+@@ -2440,7 +2443,8 @@ async fn run_sampling_request(
+                 && retry_settings.and_then(|settings| settings.max_retries) != Some(0)
+                 && locked_retries < 3;
+             let mut resolution = None;
+-            if !permanently_stopped
++            if !stop_at_plan_error
++                && !permanently_stopped
+                 && !retirement_failed
+                 && !compatibility_retry
+                 && (retry_configured || failure.is_some() || attempt_timeout.is_some())
