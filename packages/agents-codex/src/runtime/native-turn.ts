@@ -31,6 +31,7 @@ export class NativeTurn {
   clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[] = [];
   guardrailInput?: UserInput;
+  stagedCheckpoint?: import('./state').ManualSessionState;
   inputGuardrailsStarted = false;
   inputGuardrailsPassed?: boolean;
   inputGuardrailsTask?: Promise<void>;

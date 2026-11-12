@@ -226,7 +226,12 @@ import type { EnvironmentAcquisition } from './environment-source';
 import type { SandboxMemoryTerminal } from './sandbox-memory';
 import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { nativeInput, type UserInput, type FunctionCallOutput } from './input';
+import {
+  nativeInput,
+  stagedGuardrailInput,
+  type UserInput,
+  type FunctionCallOutput,
+} from './input';
 import {
   ObservationBuffer,
   type Observation,
@@ -361,6 +366,7 @@ import {
   parseSessionState,
   parseNativeCheckpoint,
   fromNativeCheckpoint,
+  withOutputState,
   type NativeCheckpoint,
   isManualSessionState,
   isOutputAwareState,
@@ -9833,10 +9839,18 @@ export class Session<OutputT = string, Context = unknown> {
           };
           assertActive();
           selection.budget?.check(assertActive);
-          const stepIndex = selection.stepIndex++;
+          const stagedPreparation = msg.staged_input_preparation === true;
+          const stepIndex = stagedPreparation
+            ? selection.stepIndex
+            : selection.stepIndex++;
           if (run.failure !== undefined) throw run.failure;
-          // Selection can repeat before the first provider request. Parallel
-          // input checks join at completion, not during this preparation.
+          // Ordinary parallel checks join at completion. Staged checks join
+          // before this preparation acknowledges the selected source.
+          const stagedInput = msg.staged_input;
+          if (stagedInput !== undefined && !run.inputGuardrailsStarted)
+            run.guardrailInput = stagedGuardrailInput(
+              z.array(losslessJsonObjectSchema).min(1).parse(stagedInput),
+            );
           if (!run.inputGuardrailsStarted && run.guardrailInput !== undefined) {
             run.inputGuardrailsStarted = true;
             const source = this.messageProfile(msg);
@@ -9860,7 +9874,9 @@ export class Session<OutputT = string, Context = unknown> {
               const parallel = guards.filter(
                 (guard) => guard.runInParallel !== false,
               );
-              if (parallel.length) {
+              if (parallel.length && stagedInput !== undefined) {
+                await this.checkInputGuardrails(run, msg, parallel);
+              } else if (parallel.length) {
                 run.inputGuardrailsTask = this.invokeCallback(run, () =>
                   this.checkInputGuardrails(run, msg, parallel),
                 ).finally(() => {
@@ -9871,6 +9887,11 @@ export class Session<OutputT = string, Context = unknown> {
             } finally {
               if (!run.inputGuardrailsTask) run.guardrailInput = undefined;
             }
+          }
+          if (stagedInput !== undefined) {
+            await run.inputGuardrailsTask;
+            assertActive();
+            if (run.failure !== undefined) throw run.failure;
           }
           const scope = this.decisionScope(event.msg, signal);
           let names: ReturnType<typeof this.selectedStepNames> = [];
@@ -9954,7 +9975,7 @@ export class Session<OutputT = string, Context = unknown> {
             });
           }
           reply(names);
-          selection.budget?.charge();
+          if (!stagedPreparation) selection.budget?.charge();
         } catch (error) {
           reply(null);
           throw error;
@@ -11518,6 +11539,7 @@ export class Session<OutputT = string, Context = unknown> {
                   before_step:
                     run.selection.maxModelSteps !== undefined ||
                     run.selection.budget !== undefined ||
+                    run.stagedCheckpoint !== undefined ||
                     this.options.agentGraph !== undefined,
                 })
               : undefined,
@@ -12070,6 +12092,13 @@ export class Session<OutputT = string, Context = unknown> {
       restoredOutput.output,
       restoredOutput.outputOverride,
     );
+    if (
+      (state.manual_continuation.pending_input?.length ?? 0) > 0 ||
+      state.manual_continuation.staged_retry
+    )
+      run.stagedCheckpoint = parseSessionState(
+        encode(state),
+      ) as ManualSessionState;
     run.guardrailResults.push(...guardrailRecords);
     run.tracing = tracing;
     submissions.get(run)!.originalInput = state.manual_context.original_input;
@@ -12088,6 +12117,7 @@ export class Session<OutputT = string, Context = unknown> {
     const remaining = state.manual_context.remaining_model_steps;
     if (
       this.options.agentGraph ||
+      run.stagedCheckpoint !== undefined ||
       operation !== undefined ||
       remaining !== undefined ||
       state.manual_continuation.model_override !== undefined ||
@@ -12158,6 +12188,8 @@ export class Session<OutputT = string, Context = unknown> {
     for (const event of events) {
       this.publishManualRequest(run, event);
     }
+    if (state.manual_continuation.staged_retry)
+      await this.resumeManualIfReady(run);
   }
   /** @internal Recheck the declaration that owns the retained native source. */
   async _realtimeAgentToolEnabled(
@@ -15876,11 +15908,47 @@ export class Session<OutputT = string, Context = unknown> {
             'Managed memory capture was interrupted before checkpoint',
           );
       }
-      const state = this.decorateState(
-        parseNativeCheckpoint(
-          await this.#native._export_checkpoint(null, false),
-        ),
+      const wire = losslessJsonObjectSchema.parse(
+        parseNative(await this.#native._export_checkpoint(null, false)),
       );
+      const { _staged_manual_retry: retry, ...native } = wire;
+      let state: SessionState;
+      if (retry !== undefined) {
+        const saved = this.lastRun?.stagedCheckpoint;
+        if (!saved)
+          throw new NativeError(
+            'Staged retry has no original checkpoint owner',
+          );
+        state = parseSessionState(
+          encode({ ...saved, manual_continuation: retry }),
+        );
+        if (
+          !isManualSessionState(state) ||
+          state.manual_continuation.staged_retry !== true ||
+          state.manual_continuation.turn_id !==
+            saved.manual_continuation.turn_id
+        )
+          throw new NativeError(
+            'Staged retry does not match its original checkpoint',
+          );
+        state = this.withRememberedApprovals(
+          withOutputState(
+            state,
+            isOutputAwareState(saved)
+              ? saved.output_context
+              : this.defaultOutput.identity,
+            saved,
+            {
+              turns: this.repairTurns,
+              items: this.repairItems,
+              applicationToolOutputs: this.applicationOutputSnapshot(),
+              pendingApplicationToolOutputs: structuredClone(
+                this.pendingApplicationOutputs,
+              ),
+            },
+          ),
+        );
+      } else state = this.decorateState(parseNativeCheckpoint(native));
 
       snapshot = state;
       if (retire) {

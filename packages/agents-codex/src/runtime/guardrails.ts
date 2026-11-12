@@ -14,7 +14,7 @@ export interface GuardrailResult {
 export interface InputGuardrail<Context = unknown> {
   readonly name: string;
   readonly runInParallel?: boolean;
-  /** Root submissions with original input before model augmentation. */
+  /** Root input before model augmentation; staged user content joins in one message. Mixed Responses batches use JSON text. */
   readonly callback: (
     input: Omit<BeforeStepContext<Context>, 'stepIndex'> & {
       readonly agent: Agent<any, any>;

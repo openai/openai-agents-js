@@ -1,4 +1,9 @@
-import { copyJsonValue, type JsonValue } from './binding';
+import {
+  copyJsonValue,
+  checkEncodedCapacity,
+  type JsonValue,
+  type JsonObject,
+} from './binding';
 import {
   captureAudio,
   captureFile,
@@ -147,3 +152,57 @@ export function responseContent(
 }
 
 export type { ImageDetail } from './media';
+
+/** Root guardrail projection only; the original Core records remain unchanged. */
+export function stagedGuardrailInput(items: readonly JsonObject[]): UserInput {
+  const content: JsonValue[] = [];
+  for (const item of items) {
+    if (
+      item.type !== 'message' ||
+      item.role !== 'user' ||
+      !Array.isArray(item.content) ||
+      !item.content.every(
+        (part) =>
+          part !== null &&
+          typeof part === 'object' &&
+          !Array.isArray(part) &&
+          ['input_text', 'input_image', 'input_file', 'input_audio'].includes(
+            String(part.type),
+          ),
+      )
+    )
+      return JSON.stringify(items);
+    content.push(...item.content);
+  }
+  return {
+    type: 'message',
+    role: 'user',
+    content: copyJsonValue(content) as unknown as UserMessage['content'],
+  };
+}
+
+/** Reuse the operation audio allowance across the canonical staged containers. */
+export function validateStagedInputAudio(items: readonly JsonObject[]): void {
+  for (const item of items) {
+    const parts =
+      item.type === 'message'
+        ? item.content
+        : item.type === 'function_call_output' ||
+            item.type === 'custom_tool_call_output'
+          ? item.output
+          : undefined;
+    if (
+      Array.isArray(parts) &&
+      parts.some(
+        (part) =>
+          part !== null &&
+          typeof part === 'object' &&
+          !Array.isArray(part) &&
+          part.type === 'input_audio',
+      )
+    ) {
+      checkEncodedCapacity(items, MAX_AUDIO_INPUT_BYTES);
+      return;
+    }
+  }
+}

@@ -209,7 +209,13 @@ export type {
   ChecklistState,
   SessionState,
 } from './runtime/state';
-export { parseSessionState, readSessionInstructions } from './runtime/state';
+export {
+  parseSessionState,
+  readSessionInstructions,
+  pendingInput,
+  withPendingInput,
+  withoutPendingInput,
+} from './runtime/state';
 export type {
   TokenUsage,
   TokenUsageInfo,
@@ -568,3 +574,5 @@ export type {
   LocalDirLazySkillSource,
 } from './runtime/sandbox-skills';
 export type { SandboxMemoryOptions } from './runtime/sandbox-memory';
+
+export type { PendingInput, PendingInputItem } from './runtime/state';

@@ -260,6 +260,10 @@ impl Receipt {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Continuation {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pending_input: Vec<Value>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) staged_retry: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -278,6 +282,31 @@ pub(crate) struct Continuation {
 }
 
 impl Continuation {
+    pub(crate) fn staged_items(&self) -> Result<Vec<ResponseItem>> {
+        let items = self
+            .pending_input
+            .iter()
+            .cloned()
+            .map(serde_json::from_value::<ResponseItem>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for item in &items {
+            crate::checkpoint::validate_external_response_item(item)?;
+        }
+        ensure!(
+            !items.iter().any(|item| matches!(item, ResponseItem::Other)),
+            "Unsupported staged response item"
+        );
+        for item in &self.pending_input {
+            if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                ensure!(
+                    !self.reply_order.iter().any(|original| original == id),
+                    "Staged input cannot reuse a manual call identity"
+                );
+            }
+        }
+        Ok(items)
+    }
+
     pub(crate) fn terminal_seed(
         &mut self,
         raw: &Value,
@@ -309,7 +338,7 @@ impl Continuation {
                 held.push((receipt.envelope(call, &self.turn_id)?, success));
             }
         }
-        Ok(match self.tool_outcomes.take() {
+        Ok(match self.tool_outcomes.clone() {
             Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),
@@ -806,8 +835,22 @@ fn restored_profile_plan(
             "Pending call differs from the active admitted Agent source"
         );
     }
+    let settled_retry = frame.staged_retry
+        && frame.pending_manual.is_empty()
+        && frame.turn_id == history.turn
+        && !frame.reply_order.is_empty()
+        && frame.reply_order.len() == frame.accepted_replies.len()
+        && frame
+            .reply_order
+            .iter()
+            .all(|id| frame.accepted_replies.contains_key(id))
+        && frame
+            .reply_order
+            .iter()
+            .map(String::as_str)
+            .eq(history.calls.iter().map(|call| call.call_id.as_str()));
     ensure!(
-        !pending_ids.is_empty(),
+        !pending_ids.is_empty() || settled_retry,
         "Manual continuation has no pending calls"
     );
     let mut proofs = history.handoffs.clone();
@@ -1513,6 +1556,8 @@ impl PythonTools {
             return Ok(None);
         }
         let mut frame = Continuation {
+            pending_input: Vec::new(),
+            staged_retry: false,
             model_settings_override: history
                 .context
                 .as_ref()
@@ -1725,7 +1770,8 @@ impl PythonTools {
                 .accepted_replies
                 .keys()
                 .all(|id| frame.reply_order.contains(id))
-                && !expected.is_empty()
+                && !frame.reply_order.is_empty()
+                && expected.is_empty() == frame.staged_retry
                 && expected.len() == frame.pending_manual.len(),
             "manual checkpoint has invalid pending/result partition"
         );
@@ -1851,6 +1897,7 @@ impl PythonTools {
         mut frame: Continuation,
         raw: &Value,
     ) -> Result<Value> {
+        frame.staged_items()?;
         let history = history(raw)?;
         if let Some(outcomes) = &frame.tool_outcomes {
             outcomes.validate(
@@ -1903,6 +1950,23 @@ impl PythonTools {
         } else {
             self.snapshot()
         };
+        if !frame.pending_input.is_empty() {
+            let terminal = history.calls.iter().any(|call| {
+                let name = ToolName::new(call.namespace.clone(), call.name.clone())
+                    .with_default_namespace();
+                generation.terminal_slots.iter().any(|slot| {
+                    generation.entries[*slot]
+                        .name
+                        .clone()
+                        .with_default_namespace()
+                        == name
+                })
+            });
+            ensure!(
+                !terminal,
+                "Staged input requires a model continuation after the manual replies"
+            );
+        }
         frame.generation = Some(generation.clone());
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         ensure!(
@@ -2383,5 +2447,79 @@ mod canonical_result_tests {
         assert!(legacy.envelope(&call("legacy"), "turn").is_ok());
         let text: Receipt = serde_json::from_value(json!("old text")).unwrap();
         assert!(text.envelope(&call("legacy"), "turn").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod staged_input_tests {
+    use super::*;
+    fn frame(items: Vec<Value>) -> Continuation {
+        serde_json::from_value(json!({"turn_id":"turn","reply_order":["pending"],"accepted_replies":{},"pending_manual":[{"call_id":"pending","name":"lookup","arguments":"{}"}],"pending_input":items})).unwrap()
+    }
+    #[test]
+    fn staged_input_keeps_duplicate_occurrences() {
+        let item = json!({"type":"message","role":"user","content":[{"type":"input_text","text":"repeat"}]});
+        assert_eq!(
+            frame(vec![item.clone(), item])
+                .staged_items()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn staged_input_rejects_unknown_items_and_manual_identity_reuse() {
+        assert!(
+            frame(vec![json!({"type":"unknown_item"})])
+                .staged_items()
+                .is_err()
+        );
+        assert!(
+            frame(vec![
+                json!({"type":"function_call_output","call_id":"pending","output":"forged"})
+            ])
+            .staged_items()
+            .is_err()
+        );
+    }
+}
+
+struct StagedRetry {
+    turn: String,
+    continuation: Value,
+    batch: codex_extension_api::StagedInputBatch,
+}
+impl PythonTools {
+    pub(crate) fn retain_staged_retry(
+        state: &crate::engine::ThreadState,
+        frame: &Continuation,
+        batch: codex_extension_api::StagedInputBatch,
+    ) -> Result<()> {
+        let mut continuation = serde_json::to_value(frame)?;
+        continuation["staged_retry"] = Value::Bool(true);
+        state.thread.thread_extension_data().insert(StagedRetry {
+            turn: frame.turn_id.clone(),
+            continuation,
+            batch,
+        });
+        Ok(())
+    }
+    pub(crate) fn staged_retry(
+        state: &crate::engine::ThreadState,
+        checkpoint: &Value,
+    ) -> Option<Value> {
+        let retry = state.thread.thread_extension_data().get::<StagedRetry>()?;
+        if !retry.batch.is_pending() {
+            return None;
+        }
+        let last = checkpoint["history"]
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|record| {
+                record["type"] == "event_msg" && record["payload"]["type"] == "task_started"
+            })?["payload"]["turn_id"]
+            .as_str()?;
+        (last == retry.turn).then(|| retry.continuation.clone())
     }
 }

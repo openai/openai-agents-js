@@ -64,6 +64,7 @@ import {
   assertOutputState,
   sessionStateSchema,
   isManualSessionState,
+  isOutputAwareState,
   isBudgetedManualSessionState,
   readCheckpointSelections,
 } from './state';
@@ -1472,7 +1473,8 @@ export class Agent<Context = undefined, Output = string> {
     assertOutputState(state, activeOutput.identity);
     if (
       (activeOutput.prompt || activeOutput.schema != null) &&
-      state?.format_version === 3
+      isManualSessionState(state) &&
+      !isOutputAwareState(state)
     )
       throw new TypeError(
         'Cannot restore a legacy pending manual checkpoint with structured or prompted output',
