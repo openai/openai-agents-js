@@ -23,6 +23,12 @@ import {
   type ToolCallContext,
 } from './tools';
 
+const metadataLimits = {
+  maxEntries: 1024,
+  maxFileBytes: 64 * 1024,
+  maxTotalBytes: 4 * 1024 * 1024,
+};
+
 export type Skills = SkillConfiguration;
 export type {
   SkillsArgs,
@@ -178,7 +184,12 @@ export class SandboxSkillLease {
     this.checkPaths();
     const configuration = this.binding.configuration;
     const sandbox = this.#sandbox!;
-    const runtime = await resolveSkillRuntimeMetadata(configuration, sandbox);
+    const runtime = await resolveSkillRuntimeMetadata(
+      configuration,
+      sandbox,
+      undefined,
+      metadataLimits,
+    );
     const metadata = resolveSkillsMetadata(
       configuration,
       runtime,

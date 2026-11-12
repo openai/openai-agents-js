@@ -824,3 +824,123 @@ nativeIt.each(['inline', 'from'] as const)(
   },
   20_000,
 );
+
+it.each(['count', 'aggregate', 'header'] as const)(
+  'bounds %s metadata before publishing a from-source index',
+  async (kind) => {
+    const workspace = await mkdtemp(join(tmpdir(), 'skills-metadata-'));
+    const f = clientFixture();
+    const originalCreate = f.client.create!.bind(f.client);
+    let reads = 0;
+    const document = new TextEncoder().encode(
+      `---\ndescription: ${'x'.repeat(kind === 'header' ? 100_000 : 60_000)}\n---\n`,
+    );
+    f.client.create = async (args) => {
+      const sandbox = await originalCreate(
+        normalizeSandboxClientCreateArgs(args),
+      );
+      sandbox.listDir = async () =>
+        Array.from(
+          { length: kind === 'count' ? 1025 : kind === 'aggregate' ? 100 : 1 },
+          (_, i) => ({
+            name: `skill-${i}`,
+            path: `.agents/skill-${i}`,
+            type: 'dir' as const,
+          }),
+        );
+      sandbox.readFile = async ({ maxBytes }) => {
+        reads++;
+        return document.subarray(0, maxBytes);
+      };
+      return sandbox;
+    };
+    const source = sandboxEnvironment({
+      client: f.client,
+      manifest: new Manifest({ root: workspace }),
+      skills: skills({ from: dir({ children: {} }) }),
+      connect: async () =>
+        Environment.lease(
+          new Environment({
+            url: 'wss://fixture.invalid',
+            cwd: workspace,
+            capabilityDirectories: [join(workspace, '.agents')],
+          }),
+          async () => {},
+        ),
+    });
+    try {
+      await expect(
+        acquireEnvironment(source, new AbortController().signal),
+      ).rejects.toThrow(/Skill metadata.*limit/);
+      if (kind === 'count') expect(reads).toBe(0);
+      if (kind === 'aggregate') expect(reads).toBeLessThan(100);
+      expect(f.closed).toHaveLength(1);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  },
+);
+
+nativeIt(
+  'reads a bounded metadata prefix while preserving a large skill document',
+  async () => {
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([[message('bounded metadata')]]);
+    await using provider = await providerFor(server);
+    const document =
+      '---\nname: report\ndescription: BOUNDED_NATIVE_INDEX\n---\n' +
+      'body\n'.repeat(220_000);
+    const readCaps: (number | undefined)[] = [];
+    try {
+      const source = sandboxEnvironment({
+        client: new UnixLocalSandboxClient(),
+        manifest: new Manifest({ root: '/workspace' }),
+        skills: skills({
+          from: dir({
+            children: {
+              report: dir({
+                children: { 'SKILL.md': file({ content: document }) },
+              }),
+            },
+          }),
+        }),
+        connect: async (sandbox) => {
+          const read = sandbox.readFile!.bind(sandbox);
+          sandbox.readFile = async (args) => {
+            readCaps.push(args.maxBytes);
+            return read(args);
+          };
+          const root = sandbox.state.workspaceRootPath;
+          expect(
+            await readFile(join(root, '.agents/report/SKILL.md'), 'utf8'),
+          ).toBe(document);
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: root,
+              capabilityDirectories: [join(root, '.agents')],
+              tools: [],
+            }),
+            async () => {},
+          );
+        },
+      });
+      await using session = await new Agent({
+        provider,
+        model: 'fixture-skills',
+        instructions: 'Inspect the index.',
+      }).session({ environment: source });
+      await (await session.submit('Inspect the index.')).wait();
+      expect(readCaps).toHaveLength(1);
+      expect(readCaps[0]).toBeLessThanOrEqual(65_537);
+      expect(JSON.stringify(server.requests[0])).toContain(
+        'BOUNDED_NATIVE_INDEX',
+      );
+      server.assertExhausted();
+    } finally {
+      await peer.close();
+    }
+  },
+  20_000,
+);

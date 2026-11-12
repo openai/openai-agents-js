@@ -122,6 +122,7 @@ export async function resolveSkillRuntimeMetadata(
   configuration: SkillConfiguration,
   session?: SandboxSessionLike,
   runAs?: string,
+  limits?: { maxEntries: number; maxFileBytes: number; maxTotalBytes: number },
 ): Promise<SkillIndexEntry[]> {
   if (!configuration.from || !session?.listDir || !session.readFile) {
     return [];
@@ -140,17 +141,30 @@ export async function resolveSkillRuntimeMetadata(
     throw error;
   }
 
+  if (limits && entries.length > limits.maxEntries)
+    throw new SandboxSkillsConfigError(
+      'Skill metadata directory count exceeds its limit',
+    );
+  let totalBytes = 0;
   const metadata: SkillIndexEntry[] = [];
   for (const entry of entries) {
     if (entry.type !== 'dir') {
       continue;
     }
 
+    const readLimit = limits
+      ? Math.min(limits.maxFileBytes, limits.maxTotalBytes - totalBytes)
+      : undefined;
+    if (readLimit !== undefined && readLimit <= 0)
+      throw new SandboxSkillsConfigError(
+        'Skill metadata reads exceed their total byte limit',
+      );
     let content: string | Uint8Array;
     try {
       content = await session.readFile({
         path: joinRelativePaths(entry.path, 'SKILL.md'),
         runAs: runAs,
+        ...(readLimit === undefined ? {} : { maxBytes: readLimit + 1 }),
       });
     } catch (error) {
       if (isSandboxPathNotFoundError(error)) {
@@ -159,9 +173,38 @@ export async function resolveSkillRuntimeMetadata(
       throw error;
     }
 
-    const markdown =
+    let truncated = false;
+    if (limits) {
+      // Check a provider's result before decoding/parsing it. The extra byte
+      // distinguishes a complete file from a bounded metadata prefix.
+      if (content.length > readLimit! + 1)
+        throw new SandboxSkillsConfigError(
+          'Skill metadata provider read exceeds its limit',
+        );
+      const bytes =
+        typeof content === 'string'
+          ? new TextEncoder().encode(content)
+          : content;
+      totalBytes += bytes.byteLength;
+      if (totalBytes > limits.maxTotalBytes)
+        throw new SandboxSkillsConfigError(
+          'Skill metadata reads exceed their total byte limit',
+        );
+      truncated = bytes.byteLength > limits.maxFileBytes;
+      content = bytes.subarray(0, limits.maxFileBytes);
+    }
+    let markdown =
       typeof content === 'string' ? content : new TextDecoder().decode(content);
-    const frontmatter = parseSkillFrontmatter(markdown);
+    if (truncated) {
+      // A partial last line must not masquerade as a closing YAML delimiter.
+      const lastLine = markdown.lastIndexOf('\n');
+      if (lastLine < 0)
+        throw new SandboxSkillsConfigError(
+          'Skill metadata header exceeds its read limit',
+        );
+      markdown = markdown.slice(0, lastLine + 1);
+    }
+    const frontmatter = parseSkillFrontmatter(markdown, truncated);
     metadata.push({
       name: frontmatter.name ?? entry.name,
       description: frontmatter.description ?? 'No description provided.',
@@ -333,6 +376,7 @@ export function resolveSkillsMetadata(
  */
 export function parseSkillFrontmatter(
   markdown: string,
+  requireCompleteHeader = false,
 ): Record<string, string> {
   const lines = markdown.split(/\r?\n/);
   if (lines[0]?.trim() !== '---') {
@@ -347,6 +391,10 @@ export function parseSkillFrontmatter(
       frontmatterIndent(line) <= delimiterIndent,
   );
   if (endIndex === -1) {
+    if (requireCompleteHeader)
+      throw new SandboxSkillsConfigError(
+        'Skill metadata header exceeds its read limit',
+      );
     return {};
   }
 
