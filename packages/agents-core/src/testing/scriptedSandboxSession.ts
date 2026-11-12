@@ -214,6 +214,7 @@ const sandboxMethodModes = {
   readFile: 'async',
   readFileNoFollow: 'async',
   writeFileNoFollow: 'async',
+  removeEntryNoFollow: 'async',
   listDir: 'async',
   pathExists: 'async',
   directoryExists: 'async',

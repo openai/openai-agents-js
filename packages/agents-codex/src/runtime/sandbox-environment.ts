@@ -1,4 +1,10 @@
 import {
+  SandboxSkillBinding,
+  SandboxSkillLease,
+  type Skills,
+} from './sandbox-skills';
+import type { FunctionTool } from './tools';
+import {
   captureSandboxMemory,
   type SandboxMemoryOptions,
 } from './sandbox-memory';
@@ -11,6 +17,7 @@ import {
   type ManagedWorkspaceAuthorization,
 } from './managed-workspace';
 import type {
+  Entry,
   SandboxClient,
   SandboxArchiveLimits,
   SandboxConcurrencyLimits,
@@ -31,6 +38,22 @@ import {
   type EnvironmentSource,
 } from './environment-source';
 
+export type SandboxEnvironmentSource<Context = any> =
+  EnvironmentSource<Context> & {
+    readonly skillTools: readonly FunctionTool<Context>[];
+  };
+
+function exposeSkillTools<Context>(
+  source: EnvironmentSource<Context>,
+  binding?: SandboxSkillBinding<Context>,
+): SandboxEnvironmentSource<Context> {
+  Object.defineProperty(source, 'skillTools', {
+    value: binding?.tools ?? Object.freeze([]),
+    enumerable: true,
+  });
+  return source as SandboxEnvironmentSource<Context>;
+}
+
 export interface SandboxEnvironmentOptions<
   Context = any,
   Options extends SandboxClientOptions = SandboxClientOptions,
@@ -40,6 +63,9 @@ export interface SandboxEnvironmentOptions<
   client: SandboxClient<Options, State>;
   /** Application-authorized manifest; validate untrusted data before constructing it. */
   manifest: Manifest;
+  /** Resource declarations; select source.skillTools in each intended Agent catalog. */
+  /** Eager resources require an owned source; borrowed sources support prepared lazy indexes. */
+  skills?: Skills;
   /** Trusted provider options: plain data is captured; opaque handles/functions remain caller-owned. */
   options?: Options;
   /** Workspace snapshot used only for resource creation. */
@@ -91,7 +117,7 @@ export function sandboxEnvironment<
   State extends SandboxSessionState = SandboxSessionState,
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
-): EnvironmentSource<Context> {
+): SandboxEnvironmentSource<Context> {
   return sandboxEnvironmentWithRuntime(options, sandboxRuntime);
 }
 
@@ -104,7 +130,7 @@ export function sandboxEnvironmentWithRuntime<
 >(
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
-): EnvironmentSource<Context> {
+): SandboxEnvironmentSource<Context> {
   return createSandboxEnvironment(options, runtime);
 }
 
@@ -204,7 +230,13 @@ function createSandboxEnvironment<
   options: SandboxEnvironmentOptions<Context, Options, State>,
   runtime: typeof sandboxRuntime,
   inheritedManaged?: ManagedWorkspaceAuthorization,
-): EnvironmentSource<Context> {
+  inheritedSkills?: SandboxSkillBinding<Context>,
+): SandboxEnvironmentSource<Context> {
+  const skillBinding =
+    inheritedSkills ??
+    (options.skills
+      ? new SandboxSkillBinding<Context>(options.skills)
+      : undefined);
   const {
     cloneManifest,
     copySandboxStateRuntimeAuthority,
@@ -316,9 +348,13 @@ function createSandboxEnvironment<
         },
         runtime,
         binding,
+        skillBinding,
       )(acquisition);
     };
-    return binding ? bindManagedWorkspaceSource(source, binding) : source;
+    return exposeSkillTools(
+      binding ? bindManagedWorkspaceSource(source, binding) : source,
+      skillBinding,
+    );
   }
   if (options.managedWorkspace && granted && !inheritedManaged)
     throw new TypeError(
@@ -328,6 +364,15 @@ function createSandboxEnvironment<
     inheritedManaged ?? (options.managedWorkspace ? {} : undefined);
   const create = client.create?.bind(client);
   const borrowed = options.session;
+  if (
+    borrowed &&
+    skillBinding &&
+    (skillBinding.configuration.from ||
+      skillBinding.configuration.skills.length > 0)
+  )
+    throw new TypeError(
+      'Eager Skills require an owned sandbox source; prepare borrowed resources before selecting a lazy skill index',
+    );
   const resume = options.authorizedResumeState;
   const originalResumeState = resume?.state;
   if (
@@ -357,6 +402,14 @@ function createSandboxEnvironment<
   const capturedManifest = cloneManifest(
     requireManifest(options.manifest, Manifest),
   );
+  let eagerSkillEntries: [string, Entry][] = [];
+  if (skillBinding) {
+    const existingPaths = new Set(Object.keys(capturedManifest.entries));
+    runtime.processSkillManifest(skillBinding.configuration, capturedManifest);
+    eagerSkillEntries = Object.entries(capturedManifest.entries).filter(
+      ([path]) => !existingPaths.has(path),
+    );
+  }
   const manifest =
     (borrowed || resume) && client.resolveTrustedManifestForResume
       ? client.resolveTrustedManifestForResume(
@@ -427,10 +480,12 @@ function createSandboxEnvironment<
         return sandbox;
       });
     let gateway: EnvironmentAcquisition | undefined;
+    let skillLease: SandboxSkillLease | undefined;
     let disposal: Promise<void> | undefined;
     const dispose = (guard?: DisposeGuard) =>
       (disposal ??= Promise.resolve().then(() => {
         const sandbox = ownedSandbox;
+        skillLease?.retire();
         if (!gateway && !sandbox) return;
         return observe('sandbox.cleanup', async () => {
           const errors: unknown[] = [];
@@ -479,7 +534,7 @@ function createSandboxEnvironment<
         });
       }));
     try {
-      const open = async () => {
+      const acquireResource = async () => {
         signal.throwIfAborted();
         if (borrowed) {
           const trustedEnvironment = client.resolveTrustedEnvironment
@@ -600,11 +655,25 @@ function createSandboxEnvironment<
             );
           retainManagedWorkspaceSnapshot(sandbox.state.snapshot as any);
         }
+        return sandbox;
+      };
+      const connectAndPublish = async (sandbox: SandboxSessionLike<State>) => {
         const created = sandbox;
         gateway = await acquireEnvironment(
           ({ signal }) => connect(created, { signal }),
           signal,
         );
+        skillLease = skillBinding
+          ? new SandboxSkillLease(
+              skillBinding,
+              sandbox,
+              gateway.environment!,
+              manifest,
+              runtime.skillWorkspaceRoot(sandbox),
+              borrowed ? undefined : !resumeState,
+            )
+          : undefined;
+        const skillInstructions = await skillLease?.activate();
         gateway.opened();
         signal.throwIfAborted();
         return createEnvironmentLease(
@@ -612,16 +681,36 @@ function createSandboxEnvironment<
           dispose,
           gateway.signal,
           managed,
-          renderWorkspaceInstructions(
-            sandbox.state.manifest,
-            gateway.environment! as Environment<Context>,
-            runtime,
+          appendSkillInstructions(
+            renderWorkspaceInstructions(
+              sandbox.state.manifest,
+              gateway.environment! as Environment<Context>,
+              runtime,
+            ),
+            skillInstructions,
           ),
           (message) =>
             observeNativeSandboxOperation(runtime, client.backendId, message),
+          skillLease,
           createMemory?.(created),
         );
       };
+      // Resume inspection protects the old state. The owned provider mutation
+      // takes its own exclusive lock, so staging must follow that inspection.
+      if (originalResumeState && eagerSkillEntries.length > 0) {
+        const sandbox = await withExclusiveSandboxStateInspection(
+          originalResumeState,
+          acquireResource,
+        );
+        await skillBinding!.stageOwnedResume(
+          sandbox,
+          manifest,
+          eagerSkillEntries,
+          signal,
+        );
+        return await connectAndPublish(sandbox);
+      }
+      const open = async () => connectAndPublish(await acquireResource());
       const inspectedState = borrowed?.state ?? originalResumeState;
       return inspectedState
         ? await withExclusiveSandboxStateInspection(inspectedState, open)
@@ -639,9 +728,12 @@ function createSandboxEnvironment<
       throw error;
     }
   };
-  return managedAuthorization
-    ? bindManagedWorkspaceSource(source, managedAuthorization)
-    : source;
+  return exposeSkillTools(
+    managedAuthorization
+      ? bindManagedWorkspaceSource(source, managedAuthorization)
+      : source,
+    skillBinding,
+  );
 }
 
 /** Render only paths, access and caller descriptions, never provider config or environment values. */
@@ -856,4 +948,23 @@ function captureResumeState<State extends SandboxSessionState>(
   const captured = captureOptions(state);
   copySandboxStateRuntimeAuthority(state, captured);
   return captured;
+}
+
+// Preserve complete workspace safety guidance before filling the remaining native byte budget.
+function appendSkillInstructions(
+  workspace: string,
+  index?: string | null,
+): string {
+  if (!index) return workspace;
+  const combined = workspace + '\n\n' + index;
+  if (Buffer.byteLength(combined, 'utf8') <= 40_000) return combined;
+  const notice =
+    '\nSome skill index details have been omitted to fit the instruction limit.';
+  const available =
+    40_000 - Buffer.byteLength(workspace + '\n\n' + notice, 'utf8');
+  if (available <= 0) return workspace;
+  const bytes = Buffer.from(index, 'utf8');
+  let end = available;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return workspace + '\n\n' + bytes.subarray(0, end).toString('utf8') + notice;
 }

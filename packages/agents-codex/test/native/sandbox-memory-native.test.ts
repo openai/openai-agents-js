@@ -14,6 +14,7 @@ import {
   Agent,
   Environment,
   NativeProvider,
+  ToolOutput,
   tool,
   type Session,
 } from '../../src';
@@ -30,7 +31,17 @@ import { ModelServer, message, call } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 afterEach(() => ModelServer.closeAll());
-it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
+it.each([
+  'generate',
+  'close',
+  'tool-history',
+  'tool-text-parts',
+  'tool-media',
+  'structured',
+  'phase-close',
+  'tool-record-bound',
+  'tool-byte-bound',
+] as const)(
   'owns explicit native sandbox memory (%s)',
   async (mode) => {
     const peer = await startPublicExecutor();
@@ -49,7 +60,7 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
         ),
     } satisfies NonNullable<SandboxMemoryOptions['store']>;
     const events: SandboxEvent[] = [];
-    let session: Session | undefined;
+    let session: Session<unknown> | undefined;
     let closing: Promise<void> | undefined;
     const appInput =
       '# AGENTS.md instructions\n\n<INSTRUCTIONS>\nRemember this project uses pnpm.\n</INSTRUCTIONS>';
@@ -69,10 +80,41 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
     });
     const phaseEntered = Promise.withResolvers<void>();
     const phaseRelease = Promise.withResolvers<void>();
+    const typedTool = mode.startsWith('tool-');
+    const structured = typedTool || mode === 'structured';
+    const generates =
+      mode === 'generate' ||
+      mode === 'phase-close' ||
+      mode === 'tool-history' ||
+      mode === 'tool-text-parts' ||
+      mode === 'structured';
+    const toolResult = {
+      package_manager: 'pnpm',
+      topic: 'package manager',
+      ...(mode === 'tool-byte-bound' ? { padding: 'x'.repeat(1_000_000) } : {}),
+    };
+    const toolCalls = typedTool
+      ? Array.from(
+          { length: mode === 'tool-record-bound' ? 129 : 1 },
+          (_, index) =>
+            call(
+              'lookup',
+              { topic: 'package manager' },
+              { callId: `lookup-${index}` },
+            ),
+        )
+      : [];
+    const finalMessage = message(
+      structured
+        ? JSON.stringify({ decision: 'Use pnpm.' })
+        : 'The project uses pnpm.',
+    );
+    let effects = 0;
     const server = new ModelServer(
-      mode === 'generate' || mode === 'phase-close'
+      generates
         ? [
-            [message('The project uses pnpm.')],
+            ...(typedTool ? [toolCalls] : []),
+            [finalMessage],
             async () => {
               if (mode === 'phase-close') {
                 phaseEntered.resolve();
@@ -97,12 +139,7 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
               ),
             ],
           ]
-        : mode === 'tool-history'
-          ? [
-              [call('lookup', {}, { callId: 'lookup' })],
-              [message('lookup finished')],
-            ]
-          : [[message('The project uses pnpm.')]],
+        : [...(typedTool ? [toolCalls] : []), [finalMessage]],
     );
     const config = await server.config();
     await using provider = new NativeProvider({
@@ -154,27 +191,56 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
       },
     });
     try {
-      session = await new Agent({
+      const agent = new Agent({
         provider,
         model: 'gpt-5',
         instructions: 'private-developer-instruction',
-        ...(mode === 'tool-history'
+        ...(typedTool
           ? {
               tools: [
                 tool({
                   name: 'lookup',
-                  parameters: z.object({}),
-                  execute: async () => 'lookup output',
+                  parameters: z.object({ topic: z.string() }),
+                  execute: async ({ topic }) => {
+                    expect(topic).toBe('package manager');
+                    effects++;
+                    if (mode === 'tool-media')
+                      return ToolOutput.image({
+                        fileId: 'opaque-memory-image',
+                      });
+                    if (mode === 'tool-text-parts')
+                      return new ToolOutput([
+                        { type: 'inputText', text: JSON.stringify(toolResult) },
+                        {
+                          type: 'inputText',
+                          text: 'verified local tool result',
+                        },
+                      ]);
+                    return toolResult;
+                  },
                 }),
               ],
             }
           : {}),
-      }).session({ environment: source });
-      await (await session.submit(appInput)).wait();
-      if (mode === 'generate') {
+      });
+      session = await (
+        structured
+          ? agent.withOutputType(z.object({ decision: z.string() }))
+          : agent
+      ).session({ environment: source });
+      const result = await (await session.submit(appInput)).wait();
+      if (structured)
+        expect(result.finalOutput).toEqual({ decision: 'Use pnpm.' });
+      if (typedTool) expect(effects).toBe(toolCalls.length);
+      if (
+        mode === 'generate' ||
+        mode === 'tool-history' ||
+        mode === 'tool-text-parts' ||
+        mode === 'structured'
+      ) {
         await Promise.all([session.flushMemory(), session.flushMemory()]);
         await session.flushMemory();
-        expect(server.requests).toHaveLength(3);
+        expect(server.requests).toHaveLength(typedTool ? 4 : 3);
         expect(
           await readFile(join(workspace, 'memories', 'MEMORY.md'), 'utf8'),
         ).toBe('Use pnpm.');
@@ -203,21 +269,52 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
         expect(
           JSON.parse(transcript).items.some(
             (item: { content: Array<{ text: string }> }) =>
-              item.content.some((part) => part.text === appInput),
+              item.content?.some((part) => part.text === appInput),
           ),
         ).toBe(true);
-        expect(JSON.stringify(server.requests.slice(1))).not.toContain(
-          generatedGuidance,
-        );
+        expect(
+          JSON.stringify(server.requests.slice(typedTool ? 2 : 1)),
+        ).not.toContain(generatedGuidance);
         expect(transcript).not.toContain(generatedGuidance);
         expect(
           JSON.stringify((await session.historySnapshot()).items),
         ).toContain(generatedGuidance);
         expect(JSON.parse(transcript).native_thread_id).toBe(session.id);
+        if (structured) expect(transcript).toContain('Use pnpm.');
+        if (typedTool) {
+          const items = JSON.parse(transcript).items;
+          expect(items).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: 'function_call',
+                name: 'lookup',
+                call_id: 'lookup-0',
+                arguments: JSON.stringify({ topic: 'package manager' }),
+              }),
+              expect.objectContaining({
+                type: 'function_call_output',
+                call_id: 'lookup-0',
+                output:
+                  mode === 'tool-text-parts'
+                    ? [
+                        {
+                          type: 'input_text',
+                          text: JSON.stringify(toolResult),
+                        },
+                        {
+                          type: 'input_text',
+                          text: 'verified local tool result',
+                        },
+                      ]
+                    : JSON.stringify(toolResult),
+              }),
+            ]),
+          );
+        }
         expect(transcript).not.toContain('private-developer-instruction');
-        expect(JSON.stringify(server.requests.slice(1))).not.toContain(
-          'private-developer-instruction',
-        );
+        expect(
+          JSON.stringify(server.requests.slice(typedTool ? 2 : 1)),
+        ).not.toContain('private-developer-instruction');
         for (const name of [
           'sandbox.memory.enqueue_rollout',
           'sandbox.memory.flush',
@@ -248,8 +345,14 @@ it.each(['generate', 'close', 'tool-history', 'phase-close'] as const)(
         await rejected;
         expect(server.requests).toHaveLength(2);
       } else {
+        if (mode === 'tool-record-bound')
+          expect((await session.historySnapshot()).total).toBeGreaterThan(256);
         await expect(session.flushMemory()).rejects.toThrow(
-          /text message history/,
+          mode === 'tool-record-bound'
+            ? /256 original records/
+            : mode === 'tool-media'
+              ? /text content/
+              : /1000000 bytes/,
         );
         expect(await store.list('')).toEqual([]);
         expect(server.requests).toHaveLength(2);

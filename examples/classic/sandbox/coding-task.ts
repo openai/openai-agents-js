@@ -4,7 +4,7 @@ import {
   Manifest,
   SandboxAgent,
   skills,
-} from '@openai/agents/sandbox';
+} from '@openai/agents/classic/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
