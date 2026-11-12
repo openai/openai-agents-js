@@ -591,3 +591,5 @@ export type {
   RealtimeConnectCall,
   RealtimeScenario,
 } from './realtime';
+
+export { ScriptedModel, type ModelError } from './model';
