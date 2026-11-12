@@ -247,7 +247,10 @@ export async function applyNativeAgentsApproval<Context>(
     !collaborationToolNames(declaration).some((name) => name === tool.name)
   )
     return { action: 'continue' };
-  if (request.call_id == null) return { action: 'deny' };
+  const callbackId =
+    request.call_id ??
+    (request.route === 'code_mode' ? request.runtime_tool_call_id : null);
+  if (typeof callbackId !== 'string') return { action: 'deny' };
   try {
     signal.throwIfAborted();
     const call: NativeToolCall = Object.freeze({
@@ -284,7 +287,7 @@ export async function applyNativeAgentsApproval<Context>(
         call: interceptedCallInfo(submission, request),
         threadId: call.threadId,
         turnId: call.turnId,
-        callId: call.callId!,
+        callId: callbackId,
         signal,
         originalArguments: Object.freeze({}),
         effectiveArguments: Object.freeze({}),

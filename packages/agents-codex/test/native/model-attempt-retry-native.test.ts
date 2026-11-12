@@ -26,6 +26,78 @@ function message(text = 'ok', input = 1): ModelResponse {
 function failure(label: string) {
   return Object.assign(new Error(label), { status: 503, code: 'server_error' });
 }
+it.each([
+  ['omitted', {}],
+  ['undefined', { retry: undefined }],
+  ['null', { retry: null }],
+  ['partial backoff', { retry: { backoff: { initialDelayMs: 0 } } }],
+] as const)(
+  'merges opening retry %s without changing later Agent defaults',
+  async (kind, modelSettings) => {
+    const error = failure('opening retry boundary');
+    const complete = vi.fn(() => {
+      throw error;
+    });
+    const policy = vi.fn(() => ({ retry: true, delayMs: 0 }));
+    await using provider = new NativeProvider({ modelBackend: { complete } });
+    const agent = new Agent({
+      model: 'custom-model',
+      instructions: 'Answer.',
+      provider,
+      modelSettings: {
+        retry: {
+          maxRetries: 1,
+          policy,
+          backoff: {
+            initialDelayMs: 5,
+            maxDelayMs: 20,
+            multiplier: 3,
+            jitter: false,
+          },
+        },
+      },
+    });
+    for (const options of [{ modelSettings }, {}]) {
+      complete.mockClear();
+      policy.mockClear();
+      await using session = await agent.session(options);
+      const cleared = 'modelSettings' in options && kind === 'null';
+      const partial = 'modelSettings' in options && kind === 'partial backoff';
+      // Observe native-applied settings, including whole-backoff replacement.
+      expect(await session.saveState()).toMatchObject({
+        history: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'event_msg',
+            payload: expect.objectContaining({
+              type: 'thread_settings_applied',
+              thread_settings: expect.objectContaining({
+                request_controls: expect.objectContaining({
+                  retry: cleared
+                    ? null
+                    : {
+                        configured: true,
+                        has_policy: true,
+                        max_retries: 1,
+                        backoff: {
+                          initial_delay_ms: partial ? 0 : 5,
+                          max_delay_ms: partial ? 2000 : 20,
+                          multiplier: partial ? 2 : 3,
+                          jitter: partial,
+                        },
+                      },
+                }),
+              }),
+            }),
+          }),
+        ]),
+      });
+      await expect((await session.submit('fail')).wait()).rejects.toBe(error);
+      expect(complete).toHaveBeenCalledTimes(cleared ? 1 : 2);
+      expect(policy).toHaveBeenCalledTimes(cleared ? 0 : 1);
+    }
+  },
+  20_000,
+);
 it.each([0, 1])(
   'uses only current retry bounds after restore (maxRetries=%s)',
   async (maxRetries) => {
