@@ -21,12 +21,19 @@ export type SandboxEvent = SandboxOperationEvent;
 
 export type SandboxEventSink = (event: SandboxEvent) => void | Promise<void>;
 
+type CancellableSandboxEventSink = (
+  event: SandboxEvent,
+  signal?: AbortSignal,
+) => void | Promise<void>;
+
 export type SandboxJsonlEventWriter = (line: string) => void | Promise<void>;
 
 export type SandboxHttpEventRequest = {
   method: 'POST';
   headers: Record<string, string>;
   body: string;
+  /** Present for detached native delivery. */
+  signal?: AbortSignal;
 };
 
 export type SandboxHttpEventResponse = {
@@ -47,17 +54,46 @@ export type SandboxHttpEventSinkOptions = {
   headers?: Record<string, string>;
 };
 
-const sandboxEventSinks = new Set<SandboxEventSink>();
+const MAX_DETACHED_DELIVERIES_PER_SINK = 32;
+const DETACHED_DELIVERY_TIMEOUT_MS = 10_000;
+const sandboxEventSinks = new Map<SandboxEventSink, Set<AbortController>>();
+const cancellableSinks = new WeakMap<
+  SandboxEventSink,
+  CancellableSandboxEventSink
+>();
+
+function cancellableSink(
+  deliver: CancellableSandboxEventSink,
+): SandboxEventSink {
+  cancellableSinks.set(deliver, deliver);
+  return deliver;
+}
+
+function deliverSandboxEvent(
+  sink: SandboxEventSink,
+  event: SandboxEvent,
+  signal?: AbortSignal,
+): void | Promise<void> {
+  const deliver = signal === undefined ? undefined : cancellableSinks.get(sink);
+  return deliver ? deliver(event, signal) : sink(event);
+}
 
 export function addSandboxEventSink(sink: SandboxEventSink): () => void {
-  sandboxEventSinks.add(sink);
-  return () => {
-    sandboxEventSinks.delete(sink);
-  };
+  if (!sandboxEventSinks.has(sink)) {
+    sandboxEventSinks.set(sink, new Set());
+  }
+  return () => removeSandboxEventSink(sink);
+}
+
+function removeSandboxEventSink(sink: SandboxEventSink): void {
+  const deliveries = sandboxEventSinks.get(sink);
+  sandboxEventSinks.delete(sink);
+  for (const controller of deliveries ?? []) controller.abort();
 }
 
 export function clearSandboxEventSinks(): void {
-  sandboxEventSinks.clear();
+  for (const sink of [...sandboxEventSinks.keys()])
+    removeSandboxEventSink(sink);
 }
 
 export async function emitSandboxEvent(event: SandboxEvent): Promise<void> {
@@ -66,10 +102,42 @@ export async function emitSandboxEvent(event: SandboxEvent): Promise<void> {
   }
 
   await Promise.allSettled(
-    [...sandboxEventSinks].map(async (sink) => {
+    [...sandboxEventSinks.keys()].map(async (sink) => {
       await sink(event);
     }),
   );
+}
+
+/**
+ * Deliver a native lifecycle event without delaying its operation.
+ * A saturated sink drops new events independently of the other sinks.
+ */
+export function dispatchSandboxEvent(event: SandboxEvent): void {
+  for (const [sink, deliveries] of [...sandboxEventSinks]) {
+    if (
+      deliveries.size >= MAX_DETACHED_DELIVERIES_PER_SINK ||
+      sandboxEventSinks.get(sink) !== deliveries
+    ) {
+      continue;
+    }
+    const controller = new AbortController();
+    deliveries.add(controller);
+    const timeout = setTimeout(
+      () => controller.abort(),
+      DETACHED_DELIVERY_TIMEOUT_MS,
+    );
+    if (typeof timeout === 'object') timeout.unref?.();
+    void (async () => {
+      try {
+        await deliverSandboxEvent(sink, event, controller.signal);
+      } catch {
+        // Detached delivery is best effort.
+      } finally {
+        clearTimeout(timeout);
+        deliveries.delete(controller);
+      }
+    })();
+  }
 }
 
 /**
@@ -91,7 +159,7 @@ export function createSandboxHttpEventSink(
 ): SandboxEventSink {
   const headers = { ...options.headers };
 
-  return async (event) => {
+  return cancellableSink(async (event, signal) => {
     const fetch = options.fetch ?? readGlobalFetch();
     if (!fetch) {
       throw new Error(
@@ -106,15 +174,24 @@ export function createSandboxHttpEventSink(
         ...headers,
       },
       body: JSON.stringify(event),
+      ...(signal === undefined ? {} : { signal }),
     });
 
+    // Detached delivery never needs a response payload. Release the connection.
+    if (signal !== undefined) {
+      const body = (
+        response as { body?: { cancel?: () => Promise<void> } | null }
+      ).body;
+      if (typeof body?.cancel === 'function') await body.cancel();
+    }
     if (!response.ok) {
-      const detail = await readHttpErrorDetail(response);
+      const detail =
+        signal === undefined ? await readHttpErrorDetail(response) : '';
       throw new Error(
         `Sandbox event HTTP sink failed with status ${response.status}${detail}`,
       );
     }
-  };
+  });
 }
 
 /**
@@ -123,13 +200,13 @@ export function createSandboxHttpEventSink(
 export function createChainedSandboxEventSink(
   ...sinks: SandboxEventSink[]
 ): SandboxEventSink {
-  return async (event) => {
+  return cancellableSink(async (event, signal) => {
     await Promise.allSettled(
       sinks.map(async (sink) => {
-        await sink(event);
+        await deliverSandboxEvent(sink, event, signal);
       }),
     );
-  };
+  });
 }
 
 export function serializeSandboxEventError(error: unknown): SandboxEventError {

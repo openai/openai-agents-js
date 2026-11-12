@@ -102,6 +102,51 @@ export function sandboxEnvironmentWithRuntime<
   return createSandboxEnvironment(options, runtime);
 }
 
+async function observeSandboxLifecycle<T>(
+  runtime: typeof sandboxRuntime,
+  name: string,
+  backendId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  const event = {
+    type: 'sandbox_operation' as const,
+    name,
+    data: { backend_id: backendId },
+  };
+  // Sink completion never controls acquisition or cleanup.
+  runtime.dispatchSandboxEvent({
+    ...event,
+    phase: 'start',
+    timestamp: new Date(startedAt).toISOString(),
+  });
+  try {
+    const result = await operation();
+    runtime.dispatchSandboxEvent({
+      ...event,
+      data: { backend_id: backendId },
+      phase: 'end',
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    runtime.dispatchSandboxEvent({
+      ...event,
+      data: { backend_id: backendId },
+      phase: 'error',
+      timestamp: new Date().toISOString(),
+      durationMs: Date.now() - startedAt,
+      error: {
+        // Provider error fields can carry credentials or invoke accessors.
+        name: 'SandboxOperationError',
+        message: 'Sandbox operation failed',
+      },
+    });
+    throw error;
+  }
+}
+
 function createSandboxEnvironment<
   Context,
   Options extends SandboxClientOptions,
@@ -130,6 +175,8 @@ function createSandboxEnvironment<
     validateMountEnvironmentCredentialBoundaries,
   } = runtime;
   const { client, connect } = options;
+  const observe = <T>(name: string, operation: () => Promise<T>) =>
+    observeSandboxLifecycle(runtime, name, client.backendId, operation);
   if (
     options.managedWorkspace !== undefined &&
     typeof options.managedWorkspace !== 'boolean'
@@ -316,55 +363,67 @@ function createSandboxEnvironment<
         throw new TypeError('authorizedResumeState has already been acquired');
       resumeConsumed = true;
     }
-    let sandbox: SandboxSessionLike<State> | undefined;
+    let ownedSandbox: SandboxSessionLike<State> | undefined;
+    const acquireSandbox = (
+      name: string,
+      operation: () => Promise<SandboxSessionLike<State>>,
+    ) =>
+      observe(name, async () => {
+        const sandbox = await operation();
+        ownedSandbox = sandbox;
+        return sandbox;
+      });
     let gateway: EnvironmentAcquisition | undefined;
     let disposal: Promise<void> | undefined;
     const dispose = (guard?: DisposeGuard) =>
-      (disposal ??= Promise.resolve().then(async () => {
-        const errors: unknown[] = [];
-        for (const release of [
-          // The gateway restores its own scope before reinstalling this guard.
-          () => gateway?.dispose(guard),
-          () =>
-            !borrowed &&
-            sandbox &&
-            cleanupSandboxSession(
-              sandbox,
-              { preserveOwnedSessions: false },
-              async () => {
-                if (!managed?.captureRequested) return;
-                const providerState = await serialize!(sandbox!.state, {
-                  preserveOwnedSession: false,
-                  reuseLiveSession: false,
-                  willCloseAfterSerialize: true,
-                });
-                if (
-                  sandbox!.state.snapshot?.type !== 'local' &&
-                  sandbox!.state.snapshot?.type !== 'remote'
-                )
-                  throw new TypeError(
-                    'Managed retirement produced no durable snapshot',
-                  );
-                managed.receipt = capturedWorkspaceJson({
-                  backendId: client.backendId,
-                  providerState,
-                });
-              },
-            ),
-          () => !borrowed && sandbox && deleteResource?.(sandbox.state),
-        ]) {
-          try {
-            await release();
-          } catch (error) {
-            errors.push(error);
+      (disposal ??= Promise.resolve().then(() => {
+        const sandbox = ownedSandbox;
+        if (!gateway && !sandbox) return;
+        return observe('sandbox.cleanup', async () => {
+          const errors: unknown[] = [];
+          for (const release of [
+            // The gateway restores its own scope before reinstalling this guard.
+            () => gateway?.dispose(guard),
+            () =>
+              sandbox &&
+              cleanupSandboxSession(
+                sandbox,
+                { preserveOwnedSessions: false },
+                async () => {
+                  if (!managed?.captureRequested) return;
+                  const providerState = await serialize!(sandbox!.state, {
+                    preserveOwnedSession: false,
+                    reuseLiveSession: false,
+                    willCloseAfterSerialize: true,
+                  });
+                  if (
+                    sandbox!.state.snapshot?.type !== 'local' &&
+                    sandbox!.state.snapshot?.type !== 'remote'
+                  )
+                    throw new TypeError(
+                      'Managed retirement produced no durable snapshot',
+                    );
+                  managed.receipt = capturedWorkspaceJson({
+                    backendId: client.backendId,
+                    providerState,
+                  });
+                },
+              ),
+            () => sandbox && deleteResource?.(sandbox.state),
+          ]) {
+            try {
+              await release();
+            } catch (error) {
+              errors.push(error);
+            }
           }
-        }
-        if (errors.length === 1) throw errors[0];
-        if (errors.length)
-          throw new AggregateError(
-            errors,
-            'Sandbox Environment cleanup failed',
-          );
+          if (errors.length === 1) throw errors[0];
+          if (errors.length)
+            throw new AggregateError(
+              errors,
+              'Sandbox Environment cleanup failed',
+            );
+        });
       }));
     try {
       const open = async () => {
@@ -408,6 +467,7 @@ function createSandboxEnvironment<
           providerOptions === undefined
             ? undefined
             : captureOptions(providerOptions);
+        let sandbox: SandboxSessionLike<State>;
         if (resumeState) {
           const state = captureResumeState(
             resumeState,
@@ -433,16 +493,22 @@ function createSandboxEnvironment<
             throw new TypeError(
               'provider requires fresh resource creation for this resume state',
             );
-          sandbox = await client.resume!(state, resumeOptions);
+          sandbox = await acquireSandbox('sandbox.resume_session', () => {
+            signal.throwIfAborted();
+            return client.resume!(state, resumeOptions);
+          });
         } else {
           sandbox =
             borrowed ??
-            (await create!({
-              manifest: cloneManifest(manifest),
-              options: currentOptions,
-              snapshot,
-              concurrencyLimits,
-              archiveLimits,
+            (await acquireSandbox('sandbox.create_session', () => {
+              signal.throwIfAborted();
+              return create!({
+                manifest: cloneManifest(manifest),
+                options: currentOptions,
+                snapshot,
+                concurrencyLimits,
+                archiveLimits,
+              });
             }));
         }
         if (
@@ -460,8 +526,10 @@ function createSandboxEnvironment<
         if (!borrowed && archiveLimits !== undefined)
           sandbox.setArchiveLimits?.(archiveLimits);
         if (!borrowed && sandbox.start && !(await sandbox.running?.())) {
-          signal.throwIfAborted();
-          await sandbox.start({ reason: 'native session opening' });
+          await observe('sandbox.start', () => {
+            signal.throwIfAborted();
+            return sandbox!.start!({ reason: 'native session opening' });
+          });
         }
         signal.throwIfAborted();
         if (managed && !sandbox.stop)
