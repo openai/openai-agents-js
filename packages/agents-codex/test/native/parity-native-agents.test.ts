@@ -816,3 +816,86 @@ it('captures a reloaded child when its row is issued by an open iterator', async
     await executor.close();
   }
 }, 20_000);
+
+it('attributes produced managed-role calls and outputs', async () => {
+  const executor = await startPublicExecutor();
+  try {
+    const managed = {
+      name: 'research_topic',
+      role: 'research',
+      description: 'Research a topic.',
+    };
+    const server = new ModelServer([
+      [call(managed.name, {}, { callId: 'ordinary' })],
+      [
+        call(
+          managed.name,
+          { input: 'Read the record.' },
+          { namespace: 'collaboration', callId: 'managed' },
+        ),
+      ],
+      [message('child result')],
+      [message('parent result')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-managed-role-origin',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      instructions: 'Use the research tool.',
+      model: nativeDescendantModel,
+      provider,
+      tools: [
+        tool({
+          name: managed.name,
+          parameters: z.object({}),
+          execute: () => 'ordinary tool output',
+        }),
+        new NativeAgents({
+          additionalRoles: [
+            new NativeRole({
+              name: managed.role,
+              description: 'Research a topic.',
+              instructions: 'Find the requested record.',
+            }),
+          ],
+          managedTools: [managed],
+          approval: () => true,
+        }),
+      ],
+    });
+    const completed = await agent.run('Research the record.', {
+      environment: new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command', 'write_stdin', 'apply_patch'],
+      }),
+      returnItems: true,
+    });
+
+    expect(completed.finalOutput).toBe('parent result');
+    for (const [callId, origin] of [
+      ['ordinary', undefined],
+      ['managed', { name: managed.name, role: managed.role }],
+    ] as const) {
+      const entries = completed.items?.filter(
+        ({ item }) => 'callId' in item && item.callId === callId,
+      );
+      expect(entries?.map(({ item }) => item.type)).toEqual([
+        'function_call',
+        'function_call_output',
+      ]);
+      expect(entries?.map(({ toolOrigin }) => toolOrigin)).toEqual([
+        origin,
+        origin,
+      ]);
+    }
+    server.assertExhausted();
+  } finally {
+    await executor.close();
+  }
+});
