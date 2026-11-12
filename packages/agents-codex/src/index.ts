@@ -384,7 +384,10 @@ export {
   sandboxEnvironment,
   renderStorageLayout,
 } from './runtime/sandbox-environment';
-export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';
+export type {
+  SandboxEnvironmentSource,
+  SandboxEnvironmentOptions,
+} from './runtime/sandbox-environment';
 
 export type {
   InitialMessage,
@@ -551,4 +554,12 @@ export type {
   ApplyPatchResult,
 } from './runtime/apply-patch';
 
+export { skills } from './runtime/sandbox-skills';
+export type {
+  Skills,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+} from './runtime/sandbox-skills';
 export type { SandboxMemoryOptions } from './runtime/sandbox-memory';

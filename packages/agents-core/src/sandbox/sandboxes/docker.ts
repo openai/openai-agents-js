@@ -1,4 +1,8 @@
 import {
+  beforeGitRepoCopy,
+  type BeforeGitRepoCopy,
+} from '../internal/gitRepoCopy';
+import {
   BOUNDED_FILE_READ_STATUS_BYTES,
   boundedFileReadCommand,
   decodeBoundedFileRead,
@@ -6,6 +10,7 @@ import {
 import { UserError } from '../../errors';
 import {
   copyRemoteSnapshotAuthority,
+  markDeserializedSandboxState,
   getRemoteSnapshotPolicyAuthority,
   setRemoteSnapshotPolicyAuthority,
 } from '../internal/sessionStateTrust';
@@ -87,6 +92,7 @@ import {
 import {
   getRecordedExposedPortEndpoint,
   normalizeExposedPort,
+  normalizeDirectoryEntryLimit,
   recordExposedPortEndpoint,
   type ExposedPortEndpoint,
   type ListDirectoryArgs,
@@ -119,7 +125,7 @@ import {
   sanitizeEnvironmentForPersistence,
   serializeHostPathGrantRedactionMetadata,
   serializeMountCredentialRedactionMetadata,
-  serializeManifest,
+  serializeManifestRecord,
 } from './shared/manifestPersistence';
 import {
   assertExistingMountTopologyPreserved,
@@ -335,12 +341,25 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   override async listDir(
     args: ListDirectoryArgs,
   ): Promise<SandboxDirectoryEntry[]> {
+    const limit = normalizeDirectoryEntryLimit(args.maxEntries);
     const absolutePath = await this.validateContainerFilesystemPath(args.path);
     const output = await this.runReadableDockerFilesystemCommand(
       [
         `test -d ${shellQuote(absolutePath)} && find -H ${shellQuote(absolutePath)} -mindepth 1 -maxdepth 1 -printf '%y\\0%f\\0'`,
       ].join(' && '),
-      { runAs: args.runAs },
+      {
+        runAs: args.runAs,
+        // Linux filenames are at most 255 bytes, plus type and NUL delimiters.
+        // Reuse the existing output fence/owned process retirement before parsing.
+        ...(limit === undefined
+          ? {}
+          : {
+              maxOutputBytes: Math.min(
+                Number.MAX_SAFE_INTEGER,
+                (limit + 1) * 258,
+              ),
+            }),
+      },
       `list directory ${absolutePath}`,
       absolutePath,
     );
@@ -354,6 +373,8 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     for (let index = 0; index + 1 < fields.length; index += 2) {
       const kind = fields[index];
       const name = fields[index + 1]!;
+      if (limit !== undefined && entries.length >= limit)
+        throw new UserError('Directory listing exceeds its entry limit');
       entries.push({
         name,
         path: logicalPath ? `${logicalPath}/${name}` : name,
@@ -380,6 +401,9 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         const permissions = await this.copyEntryIntoContainer(
           logicalPath,
           entry,
+          this.state.manifest.extraPathGrants,
+          undefined,
+          args[beforeGitRepoCopy],
         );
         await this.applyContainerCopyPermissions(permissions);
         recordLiveMountCredentialAuthority(nextManifest, this.state.manifest);
@@ -402,6 +426,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     entry: Entry,
     localSourceGrants = this.state.manifest.extraPathGrants,
     budget = new DockerResourceCopyBudget(this.archiveLimits),
+    beforeCopy?: BeforeGitRepoCopy,
   ): Promise<{ path: string; mode: number }[]> {
     const destination = this.resolveContainerFilesystemPath(logicalPath, {
       forWrite: true,
@@ -413,7 +438,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       : undefined;
     const archive = this.readContainerCopyArchive(
       destination,
-      readLocalWorkspaceEntry(entry, localSourceGrants, gitSourceRoot),
+      readLocalWorkspaceEntry(
+        entry,
+        localSourceGrants,
+        gitSourceRoot,
+        beforeCopy,
+      ),
       execArgs,
       permissions,
       budget,
@@ -1924,7 +1954,7 @@ export class DockerSandboxClient implements SandboxClient<
     const serialized = {
       ...serializeHostPathGrantRedactionMetadata(state),
       ...serializeMountCredentialRedactionMetadata(state),
-      manifest: serializeManifest(sanitizedMountEnvironment.manifest),
+      manifest: serializeManifestRecord(sanitizedMountEnvironment.manifest),
       sessionIdentity: state.sessionIdentity,
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
@@ -1962,7 +1992,7 @@ export class DockerSandboxClient implements SandboxClient<
       state,
       this.options.snapshot,
     );
-    return {
+    return markDeserializedSandboxState({
       ...baseState,
       sessionIdentity: readOptionalString(state, 'sessionIdentity'),
       image: readString(state, 'image'),
@@ -1975,7 +2005,7 @@ export class DockerSandboxClient implements SandboxClient<
         'Serialized Docker sandbox session state labels',
       ),
       dockerVolumeNames: readStringArray(state.dockerVolumeNames),
-    };
+    });
   }
 
   private async restoreIfNeeded(

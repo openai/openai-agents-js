@@ -11991,6 +11991,7 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
+      const skillLease = this.options.environmentOwner?.skillLease;
       registerToolSessionOwner(
         context,
         this.toolSessionOwner,
@@ -12007,6 +12008,7 @@ export class Session<OutputT = string, Context = unknown> {
                 admit,
               )
           : undefined,
+        skillLease?.environment === this.environment ? skillLease : undefined,
       );
       const identity: ToolIdentity = {
         callId: context.callId,

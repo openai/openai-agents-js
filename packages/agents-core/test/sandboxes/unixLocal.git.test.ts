@@ -6,6 +6,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,9 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Manifest, UnixLocalSandboxClient } from '../../src/sandbox/local';
+
+import { beforeGitRepoCopy } from '../../src/sandbox/internal/gitRepoCopy';
+import { readLocalWorkspaceEntry } from '../../src/sandbox/sandboxes/shared/localWorkspace';
 
 import * as gitProcess from '../../src/sandbox/sandboxes/shared/runProcess';
 
@@ -29,6 +33,188 @@ describe('UnixLocalSandboxClient git repository entries', () => {
     vi.restoreAllMocks();
     await rm(rootDir, { recursive: true, force: true });
   });
+
+  it('prepares one verified Git copy before writes while retaining its descriptor', async () => {
+    const repository = join(rootDir, 'source');
+    await mkdir(repository);
+    await createGitRepository(repository, 'current bytes');
+    await mkdir(join(repository, 'skills', 'report'), { recursive: true });
+    await writeFile(
+      join(repository, 'skills', 'report', 'SKILL.md'),
+      'current skill',
+    );
+    await execFileAsync('git', ['add', '.'], { cwd: repository });
+    await execFileAsync('git', ['commit', '-m', 'skills'], { cwd: repository });
+    const client = new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: { type: 'local', baseDir: rootDir },
+    });
+    const session = await client.create(
+      new Manifest({
+        entries: {
+          '.agents/report/old.txt': { type: 'file', content: 'retained' },
+        },
+      }),
+    );
+    const entry = {
+      type: 'git_repo' as const,
+      repo: `file://${repository}`,
+      subpath: 'skills',
+    };
+    const prepare = vi.fn(async (children: readonly string[]) => {
+      expect(children).toEqual(['report']);
+      await expect(
+        readFile(
+          join(session.state.workspaceRootPath, '.agents/report/SKILL.md'),
+        ),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      await session.removeEntryNoFollow!('.agents/report/old.txt');
+    });
+    try {
+      await session.materializeEntry({
+        path: '.agents',
+        entry,
+        [beforeGitRepoCopy]: {
+          prepare,
+          limits: { maxMembers: 4096, maxDepth: 32 },
+        },
+      });
+      expect(prepare).toHaveBeenCalledTimes(1);
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, '.agents/report/SKILL.md'),
+          'utf8',
+        ),
+      ).toBe('current skill');
+      expect(session.state.manifest.entries['.agents']).toMatchObject(entry);
+      const serialized = await client.serializeSessionState(session.state);
+      expect(serialized.manifest).toMatchObject({
+        entries: { '.agents': entry },
+      });
+      expect(JSON.stringify(serialized.manifest)).not.toContain(
+        'current skill',
+      );
+    } finally {
+      await session.close();
+    }
+  }, 10_000);
+
+  it('rejects inadmissible Git roots and direct children before preparing destinations', async () => {
+    const repository = join(rootDir, 'source');
+    await mkdir(repository);
+    await createGitRepository(repository, 'current bytes');
+    await mkdir(join(repository, 'skills'));
+    await symlink('../README.md', join(repository, 'skills', 'report'));
+    await execFileAsync('git', ['add', '.'], { cwd: repository });
+    await execFileAsync('git', ['commit', '-m', 'linked child'], {
+      cwd: repository,
+    });
+    const session = await new UnixLocalSandboxClient({
+      workspaceBaseDir: rootDir,
+    }).create(new Manifest());
+    const prepare = vi.fn(async () => {});
+    try {
+      await expect(
+        session.materializeEntry({
+          path: '.agents',
+          entry: {
+            type: 'git_repo',
+            repo: `file://${repository}`,
+            subpath: 'skills',
+          },
+          [beforeGitRepoCopy]: {
+            prepare,
+            limits: { maxMembers: 4096, maxDepth: 32 },
+          },
+        }),
+      ).rejects.toThrow('regular files and directories');
+      const staged = join(rootDir, 'git-staging');
+      await mkdir(staged);
+      const content = readLocalWorkspaceEntry(
+        {
+          type: 'git_repo',
+          repo: `file://${repository}`,
+          subpath: 'README.md',
+        },
+        [],
+        staged,
+        { prepare, limits: { maxMembers: 4096, maxDepth: 32 } },
+      );
+      await expect(content.next()).rejects.toThrow('require a directory');
+      expect(prepare).not.toHaveBeenCalled();
+      await expect(
+        stat(join(session.state.workspaceRootPath, '.agents')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await session.close();
+    }
+  }, 10_000);
+
+  it.each([false, true])(
+    'keeps the direct clone empty-destination guard unless its copy is prepared=%s',
+    async (prepared) => {
+      const repository = join(rootDir, 'direct-source');
+      await mkdir(repository);
+      await createGitRepository(repository, 'direct clone bytes');
+      const staging = join(rootDir, 'direct-staging');
+      await mkdir(staging);
+      const prepare = vi.fn(async () => {});
+      const contents = readLocalWorkspaceEntry(
+        { type: 'git_repo', repo: `file://${repository}` },
+        [],
+        staging,
+        prepared
+          ? { prepare, limits: { maxMembers: 4096, maxDepth: 32 } }
+          : undefined,
+      );
+      try {
+        const first = await contents.next();
+        expect(first.value).toMatchObject({ type: 'dir', path: '.' });
+        if (prepared) {
+          expect(first.value).not.toHaveProperty('mustBeEmpty');
+          expect(prepare).toHaveBeenCalledTimes(1);
+        } else {
+          expect(first.value).toHaveProperty('mustBeEmpty', true);
+          expect(prepare).not.toHaveBeenCalled();
+        }
+      } finally {
+        await contents.return(undefined);
+      }
+    },
+    10_000,
+  );
+
+  it.each([
+    { maxMembers: 1, maxDepth: 32 },
+    { maxMembers: 4096, maxDepth: 0 },
+  ])(
+    'rejects prepared Git source limits before destination writes: %j',
+    async (limits) => {
+      const repository = join(rootDir, 'bounded-source');
+      await mkdir(repository);
+      await createGitRepository(repository, 'current bytes');
+      const session = await new UnixLocalSandboxClient({
+        workspaceBaseDir: rootDir,
+      }).create(new Manifest());
+      const prepare = vi.fn(async () => {});
+      try {
+        await expect(
+          session.materializeEntry({
+            path: '.agents',
+            entry: { type: 'git_repo', repo: `file://${repository}` },
+            [beforeGitRepoCopy]: { prepare, limits },
+          }),
+        ).rejects.toThrow();
+        expect(prepare).not.toHaveBeenCalled();
+        await expect(
+          stat(join(session.state.workspaceRootPath, '.agents')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      } finally {
+        await session.close();
+      }
+    },
+    10_000,
+  );
 
   it('rejects repository option injection before changing an existing workspace', async () => {
     const repository = join(rootDir, 'source');

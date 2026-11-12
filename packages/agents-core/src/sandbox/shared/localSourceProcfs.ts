@@ -1,5 +1,6 @@
-import { constants } from 'node:fs';
-import { lstat, open, readdir, stat, statfs } from 'node:fs/promises';
+import { constants, type Dirent } from 'node:fs';
+import { readLocalSourceBuffer } from './localSourceBuffer';
+import { lstat, open, opendir, readdir, stat, statfs } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import type {
   NativeSourceDirectory,
@@ -116,7 +117,11 @@ class ProcfsSourceDirectory implements NativeSourceDirectory {
     });
   }
 
-  async readFile(name: string): Promise<Uint8Array> {
+  async readFile(
+    name: string,
+    maxBytes?: number,
+    prefix?: boolean,
+  ): Promise<Uint8Array> {
     validateName(name);
     const file = await this.run(() =>
       open(
@@ -127,10 +132,18 @@ class ProcfsSourceDirectory implements NativeSourceDirectory {
     // The opened file retains its own authority, so the parent can now close.
     let failed = false;
     try {
-      if (!(await file.stat()).isFile()) {
+      const info = await file.stat();
+      if (!info.isFile()) {
         throw sourceError('EINVAL', 'Local source is not a regular file');
       }
-      return await file.readFile();
+      if (maxBytes === undefined) return await file.readFile();
+      return await readLocalSourceBuffer(
+        info.size,
+        async (buffer) =>
+          (await file.read(buffer, 0, buffer.length, null)).bytesRead,
+        maxBytes,
+        prefix,
+      );
     } catch (error) {
       failed = true;
       throw error;
@@ -140,13 +153,22 @@ class ProcfsSourceDirectory implements NativeSourceDirectory {
     }
   }
 
-  entries(): Promise<NativeSourceEntry[]> {
+  entries(maxEntries?: number): Promise<NativeSourceEntry[]> {
     return this.run(async () => {
       // Each call starts a fresh enumeration. Retain the handle until the
       // entire promise settles, including Node's lstat fallback for DT_UNKNOWN.
-      const entries = await readdir(procPath(this.handle), {
-        withFileTypes: true,
-      });
+      let entries: Dirent[];
+      if (maxEntries === undefined) {
+        entries = await readdir(procPath(this.handle), { withFileTypes: true });
+      } else {
+        entries = [];
+        const stream = await opendir(procPath(this.handle));
+        for await (const entry of stream) {
+          if (entries.length >= maxEntries)
+            throw new RangeError('Local source member limit exceeded');
+          entries.push(entry);
+        }
+      }
       return entries.map((entry): NativeSourceEntry => {
         validateName(entry.name);
         return {

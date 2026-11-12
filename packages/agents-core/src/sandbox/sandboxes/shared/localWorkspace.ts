@@ -1,3 +1,7 @@
+import {
+  beforeGitRepoCopy,
+  type BeforeGitRepoCopy,
+} from '../../internal/gitRepoCopy';
 import { UserError } from '../../../errors';
 import {
   openLocalSourceDirectory,
@@ -5,6 +9,7 @@ import {
   readLocalSourceFile,
   readLocalSourceFileAt,
   readLocalSourceEntriesAt,
+  walkLocalSourceDirectoryEntries,
 } from '../../shared/localSourceReader';
 import type { NativeSourceEntry } from '../../shared/localSourceTypes';
 import { SandboxUnsupportedFeatureError } from '../../errors';
@@ -73,6 +78,7 @@ const LOCAL_SOURCE_DIRECTORY_READ_FLAGS =
   constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY;
 
 type MaterializeLocalWorkspaceOptions = {
+  [beforeGitRepoCopy]?: BeforeGitRepoCopy;
   concurrencyLimits?: SandboxConcurrencyLimits;
   manifestRoot?: string;
   localSourceBaseDir?: string;
@@ -226,6 +232,7 @@ export async function materializeLocalWorkspaceManifestEntry(
         destination,
         entry,
         logicalPath,
+        options[beforeGitRepoCopy],
       );
       break;
     default:
@@ -718,6 +725,7 @@ export async function* readLocalWorkspaceEntry(
   entry: Entry,
   localSourceGrants: SandboxPathGrant[],
   privateGitRoot: string | undefined,
+  beforeCopy?: BeforeGitRepoCopy,
 ): AsyncGenerator<LocalWorkspaceContent> {
   assertLocalWorkspaceEntryMetadataSupported(
     'Local sandbox materialization',
@@ -730,6 +738,7 @@ export async function* readLocalWorkspaceEntry(
     '',
     localSourceGrants,
     privateGitRoot,
+    beforeCopy,
   );
 }
 
@@ -738,6 +747,7 @@ async function* readLocalWorkspaceEntryContents(
   path: string,
   localSourceGrants: SandboxPathGrant[],
   privateGitRoot: string | undefined,
+  beforeCopy?: BeforeGitRepoCopy,
 ): AsyncGenerator<LocalWorkspaceContent> {
   const permissions =
     permissionsForSandboxEntry(entry.permissions).toMode() & 0o1777;
@@ -805,10 +815,10 @@ async function* readLocalWorkspaceEntryContents(
           );
         }
         const source = await resolveGitRepoSource(temporary, entry);
-        const copiesTree = Boolean(
-          entry.subpath || (entry.ref && looksLikeCommitRef(entry.ref)),
-        );
+        const copiesTree = gitRepoCopiesTree(entry);
         const info = await lstat(source);
+        if (beforeCopy && !info.isDirectory())
+          throw new UserError('Eager skill sources require a directory.');
         if (copiesTree && info.isFile()) {
           yield {
             type: 'file',
@@ -823,6 +833,7 @@ async function* readLocalWorkspaceEntryContents(
             `git_repo subpath must resolve to a file or directory: ${entry.subpath}`,
           );
         }
+        if (beforeCopy) await prepareGitRepoCopy(source, beforeCopy);
         // SHA/subpath copies retain existing target modes; direct clones retain Git modes.
         const contents = copiesTree
           ? readLocalDirectoryContents(source, '')
@@ -832,7 +843,10 @@ async function* readLocalWorkspaceEntryContents(
             ...item,
             path: posix.join(path, item.path),
             ...(item.path === '' ? { permissions } : {}),
-            ...(item.path === '' && item.type === 'dir' && !copiesTree
+            ...(item.path === '' &&
+            item.type === 'dir' &&
+            !copiesTree &&
+            !beforeCopy
               ? { mustBeEmpty: true }
               : {}),
           };
@@ -909,6 +923,46 @@ async function* readLocalDirectoryContents(
       ...item,
       path: relativePath ? posix.join(relativePath, item.path) : item.path,
     };
+  }
+}
+
+/** Copy an owned Git checkout through confined writers, retaining Git modes. */
+async function copyClonedGitDirectory(
+  source: string,
+  destination: string,
+  workspaceRootPath: string,
+  logicalPath: string,
+): Promise<void> {
+  for await (const item of readClonedGitContent(source, '')) {
+    const childPath = item.path
+      ? joinLogicalPath(logicalPath, item.path)
+      : logicalPath;
+    const childDestination = item.path
+      ? join(destination, item.path)
+      : destination;
+    if (item.type === 'dir')
+      await createMaterializationDirectory(
+        workspaceRootPath,
+        childDestination,
+        childPath,
+      );
+    else if (item.type === 'file')
+      await writeMaterializationFile(
+        workspaceRootPath,
+        childDestination,
+        childPath,
+        'content' in item ? item.content : item.chunks,
+      );
+    else
+      throw new UserError(
+        'Restored eager Git skills require regular files and directories.',
+      );
+    await applyEntryPermissions(
+      workspaceRootPath,
+      childDestination,
+      { permissions: item.permissions },
+      childPath,
+    );
   }
 }
 
@@ -992,7 +1046,7 @@ async function writeMaterializationFile(
   workspaceRootPath: string,
   destination: string,
   logicalPath: string,
-  content: string | Uint8Array,
+  content: string | Uint8Array | AsyncIterable<Uint8Array>,
 ): Promise<void> {
   await assertSafeMaterializationPath(
     workspaceRootPath,
@@ -1010,7 +1064,11 @@ async function writeMaterializationFile(
     throw error;
   }
   try {
-    await handle.writeFile(content);
+    if (typeof content === 'string' || ArrayBuffer.isView(content)) {
+      await handle.writeFile(content);
+    } else {
+      for await (const chunk of content) await handle.writeFile(chunk);
+    }
   } finally {
     await handle.close();
   }
@@ -1037,18 +1095,48 @@ function sameFilesystemEntry(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+async function prepareGitRepoCopy(
+  source: string,
+  beforeCopy: BeforeGitRepoCopy,
+): Promise<void> {
+  const directory = await openLocalSourceDirectory(source);
+  try {
+    const entries: NativeSourceEntry[] = [];
+    for await (const { components, type } of walkLocalSourceDirectoryEntries(
+      directory,
+      beforeCopy.limits,
+    )) {
+      if (type !== 'directory' && type !== 'file')
+        throw new UserError(
+          'Skill trees require regular files and directories.',
+        );
+      if (components.length === 1) entries.push({ name: components[0], type });
+    }
+    await beforeCopy.prepare(
+      entries.map(({ name }) => name),
+      entries.filter(({ type }) => type === 'file').map(({ name }) => name),
+    );
+  } finally {
+    await directory.close();
+  }
+}
+
+function gitRepoCopiesTree(entry: GitRepo): boolean {
+  return Boolean(entry.subpath || (entry.ref && looksLikeCommitRef(entry.ref)));
+}
+
 async function materializeGitRepoEntry(
   workspaceRootPath: string,
   destination: string,
   entry: GitRepo,
   logicalPath: string,
+  beforeCopy?: BeforeGitRepoCopy,
 ): Promise<void> {
   await assertGitAvailable();
 
   const repository = normalizeGitRepository(entry);
-  const cloneIntoTemporaryDirectory =
-    Boolean(entry.subpath) ||
-    Boolean(entry.ref && looksLikeCommitRef(entry.ref));
+  const copiesTree = gitRepoCopiesTree(entry);
+  const cloneIntoTemporaryDirectory = copiesTree || Boolean(beforeCopy);
   const cloneDestination = cloneIntoTemporaryDirectory
     ? await mkdtemp(join(tmpdir(), 'openai-agents-git-repo-'))
     : destination;
@@ -1083,14 +1171,25 @@ async function materializeGitRepoEntry(
 
     const sourcePath = await resolveGitRepoSource(cloneDestination, entry);
     const sourceInfo = await lstat(sourcePath);
+    if (beforeCopy && !sourceInfo.isDirectory())
+      throw new UserError('Eager skill sources require a directory.');
     if (sourceInfo.isDirectory()) {
-      await copyLocalDirectory(
-        sourcePath,
-        destination,
-        {},
-        workspaceRootPath,
-        logicalPath,
-      );
+      if (beforeCopy) await prepareGitRepoCopy(sourcePath, beforeCopy);
+      if (!copiesTree)
+        await copyClonedGitDirectory(
+          sourcePath,
+          destination,
+          workspaceRootPath,
+          logicalPath,
+        );
+      else
+        await copyLocalDirectory(
+          sourcePath,
+          destination,
+          {},
+          workspaceRootPath,
+          logicalPath,
+        );
       return;
     }
     if (sourceInfo.isFile()) {
@@ -1305,7 +1404,7 @@ function joinLogicalPath(parent: string, child: string): string {
 async function applyEntryPermissions(
   workspaceRootPath: string,
   destination: string,
-  entry: Entry,
+  entry: Pick<Entry, 'permissions'>,
   logicalPath: string,
 ): Promise<void> {
   await assertSafeMaterializationPath(
