@@ -47,6 +47,9 @@ fn manual_request(key: &PendingKey, call: &ManualCall, model: Option<&str>) -> R
         "turnId":key.turn,"callId":call.call_id,"namespace":call.namespace,
         "tool":call.name,"arguments":arguments,"_sdk_python_tool":key.reply,
         "_sdk_code_origin":null,"_sdk_model":model, "_sdk_restored_approval":true, "_sdk_approval_required":call.approval_required}});
+    if !call.custom && !call.shell && !call.patch {
+        request["msg"]["_sdk_raw_function_arguments"] = json!(call.arguments);
+    }
     if let Some(arguments) = &call.effective_arguments {
         request["msg"]["_sdk_effective_arguments"] = serde_json::from_str(arguments)?;
     }
