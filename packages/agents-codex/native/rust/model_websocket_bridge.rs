@@ -37,7 +37,7 @@ pub(crate) async fn connect(
                 biased;
                 () = stopped.cancelled() => return,
                 () = ready.closed() => return,
-                result = open_message_transport(&opening_engine, &expected_url, request) => result,
+                result = open_message_transport(&opening_engine, &expected_url, request, None) => result,
             };
             drop(opening_engine);
             let (provider, socket, headers) = match result {

@@ -463,6 +463,9 @@ export async function tryOpenPlainRun(
     ...(settings?.reasoningEffort === undefined
       ? {}
       : { reasoningEffort: settings.reasoningEffort }),
+    ...(lease.websocketsAllowed && borrow?.refreshWebsocketTrust
+      ? { freshWebsocketConnector: true }
+      : {}),
     observationRetentionAll: options.observationRetention === 'all',
     preferBufferedResponse: setup.threadOptions._buffered_responses === true,
   });
