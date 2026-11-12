@@ -1906,12 +1906,25 @@ impl PythonTools {
     ) -> Result<()> {
         self.check_restored_manual(owner, &key)?;
         let success = response.success;
-        let receipt = Receipt::Native(PythonOutput(response).receipt(&key));
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         let (frame, keys) = manual
             .restored
             .as_mut()
             .context("manual continuation expired")?;
+        let call = frame
+            .pending_manual
+            .iter()
+            .find(|call| call.call_id == key.call)
+            .context("manual request has no original call")?;
+        let receipt = Receipt::Native(if call.shell {
+            crate::local_reconciliation::shell_receipt(
+                &serde_json::from_str::<ResponseItem>(&call.arguments)?,
+                response,
+                &key.turn,
+            )?
+        } else {
+            PythonOutput(response).receipt(&key)
+        });
         ensure!(
             keys.remove(&key).is_some(),
             "manual request already answered"

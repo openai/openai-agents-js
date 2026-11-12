@@ -143,7 +143,13 @@ it.each([true, false])(
       });
     } else {
       expect(receipts[0]).toMatchObject({
-        output: [{ stderr: 'Application denied execution' }],
+        max_output_length: 32,
+        output: [
+          {
+            stderr: 'Application denied execution',
+            outcome: { type: 'exit', exit_code: 1 },
+          },
+        ],
       });
     }
     server.assertExhausted();
