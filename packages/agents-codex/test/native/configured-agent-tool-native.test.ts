@@ -1,17 +1,28 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import {
   Agent,
+  Environment,
+  NativeAgents,
+  NativeRole,
+  InteractionRequired,
   NativeProvider,
   isFunctionApprovalRequest,
   tool,
   type Session,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { startPublicExecutor } from './fixtures/public-executor';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
-const model =
+const catalog: {
+  slug: string;
+  supported_in_api?: boolean;
+  use_responses_lite?: boolean;
+  multi_agent_version?: string;
+}[] =
   process.env.OPENAI_AGENTS_NATIVE_TESTS === '1'
     ? JSON.parse(
         readFileSync(
@@ -22,11 +33,14 @@ const model =
             ),
           'utf8',
         ),
-      ).models.find(
-        (entry: { supported_in_api?: boolean; use_responses_lite?: boolean }) =>
-          entry.supported_in_api && !entry.use_responses_lite,
-      )?.slug
-    : undefined;
+      ).models
+    : [];
+const model = catalog.find(
+  (entry) => entry.supported_in_api && !entry.use_responses_lite,
+)?.slug;
+const descendantModel = catalog.find(
+  (entry) => entry.supported_in_api && entry.multi_agent_version === 'v2',
+)?.slug;
 if (process.env.OPENAI_AGENTS_NATIVE_TESTS === '1' && !model)
   throw new Error('Expected a catalog model with standard Responses support');
 
@@ -48,7 +62,10 @@ async function approval(session: Session) {
   throw new Error('Expected the managed child approval');
 }
 
-async function fixture(siblingApproval = false) {
+async function fixture(
+  siblingApproval = false,
+  observeChild?: (session: Session) => void,
+) {
   const rootModel = new ModelServer([
     [
       call(
@@ -69,6 +86,7 @@ async function fixture(siblingApproval = false) {
   const effects: string[] = [];
   const guards: { name: string; agent: Agent<any, any> }[] = [];
   const sibling = Promise.withResolvers<void>();
+  const approvalEntered = Promise.withResolvers<void>();
   const child = new Agent({
     name: 'Nested guarded child',
     instructions: 'Request the child effect.',
@@ -78,7 +96,10 @@ async function fixture(siblingApproval = false) {
       tool({
         name: 'child_effect',
         parameters: z.object({}),
-        needsApproval: true,
+        needsApproval() {
+          approvalEntered.resolve();
+          return true;
+        },
         execute() {
           effects.push('child-effect');
           return 'child effect output';
@@ -105,6 +126,14 @@ async function fixture(siblingApproval = false) {
       },
     ],
   });
+  if (observeChild) {
+    const open = child.session.bind(child);
+    child.session = async (...args) => {
+      const session = await open(...args);
+      observeChild(session);
+      return session;
+    };
+  }
   const parent = new Agent({
     name: 'Guarded parent',
     instructions: 'Run the child and sibling.',
@@ -161,6 +190,7 @@ async function fixture(siblingApproval = false) {
     effects,
     guards,
     sibling,
+    approvalEntered,
     child,
     parent,
   };
@@ -376,4 +406,347 @@ nativeIt.each([false, true])(
     f.childModel.assertExhausted();
   },
   30000,
+);
+
+nativeIt(
+  'rejects an inaccessible configured child approval from parent.run',
+  async () => {
+    await using f = await fixture();
+    const controller = new AbortController();
+    const completed = f.parent
+      .run('begin one-shot witness', { signal: controller.signal })
+      .then(
+        (result) => ({ kind: 'completed', value: result }),
+        (error: unknown) => ({ kind: 'rejected', error }),
+      );
+    let observed: unknown;
+    try {
+      await f.approvalEntered.promise;
+      await f.sibling.promise;
+      observed = await Promise.race([
+        completed,
+        new Promise((resolve) =>
+          setTimeout(
+            () => resolve({ kind: 'still-pending-at-inaccessible-approval' }),
+            1500,
+          ),
+        ),
+      ]);
+    } finally {
+      controller.abort(new Error('bounded one-shot witness cleanup'));
+      await completed;
+    }
+    expect(f.effects).toEqual(['accepted-sibling']);
+    expect(f.childModel.requests).toHaveLength(1);
+    expect(observed).toEqual({
+      kind: 'rejected',
+      error: expect.any(InteractionRequired),
+    });
+  },
+  15_000,
+);
+
+nativeIt(
+  'answers a configured child approval through parent.run with a handler',
+  async () => {
+    await using f = await fixture();
+    const result = await f.parent.run('begin one-shot witness', {
+      onInteraction(request) {
+        if (!isFunctionApprovalRequest(request))
+          throw new Error('Expected child approval');
+        return request.approve();
+      },
+    });
+    expect(result.finalOutput).toBe('parent complete');
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    f.rootModel.assertExhausted();
+    f.childModel.assertExhausted();
+  },
+  15000,
+);
+
+nativeIt.each(['poll', 'respond'] as const)(
+  'ignores a retired child snapshot during parent %s',
+  async (operation) => {
+    let childSession: Session | undefined;
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let hold = false;
+    const snapshotScope = new AsyncLocalStorage<boolean>();
+    let originalSnapshot: Session['pendingInteractions'];
+    await using f = await fixture(operation === 'respond', (child) => {
+      childSession = child;
+      originalSnapshot = child.pendingInteractions.bind(child);
+      child.pendingInteractions = async () => {
+        if (hold && snapshotScope.getStore()) {
+          hold = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return originalSnapshot();
+      };
+    });
+    await using session = await f.parent.session();
+    const root = await session.submit('begin retirement witness');
+    const requests = await vi.waitFor(async () => {
+      const pending = (await session.pendingInteractions()).filter(
+        isFunctionApprovalRequest,
+      );
+      expect(pending).toHaveLength(operation === 'respond' ? 2 : 1);
+      return pending;
+    });
+    const child = requests.find(
+      (request) => request.callId === 'child-approval-call',
+    )!;
+    const sibling = requests.find(
+      (request) => request.callId === 'held-sibling-call',
+    );
+    hold = true;
+    const pending = snapshotScope.run(true, () =>
+      operation === 'poll'
+        ? session.pendingInteractions()
+        : session.respond(sibling!.approve()),
+    );
+    // The snapshot has been crossing the real child's retirement boundary.
+    const settled = pending.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    try {
+      await entered.promise;
+      await childSession!.respond(child.approve());
+      await vi.waitFor(async () => {
+        await expect(originalSnapshot()).rejects.toThrow('Session is closed');
+      });
+    } finally {
+      release.resolve();
+    }
+    const result = await settled;
+    expect(result).toEqual(
+      operation === 'poll' ? { value: [] } : { value: undefined },
+    );
+    expect((await root.wait()).finalOutput).toBe('parent complete');
+    expect(await session.pendingInteractions()).toEqual([]);
+    expect(f.effects).toEqual(
+      operation === 'poll'
+        ? ['accepted-sibling', 'child-effect']
+        : ['child-effect', 'accepted-sibling'],
+    );
+    f.rootModel.assertExhausted();
+    f.childModel.assertExhausted();
+  },
+  15000,
+);
+
+nativeIt(
+  'preserves a snapshot failure from an active configured child',
+  async () => {
+    let fail = false;
+    const snapshotScope = new AsyncLocalStorage<boolean>();
+    const failure = new Error('Active child snapshot failed');
+    await using f = await fixture(false, (child) => {
+      const snapshot = child.pendingInteractions.bind(child);
+      child.pendingInteractions = async () => {
+        if (fail && snapshotScope.getStore()) {
+          fail = false;
+          throw failure;
+        }
+        return snapshot();
+      };
+    });
+    await using session = await f.parent.session();
+    const root = await session.submit('begin active child witness');
+    const request = await approval(session);
+    fail = true;
+    await expect(
+      snapshotScope.run(true, () => session.pendingInteractions()),
+    ).rejects.toBe(failure);
+    await session.respond(request.approve());
+    expect((await root.wait()).finalOutput).toBe('parent complete');
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    f.rootModel.assertExhausted();
+    f.childModel.assertExhausted();
+  },
+  15000,
+);
+
+nativeIt.each(['close', 'cancel'] as const)(
+  'cancels configured child opening on parent %s',
+  async (operation) => {
+    const started = Promise.withResolvers<void>();
+    const credential = Promise.withResolvers<never>();
+    const server = new ModelServer([
+      [call('opening_child', { input: 'begin' }, { callId: 'opening-call' })],
+    ]);
+    await using rootProvider = await provider(server);
+    await using childProvider = new NativeProvider({
+      signInWithChatGPT: {
+        getCredential() {
+          started.resolve();
+          return credential.promise;
+        },
+      },
+    });
+    const child = new Agent({
+      instructions: 'Retain the current credential owner.',
+      model,
+      provider: childProvider,
+    });
+    const parent = new Agent({
+      instructions: 'Call the configured child.',
+      model,
+      provider: rootProvider,
+      tools: [child.asTool({ toolName: 'opening_child' })],
+    });
+    await using session = await parent.session();
+    const root = await session.submit('begin opening witness');
+    const completion = root.wait().catch((error: unknown) => error);
+    await started.promise;
+    const stopping = operation === 'close' ? session.close() : root.cancel();
+    const settled = stopping.then(
+      () => ({ kind: 'settled' }),
+      (error: unknown) => ({ kind: 'rejected', error }),
+    );
+    let observed;
+    try {
+      observed = await Promise.race([
+        settled,
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ kind: 'still-opening' }), 1500),
+        ),
+      ]);
+    } finally {
+      credential.reject(new Error('bounded opening witness cleanup'));
+      await settled;
+      await completion;
+    }
+    expect(observed).toEqual({ kind: 'settled' });
+    expect(await completion).toBeInstanceOf(Error);
+    expect(server.requests).toHaveLength(1);
+    server.assertExhausted();
+  },
+  15000,
+);
+
+nativeIt(
+  'routes an inaccessible configured child approval from a native role to the one-shot root',
+  async () => {
+    if (!descendantModel)
+      throw new Error('Expected a catalog model with V2 collaboration');
+    const entered = Promise.withResolvers<void>();
+    let effects = 0;
+    const rootModel = new ModelServer([
+      [
+        call(
+          'managed_parent',
+          { input: 'Run the configured child.' },
+          { namespace: 'collaboration', callId: 'managed-parent' },
+        ),
+      ],
+      [
+        call(
+          'nested_child',
+          { input: 'Request the child effect.' },
+          { callId: 'role-configured-child' },
+        ),
+      ],
+    ]);
+    const childModel = new ModelServer([
+      [call('child_effect', {}, { callId: 'role-child-approval' })],
+    ]);
+    const executor = await startPublicExecutor();
+    try {
+      await using rootProvider = await provider(rootModel);
+      await using childProvider = await provider(childModel);
+      const child = new Agent({
+        instructions: 'Request the child effect.',
+        model,
+        provider: childProvider,
+        tools: [
+          tool({
+            name: 'child_effect',
+            parameters: z.object({}),
+            needsApproval() {
+              entered.resolve();
+              return true;
+            },
+            execute() {
+              effects++;
+              return 'child effect';
+            },
+          }),
+        ],
+      });
+      const parent = new Agent({
+        instructions: 'Delegate to the managed role.',
+        model: descendantModel,
+        provider: rootProvider,
+        tools: [
+          new NativeAgents({
+            additionalRoles: [
+              new NativeRole({
+                name: 'delegated',
+                description: 'Delegate configured work.',
+                instructions: 'Call nested_child.',
+              }),
+            ],
+            managedTools: [
+              {
+                name: 'managed_parent',
+                role: 'delegated',
+                description:
+                  'Run the configured child through the native role.',
+              },
+            ],
+          }),
+          child.asTool({ toolName: 'nested_child' }),
+        ],
+      });
+      const controller = new AbortController();
+      const completed = parent
+        .run('begin managed one-shot witness', {
+          signal: controller.signal,
+          environment: new Environment({
+            url: executor.url,
+            cwd: executor.cwd,
+            headers: executor.headers,
+            tools: ['exec_command', 'write_stdin', 'apply_patch'],
+          }),
+        })
+        .then(
+          (value) => ({ kind: 'completed', value }),
+          (error: unknown) => ({ kind: 'rejected', error }),
+        );
+      let observed;
+      try {
+        const admission = await Promise.race([
+          entered.promise.then(() => ({ kind: 'entered' })),
+          completed,
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ kind: 'no-admission' }), 2000),
+          ),
+        ]);
+        expect(admission).toEqual({ kind: 'entered' });
+        observed = await Promise.race([
+          completed,
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ kind: 'still-pending' }), 1500),
+          ),
+        ]);
+      } finally {
+        controller.abort(new Error('bounded managed one-shot cleanup'));
+        await completed;
+      }
+      expect(observed).toEqual({
+        kind: 'rejected',
+        error: expect.any(InteractionRequired),
+      });
+      expect(effects).toBe(0);
+      rootModel.assertExhausted();
+      childModel.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  20000,
 );

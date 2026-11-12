@@ -23,6 +23,7 @@ export interface ConfiguredAgentTool {
   open(
     context: unknown,
     environment: Environment | null,
+    signal: AbortSignal,
   ): Promise<Session<unknown>>;
   extract(result: Completed<unknown>): Promise<string>;
 }
@@ -49,10 +50,10 @@ export function createAgentTool<Context, Output>(
     execute: ({ input }, context) => invokeConfiguredAgentTool(context, input),
   });
   declarations.set(declaration, {
-    open: (context, environment) =>
+    open: (context, environment, signal) =>
       agent.session(
         ...([
-          { context, ...(environment ? { environment } : {}) },
+          { context, signal, ...(environment ? { environment } : {}) },
         ] as Parameters<typeof agent.session>),
       ),
     async extract(result) {

@@ -1351,6 +1351,13 @@ function realtimeToolSelection(
   };
 }
 
+type ConfiguredChild = {
+  session: import('./public-agent').Session<unknown>;
+  owner: NativeTurn | ChildCallbackOwner;
+  signal: AbortSignal;
+  active: boolean;
+};
+
 export class Session<OutputT = string, Context = unknown> {
   #collectingRawUsage = false;
 
@@ -2860,15 +2867,7 @@ export class Session<OutputT = string, Context = unknown> {
     () => this.observations.currentSequence,
   );
   private readonly toolSessionOwner = Object.freeze({});
-  private readonly configuredChildren = new Map<
-    string,
-    {
-      session: import('./public-agent').Session<unknown>;
-      owner: NativeTurn | ChildCallbackOwner;
-      signal: AbortSignal;
-      active: boolean;
-    }
-  >();
+  private readonly configuredChildren = new Map<string, ConfiguredChild>();
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -5222,7 +5221,7 @@ export class Session<OutputT = string, Context = unknown> {
       for (const child of this.configuredChildren.values()) {
         if (!child.active || child.signal.aborted || !this.current(child.owner))
           continue;
-        const pending = await child.session.pendingInteractions();
+        const pending = await this.configuredChildRequests(child);
         const matched = pending.some((request) =>
           isManualReply(input)
             ? manualReplyMatchesRequest(input, request)
@@ -11941,21 +11940,28 @@ export class Session<OutputT = string, Context = unknown> {
       this.executeCallbackRequest(owner, event, signal, delivery),
     );
   }
+  private async configuredChildRequests(
+    child: ConfiguredChild,
+  ): Promise<readonly Interaction[]> {
+    const current = () =>
+      child.active && !child.signal.aborted && this.current(child.owner);
+    if (!current()) return [];
+    try {
+      const requests = await child.session.pendingInteractions();
+      return current() ? requests : [];
+    } catch (error) {
+      if (!current()) return [];
+      throw error;
+    }
+  }
+
   private async pendingConfiguredChildRequests(
     owner?: NativeTurn | ChildCallbackOwner,
   ): Promise<Interaction[]> {
     const requests: Interaction[] = [];
     for (const child of this.configuredChildren.values()) {
-      if (
-        !child.active ||
-        child.signal.aborted ||
-        !this.current(child.owner) ||
-        (owner && child.owner !== owner)
-      )
-        continue;
-      const pending = await child.session.pendingInteractions();
-      if (child.active && !child.signal.aborted && this.current(child.owner))
-        requests.push(...pending);
+      if (owner && child.owner !== owner) continue;
+      requests.push(...(await this.configuredChildRequests(child)));
     }
     return requests;
   }
@@ -11969,7 +11975,11 @@ export class Session<OutputT = string, Context = unknown> {
     context.signal.throwIfAborted();
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
-    const session = await declaration.open(context.context, this.environment);
+    const session = await declaration.open(
+      context.context,
+      this.environment,
+      context.signal,
+    );
     const child = { session, owner, signal: context.signal, active: true };
     let closing: Promise<void> | undefined;
     const close = () => {
@@ -11999,6 +12009,22 @@ export class Session<OutputT = string, Context = unknown> {
             return;
           this.observations.notify();
           const handler = this.options.onInteraction;
+          if (!handler && this.oneShot) {
+            const failure = new InteractionRequired();
+            const root =
+              owner instanceof NativeTurn
+                ? owner
+                : this.lifecycle.kind === 'turn'
+                  ? this.lifecycle.run
+                  : undefined;
+            if (!root) this.oneShotChildCleanupErrors.push(failure);
+            toolInvocation.exit(() => {
+              void this.trackQuestionCallback(root ?? owner, async () => {
+                throw failure;
+              }).catch(() => {});
+            });
+            return;
+          }
           if (handler) {
             const reply = await toolInvocation.exit(() =>
               handler(request, context.signal),
@@ -14459,7 +14485,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /**
-   * Generate sandbox memory explicitly from a successful, settled text conversation.
+   * Generate sandbox memory explicitly from successful text and function tool history.
    * Requires memory on this resource acquisition. Concurrent calls share one flush.
    * Native checkpoint restore, non-text history and automatic close generation are unsupported.
    */
