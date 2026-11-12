@@ -530,7 +530,7 @@ globalThis.fetch = async (url, options = {}) => {
   attempts.set(name, attempt);
   const mode = process.env.TEST_V8_DOWNLOAD;
   const headers = new Headers(options.headers);
-  let status = 200, body = name, responseHeaders = {};
+  let status = 200, body = name, responseHeaders = {}, errorCode;
   if (parsed.hostname === 'api.github.com') {
     if (mode === 'exhausted') status = 504;
     else if (mode === 'api-rate') {
@@ -549,12 +549,21 @@ globalThis.fetch = async (url, options = {}) => {
   } else if (parsed.hostname === 'release-assets.githubusercontent.com') {
     if (headers.has('authorization')) throw new Error('API credential reached download host');
   } else {
-    const firstArchiveRetry = mode === 'retry' && name.startsWith('lib') && attempt === 1;
-    if (mode === 'exhausted' || mode.startsWith('api') || firstArchiveRetry) status = 504;
+    if (mode === 'exhausted' || mode.startsWith('api')) status = 504;
+    if ((mode === 'retry' && attempt === 1) || mode === 'api') {
+      if (name.startsWith('lib')) errorCode = 'UND_ERR_CONNECT_TIMEOUT';
+      else status = 504;
+    }
+    if (mode === 'tls') errorCode = 'CERT_HAS_EXPIRED';
     if (mode === '404') status = 404;
     if (mode === 'digest') body = 'incorrect bytes';
   }
-  appendFileSync(process.env.TEST_FETCH_LOG, JSON.stringify({ name, status, host: parsed.hostname, authorization: headers.get('authorization'), accept: headers.get('accept'), redirect: options.redirect }) + '\\n');
+  appendFileSync(process.env.TEST_FETCH_LOG, JSON.stringify({ name, status: errorCode ? null : status, errorCode, host: parsed.hostname, authorization: headers.get('authorization'), accept: headers.get('accept'), redirect: options.redirect }) + '\\n');
+  if (errorCode) {
+    throw new TypeError('fetch failed', {
+      cause: Object.assign(new Error('fixture fetch failure'), { code: errorCode }),
+    });
+  }
   return new Response(body, { status, headers: responseHeaders });
 };`,
         );
@@ -649,7 +658,9 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
             .trim()
             .split('\n')
             .map((line) => JSON.parse(line));
-          expect(requests.map(({ status }) => status)).toEqual([504, 200, 200]);
+          expect(
+            requests.map(({ errorCode, status }) => errorCode ?? status),
+          ).toEqual(['UND_ERR_CONNECT_TIMEOUT', 200, 504, 200]);
           for (const name of names)
             expect(readFileSync(join(cache, name), 'utf8')).toBe(name);
           expect(readdirSync(cache).sort()).toEqual([...names].sort());
@@ -839,15 +850,18 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         );
         if (downloads) {
           const cargoLog = readFileSync(log, 'utf8');
-          for (const mode of ['exhausted', '404', 'digest']) {
+          for (const mode of ['exhausted', '404', 'digest', 'tls'] as const) {
             for (const name of names) rmSync(join(cache, name));
             rmSync(fetchLog);
             const result = invoke(build, { TEST_V8_DOWNLOAD: mode });
             expect(result.status).toBe(1);
             expect(result.stderr).toContain(
-              mode === 'digest'
-                ? 'V8 SHA-256 mismatch'
-                : `V8 download failed (${mode === '404' ? 404 : 504})`,
+              {
+                exhausted: 'V8 download failed (504)',
+                '404': 'V8 download failed (404)',
+                digest: 'V8 SHA-256 mismatch',
+                tls: 'CERT_HAS_EXPIRED',
+              }[mode],
             );
             expect(
               readFileSync(fetchLog, 'utf8').trim().split('\n'),
@@ -869,12 +883,21 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
             .trim()
             .split('\n')
             .map((line) => JSON.parse(line));
-          expect(requests).toHaveLength(11);
           expect(
-            requests
-              .filter((row) => row.host === 'github.com')
-              .map((row) => row.status),
-          ).toEqual([504, 504, 504, 504, 504, 504]);
+            requests.map(({ errorCode, status }) => errorCode ?? status),
+          ).toEqual([
+            'UND_ERR_CONNECT_TIMEOUT',
+            'UND_ERR_CONNECT_TIMEOUT',
+            'UND_ERR_CONNECT_TIMEOUT',
+            200,
+            302,
+            200,
+            504,
+            504,
+            504,
+            200,
+            200,
+          ]);
           for (const request of requests) {
             expect(request.authorization).toBe(
               request.host === 'api.github.com'

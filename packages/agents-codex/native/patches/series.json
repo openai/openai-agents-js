@@ -893,9 +893,21 @@
       "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
     },
     {
+      "path": "sdk-provider-hosted-mcp.patch",
+      "sha256": "65236f86077f6fa5dbd2a8f46533712eb20d4ad3c2ab6625dfc18f3c32308945"
+    },
+    {
+      "path": "sdk-acknowledged-provider-window.patch",
+      "sha256": "cbbbd43cfef7f8ae00f23ab6a2e87d6ccd98a1f2e3b32b7b8f470d529a17d4e1"
+    },
+    {
+      "path": "sdk-chat-completions-raw-response.patch",
+      "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
+    },
+    {
       "path": "sdk-trace-provider-restart.patch",
       "sha256": "f34d52ce9a626d24097742c98dd36bd599313bbe8bf3c5a67e6c4386e5770ec3"
     }
   ],
-  "result_tree": "56b3800d3a7d70b3ed6058ff27fa0673fc5e1c89"
+  "result_tree": "fabdd13730131af39ff25f09e9305b2e001b7bee"
 }

@@ -30,6 +30,10 @@ import {
 import type { ResponsesCompaction } from './responses-compaction';
 import { audioInputByteLimit } from './media';
 import {
+  assertHostedMcpConfigurations,
+  hostedMcpBinding,
+} from './hosted-mcp-binding';
+import {
   ManagedWorkspaceCheckpoint,
   captureRetiredWorkspace,
   managedWorkspaceRestore,
@@ -51,6 +55,7 @@ import {
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
+  markRawProviderRequest,
   type NativeModel,
   type ModelRequest,
   type ModelProvider,
@@ -7006,7 +7011,7 @@ export class Session<OutputT = string, Context = unknown> {
         (!owner.instanceId ||
           owner.instanceId === event.subagent_instance_id) &&
         event.id === turnId &&
-        msg.source === 'responses' &&
+        (msg.source === 'responses' || msg.source === 'chat_completions') &&
         (msg.transport === 'sse' ||
           msg.transport === 'websocket' ||
           msg.transport === 'json') &&
@@ -7818,7 +7823,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       kind === 'sdk_raw_provider_event' &&
       eventTurn === run.id &&
-      msg.source === 'responses' &&
+      (msg.source === 'responses' || msg.source === 'chat_completions') &&
       (msg.transport === 'sse' ||
         msg.transport === 'websocket' ||
         msg.transport === 'json') &&
@@ -8882,7 +8887,7 @@ export class Session<OutputT = string, Context = unknown> {
                       callback: parseNative(delivery.wire),
                     })
                   : undefined;
-              const request: ModelRequest = Object.freeze({
+              const request: ModelRequest = {
                 ...base,
                 body: losslessJsonObjectSchema.parse(msg.data),
                 ...(attemptId === undefined
@@ -8914,7 +8919,10 @@ export class Session<OutputT = string, Context = unknown> {
                             },
                           }),
                     }),
-              });
+              };
+              if (this.options.includeRawProviderEvents)
+                markRawProviderRequest(request);
+              Object.freeze(request);
               const advice = backend.getRetryAdvice;
               if (advice !== undefined && typeof advice !== 'function')
                 throw new TypeError(
@@ -9005,6 +9013,7 @@ export class Session<OutputT = string, Context = unknown> {
                   const data = captureModelResponse(
                     returned,
                     msg.capture_raw_usage === true,
+                    this.options.includeRawProviderEvents === true,
                   );
                   check();
                   reply({ data });
@@ -9028,7 +9037,13 @@ export class Session<OutputT = string, Context = unknown> {
                     : undefined;
                 try {
                   const providerResponse =
-                    msg.provider_response == null
+                    transformContext !== undefined ||
+                    msg.provider_response == null ||
+                    compaction.mode === 'input' ||
+                    !compaction.matchesProvider(
+                      this.#modelApiKey,
+                      this.threadOptions.config,
+                    )
                       ? undefined
                       : z
                           .object({
@@ -9090,6 +9105,16 @@ export class Session<OutputT = string, Context = unknown> {
                           ),
                         });
                     }
+                    if (
+                      prepared.mode === 'previous_response_id' &&
+                      !compaction.matchesProvider(
+                        this.#modelApiKey,
+                        this.threadOptions.config,
+                      )
+                    )
+                      throw new TypeError(
+                        'Compaction client provider scope changed before dispatch',
+                      );
                     const window = await compaction.requestWindow(
                       requestContext,
                       providerResponse,
@@ -10388,7 +10413,7 @@ export class Session<OutputT = string, Context = unknown> {
         !tool ||
         tool.kind !== 'manual' ||
         msg.tool !== tool.name ||
-        msg.namespace != null
+        (msg.namespace ?? null) !== toolNamespace(tool)
       )
         throw new NativeError('Invalid managed tool identity');
       const approval = managedApproval(tool);
@@ -10403,7 +10428,7 @@ export class Session<OutputT = string, Context = unknown> {
       const identity = {
         callId,
         toolName: tool.name,
-        namespace: null,
+        namespace: toolNamespace(tool),
         family: 'function' as const,
       };
       this.observeToolStart(run, identity);
@@ -11106,6 +11131,16 @@ export class Session<OutputT = string, Context = unknown> {
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
   ): Promise<SessionState> {
+    if (
+      [...this.manualCalls.values()].some(
+        (call) => call.run === run && hostedMcpBinding(call.tool),
+      )
+    )
+      return Promise.reject(
+        new NativeError(
+          'Pending Hosted MCP approval requires a live reply; portable suspension is not supported',
+        ),
+      );
     const refusal = manualCaptureRefusal(run.selection);
     if (refusal) return Promise.reject(new NativeError(refusal));
     this.requireCompleteRepairReceipts();
@@ -12688,6 +12723,10 @@ export class Session<OutputT = string, Context = unknown> {
             'Updated MCP tools must have been declared when the Session opened',
           );
       const replacements = captureTools(next.tools);
+      assertHostedMcpConfigurations(
+        replacements.tools,
+        this.threadOptions._hosted_tools ?? [],
+      );
       const callbackBindings = this.profileCurrent
         ? this.profileRuntimes.get(this.profileCurrent.profile_id)?.profile
             .callbackTools
@@ -12982,6 +13021,7 @@ export class Session<OutputT = string, Context = unknown> {
           .filter((tool) => tool.kind === 'manual')
           .map((tool) => ({
             name: tool.name,
+            namespace: toolNamespace(tool),
           })),
       ),
       this.terminalSlots(),
@@ -13092,6 +13132,8 @@ export class Session<OutputT = string, Context = unknown> {
         (item) =>
           item.type === 'mcp_call' &&
           item.turnId === turn.turnId &&
+          'callId' in item &&
+          'threadId' in item &&
           item.callId === callId &&
           item.threadId === this.id,
       );
@@ -13980,7 +14022,10 @@ export class Session<OutputT = string, Context = unknown> {
             payload.type === 'response.failed'
           ) {
             response = payload.response;
-          } else if (payload.object === 'response') {
+          } else if (
+            payload.object === 'response' ||
+            payload.object === 'chat.completion'
+          ) {
             response = payload;
           }
           if (
@@ -14618,7 +14663,7 @@ export class Session<OutputT = string, Context = unknown> {
         if (current !== capturedContext)
           throw new NativeError('Model context snapshot is stale');
       }
-      const checkpoint = await owner.change.prepare(summary, retainedIndices);
+      await owner.change.prepare(summary, retainedIndices);
       const current = decode(
         z.object({
           instructions: z.string(),
@@ -14654,18 +14699,16 @@ export class Session<OutputT = string, Context = unknown> {
       owner.candidate = await owner.creation;
       beforeRetirement();
       this.carrier?.bindEngine(owner.candidate);
-      owner.thread = await owner.candidate.restore_checkpoint(
-        checkpoint,
+      owner.thread = await owner.change.restoreCandidate(
         encode(options),
         this.catalog.specsJson,
-        false,
       );
       beforeRetirement();
       this.configureNative(owner.thread);
       const manualSlots = encode(
         this.catalog.tools
           .filter((tool) => tool.kind === 'manual')
-          .map((tool) => ({ name: tool.name })),
+          .map((tool) => ({ name: tool.name, namespace: toolNamespace(tool) })),
       );
       owner.thread._configure_manual_tools(manualSlots);
       if (this.options.includeRawProviderEvents)

@@ -11,6 +11,7 @@ import { projectProfileCatalog } from './agent-profiles';
 import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
+import { hostedMcpConfigurations } from './hosted-mcp-binding';
 import { assertCheckpointNetworkPolicy } from './state';
 import {
   assertCheckpointSelections,
@@ -75,6 +76,12 @@ export async function openSession(
   oneShot?: OneShotOptions,
   catalog: ToolCatalog = captureTools(setup.tools),
 ): Promise<Session> {
+  const hostedMcp = hostedMcpConfigurations([
+    ...catalog.tools,
+    ...[...(options.agentGraph?.profiles.values() ?? [])].flatMap(
+      (profile) => profile.catalog.tools,
+    ),
+  ]);
   const { initialMessages, ...liveOptions } = options;
   const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
@@ -155,6 +162,14 @@ export async function openSession(
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
+    ...(hostedMcp.length
+      ? {
+          _hosted_tools: [
+            ...(capturedThreadOptions._hosted_tools ?? []),
+            ...hostedMcp,
+          ],
+        }
+      : {}),
     ...(options.environmentOwner?.workspaceInstructions === undefined
       ? {}
       : {

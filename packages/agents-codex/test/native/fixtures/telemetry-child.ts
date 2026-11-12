@@ -225,6 +225,59 @@ async function main() {
     await telemetry.shutdown();
     await assert.rejects(failedEngine(), /shut down or failed to initialize/);
     await assert.rejects(telemetry.configure(), { message: once });
+  } else if (
+    mode === 'restart-diagnostics-omitted' ||
+    mode === 'restart-diagnostics-null'
+  ) {
+    const operation = async (output: string) => {
+      const server = new ModelServer([[message(output)]]);
+      const config = await server.config();
+      class FixtureProvider extends NativeProvider {
+        override _acquire() {
+          const lease = super._acquire();
+          Object.assign(lease.config, config);
+          return lease;
+        }
+      }
+      const provider = new FixtureProvider({
+        apiKey: 'synthetic-diagnostics-key',
+      });
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider,
+      });
+      try {
+        const session = await agent.session();
+        try {
+          assert.equal(
+            (await (await session.submit('Synthetic input')).wait())
+              .finalOutput,
+            output,
+          );
+        } finally {
+          await session.close();
+        }
+      } finally {
+        await provider.close();
+        await ModelServer.closeAll();
+      }
+    };
+    await telemetry.configure({
+      diagnostics: {
+        level: 'trace',
+        targets: ['codex_api::sse::responses'],
+        includeFields: true,
+      },
+    });
+    await operation('DIAGNOSTICS_ENABLED_PAYLOAD');
+    await telemetry.shutdown();
+    console.log('DIAGNOSTICS_RESTART_BOUNDARY');
+    await telemetry.configure({
+      restartAfterShutdown: true,
+      ...(mode === 'restart-diagnostics-null' ? { diagnostics: null } : {}),
+    });
+    await operation('DIAGNOSTICS_DISABLED_PAYLOAD');
+    await telemetry.shutdown();
   } else if (mode === 'restart-credentials') {
     const authorizations: (string | undefined)[] = [];
     const server = createServer(async (request, response) => {
