@@ -1,3 +1,4 @@
+import type { StandardSchemaWithJSON } from '@openai/agents-core';
 import { isZodObject } from '@openai/agents-core/utils';
 import {
   getSchemaAndParserFromInputType,
@@ -559,8 +560,20 @@ export type Tool<Context = any> =
   | NativeGoals
   | Checklist;
 
+type ToolParameters = z.ZodType | StandardSchemaWithJSON;
+type ToolParameterInput<T extends ToolParameters> = T extends z.ZodType
+  ? z.input<T>
+  : T extends StandardSchemaWithJSON<infer Input, unknown>
+    ? Input
+    : never;
+type ToolParameterOutput<T extends ToolParameters> = T extends z.ZodType
+  ? z.output<T>
+  : T extends StandardSchemaWithJSON<unknown, infer Output>
+    ? Output
+    : never;
+
 export function tool<
-  T extends z.ZodType,
+  T extends ToolParameters,
   Context = unknown,
   Result extends z.ZodType = z.ZodType<
     JsonValue | ToolOutput,
@@ -614,13 +627,16 @@ export function tool<
   namespace?: string;
   namespaceDescription?: string;
   description?: string;
+  /** Standard Schema parameters require strict mode and synchronous validation. */
   parameters: T;
   /** Validate the callback result before converting it to model-visible content. */
   result?: Result;
   /** Allow, deny, or replace validated arguments before the callback runs. */
   before?: (
     context: ToolContext<Context>,
-  ) => ToolDecision<z.input<T>> | Promise<ToolDecision<z.input<T>>>;
+  ) =>
+    | ToolDecision<ToolParameterInput<T>>
+    | Promise<ToolDecision<ToolParameterInput<T>>>;
   /**
    * Transform validated content. Returning the same output preserves background
    * intent; a replacement is foreground unless wrapped in backgroundResult().
@@ -633,7 +649,7 @@ export function tool<
     | BackgroundResult<ToolOutput>
     | Promise<ToolOutput | BackgroundResult<ToolOutput>>;
   execute: (
-    args: z.output<T>,
+    args: ToolParameterOutput<T>,
     context: ToolContext<Context>,
   ) =>
     | z.input<Result>
@@ -713,19 +729,31 @@ export function tool<
   if (outputSchema !== undefined && outputSchema.type !== 'object')
     throw new TypeError('outputSchema must define a JSON object');
   let inputSchema: unknown;
-  if (strict) {
-    if (!isZodObject(parameters))
-      throw new TypeError('Strict tool parameters must be a Zod object');
-    inputSchema = getSchemaAndParserFromInputType(parameters, name, {
-      strict,
-    }).schema;
+  let parseInput: (value: unknown) => ToolParameterOutput<T>;
+  if (isZodObject(parameters) || parameters instanceof z.ZodType) {
+    const zodParameters = parameters as z.ZodType;
+    if (strict) {
+      if (!isZodObject(parameters))
+        throw new TypeError('Strict tool parameters must be a Zod object');
+      inputSchema = getSchemaAndParserFromInputType(parameters, name, {
+        strict,
+      }).schema;
+    } else {
+      inputSchema = z.toJSONSchema(zodParameters, { io: 'input' });
+    }
+    parseInput = (value) =>
+      zodParameters.parse(
+        strict ? stripStrictNullsForZodSchema(zodParameters, value) : value,
+      ) as ToolParameterOutput<T>;
   } else {
-    inputSchema = z.toJSONSchema(parameters, { io: 'input' });
+    const prepared = getSchemaAndParserFromInputType(parameters, name, {
+      strict,
+    });
+    inputSchema = prepared.schema;
+    // The shared Standard Schema parser rejects asynchronous validation.
+    parseInput = (value) =>
+      prepared.parser(JSON.stringify(value)) as ToolParameterOutput<T>;
   }
-  const parseInput = (value: unknown): z.output<T> =>
-    parameters.parse(
-      strict ? stripStrictNullsForZodSchema(parameters, value) : value,
-    );
   const recoverRunError = async (
     phase: ToolErrorContext['phase'],
     error: unknown,
@@ -838,8 +866,8 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed: z.output<T>;
-      if (approved) parsed = approved.value as z.output<T>;
+      let parsed: ToolParameterOutput<T>;
+      if (approved) parsed = approved.value as ToolParameterOutput<T>;
       else if (effectiveArgs !== undefined) parsed = parseInput(effectiveArgs);
       else {
         try {
