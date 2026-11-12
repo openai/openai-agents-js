@@ -47,21 +47,28 @@ async function fixture(secondMiB = 33) {
   const binding = new SandboxSkillBinding(
     skills({ lazyFrom: localDirLazySkillSource({ src: root, baseDir: root }) }),
   );
-  const lease = new SandboxSkillLease(
-    binding,
-    sandbox,
-    environment,
-    sandbox.state.manifest,
-    workspace,
-  );
+  const leases: SandboxSkillLease[] = [];
+  const newLease = (resource = sandbox) => {
+    const lease = new SandboxSkillLease(
+      binding,
+      resource,
+      environment,
+      resource.state.manifest,
+      workspace,
+    );
+    leases.push(lease);
+    return lease;
+  };
+  const lease = newLease();
   await lease.activate();
   const load = (name: string) => lease.load(name, new AbortController().signal);
   return {
     sandbox,
     lease,
     load,
+    newLease,
     async close() {
-      lease.retire();
+      for (const lease of leases) lease.retire();
       await sandbox.close();
       await rm(root, { recursive: true, force: true });
     },
@@ -197,6 +204,79 @@ unixIt(
       expect(await f.sandbox.pathExists('.agents/alpha/SKILL.md')).toBe(true);
     } finally {
       release();
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'retains captured-byte admission after a borrowed sandbox receives another lease',
+  async () => {
+    const f = await fixture();
+    try {
+      expect((await f.load('alpha')).status).toBe('loaded');
+      f.lease.retire();
+      const next = f.newLease();
+      await next.activate();
+      await expect(
+        next.load('beta', new AbortController().signal),
+      ).rejects.toThrow(/skill tree byte limit/i);
+      expect(await f.sandbox.pathExists('.agents/alpha/SKILL.md')).toBe(true);
+      expect(await f.sandbox.pathExists('.agents/beta/SKILL.md')).toBe(false);
+    } finally {
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'shares captured-byte admission across concurrent leases of one borrowed sandbox',
+  async () => {
+    const f = await fixture();
+    try {
+      const other = f.newLease();
+      await other.activate();
+      const results = await Promise.allSettled([
+        f.load('alpha'),
+        other.load('beta', new AbortController().signal),
+      ]);
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === 'rejected'),
+      ).toHaveLength(1);
+      expect(await f.sandbox.pathExists('.agents/alpha/SKILL.md')).toBe(true);
+      expect(await f.sandbox.pathExists('.agents/beta/SKILL.md')).toBe(false);
+    } finally {
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'preserves captured-byte admission through a trusted live sandbox resume',
+  async () => {
+    const f = await fixture();
+    let resumed: typeof f.sandbox | undefined;
+    try {
+      await f.load('alpha');
+      f.lease.retire();
+      resumed = await new UnixLocalSandboxClient().resume(f.sandbox.state);
+      expect(resumed.state.workspaceRootPath).toBe(
+        f.sandbox.state.workspaceRootPath,
+      );
+      const next = f.newLease(resumed);
+      await next.activate();
+      await expect(
+        next.load('beta', new AbortController().signal),
+      ).rejects.toThrow(/skill tree byte limit/i);
+      expect(await resumed.pathExists('.agents/beta/SKILL.md')).toBe(false);
+    } finally {
+      await resumed?.close();
       await f.close();
     }
   },

@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import {
   createSkillConfiguration,
+  getSandboxStateIdentity,
   resolveSkillRuntimeMetadata,
   resolveSkillsMetadata,
   renderSkillsDiscoveryInstructions,
@@ -49,6 +50,30 @@ function capturedTreeUsage(entry: Entry): SkillTreeUsage {
     usage.bytes += next.bytes;
   }
   return usage;
+}
+
+type SandboxSkillBudget = {
+  readonly retained: Map<string, SkillTreeUsage>;
+  bytes: number;
+  members: number;
+  tail: Promise<void>;
+};
+// Retained manifest entries outlive acquisition leases. Trusted state aliases
+// share their physical owner; dropping an Environment never resets its budget.
+const sandboxSkillBudgets = new WeakMap<object, SandboxSkillBudget>();
+function sandboxSkillBudget(sandbox: SandboxSessionLike): SandboxSkillBudget {
+  const owner = getSandboxStateIdentity(sandbox.state);
+  let budget = sandboxSkillBudgets.get(owner);
+  if (!budget) {
+    budget = {
+      retained: new Map(),
+      bytes: 0,
+      members: 0,
+      tail: Promise.resolve(),
+    };
+    sandboxSkillBudgets.set(owner, budget);
+  }
+  return budget;
 }
 
 const metadataLimits = Object.freeze({
@@ -164,10 +189,7 @@ export class SandboxSkillLease {
   #index: SkillIndexEntry[] = [];
   #active = false;
   readonly #grants: string;
-  readonly #retained = new Map<string, SkillTreeUsage>();
-  #retainedBytes = 0;
-  #retainedMembers = 0;
-  #loadTail: Promise<void> = Promise.resolve();
+  readonly #budget: SandboxSkillBudget;
 
   constructor(
     readonly binding: SandboxSkillBinding,
@@ -177,6 +199,7 @@ export class SandboxSkillLease {
     readonly workspaceRoot: string,
   ) {
     this.#sandbox = sandbox;
+    this.#budget = sandboxSkillBudget(sandbox);
     this.#environment = environment;
     this.#grants = grantStamp(trustedManifest);
   }
@@ -280,10 +303,10 @@ export class SandboxSkillLease {
       );
     const match = matches[0];
     // Admission stays with this lease; each queued caller retains its own signal.
-    const pending = this.#loadTail.then(() =>
+    const pending = this.#budget.tail.then(() =>
       this.loadDestination(match, signal),
     );
-    this.#loadTail = pending.then(
+    this.#budget.tail = pending.then(
       () => {},
       () => {},
     );
@@ -312,7 +335,7 @@ export class SandboxSkillLease {
       const relative = configuration.skillsPath
         ? destination.slice(configuration.skillsPath.length + 1)
         : destination;
-      const previous = this.#retained.get(destination) ?? {
+      const previous = this.#budget.retained.get(destination) ?? {
         members: 0,
         bytes: 0,
       };
@@ -322,10 +345,9 @@ export class SandboxSkillLease {
         {
           limits: {
             maxMembers:
-              treeLimits.maxMembers - this.#retainedMembers + previous.members,
+              treeLimits.maxMembers - this.#budget.members + previous.members,
             maxDepth: treeLimits.maxDepth,
-            maxBytes:
-              treeLimits.maxBytes - this.#retainedBytes + previous.bytes,
+            maxBytes: treeLimits.maxBytes - this.#budget.bytes + previous.bytes,
           },
           sourceGrants: sandbox.state.manifest.extraPathGrants,
         },
@@ -335,11 +357,9 @@ export class SandboxSkillLease {
       const usage = capturedTreeUsage(entry);
       await sandbox.materializeEntry({ path: destination, entry });
       // Successful writes retain these bytes even if the caller then observes cancellation.
-      if (this.#active) {
-        this.#retainedMembers += usage.members - previous.members;
-        this.#retainedBytes += usage.bytes - previous.bytes;
-        this.#retained.set(destination, usage);
-      }
+      this.#budget.members += usage.members - previous.members;
+      this.#budget.bytes += usage.bytes - previous.bytes;
+      this.#budget.retained.set(destination, usage);
       this.admit();
       signal.throwIfAborted();
     }
@@ -353,9 +373,6 @@ export class SandboxSkillLease {
   retire(): void {
     this.#active = false;
     this.#index = [];
-    this.#retained.clear();
-    this.#retainedBytes = 0;
-    this.#retainedMembers = 0;
     this.#sandbox = undefined;
     this.#environment = undefined;
   }
