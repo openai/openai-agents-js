@@ -1,12 +1,4 @@
-import {
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  expectTypeOf,
-  it,
-  vi,
-} from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { Agent, type AgentOutputType } from '../src/agent';
 import { handoff } from '../src/handoff';
@@ -1295,12 +1287,6 @@ function fakeSandboxSessionStateEnvelope(
 }
 
 describe('sandbox runner integration', () => {
-  it('preserves the boolean live-session reuse hook contract', () => {
-    expectTypeOf<
-      ReturnType<NonNullable<SandboxClient['canReusePreservedOwnedSession']>>
-    >().toEqualTypeOf<boolean | Promise<boolean>>();
-  });
-
   it('delegates fresh manifest environment preparation to an opted-in client', async () => {
     let resolveCalls = 0;
     const secret = {

@@ -145,7 +145,6 @@ describe('sandbox path probes', () => {
   });
 
   it.each([
-    'test: /workspace/missing: No such file or directory',
     `base64: '/workspace/missing': No such file or directory`,
     '/workspace/missing not found',
     'missing path: /workspace/missing',

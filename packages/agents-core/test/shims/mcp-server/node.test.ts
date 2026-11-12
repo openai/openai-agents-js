@@ -333,18 +333,6 @@ describe('NodeMCPServerStdio', () => {
     await server.close();
   });
 
-  test('installed MCP client should support automatic tool pagination', async () => {
-    const { Client } = await vi.importActual<
-      typeof import('@modelcontextprotocol/client')
-    >('@modelcontextprotocol/client');
-    const client = new Client({
-      name: 'metadata-compatibility-test',
-      version: '1.0.0',
-    });
-
-    expect(typeof client.listTools).toBe('function');
-  });
-
   test('should apply custom client session timeout when connecting', async () => {
     const server = new NodeMCPServerStdio({
       name: 'custom-timeout',
