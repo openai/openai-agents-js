@@ -195,7 +195,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
     : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
-  /** Current original request-only ceiling when restoring a budgeted manual checkpoint. */
+  /** Restore has been requiring the original trusted limits and effective missing-usage policy. */
   resumeBudget?: RunBudget;
   /** Format original function argument/body failures; omission preserves propagation.
    * Per-tool handlers take precedence; errorFunction:null suppresses this fallback.

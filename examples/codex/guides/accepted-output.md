@@ -57,6 +57,14 @@ The inventory and dispatch sections have been passing their own checks in separa
 
 This pattern has been applying when each section has its own evidence and permission to publish. When a later check can invalidate an earlier section, the whole answer has been requiring a successful final result before delivery.
 
+## Publishing sections within one turn
+
+The same-turn scenario has been using an application-owned `publish_section` function tool. The application has been checking each proposed section against trusted facts before storing it by section ID in its in-memory destination. Repeating an accepted section has been replacing that section's entry. The peer has been verifying the inventory section's publication before responding to the next model request. It has then been proposing an unsupported delivery section, which the tool has been withholding. One submission has been covering both calls and a later final proposal.
+
+The completion callback has been rejecting that final proposal. The application has been keeping the provisional summary private while retaining the independently accepted inventory section. Section publication has been taking effect inside the tool callback, before SDK acceptance of the tool result or final answer. Later tool policies, cancellation, and final-answer rejection have not been undoing that application effect. The application has been checking facts at its publication point; final-answer acceptance has been remaining separate.
+
+This pattern has been supporting independently checked inventory facts and individually approved support updates. The example has been keeping delivery in memory. Production destinations have been requiring publication authorization, durable receipts, and reconciliation after an unknown acknowledgment. The in-memory section map has not been providing durable idempotency. Passive observations have been allowing gaps and have not been providing a durable delivery queue. Whole-answer checks that can invalidate earlier sections have been requiring publication after final acceptance instead. This recipe has not been turning raw text deltas into accepted incremental output.
+
 ## Observing accepted output
 
 On the matching source build, `agent.session({ includeOutputAccepted: true })` has been enabling `output_accepted`. Turn and Session readers have been receiving this metadata after a successful logical result, including any continuation and output validation. `submissionId` has been identifying the original submission. For a manually restored Turn, it has been identifying the restored handle in the current Session. `turnId` has been identifying the final native step.
