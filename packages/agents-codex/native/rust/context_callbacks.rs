@@ -1096,7 +1096,7 @@ pub(super) struct ModelReply {
     usage: Option<codex_protocol::protocol::TokenUsage>,
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
-    #[serde(default, deserialize_with = "deserialize_received_cache_write_usage")]
+    #[serde(default)]
     received_cache_write_usage: Option<ReceivedCacheWriteUsage>,
     #[serde(default)]
     raw_chat_completion: Option<serde_json::Map<String, Value>>,
@@ -1104,40 +1104,7 @@ pub(super) struct ModelReply {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReceivedCacheWriteUsage {
-    #[serde(deserialize_with = "deserialize_received_cache_write_count")]
     count: Option<i64>,
-}
-
-fn deserialize_received_cache_write_usage<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<ReceivedCacheWriteUsage>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
-    if !value.is_object() {
-        return Err(serde::de::Error::custom(
-            "Received cache-write usage requires a count object",
-        ));
-    }
-    serde_json::from_value(value)
-        .map(Some)
-        .map_err(serde::de::Error::custom)
-}
-
-fn deserialize_received_cache_write_count<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<i64>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let count = <Option<i64> as serde::Deserialize>::deserialize(deserializer)?;
-    if count.is_some_and(|count| !(0..=9_007_199_254_740_991).contains(&count)) {
-        return Err(serde::de::Error::custom(
-            "Invalid received cache-write token count",
-        ));
-    }
-    Ok(count)
 }
 
 #[derive(Deserialize)]

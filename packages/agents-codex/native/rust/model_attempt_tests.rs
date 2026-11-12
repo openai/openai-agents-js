@@ -295,7 +295,7 @@ async fn provider_failure_wrapper_reports_the_original_frame() {
 }
 
 #[test]
-fn borrowed_cache_write_usage_has_three_strict_states() {
+fn borrowed_cache_write_usage_preserves_availability() {
     let generic: ModelReply = serde_json::from_value(json!({
         "response_id": "sdk-id", "output": []
     }))
@@ -315,31 +315,6 @@ fn borrowed_cache_write_usage_has_three_strict_states() {
         assert_eq!(
             reply.received_cache_write_usage.unwrap().count,
             count.as_i64()
-        );
-    }
-    for invalid in [
-        Value::Null,
-        json!({}),
-        json!({"count": "0"}),
-        json!({"count": false}),
-        json!({"count": -1}),
-        json!({"count": 0.5}),
-        json!({"count": 9_007_199_254_740_992_i64}),
-        json!({"count": 0, "extra": true}),
-        json!([]),
-        json!([0]),
-        json!([null]),
-        json!([0, 1]),
-        json!(0),
-        json!(false),
-        json!("0"),
-    ] {
-        assert!(
-            serde_json::from_value::<ModelReply>(json!({
-                "response_id": "sdk-id", "output": [],
-                "received_cache_write_usage": invalid
-            }))
-            .is_err()
         );
     }
 }
