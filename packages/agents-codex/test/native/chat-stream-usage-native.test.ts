@@ -94,6 +94,184 @@ it.each([true, false])(
   20_000,
 );
 
+it.each([true, false])(
+  'observes original Chat chunks only when requested (%s)',
+  async (includeRawProviderEvents) => {
+    const chunks = [
+      {
+        id: 'raw-chat-stream',
+        object: 'chat.completion.chunk',
+        choices: [
+          { index: 0, delta: { content: 'Original' }, finish_reason: 'stop' },
+        ],
+        vendor: { sequence: 1, fields: ['opaque', null] },
+      },
+      {
+        id: 'raw-chat-stream',
+        object: 'chat.completion.chunk',
+        choices: [],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        vendor: { sequence: 2 },
+      },
+    ];
+    const client = {
+      chat: {
+        completions: {
+          async *create() {
+            yield* chunks;
+          },
+        },
+      },
+    };
+    await using provider = new NativeProvider({
+      modelBackend: new ChatCompletionsModel(client, 'chat-model', {
+        stream: true,
+      }),
+    });
+    await using session = await new Agent({
+      instructions: 'Answer.',
+      model: 'fixture-stream-model',
+      provider,
+    }).session({ includeRawProviderEvents });
+    const turn = await session.submit('Begin.');
+    expect((await turn.wait()).finalOutput).toBe('Original');
+    const raw = [];
+    for await (const event of turn.events({ includeExecutionDetails: true })) {
+      if (event.type === 'raw_provider_event')
+        raw.push({
+          source: event.source,
+          transport: event.transport,
+          payload: event.payload,
+        });
+    }
+    expect(raw).toEqual(
+      includeRawProviderEvents
+        ? chunks.map((payload) => ({
+            source: 'chat_completions',
+            transport: 'json',
+            payload,
+          }))
+        : [],
+    );
+  },
+  20_000,
+);
+
+it.each(['cleanup failure', 'cancel', 'timeout'] as const)(
+  'retains Chat usage after %s while withholding tools',
+  async (retirement) => {
+    const accounted = Promise.withResolvers<void>();
+    const cleaning = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const cleanupError = new Error('synthetic Chat cleanup failure');
+    let effects = 0;
+    const record = tool({
+      name: 'record',
+      parameters: z.object({}),
+      execute() {
+        effects++;
+        return 'recorded';
+      },
+    });
+    const client = {
+      chat: {
+        completions: {
+          async *create(_body: unknown, { signal }: { signal: AbortSignal }) {
+            try {
+              yield {
+                id: 'retired-chat-usage',
+                choices: [
+                  {
+                    index: 0,
+                    delta: {
+                      tool_calls: [
+                        {
+                          index: 0,
+                          id: 'withheld-record',
+                          type: 'function',
+                          function: { name: 'record', arguments: '{}' },
+                        },
+                      ],
+                    },
+                    finish_reason: 'tool_calls',
+                  },
+                ],
+              };
+              yield {
+                id: 'retired-chat-usage',
+                choices: [],
+                usage: {
+                  prompt_tokens: 3,
+                  completion_tokens: 2,
+                  total_tokens: 5,
+                  prompt_tokens_details: { cached_tokens: 1 },
+                  completion_tokens_details: { reasoning_tokens: 1 },
+                },
+              };
+              accounted.resolve();
+              if (retirement === 'cleanup failure') throw cleanupError;
+              if (!signal.aborted)
+                await new Promise<void>((resolve) =>
+                  signal.addEventListener('abort', () => resolve(), {
+                    once: true,
+                  }),
+                );
+            } finally {
+              cleaning.resolve();
+              await release.promise;
+            }
+          },
+        },
+      },
+    };
+    await using provider = new NativeProvider({
+      modelBackend: new ChatCompletionsModel(client, 'chat-model', {
+        stream: true,
+      }),
+    });
+    await using session = await new Agent({
+      instructions: 'Use record.',
+      model: 'fixture-stream-model',
+      modelSettings:
+        retirement === 'timeout' ? { invocationTimeoutMs: 1000 } : {},
+      provider,
+      tools: [record],
+    }).session();
+    const turn = await session.submit('Begin.');
+    const completion = turn.wait();
+    void completion.catch(() => {});
+    let cancellation: Promise<void> | undefined;
+    try {
+      await accounted.promise;
+      if (retirement === 'cancel') cancellation = turn.cancel();
+      await cleaning.promise;
+      expect(effects).toBe(0);
+    } finally {
+      release.resolve();
+    }
+    await cancellation;
+    if (retirement === 'cleanup failure')
+      await expect(completion).rejects.toBe(cleanupError);
+    else await expect(completion).rejects.toThrow();
+    expect(effects).toBe(0);
+    const usage = {
+      requests: 1,
+      missingUsageRequests: 0,
+      inputTokens: 3,
+      cachedInputTokens: 1,
+      outputTokens: 2,
+      reasoningOutputTokens: 1,
+      totalTokens: 5,
+    };
+    expect(turn.runUsage).toMatchObject(usage);
+    const turns = [];
+    for await (const recorded of session.turns()) turns.push(recorded);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].runUsage).toMatchObject(usage);
+  },
+  20_000,
+);
+
 it('settles fragmented Chat tool calls only after iterator completion and replays their result', async () => {
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();

@@ -52,12 +52,22 @@ function selectedFunctionName(
 const originalResponsesUsage = Symbol('original Responses usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
+const chatModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
+const rawChatChunks = new WeakSet<JsonObject>();
 // The adapter assembles items before Core sees them, including tool-only chunks.
 const maxChatStreamBytes = 8 * 1024 * 1024;
 
 /** @internal Existing native turn opt-in, without provider request fields. */
 export function markRawProviderRequest(request: ModelRequest): void {
   Object.defineProperty(request, rawProviderRequest, { value: true });
+}
+
+export function isChatModelStream(stream: AsyncIterable<JsonObject>): boolean {
+  return chatModelStreams.has(stream);
+}
+
+export function isRawChatChunk(event: JsonObject): boolean {
+  return rawChatChunks.has(event);
 }
 
 type OriginalResponsesUsage = {
@@ -528,7 +538,11 @@ export class ChatCompletionsModel implements NativeModel {
     this.#requestOptions = captureRequestOptionsSource(options);
     this.#includeUsage = options.includeUsage ?? true;
     if (options.stream === true)
-      this.stream = (request) => this.#streamResponse(request);
+      this.stream = (request) => {
+        const stream = this.#streamResponse(request);
+        chatModelStreams.add(stream);
+        return stream;
+      };
   }
   getRetryAdvice(
     request: ModelRetryAdviceRequest,
@@ -836,6 +850,9 @@ export class ChatCompletionsModel implements NativeModel {
         await clientRequestOptions(this.#requestOptions, request),
       );
     const messageId = 'msg_chat_' + randomUUID();
+    const observeRaw = (
+      request as ModelRequest & { [rawProviderRequest]?: boolean }
+    )[rawProviderRequest];
     let responseId: string | undefined;
     let finishReason:
       | NonNullable<ChatCompletionChunk['choices'][number]['finish_reason']>
@@ -856,18 +873,37 @@ export class ChatCompletionsModel implements NativeModel {
       }
     >();
     for await (const chunk of chunks) {
-      request.signal.throwIfAborted();
-      if (responseId === undefined) {
+      const opening = responseId === undefined;
+      if (opening) {
         if (typeof chunk.id !== 'string' || !chunk.id.trim())
           throw new TypeError(
             'ChatCompletionsModel stream requires a response ID',
           );
         responseId = chunk.id;
-        yield { type: 'response.created', response: { id: responseId } };
       }
       if (chunk.id !== responseId)
         throw new TypeError('ChatCompletionsModel stream changed response ID');
-      if (chunk.usage != null) usage = chunk.usage;
+      if (chunk.usage != null) {
+        usage = chunk.usage;
+        const measured = chatCompletionUsage(usage);
+        // The borrowed iterator may fail or be cancelled during its next advance.
+        request.reportUsage?.({
+          inputTokens: measured.input_tokens,
+          cachedInputTokens: measured.cached_input_tokens,
+          cacheWriteInputTokens: 0,
+          outputTokens: measured.output_tokens,
+          reasoningOutputTokens: measured.reasoning_output_tokens,
+          totalTokens: measured.total_tokens,
+        });
+      }
+      request.signal.throwIfAborted();
+      if (observeRaw) {
+        const original = copyJsonValue(chunk) as JsonObject;
+        rawChatChunks.add(original);
+        yield original;
+      }
+      if (opening)
+        yield { type: 'response.created', response: { id: responseId } };
       if (chunk.choices.length === 0) continue;
       const [choice] = chunk.choices;
       if (chunk.choices.length !== 1 || choice.index !== 0)
@@ -1020,6 +1056,17 @@ export class ChatCompletionsModel implements NativeModel {
   }
 }
 
+function chatCompletionUsage(usage: NonNullable<ChatCompletion['usage']>) {
+  return {
+    input_tokens: usage.prompt_tokens ?? 0,
+    output_tokens: usage.completion_tokens ?? 0,
+    total_tokens: usage.total_tokens ?? 0,
+    cached_input_tokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
+    reasoning_output_tokens:
+      usage.completion_tokens_details?.reasoning_tokens ?? 0,
+  };
+}
+
 function chatCompletionResult(
   value: Pick<ChatCompletion, 'id' | 'choices' | 'usage'>,
   applyPatchWire: ApplyPatchWire | undefined,
@@ -1074,17 +1121,7 @@ function chatCompletionResult(
     );
   }
   const usage =
-    value.usage == null
-      ? undefined
-      : {
-          input_tokens: value.usage.prompt_tokens ?? 0,
-          output_tokens: value.usage.completion_tokens ?? 0,
-          total_tokens: value.usage.total_tokens ?? 0,
-          cached_input_tokens:
-            value.usage.prompt_tokens_details?.cached_tokens ?? 0,
-          reasoning_output_tokens:
-            value.usage.completion_tokens_details?.reasoning_tokens ?? 0,
-        };
+    value.usage == null ? undefined : chatCompletionUsage(value.usage);
   return { responseId: value.id, output, usage };
 }
 
