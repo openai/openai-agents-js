@@ -1,3 +1,4 @@
+import { NativeTurn, type NativeRunResult } from './native-turn';
 import { validatePrepareRequestCompatibility } from './opening-compatibility';
 import {
   captureHostedPromptReference,
@@ -26,7 +27,6 @@ import {
   modelAttemptTerminalError,
   releaseModelAttemptPayload,
   restoreModelUsageOffset,
-  type ModelAttemptState,
 } from './model-attempts';
 import { parseRequestAttempts, type RequestAttempts } from './request-attempts';
 import type { ResponsesCompaction } from './responses-compaction';
@@ -639,7 +639,8 @@ export function validateMaxModelSteps(
   return value;
 }
 
-interface OperationSelection {
+/** @internal */
+export interface OperationSelection {
   readonly modelOverride?: string;
   readonly modelSettingsOverride?: JsonObject;
   readonly retryPolicyOverride?: RetryPolicy | null;
@@ -1108,12 +1109,6 @@ interface SessionStartup {
   cause?: { value: unknown };
 }
 
-interface NativeRunResult {
-  finalOutput: string;
-  turnId: string;
-  usage: JsonValue | null;
-}
-
 export class TurnAborted extends NativeError {}
 export class StaleTurnError extends NativeError {}
 export class TurnNotSubmitted extends NativeError {
@@ -1282,63 +1277,6 @@ const clientSearchCatalogSource = Symbol('client tool search source');
 type ClientSearchCatalog = ToolCatalog & {
   readonly [clientSearchCatalogSource]: string;
 };
-
-class NativeTurn {
-  captureRequestAttempts = false;
-  requestAttemptsStarted = false;
-  borrowedRequestAttempts = false;
-  requestAttempts?: RequestAttempts;
-  clientSearchCatalogKeys?: Set<string>;
-  readonly guardrailResults: GuardrailRecord[] = [];
-  guardrailInput?: UserInput;
-  inputGuardrailsStarted = false;
-  inputGuardrailsTask?: Promise<void>;
-  parentTrace?: TraceContext;
-  readonly accepted = Promise.withResolvers<AcceptedSubmission>();
-  readonly completion = Promise.withResolvers<NativeRunResult>();
-  readonly controller = new AbortController();
-  mcpPublication?: Promise<void>;
-  readonly pending: NativeEvent[] = [];
-  readonly manualReplies = new Set<Promise<void>>();
-  readonly callbacks = new Set<Promise<void>>();
-  readonly toolInvocations = new Set<Promise<void>>();
-  readonly toolCallIds = new Set<string>();
-  readonly toolCleanupErrors: unknown[] = [];
-  readonly executing = new Set<string>();
-  tracing?: TraceCapture;
-  // Keep workflow ownership when a retained successor takes completion tracing.
-  issuedTracing?: TraceCapture;
-  selection?: OperationSelection;
-  writableRoots?: readonly string[];
-  preparation?: AbortController;
-  id: string | null = null;
-  usage: JsonValue | null = null;
-  modelAttempts?: ModelAttemptState;
-  tokenUsage: TokenUsage | null = null;
-  requests: TokenCount = 0;
-  missingUsageRequests: TokenCount = 0;
-  addUsage(
-    raw: JsonObject,
-    requests: TokenCount = 1,
-    missing: TokenCount = 0,
-  ): void {
-    addModelReportedUsage(this, raw, requests, missing);
-  }
-  failure: unknown;
-  nativeFailure?: NativeError;
-  constructor(
-    private readonly beforeWait: () => void,
-    usageParent?: NativeTurn,
-  ) {
-    if (usageParent) attachModelUsageSource(usageParent, this);
-    this.accepted.promise.catch(() => {});
-    this.completion.promise.catch(() => {});
-  }
-  wait(): Promise<NativeRunResult> {
-    this.beforeWait();
-    return afterSubmissionRetirement(this, this.completion.promise);
-  }
-}
 
 type Lifecycle =
   | { kind: 'idle' }
@@ -6022,8 +5960,9 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
-    const run = new NativeTurn(
+    const run: NativeTurn = new NativeTurn(
       () => this.assertCanWait(run),
+      (completion) => afterSubmissionRetirement(run, completion),
       this.repairUsageParent,
     );
     run.controller.signal.addEventListener(
@@ -6930,7 +6869,10 @@ export class Session<OutputT = string, Context = unknown> {
     let batch: string[] = [];
     let batchIndex = 0;
     let delivery: NativeCallbackDelivery | undefined;
+    const observeSandboxOperation =
+      this.options.environmentOwner?.observeSandboxOperation;
     try {
+      if (observeSandboxOperation) native._enable_sandbox_operations();
       while (this.isOpen && this.#native === native) {
         if (delivery && !delivery.claimed && !delivery.buffered)
           this.releaseCallbackDelivery(delivery);
@@ -6987,6 +6929,10 @@ export class Session<OutputT = string, Context = unknown> {
           continue;
         }
         if (!this.isOpen) return;
+        if (event.msg.type === '_sdk_sandbox_operation') {
+          observeSandboxOperation?.(event.msg);
+          continue;
+        }
         if (this.realtimeOwner?._ingest(event)) continue;
         const msg = event.msg;
         if (msg.type === 'token_count') {
