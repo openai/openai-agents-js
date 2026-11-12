@@ -1019,11 +1019,61 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       );
       expect(beforeComplete).toHaveBeenCalledTimes(1);
       expect(plain).toHaveBeenCalledTimes(2);
-      expect(open.mock.calls.length + reuse.mock.calls.length).toBeGreaterThan(
-        0,
-      );
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(reuse).not.toHaveBeenCalled();
+      expect(open.mock.contexts[0]).not.toBe(plain.mock.contexts[1]);
       expect(peer.generations).toHaveLength(3);
       await peer.generations[2]!.closed();
+      expect(peer.server.requests).toHaveLength(0);
+      expect(peer.failures).toEqual([]);
+      peer.server.assertExhausted();
+    }, 30_000);
+
+    it('keeps forced run settings outside a parked plain WSS Engine', async () => {
+      const peer = await plainWebsocketPeer();
+      await using provider = peer.provider;
+      const agent = new Agent({
+        instructions: 'Answer the request.',
+        model: 'gpt-5',
+        modelSettings: { reasoningEffort: 'low' },
+        provider,
+      });
+      const native = await binding();
+      const plain = vi.spyOn(native.Engine.prototype, '_plain_run');
+      const open = vi.spyOn(
+        native.Engine.prototype,
+        'start_replaceable_thread',
+      );
+      const reuse = vi.spyOn(native.Engine.prototype, '_private_start_thread');
+      const close = vi.spyOn(native.Engine.prototype, '_close_report');
+      await agent.run('first plain question');
+      await agent.run('adjacent plain question');
+      const forced = await agent.run('forced question', {
+        modelSettingsOverride: { reasoningEffort: 'high' },
+      });
+      const following = await agent.run('following plain question');
+      expect(forced.finalOutput).toBe('answer 3');
+      expect(following.finalOutput).toBe('answer 4');
+      expect(plain).toHaveBeenCalledTimes(3);
+      expect(plain.mock.contexts[1]).toBe(plain.mock.contexts[0]);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(reuse).not.toHaveBeenCalled();
+      const fallbackEngine = open.mock.contexts[0];
+      expect(fallbackEngine).not.toBe(plain.mock.contexts[1]);
+      expect(plain.mock.contexts[2]).not.toBe(fallbackEngine);
+      expect(
+        close.mock.contexts.filter((engine) => engine === fallbackEngine),
+      ).toHaveLength(1);
+      expect(peer.generations).toHaveLength(4);
+      expect(peer.generations[2]!.request).toMatchObject({
+        reasoning: { effort: 'high' },
+      });
+      expect(peer.generations[3]!.request).toMatchObject({
+        reasoning: { effort: 'low' },
+      });
+      for (const generation of peer.generations) {
+        await generation.closed();
+      }
       expect(peer.server.requests).toHaveLength(0);
       expect(peer.failures).toEqual([]);
       peer.server.assertExhausted();

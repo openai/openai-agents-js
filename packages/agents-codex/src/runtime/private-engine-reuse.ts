@@ -29,6 +29,7 @@ export interface PrivateRuntimeSlot {
 
 export interface PrivateRuntimeBorrow {
   readonly plainOnly?: boolean;
+  readonly refreshWebsocketTrust?: boolean;
   readonly concurrent?: boolean;
   invalidate?(): void;
   readonly done: boolean;

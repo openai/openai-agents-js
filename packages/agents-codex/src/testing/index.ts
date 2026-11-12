@@ -593,3 +593,19 @@ export type {
 } from './realtime';
 
 export { ScriptedModel, type ModelError } from './model';
+
+export {
+  InvalidScriptedSandboxStepError,
+  SandboxCallMatcherError,
+  UnexpectedSandboxCallError,
+  UnconsumedSandboxStepsError,
+  scriptedSandboxSession,
+} from '@openai/agents-core/testing';
+export type {
+  InvalidScriptedSandboxStepReason,
+  RecordedSandboxCall,
+  ScriptedSandboxCallFor,
+  ScriptedSandboxInput,
+  ScriptedSandboxMethod,
+  ScriptedSandboxSession,
+} from '@openai/agents-core/testing';

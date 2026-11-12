@@ -16,56 +16,89 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "node": {
+        "module-sync": "./dist/index.js"
+      },
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
     },
     "./model": {
       "types": "./dist/model.d.ts",
+      "node": {
+        "module-sync": "./dist/model.js"
+      },
       "require": "./dist/model.js",
       "import": "./dist/model.mjs"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
+      "node": {
+        "module-sync": "./dist/testing/index.js"
+      },
       "require": "./dist/testing/index.js",
       "import": "./dist/testing/index.mjs"
     },
     "./utils": {
       "types": "./dist/utils/index.d.ts",
+      "node": {
+        "module-sync": "./dist/utils/index.js"
+      },
       "require": "./dist/utils/index.js",
       "import": "./dist/utils/index.mjs"
     },
     "./utils/internal": {
       "types": "./dist/utils/internal.d.ts",
+      "node": {
+        "module-sync": "./dist/utils/internal.js"
+      },
       "require": "./dist/utils/internal.js",
       "import": "./dist/utils/internal.mjs"
     },
     "./extensions": {
       "types": "./dist/extensions/index.d.ts",
+      "node": {
+        "module-sync": "./dist/extensions/index.js"
+      },
       "require": "./dist/extensions/index.js",
       "import": "./dist/extensions/index.mjs"
     },
     "./sandbox": {
       "types": "./dist/sandbox/index.d.ts",
+      "node": {
+        "module-sync": "./dist/sandbox/index.js"
+      },
       "require": "./dist/sandbox/index.js",
       "import": "./dist/sandbox/index.mjs"
     },
     "./sandbox/local": {
       "types": "./dist/sandbox/local.d.ts",
+      "node": {
+        "module-sync": "./dist/sandbox/local.js"
+      },
       "require": "./dist/sandbox/local.js",
       "import": "./dist/sandbox/local.mjs"
     },
     "./sandbox/internal": {
       "types": "./dist/sandbox/internal.d.ts",
+      "node": {
+        "module-sync": "./dist/sandbox/internal.js"
+      },
       "require": "./dist/sandbox/internal.js",
       "import": "./dist/sandbox/internal.mjs"
     },
     "./sandbox/internal/process": {
       "types": "./dist/sandbox/internal/process.d.ts",
+      "node": {
+        "module-sync": "./dist/sandbox/internal/process.js"
+      },
       "require": "./dist/sandbox/internal/process.js",
       "import": "./dist/sandbox/internal/process.mjs"
     },
     "./types": {
       "types": "./dist/types/index.d.ts",
+      "node": {
+        "module-sync": "./dist/types/index.js"
+      },
       "require": "./dist/types/index.js",
       "import": "./dist/types/index.mjs"
     },
@@ -87,6 +120,7 @@
       },
       "node": {
         "types": "./dist/shims/shims-node.d.ts",
+        "module-sync": "./dist/shims/shims-node.js",
         "require": "./dist/shims/shims-node.js",
         "import": "./dist/shims/shims-node.mjs"
       },
@@ -112,6 +146,7 @@
       },
       "node": {
         "types": "./dist/shims/config-node.d.ts",
+        "module-sync": "./dist/shims/config-node.js",
         "require": "./dist/shims/config-node.js",
         "import": "./dist/shims/config-node.mjs"
       },
@@ -137,6 +172,7 @@
       },
       "node": {
         "types": "./dist/shims/platform-node.d.ts",
+        "module-sync": "./dist/shims/platform-node.js",
         "require": "./dist/shims/platform-node.js",
         "import": "./dist/shims/platform-node.mjs"
       },

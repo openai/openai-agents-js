@@ -42,6 +42,9 @@
     "./testing": {
       "node": {
         "types": "./dist/testing/index.d.ts",
+        "import": {
+          "module-sync": "./node/testing.mjs"
+        },
         "module-sync": "./dist/testing/index.js"
       },
       "import": {
