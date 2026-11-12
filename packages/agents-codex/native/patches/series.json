@@ -1015,7 +1015,11 @@
     {
       "path": "sdk-decision-handoff-admission.patch",
       "sha256": "c16299166bda18fd3d9cdcc0af0d0d9d5d9911246e8fe20b29d13cee12908450"
+    },
+    {
+      "path": "sdk-websocket-overload-classification.patch",
+      "sha256": "948693109cb29cd7a29c3b7e5cecd6329ae9e05e891ef3cf1ba56595250ee725"
     }
   ],
-  "result_tree": "29afd5086cf6622372e97bfa3ff0f1a8bbe52fd6"
+  "result_tree": "fe89d8f6792fc49c032a9d493ca94683099748d3"
 }
