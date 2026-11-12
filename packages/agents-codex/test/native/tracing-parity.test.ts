@@ -21,6 +21,7 @@ for (const mode of [
   ),
   'processors',
   'restore',
+  'restore-state-only',
   'retained',
   'model-preparation',
   'parent-policy',
