@@ -25,10 +25,13 @@ export type EnvironmentSource<Context = any> = (options: {
 export type DisposeGuard = (
   dispose: () => void | Promise<void>,
 ) => Promise<void>;
+type SandboxOperationObserver = (message: Record<string, unknown>) => void;
+
 interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
+  readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly skillLease?: SandboxSkillLease;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
@@ -47,6 +50,7 @@ export function createEnvironmentLease<Context>(
   sourceSignal?: AbortSignal,
   managedWorkspace?: ManagedWorkspaceBinding,
   workspaceInstructions?: string,
+  observeSandboxOperation?: SandboxOperationObserver,
   skillLease?: SandboxSkillLease,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
@@ -58,6 +62,7 @@ export function createEnvironmentLease<Context>(
     signal: sourceSignal,
     managedWorkspace,
     workspaceInstructions,
+    observeSandboxOperation,
     skillLease,
   };
   const close = () => {
@@ -114,6 +119,11 @@ export class EnvironmentAcquisition {
   /** @internal Immutable current resource text from this exact acquisition. */
   get workspaceInstructions(): string | undefined {
     return this.state?.workspaceInstructions;
+  }
+
+  /** @internal The exact provider lease supplies the sink namespace. */
+  get observeSandboxOperation(): SandboxOperationObserver | undefined {
+    return this.state?.observeSandboxOperation;
   }
 
   /** @internal Current resource authority, carried by this exact acquisition. */

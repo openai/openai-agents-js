@@ -21,6 +21,7 @@ Use this reference for package export maps, convenience-package re-exports, ESM/
 - Core and Realtime expose `_shims` conditionally for Node, browser, and workerd. Preserve the same interface across implementations even when context storage, event emitters, crypto, fetch, or MCP transports differ.
 - Browser event-emitter removal must remove the intended listener without collapsing duplicate registrations unexpectedly. Context-storage shims must keep trace context active across awaited and streamed work even when true `AsyncLocalStorage` is unavailable.
 - Keep workerd/browser package conditions aligned with bundler resolution. Test the condition that users actually import; a Node-only test does not validate a browser export.
+- Modern Node Core imports have been sharing the CommonJS graph under `dist/node` through `module-sync`. The ordered package builder has been packing emitted ESM leaves after both TypeScript targets, including initial watch builds and source edits. Legacy Node and non-Node conditions have been retaining the original files; dependencies and optional dynamic imports have been remaining external and lazy.
 
 ## Review Checklist
 
