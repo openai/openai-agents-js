@@ -1616,6 +1616,14 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.options.chatGPTPlan)
       throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('open Realtime on');
+    if (
+      [...this.profileRuntimes.values()].some(
+        (runtime) => Object.keys(runtime.profile.decisionHandoffs ?? {}).length,
+      )
+    )
+      throw new TypeError(
+        'DecisionHandoff supports text Agents; use realtimeHandoff for Realtime routing',
+      );
     // A rejected startup cannot return its owner as a cleanup retry handle.
     // Keep it installed until this explicit retry joins its retained cleanup.
     if (this.realtimeOwner?._startupFailed) await this.realtimeOwner.close();
@@ -2727,21 +2735,9 @@ export class Session<OutputT = string, Context = unknown> {
     NativeTurn,
     Turn<unknown, string | null>
   >();
-  private readonly pendingRoots = new QueuedRoots((run) => {
-    // Rejected queue entries have not entered native dispatch. Preserve the
-    // native snapshot while reporting their known zero logical submissions.
-    if (
-      run.captureRequestAttempts &&
-      run.id === null &&
-      !run.requestAttemptsStarted
-    )
-      run.submissionRequestAttempts = Object.freeze({
-        availability: 'complete',
-        counts: Object.freeze([]),
-        borrowedRequestsUnavailable: false,
-      });
-    this.finishObservation(run);
-  });
+  private readonly pendingRoots = new QueuedRoots((run) =>
+    this.finishObservation(run),
+  );
   private readonly decodedOutputs = new WeakMap<NativeTurn, unknown>();
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,
@@ -4695,6 +4691,17 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private finishObservation(run: NativeTurn): void {
+    // Preserve the native snapshot; only settle known zero before dispatch.
+    if (
+      run.captureRequestAttempts &&
+      run.id === null &&
+      !run.requestAttemptsStarted
+    )
+      run.submissionRequestAttempts ??= Object.freeze({
+        availability: 'complete',
+        counts: Object.freeze([]),
+        borrowedRequestsUnavailable: false,
+      });
     run.guardrailInput = undefined;
     releaseModelAttemptPayload(run);
     submissions.get(run)!.observation = 'ended';

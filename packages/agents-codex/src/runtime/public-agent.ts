@@ -2098,8 +2098,8 @@ export function captureAgentProfiles<Context, Output>(
   captureProvider = true,
   idPrefix = 'agent_',
   rootPromptControls?: JsonObject,
+  realtimeGraph = hasRealtimeAgentConfiguration(rootDeclaration),
 ): readonly CapturedAgentProfile<Context, Output>[] {
-  const realtimeGraph = hasRealtimeAgentConfiguration(rootDeclaration);
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
     // Validate actual retries, then compare only the shared wire encoding.
@@ -2424,7 +2424,14 @@ export function captureRealtimeAgentGraph(
     instructions: candidate.instructions,
     provider: opening.provider,
   });
-  const profiles = captureAgentProfiles(candidate, declaration, true, idPrefix);
+  const profiles = captureAgentProfiles(
+    candidate,
+    declaration,
+    true,
+    idPrefix,
+    undefined,
+    true,
+  );
   return captureProfileRuntimes(
     profiles,
     captureTools(splitToolDeclarations(declaration.tools).tools),

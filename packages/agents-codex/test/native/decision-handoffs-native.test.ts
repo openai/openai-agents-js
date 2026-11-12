@@ -7,7 +7,75 @@ import {
 } from '../../src';
 import type { JsonObject } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { ScriptedRealtimeAdapter } from '../../src/testing';
 afterEach(() => ModelServer.closeAll());
+
+it('rejects Realtime startup on a text Decisions graph before adapter connection', async () => {
+  await using provider = new NativeProvider({ apiKey: 'synthetic' });
+  await using session = await new Agent({
+    instructions: 'Text source',
+    provider,
+    handoffs: [
+      new DecisionHandoff({
+        name: 'route',
+        description: 'Route',
+        question: 'Where?',
+        targets: { one: new Agent({ instructions: 'One' }) },
+      }),
+    ],
+  }).session();
+  const adapter = new ScriptedRealtimeAdapter([], {
+    connectError: new Error('Unexpected adapter connection'),
+  });
+  await expect(
+    session.realtime({ model: 'fixture-realtime', adapter }),
+  ).rejects.toThrow('supports text Agents');
+  expect(adapter.connectCalls).toHaveLength(0);
+});
+
+it('rejects Decisions during Realtime graph updates before provider configuration', async () => {
+  await using provider = new NativeProvider({ apiKey: 'synthetic' });
+  await using session = await new Agent({
+    instructions: 'Voice source',
+    provider,
+  }).session();
+  const adapter = new ScriptedRealtimeAdapter([
+    {
+      expect: 'session.update',
+      emit: (frame) => [
+        {
+          type: 'session.updated',
+          session: { ...(frame.session as JsonObject), id: 'fixture' },
+        },
+      ],
+    },
+  ]);
+  const voice = await session.realtime({ model: 'fixture-realtime', adapter });
+  try {
+    const candidate = new Agent({
+      instructions: 'Candidate',
+      provider,
+      handoffs: [
+        new DecisionHandoff({
+          name: 'route',
+          description: 'Route',
+          question: 'Where?',
+          targets: { one: new Agent({ instructions: 'One' }) },
+        }),
+      ],
+    });
+    await expect(voice.updateAgent(candidate)).rejects.toThrow(
+      'supports text Agents',
+    );
+    expect(
+      adapter.sentEvents.filter((frame) => frame.type === 'session.update'),
+    ).toHaveLength(1);
+  } finally {
+    await voice.close();
+  }
+  adapter.assertComplete();
+  adapter.assertClosed();
+});
 async function providerFor(server: ModelServer) {
   const config = await server.config();
   return new NativeProvider({
