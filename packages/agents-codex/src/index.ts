@@ -508,3 +508,11 @@ export type {
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
 
 export { Handoff } from './runtime/handoffs';
+export {
+  ResponsesCompaction,
+  responsesCompaction,
+} from './runtime/responses-compaction';
+export type {
+  ResponsesCompactionOptions,
+  ResponsesCompactionContext,
+} from './runtime/responses-compaction';
