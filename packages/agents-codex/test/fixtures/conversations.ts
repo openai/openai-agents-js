@@ -13,6 +13,7 @@ export function conversationsClientFixture() {
   const state = {
     items: [] as JsonObject[],
     creates: 0,
+    pageSize: 2,
     requests: [] as { method: string; url: URL; body: any }[],
     batches: [] as JsonObject[][],
     failBatch: undefined as number | undefined,
@@ -48,7 +49,7 @@ export function conversationsClientFixture() {
         if (after !== null)
           ordered = ordered.slice(ordered.findIndex((i) => i.id === after) + 1);
         const included = new Set(url.searchParams.getAll('include[]'));
-        const page = ordered.slice(0, 2).map((original) => {
+        const page = ordered.slice(0, state.pageSize).map((original) => {
           const item = structuredClone(original);
           if (
             item.type === 'message' &&

@@ -135,3 +135,37 @@ it('rejects reentrant transport calls while queuing external and retired work', 
   expect(await retired).toEqual([]);
   expect(state.creates).toBe(1);
 });
+
+it.each(['records', 'bytes'] as const)(
+  'bounds run imports by %s before environment acquisition',
+  async (kind) => {
+    const { client, state } = fixture();
+    state.pageSize = 100;
+    state.items =
+      kind === 'records'
+        ? Array.from({ length: 4097 }, (_, i) => message(i))
+        : [
+            {
+              ...message(0),
+              content: [
+                { type: 'input_text', text: 'é'.repeat(4 * 1024 * 1024) },
+              ],
+            },
+          ];
+    const history = new ConversationsHistory(client, {
+      conversationId: 'conv_existing',
+    });
+    let acquisitions = 0;
+    const agent = new Agent({ instructions: 'Answer briefly.' });
+    await expect(
+      history.run(agent, 'not admitted', {
+        environment: async () => {
+          acquisitions++;
+          throw new Error('unexpected acquisition');
+        },
+      }),
+    ).rejects.toThrow(kind === 'records' ? '4096 records' : '8 MiB');
+    expect(acquisitions).toBe(0);
+    expect(await history.getItems(1)).toEqual(state.items.slice(-1));
+  },
+);

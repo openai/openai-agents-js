@@ -1,8 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type OpenAI from 'openai';
 import type { JsonObject } from './binding';
-import type { Agent } from './public-agent';
-import type { UserInput } from './input';
+import { openOwnedHistorySession, type Agent } from './public-agent';
+import { nativeInput, type UserInput } from './input';
+import { RunCleanupError } from './native-error';
 import { Session, type Completed } from './session';
 
 /** An uncertain append, retaining public items for explicit reconciliation. */
@@ -78,14 +79,16 @@ export class ConversationsHistory {
     return this.#serial(() => this.#id());
   }
 
-  async #getItems(limit?: number): Promise<JsonObject[]> {
+  async #getItems(limit?: number, forRun = false): Promise<JsonObject[]> {
     const conversationId = await this.#id();
     if (limit === 0) return [];
     const items: JsonObject[] = [];
+    let bytes = 2;
     for await (const item of this.#client.conversations.items.list(
       conversationId,
       {
         order: limit === undefined ? 'asc' : 'desc',
+        ...(forRun ? { limit: 100 } : {}),
         include: [
           'reasoning.encrypted_content',
           'message.input_image.image_url',
@@ -93,6 +96,15 @@ export class ConversationsHistory {
         ],
       },
     )) {
+      if (forRun) {
+        if (items.length >= 4096)
+          throw new RangeError('Conversation import exceeds 4096 records');
+        bytes +=
+          Buffer.byteLength(JSON.stringify(item), 'utf8') +
+          (items.length ? 1 : 0);
+        if (bytes > 8 * 1024 * 1024)
+          throw new RangeError('Conversation import exceeds 8 MiB');
+      }
       items.push(structuredClone(item) as unknown as JsonObject);
       if (limit !== undefined && items.length === limit) break;
     }
@@ -158,9 +170,10 @@ export class ConversationsHistory {
     input: UserInput,
     ...options: Parameters<Agent<Context, Output>['session']>
   ): Promise<Completed<Output>> {
-    const supplied = options[0];
+    const supplied = { ...options[0] };
+    const capturedInput = structuredClone(input);
+    const preparedInput = nativeInput(capturedInput);
     if (
-      supplied &&
       ['state', 'resume', 'storage', 'initialMessages'].some(
         (key) => (supplied as Record<string, unknown>)[key] !== undefined,
       )
@@ -169,41 +182,70 @@ export class ConversationsHistory {
         'Conversations history requires a fresh native Session history owner',
       );
     return this.#serial(async () => {
-      try {
-        await using session = await agent.session(...options);
-        const owner = session as Session<Output, Context>;
-        this.#activeSession = owner as Session<unknown, unknown>;
-        const items = await this.#getItems();
-        const before = await session.historySnapshot();
-        if (items.length)
-          await session.transactHistory({
-            expectedRevision: before.revision,
-            keep: 0,
-            items,
-          });
-        const loaded = await session.historySnapshot();
-        let result: Completed<Output>;
+      const items = await this.#getItems(undefined, true);
+      const session = await openOwnedHistorySession(
+        agent,
+        preparedInput,
+        ...([supplied] as Parameters<Agent<Context, Output>['session']>),
+      );
+      this.#activeSession = session as Session<unknown, unknown>;
+      let result: Completed<Output> | undefined;
+      const closeOwned = async (failure?: { error: unknown }) => {
         try {
-          const turn = await session.submit(input);
-          result = await turn.wait();
-        } catch (error) {
+          await session.close();
+        } catch (cleanupError) {
+          const error = new RunCleanupError(
+            failure ? [failure.error, cleanupError] : [cleanupError],
+            'Conversations run cleanup is incomplete; retry cleanup.close without repeating the run',
+            () => session.close(),
+            { cause: failure ? failure.error : cleanupError },
+          );
+          if (result !== undefined) error.result = result;
+          throw error;
+        }
+      };
+      try {
+        try {
+          const before = await session.historySnapshot();
+          if (items.length)
+            await session.transactHistory({
+              expectedRevision: before.revision,
+              keep: 0,
+              items,
+            });
+          const loaded = await session.historySnapshot();
+          try {
+            await session._run(
+              preparedInput,
+              undefined,
+              undefined,
+              undefined,
+              capturedInput,
+            );
+            result = await session.wait();
+          } catch (error) {
+            try {
+              await this.#appendNativeSuffix(session, loaded.total);
+            } catch (writeError) {
+              throw new AggregateError(
+                [error, writeError],
+                'Native run and Conversations history append failed',
+                { cause: error },
+              );
+            }
+            throw error;
+          }
           try {
             await this.#appendNativeSuffix(session, loaded.total);
-          } catch (writeError) {
-            throw new AggregateError(
-              [error, writeError],
-              'Native run and Conversations history append failed',
-              { cause: error },
-            );
+          } catch (error) {
+            if (error instanceof ConversationsWriteError) error.result = result;
+            throw error;
           }
-          throw error;
-        }
-        try {
-          await this.#appendNativeSuffix(session, loaded.total);
         } catch (error) {
-          if (error instanceof ConversationsWriteError) error.result = result;
+          await closeOwned({ error });
           throw error;
         }
+        await closeOwned();
         return result;
       } finally {
         this.#activeSession = undefined;

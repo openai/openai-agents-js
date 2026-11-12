@@ -1,9 +1,12 @@
-import { afterEach, expect, it } from 'vitest';
+import { Session } from '../../src/runtime/session';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
   ConversationsHistory,
   NativeProvider,
+  InteractionRequired,
+  RunCleanupError,
   ToolOutput,
   tool,
 } from '../../src';
@@ -170,4 +173,124 @@ it('preserves accepted tool receipts after model failure without rerunning effec
   expect(JSON.stringify(server.requests[2])).toContain(
     'settled before failure',
   );
+});
+
+it('captures structured input before waiting behind queued history work', async () => {
+  const { client, state } = conversationsClientFixture();
+  const history = new ConversationsHistory(client);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  state.beforeCreate = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const first = history.getConversationId();
+  await entered.promise;
+  const server = new ModelServer([[message('captured answer')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-conversations',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({ provider, instructions: 'Answer briefly.' });
+  const input = {
+    role: 'user' as const,
+    content: [{ type: 'input_text' as const, text: 'captured before queue' }],
+  };
+  const pending = history.run(agent, input);
+  input.content[0].text = 'caller mutation after queue';
+  release.resolve();
+  await first;
+  expect((await pending).finalOutput).toBe('captured answer');
+  expect(JSON.stringify(server.requests)).toContain('captured before queue');
+  expect(JSON.stringify(server.requests)).not.toContain(
+    'caller mutation after queue',
+  );
+  expect(JSON.stringify(state.items)).toContain('captured before queue');
+});
+
+it('fails unattended approvals without executing or holding the history queue', async () => {
+  const { client } = conversationsClientFixture();
+  const history = new ConversationsHistory(client);
+  const server = new ModelServer([
+    [call('approval_only', {}, { callId: 'unattended-approval' })],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-conversations',
+    supportsWebsockets: false,
+  });
+  let effects = 0;
+  const agent = new Agent({
+    provider,
+    instructions: 'Call the tool.',
+    tools: [
+      tool({
+        name: 'approval_only',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: () => {
+          effects++;
+          return 'must not execute';
+        },
+      }),
+    ],
+  });
+  const failure = await history
+    .run(agent, 'needs approval')
+    .catch((error) => error);
+  expect(
+    failure instanceof InteractionRequired ||
+      failure.cause instanceof InteractionRequired,
+  ).toBe(true);
+  expect(effects).toBe(0);
+  expect(server.requests).toHaveLength(1);
+  await expect(history.getItems()).resolves.toBeInstanceOf(Array);
+});
+
+it('retains completed output and retryable cleanup without repeating remote work', async () => {
+  const { client, state } = conversationsClientFixture();
+  const history = new ConversationsHistory(client);
+  const server = new ModelServer([[message('already committed')]]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-conversations',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({ provider, instructions: 'Answer briefly.' });
+  const close = Session.prototype.close;
+  let fail = true;
+  const spy = vi.spyOn(Session.prototype, 'close').mockImplementation(function (
+    this: Session,
+    ...args
+  ) {
+    if (fail) {
+      fail = false;
+      return Promise.reject(new Error('retryable cleanup'));
+    }
+    return Reflect.apply(close, this, args);
+  });
+  let failure: RunCleanupError | undefined;
+  try {
+    const caught = await history
+      .run(agent, 'one request')
+      .catch((error) => error);
+    expect(caught).toBeInstanceOf(RunCleanupError);
+    failure = caught;
+    expect(failure!.result?.finalOutput).toBe('already committed');
+    expect(state.items).toHaveLength(2);
+    await expect(provider.close()).rejects.toThrow('open or opening');
+    await failure!.cleanup.close();
+    expect(server.requests).toHaveLength(1);
+    expect(state.batches).toHaveLength(1);
+  } finally {
+    spy.mockRestore();
+    await failure?.cleanup.close();
+  }
 });

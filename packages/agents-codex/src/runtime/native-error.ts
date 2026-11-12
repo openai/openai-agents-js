@@ -3,7 +3,7 @@ import { encode, type JsonObject } from './binding';
 import type { GuardrailRecord } from './guardrails';
 import type { UserInput } from './input';
 import type { Agent } from './public-agent';
-import type { ProducedItem } from './session';
+import type { Completed, ProducedItem } from './session';
 
 /**
  * A one-shot run and its owned resource cleanup failed.
@@ -12,6 +12,8 @@ import type { ProducedItem } from './session';
  * The original failure remains in cause and both failures remain in errors.
  */
 export class RunCleanupError extends AggregateError {
+  /** An owning wrapper has been retaining its completed result here. */
+  declare result?: Completed<unknown>;
   readonly cleanup: { close(): Promise<void> };
 
   constructor(
