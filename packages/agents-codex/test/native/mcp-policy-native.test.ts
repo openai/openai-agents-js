@@ -44,8 +44,17 @@ import {
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
+const callbackTraceEvents: unknown[] = [];
 beforeAll(async () => {
-  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+  await telemetry.configure({
+    traceProcessors: [
+      {
+        onEvent(event) {
+          callbackTraceEvents.push(event);
+        },
+      },
+    ],
+  });
 });
 
 afterAll(async () => {
@@ -2747,5 +2756,109 @@ it.each([true, false])(
     );
     expect(remote.effects.map((effect) => effect.name)).toEqual(['a.b']);
     expect(model.requests).toHaveLength(3);
+  },
+);
+
+for (const asynchronous of [false, true]) {
+  it.each(['transform', 'extract', 'metadata'] as const)(
+    `retains the selected %s callback failure as a private cause (async=${asynchronous})`,
+    async (phase) => {
+      const privateResult = 'SYNTHETIC_PRIVATE_MCP_RESULT';
+      const selected = new Error('SYNTHETIC_SELECTED_CALLBACK_FAILURE');
+      await telemetry.forceFlush();
+      callbackTraceEvents.length = 0;
+      const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map(
+        (method) => vi.spyOn(console, method).mockImplementation(() => {}),
+      );
+      onTestFinished(() => logs.forEach((log) => log.mockRestore()));
+      const fail = (): never => {
+        throw selected;
+      };
+      const callback = asynchronous ? async () => fail() : fail;
+      const remote = await peer('lookup', undefined, {
+        content: [{ type: 'text', text: privateResult }],
+        isError: true,
+      });
+      const descriptor = new HttpMCP({
+        name: 'fixture',
+        url: remote.url,
+        approvalMode: 'preapproved',
+        tools: ['lookup'],
+        ...(phase === 'transform' ? { transformResult: callback } : {}),
+        ...(phase === 'extract' ? { extractApplicationData: callback } : {}),
+        ...(phase === 'metadata' ? { requestMetadata: callback } : {}),
+      });
+      const { session, model } = await open(
+        descriptor,
+        [
+          [
+            call(
+              'lookup',
+              { key: 'read' },
+              { namespace: 'mcp__fixture', callId: 'cause-call' },
+            ),
+          ],
+        ],
+        false,
+        false,
+        { name: 'Selected MCP callback', includeSensitiveData: true },
+      );
+      const turn = await session.submit('Read one record.');
+      const failure = await turn.wait().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(NativeError);
+      expect((failure as NativeError).message).toBe(
+        'Native MCP result policy failed',
+      );
+      expect((failure as NativeError).cause).toBe(selected);
+      await expect(turn.wait()).rejects.toBe(failure);
+      expect(remote.effects).toHaveLength(phase === 'metadata' ? 0 : 1);
+      expect(model.requests).toHaveLength(1);
+      const items = [];
+      for await (const item of session.items()) items.push(item);
+      const channels = [
+        JSON.stringify(model.requests),
+        JSON.stringify(items),
+        JSON.stringify(await session.saveState()),
+      ];
+      await session.close();
+      await telemetry.forceFlush();
+      channels.push(
+        JSON.stringify(callbackTraceEvents),
+        JSON.stringify(logs.map((log) => log.mock.calls)),
+      );
+      for (const channel of channels) {
+        expect(channel).not.toContain(privateResult);
+        expect(channel).not.toContain(selected.message);
+      }
+    },
+  );
+}
+
+it.each(['transform', 'extract', 'metadata'] as const)(
+  'keeps malformed %s callback results separate from selected exceptions',
+  async (phase) => {
+    const remote = await peer();
+    const invalid = () => ({ unsupported: undefined }) as unknown as JsonObject;
+    const descriptor = new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      approvalMode: 'preapproved',
+      tools: ['lookup'],
+      ...(phase === 'transform' ? { transformResult: invalid } : {}),
+      ...(phase === 'extract' ? { extractApplicationData: invalid } : {}),
+      ...(phase === 'metadata' ? { requestMetadata: invalid } : {}),
+    });
+    const { session, model } = await open(descriptor, [[lookup()]]);
+    const failure = await (
+      await session.submit('Read.')
+    )
+      .wait()
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(NativeError);
+    expect((failure as NativeError).message).toBe(
+      'Native MCP result policy failed',
+    );
+    expect(Object.hasOwn(failure as NativeError, 'cause')).toBe(false);
+    expect(model.requests).toHaveLength(1);
   },
 );
