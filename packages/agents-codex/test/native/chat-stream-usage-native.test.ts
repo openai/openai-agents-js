@@ -465,3 +465,76 @@ it('joins borrowed Chat cleanup and drops a cancelled tool suffix', async () => 
   expect(cleaned).toBe(true);
   expect(effects).toBe(0);
 }, 20_000);
+
+it.each([false, true])(
+  'keeps Chat usage in normalized counters with stream=%s',
+  async (stream) => {
+    const usage = {
+      prompt_tokens: 5,
+      completion_tokens: 2,
+      total_tokens: 7,
+    };
+    const client = {
+      chat: {
+        completions: {
+          create() {
+            if (stream) {
+              return (async function* () {
+                yield {
+                  id: 'chat-usage-fixture',
+                  object: 'chat.completion.chunk',
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { role: 'assistant', content: 'Native Chat' },
+                      finish_reason: 'stop',
+                    },
+                  ],
+                };
+                yield {
+                  id: 'chat-usage-fixture',
+                  object: 'chat.completion.chunk',
+                  choices: [],
+                  usage,
+                };
+              })();
+            }
+            return Promise.resolve({
+              id: 'chat-usage-fixture',
+              object: 'chat.completion',
+              choices: [
+                {
+                  index: 0,
+                  message: { role: 'assistant', content: 'Native Chat' },
+                  finish_reason: 'stop',
+                },
+              ],
+              usage,
+            });
+          },
+        },
+      },
+    };
+    await using provider = new NativeProvider({
+      modelBackend: new ChatCompletionsModel(client, 'chat-model', {
+        stream,
+        includeUsage: stream,
+      }),
+    });
+    const result = await new Agent({
+      instructions: 'Answer.',
+      model: 'fixture-stream-model',
+      provider,
+    }).run('Begin.', { returnRawUsage: true });
+
+    expect(result.finalOutput).toBe('Native Chat');
+    expect(result.runUsage).toMatchObject({
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 2,
+      totalTokens: 7,
+    });
+    expect(result.rawUsage).toEqual([]);
+  },
+  20_000,
+);
