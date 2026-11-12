@@ -1098,8 +1098,15 @@ pub(super) struct ModelReply {
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
     #[serde(default)]
+    received_cache_write_usage: Option<ReceivedCacheWriteUsage>,
+    #[serde(default)]
     raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
+#[derive(Deserialize)]
+struct ReceivedCacheWriteUsage {
+    count: Option<i64>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OriginalResponsesUsage {
@@ -1247,7 +1254,16 @@ impl PythonTools {
                                 status:
                                     codex_protocol::protocol::ResponseObservationStatus::Completed,
                                 incomplete_reason: None,
-                                usage: None,
+                                usage: reply.received_cache_write_usage.map(|received| {
+                                    codex_protocol::protocol::ReceivedResponseUsage {
+                                        input_tokens: None,
+                                        cached_input_tokens: None,
+                                        cache_write_input_tokens: received.count,
+                                        output_tokens: None,
+                                        reasoning_output_tokens: None,
+                                        total_tokens: None,
+                                    }
+                                }),
                             },
                         )),
                     );

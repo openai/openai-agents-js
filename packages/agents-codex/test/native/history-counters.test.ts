@@ -517,6 +517,90 @@ describe('recorded response observations', () => {
     ]);
   });
 
+  it('keeps empty received usage for a genuine no-ID direct observation', () => {
+    const turn = project([
+      observed('direct-empty', {}, { response_id: null }),
+      accounting('direct-empty'),
+    ]);
+    expect(turn.responses?.[0]).toMatchObject({ responseId: null, usage: {} });
+    expect(turn.usage?.inputTokensDetails).not.toHaveProperty(
+      'cacheWriteTokens',
+    );
+    expect(
+      recordedTurnFromWire(recordedTurnToWire(turn)).responses?.[0].usage,
+    ).toEqual({});
+  });
+
+  it.each([undefined, 0, 4])(
+    'retains borrowed counter availability without inventing a provider ID: %s',
+    (count) => {
+      const normalized = accounting('borrowed-availability');
+      normalized.payload.usage = { cache_write_input_tokens: count ?? 0 };
+      normalized.payload.turn_token_usage = {
+        cache_write_input_tokens: count ?? 0,
+      };
+      const turn = project([
+        observed(
+          'borrowed-availability',
+          count === undefined ? {} : { cache_write_input_tokens: count },
+          { response_id: null },
+        ),
+        normalized,
+      ]);
+      expect(turn.usage).not.toBeNull();
+      expect(turn.usage?.inputTokensDetails.cacheWriteTokens).toBe(count);
+      expect(turn.responses?.[0].responseId).toBeNull();
+      expect(turn.responses?.[0].usage).toEqual(
+        count === undefined
+          ? {}
+          : { inputTokensDetails: { cacheWriteTokens: count } },
+      );
+      const restored = recordedTurnFromWire(recordedTurnToWire(turn));
+      expect(restored.responses?.[0].usage).toEqual(turn.responses?.[0].usage);
+      expect(restored.usage?.inputTokensDetails.cacheWriteTokens).toBe(count);
+    },
+  );
+
+  it.each([true, false])(
+    'withholds a borrowed mixed total when the omitted peer is first: %s',
+    (omittedFirst) => {
+      const first = accounting('first-borrowed');
+      const second = accounting('second-borrowed');
+      first.payload.usage = { cache_write_input_tokens: omittedFirst ? 0 : 2 };
+      first.payload.turn_token_usage = {
+        cache_write_input_tokens: omittedFirst ? 0 : 2,
+      };
+      second.payload.usage = { cache_write_input_tokens: omittedFirst ? 2 : 0 };
+      second.payload.turn_token_usage = { cache_write_input_tokens: 2 };
+      const turn = project([
+        observed(
+          'first-borrowed',
+          omittedFirst ? {} : { cache_write_input_tokens: 2 },
+          { response_id: null },
+        ),
+        first,
+        observed(
+          'second-borrowed',
+          omittedFirst ? { cache_write_input_tokens: 2 } : {},
+          { response_id: null },
+        ),
+        second,
+      ]);
+      expect(turn.usage).not.toBeNull();
+      expect(turn.usage?.inputTokensDetails).not.toHaveProperty(
+        'cacheWriteTokens',
+      );
+      expect(turn.responses).toHaveLength(2);
+      expect(
+        turn.responses?.every((response) => response.responseId === null),
+      ).toBe(true);
+      expect(
+        recordedTurnFromWire(recordedTurnToWire(turn)).usage
+          ?.inputTokensDetails,
+      ).not.toHaveProperty('cacheWriteTokens');
+    },
+  );
+
   it('keeps received cache-write availability through normalized totals and portable history', () => {
     for (const cacheWrite of [undefined, 0, 4]) {
       const normalized = accounting('availability');
