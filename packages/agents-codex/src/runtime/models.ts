@@ -332,7 +332,22 @@ function openAIRetryAdvice({
     return { suggested: true };
   return undefined;
 }
-/** An injected async Chat Completions client; Core continues tools and conversation history. */
+function chatApplyPatchInput(argumentsText: unknown): string {
+  if (typeof argumentsText !== 'string') return '';
+  try {
+    const envelope = JSON.parse(argumentsText) as
+      { patch?: unknown } | string | null;
+    if (typeof envelope === 'string') return envelope;
+    return typeof envelope?.patch === 'string' ? envelope.patch : '';
+  } catch {
+    return argumentsText;
+  }
+}
+
+/**
+ * An injected async Chat Completions client. Core owns tool execution and history.
+ * Native workspace ApplyPatch uses a function declaration on the provider wire.
+ */
 export class ChatCompletionsModel implements NativeModel {
   readonly #promptCacheKey: string | undefined;
   readonly #requestOptions: CapturedRequestOptions;
@@ -353,6 +368,8 @@ export class ChatCompletionsModel implements NativeModel {
   async complete(request: ModelRequest): Promise<ModelResponse> {
     const messages: Record<string, unknown>[] = [];
     const nativeTools = [...((request.body.tools ?? []) as JsonObject[])];
+    const applyPatchCalls = new Set<string>();
+    let applyPatchOffered = false;
     for (const raw of request.body.input as JsonObject[]) {
       if (raw.type === 'additional_tools') {
         nativeTools.push(...(raw.tools as JsonObject[]));
@@ -401,7 +418,10 @@ export class ChatCompletionsModel implements NativeModel {
             ...content,
           ];
         else messages.push({ role: raw.role, content });
-      } else if (raw.type === 'function_call') {
+      } else if (
+        raw.type === 'function_call' ||
+        (raw.type === 'custom_tool_call' && raw.name === 'apply_patch')
+      ) {
         if (raw.namespace != null && raw.namespace !== 'functions')
           throw new TypeError(
             'ChatCompletionsModel supports the default function namespace',
@@ -415,12 +435,24 @@ export class ChatCompletionsModel implements NativeModel {
           string,
           unknown
         >[];
+        if (raw.type === 'custom_tool_call')
+          applyPatchCalls.add(raw.call_id as string);
         calls.push({
           id: raw.call_id,
           type: 'function',
-          function: { name: raw.name, arguments: raw.arguments },
+          function: {
+            name: raw.name,
+            arguments:
+              raw.type === 'custom_tool_call'
+                ? JSON.stringify({ patch: raw.input })
+                : raw.arguments,
+          },
         });
-      } else if (raw.type === 'function_call_output') {
+      } else if (
+        raw.type === 'function_call_output' ||
+        (raw.type === 'custom_tool_call_output' &&
+          applyPatchCalls.has(raw.call_id as string))
+      ) {
         const output = raw.output as string | JsonObject[];
         if (
           typeof output !== 'string' &&
@@ -463,6 +495,31 @@ export class ChatCompletionsModel implements NativeModel {
           throw new TypeError(
             'Chat adapters support the default function namespace',
           );
+        if (type === 'custom' && tool.name === 'apply_patch') {
+          applyPatchOffered = true;
+          return {
+            type: 'function',
+            function: {
+              name: 'apply_patch',
+              description: 'Apply a patch to files in the workspace.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  patch: {
+                    type: 'string',
+                    description:
+                      'A patch between *** Begin Patch and *** End Patch. ' +
+                      'Use *** Add File:, *** Update File:, or *** Delete File: headers, ' +
+                      'and *** Move to: within an update to rename a file.',
+                  },
+                },
+                required: ['patch'],
+                additionalProperties: false,
+              },
+              strict: true,
+            },
+          };
+        }
         if (type !== 'function')
           throw new TypeError(
             'ChatCompletionsModel supports native function tools',
@@ -565,16 +622,25 @@ export class ChatCompletionsModel implements NativeModel {
       );
     if ('max_output_tokens' in request.body)
       options.max_completion_tokens = request.body.max_output_tokens;
-    if (options.tool_choice != null && typeof options.tool_choice === 'object')
+    if (
+      options.tool_choice != null &&
+      typeof options.tool_choice === 'object'
+    ) {
+      const choice = options.tool_choice as JsonObject;
+      const patchChoice =
+        applyPatchOffered &&
+        choice.type === 'custom' &&
+        choice.name === 'apply_patch';
       options.tool_choice = {
         type: 'function',
         function: {
           name: selectedFunctionName(
-            options.tool_choice,
+            patchChoice ? { ...choice, type: 'function' } : choice,
             tools.map((tool: any) => tool.function.name),
           ),
         },
       };
+    }
     if (tools.length) options.tools = tools;
     else {
       delete options.tool_choice;
@@ -626,6 +692,15 @@ export class ChatCompletionsModel implements NativeModel {
         throw new TypeError(
           'ChatCompletionsModel received an unsupported tool call',
         );
+      if (applyPatchOffered && call.function.name === 'apply_patch') {
+        output.push({
+          type: 'custom_tool_call',
+          call_id: call.id,
+          name: 'apply_patch',
+          input: chatApplyPatchInput(call.function.arguments),
+        });
+        continue;
+      }
       output.push({
         type: 'function_call',
         call_id: call.id,
