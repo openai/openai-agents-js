@@ -1033,7 +1033,7 @@ function validateCheckpointTree(
 }
 export type SessionState = z.infer<typeof sessionStateSchema>;
 
-/** Read the saved current anchor as detached data for explicit restore authorization. */
+/** Untrusted saved anchor data; independent application authorization required before restore. */
 export function getProviderHistory(
   state: SessionState,
 ): ProviderHistory | undefined {

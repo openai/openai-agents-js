@@ -14,6 +14,7 @@ import {
   tool,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
+import { jsonObject } from '../../src/runtime/binding';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 const fronts: Server[] = [];
@@ -850,16 +851,26 @@ nativeIt(
     await (await source.submit('Before.')).wait();
     const state = await source.saveState();
     await source.close();
+    // Application-owned authorization, independent of the imported checkpoint.
+    const authorized = { type: 'previous_response' as const, id: 'response-1' };
     const selected = getProviderHistory(state);
-    expect(selected).toEqual({ type: 'previous_response', id: 'response-1' });
+    expect(selected).toEqual(authorized);
     (selected as { id: string }).id = 'modified';
     expect(getProviderHistory(state)).toEqual({
       type: 'previous_response',
       id: 'response-1',
     });
+    const tampered = JSON.parse(
+      JSON.stringify(state).replaceAll('response-1', 'victim-response'),
+    );
+    const beforeRejectedRestore = remote.wire.length;
+    await expect(
+      agent.session({ state: tampered, providerHistory: authorized }),
+    ).rejects.toThrow('exact current anchor');
+    expect(remote.wire).toHaveLength(beforeRejectedRestore);
     await using restored = await agent.session({
       state,
-      providerHistory: getProviderHistory(state),
+      providerHistory: authorized,
     });
     await (await restored.submit('After.')).wait();
     expect(model.requests[1]!.previous_response_id).toBe('response-1');
@@ -1105,3 +1116,197 @@ for (const kind of ['conversation', 'previous_response'] as const) {
     );
   }
 }
+
+nativeIt(
+  'lineage sampling reference preserves canonical history and followup',
+  async () => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'conversation', id: 'conv_current' },
+    });
+    await (
+      await session.submit('Before.', {
+        prepareRequest({ request }) {
+          request.input.push({
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'sampling-only-note' }],
+          });
+          return request;
+        },
+      })
+    ).wait();
+    expect(JSON.stringify(model.requests[0]?.input)).toContain(
+      'sampling-only-note',
+    );
+    const canonical = await session.historySnapshot();
+    expect(JSON.stringify(canonical)).not.toContain('sampling-only-note');
+    await (await session.submit('After.')).wait();
+    expect(model.requests).toHaveLength(2);
+  },
+  30000,
+);
+
+for (const mode of [
+  'replacement',
+  'omission',
+  'repeated_replacement',
+  'cold_omission',
+] as const) {
+  nativeIt(
+    `lineage sampling occurrence delivery ${mode}`,
+    async () => {
+      const model = new ModelServer([
+        [message('Before.')],
+        [message('After.')],
+      ]);
+      const remote = await peer(model);
+      await using provider = new NativeProvider(remote.options);
+      const agent = new Agent({
+        instructions: 'Continue.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'conversation', id: 'conv_current' },
+      });
+      let calls = 0;
+      const prepareRequest = ({
+        request,
+      }: import('../../src').PrepareRequestContext) => {
+        calls++;
+        if (calls !== 1 && mode !== 'repeated_replacement') return;
+        const input = z.array(jsonObject).parse(request.input);
+        const index = input.findIndex((item) => item.role === 'user');
+        expect(index).toBeGreaterThanOrEqual(0);
+        if (mode === 'omission' || mode === 'cold_omission')
+          input.splice(index, 1);
+        else
+          input[index]!.content = [
+            { type: 'input_text', text: 'sampling-replacement' },
+          ];
+        request.input = input;
+        return request;
+      };
+      await (await session.submit('original-input', { prepareRequest })).wait();
+      const firstInput = JSON.stringify(model.requests[0]!.input);
+      expect(firstInput).not.toContain('original-input');
+      if (mode === 'replacement' || mode === 'repeated_replacement')
+        expect(firstInput).toContain('sampling-replacement');
+      if (mode === 'cold_omission') {
+        const state = await session.saveState();
+        await session.close();
+        await using restored = await agent.session({
+          state,
+          providerHistory: { type: 'conversation', id: 'conv_current' },
+        });
+        await (await restored.submit('After.', { prepareRequest })).wait();
+      } else {
+        await (await session.submit('After.', { prepareRequest })).wait();
+      }
+      expect(model.requests).toHaveLength(2);
+      expect(
+        JSON.stringify(model.requests[1]!.input).includes('original-input'),
+      ).toBe(mode === 'omission' || mode === 'cold_omission');
+    },
+    30000,
+  );
+}
+nativeIt(
+  'lineage sampling full idless multiplicity survives prefix insertion and initial reorder',
+  async () => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'conversation', id: 'conv_current' },
+    });
+    const snap = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: snap.revision,
+      keep: snap.total,
+      items: [
+        { type: 'item_reference', id: 'provider_item' },
+        { type: 'item_reference', id: 'provider_item' },
+      ],
+    });
+    await (
+      await session.submit('Before.', {
+        prepareRequest({ request }) {
+          request.input.reverse();
+          request.input.unshift({
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'sampling-prefix' }],
+          });
+          return request;
+        },
+      })
+    ).wait();
+    await (await session.submit('After.')).wait();
+    expect(model.requests).toHaveLength(2);
+  },
+  30000,
+);
+nativeIt(
+  'lineage sampling reduced idless group refuses before dispatch',
+  async () => {
+    const model = new ModelServer([[message('Recovered.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'conversation', id: 'conv_current' },
+    });
+    const snap = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: snap.revision,
+      keep: snap.total,
+      items: [
+        { type: 'item_reference', id: 'provider_item' },
+        { type: 'item_reference', id: 'provider_item' },
+      ],
+    });
+    await expect(
+      (
+        await session.submit('Before.', {
+          prepareRequest({ request }) {
+            const input = z.array(jsonObject).parse(request.input);
+            const index = input.findIndex(
+              (item) => item.type === 'item_reference',
+            );
+            input.splice(index, 1);
+            request.input = input;
+            return request;
+          },
+        })
+      ).wait(),
+    ).rejects.toThrow('ambiguous');
+    expect(remote.wire).toEqual([]);
+    await (await session.submit('Recovered.')).wait();
+    expect(model.requests).toHaveLength(1);
+    expect(
+      z
+        .array(jsonObject)
+        .parse(model.requests[0]!.input)
+        .filter((item) => item.type === 'item_reference'),
+    ).toHaveLength(2);
+  },
+  30000,
+);
