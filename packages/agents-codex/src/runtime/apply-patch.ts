@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { JsonObject } from './binding';
 import {
   createApplyPatchTool,
   ToolOutput,
@@ -15,6 +16,8 @@ export type ApplyPatchOperation =
 export interface ApplyPatchResult {
   status?: 'completed' | 'failed';
   output?: string;
+  /** Application-only JSON retained with the accepted editor result. */
+  applicationData?: JsonObject | null;
 }
 export interface ApplyPatchEditor<Context = unknown> {
   createFile(
@@ -97,6 +100,7 @@ export function applyPatchTool<Context = unknown>(options: {
         return new ToolOutput(
           [{ type: 'inputText', text: JSON.stringify(result) }],
           result.status === 'completed',
+          returned ? returned.applicationData : undefined,
         );
       },
     },

@@ -919,7 +919,11 @@
     {
       "path": "sdk-application-model-raw-events.patch",
       "sha256": "fc99d550ba9948829fc1fad79d8eb907da293d2aa78a79152d37a0d166091a7e"
+    },
+    {
+      "path": "sdk-trace-flush-worker-completion.patch",
+      "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
     }
   ],
-  "result_tree": "27071719c18681ed0cc9158c7f88ea63aa1113b4"
+  "result_tree": "fe092b8bff6bd0b7d35a2d3a9947cfe2dafc2edc"
 }

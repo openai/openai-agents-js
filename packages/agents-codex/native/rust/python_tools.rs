@@ -4179,12 +4179,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .insert(key);
             }
             if let ToolPayload::ApplyPatch { arguments } = &call.payload {
-                return Ok(
-                    Box::new(codex_tools::ApplyPatchToolOutput::from_dynamic_response(
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ApplyPatchToolOutput::from_dynamic_response(
                         arguments,
                         response.response,
-                    )?) as Box<dyn ToolOutput>,
-                );
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
             }
             if let Some(search) = client_search {
                 let selection =
