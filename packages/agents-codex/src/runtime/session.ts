@@ -55,6 +55,7 @@ import {
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
+  markRawProviderRequest,
   type NativeModel,
   type ModelRequest,
   type ModelProvider,
@@ -7010,7 +7011,7 @@ export class Session<OutputT = string, Context = unknown> {
         (!owner.instanceId ||
           owner.instanceId === event.subagent_instance_id) &&
         event.id === turnId &&
-        msg.source === 'responses' &&
+        (msg.source === 'responses' || msg.source === 'chat_completions') &&
         (msg.transport === 'sse' ||
           msg.transport === 'websocket' ||
           msg.transport === 'json') &&
@@ -7822,7 +7823,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       kind === 'sdk_raw_provider_event' &&
       eventTurn === run.id &&
-      msg.source === 'responses' &&
+      (msg.source === 'responses' || msg.source === 'chat_completions') &&
       (msg.transport === 'sse' ||
         msg.transport === 'websocket' ||
         msg.transport === 'json') &&
@@ -8887,7 +8888,7 @@ export class Session<OutputT = string, Context = unknown> {
                       callback: parseNative(delivery.wire),
                     })
                   : undefined;
-              const request: ModelRequest = Object.freeze({
+              const request: ModelRequest = {
                 ...base,
                 body: losslessJsonObjectSchema.parse(msg.data),
                 ...(attemptId === undefined
@@ -8919,7 +8920,10 @@ export class Session<OutputT = string, Context = unknown> {
                             },
                           }),
                     }),
-              });
+              };
+              if (this.options.includeRawProviderEvents)
+                markRawProviderRequest(request);
+              Object.freeze(request);
               const advice = backend.getRetryAdvice;
               if (advice !== undefined && typeof advice !== 'function')
                 throw new TypeError(
@@ -9010,6 +9014,7 @@ export class Session<OutputT = string, Context = unknown> {
                   const data = captureModelResponse(
                     returned,
                     msg.capture_raw_usage === true,
+                    this.options.includeRawProviderEvents === true,
                   );
                   check();
                   reply({ data });
@@ -14018,7 +14023,10 @@ export class Session<OutputT = string, Context = unknown> {
             payload.type === 'response.failed'
           ) {
             response = payload.response;
-          } else if (payload.object === 'response') {
+          } else if (
+            payload.object === 'response' ||
+            payload.object === 'chat.completion'
+          ) {
             response = payload;
           }
           if (
