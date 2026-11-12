@@ -299,7 +299,7 @@ impl PythonTools {
             .context("Expired compaction policy turn")?;
         self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
             json!({"type":"_sdk_before_compact_policy", "model":input.model,
-                "automatic":input.automatic, "items":input.items, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted}),
+                "automatic":input.automatic, "items":input.items, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::CompactionPolicy).await
     }
 
@@ -320,7 +320,7 @@ impl PythonTools {
             .context("Expired compaction callback turn")?;
         self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
             json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items,
-                "optional":input.optional, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted}),
+                "optional":input.optional, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::Compaction).await
     }
 

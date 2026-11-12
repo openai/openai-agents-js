@@ -32,6 +32,11 @@ impl ModelRequestContributor for Contributor {
 struct Interceptor(Arc<crate::turn_settlement::Turn>);
 
 impl ModelResponseInterceptor for Interceptor {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Validation either forwards the original events or rejects the stream.
+        true
+    }
+
     fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream {
         Box::pin(Generation {
             stream,
