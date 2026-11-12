@@ -331,6 +331,60 @@ it('filters native MCP discovery from a captured Agent profile', async () => {
   model.assertExhausted();
 }, 20_000);
 
+it.each([false, true])(
+  'projects native Realtime MCP catalogs with a discovery filter configured: %s',
+  async (filtered) => {
+    const endpoint = await peer();
+    const { session, model } = await open(
+      new HttpMCP({
+        name: 'fixture',
+        url: endpoint.url,
+        tools: ['lookup'],
+        approvalMode: 'preapproved',
+        ...(filtered ? { toolFilter: () => false } : {}),
+      }),
+      [],
+    );
+    const configuration = await session.buildRealtimeSipConfig();
+    const lookup = [expect.objectContaining({ name: 'mcp__fixture__lookup' })];
+    const expected = filtered
+      ? expect.not.arrayContaining(lookup)
+      : expect.arrayContaining(lookup);
+    const websocket = new WebSocketServer({ noServer: true });
+    let advertised: unknown;
+    model.onUpgrade((request, socket, head) => {
+      websocket.handleUpgrade(request, socket, head, (connection) => {
+        connection.on('message', (raw) => {
+          const frame = JSON.parse(raw.toString());
+          if (frame.type !== 'session.update') return;
+          advertised = frame.session.tools;
+          connection.send(
+            JSON.stringify({
+              type: 'session.updated',
+              session: { ...frame.session, id: 'mcp-catalog-fixture' },
+            }),
+          );
+        });
+      });
+    });
+    try {
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        expect(configuration.tools ?? []).toEqual(expected);
+        expect(advertised ?? []).toEqual(expected);
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      for (const connection of websocket.clients) connection.terminate();
+      websocket.close();
+    }
+    expect(endpoint.effects).toEqual([]);
+    model.assertExhausted();
+  },
+  20_000,
+);
+
 const lookup = () => ({
   ...call(
     'lookup',

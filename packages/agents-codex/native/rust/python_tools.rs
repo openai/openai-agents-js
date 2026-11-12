@@ -3261,6 +3261,11 @@ impl ToolContributor for PythonContributor {
             );
         }
         if let Some(binding) = input.mcp {
+            let discovery = input.retained_execution_data.and_then(|data| {
+                data.get::<crate::native_interception::ProfileMcpSource>()
+                    .and_then(|source| source.result_selection.clone())
+                    .or_else(|| data.get::<crate::mcp_result_control::Selection>())
+            });
             for info in binding.tools() {
                 let native_name = info.canonical_tool_name();
                 let admitted = voice
@@ -3272,7 +3277,12 @@ impl ToolContributor for PythonContributor {
                         }),
                         None => tools.policy.allows(&native_name),
                     };
-                if !admitted {
+                // Realtime declaration capture has no text step to evaluate a discovery callback.
+                if !admitted
+                    || discovery.as_ref().is_some_and(|selection| {
+                        selection.filters_server_discovery(&info.server_name)
+                    })
+                {
                     continue;
                 }
                 let server = binding

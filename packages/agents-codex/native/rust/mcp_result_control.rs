@@ -233,8 +233,14 @@ impl Selection {
             );
         }
         for (selected, message) in [
-            (&self.metadata_servers, "MCP metadata policy must select admitted ordinary raw tool names"),
-            (&self.discovery_servers, "MCP discovery policy must select admitted ordinary raw tool names"),
+            (
+                &self.metadata_servers,
+                "MCP metadata policy must select admitted ordinary raw tool names",
+            ),
+            (
+                &self.discovery_servers,
+                "MCP discovery policy must select admitted ordinary raw tool names",
+            ),
         ] {
             for (name, tools) in selected {
                 ensure!(
@@ -259,6 +265,10 @@ impl Selection {
         self.discovery_servers
             .get(server)
             .is_some_and(|names| names.iter().any(|name| name == tool))
+    }
+
+    pub(crate) fn filters_server_discovery(&self, server: &str) -> bool {
+        self.discovery_servers.contains_key(server)
     }
 }
 

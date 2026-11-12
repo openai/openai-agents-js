@@ -264,7 +264,11 @@ export interface MCPOptions<Context = unknown> {
   name: string;
   /** Selected raw tool names. Use [] for a resource-only server. */
   tools: readonly string[];
-  /** Per-discovery narrowing with the current admitted context. */
+  /**
+   * Per-discovery narrowing with the current admitted text context.
+   * Realtime and SIP omit tools from filtered MCP declarations. Use a separate
+   * declaration with an approval callback for Realtime MCP authorization.
+   */
   toolFilter?: (
     context: MCPDiscoveryContext<Context>,
     tool: MCPToolDefinition,
