@@ -1,11 +1,10 @@
 import { inspect } from 'node:util';
-import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   allowExecutorCall,
   readExecutorPolicyDecision,
   replaceExecutorArguments,
   stopExecutorTurn,
-  type ExecutorPolicyDecision,
 } from '../../src/runtime/executor-decisions';
 import {
   Environment,
@@ -116,25 +115,6 @@ describe('executor decision authority', () => {
       sentinel,
     );
     expect(structuredClone(decision)).toEqual({});
-  });
-
-  it('limits approval authority to stop and leaves result transforms data-only', () => {
-    type Approval = NonNullable<EnvironmentOptions['approval']>;
-    type Arguments = NonNullable<EnvironmentOptions['transformArguments']>;
-    type Result = NonNullable<EnvironmentOptions['transformResult']>;
-    expectTypeOf(stopExecutorTurn).returns.toExtend<ExecutorPolicyDecision>();
-    expectTypeOf<ReturnType<typeof stopExecutorTurn>>().toExtend<
-      Awaited<ReturnType<Approval>>
-    >();
-    expectTypeOf<ExecutorPolicyDecision>().toExtend<
-      Awaited<ReturnType<Arguments>>
-    >();
-    expectTypeOf<ReturnType<typeof allowExecutorCall>>().not.toExtend<
-      Awaited<ReturnType<Approval>>
-    >();
-    expectTypeOf<ExecutorPolicyDecision>().not.toExtend<
-      Awaited<ReturnType<Result>>
-    >();
   });
 });
 

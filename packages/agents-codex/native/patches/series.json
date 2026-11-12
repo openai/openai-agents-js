@@ -907,7 +907,11 @@
     {
       "path": "sdk-chat-completions-raw-response.patch",
       "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
+    },
+    {
+      "path": "sdk-application-apply-patch.patch",
+      "sha256": "5426ca44464782995b1eafaaa96356bf5f30082ab49168d7aa886cea6131fd09"
     }
   ],
-  "result_tree": "2123d320d9f724a3d33e64218a776b3c7e0d4b5d"
+  "result_tree": "bf82544b34c5e037ec736959f2b9fb0b69e14108"
 }

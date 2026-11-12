@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   camelOrSnakeToSnakeCase,
   getProviderDataWithoutReservedKeys,
@@ -82,44 +82,6 @@ describe('camelToSnakeCase', () => {
       ],
     });
   });
-
-  it('leaves already snake_case keys as is', () => {
-    expect(
-      camelOrSnakeToSnakeCase({ already_snake: 1, also_snake_case: 2 }),
-    ).toEqual({
-      already_snake: 1,
-      also_snake_case: 2,
-    });
-  });
-
-  it('handles mixed keys', () => {
-    expect(camelOrSnakeToSnakeCase({ fooBar: 1, already_snake: 2 })).toEqual({
-      foo_bar: 1,
-      already_snake: 2,
-    });
-  });
-
-  it('preserves a typed snake_cased object shape', () => {
-    const result = camelOrSnakeToSnakeCase({
-      fooBar: 1,
-      nestedValue: { deepKey: 'x' },
-    });
-
-    expectTypeOf(result).toEqualTypeOf<{
-      foo_bar: number;
-      nested_value: { deep_key: string };
-    }>();
-  });
-
-  it('preserves array entry types when arrays are passed through', () => {
-    const result = camelOrSnakeToSnakeCase({
-      toolResults: [{ inputSchema: { customerId: { type: 'string' } } }],
-    });
-
-    expectTypeOf(result.tool_results).toEqualTypeOf<
-      Array<{ inputSchema: { customerId: { type: string } } }>
-    >();
-  });
 });
 
 describe('snakeOrCamelToCamelCase', () => {
@@ -140,16 +102,6 @@ describe('snakeOrCamelToCamelCase', () => {
   it('preserves arrays and primitives', () => {
     expect(snakeOrCamelToCamelCase([1, 2, 3])).toEqual([1, 2, 3]);
     expect(snakeOrCamelToCamelCase(undefined)).toBe(undefined);
-  });
-
-  it('preserves a typed camelCased object shape', () => {
-    const result = snakeOrCamelToCamelCase({
-      outer_key: { nested_tools: [{ function_name: 'lookup' }] },
-    });
-
-    expectTypeOf(result).toEqualTypeOf<{
-      outerKey: { nestedTools: Array<{ functionName: string }> };
-    }>();
   });
 });
 

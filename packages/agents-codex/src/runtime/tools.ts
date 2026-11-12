@@ -290,7 +290,7 @@ export function supportsInputErrorRecovery(tool: SessionTool): boolean {
   return source.kind !== 'manual' && source[inputRecovery] === true;
 }
 
-const computerDeclaration = Symbol('native computer declaration');
+const nativeCallbackDeclaration = Symbol('native computer declaration');
 const clientToolSearchDeclaration = Symbol(
   'native client tool search declaration',
 );
@@ -301,7 +301,7 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
     tool.kind !== 'manual' &&
     !tool.deferLoading &&
-    !tool[computerDeclaration] &&
+    !tool[nativeCallbackDeclaration] &&
     !tool[clientToolSearchDeclaration] &&
     !hostedMcpBinding(tool) &&
     !tool[shellDeclaration]
@@ -368,7 +368,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
-  readonly [computerDeclaration]?: JsonObject;
+  readonly [nativeCallbackDeclaration]?: JsonObject;
   readonly [clientToolSearchDeclaration]?: JsonObject;
   readonly [shellDeclaration]?: JsonObject;
   readonly [prepareInvocation]: Invocation<Context>;
@@ -432,21 +432,65 @@ export function createComputerTool<Context>(
     reportFailure: (error: Error) => void,
   ) => Promise<ToolResponse>,
 ): FunctionTool<Context> {
+  return createNativeCallbackTool(
+    'computer',
+    "Operate the application's computer",
+    declaration,
+    execute,
+  );
+}
+
+/** @internal Bind a typed native declaration to the existing callback owner. */
+export function createNativeCallbackTool<Context>(
+  name: 'computer' | 'apply_patch',
+  description: string,
+  declaration: JsonObject,
+  execute: (
+    args: JsonValue,
+    context: ToolCallContext<Context>,
+    admit: () => void,
+    reportFailure: (error: Error) => void,
+    enterBody: () => void,
+  ) => Promise<ToolResponse>,
+): FunctionTool<Context> {
   return Object.freeze({
-    name: 'computer',
-    description: "Operate the application's computer",
+    name,
+    description,
     parameters: {},
-    [computerDeclaration]: declaration,
+    [nativeCallbackDeclaration]: declaration,
     async [prepareInvocation](
       args: JsonValue,
       context: ToolCallContext<Context>,
       reportFailure: (error: Error) => void,
       admit: () => void,
+      _effectiveArgs?: JsonValue,
+      _approved?: ApprovedArguments,
+      _argumentError?: string,
+      _beforeExecute?: () => Promise<boolean>,
+      onBodyEntry?: () => void,
     ) {
       admit();
-      return execute(args, context, admit, reportFailure);
+      return execute(
+        args,
+        context,
+        admit,
+        reportFailure,
+        onBodyEntry ?? (() => {}),
+      );
     },
   });
+}
+
+/** @internal Preserve the ordinary callback and approval owners for typed edits. */
+export function createApplyPatchTool<T extends z.ZodType, Context>(
+  declaration: JsonObject,
+  options: Parameters<typeof tool<T, Context>>[0],
+): FunctionTool<Context> {
+  const captured = {
+    ...options,
+    [nativeCallbackDeclaration]: structuredClone(declaration),
+  };
+  return tool(captured);
 }
 
 /** @internal Bind one borrowed MCP tool to the existing managed callback owner. */
@@ -729,8 +773,12 @@ export function tool<
   const shell = (
     options as typeof options & { [shellDeclaration]?: JsonObject }
   )[shellDeclaration];
+  const native = (
+    options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
+  )[nativeCallbackDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
     ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+    ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
     finishTurn: options.finishTurn ?? false,
     [inputRecovery]: inputErrorFunction !== undefined,
     name: options.name,
@@ -1202,6 +1250,9 @@ export function captureTools(
         'Shell declarations retain their native identity and policies',
       );
     const approval = managedApproval(tool);
+    const native = (
+      tool as SessionTool & { [nativeCallbackDeclaration]?: JsonObject }
+    )[nativeCallbackDeclaration];
     const source = approval
       ? Object.freeze({
           ...assembleManualTool(tool, {
@@ -1217,6 +1268,7 @@ export function captureTools(
     const binding = Object.freeze({
       ...source,
       ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+      ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
       ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
@@ -1269,18 +1321,29 @@ export function captureTools(
     }
     if (tool[shellDeclaration])
       return losslessJsonObjectSchema.parse(tool[shellDeclaration]);
-    if (tool.kind !== 'manual' && tool[computerDeclaration]) {
+    const native = (
+      tool as SessionTool & { [nativeCallbackDeclaration]?: JsonObject }
+    )[nativeCallbackDeclaration];
+    if (native) {
+      const declaration = losslessJsonObjectSchema.parse(native);
+      const expectedName =
+        declaration.type === 'computer'
+          ? 'computer'
+          : declaration.type === 'applyPatch'
+            ? 'apply_patch'
+            : undefined;
       if (
-        tool.name !== 'computer' ||
-        tool.namespace !== undefined ||
+        expectedName === undefined ||
+        tool.name !== expectedName ||
+        (tool.kind !== 'manual' && tool.namespace !== undefined) ||
         tool.deferLoading ||
         tool.finishTurn ||
-        tool.callbackTimeout !== undefined
+        (tool.kind !== 'manual' && tool.callbackTimeout !== undefined)
       )
         throw new TypeError(
           'Computer declarations retain their native identity and policies',
         );
-      return losslessJsonObjectSchema.parse(tool[computerDeclaration]);
+      return declaration;
     }
     const spec = {
       type: 'function',

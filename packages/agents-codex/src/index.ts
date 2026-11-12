@@ -525,3 +525,10 @@ export type {
   ResponsesCompactionOptions,
   ResponsesCompactionContext,
 } from './runtime/responses-compaction';
+
+export { applyPatchTool } from './runtime/apply-patch';
+export type {
+  ApplyPatchEditor,
+  ApplyPatchOperation,
+  ApplyPatchResult,
+} from './runtime/apply-patch';
