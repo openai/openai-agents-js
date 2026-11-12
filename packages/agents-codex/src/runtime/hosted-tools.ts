@@ -379,6 +379,21 @@ export type HostedToolItem =
             result: string | null;
             revised_prompt: string | null;
           }
+        | {
+            type: 'mcp_list_tools';
+            server_label: string;
+            tools: import('./binding').JsonValue;
+            error: import('./binding').JsonValue;
+          }
+        | {
+            type: 'mcp_call';
+            serverLabel: string;
+            callId: null;
+            name: string;
+            arguments: string;
+            output: import('./binding').JsonValue;
+            error: import('./binding').JsonValue;
+          }
       ))
   | (HostedItemIdentity<HostedToolStatus | 'unknown'> &
       (
