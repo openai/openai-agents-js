@@ -228,6 +228,7 @@ export class UnixLocalSandboxSession<
   private fileOperationGeneration = 0;
   private readonly hostFiles: UnixLocalFiles | null;
   readonly readFileNoFollow?: (args: ReadFileArgs) => Promise<Uint8Array>;
+  readonly removeEntryNoFollow?: (path: string) => Promise<void>;
   readonly writeFileNoFollow?: (args: MaterializeEntryArgs) => Promise<void>;
   private readonly workspaceCleanupPath?: string;
 
@@ -256,6 +257,7 @@ export class UnixLocalSandboxSession<
         ? null
         : (args[preparedFileIO] ?? new UnixLocalFiles(args.fileIOProtection));
     if (this.hostFiles) {
+      this.removeEntryNoFollow = this.removeEmptyEntryWithoutLinks.bind(this);
       this.readFileNoFollow = this.readFileWithoutLinks.bind(this);
       this.writeFileNoFollow = this.materializeFileWithoutLinks.bind(this);
     }
@@ -531,6 +533,25 @@ export class UnixLocalSandboxSession<
     );
   }
 
+  private async removeEmptyEntryWithoutLinks(path: string): Promise<void> {
+    const generation = this.fileOperationGeneration;
+    await withUnixLocalFileAccess(this.state, async () => {
+      this.assertSessionUsable();
+      if (
+        this.closePromise ||
+        this.stopPromise ||
+        generation !== this.fileOperationGeneration
+      )
+        throw new UserError('UnixLocal file operation cancelled.');
+      const target = this.noFollowWorkspacePath(path, true);
+      const identity = await this.resolveFilesystemRunAs();
+      await this.files.run(
+        { operation: 'removeEmpty', path: target },
+        { identity },
+      );
+    });
+  }
+
   private async readFileWithoutLinks(args: ReadFileArgs): Promise<Uint8Array> {
     this.assertSessionUsable();
     if (
@@ -558,7 +579,7 @@ export class UnixLocalSandboxSession<
       );
     // Preserve provider authorization/overrides, but never use a resolved descendant for IO.
     this.resolveSandboxPath(inputPath, { forWrite });
-    const root = realpathSync(this.state.workspaceRootPath);
+    const root = this.filesystemRoot(this.state.workspaceRootPath).content;
     const path = resolve(root, inputPath);
     const child = relative(root, path);
     if (

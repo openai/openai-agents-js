@@ -729,13 +729,15 @@ nativeIt(
 );
 
 nativeIt.each([
-  { kind: 'inline', savedSkills: false },
-  { kind: 'inline', savedSkills: true },
-  { kind: 'from', savedSkills: false },
-  { kind: 'from', savedSkills: true },
+  { kind: 'inline', savedSkills: false, conflict: 'none' },
+  { kind: 'inline', savedSkills: true, conflict: 'none' },
+  { kind: 'from', savedSkills: false, conflict: 'none' },
+  { kind: 'from', savedSkills: true, conflict: 'none' },
+  { kind: 'from', savedSkills: true, conflict: 'missing-sentinel' },
+  { kind: 'from', savedSkills: true, conflict: 'directory-to-file' },
 ] as const)(
-  'stages $kind eager skills on an authorized cold resume with savedSkills=$savedSkills',
-  async ({ kind, savedSkills }) => {
+  'stages $kind eager skills on an authorized cold resume with savedSkills=$savedSkills and conflict=$conflict',
+  async ({ kind, savedSkills, conflict }) => {
     const client = new UnixLocalSandboxClient();
     const archiveBase = await mkdtemp(
       join(tmpdir(), 'skills-resume-snapshot-'),
@@ -749,11 +751,24 @@ nativeIt.each([
                 children: {
                   report: dir({
                     children: {
-                      'SKILL.md': file({
-                        content:
-                          '---\nname: report\ndescription: OLD_REPORT_INDEX\n---\n',
-                      }),
+                      ...(conflict === 'missing-sentinel'
+                        ? {}
+                        : {
+                            'SKILL.md': file({
+                              content:
+                                '---\nname: report\ndescription: OLD_REPORT_INDEX\n---\n',
+                            }),
+                          }),
                       'removed.sh': file({ content: 'obsolete member' }),
+                      ...(conflict === 'directory-to-file'
+                        ? {
+                            replaced: dir({
+                              children: {
+                                old: file({ content: 'obsolete directory' }),
+                              },
+                            }),
+                          }
+                        : {}),
                     },
                   }),
                   retired: dir({
@@ -820,7 +835,12 @@ nativeIt.each([
                 from: dir({
                   children: {
                     report: dir({
-                      children: { 'SKILL.md': file({ content: document }) },
+                      children: {
+                        'SKILL.md': file({ content: document }),
+                        ...(conflict === 'directory-to-file'
+                          ? { replaced: file({ content: 'replacement file' }) }
+                          : {}),
+                      },
                     }),
                   },
                 }),
@@ -869,6 +889,14 @@ nativeIt.each([
         await expect(
           access(join(resumedRoot, '.agents/report/removed.sh')),
         ).rejects.toMatchObject({ code: 'ENOENT' });
+        if (conflict === 'directory-to-file') {
+          expect(
+            await readFile(
+              join(resumedRoot, '.agents/report/replaced'),
+              'utf8',
+            ),
+          ).toBe('replacement file');
+        }
         expect(
           await readFile(join(resumedRoot, '.agents/keep.txt'), 'utf8'),
         ).toBe('unrelated namespace file');

@@ -413,6 +413,16 @@ def run(request):
     if operation == "write":
         write_destination(path)
         return
+    if operation == "removeEmpty":
+        with parent(path) as (directory, name):
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                os.rmdir(name, dir_fd=directory)
+            elif stat.S_ISREG(info.st_mode):
+                os.unlink(name, dir_fd=directory)
+            else:
+                raise OSError(errno.EINVAL, "Sandbox cleanup requires a regular file or empty directory", path)
+        return
     if operation == "delete":
         with parent(path) as (directory, name):
             os.unlink(name, dir_fd=directory)

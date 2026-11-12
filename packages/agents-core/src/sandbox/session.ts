@@ -221,6 +221,8 @@ export interface SandboxSession<
   readFileNoFollow?(args: ReadFileArgs): Promise<string | Uint8Array>;
   /** Complete regular-file materialization through a no-follow workspace writer. */
   writeFileNoFollow?(args: MaterializeEntryArgs): Promise<void>;
+  /** Remove one workspace file or empty directory without following symlink components. */
+  removeEntryNoFollow?(path: string): Promise<void>;
   listDir?(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]>;
   pathExists?(path: string, runAs?: string): Promise<boolean>;
   directoryExists?(path: string, runAs?: string): Promise<boolean>;

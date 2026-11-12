@@ -254,18 +254,37 @@ export class SandboxSkillBinding<Context = any> {
     const expectedGrants = grantStamp(trustedManifest);
     if (grantStamp(sandbox.state.manifest) !== expectedGrants)
       throw new Error('Sandbox skill grants do not match the current manifest');
-    const stale = await this.restoredEagerSkillFiles(sandbox, signal);
+    const stale = await this.restoredEagerSkillFiles(
+      sandbox,
+      entries.flatMap(([path, entry]) =>
+        path === this.configuration.skillsPath && entry.type === 'dir'
+          ? Object.keys(entry.children ?? {}).map((name) =>
+              joinRelativePaths(path, name),
+            )
+          : [path],
+      ),
+      signal,
+    );
     if (stale.length) {
-      const editor = sandbox.createEditor?.();
-      if (!editor)
-        throw new Error('Restored eager Skills require sandbox createEditor()');
-      for (const path of stale) {
+      const remove = sandbox.removeEntryNoFollow?.bind(sandbox);
+      const editor = remove ? undefined : sandbox.createEditor?.();
+      if (!remove && (stale.some(({ directory }) => directory) || !editor))
+        throw new Error(
+          'Restored eager Skills require confined empty-directory removal',
+        );
+      for (const { path } of stale) {
         signal.throwIfAborted();
         if (grantStamp(sandbox.state.manifest) !== expectedGrants)
           throw new Error('Sandbox skill grants changed before cleanup');
-        const result = await editor.deleteFile({ type: 'delete_file', path });
-        if (result?.status === 'failed')
-          throw new Error('Could not remove a restored eager skill file');
+        if (remove) await remove(path);
+        else {
+          const result = await editor!.deleteFile({
+            type: 'delete_file',
+            path,
+          });
+          if (result?.status === 'failed')
+            throw new Error('Could not remove a restored eager skill file');
+        }
       }
     }
     for (const [path, entry] of entries) {
@@ -283,8 +302,9 @@ export class SandboxSkillBinding<Context = any> {
 
   private async restoredEagerSkillFiles(
     sandbox: SandboxSessionLike,
+    declaredPaths: readonly string[],
     signal: AbortSignal,
-  ): Promise<string[]> {
+  ): Promise<{ path: string; directory: boolean }[]> {
     const listDir = sandbox.listDir?.bind(sandbox);
     if (!listDir)
       throw new Error('Restored eager Skills require sandbox listDir()');
@@ -314,16 +334,28 @@ export class SandboxSkillBinding<Context = any> {
         return { name, type, path: joinRelativePaths(path, name) };
       });
     };
-    const files: string[] = [];
+    const files: { path: string; directory: boolean }[] = [];
     for (const root of await list(this.configuration.skillsPath, true)) {
-      if (root.type !== 'dir') continue;
+      const declared = declaredPaths.includes(root.path);
+      if (root.type !== 'dir') {
+        if (declared) {
+          if (root.type !== 'file')
+            throw new Error(
+              'Restored skill tree contains an unsupported member',
+            );
+          files.push({ path: root.path, directory: false });
+        }
+        continue;
+      }
       if (
+        !declared &&
         sandbox.pathExists &&
         !(await sandbox.pathExists(joinRelativePaths(root.path, 'SKILL.md')))
       )
         continue;
       const children = await list(root.path);
       if (
+        !declared &&
         !children.some(
           ({ name, type }) => name === 'SKILL.md' && type !== 'dir',
         )
@@ -334,8 +366,10 @@ export class SandboxSkillBinding<Context = any> {
         const member = pending.pop()!;
         if (member.depth > treeLimits.maxDepth)
           throw new Error('Skill tree depth limit exceeded');
-        if (member.type === 'file') files.push(member.path);
+        if (member.type === 'file')
+          files.push({ path: member.path, directory: false });
         else if (member.type === 'dir') {
+          if (declared) files.push({ path: member.path, directory: true });
           const children = await list(member.path);
           pending.push(
             ...children.map((child) => ({ ...child, depth: member.depth + 1 })),
@@ -344,7 +378,9 @@ export class SandboxSkillBinding<Context = any> {
           throw new Error('Restored skill tree contains an unsupported member');
       }
     }
-    return files;
+    return files.sort(
+      (a, b) => b.path.split('/').length - a.path.split('/').length,
+    );
   }
 
   private admit(context: ToolCallContext): SandboxSkillLease {
