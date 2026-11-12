@@ -18,6 +18,7 @@ import {
   type PrivateRuntimeSlot,
 } from './private-engine-reuse';
 import { NativeError } from './native-error';
+import { z } from 'zod';
 import {
   borrowNativeRuntime,
   validateNativeRuntime,
@@ -28,6 +29,27 @@ import {
   capturePlanCredential,
   type SignInWithChatGPT,
 } from './sign-in-with-chatgpt';
+
+const compactionTokenThreshold = z
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER);
+const providerCompactionPolicySchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('static'),
+    threshold: compactionTokenThreshold,
+  }),
+  z.strictObject({
+    type: z.literal('dynamic'),
+    thresholdRatio: z.number().min(0).max(1).optional(),
+    fallbackThreshold: compactionTokenThreshold.optional(),
+  }),
+]);
+
+export type ProviderCompactionPolicy = z.input<
+  typeof providerCompactionPolicySchema
+>;
 
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
@@ -667,6 +689,8 @@ export interface ModelSettings {
   /** Additional response fields; native replay and hosted-tool includes remain enabled. */
   include?: readonly string[] | null;
   contextManagement?: readonly JsonObject[] | null;
+  /** Standard Responses compaction threshold. Explicit contextManagement takes precedence. */
+  providerCompaction?: ProviderCompactionPolicy | null;
   extraBody?: JsonObject | null;
   /**
    * Ordinary text sampling only: opt-in release of required/named forcing after an
@@ -706,6 +730,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'truncation',
     'include',
     'contextManagement',
+    'providerCompaction',
     'extraBody',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
@@ -771,6 +796,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         )
           throw new TypeError('include must be an array of strings');
         value = [...value];
+      } else if (key === 'providerCompaction') {
+        value = providerCompactionPolicySchema.parse(value);
       } else if (key === 'contextManagement' || key === 'extraBody') {
         if (key === 'contextManagement') {
           if (
@@ -883,6 +910,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'truncation',
         'include',
         'contextManagement',
+        'providerCompaction',
         'extraBody',
       ].includes(key)
     ) {
@@ -1128,6 +1156,17 @@ export function modelOverrides(
   for (const [key, wire] of Object.entries(names)) {
     const value = selected[key as keyof typeof names];
     if (value !== undefined) controls[wire] = copyJsonValue(value);
+  }
+  if (selected.providerCompaction !== undefined) {
+    const policy = selected.providerCompaction;
+    controls.provider_compaction =
+      policy?.type === 'dynamic'
+        ? {
+            type: 'dynamic',
+            threshold_ratio: policy.thresholdRatio ?? 0.9,
+            fallback_threshold: policy.fallbackThreshold ?? 240_000,
+          }
+        : policy;
   }
   if (selected.toolChoice !== undefined) {
     const choice = selected.toolChoice;
