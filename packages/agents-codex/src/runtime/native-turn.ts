@@ -51,6 +51,7 @@ export class NativeTurn {
   // Keep workflow ownership when a retained successor takes completion tracing.
   issuedTracing?: TraceCapture;
   selection?: OperationSelection;
+  raiseOnUnknownTool?: boolean;
   writableRoots?: readonly string[];
   preparation?: AbortController;
   id: string | null = null;

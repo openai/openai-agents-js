@@ -156,6 +156,7 @@ import {
 import {
   validateMaxModelSteps,
   validateModelOverride,
+  captureToolNotFoundBehavior,
   type OperationOptions,
 } from './session';
 import type {
@@ -325,6 +326,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   modelOverride?: string;
   /** Sparse forced settings for this run, its handoffs and native children. */
   modelSettingsOverride?: ModelSettings;
+  /** Unknown direct function calls default to recoverable model errors. */
+  toolNotFoundBehavior?: OperationOptions<Context>['toolNotFoundBehavior'];
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
@@ -873,6 +876,9 @@ export class Agent<Context = undefined, Output = string> {
       providerHistory: captureProviderHistory(args[0]?.providerHistory),
     };
     const modelOverride = validateModelOverride(options.modelOverride);
+    const raiseOnUnknownTool = captureToolNotFoundBehavior(
+      options.toolNotFoundBehavior,
+    );
     const modelSettingsOverride =
       options.modelSettingsOverride === undefined
         ? undefined
@@ -883,6 +889,10 @@ export class Agent<Context = undefined, Output = string> {
     )
       throw new TypeError(
         'modelSettingsOverride cannot replace restored run settings',
+      );
+    if (isManualSessionState(options.state) && raiseOnUnknownTool !== undefined)
+      throw new TypeError(
+        'toolNotFoundBehavior cannot replace a restored operation choice',
       );
     if (isManualSessionState(options.state) && modelOverride !== undefined)
       throw new TypeError('modelOverride cannot replace a restored run model');
@@ -1000,6 +1010,7 @@ export class Agent<Context = undefined, Output = string> {
       modelOverride === undefined &&
       modelSettingsOverride === undefined &&
       options.providerHistory === undefined &&
+      raiseOnUnknownTool === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -1024,6 +1035,7 @@ export class Agent<Context = undefined, Output = string> {
     return runOwnedSession(session, preparedInput, {
       modelOverride,
       modelSettingsOverride,
+      toolNotFoundBehavior: options.toolNotFoundBehavior,
       guardrailInput,
       errorInput,
       maxModelSteps,

@@ -332,6 +332,7 @@ params!(TurnParams {
     expected_previous_turn_id: Option<String>,
     #[serde(default)] exact_steering: bool,
     writable_roots: Option<Vec<PathUri>>,
+    raise_on_unknown_tool: Option<bool>,
 });
 
 fn rejection(reason: NotSubmittedReason) -> Value {
@@ -440,6 +441,11 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
         .transpose()
         .map_err(pre_admission)?;
     let mut p: TurnParams = decode(value).map_err(pre_admission)?;
+    if p.raise_on_unknown_tool.is_some() && !matches!(p.mode, Mode::StartIfIdle) {
+        return Err(pre_admission(anyhow::anyhow!(
+            "Tool-not-found choice applies only to new roots"
+        )));
+    }
     if let Some(selection) = &selection {
         ensure!(
             selection.model_override == p.start.model_override
@@ -479,7 +485,8 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
             "native executor overrides cannot replace trusted environment policy"
         )));
     }
-    let turn_init = if let Some(selection) = selection {
+    let has_selection = selection.is_some();
+    let mut turn_init = if let Some(selection) = selection {
         if !matches!(p.mode, Mode::StartIfIdle) {
             return Err(pre_admission(anyhow::anyhow!(
                 "Selection applies only to new roots"
@@ -499,6 +506,17 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
     } else {
         None
     };
+    if matches!(p.mode, Mode::StartIfIdle) {
+        let init = turn_init.get_or_insert(thread.config_snapshot().await.turn_extension_init);
+        if !has_selection {
+            init.insert(None::<crate::python_tools::OperationSelection>);
+        }
+        init.insert(if p.raise_on_unknown_tool == Some(true) {
+            codex_extension_api::ToolNotFoundBehavior::RaiseError
+        } else {
+            codex_extension_api::ToolNotFoundBehavior::ReturnErrorToModel
+        });
+    }
     if matches!(p.mode, Mode::ContinueIfIdle) {
         if p.writable_roots.is_some() {
             return Err(pre_admission(anyhow::anyhow!(
@@ -723,6 +741,26 @@ async fn continue_managed<'a>(
             tools.validate_operation(selection).map_err(pre_admission)?;
         }
     }
+    state
+        .thread
+        .flush_rollout()
+        .await
+        .map_err(|error| pre_admission(error.into()))?;
+    let history = state
+        .engine
+        .load_checkpoint_history(state.id)
+        .await
+        .map_err(|error| pre_admission(error.into()))?;
+    let raise_on_unknown_tool = matches!(
+        codex_extension_api::ToolNotFoundBehavior::from_turn_history(&history, &previous_id)
+            .map_err(|error| pre_admission(anyhow::anyhow!(error)))?,
+        Some(codex_extension_api::ToolNotFoundBehavior::RaiseError)
+    );
+    init.insert(if raise_on_unknown_tool {
+        codex_extension_api::ToolNotFoundBehavior::RaiseError
+    } else {
+        codex_extension_api::ToolNotFoundBehavior::ReturnErrorToModel
+    });
     let retained_model = selection
         .as_ref()
         .and_then(|selection| selection.model_override.clone());
@@ -775,6 +813,7 @@ pub async fn recover_prepared(
     observation_submission_id: Option<String>,
     terminal: Option<crate::python_tools::RecoveredToolCompletionSeed>,
     staged_input: codex_extension_api::StagedInputBatch,
+    raise_on_unknown_tool: bool,
 ) -> Result<Value> {
     let thread = &state.thread;
     let mut init = thread.config_snapshot().await.turn_extension_init;
@@ -784,6 +823,11 @@ pub async fn recover_prepared(
             .seed(&mut init, submission, state.id.to_string());
     }
     init.insert(selection);
+    init.insert(if raise_on_unknown_tool {
+        codex_extension_api::ToolNotFoundBehavior::RaiseError
+    } else {
+        codex_extension_api::ToolNotFoundBehavior::ReturnErrorToModel
+    });
     if let Some(terminal) = terminal {
         terminal.attach(&mut init);
     }

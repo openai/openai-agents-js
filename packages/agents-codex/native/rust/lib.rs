@@ -4588,6 +4588,16 @@ impl NativeThread {
                     ));
                 }
             }
+            let saved_history: Vec<codex_history::RolloutItem> =
+                serde_json::from_value(saved["history"].clone()).map_err(native_error)?;
+            let raise_on_unknown_tool = matches!(
+                codex_extension_api::ToolNotFoundBehavior::from_turn_history(
+                    &saved_history,
+                    &frame.turn_id
+                )
+                .map_err(native_error)?,
+                Some(codex_extension_api::ToolNotFoundBehavior::RaiseError)
+            );
             if !items.is_empty() {
                 // Update Core's live model context as well as its rollout. A raw
                 // writer append alone would let prompt normalization invent "aborted".
@@ -4632,12 +4642,16 @@ impl NativeThread {
                 observation_submission_id,
                 terminal,
                 staged_input,
+                raise_on_unknown_tool,
             )
             .await
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
                 tools.retire_manual();
                 result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
+                if raise_on_unknown_tool {
+                    result["raise_on_unknown_tool"] = serde_json::json!(true);
+                }
             }
             serde_json::to_string(&result).map_err(native_error)
         })
