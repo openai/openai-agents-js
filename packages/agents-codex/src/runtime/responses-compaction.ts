@@ -180,6 +180,7 @@ export class ResponsesCompaction<Context = unknown> {
     providerResponse: { response_id: string; model?: string } | undefined,
     observe: (usage: TokenUsage | null) => void,
     canonicalItems?: CompactionContext<Context>['items'],
+    onDispatch?: () => void,
   ): Promise<{ items: unknown[]; response_id?: string; model: string }> {
     const model = context.model;
     const body: Parameters<OpenAI['responses']['compact']>[0] = { model };
@@ -194,6 +195,7 @@ export class ResponsesCompaction<Context = unknown> {
       context.mode === 'input' && canonicalItems !== undefined
         ? controlAliases(canonicalItems, body.input as unknown[])
         : undefined;
+    onDispatch?.();
     const response = await this.#compact(body, { signal: context.signal });
     let reported = false;
     try {

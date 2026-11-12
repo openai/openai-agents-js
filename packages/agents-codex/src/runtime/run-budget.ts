@@ -1,4 +1,5 @@
 import { types } from 'node:util';
+import { z } from 'zod';
 import type { JsonObject } from './binding';
 import { NativeError } from './native-error';
 import { addRunUsage, parseTokenCount, type TokenUsage } from './run-events';
@@ -6,7 +7,10 @@ import { addRunUsage, parseTokenCount, type TokenUsage } from './run-events';
 /**
  * Limits for direct native Agent runs and Session submissions. A new root
  * starts fresh. Live manual replies, retained steering, and SDK output
- * corrections share the root budget. Active portable checkpoints are unavailable.
+ * corrections share the root budget. Request-only limits have been retaining
+ * admissions through supported manual checkpoints with the original current
+ * ceiling supplied again on restore. Token/cost limits have been rejecting
+ * active portable capture.
  *
  * Supply at least one nonnegative safe integer limit. Zero blocks the first
  * preparation. A request already admitted can exceed a usage or cost limit and
@@ -45,6 +49,21 @@ export interface RunBudget {
    */
   missingUsage?: 'stop' | 'continue';
 }
+
+export const requestRunBudgetCheckpointSchema = z
+  .object({
+    version: z.literal(1),
+    maxRequests: z.number().int().nonnegative().safe(),
+    admittedRequests: z.number().int().nonnegative().safe(),
+  })
+  .strict()
+  .refine((value) => value.admittedRequests <= value.maxRequests, {
+    message: 'Admitted requests cannot exceed the saved request limit',
+  });
+
+export type RequestRunBudgetCheckpoint = z.infer<
+  typeof requestRunBudgetCheckpointSchema
+>;
 
 /** The live operation owns this tracker, including any correction Sessions. */
 export class RunBudgetTracker {
@@ -95,6 +114,36 @@ export class RunBudgetTracker {
       estimateCostMicros,
       missingUsage,
     );
+  }
+
+  checkpoint(): RequestRunBudgetCheckpoint {
+    if (
+      this.maxRequests === undefined ||
+      this.maxTokens !== undefined ||
+      this.maxEstimatedCostMicros !== undefined
+    )
+      throw new TypeError(
+        'Only request-only run budgets support portable checkpoints',
+      );
+    return requestRunBudgetCheckpointSchema.parse({
+      version: 1,
+      maxRequests: this.maxRequests,
+      admittedRequests: Number(this.requests),
+    });
+  }
+
+  static restoreCheckpoint(
+    source: unknown,
+    current: RunBudget | undefined,
+  ): RunBudgetTracker {
+    const saved = requestRunBudgetCheckpointSchema.parse(source);
+    const tracker = RunBudgetTracker.capture(current);
+    if (!tracker || tracker.checkpoint().maxRequests !== saved.maxRequests)
+      throw new TypeError(
+        'Restored run budget requires the original request limit',
+      );
+    tracker.requests = BigInt(saved.admittedRequests);
+    return tracker;
   }
 
   observe(raw: JsonObject | undefined): void {

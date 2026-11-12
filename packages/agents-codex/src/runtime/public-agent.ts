@@ -62,6 +62,7 @@ import {
   assertOutputState,
   sessionStateSchema,
   isManualSessionState,
+  isBudgetedManualSessionState,
   readCheckpointSelections,
 } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
@@ -189,6 +190,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
     : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Current original request-only ceiling when restoring a budgeted manual checkpoint. */
+  resumeBudget?: RunBudget;
   /** Format original function argument/body failures; omission preserves propagation.
    * Per-tool handlers take precedence; errorFunction:null suppresses this fallback.
    * Callback failure or undefined uses safe default text. Not persisted in state. */
@@ -199,6 +202,10 @@ export interface SessionBaseOptions<Context = undefined> {
   observationRetention?: 'bounded' | 'all';
   /** Record completed assistant messages and provider reasoning summaries. */
   includeModelOutputItems?: boolean;
+  /** Record content-free acceptance notifications for logical root results. */
+  includeOutputAccepted?: boolean;
+  /** Capture content-free native transport attempts for fresh explicit submissions. */
+  includeRequestAttempts?: boolean;
   /**
    * Capture Responses provider JSON in the Session's observation buffer.
    * Use includeExecutionDetails on an observation reader to receive it.
@@ -279,14 +286,18 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
 
 export interface RunOptions<Context = undefined> extends Omit<
   SessionBaseOptions<Context>,
-  'tools' | 'includeModelOutputItems' | 'includeRawProviderEvents'
+  | 'tools'
+  | 'includeModelOutputItems'
+  | 'includeOutputAccepted'
+  | 'includeRequestAttempts'
+  | 'includeRawProviderEvents'
 > {
   /** Force the model across this run, handoffs and native children. */
   modelOverride?: string;
   state?: SessionState;
   /** Root model preparation limit for a new run. Resumed runs inherit their saved budget. */
   maxModelSteps?: OperationOptions<Context>['maxModelSteps'];
-  /** Observed budget for a new direct native run with input. See {@link RunBudget}. */
+  /** Observed budget for a new root, or the original request-only ceiling for manual restore. See {@link RunBudget}. */
   budget?: RunBudget;
   /**
    * Edit requests for a new run with input. A resumed turn cannot add an editor.
@@ -352,6 +363,8 @@ interface CapturedOpening {
   readonly maxFunctionConcurrency?: number;
   readonly observationRetention?: 'bounded' | 'all';
   readonly includeModelOutputItems?: boolean;
+  readonly includeOutputAccepted?: boolean;
+  readonly includeRequestAttempts?: boolean;
   readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
@@ -837,7 +850,11 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Cannot replace the model step budget when resuming a run',
       );
-    if (input === null && budget !== undefined)
+    if (
+      input === null &&
+      budget !== undefined &&
+      !isBudgetedManualSessionState(options.state)
+    )
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
@@ -874,6 +891,10 @@ export class Agent<Context = undefined, Output = string> {
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
+      resumeBudget:
+        input === null
+          ? (options.budget ?? options.resumeBudget)
+          : options.resumeBudget,
       environment: options.environment,
       instructionFiles: options.instructionFiles,
       discoverAgentsMd: options.discoverAgentsMd,
@@ -1024,6 +1045,12 @@ export class Agent<Context = undefined, Output = string> {
     const includeModelOutputItems = opening
       ? opening.includeModelOutputItems
       : options.includeModelOutputItems;
+    const includeOutputAccepted = opening
+      ? opening.includeOutputAccepted
+      : options.includeOutputAccepted;
+    const includeRequestAttempts = opening
+      ? opening.includeRequestAttempts
+      : options.includeRequestAttempts;
     const includeRawProviderEvents =
       options.includeRawProviderEvents ?? opening?.includeRawProviderEvents;
     const maxFunctionConcurrency = opening
@@ -1167,6 +1194,20 @@ export class Agent<Context = undefined, Output = string> {
       suppliedState == null
         ? undefined
         : sessionStateSchema.safeParse(suppliedState);
+    const budgetState = stateResult?.success ? stateResult.data : undefined;
+    const restoredRunBudget = isBudgetedManualSessionState(budgetState)
+      ? RunBudgetTracker.restoreCheckpoint(
+          budgetState.run_budget,
+          options.resumeBudget,
+        )
+      : undefined;
+    if (
+      !isBudgetedManualSessionState(budgetState) &&
+      options.resumeBudget !== undefined
+    )
+      throw new TypeError(
+        'Cannot add a run budget when resuming an unbudgeted checkpoint',
+      );
     const declaredOutput = this.outputTypeFor(options);
     const outputType =
       declaredOutput &&
@@ -1816,12 +1857,15 @@ export class Agent<Context = undefined, Output = string> {
         realtimeApiKey: lease.realtimeApiKey,
         observationRetention,
         includeModelOutputItems,
+        includeOutputAccepted,
+        includeRequestAttempts,
         includeRawProviderEvents,
         initialMessages: options.initialMessages,
         maxFunctionConcurrency,
         decisions,
         parentTrace: captureTraceContext(options.parentTrace),
         state,
+        restoredRunBudget,
         localStorage: persistent,
         customStore,
         localResume: resume !== undefined,
@@ -1901,6 +1945,7 @@ export class Agent<Context = undefined, Output = string> {
               const correctionOptions: OwnedSessionOptions<undefined> = {
                 parentTrace,
                 includeModelOutputItems,
+                includeOutputAccepted,
                 includeRawProviderEvents,
                 [correctionOpening]: {
                   apiKey: lease.realtimeApiKey,
@@ -1942,6 +1987,8 @@ export class Agent<Context = undefined, Output = string> {
             maxFunctionConcurrency,
             observationRetention,
             includeModelOutputItems,
+            includeOutputAccepted,
+            includeRequestAttempts,
             includeRawProviderEvents,
             contextTransformPurpose,
             beforeCompact,
@@ -1957,6 +2004,7 @@ export class Agent<Context = undefined, Output = string> {
           active,
           outputOverride,
           parentTrace,
+          resumeBudget,
         ) => {
           let owned: CoreSession<any, any> | undefined;
           try {
@@ -1966,6 +2014,7 @@ export class Agent<Context = undefined, Output = string> {
               onInteraction: captured.onInteraction,
               toolErrorFormatter: captured.toolErrorFormatter,
               state,
+              resumeBudget,
               [deferredOpening]: {
                 opening: captured,
                 restoredOutput: { output: active, outputOverride },

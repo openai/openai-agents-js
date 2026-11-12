@@ -45,6 +45,35 @@ pnpm exec tsx examples/codex/observability/trace-walkthrough.ts --scenario provi
 
 These fields describe the build used by the walkthrough. Some logs lack trace IDs and some spans lack Session IDs. Use the application receipt for callback and validation outcomes.
 
+## Compare retry receipts with completed model requests
+
+```sh
+pnpm exec tsx examples/codex/observability/trace-walkthrough.ts --scenario retry --output "$TRACE_DIRECTORY/retry.json"
+```
+
+The scripted peer has been recording two HTTP requests, with replies of HTTP 503 and HTTP 200. The matching build's collector has been receiving a `codex.api_request` log for HTTP 200. The successful Turn's `runUsage.requests` has been counting one completed model request. The artifact has been keeping these observations separate as `receipt.providerRequests`, received logs, and `receipt.completedModelRequests`.
+
+The logs have been recording settled HTTP exchanges from this build. A canceled send can lack a log, and an exporter can lose records. These receipts have been supporting diagnosis within the fixture. Exact attempt accounting requires instrumentation at the transport that sends each request.
+
+### Read native send counts
+
+`includeRequestAttempts: true` on a matching source build has been capturing a report for each new explicit Turn. `turn.requestAttempts` has been making the report available once that native turn settles, including after a failed result.
+
+```ts
+await using session = await agent.session({ includeRequestAttempts: true });
+const turn = await session.submit('Find the synthetic record.');
+try {
+  await turn.wait();
+} finally {
+  const report = turn.requestAttempts;
+  // Send the counts to your application metrics here.
+}
+```
+
+Each count has been grouping SDK-owned send entries by root or child, operation, and transport. Each HTTP retry has been contributing one entry. WebSocket counts have been covering `response.create` sends. The report has been covering the issuing native Turn through settlement, including linked child work and automatic compaction in that window. Session startup warmup, WebSocket handshakes and interrupts, and work detached from the turn have been falling outside this scope.
+
+Applications have been using their own transport instrumentation for borrowed-client retries. `availability` and `borrowedRequestsUnavailable` have been identifying missing coverage on that path. A remote service such as an A2A specialist has been owning its own sends and needs its own report. The report has been measuring send entries, while peer receipts, tokens, billing, and request-budget admissions have been keeping their own counts.
+
 ## Read supported history
 
 [`history-reader.ts`](history-reader.ts) reads `session.turns()` and `session.items()` after settlement while the Session is still open. Each iterator takes its own projection snapshot. Reading an active Session can produce views of different moments. The artifact retains those projected records and adds `functionResults`.

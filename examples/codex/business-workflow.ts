@@ -7,6 +7,7 @@ import {
   Agent,
   NativeError,
   TraceContext,
+  TurnAborted,
   telemetry,
   tool,
 } from '@openai/agents';
@@ -27,6 +28,140 @@ type WorkerReceipt = {
   events: telemetry.TraceEvent[];
   flush: telemetry.FlushResult;
 };
+
+type StageReceipt = {
+  stage: string;
+  outcome: 'completed' | 'rejected' | 'suppressed' | 'failed';
+  durationNs?: string;
+  specialist?: string;
+  errorCode?: 'provider_failure' | 'cancelled' | 'run_budget_exceeded';
+};
+
+async function businessStage(
+  stage: string,
+  receipts: StageReceipt[],
+  operation: (receipt: StageReceipt) => Promise<void>,
+) {
+  const receipt: StageReceipt = { stage, outcome: 'completed' };
+  const started = process.hrtime.bigint();
+  await telemetry.withSpan(
+    { name: `business.${stage}`, metadata: { 'business.stage': stage } },
+    async (span) => {
+      try {
+        await operation(receipt);
+      } catch (error) {
+        receipt.outcome = 'failed';
+        throw error;
+      } finally {
+        if (receipt.errorCode)
+          span.end({ status: 'error', category: receipt.errorCode });
+        receipt.durationNs = String(process.hrtime.bigint() - started);
+        receipts.push(receipt);
+      }
+    },
+  );
+}
+
+async function supervisoryStages(events: telemetry.TraceEvent[]) {
+  const stages: StageReceipt[] = [];
+  await telemetry.withTrace(
+    { name: 'business.supervisory-stops' },
+    async () => {
+      for (const scenario of ['cancelled', 'run_budget_exceeded'] as const) {
+        const entered = Promise.withResolvers<void>();
+        let cleaned = false;
+        await withScriptedResponses(
+          scenario === 'cancelled'
+            ? [[toolCall('hold', {}, { callId: 'supervisory-hold' })]]
+            : [],
+          async (peer) => {
+            const hold = tool({
+              name: 'hold',
+              description: 'Wait for the synthetic cancellation.',
+              parameters: z.strictObject({}),
+              async execute(_args, context) {
+                entered.resolve();
+                try {
+                  await new Promise<void>((resolve) => {
+                    if (context.signal.aborted) resolve();
+                    else
+                      context.signal.addEventListener(
+                        'abort',
+                        () => resolve(),
+                        { once: true },
+                      );
+                  });
+                } finally {
+                  cleaned = true;
+                }
+                return 'Synthetic cleanup completed.';
+              },
+            });
+            await using session = await new Agent({
+              instructions: 'Run the synthetic stage.',
+              provider: peer.provider,
+              tools: [hold],
+            }).session();
+            await businessStage(
+              `supervisory_${scenario}`,
+              stages,
+              async (receipt) => {
+                const turn = await session.submit('Run the stage.', {
+                  ...(scenario === 'run_budget_exceeded'
+                    ? { budget: { maxRequests: 0 } }
+                    : {}),
+                });
+                if (scenario === 'cancelled') {
+                  await entered.promise;
+                  await turn.cancel();
+                  assert(cleaned);
+                }
+                const outcome = await turn.waitForAttention();
+                assert('type' in outcome && outcome.type === 'needs_attention');
+                assert.equal(
+                  outcome.reason,
+                  scenario === 'cancelled' ? 'interrupted' : 'budget_exceeded',
+                );
+                if (scenario === 'cancelled')
+                  assert(outcome.error instanceof TurnAborted);
+                else {
+                  assert(outcome.error instanceof NativeError);
+                  assert.equal(outcome.error.code, 'run_budget_exceeded');
+                  assert.equal(cleaned, false);
+                }
+                await assert.rejects(
+                  turn.wait(),
+                  (error) => error === outcome.error,
+                );
+                receipt.outcome = 'failed';
+                receipt.errorCode = scenario;
+                assert.equal(
+                  peer.requests.length,
+                  scenario === 'cancelled' ? 1 : 0,
+                );
+                peer.assertExhausted();
+              },
+            );
+          },
+        );
+      }
+    },
+  );
+  await telemetry.forceFlush({ timeoutMs: 5000 });
+  for (const stage of stages) {
+    assert.equal(stage.outcome, 'failed');
+    assert(BigInt(stage.durationNs!) >= 0n);
+    assert(
+      events.some(
+        (event) =>
+          event.lifecycle === 'end' &&
+          event.name === `business.${stage.stage}` &&
+          event.attributes['sdk.outcome.category'] === stage.errorCode,
+      ),
+    );
+  }
+  return stages;
+}
 
 async function configure(endpoint: string, service: string) {
   // Each service owns its policy. W3C headers carry identity, never privacy policy.
@@ -128,7 +263,8 @@ async function worker(endpoint: string) {
 
 /** Two synthetic business requests; run once in a fresh process. */
 export async function businessWorkflow() {
-  await using receiver = await startTraceReceiver();
+  // Synthetic native batches have been exceeding the helper's default 1 MiB.
+  await using receiver = await startTraceReceiver({ maxBatchBytes: 2_097_152 });
   const child = fork(
     typeof __filename !== 'undefined'
       ? __filename
@@ -191,6 +327,9 @@ export async function businessWorkflow() {
     for (const scenario of ['success', 'stopped'] as const) {
       let remote: WorkerReceipt | undefined;
       let traceId = '';
+      const stages: StageReceipt[] = [];
+      const delivered: { outcome: 'completed' }[] = [];
+      let accounting: Record<string, unknown> | undefined;
       failDelivery = scenario === 'stopped';
       await telemetry.withTrace(
         {
@@ -203,10 +342,19 @@ export async function businessWorkflow() {
         },
         async (root) => {
           traceId = root.context.traceId;
+          let selectedWorker = '';
+          await businessStage('authorized_routing', stages, async (receipt) => {
+            const registry = new Map([['fulfilment', url]]);
+            selectedWorker = registry.get('fulfilment')!;
+            receipt.specialist = 'fulfilment';
+          });
           await withScriptedResponses(
             [
               [toolCall('fulfil', { note: SENTINEL }, { callId: scenario })],
-              [text(SENTINEL)],
+              {
+                items: [text(SENTINEL)],
+                usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+              },
             ],
             async (peer) => {
               const agent = new Agent({
@@ -218,19 +366,48 @@ export async function businessWorkflow() {
                     parameters: z.object({ note: z.string() }),
                     async execute(_args, context) {
                       assert(context.traceContext);
-                      const response = await fetch(`${url}/${scenario}`, {
-                        method: 'POST',
-                        headers: context.traceContext.toHeaders(),
-                        signal: AbortSignal.timeout(10000),
-                      });
-                      assert.equal(response.status, 200);
-                      remote = (await response.json()) as WorkerReceipt;
+                      await businessStage(
+                        'specialist_tool',
+                        stages,
+                        async (receipt) => {
+                          const response = await fetch(
+                            `${selectedWorker}/${scenario}`,
+                            {
+                              method: 'POST',
+                              headers: context.traceContext!.toHeaders(),
+                              signal: AbortSignal.timeout(10000),
+                            },
+                          );
+                          assert.equal(response.status, 200);
+                          remote = (await response.json()) as WorkerReceipt;
+                          if (remote.outcome === 'provider_failure') {
+                            receipt.outcome = 'failed';
+                            receipt.errorCode = 'provider_failure';
+                          }
+                        },
+                      );
                       return SENTINEL;
                     },
                   }),
                 ],
               });
-              assert.equal((await agent.run(SENTINEL)).finalOutput, SENTINEL);
+              const result = await agent.run(SENTINEL);
+              assert.equal(result.finalOutput, SENTINEL);
+              const usage = result.runUsage;
+              accounting = {
+                reportedTotals: {
+                  inputTokens: String(usage.inputTokens),
+                  outputTokens: String(usage.outputTokens),
+                  totalTokens: String(usage.totalTokens),
+                },
+                observedCompletions: String(usage.requests),
+                missingUsageRequests: String(usage.missingUsageRequests),
+                fixtureEstimate: {
+                  tokens: 8,
+                  basis: 'synthetic fixture estimate',
+                },
+                workerTokens: { status: 'unavailable' },
+              };
               peer.assertExhausted();
             },
           );
@@ -239,6 +416,15 @@ export async function businessWorkflow() {
             remote.outcome,
             scenario === 'success' ? 'completed' : 'provider_failure',
           );
+          let accepted = false;
+          await businessStage('validation', stages, async (receipt) => {
+            accepted = remote?.outcome === 'completed';
+            receipt.outcome = accepted ? 'completed' : 'rejected';
+          });
+          await businessStage('in_memory_delivery', stages, async (receipt) => {
+            if (accepted) delivered.push({ outcome: 'completed' });
+            else receipt.outcome = 'suppressed';
+          });
           await telemetry.withSpan(
             {
               name: `business.outcome.${remote.outcome}`,
@@ -305,8 +491,50 @@ export async function businessWorkflow() {
       assert(remoteSpan);
       assert(JSON.stringify(receiver.batches).includes(remoteSpan.span_id));
       assert(JSON.stringify(receiver.batches).includes(traceId));
+      assert.deepEqual(
+        stages.map((receipt) => receipt.stage),
+        [
+          'authorized_routing',
+          'specialist_tool',
+          'validation',
+          'in_memory_delivery',
+        ],
+      );
+      assert(stages.every((receipt) => BigInt(receipt.durationNs!) >= 0n));
+      assert.deepEqual(
+        delivered,
+        scenario === 'success' ? [{ outcome: 'completed' }] : [],
+      );
+      assert.equal(
+        stages.at(-1)!.outcome,
+        scenario === 'success' ? 'completed' : 'suppressed',
+      );
+      assert.equal(
+        stages[1]!.errorCode,
+        scenario === 'stopped' ? 'provider_failure' : undefined,
+      );
+      assert.equal(
+        events.some(
+          (event) =>
+            event.trace_id === traceId &&
+            event.name === 'business.specialist_tool' &&
+            event.attributes['sdk.outcome.category'] === 'provider_failure',
+        ),
+        scenario === 'stopped',
+      );
+      assert(accounting);
+      assert.deepEqual(accounting.reportedTotals, {
+        inputTokens: '3',
+        outputTokens: '2',
+        totalTokens: '5',
+      });
+      assert.equal(accounting.observedCompletions, '2');
+      assert.equal(accounting.missingUsageRequests, '1');
       receipts.push({
         scenario,
+        stages,
+        delivered,
+        accounting,
         traceId,
         outcome: remote.outcome,
         usage: remote.usage,
@@ -336,8 +564,10 @@ export async function businessWorkflow() {
     assert(
       !JSON.stringify({ events, batches: receiver.batches }).includes(SENTINEL),
     );
+    const supervisory = await supervisoryStages(events);
     return {
       receipts,
+      supervisory,
       replacement: { callbackReceived: true, otlpReceived: false },
       batchesReceived: receiver.batches.length,
     };

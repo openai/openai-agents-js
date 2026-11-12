@@ -22,6 +22,12 @@ The `success` scenario has been completing fulfilment. The `stopped` scenario ha
 
 ## Metadata and privacy
 
+Each scenario's `stages` receipt has been keeping an ordered record of authorized routing, specialist tool work, validation, and in-memory delivery. Each stage has been carrying its outcome and elapsed nanoseconds. The stopped scenario has been recording rejected validation and suppressed delivery. The successful scenario has been keeping one public outcome in `delivered`.
+
+The `supervisory` receipts have been mapping typed stops to the fixed span categories `cancelled` and `run_budget_exceeded`. The cancellation probe has been joining local tool cleanup before recording the stage. The zero-request budget probe has been stopping before any provider send or tool effect. Both probes have been checking ended-span receipts from the callback sink after route replacement. The native OTLP checks have been covering the two main workflow scenarios.
+
+The `accounting` receipt has been keeping reported totals, observed completions, and the number of completions without usage. It has also been keeping a separately labeled fixture estimate. Worker tokens have been marked unavailable.
+
 Both services have been disabling prompt and response logging and setting `toolResultMaxBytes: 0`. The orchestrator has also been calling `telemetry.setSensitiveDataLoggingEnabled(false)` before Agent admission, with `includeSensitiveData: false` on its root. The worker has been using the content-logging switches with its externally parented Agent and no tools. A global false restriction has been opening an implicit SDK scope and conflicting with an external `parentTrace` in this source build. W3C headers have been carrying identity; each service has been configuring its own content policy independently.
 
 Application metadata has been using this allowlist:
@@ -61,3 +67,9 @@ Both processes have been configuring native OTLP export, then adding a callback 
 After both scenarios, `telemetry.setTraceProcessors([receiptSink])` has been replacing all future routes, including native OTLP and the throwing processor. A new probe has been reaching the callback sink while remaining absent from the OTLP receiver. Replacement has been following completed flushes, keeping earlier queued-route ownership out of this probe.
 
 The example has been checking flush status, dropped records, and failed deliveries separately from receiver batch arrival. A `partial` flush status with nonzero `failedDeliveries` has been recording the controlled destination loss. These counters have been remaining cumulative: the later replacement flush has still been reporting `partial`, with the same failure count and no new losses. Successful Agent output alone has not been establishing trace delivery. The [processor guide](trace-processors.md) has been describing route ownership and callback lifecycle in more detail.
+
+## Diagnosing missing trace records
+
+Comparing records for one trace ID has been separating four questions. The local processor has been showing creation and ancestry. `forceFlush()` has been showing known queue drops and failed deliveries. A receiver receipt has been showing transport arrival. A separate lookup in the destination has been establishing whether the trace is stored and visible.
+
+The native OpenAI exporter has been requiring a known native root descriptor. The local exporter fixture has been recording an externally parented child in a separate processor while reporting failed delivery and no matching trace at the loopback ingest endpoint. The same exporter has been delivering a locally rooted trace. [Exporter fixture](../../../packages/agents-codex/test/native/fixtures/telemetry-child.ts)
