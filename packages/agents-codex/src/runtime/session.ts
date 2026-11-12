@@ -860,6 +860,7 @@ export interface TurnRequestWait<T, NativeId extends string | null = string> {
   runUsage?(): RunUsage;
   requestAttempts?(): RequestAttempts | undefined;
   submissionRequestAttempts?(): RequestAttempts | undefined;
+  acceptedTextEvents?(): AsyncIterableIterator<Observation>;
   acceptedTextOwns?(chunk: AcceptedTextChunk): boolean;
   notify(): void;
   rateLimits(): ApiRateLimits;
@@ -1000,7 +1001,7 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
       );
     if (this.childId !== null)
       throw new TypeError('acceptedText requires a root Turn');
-    const observations = this.events();
+    const observations = this.requests?.acceptedTextEvents?.() ?? this.events();
     let closed = false;
     const iterator = acceptedText(
       observations,
@@ -4442,6 +4443,7 @@ export class Session<OutputT = string, Context = unknown> {
           guardrailResults: () =>
             [...this.rootSteps(run)].flatMap((step) => step.guardrailResults),
           applicationToolOutputs: () => this.applicationOutputSnapshot(run),
+          acceptedTextEvents: () => this.observations.events({}, scope, true),
           acceptedTextOwns: (chunk) => {
             if (
               chunk.sessionId !== this.id ||
