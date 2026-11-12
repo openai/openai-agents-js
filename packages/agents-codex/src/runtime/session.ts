@@ -75,6 +75,7 @@ import {
   captureModelResponse,
   isChatModelStream,
   isRawChatChunk,
+  markModelRequestTransport,
   markRawProviderRequest,
   type NativeModel,
   type ModelRequest,
@@ -1462,6 +1463,10 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly profileMcp = new Map<string, readonly McpTool[]>();
   private readonly profileStepMcp = new Map<string, readonly McpTool[]>();
   private profileCurrent?: AgentProfileReceipt;
+  private requestTransportDefaults: Pick<
+    ModelSettings,
+    'extraHeaders' | 'extraQuery'
+  > = {};
   private profileHighWater = 0n;
   private profileKey(id: string, generation: bigint | string): string {
     return `${id}\0${generation}`;
@@ -2611,6 +2616,10 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     const profile = this.profileRuntimes.get(receipt.profile_id)!;
+    this.requestTransportDefaults = {
+      extraHeaders: profile.profile.declaration.modelSettings?.extraHeaders,
+      extraQuery: profile.profile.declaration.modelSettings?.extraQuery,
+    };
     this.catalog = profile.catalog;
     this.openingCatalog = profile.catalog;
     this.defaultTools = [...profile.catalog.tools];
@@ -2990,6 +2999,10 @@ export class Session<OutputT = string, Context = unknown> {
       runs.delete(reference),
     );
     this.profileRuntimes = options.agentGraph?.profiles ?? new Map();
+    this.requestTransportDefaults = {
+      extraHeaders: options.initialModelSettings?.extraHeaders,
+      extraQuery: options.initialModelSettings?.extraQuery,
+    };
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
     const receipts = isOutputAwareState(restored) ? restored : undefined;
@@ -6375,7 +6388,18 @@ export class Session<OutputT = string, Context = unknown> {
         'Native history does not contain accepted model settings for repair',
       );
     const captured = accepted.data;
-    const settings: ModelSettings = {};
+    // Durable settings omit transport. Retain the completing Agent's live defaults.
+    const transport =
+      source &&
+      (source.profile_id !== this.profileCurrent?.profile_id ||
+        source.epoch !== this.profileCurrent.epoch)
+        ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+            .modelSettings
+        : this.requestTransportDefaults;
+    const settings: ModelSettings = {
+      extraHeaders: transport?.extraHeaders,
+      extraQuery: transport?.extraQuery,
+    };
     if (captured.invocation_timeout_ms !== undefined)
       settings.invocationTimeoutMs =
         captured.invocation_timeout_ms as ModelSettings['invocationTimeoutMs'];
@@ -9159,6 +9183,7 @@ export class Session<OutputT = string, Context = unknown> {
                           }),
                     }),
               };
+              markModelRequestTransport(request, msg.request_transport);
               if (this.options.includeRawProviderEvents)
                 markRawProviderRequest(request);
               Object.freeze(request);
@@ -13601,6 +13626,12 @@ export class Session<OutputT = string, Context = unknown> {
           )
             throw new NativeError('Native model update was not acknowledged');
           await this.acknowledgeProfilePublication();
+          if (capturedSettings?.extraHeaders !== undefined)
+            this.requestTransportDefaults.extraHeaders =
+              capturedSettings.extraHeaders;
+          if (capturedSettings?.extraQuery !== undefined)
+            this.requestTransportDefaults.extraQuery =
+              capturedSettings.extraQuery;
         } catch (error) {
           if (!(
             error instanceof Error &&

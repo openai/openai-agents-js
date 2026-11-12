@@ -338,7 +338,7 @@ impl Continuation {
                 held.push((receipt.envelope(call, &self.turn_id)?, success));
             }
         }
-        Ok(match self.tool_outcomes.take() {
+        Ok(match self.tool_outcomes.clone() {
             Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),

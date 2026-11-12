@@ -1343,13 +1343,22 @@ export function fromNativeCheckpoint(
   networkPolicy: string | undefined = undefined,
   executorReadOnly = false,
 ): SessionState {
+  const continuation = manual
+    ? manualContinuationSchema.parse(manual.manual_continuation)
+    : undefined;
+  const staged =
+    (continuation?.pending_input?.length ?? 0) > 0 ||
+    continuation?.staged_retry === true;
   return sessionStateSchema.parse({
     ...state,
     ...manual,
     ...selection,
     ...(executorReadOnly ? { executor_read_only: true } : {}),
-    format_version:
-      manual?.run_budget !== undefined
+    format_version: staged
+      ? state.format_version === 4
+        ? 20
+        : 19
+      : manual?.run_budget !== undefined
         ? state.format_version === 4
           ? 18
           : 17

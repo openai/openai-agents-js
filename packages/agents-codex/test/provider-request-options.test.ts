@@ -6,6 +6,7 @@ import {
   type ModelRequest,
   type ModelRequestOptions,
 } from '../src';
+import { markModelRequestTransport } from '../src/runtime/models';
 
 const adapters = [ChatCompletionsModel, ResponsesModel] as const;
 function request(signal = new AbortController().signal): ModelRequest {
@@ -211,5 +212,74 @@ it.each(adapters)(
           requestOptions: { signal: new AbortController().signal } as any,
         }),
     ).toThrow(TypeError);
+  },
+);
+
+it.each(adapters)(
+  'overlays scoped HTTP options only on the issuing model request with %s',
+  async (Adapter) => {
+    const seen: Array<{
+      url: URL;
+      headers: Headers;
+      body: Record<string, unknown>;
+    }> = [];
+    let credentialCalls = 0;
+    const client = new OpenAI({
+      apiKey: async () => {
+        credentialCalls += 1;
+        return 'synthetic-borrowed-' + credentialCalls;
+      },
+      baseURL: 'http://test.invalid/v1',
+      defaultHeaders: { 'x-drop': 'client' },
+      defaultQuery: { keep: 'client', empty: 'client' },
+      fetch: async (url, init) => {
+        seen.push({
+          url: new URL(String(url)),
+          headers: new Headers(init?.headers),
+          body: JSON.parse(String(init?.body)),
+        });
+        return success(Adapter === ChatCompletionsModel);
+      },
+    });
+    const model = new Adapter(client, undefined, {
+      requestOptions: {
+        headers: { 'X-Routing': 'adapter', 'x-adapter': 'retained' },
+        query: { route: 'adapter' },
+      },
+    });
+    const scoped = request();
+    markModelRequestTransport(scoped, {
+      headers: { 'x-routing': 'operation', 'x-drop': null },
+      query: { route: 'operation', empty: null, count: 2 },
+      query_nulls_as_empty: true,
+    });
+    await model.complete(scoped);
+    await model.complete(request());
+    expect(seen).toHaveLength(2);
+    const [first, second] = seen;
+    expect(first.headers.get('authorization')).toBe(
+      'Bearer synthetic-borrowed-1',
+    );
+    expect(first.headers.get('x-routing')).toBe('operation');
+    expect(first.headers.get('x-adapter')).toBe('retained');
+    expect(first.headers.has('x-drop')).toBe(false);
+    expect(Object.fromEntries(first.url.searchParams)).toEqual({
+      route: 'operation',
+      keep: 'client',
+      empty: '',
+      count: '2',
+    });
+    expect(second.headers.get('authorization')).toBe(
+      'Bearer synthetic-borrowed-2',
+    );
+    expect(second.headers.get('x-routing')).toBe('adapter');
+    expect(second.headers.get('x-drop')).toBe('client');
+    expect(Object.fromEntries(second.url.searchParams)).toEqual({
+      route: 'adapter',
+      keep: 'client',
+      empty: 'client',
+    });
+    for (const call of seen)
+      expect(call.body).not.toHaveProperty('request_transport');
   },
 );

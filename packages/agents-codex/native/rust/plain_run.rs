@@ -337,7 +337,7 @@ impl ModelRequestContributor for Route {
         let transport = self.transport.clone();
         let stop = self.stop.clone();
         let cancel = self.cancel.clone();
-        Some(Arc::new(move |request| {
+        Some(Arc::new(move |mut request, request_transport| {
             let (endpoint, transport, stop, cancel) = (
                 endpoint.clone(),
                 transport.clone(),
@@ -349,6 +349,9 @@ impl ModelRequestContributor for Route {
                 if request.url != endpoint || request.method != http::Method::POST {
                     return Err(TransportError::Build("Plain request route mismatch".into()));
                 }
+                codex_api::prepare_request_transport(&request.url, request_transport.as_ref())
+                    .map_err(|error| TransportError::Build(error.to_string()))?
+                    .apply(&mut request);
                 let send = stop
                     .try_commit(|| transport.stream(request))
                     .ok_or_else(|| {
