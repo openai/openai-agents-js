@@ -31,7 +31,7 @@ export interface RunErrorDetails {
   readonly input: UserInput | null;
   readonly lastAgent: Agent<any, any> | null;
   readonly items: readonly ProducedItem[];
-  /** Original response payloads from retained Responses observations. */
+  /** Detached client JSON from retained provider observations. */
   readonly rawResponses: readonly JsonObject[];
   readonly guardrailResults: readonly GuardrailRecord[];
   /** Gaps in the available native evidence. */

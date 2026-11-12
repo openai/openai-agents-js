@@ -3391,6 +3391,24 @@ impl ModelRequestContributor for Boundary {
         })
     }
 
+    fn preserves_provider_request_window(&self, url: &str) -> bool {
+        // This exact native route validates the provider/grant/one-use ticket,
+        // restores tool schemas, and sends input/model/store through Reqwest.
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .is_some_and(|engine| {
+                engine
+                    .sentinel
+                    .read()
+                    .expect("sentinel poisoned")
+                    .as_ref()
+                    .is_some_and(|(base, _, _)| {
+                        url.starts_with(&format!("{}/p-", base.trim_end_matches('/')))
+                    })
+            })
+    }
+
     fn http_stream(&self, url: &str) -> Option<codex_extension_api::ModelHttpStream> {
         let engine = self.engine.get()?.upgrade()?;
         let base = engine
@@ -3673,6 +3691,12 @@ impl SentinelRequest {
 }
 
 impl ModelResponseInterceptor for SentinelRequest {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Admission may edit tool calls, but passes messages, reasoning and
+        // the physical response ID unchanged. Core excludes tool output here.
+        true
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
@@ -4466,6 +4490,12 @@ fn valid_stdin_arguments(arguments: &str) -> bool {
 }
 
 impl ModelResponseInterceptor for DirectRequest {
+    fn preserves_provider_message_window(&self) -> bool {
+        // Admission may edit tool calls, but passes messages, reasoning and
+        // the physical response ID unchanged. Core excludes tool output here.
+        true
+    }
+
     fn intercept_with_tool_admission(
         mut self: Box<Self>,
         stream: ModelResponseStream,
