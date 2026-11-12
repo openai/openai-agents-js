@@ -81,6 +81,55 @@ it.each([true, false])(
   },
 );
 
+it.each([false, true])(
+  'keeps the original function arguments in the admitted callback (restore=%s)',
+  async (restore) => {
+    const raw = '{\n  "value" : "A"\n}';
+    const seen: [string, string | undefined][] = [];
+    const record = tool({
+      name: 'record',
+      parameters: z.object({ value: z.string() }),
+      needsApproval: restore,
+      execute({ value }, context) {
+        seen.push([value, context.rawArguments]);
+        return value;
+      },
+    });
+    const server = new ModelServer([
+      [
+        {
+          ...call('record', { value: 'A' }, { callId: 'wire-json' }),
+          arguments: raw,
+        },
+      ],
+      [message('done')],
+    ]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Use record.',
+      model: 'gpt-5',
+      provider,
+      tools: [record],
+    });
+    if (restore) {
+      let state;
+      {
+        await using source = await agent.session();
+        await source.submit('begin');
+        await nextApproval(source);
+        state = parseSessionState(JSON.stringify(await source.suspend()));
+      }
+      await using session = await agent.session({ state });
+      await session.respond((await nextApproval(session)).approve());
+      expect((await session.restoredTurn!.wait()).finalOutput).toBe('done');
+    } else {
+      expect((await agent.run('begin')).finalOutput).toBe('done');
+    }
+    expect(seen).toEqual([['A', raw]]);
+    server.assertExhausted();
+  },
+);
+
 it('runs a false predicate automatically without an interaction handler', async () => {
   const calls: string[] = [];
   const safe = tool({
