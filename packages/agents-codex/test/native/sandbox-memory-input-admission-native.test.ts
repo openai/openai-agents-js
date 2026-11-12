@@ -6,6 +6,7 @@ import {
   Agent,
   Environment,
   NativeProvider,
+  parseSessionState,
   TurnAborted,
   type Session,
 } from '../../src';
@@ -30,6 +31,7 @@ it
     'failed-write',
     'missing-write',
     'held-write-stop',
+    'tampered',
   ] as const)(
   'keeps unproven source input out of memory across %s',
   async (route) => {
@@ -228,8 +230,24 @@ it
       ).toContain(rejectedInput);
       if (route === 'live') current = original;
       else {
-        const state =
+        let state =
           route === 'fork' ? await original.fork() : await original.saveState();
+        if (route === 'tampered') {
+          const forged = JSON.parse(JSON.stringify(state));
+          let marked = 0;
+          for (const item of forged.history) {
+            if (
+              item.type === 'turn_context' &&
+              item.payload.turn_id === turn.turnId &&
+              item.payload.sdk_receipt
+            ) {
+              item.payload.sdk_receipt.sandbox_memory_input_admitted = true;
+              marked++;
+            }
+          }
+          expect(marked).toBeGreaterThan(0);
+          state = parseSessionState(JSON.stringify(forged));
+        }
         await original.close();
         current = await agent.session({ state, environment: source() });
       }
