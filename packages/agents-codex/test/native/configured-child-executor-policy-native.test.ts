@@ -345,6 +345,7 @@ it
     'forced-name',
     'legacy-operation',
     'application-search',
+    'stdin-only',
   ] as const)(
   'keeps the issuing %s executor tool ceiling in a configured child',
   async (selection) => {
@@ -450,7 +451,9 @@ it
           ? { tools: selected }
           : selection === 'before-step'
             ? { beforeStep: () => [configured] }
-            : undefined,
+            : selection === 'stdin-only'
+              ? { tools: [configured, toolRef('write_stdin')] }
+              : undefined,
       );
       expect((await turn.wait()).finalOutput).toBe('root complete');
       expect(JSON.stringify(rootModel.requests[0].tools)).not.toContain(
@@ -464,7 +467,9 @@ it
       expect(childEnvironment!.tools).toEqual([]);
       expect(callbackCalls).toEqual([]);
       expect(receipts).toHaveLength(1);
-      expect(receipts[0].tools).toEqual([]);
+      expect(receipts[0].tools).toEqual(
+        selection === 'stdin-only' ? ['write_stdin'] : [],
+      );
       expect(JSON.stringify(childModel.requests[0].tools)).not.toContain(
         'exec_command',
       );
@@ -571,6 +576,82 @@ it.skipIf(!native)(
       );
       rootModel.assertExhausted();
       childModel.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  15000,
+);
+
+it.skipIf(!native || process.platform !== 'linux').each([false, true])(
+  'normalizes dependent network policy for configured child with exec_command=%s',
+  async (commands) => {
+    const executor = await startPublicExecutor();
+    try {
+      const server = new ModelServer([
+        [
+          call(
+            'configured_child',
+            { input: 'Report.' },
+            { callId: 'network-child' },
+          ),
+        ],
+        [message('child complete')],
+        [message('root complete')],
+      ]);
+      const config = await server.config();
+      await using provider = new NativeProvider({
+        baseUrl: (config['model_providers.fixture'] as { base_url: string })
+          .base_url,
+        apiKey: 'synthetic-child-network',
+        supportsWebsockets: false,
+      });
+      const child = new Agent({
+        instructions: 'Report.',
+        model: 'gpt-5.5',
+        provider,
+      });
+      let childEnvironment: Environment | undefined;
+      const open = child.session.bind(child);
+      child.session = async (...args) => {
+        childEnvironment = (
+          args[0] as { environment?: Environment } | undefined
+        )?.environment;
+        return open(...args);
+      };
+      const configured = child.asTool({ toolName: 'configured_child' });
+      const parent = new Agent({
+        instructions: 'Use the child.',
+        model: 'gpt-5.5',
+        provider,
+        tools: [configured],
+      });
+      const environment = new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command'],
+        network: {
+          allowedDomains: ['child-policy.invalid'],
+          allowAllUnixSockets: true,
+        },
+      });
+      await using root = await parent.session({ environment });
+      const turn = await root.submit(
+        'Report.',
+        commands ? undefined : { tools: [configured] },
+      );
+      expect((await turn.wait()).finalOutput).toBe('root complete');
+      expect(childEnvironment!.tools).toEqual(commands ? ['exec_command'] : []);
+      expect(childEnvironment!.network).toEqual(
+        commands ? environment.network : undefined,
+      );
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toEqual([]);
+      server.assertExhausted();
     } finally {
       await executor.close();
     }

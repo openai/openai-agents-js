@@ -12331,8 +12331,13 @@ export class Session<OutputT = string, Context = unknown> {
         transformResult,
         ...settings
       } = environment;
+      const tools = environment.tools.filter((tool) =>
+        policy.tools.includes(tool),
+      );
+      const commands = tools.includes('exec_command');
       environment = new Environment({
         ...settings,
+        network: commands ? environment.network : undefined,
         env,
         approval,
         transformArguments,
@@ -12359,7 +12364,9 @@ export class Session<OutputT = string, Context = unknown> {
         ...(writePolicy === 'legacy'
           ? {}
           : { cwd: policy.cwd, writableRoots: policy.writableRoots }),
-        tools: environment.tools.filter((tool) => policy.tools.includes(tool)),
+        tools: commands
+          ? tools
+          : tools.filter((tool) => tool !== 'write_stdin'),
       });
     }
     const session = await declaration.open(
