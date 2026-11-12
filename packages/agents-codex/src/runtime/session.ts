@@ -7166,21 +7166,7 @@ export class Session<OutputT = string, Context = unknown> {
     // Only starts from this ordered reader establish prior-turn ownership.
     if (startsTurn) {
       owner.nativeStartObserved = true;
-      if (
-        owner.rootTurnId === undefined &&
-        typeof msg.root_turn_id === 'string' &&
-        msg.root_turn_id
-      ) {
-        const rootTurnId = msg.root_turn_id;
-        owner.rootTurnId = rootTurnId;
-        for (const output of this.applicationOutputs) {
-          if (
-            output.submissionId === submissionId &&
-            output.rootTurnId === undefined
-          )
-            output.rootTurnId = rootTurnId;
-        }
-      }
+      this.attachChildRootTurn(owner, submissionId, msg.root_turn_id);
       this.observations.notify();
     }
     this.attachChildUsage(owner);
@@ -7190,11 +7176,7 @@ export class Session<OutputT = string, Context = unknown> {
 
     if (msg.type === '_sdk_model_attempt') {
       if (msg.thread !== id) return;
-      if (
-        owner.rootTurnId === undefined &&
-        typeof msg.root_turn_id === 'string'
-      )
-        owner.rootTurnId = msg.root_turn_id;
+      this.attachChildRootTurn(owner, submissionId, msg.root_turn_id);
       this.observeModelAttempt(owner, msg.data);
       return;
     }
@@ -10257,6 +10239,27 @@ export class Session<OutputT = string, Context = unknown> {
           `A tool callback cannot ${operation} its own session`,
         );
   }
+  private attachChildRootTurn(
+    owner: ChildCallbackOwner,
+    submissionId: string,
+    rootTurnId: JsonValue | undefined,
+  ): void {
+    if (
+      owner.rootTurnId !== undefined ||
+      typeof rootTurnId !== 'string' ||
+      !rootTurnId
+    )
+      return;
+    owner.rootTurnId = rootTurnId;
+    for (const output of this.applicationOutputs) {
+      if (
+        output.submissionId === submissionId &&
+        output.rootTurnId === undefined
+      )
+        output.rootTurnId = rootTurnId;
+    }
+  }
+
   private applicationOutputSnapshot(
     owner?: NativeTurn | ChildCallbackOwner,
   ): readonly ApplicationToolOutput[] {

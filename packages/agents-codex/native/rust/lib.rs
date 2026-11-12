@@ -4144,13 +4144,18 @@ impl NativeThread {
             let first = keys
                 .first()
                 .ok_or_else(|| native_error("no pending manual requests"))?;
-            let usage_owner = inner
-                .thread
-                .thread_extension_data()
-                .get::<turn_settlement::Settlement>()
-                .ok_or_else(|| native_error("Manual turn owner missing"))?
-                .admission_ready(&first.turn)
-                .map_err(native_error)?;
+            // Restored grants can be sealed again before Core resumes sampling.
+            let usage_owner = if restored {
+                None
+            } else {
+                inner
+                    .thread
+                    .thread_extension_data()
+                    .get::<turn_settlement::Settlement>()
+                    .ok_or_else(|| native_error("Manual turn owner missing"))?
+                    .admission_ready(&first.turn)
+                    .map_err(native_error)?
+            };
             let usage_turn = first.turn.clone();
             let first = serde_json::to_value(first).map_err(native_error)?;
             let history = checkpoint::capture(&inner.engine, inner.id, &mut Vec::new())
