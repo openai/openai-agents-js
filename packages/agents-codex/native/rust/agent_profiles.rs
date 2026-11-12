@@ -12,6 +12,7 @@ use codex_extension_api::{
 };
 use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::dynamic_tools::{DynamicToolFunctionSpec, DynamicToolSpec};
+use codex_protocol::model_request_transport::RequestTransportOverrides;
 use codex_tools::{
     FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolName,
     ToolOutput, ToolSpec, dynamic_tool_to_responses_api_tool,
@@ -401,6 +402,7 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
         .iter()
         .map(|profile| {
             let mut descriptor = serde_json::to_value(profile)?;
+            descriptor["model"] = serde_json::to_value(profile.model.for_persistence())?;
             // Endpoint credentials, process configuration and refreshed policies are not
             // declaration compatibility. Their fresh native owners remain authority.
             descriptor["mcp_servers"] = json!(profile.mcp_servers.keys().collect::<Vec<_>>());
@@ -474,20 +476,17 @@ fn restored_envelope<'a>(
     opening: &OpeningProfiles,
     history: &'a [RolloutItem],
 ) -> Result<Option<(&'a ResponseItemEnvelope, PersistedProfile)>> {
-    let latest = history
-        .iter()
-        .filter_map(|item| match item {
-            RolloutItem::ResponseItem(envelope)
-                if envelope
-                    .metadata
-                    .as_ref()
-                    .is_some_and(|metadata| metadata.sdk_agent_profile.is_some()) =>
-            {
-                Some(envelope)
-            }
-            _ => None,
-        })
-        .last();
+    let latest = history.iter().rev().find_map(|item| match item {
+        RolloutItem::ResponseItem(envelope)
+            if envelope
+                .metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.sdk_agent_profile.is_some()) =>
+        {
+            Some(envelope)
+        }
+        _ => None,
+    });
     let Some(envelope) = latest else {
         return Ok(None);
     };
@@ -629,6 +628,20 @@ pub(crate) fn validate_restored(
     Ok(accepted)
 }
 
+pub(crate) fn restored_request_transport(
+    opening: &OpeningProfiles,
+    history: &[RolloutItem],
+) -> Result<Option<Option<RequestTransportOverrides>>> {
+    let (_, source) = restored_envelope(opening, history)?
+        .context("Managed Agent checkpoint has no source receipt")?;
+    let profile = opening
+        .roster
+        .iter()
+        .find(|profile| profile.id == source.profile_id)
+        .context("Restored Agent is outside the captured graph")?;
+    Ok(profile.model.request_controls.request_transport.clone())
+}
+
 #[derive(Clone)]
 struct PreparedProfile {
     declaration: ProfileSpec,
@@ -680,6 +693,10 @@ fn rebind_restored_controls(
     model.invocation_timeout_ms = current.invocation_timeout_ms;
     model.request_controls.retry = current.request_controls.retry.clone();
     model.request_controls.attempt_timeout_ms = current.request_controls.attempt_timeout_ms;
+    model
+        .request_controls
+        .request_transport
+        .clone_from(&current.request_controls.request_transport);
 }
 
 async fn prepare_profile(
@@ -1225,9 +1242,14 @@ pub(crate) async fn configure(
                 })
                 .collect(),
         });
+        let mut model = receipt.model;
+        model
+            .request_controls
+            .request_transport
+            .clone_from(&prepared.model.request_controls.request_transport);
         let mut target = AgentProfile {
             profile_id: receipt.profile_id,
-            model: receipt.model,
+            model,
             application_instructions: envelope.clone(),
             data,
             mcp: prepared.mcp.clone(),

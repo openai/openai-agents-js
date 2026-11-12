@@ -784,6 +784,10 @@ export interface ModelSettings {
   /** Standard Responses compaction threshold. Explicit contextManagement takes precedence. */
   providerCompaction?: ProviderCompactionPolicy | null;
   extraBody?: JsonObject | null;
+  /** Request headers; a null value omits a provider default. Native auth stays provider-owned. */
+  extraHeaders?: Readonly<Record<string, string | null>> | null;
+  /** Request-local JSON query values; null clears the query override. */
+  extraQuery?: Readonly<JsonObject> | null;
   /**
    * Ordinary text sampling only: opt-in release of required/named forcing after an
    * accepted tool batch on this profile.
@@ -791,6 +795,81 @@ export interface ModelSettings {
    * declared first choice. No change to toolChoice: 'none'.
    */
   resetToolChoice?: boolean | null;
+}
+
+const protectedTransportHeaders = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'host',
+  'connection',
+  'upgrade',
+  'content-length',
+  'transfer-encoding',
+  'te',
+  'trailer',
+  'keep-alive',
+  'proxy-connection',
+  'content-type',
+  'accept',
+  'accept-encoding',
+  'user-agent',
+  'openai-beta',
+  'originator',
+  'session_id',
+  'x-client-request-id',
+  'x-request-id',
+  'chatgpt-account-id',
+  'openai-organization',
+  'openai-project',
+  'x-responsesapi-include-timing-metrics',
+  'x-sdk-sentinel-grant',
+]);
+
+function invalidTransportHeaderName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+    protectedTransportHeaders.has(lower) ||
+    ['sec-websocket-', 'x-codex-', 'x-openai-'].some((prefix) =>
+      lower.startsWith(prefix),
+    )
+  );
+}
+
+function captureRequestHeaders(
+  value: unknown,
+): Readonly<Record<string, string | null>> {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  )
+    throw new TypeError('extraHeaders must be a header map or null');
+  const captured: Record<string, string | null> = {};
+  const seen = new Set<string>();
+  for (const [name, header] of Object.entries(value)) {
+    const lower = name.toLowerCase();
+    if (
+      invalidTransportHeaderName(name) ||
+      lower === 'api-key' ||
+      seen.has(lower)
+    )
+      throw new TypeError(
+        'Request header name is invalid, duplicated, or owned by native transport/auth',
+      );
+    if (
+      header !== null &&
+      (typeof header !== 'string' || /[^\x20-\x7e]/.test(header))
+    )
+      throw new TypeError(
+        'Request header values must contain printable ASCII or null',
+      );
+    seen.add(lower);
+    Object.defineProperty(captured, lower, { value: header, enumerable: true });
+  }
+  return Object.freeze(captured);
 }
 
 /** @internal Capture nested settings before opening can await. */
@@ -824,6 +903,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'contextManagement',
     'providerCompaction',
     'extraBody',
+    'extraHeaders',
+    'extraQuery',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!allowed.has(key))
@@ -947,6 +1028,18 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
             'extraBody cannot replace native request fields; use the corresponding model setting',
           );
         value = copyJsonValue(value);
+      } else if (key === 'extraHeaders') {
+        value = captureRequestHeaders(value);
+      } else if (key === 'extraQuery') {
+        if (
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
+          Object.keys(value).some((name) => !name)
+        )
+          throw new TypeError(
+            'extraQuery must be a JSON object with nonempty keys',
+          );
+        value = copyJsonValue(value);
       } else if (key === 'metadata') {
         if (typeof value !== 'object' || Array.isArray(value))
           throw new TypeError('metadata must be a string map');
@@ -1006,6 +1099,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'contextManagement',
         'providerCompaction',
         'extraBody',
+        'extraHeaders',
+        'extraQuery',
       ].includes(key)
     ) {
       throw new TypeError(`Invalid null model setting: ${key}`);
@@ -1104,46 +1199,12 @@ function captureProviderRouting(options: NativeProviderOptions) {
       copied[name] = Object.freeze(Object.fromEntries(Object.entries(value)));
     }
   }
-  const protectedNames = new Set([
-    'authorization',
-    'proxy-authorization',
-    'cookie',
-    'host',
-    'connection',
-    'upgrade',
-    'content-length',
-    'transfer-encoding',
-    'te',
-    'trailer',
-    'keep-alive',
-    'proxy-connection',
-    'content-type',
-    'accept',
-    'accept-encoding',
-    'user-agent',
-    'openai-beta',
-    'originator',
-    'session_id',
-    'x-client-request-id',
-    'x-request-id',
-    'chatgpt-account-id',
-    'openai-organization',
-    'openai-project',
-    'x-responsesapi-include-timing-metrics',
-    'x-sdk-sentinel-grant',
-  ]);
   const headers: Record<string, string> = {};
   const seen = new Set<string>();
   for (const name of ['headers', 'envHeaders'] as const) {
     for (const [key, original] of Object.entries(copied[name] ?? {})) {
       const lower = key.toLowerCase();
-      if (
-        !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key) ||
-        protectedNames.has(lower) ||
-        ['sec-websocket-', 'x-codex-', 'x-openai-'].some((prefix) =>
-          lower.startsWith(prefix),
-        )
-      )
+      if (invalidTransportHeaderName(key))
         throw new TypeError(
           'Provider header name is invalid or belongs to native transport/auth',
         );
@@ -1201,6 +1262,20 @@ function captureProviderRouting(options: NativeProviderOptions) {
   return { options: copied, config: Object.freeze(config) };
 }
 
+/** @internal The same detached transport settings are used during startup and sampling. */
+export function requestTransportWire(
+  settings?: ModelSettings,
+): JsonObject | undefined {
+  const transport: JsonObject = {};
+  if (settings?.extraHeaders !== undefined)
+    transport.headers = copyJsonValue(settings.extraHeaders);
+  if (settings?.extraQuery !== undefined) {
+    transport.query = copyJsonValue(settings.extraQuery);
+    transport.query_nulls_as_empty = true;
+  }
+  return Object.keys(transport).length ? transport : undefined;
+}
+
 /** @internal Shared projection for Session updates and captured Agent profiles. */
 export function modelOverrides(
   model?: string,
@@ -1252,6 +1327,8 @@ export function modelOverrides(
     const value = selected[key as keyof typeof names];
     if (value !== undefined) controls[wire] = copyJsonValue(value);
   }
+  const transport = requestTransportWire(selected);
+  if (transport !== undefined) controls.request_transport = transport;
   if (selected.providerCompaction !== undefined) {
     const policy = selected.providerCompaction;
     controls.provider_compaction =
