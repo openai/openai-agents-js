@@ -2340,8 +2340,8 @@ impl PythonTools {
         admission: Option<Arc<crate::turn_settlement::Turn>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
-            thread, generation, slot, turn, call, arguments, None, source, model, media, admission,
-            None, None, None, None,
+            thread, generation, slot, turn, call, arguments, None, None, source, model, media,
+            admission, None, None, None, None,
         )
     }
 
@@ -2354,6 +2354,7 @@ impl PythonTools {
         call: &str,
         arguments: Value,
         argument_error: Option<String>,
+        raw_function_arguments: Option<&str>,
         source: &ToolCallSource,
         model: &str,
         media: Option<NativeMediaContext>,
@@ -2421,6 +2422,9 @@ impl PythonTools {
         });
         if let Some(error) = argument_error {
             request["msg"]["_sdk_argument_error"] = json!(error);
+        }
+        if let Some(arguments) = raw_function_arguments {
+            request["msg"]["_sdk_raw_function_arguments"] = json!(arguments);
         }
         if let Some(callback) = &callback {
             request["msg"]["_sdk_callback"] = callback.receipt.clone();
@@ -4122,6 +4126,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .await
                     .map_err(|e| FunctionCallError::Fatal(e.to_string()))?;
             }
+            let raw_function_arguments = match (&call.source, &call.payload) {
+                (ToolCallSource::Direct, ToolPayload::Function { arguments })
+                    if client_search.is_none() =>
+                {
+                    Some(arguments.as_str())
+                }
+                _ => None,
+            };
             let (key, receiver) = self
                 .tools
                 .enqueue_profile(
@@ -4132,6 +4144,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     &call.call_id,
                     arguments,
                     argument_error,
+                    raw_function_arguments,
                     &call.source,
                     &call.model,
                     Some(NativeMediaContext {
@@ -4712,6 +4725,7 @@ mod pending_tests {
                 "turn",
                 "captured-manual",
                 json!({}),
+                None,
                 None,
                 &ToolCallSource::Direct,
                 "fixture-model",

@@ -10536,7 +10536,9 @@ export class Session<OutputT = string, Context = unknown> {
           if (!submission)
             throw new NativeError('Managed approval submission is unavailable');
           const scope = this.decisionScope(event.msg, run.controller.signal);
+          const rawArguments = msg._sdk_raw_function_arguments;
           const context = {
+            ...(typeof rawArguments === 'string' ? { rawArguments } : {}),
             decide: scope.decide,
             [decisionBinding]: scope[decisionBinding],
             [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
@@ -11963,7 +11965,9 @@ export class Session<OutputT = string, Context = unknown> {
         if (!check()) return;
       }
       const scope = this.decisionScope(event.msg, signal);
+      const rawArguments = msg._sdk_raw_function_arguments;
       const context = {
+        ...(typeof rawArguments === 'string' ? { rawArguments } : {}),
         [usageReportBinding]: this.toolUsageReporter(owner, check),
         [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
         decide: scope.decide,
