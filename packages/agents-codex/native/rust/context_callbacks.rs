@@ -818,6 +818,8 @@ pub(super) struct ModelReply {
     usage: Option<codex_protocol::protocol::TokenUsage>,
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
+    #[serde(default)]
+    raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -869,6 +871,18 @@ impl PythonTools {
         match reply {
             ProducedResponse::Complete(reply) => {
                 lease.finish().await?;
+                if let Some(id) = reply
+                    .raw_chat_completion
+                    .as_ref()
+                    .and_then(|raw| raw.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.trim().is_empty())
+                {
+                    ensure!(
+                        id == reply.response_id,
+                        "Original Chat Completion does not match model response"
+                    );
+                }
                 ensure!(
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
@@ -918,6 +932,19 @@ impl PythonTools {
                             Ok(codex_api::ResponseEvent::ResponseObserved(observation)),
                         );
                     }
+                }
+                if let Some(raw) = reply.raw_chat_completion {
+                    events.insert(
+                        events.len() - 1,
+                        Ok(codex_api::ResponseEvent::RawProvider(
+                            codex_protocol::protocol::SdkRawProviderEvent {
+                                source:
+                                    codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+                                transport: codex_protocol::protocol::ResponsesEventTransport::Json,
+                                payload: Value::Object(raw),
+                            },
+                        )),
+                    );
                 }
                 Ok(futures_util::stream::iter(events).boxed())
             }

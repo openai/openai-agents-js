@@ -21,6 +21,7 @@ import {
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
+  markRawProviderRequest,
   type NativeModel,
   type ModelProvider,
 } from './models';
@@ -6902,7 +6903,7 @@ export class Session<OutputT = string, Context = unknown> {
         (!owner.instanceId ||
           owner.instanceId === event.subagent_instance_id) &&
         event.id === turnId &&
-        msg.source === 'responses' &&
+        (msg.source === 'responses' || msg.source === 'chat_completions') &&
         (msg.transport === 'sse' ||
           msg.transport === 'websocket' ||
           msg.transport === 'json') &&
@@ -7688,7 +7689,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       kind === 'sdk_raw_provider_event' &&
       eventTurn === run.id &&
-      msg.source === 'responses' &&
+      (msg.source === 'responses' || msg.source === 'chat_completions') &&
       (msg.transport === 'sse' ||
         msg.transport === 'websocket' ||
         msg.transport === 'json') &&
@@ -8631,6 +8632,8 @@ export class Session<OutputT = string, Context = unknown> {
                 ...base,
                 body: losslessJsonObjectSchema.parse(msg.data),
               };
+              if (this.options.includeRawProviderEvents)
+                markRawProviderRequest(request);
               if (backend.stream) {
                 const stream = await backend.stream(request);
                 const iterator = stream[Symbol.asyncIterator]();
@@ -8667,6 +8670,7 @@ export class Session<OutputT = string, Context = unknown> {
                 const data = captureModelResponse(
                   returned,
                   msg.capture_raw_usage === true,
+                  this.options.includeRawProviderEvents === true,
                 );
                 check();
                 reply({ data });
@@ -13333,7 +13337,10 @@ export class Session<OutputT = string, Context = unknown> {
             payload.type === 'response.failed'
           ) {
             response = payload.response;
-          } else if (payload.object === 'response') {
+          } else if (
+            payload.object === 'response' ||
+            payload.object === 'chat.completion'
+          ) {
             response = payload;
           }
           if (

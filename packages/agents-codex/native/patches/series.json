@@ -1,5 +1,5 @@
 {
-  "result_tree": "9e6baab8fc1db7f349257c5a8582aca188a026ce",
+  "result_tree": "4596146d57ae644280ce10c55994be039f539f17",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -820,6 +820,10 @@
     {
       "path": "sdk-client-tool-search-discovery-admission.patch",
       "sha256": "137b34494fb5240f00e811a56b930e1e565c82f1bcf2cc01c1fef8810fc59e2c"
+    },
+    {
+      "path": "sdk-chat-completions-raw-response.patch",
+      "sha256": "5adb96468cc0c98a5516ebec5acb2afdbd33129160b7705497cb83601063713c"
     }
   ]
 }
