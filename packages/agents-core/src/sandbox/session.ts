@@ -205,6 +205,10 @@ export interface SandboxSession<
   writeStdin?(args: WriteStdinArgs): Promise<string>;
   viewImage?(args: ViewImageArgs): Promise<ToolOutputImage>;
   readFile?(args: ReadFileArgs): Promise<string | Uint8Array>;
+  /** Complete regular-file read under the configured workspace, rejecting symlink descendants. */
+  readFileNoFollow?(args: ReadFileArgs): Promise<string | Uint8Array>;
+  /** Complete regular-file materialization through a no-follow workspace writer. */
+  writeFileNoFollow?(args: MaterializeEntryArgs): Promise<void>;
   listDir?(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]>;
   pathExists?(path: string, runAs?: string): Promise<boolean>;
   directoryExists?(path: string, runAs?: string): Promise<boolean>;

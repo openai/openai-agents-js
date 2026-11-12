@@ -2032,6 +2032,43 @@ describe('Sandbox memory generation', () => {
     ).toBe(false);
   });
 
+  it.each([false, true])(
+    'preserves default non-file selection while restricting native readers (override=%s)',
+    async (override) => {
+      const session = new MemorySession();
+      session.files.set(
+        'memories/raw_memories/seed.md',
+        [
+          'rollout_id: seed',
+          'updated_at: 2026-01-01T00:00:00.000Z',
+          'rollout_path: sessions/seed.jsonl',
+          'rollout_summary_file: rollout_summaries/seed.md',
+          'terminal_state: completed',
+          '',
+          'Remember pnpm.',
+        ].join('\n'),
+      );
+      vi.spyOn(session, 'listDir').mockResolvedValue([
+        {
+          name: 'seed.md',
+          path: 'memories/raw_memories/seed.md',
+          type: 'other',
+        },
+      ]);
+      const storage = new SandboxMemoryStorage({
+        session,
+        ...(override ? { readFile: session.readFile.bind(session) } : {}),
+      });
+      const selection = await storage.buildPhaseTwoInputSelection({
+        memoriesDir: 'memories',
+        maxRawMemoriesForConsolidation: 16,
+      });
+      expect(selection.selected.map((item) => item.rolloutId)).toEqual(
+        override ? [] : ['seed'],
+      );
+    },
+  );
+
   it('rebuilds phase two selection from newest raw memories and reports removals', async () => {
     const session = new MemorySession();
     session.files.set(
