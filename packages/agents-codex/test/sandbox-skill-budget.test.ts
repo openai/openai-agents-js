@@ -1,5 +1,7 @@
 import {
   mkdir,
+  readFile,
+  symlink,
   mkdtemp,
   rename,
   rm,
@@ -627,3 +629,152 @@ unixIt.each([false, true])(
   },
   30_000,
 );
+
+unixIt.each(['local_file', 'local_dir'] as const)(
+  'recounts a restored workspace with a nested %s declaration',
+  async (kind) => {
+    const f = await fixture(0, true, 0);
+    let resumed: typeof f.sandbox | undefined;
+    try {
+      const sourceRoot = f.sandbox.state.manifest.extraPathGrants[0].path;
+      await f.sandbox.materializeEntry({
+        path: 'resources',
+        entry: {
+          type: 'dir',
+          children: {
+            nested: {
+              type: kind,
+              src: join(
+                sourceRoot,
+                'alpha',
+                ...(kind === 'local_file' ? ['SKILL.md'] : []),
+              ),
+            },
+          },
+        },
+      });
+      const saved = JSON.parse(
+        JSON.stringify(await f.client.serializeSessionState(f.sandbox.state)),
+      );
+      const originalRoot = f.sandbox.state.workspaceRootPath;
+      await f.sandbox.close();
+      const client = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: originalRoot,
+          workspaceRootOwned: true,
+          localSnapshotPath: saved.snapshot.path,
+        },
+      });
+      resumed = await client.resume(
+        await client.deserializeSessionState(saved),
+      );
+      const lease = f.newLease(resumed);
+      await lease.activate();
+      expect(
+        (await lease.load('beta', new AbortController().signal)).status,
+      ).toBe('loaded');
+      expect(await resumed.pathExists('.agents/beta/SKILL.md')).toBe(true);
+      expect(
+        await resumed.pathExists(
+          kind === 'local_file'
+            ? 'resources/nested'
+            : 'resources/nested/SKILL.md',
+        ),
+      ).toBe(true);
+    } finally {
+      await resumed?.close();
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt.each(['source', 'sentinel', 'extra-asset', 'symlink'] as const)(
+  'rejects an existing lazy tree after its %s changes',
+  async (change) => {
+    const f = await fixture(0, false, 0);
+    try {
+      await f.load('alpha');
+      const sourceRoot = f.sandbox.state.manifest.extraPathGrants[0].path;
+      const destination = join(
+        f.sandbox.state.workspaceRootPath,
+        '.agents/alpha',
+      );
+      if (change === 'source')
+        await writeFile(
+          join(sourceRoot, 'alpha/SKILL.md'),
+          'new source document',
+        );
+      else if (change === 'sentinel')
+        await writeFile(
+          join(destination, 'SKILL.md'),
+          'stale workspace document',
+        );
+      else if (change === 'extra-asset')
+        await writeFile(join(destination, 'untracked'), 'unverified asset');
+      else {
+        await rm(join(destination, 'asset'));
+        await symlink(
+          join(sourceRoot, 'alpha/SKILL.md'),
+          join(destination, 'asset'),
+        );
+      }
+      const before = await readFile(join(destination, 'SKILL.md'), 'utf8');
+      await expect(f.load('alpha')).rejects.toThrow();
+      expect(await readFile(join(destination, 'SKILL.md'), 'utf8')).toBe(
+        before,
+      );
+    } finally {
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+it('rejects an existing lazy tree for a provider without current-content verification', async () => {
+  const manifest = new Manifest();
+  const binding = new SandboxSkillBinding(
+    skills({
+      lazyFrom: {
+        source: {
+          type: 'dir',
+          children: {
+            report: {
+              type: 'dir',
+              children: { 'SKILL.md': { type: 'file', content: 'current' } },
+            },
+          },
+        },
+        index: [{ name: 'report', description: 'current report' }],
+      },
+    }),
+  );
+  let writes = 0;
+  const lease = new SandboxSkillLease(
+    binding,
+    {
+      state: { manifest },
+      pathExists: async () => true,
+      materializeEntry: async () => {
+        writes++;
+      },
+    },
+    new Environment({
+      url: 'wss://fixture.invalid',
+      cwd: '/workspace',
+      capabilityDirectories: ['/workspace/.agents'],
+      tools: [],
+    }),
+    manifest,
+    '/workspace',
+  );
+  try {
+    await lease.activate();
+    await expect(
+      lease.load('report', new AbortController().signal),
+    ).rejects.toThrow(/cannot be verified for this provider/);
+    expect(writes).toBe(0);
+  } finally {
+    lease.retire();
+  }
+});

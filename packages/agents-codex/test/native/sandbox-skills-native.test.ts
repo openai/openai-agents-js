@@ -54,7 +54,7 @@ async function materialize(path: string, entry: Entry): Promise<void> {
   }
 }
 
-function clientFixture() {
+function clientFixture(verifyExisting = false) {
   const sessions: SandboxSessionLike[] = [];
   const effects: string[] = [];
   const materializationOwners: number[] = [];
@@ -66,8 +66,21 @@ function clientFixture() {
       for (const [path, entry] of Object.entries(manifest.entries)) {
         await materialize(join(manifest.root, path), entry);
       }
+      const backing = verifyExisting
+        ? await new UnixLocalSandboxClient({
+            resumeAuthority: {
+              workspaceRootPath: manifest.root,
+              workspaceRootOwned: false,
+            },
+          }).resume({
+            manifest,
+            workspaceRootPath: manifest.root,
+            workspaceRootOwned: false,
+            environment: {},
+          })
+        : undefined;
       const session: SandboxSessionLike = {
-        state: { manifest },
+        state: backing?.state ?? { manifest },
         async pathExists(path) {
           try {
             await access(join(manifest.root, path));
@@ -81,9 +94,11 @@ function clientFixture() {
         async materializeEntry({ path, entry }) {
           effects.push(path);
           materializationOwners.push(sessions.indexOf(session));
-          await materialize(join(manifest.root, path), entry);
+          if (backing) await backing.materializeEntry({ path, entry });
+          else await materialize(join(manifest.root, path), entry);
         },
         async close() {
+          await backing?.close();
           closed.push(session);
         },
       };
@@ -196,7 +211,7 @@ nativeIt(
       [message('loaded')],
     ]);
     await using provider = await providerFor(server);
-    const f = clientFixture();
+    const f = clientFixture(true);
     let indexReads = 0;
     try {
       await mkdir(join(peer.cwd, '.agents'));
@@ -421,7 +436,7 @@ nativeIt(
   'keeps concurrent acquisitions independent when another lease closes',
   async () => {
     const peer = await startPublicExecutor();
-    const f = clientFixture();
+    const f = clientFixture(true);
     let reads = 0;
     const server = new ModelServer([
       [
@@ -1516,4 +1531,97 @@ nativeIt(
     }
   },
   60_000,
+);
+
+nativeIt(
+  'rejects an unverified stale lazy tree in a borrowed UnixLocal workspace',
+  async () => {
+    const client = new UnixLocalSandboxClient();
+    const sandbox = await client.create(
+      new Manifest({
+        entries: {
+          '.agents/report': dir({
+            children: {
+              'SKILL.md': file({ content: 'STALE_WORKSPACE_INSTRUCTIONS' }),
+              asset: file({ content: 'old asset' }),
+            },
+          }),
+        },
+      }),
+    );
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([
+      [
+        call(
+          'load_skill',
+          { skill_name: 'report' },
+          { callId: 'stale-borrowed-skill' },
+        ),
+      ],
+      [message('accepted stale skill')],
+    ]);
+    await using provider = await providerFor(server);
+    try {
+      const source = sandboxEnvironment({
+        client,
+        session: sandbox,
+        manifest: new Manifest(),
+        skills: skills({
+          lazyFrom: {
+            source: dir({
+              children: {
+                report: dir({
+                  children: {
+                    'SKILL.md': file({
+                      content: 'CURRENT_SOURCE_INSTRUCTIONS',
+                    }),
+                  },
+                }),
+              },
+            }),
+            index: [{ name: 'report', description: 'CURRENT_SOURCE_INDEX' }],
+          },
+        }),
+        connect: async () =>
+          Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: sandbox.state.workspaceRootPath,
+              capabilityDirectories: [
+                join(sandbox.state.workspaceRootPath, '.agents'),
+              ],
+              tools: [],
+            }),
+            async () => {},
+          ),
+      });
+      await using session = await new Agent({
+        provider,
+        model: 'fixture-skills',
+        instructions: 'Load the current report skill.',
+        tools: source.skillTools,
+      }).session({ environment: source });
+      await expect(
+        (await session.submit('Load report.')).wait(),
+      ).rejects.toThrow(/current source|verif/i);
+      expect(
+        await readFile(
+          join(sandbox.state.workspaceRootPath, '.agents/report/SKILL.md'),
+          'utf8',
+        ),
+      ).toBe('STALE_WORKSPACE_INSTRUCTIONS');
+      expect(
+        await readFile(
+          join(sandbox.state.workspaceRootPath, '.agents/report/asset'),
+          'utf8',
+        ),
+      ).toBe('old asset');
+      expect(server.requests).toHaveLength(1);
+    } finally {
+      await sandbox.close();
+      await peer.close();
+    }
+  },
+  20_000,
 );

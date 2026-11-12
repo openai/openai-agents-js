@@ -43,12 +43,21 @@ function capturedTreeUsage(
   maxBytes: number = treeLimits.maxBytes,
   path = '',
   known?: ReadonlyMap<string, unknown>,
+  retainedPayloadsOnly = false,
 ): SkillTreeUsage {
   const usage = { members: 0, bytes: 0 };
   const pending = [{ entry, path }];
   while (pending.length) {
     const current = pending.pop()!;
     if (known?.has(current.path)) continue;
+    // Source-backed declarations carry no retained bytes; the physical recount
+    // already measured their materialized contents. Captured trees stay strict.
+    if (
+      retainedPayloadsOnly &&
+      current.entry.type !== 'file' &&
+      current.entry.type !== 'dir'
+    )
+      continue;
     if (++usage.members > maxMembers)
       throw new Error('Skill tree member limit exceeded');
     if (current.entry.type === 'file') {
@@ -77,6 +86,22 @@ function capturedTreeUsage(
     } else throw new Error('Captured skill tree contains an unsupported entry');
   }
   return usage;
+}
+
+function sameCapturedTree(left: Entry, right: Entry): boolean {
+  if (left.type === 'file' && right.type === 'file')
+    return Buffer.from(left.content).equals(Buffer.from(right.content));
+  if (left.type !== 'dir' || right.type !== 'dir') return false;
+  const leftNames = Object.keys(left.children ?? {}).sort();
+  const rightNames = Object.keys(right.children ?? {}).sort();
+  return (
+    leftNames.length === rightNames.length &&
+    leftNames.every(
+      (name, index) =>
+        name === rightNames[index] &&
+        sameCapturedTree(left.children![name], right.children![name]),
+    )
+  );
 }
 
 type SandboxSkillBudget = {
@@ -160,6 +185,7 @@ async function seedRestoredSkillBudget(
       treeLimits.maxBytes - bytes,
       path,
       budget.retained,
+      true,
     );
     members += usage.members;
     bytes += usage.bytes;
@@ -614,7 +640,40 @@ export class SandboxSkillLease {
     );
     this.admit();
     signal.throwIfAborted();
-    if (!exists) {
+    if (exists) {
+      const authority = getLocalSandboxStateAuthority(sandbox.state);
+      if (!authority)
+        throw new Error(
+          'Existing skill destination cannot be verified for this provider; use a fresh workspace',
+        );
+      const relative = configuration.skillsPath
+        ? destination.slice(configuration.skillsPath.length + 1)
+        : destination;
+      const expected = await resolveLazySkillEntry(
+        configuration.lazyFrom!.source,
+        relative,
+        {
+          limits: treeLimits,
+          sourceGrants: sandbox.state.manifest.extraPathGrants,
+        },
+      );
+      this.admit();
+      signal.throwIfAborted();
+      const current = await resolveLazySkillEntry(
+        { type: 'local_dir', src: authority.workspaceRootPath },
+        destination,
+        {
+          limits: treeLimits,
+          sourceGrants: [{ path: authority.workspaceRootPath, readOnly: true }],
+        },
+      );
+      this.admit();
+      signal.throwIfAborted();
+      if (!sameCapturedTree(expected, current))
+        throw new Error(
+          'Existing skill destination does not match the current source; use a fresh workspace',
+        );
+    } else {
       await seedRestoredSkillBudget(this.#budget, sandbox, signal, () =>
         this.admit(),
       );
