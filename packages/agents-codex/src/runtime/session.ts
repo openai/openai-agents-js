@@ -12297,13 +12297,81 @@ export class Session<OutputT = string, Context = unknown> {
     context: ToolCallContext,
     declaration: ConfiguredAgentTool,
     input: string,
+    request: JsonObject,
   ): Promise<string> {
     context.signal.throwIfAborted();
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
+    let environment = this.environment;
+    if (environment) {
+      const policy = z
+        .object({
+          cwd: z.string(),
+          writableRoots: z.array(z.string()),
+          tools: z.array(z.string()),
+        })
+        .parse(
+          JSON.parse(
+            await this.#native._configured_child_policy(encodeReceipt(request)),
+          ),
+        );
+      context.signal.throwIfAborted();
+      if (!this.current(owner))
+        throw new NativeError('Configured child parent is no longer active');
+      const {
+        kind,
+        headers,
+        connectTimeout,
+        writePolicy,
+        mounts,
+        readOnlyRoots,
+        env,
+        approval,
+        transformArguments,
+        transformResult,
+        ...settings
+      } = environment;
+      const tools = environment.tools.filter((tool) =>
+        policy.tools.includes(tool),
+      );
+      const commands = tools.includes('exec_command');
+      environment = new Environment({
+        ...settings,
+        network: commands ? environment.network : undefined,
+        env,
+        approval,
+        transformArguments,
+        transformResult,
+        ...(kind === 'local'
+          ? {
+              local: true as const,
+              writePolicy:
+                writePolicy === 'trusted_workspace_write'
+                  ? writePolicy
+                  : ('strict' as const),
+              mounts,
+              readOnlyRoots,
+            }
+          : {
+              writePolicy:
+                writePolicy === 'legacy'
+                  ? ('legacy' as const)
+                  : ('strict' as const),
+              url: environment.url,
+              headers,
+              ...(connectTimeout === undefined ? {} : { connectTimeout }),
+            }),
+        ...(writePolicy === 'legacy'
+          ? {}
+          : { cwd: policy.cwd, writableRoots: policy.writableRoots }),
+        tools: commands
+          ? tools
+          : tools.filter((tool) => tool !== 'write_stdin'),
+      });
+    }
     const session = await declaration.open(
       context.context,
-      this.environment,
+      environment,
       context.signal,
     );
     const child = { session, owner, signal: context.signal, active: true };
@@ -12523,6 +12591,11 @@ export class Session<OutputT = string, Context = unknown> {
                 context,
                 configuredAgentTool(tool)!,
                 input,
+                {
+                  _sdk_python_tool: marker,
+                  turnId: msg.turnId!,
+                  callId: msg.callId!,
+                },
               )
           : undefined,
       );

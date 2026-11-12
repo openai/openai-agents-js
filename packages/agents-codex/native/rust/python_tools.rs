@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, Config, Feature, StartThreadOptions, ThreadManager};
 use codex_extension_api::{
-    ContextContributor, ExtensionData, ExtensionFuture, ThreadIdleInput,
+    ContextContributor, ExtensionData, ExtensionFuture, FinalStepBuiltinTools, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStartInput, ThreadStopInput, ToolCallOutcome,
     ToolContributor, ToolFinishInput, ToolLifecycleContributor, ToolLifecycleFuture, ToolPolicy,
     ToolStartInput, TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
@@ -277,6 +277,7 @@ impl ClientToolSearchWork {
 }
 
 struct PendingCall {
+    executor_tools: Option<Vec<String>>,
     client_search: Option<Arc<ClientToolSearchWork>>,
     // Captured by native enqueue, never reconstructed from a host reply.
     original_payload: Option<ToolPayload>,
@@ -2176,6 +2177,16 @@ impl PythonTools {
         Ok(())
     }
 
+    pub(crate) fn configured_child_executor_tools(&self, key: &PendingKey) -> Result<Vec<String>> {
+        self.check_pending(&key.reply.thread, key)?;
+        self.pending
+            .lock()
+            .expect("JavaScript replies poisoned")
+            .get(key)
+            .and_then(|call| call.executor_tools.clone())
+            .context("Configured child executor selection is unavailable")
+    }
+
     // Private callback delivery/admission may deny ended work. Strict checkpoint checks above remain unchanged.
     pub(crate) fn admit_callback(&self, owner: &str, key: &PendingKey) -> Result<bool> {
         ensure!(
@@ -2345,7 +2356,7 @@ impl PythonTools {
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
             thread, generation, slot, turn, call, arguments, None, None, source, model, media,
-            admission, None, None, None, None,
+            admission, None, None, None, None, None,
         )
     }
 
@@ -2367,6 +2378,7 @@ impl PythonTools {
         manual: Option<bool>,
         realtime_tool_call: Option<Value>,
         client_search: Option<Arc<ClientToolSearchWork>>,
+        executor_tools: Option<Vec<String>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -2454,6 +2466,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    executor_tools,
                     client_search,
                     original_payload: match &entry.spec {
                         ToolSpec::Mcp(_) => Some(ToolPayload::HostedMcpApproval {
@@ -3127,6 +3140,7 @@ impl PythonContributor {
         profile: Option<codex_extension_api::AgentProfileReceipt>,
         manual: Option<Arc<CapturedManualTools>>,
         wrap_profile_handoffs: bool,
+        executor_tools: Option<Arc<FinalStepBuiltinTools>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
@@ -3142,6 +3156,7 @@ impl PythonContributor {
                     })
                     .flatten();
                 let callback = Arc::new(PythonExecutor {
+                    executor_tools: executor_tools.clone(),
                     decision_selection: decision_selection.clone(),
                     admission: thread
                         .get::<ModelPresentation>()
@@ -3531,6 +3546,7 @@ impl ToolContributor for PythonContributor {
             None,
             None,
             true,
+            None,
         )
     }
 
@@ -3641,6 +3657,7 @@ impl ToolContributor for PythonContributor {
             profile.clone(),
             manual,
             true,
+            Some(step.get_or_init(FinalStepBuiltinTools::default)),
         );
         for generation in admitted_client_generations(thread, &snapshot.generation, &profile) {
             let slots: Vec<_> = (0..generation.entries.len()).collect();
@@ -3654,6 +3671,7 @@ impl ToolContributor for PythonContributor {
                 profile.clone(),
                 None,
                 false,
+                Some(step.get_or_init(FinalStepBuiltinTools::default)),
             ));
         }
         executors
@@ -3996,6 +4014,7 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    executor_tools: Option<Arc<FinalStepBuiltinTools>>,
     decision_selection: Option<Arc<crate::agent_profiles::DecisionHandoffSelection>>,
     admission: Option<Arc<crate::turn_settlement::Turn>>,
     manual: Option<Arc<CapturedManualTools>>,
@@ -4209,6 +4228,34 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .map(|manual| manual.slots.contains(&self.slot)),
                     call.conversation_history.realtime_tool_call().cloned(),
                     client_search.clone(),
+                    self.executor_tools
+                        .as_ref()
+                        .and_then(|selection| selection.names())
+                        .map(|names| {
+                            let mut names = names
+                                .iter()
+                                .filter_map(|name| {
+                                    if name
+                                        .namespace
+                                        .as_deref()
+                                        .is_some_and(|namespace| namespace != "functions")
+                                    {
+                                        return None;
+                                    }
+                                    match name.name.as_str() {
+                                        "exec_command" | "shell_command" => {
+                                            Some("exec_command".to_string())
+                                        }
+                                        "write_stdin" | "apply_patch" | "project_glob"
+                                        | "project_grep" => Some(name.name.clone()),
+                                        _ => None,
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            names.sort_unstable();
+                            names.dedup();
+                            names
+                        }),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
@@ -4811,6 +4858,7 @@ mod pending_tests {
                 None,
                 None,
                 Some(manual.slots.contains(&0)),
+                None,
                 None,
                 None,
             )

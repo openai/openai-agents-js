@@ -1027,7 +1027,11 @@
     {
       "path": "sdk-agent-profile-request-transport.patch",
       "sha256": "77c570ed69481b556ace4340382601513ac13aa377accc10da563d23bb895333"
+    },
+    {
+      "path": "sdk-final-configured-child-tool-selection.patch",
+      "sha256": "61b69736dfbba375ba595e35ee4eeaa43edf606691ef47654dfe20d34d3f4ebb"
     }
   ],
-  "result_tree": "29aa1e68efbd6a85db39851c3a05464e1b94dace"
+  "result_tree": "e3204c5a37d3c474c3625474ab10a0039ce161a2"
 }
