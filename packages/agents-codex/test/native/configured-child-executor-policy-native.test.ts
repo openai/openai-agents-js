@@ -1,5 +1,5 @@
-import { afterEach, expect, it } from 'vitest';
-import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { afterEach, expect, it, vi } from 'vitest';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -10,10 +10,30 @@ import {
   NativeProvider,
   NativeAgents,
   NativeRole,
+  toolRef,
+  tool,
   type Session,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
+import { binding, type NativeThread } from '../../src/runtime/binding';
+import { z } from 'zod';
+
+function functionOutput(
+  request: ModelServer['requests'][number],
+  callId: string,
+) {
+  return Array.isArray(request.input)
+    ? request.input.find(
+        (item) =>
+          item !== null &&
+          typeof item === 'object' &&
+          !Array.isArray(item) &&
+          item.type === 'function_call_output' &&
+          item.call_id === callId,
+      )
+    : undefined;
+}
 
 const native = process.env.OPENAI_AGENTS_NATIVE_TESTS === '1';
 const catalog: {
@@ -38,7 +58,10 @@ const descendantModel = catalog.find(
 if (native && !descendantModel)
   throw new Error('Expected a catalog model with V2 collaboration');
 
-afterEach(() => ModelServer.closeAll());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await ModelServer.closeAll();
+});
 
 it
   .skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')
@@ -309,6 +332,247 @@ it.skipIf(!native || process.platform !== 'linux')(
       childModel.assertExhausted();
     } finally {
       await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  15000,
+);
+
+it
+  .skipIf(!native)
+  .each([
+    'operation',
+    'before-step',
+    'forced-name',
+    'legacy-operation',
+    'application-search',
+  ] as const)(
+  'keeps the issuing %s executor tool ceiling in a configured child',
+  async (selection) => {
+    const executor = await startPublicExecutor();
+    try {
+      const rootModel = new ModelServer([
+        [
+          call(
+            'configured_child',
+            { input: 'run child' },
+            { callId: 'selected-child' },
+          ),
+        ],
+        [message('root complete')],
+      ]);
+      const childModel = new ModelServer([
+        [
+          call(
+            'exec_command',
+            { cmd: 'printf OMITTED_EXECUTOR_RAN' },
+            { callId: 'omitted-executor' },
+          ),
+        ],
+        [message('child complete')],
+      ]);
+      const provider = async (server: ModelServer) => {
+        const config = await server.config();
+        return new NativeProvider({
+          baseUrl: (config['model_providers.fixture'] as { base_url: string })
+            .base_url,
+          apiKey: 'local-fixture',
+          supportsWebsockets: false,
+        });
+      };
+      await using rootProvider = await provider(rootModel);
+      await using childProvider = await provider(childModel);
+      const child = new Agent({
+        instructions: 'Report.',
+        model: 'gpt-5.5',
+        provider: childProvider,
+      });
+      let childEnvironment: Environment | undefined;
+      const open = child.session.bind(child);
+      child.session = async (...args) => {
+        childEnvironment = (
+          args[0] as { environment?: Environment } | undefined
+        )?.environment;
+        return open(...args);
+      };
+      const configured = child.asTool({ toolName: 'configured_child' });
+      const callbackCalls: string[] = [];
+      const applicationSearch = tool({
+        name: 'project_glob',
+        parameters: z.object({}),
+        execute: () => {
+          callbackCalls.push('search');
+          return 'application search';
+        },
+      });
+      const selected =
+        selection === 'application-search'
+          ? [configured, applicationSearch]
+          : [configured];
+      const receipts: { tools: string[] }[] = [];
+      const nativeBinding = await binding();
+      const capture =
+        nativeBinding.NativeThread.prototype._configured_child_policy;
+      vi.spyOn(
+        nativeBinding.NativeThread.prototype,
+        '_configured_child_policy',
+      ).mockImplementation(async function (
+        this: NativeThread,
+        request: string,
+      ) {
+        const encoded = await capture.call(this, request);
+        receipts.push(JSON.parse(encoded));
+        return encoded;
+      });
+      const parent = new Agent({
+        instructions: 'Run the child.',
+        model: 'gpt-5.5',
+        provider: rootProvider,
+        tools: selected,
+        modelSettings:
+          selection === 'forced-name'
+            ? { toolChoice: toolRef('configured_child', 'functions') }
+            : undefined,
+      });
+      await using root = await parent.session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['exec_command', 'write_stdin', 'apply_patch'],
+          writePolicy: selection === 'legacy-operation' ? 'legacy' : undefined,
+        }),
+      });
+      const turn = await root.submit(
+        'Run child.',
+        selection === 'operation' ||
+          selection === 'legacy-operation' ||
+          selection === 'application-search'
+          ? { tools: selected }
+          : selection === 'before-step'
+            ? { beforeStep: () => [configured] }
+            : undefined,
+      );
+      expect((await turn.wait()).finalOutput).toBe('root complete');
+      expect(JSON.stringify(rootModel.requests[0].tools)).not.toContain(
+        'exec_command',
+      );
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toEqual([]);
+      expect(childEnvironment!.tools).toEqual([]);
+      expect(callbackCalls).toEqual([]);
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].tools).toEqual([]);
+      expect(JSON.stringify(childModel.requests[0].tools)).not.toContain(
+        'exec_command',
+      );
+      rootModel.assertExhausted();
+      childModel.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  15000,
+);
+
+it.skipIf(!native)(
+  'inherits real native project-search helpers in a configured child',
+  async () => {
+    const executor = await startPublicExecutor();
+    try {
+      await writeFile(
+        join(await realpath(executor.cwd), 'child-search-proof.txt'),
+        'configured child search proof\n',
+      );
+      const rootModel = new ModelServer([
+        [
+          call(
+            'configured_child',
+            { input: 'Search the workspace.' },
+            { callId: 'search-child' },
+          ),
+        ],
+        [message('root complete')],
+      ]);
+      const childModel = new ModelServer([
+        [
+          call(
+            'project_glob',
+            { pattern: '**/*.txt' },
+            { callId: 'child-glob' },
+          ),
+        ],
+        (request) => {
+          const output = functionOutput(request, 'child-glob');
+          if (!output || typeof output !== 'object' || Array.isArray(output))
+            throw new Error('Missing accepted glob output');
+          const found = JSON.parse(String(output.output));
+          expect(found.errors).toEqual([]);
+          expect(found.matches).toContain('child-search-proof.txt');
+          return [
+            call(
+              'project_grep',
+              { pattern: 'configured child search proof' },
+              { callId: 'child-grep' },
+            ),
+          ];
+        },
+        (request) => {
+          const output = functionOutput(request, 'child-grep');
+          if (!output || typeof output !== 'object' || Array.isArray(output))
+            throw new Error('Missing accepted grep output');
+          expect(JSON.parse(String(output.output))).toMatchObject({
+            errors: [],
+            matches: [
+              {
+                path: 'child-search-proof.txt',
+                line_number: 1,
+                line: 'configured child search proof',
+              },
+            ],
+          });
+          return [message('child search complete')];
+        },
+      ]);
+      const provider = async (server: ModelServer) => {
+        const config = await server.config();
+        return new NativeProvider({
+          baseUrl: (config['model_providers.fixture'] as { base_url: string })
+            .base_url,
+          apiKey: 'synthetic-search',
+          supportsWebsockets: false,
+        });
+      };
+      await using rootProvider = await provider(rootModel);
+      await using childProvider = await provider(childModel);
+      const child = new Agent({
+        instructions: 'Search.',
+        model: 'gpt-5.5',
+        provider: childProvider,
+      });
+      const parent = new Agent({
+        instructions: 'Use the child.',
+        model: 'gpt-5.5',
+        provider: rootProvider,
+        tools: [child.asTool({ toolName: 'configured_child' })],
+      });
+      await using root = await parent.session({
+        environment: new Environment({
+          url: executor.url,
+          cwd: executor.cwd,
+          headers: executor.headers,
+          tools: ['project_glob', 'project_grep'],
+        }),
+      });
+      expect((await (await root.submit('Search.')).wait()).finalOutput).toBe(
+        'root complete',
+      );
+      rootModel.assertExhausted();
+      childModel.assertExhausted();
+    } finally {
+      await executor.close();
     }
   },
   15000,

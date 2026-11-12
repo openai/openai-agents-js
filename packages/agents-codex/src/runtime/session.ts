@@ -12278,11 +12278,12 @@ export class Session<OutputT = string, Context = unknown> {
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
     let environment = this.environment;
-    if (environment && environment.writePolicy !== 'legacy') {
+    if (environment) {
       const policy = z
         .object({
           cwd: z.string(),
           writableRoots: z.array(z.string()),
+          tools: z.array(z.string()),
         })
         .parse(
           JSON.parse(
@@ -12312,15 +12313,28 @@ export class Session<OutputT = string, Context = unknown> {
         transformArguments,
         transformResult,
         ...(kind === 'local'
-          ? { local: true as const, writePolicy, mounts, readOnlyRoots }
+          ? {
+              local: true as const,
+              writePolicy:
+                writePolicy === 'trusted_workspace_write'
+                  ? writePolicy
+                  : ('strict' as const),
+              mounts,
+              readOnlyRoots,
+            }
           : {
-              writePolicy: 'strict' as const,
+              writePolicy:
+                writePolicy === 'legacy'
+                  ? ('legacy' as const)
+                  : ('strict' as const),
               url: environment.url,
               headers,
               ...(connectTimeout === undefined ? {} : { connectTimeout }),
             }),
-        cwd: policy.cwd,
-        writableRoots: policy.writableRoots,
+        ...(writePolicy === 'legacy'
+          ? {}
+          : { cwd: policy.cwd, writableRoots: policy.writableRoots }),
+        tools: environment.tools.filter((tool) => policy.tools.includes(tool)),
       });
     }
     const session = await declaration.open(

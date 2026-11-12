@@ -3766,12 +3766,16 @@ impl NativeThread {
         {
             return Err(native_error("Configured child callback owner has changed"));
         }
-        let policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
+        let executor_tools = owner
+            .configured_child_executor_tools(&key)
+            .map_err(native_error)?;
+        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
             .await
             .map_err(native_error)?;
         owner
             .check_pending(&key.reply.thread, &key)
             .map_err(native_error)?;
+        policy["tools"] = serde_json::json!(executor_tools);
         serde_json::to_string(&policy).map_err(native_error)
     }
 
