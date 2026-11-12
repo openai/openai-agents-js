@@ -59,6 +59,7 @@ export interface SandboxEnvironmentOptions<
   /** Application-authorized manifest; validate untrusted data before constructing it. */
   manifest: Manifest;
   /** Resource declarations; select source.skillTools in each intended Agent catalog. */
+  /** Eager resources require an owned source; borrowed sources support prepared lazy indexes. */
   skills?: Skills;
   /** Trusted provider options: plain data is captured; opaque handles/functions remain caller-owned. */
   options?: Options;
@@ -262,6 +263,15 @@ function createSandboxEnvironment<
     inheritedManaged ?? (options.managedWorkspace ? {} : undefined);
   const create = client.create?.bind(client);
   const borrowed = options.session;
+  if (
+    borrowed &&
+    skillBinding &&
+    (skillBinding.configuration.from ||
+      skillBinding.configuration.skills.length > 0)
+  )
+    throw new TypeError(
+      'Eager Skills require an owned sandbox source; prepare borrowed resources before selecting a lazy skill index',
+    );
   const resume = options.authorizedResumeState;
   const originalResumeState = resume?.state;
   if (
@@ -523,7 +533,13 @@ function createSandboxEnvironment<
           signal,
         );
         skillLease = skillBinding
-          ? new SandboxSkillLease(skillBinding, sandbox, gateway.environment!)
+          ? new SandboxSkillLease(
+              skillBinding,
+              sandbox,
+              gateway.environment!,
+              manifest,
+              runtime.skillWorkspaceRoot(sandbox),
+            )
           : undefined;
         const skillInstructions = await skillLease?.activate();
         gateway.opened();
@@ -533,16 +549,14 @@ function createSandboxEnvironment<
           dispose,
           gateway.signal,
           managed,
-          [
+          appendSkillInstructions(
             renderWorkspaceInstructions(
               sandbox.state.manifest,
               gateway.environment! as Environment<Context>,
               runtime,
             ),
             skillInstructions,
-          ]
-            .filter(Boolean)
-            .join('\n\n') || undefined,
+          ),
           skillLease,
         );
       };
@@ -783,4 +797,23 @@ function captureResumeState<State extends SandboxSessionState>(
   const captured = captureOptions(state);
   copySandboxStateRuntimeAuthority(state, captured);
   return captured;
+}
+
+// Preserve complete workspace safety guidance before filling the remaining native byte budget.
+function appendSkillInstructions(
+  workspace: string,
+  index?: string | null,
+): string {
+  if (!index) return workspace;
+  const combined = workspace + '\n\n' + index;
+  if (Buffer.byteLength(combined, 'utf8') <= 40_000) return combined;
+  const notice =
+    '\nSome skill index details have been omitted to fit the instruction limit.';
+  const available =
+    40_000 - Buffer.byteLength(workspace + '\n\n' + notice, 'utf8');
+  if (available <= 0) return workspace;
+  const bytes = Buffer.from(index, 'utf8');
+  let end = available;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return workspace + '\n\n' + bytes.subarray(0, end).toString('utf8') + notice;
 }

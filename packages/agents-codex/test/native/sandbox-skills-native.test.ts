@@ -1,4 +1,16 @@
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import {
+  UnixLocalSandboxClient,
+  localDirLazySkillSource,
+} from '@openai/agents/sandbox/local';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import {
@@ -479,4 +491,238 @@ nativeIt(
       await peer.close();
     }
   },
+);
+
+it('budgets the combined workspace and multibyte skill index instructions', async () => {
+  const f = clientFixture();
+  const source = sandboxEnvironment({
+    client: f.client,
+    manifest: new Manifest({ root: '/workspace' }),
+    skills: skills({
+      lazyFrom: {
+        source: lazyResource(),
+        index: Array.from({ length: 100 }, (_, i) => ({
+          name: `report-${i}`,
+          description: 'é'.repeat(500),
+        })),
+      },
+    }),
+    connect: async () =>
+      Environment.lease(
+        new Environment({
+          url: 'wss://fixture.invalid',
+          cwd: '/workspace',
+          capabilityDirectories: ['/workspace/.agents'],
+        }),
+        async () => {},
+      ),
+  });
+  const lease = await acquireEnvironment(source, new AbortController().signal);
+  try {
+    expect(
+      Buffer.byteLength(lease.workspaceInstructions!, 'utf8'),
+    ).toBeLessThanOrEqual(40_000);
+    expect(lease.workspaceInstructions).toContain('## Skills');
+    expect(lease.workspaceInstructions).not.toContain('�');
+  } finally {
+    await lease.dispose();
+  }
+});
+
+it.each(['matching', 'revoked', 'replaced'] as const)(
+  'checks %s borrowed UnixLocal source grants before index discovery',
+  async (mode) => {
+    const root = await mkdtemp(join(tmpdir(), 'native-skills-borrowed-'));
+    const client = new UnixLocalSandboxClient();
+    const localSkills = join(root, 'private');
+    await mkdir(join(localSkills, 'report'), { recursive: true });
+    await mkdir(join(root, 'other'));
+    await writeFile(
+      join(localSkills, 'report/SKILL.md'),
+      '---\nname: report\ndescription: PRIVATE_METADATA\n---\nprivate skill',
+    );
+    const sandbox = await client.create({
+      manifest: new Manifest({
+        root: '/workspace',
+        extraPathGrants: [{ path: localSkills, readOnly: true }],
+      }),
+    });
+    let indexed = false;
+    try {
+      const source = sandboxEnvironment({
+        client,
+        session: sandbox,
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants:
+            mode === 'matching'
+              ? [{ path: localSkills, readOnly: true }]
+              : mode === 'replaced'
+                ? [{ path: join(root, 'other'), readOnly: true }]
+                : [],
+        }),
+        skills: skills({
+          lazyFrom: {
+            ...localDirLazySkillSource(localSkills),
+            getIndex: (manifest, skillsPath) => {
+              indexed = true;
+              return localDirLazySkillSource(localSkills).getIndex!(
+                manifest,
+                skillsPath,
+              );
+            },
+          },
+        }),
+        connect: async () =>
+          Environment.lease(
+            new Environment({
+              url: 'wss://fixture.invalid',
+              cwd: sandbox.state.workspaceRootPath,
+              capabilityDirectories: [
+                join(sandbox.state.workspaceRootPath, '.agents'),
+                '/workspace/.agents',
+              ],
+            }),
+            async () => {},
+          ),
+      });
+      if (mode === 'matching') {
+        const acquisition = await acquireEnvironment(
+          source,
+          new AbortController().signal,
+        );
+        try {
+          expect(acquisition.workspaceInstructions).toContain(
+            'PRIVATE_METADATA',
+          );
+        } finally {
+          await acquisition.dispose();
+        }
+        expect(indexed).toBe(true);
+      } else {
+        await expect(
+          acquireEnvironment(source, new AbortController().signal),
+        ).rejects.toThrow(/grant/);
+        expect(indexed).toBe(false);
+      }
+      await expect(
+        access(
+          join(sandbox.state.workspaceRootPath, '.agents/report/SKILL.md'),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await sandbox.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(['inline', 'from'] as const)(
+  'rejects %s eager borrowed UnixLocal declarations before publishing an index',
+  async (mode) => {
+    const client = new UnixLocalSandboxClient();
+    const sandbox = await client.create({
+      manifest: new Manifest({ root: '/workspace' }),
+    });
+    let connected = false;
+    try {
+      expect(() =>
+        sandboxEnvironment({
+          client,
+          session: sandbox,
+          manifest: new Manifest({ root: '/workspace' }),
+          skills: skills(
+            mode === 'from'
+              ? { from: lazyResource() }
+              : {
+                  skills: [
+                    {
+                      name: 'report',
+                      description: 'BORROWED_REPORT',
+                      content: 'borrowed bytes',
+                    },
+                  ],
+                },
+          ),
+          connect: async () => {
+            connected = true;
+            return Environment.lease(
+              new Environment({
+                url: 'wss://fixture.invalid',
+                cwd: '/workspace',
+              }),
+              async () => {},
+            );
+          },
+        }),
+      ).toThrow(/Eager Skills require an owned/);
+      expect(connected).toBe(false);
+      expect(await sandbox.pathExists('.agents/report/SKILL.md')).toBe(false);
+    } finally {
+      await sandbox.close();
+    }
+  },
+);
+
+nativeIt(
+  'uses the acquired UnixLocal executor root across relocated Sessions with a subdirectory cwd',
+  async () => {
+    const client = new UnixLocalSandboxClient();
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([
+      [message('first index')],
+      [message('relocated index')],
+    ]);
+    await using provider = await providerFor(server);
+    const roots: string[] = [];
+    try {
+      const source = sandboxEnvironment({
+        client,
+        manifest: new Manifest({ root: '/workspace' }),
+        skills: skills({
+          skills: [
+            {
+              name: 'report',
+              description: 'LOCAL_REPORT',
+              content: 'local bytes\r\n',
+            },
+          ],
+        }),
+        connect: async (sandbox) => {
+          const root = sandbox.state.workspaceRootPath;
+          roots.push(root);
+          await mkdir(join(root, 'work'));
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: join(root, 'work'),
+              capabilityDirectories: [join(root, '.agents')],
+              tools: [],
+            }),
+            async () => {},
+          );
+        },
+      });
+      for (let i = 0; i < 2; i++) {
+        await using session = await new Agent({
+          provider,
+          model: 'fixture-skills',
+          instructions: 'Read the current skill index.',
+        }).session({ environment: source });
+        await (await session.submit('Inspect the index.')).wait();
+        expect(JSON.stringify(server.requests[i])).toContain(
+          `file: ${roots[i]}/.agents/report`,
+        );
+        expect(
+          await readFile(join(roots[i], '.agents/report/SKILL.md'), 'utf8'),
+        ).toBe('local bytes\r\n');
+      }
+      expect(roots[0]).not.toBe(roots[1]);
+      server.assertExhausted();
+    } finally {
+      await peer.close();
+    }
+  },
+  20_000,
 );

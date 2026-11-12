@@ -1,3 +1,4 @@
+import { getLocalSandboxStateAuthority } from './internal/sessionStateTrust';
 import {
   dir,
   file,
@@ -663,5 +664,13 @@ function pathsOverlap(left: string, right: string): boolean {
     left === right ||
     left.startsWith(`${right}/`) ||
     right.startsWith(`${left}/`)
+  );
+}
+
+/** Current provider-owned root; serialized state fields do not supply path authority. */
+export function skillWorkspaceRoot(session: SandboxSessionLike): string {
+  return (
+    getLocalSandboxStateAuthority(session.state)?.workspaceRootPath ??
+    session.state.manifest.root
   );
 }

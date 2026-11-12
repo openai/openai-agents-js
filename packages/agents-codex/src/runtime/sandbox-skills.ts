@@ -111,10 +111,12 @@ export class SandboxSkillLease {
     readonly binding: SandboxSkillBinding,
     sandbox: SandboxSessionLike,
     environment: Environment,
+    trustedManifest: Manifest,
+    readonly workspaceRoot: string,
   ) {
     this.#sandbox = sandbox;
     this.#environment = environment;
-    this.#grants = grantStamp(sandbox.state.manifest);
+    this.#grants = grantStamp(trustedManifest);
   }
 
   get environment(): Environment | undefined {
@@ -122,7 +124,7 @@ export class SandboxSkillLease {
   }
 
   private modelPath(path: string): string {
-    return modelWorkspaceResourcePath(this.#sandbox!.state.manifest.root, path);
+    return modelWorkspaceResourcePath(this.workspaceRoot, path);
   }
 
   private checkPaths(metadata: readonly SkillIndexEntry[] = []): void {
@@ -145,6 +147,9 @@ export class SandboxSkillLease {
   }
 
   async activate(): Promise<string | null> {
+    // Current configuration, not an older borrowed session, supplies source grants.
+    if (grantStamp(this.#sandbox!.state.manifest) !== this.#grants)
+      throw new Error('Sandbox skill grants do not match the current manifest');
     // Namespace admission precedes an application index callback or filesystem read.
     this.checkPaths();
     const configuration = this.binding.configuration;

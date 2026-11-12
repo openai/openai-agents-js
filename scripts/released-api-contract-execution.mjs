@@ -42,6 +42,7 @@ const CONVENIENCE_IDENTITY_PAIRS = [
     bundle: '@openai/agents/sandbox',
     bundleLabel: '@openai/agents/sandbox',
     owner: '@openai/agents-core/sandbox',
+    bindingOwners: { skills: '@openai/agents-codex' },
     ownerLabel: '@openai/agents-core',
   },
   {
@@ -81,6 +82,7 @@ function convenienceIdentityPairs(packages) {
     if (!exports[classicSubpath]) return [pair];
     const classic = {
       ...pair,
+      bindingOwners: undefined,
       bundle: `@openai/agents/classic${subpath}`,
       bundleLabel: pair.bundleLabel.replace(
         '@openai/agents',
@@ -179,10 +181,13 @@ export function compareConvenienceBindingIdentity(
         errors.push(
           `${pair.bundleLabel}.${exportedName} is missing in ${format}${conditionLabel}`,
         );
-      } else if (bundle[exportedName] !== owner[exportedName]) {
-        errors.push(
-          `${pair.bundleLabel}.${exportedName} is not the ${pair.ownerLabel} runtime binding in ${format}${conditionLabel}`,
-        );
+      } else {
+        const ownerName = pair.bindingOwners?.[exportedName];
+        const expectedOwner = ownerName ? loadedModules[ownerName] : owner;
+        if (bundle[exportedName] !== expectedOwner?.[exportedName])
+          errors.push(
+            `${pair.bundleLabel}.${exportedName} is not the ${ownerName ?? pair.ownerLabel} runtime binding in ${format}${conditionLabel}`,
+          );
       }
     }
   }

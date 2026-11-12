@@ -168,3 +168,5 @@ export type {
 } from './skillResources';
 
 export { modelWorkspaceResourcePath } from './workspacePaths';
+
+export { skillWorkspaceRoot } from './skillResources';
