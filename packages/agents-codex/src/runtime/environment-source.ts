@@ -26,6 +26,8 @@ export type EnvironmentSource<Context = any> = (options: {
 export type DisposeGuard = (
   dispose: () => void | Promise<void>,
 ) => Promise<void>;
+type SandboxOperationObserver = (message: Record<string, unknown>) => void;
+
 interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
