@@ -131,6 +131,7 @@ import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
+import { validateCustomStorageCompatibility } from './opening-compatibility';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
@@ -1178,18 +1179,12 @@ export class Agent<Context = undefined, Output = string> {
           ? undefined
           : localStoragePath(descriptor as LocalStorage);
     const persistent = descriptor !== undefined;
-    if (
-      customStore &&
-      (environmentInput !== undefined ||
-        (declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
-        declarations.checklist ||
-        declarations.nativeGoals ||
-        declarations.nativeAgents ||
-        catalog.tools.some((tool) => tool.kind === 'manual'))
-    )
-      throw new TypeError(
-        'Custom canonical storage does not support environments, standalone native search, checklists, goals, child agents, or manual tools',
-      );
+    validateCustomStorageCompatibility(
+      customStore,
+      declarations,
+      catalog,
+      environmentInput !== undefined,
+    );
     const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
     if (
       reconciledCalls !== undefined &&
