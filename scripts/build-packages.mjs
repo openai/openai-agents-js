@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { build, loadConfig } from 'tsc-multi';
 import { buildEsmDeclarations } from './build-esm-declarations.mjs';
+import { buildCoreNode } from './build-core-node.mjs';
 
 export async function buildPackages(config, isStopped = () => false) {
   const ts = createRequire(import.meta.url)(config.compiler ?? 'typescript');
@@ -38,6 +39,13 @@ export async function buildPackages(config, isStopped = () => false) {
         );
         buildEsmDeclarations(parsed.options.outDir);
       }
+    }
+    if (
+      !isStopped() &&
+      resolve(config.cwd, project) ===
+        resolve(config.cwd, 'packages/agents-core/tsconfig.json')
+    ) {
+      await buildCoreNode(resolve(config.cwd, 'packages/agents-core'));
     }
   }
   return 0;
