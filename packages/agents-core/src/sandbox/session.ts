@@ -96,7 +96,19 @@ export type ReadFileArgs = {
 export type ListDirectoryArgs = {
   path: string;
   runAs?: string;
+  /** Reject before returning more than this many entries. */
+  maxEntries?: number;
 };
+
+export function normalizeDirectoryEntryLimit(
+  limit?: number,
+): number | undefined {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0))
+    throw new UserError(
+      'Directory entry limit must be a non-negative safe integer',
+    );
+  return limit;
+}
 
 export type SandboxDirectoryEntry = {
   name: string;

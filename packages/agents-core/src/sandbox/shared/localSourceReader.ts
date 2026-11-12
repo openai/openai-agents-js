@@ -143,12 +143,15 @@ async function openSourceParent(
   }
 }
 
-export async function readLocalSourceFile(path: string): Promise<Uint8Array> {
+export async function readLocalSourceFile(
+  path: string,
+  maxBytes?: number,
+): Promise<Uint8Array> {
   const { parent, name } = await openSourceParent(path, 'local_file');
   try {
     if (!name) throw pathChanged('local_file', path);
     try {
-      return await parent.readFile(name);
+      return await parent.readFile(name, maxBytes);
     } catch (error) {
       sourceError(error, 'local_file', path);
     }
@@ -224,18 +227,18 @@ function bindDirectory(
         sourceError(error, 'local_dir', `${path}/${name}`);
       }
     },
-    async readFile(name) {
+    async readFile(name, maxBytes) {
       try {
-        return await directory.readFile(name);
+        return await directory.readFile(name, maxBytes);
       } catch (error) {
         sourceError(error, 'local_dir', `${path}/${name}`);
       }
     },
-    async entries() {
+    async entries(maxEntries) {
       try {
         // Match Node's scandir ordering so bounded materialization queues retain
         // their prior failure/skip behavior on every native backend.
-        return (await directory.entries()).sort((left, right) =>
+        return (await directory.entries(maxEntries)).sort((left, right) =>
           Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)),
         );
       } catch (error) {
@@ -275,21 +278,23 @@ async function withSourceDirectory<T>(
 export async function readLocalSourceFileAt(
   root: NativeSourceDirectory,
   components: readonly string[],
+  maxBytes?: number,
 ): Promise<Uint8Array> {
   if (components.length === 0) {
     throw new UserError('Local source file needs a relative component.');
   }
   return withSourceDirectory(root, components.slice(0, -1), (directory) =>
-    directory.readFile(components[components.length - 1]),
+    directory.readFile(components[components.length - 1], maxBytes),
   );
 }
 
 export async function readLocalSourceEntriesAt(
   root: NativeSourceDirectory,
   components: readonly string[],
+  maxEntries?: number,
 ): Promise<NativeSourceEntry[]> {
   return withSourceDirectory(root, components, (directory) =>
-    directory.entries(),
+    directory.entries(maxEntries),
   );
 }
 

@@ -1645,6 +1645,13 @@ describe('DockerSandboxClient unit behavior', () => {
       { name: 'link', path: 'mounted/link', type: 'other' },
     ]);
     await expect(
+      session.listDir({ path: 'mounted', maxEntries: 1 }),
+    ).rejects.toThrow(/entry limit/);
+    await expect(
+      session.listDir({ path: 'mounted', maxEntries: 3 }),
+    ).resolves.toHaveLength(3);
+
+    await expect(
       session.createEditor().createFile({
         type: 'create_file',
         path: 'mounted/host-only.txt',
@@ -1660,7 +1667,7 @@ describe('DockerSandboxClient unit behavior', () => {
           command.includes('base64 --') ||
           command.includes('find '),
       );
-    expect(filesystemCommands).toHaveLength(3);
+    expect(filesystemCommands).toHaveLength(5);
     for (const command of filesystemCommands) {
       expect(command).toContain('exec -i');
       expect(command).toContain('container-123');

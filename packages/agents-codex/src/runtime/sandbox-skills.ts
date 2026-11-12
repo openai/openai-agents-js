@@ -265,10 +265,21 @@ export class SandboxSkillLease {
       const relative = configuration.skillsPath
         ? destination.slice(configuration.skillsPath.length + 1)
         : destination;
-      await sandbox.materializeEntry({
-        path: destination,
-        entry: resolveLazySkillEntry(configuration.lazyFrom!.source, relative),
-      });
+      const entry = await resolveLazySkillEntry(
+        configuration.lazyFrom!.source,
+        relative,
+        {
+          limits: {
+            maxMembers: 4096,
+            maxDepth: 32,
+            maxBytes: 64 * 1024 * 1024,
+          },
+          sourceGrants: sandbox.state.manifest.extraPathGrants,
+        },
+      );
+      this.admit();
+      signal.throwIfAborted();
+      await sandbox.materializeEntry({ path: destination, entry });
       this.admit();
       signal.throwIfAborted();
     }

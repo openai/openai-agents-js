@@ -39,6 +39,7 @@ import {
 } from '../client';
 import {
   normalizeExposedPort,
+  normalizeDirectoryEntryLimit,
   recordExposedPortEndpoint,
   type ExposedPortEndpoint,
   type ExecCommandArgs,
@@ -525,6 +526,7 @@ export class UnixLocalSandboxSession<
 
   async listDir(args: ListDirectoryArgs): Promise<SandboxDirectoryEntry[]> {
     this.assertSessionUsable();
+    const limit = normalizeDirectoryEntryLimit(args.maxEntries);
     const identity = await this.resolveFilesystemRunAs(args.runAs);
     const resolved = this.resolveSandboxPathTarget(args.path);
     const logicalPath = resolved.workspaceRelativePath ?? resolved.path;
@@ -536,6 +538,7 @@ export class UnixLocalSandboxSession<
         await this.files.run(
           {
             operation: 'list',
+            ...(limit === undefined ? {} : { limit }),
             path: this.resolveFilesystemPath(args.path),
           },
           { identity },

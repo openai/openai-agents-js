@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  truncate,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -1054,6 +1055,150 @@ nativeIt(
     } finally {
       await peer.close();
       await rm(hostRoot, { recursive: true, force: true });
+    }
+  },
+  20_000,
+);
+
+nativeIt.each(['members', 'depth', 'bytes'] as const)(
+  'bounds selected lazy skill tree %s before provider materialization',
+  async (boundary) => {
+    const hostRoot = await mkdtemp(join(tmpdir(), 'native-skill-tree-'));
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([
+      [call('load_skill', { skill_name: 'report' }, { callId: 'tree-limit' })],
+      [message('unexpected unbounded load')],
+    ]);
+    await using provider = await providerFor(server);
+    let workspace = '';
+    try {
+      const selected = join(hostRoot, 'report');
+      await mkdir(selected);
+      await writeFile(
+        join(selected, 'SKILL.md'),
+        '---\nname: report\ndescription: SELECTED_TREE_LIMIT\n---\nbody',
+      );
+      const source = sandboxEnvironment({
+        client: new UnixLocalSandboxClient(),
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants: [{ path: hostRoot, readOnly: true }],
+        }),
+        skills: skills({
+          lazyFrom: localDirLazySkillSource({
+            src: hostRoot,
+            baseDir: hostRoot,
+          }),
+        }),
+        connect: async (sandbox) => {
+          workspace = sandbox.state.workspaceRootPath;
+          // Mutate only after bounded metadata discovery, before the tool call.
+          if (boundary === 'members') {
+            for (let i = 0; i < 4096; i++)
+              await writeFile(join(selected, `asset-${i}`), '');
+          } else if (boundary === 'depth') {
+            await mkdir(join(selected, ...Array(33).fill('nested')), {
+              recursive: true,
+            });
+          } else {
+            const asset = join(selected, 'large-asset');
+            await writeFile(asset, '');
+            await truncate(asset, 64 * 1024 * 1024 + 1);
+          }
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: workspace,
+              capabilityDirectories: [join(workspace, '.agents')],
+              tools: [],
+            }),
+            async () => {},
+          );
+        },
+      });
+      await using session = await new Agent({
+        provider,
+        model: 'fixture-skills',
+        instructions: 'Load the selected skill.',
+        tools: source.skillTools,
+      }).session({ environment: source });
+      await expect(
+        (await session.submit('Load report.')).wait(),
+      ).rejects.toThrow(/skill.*(member|depth|byte).*limit/i);
+      await expect(
+        access(join(workspace, '.agents/report/SKILL.md')),
+      ).rejects.toThrow();
+      expect(server.requests).toHaveLength(1);
+    } finally {
+      await peer.close();
+      await rm(hostRoot, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+nativeIt(
+  'bounds from-source provider enumeration before native session publication',
+  async () => {
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    let returned = 0;
+    let reads = 0;
+    class CountingClient extends UnixLocalSandboxClient {
+      override async create(
+        args: Parameters<UnixLocalSandboxClient['create']>[0],
+      ) {
+        const sandbox = await super.create(args);
+        const list = sandbox.listDir.bind(sandbox);
+        const read = sandbox.readFile.bind(sandbox);
+        sandbox.listDir = async (request) => {
+          const entries = await list(request);
+          returned++;
+          return entries;
+        };
+        sandbox.readFile = async (request) => {
+          reads++;
+          return read(request);
+        };
+        return sandbox;
+      }
+    }
+    const children: Record<string, Entry> = {};
+    for (let i = 0; i < 1025; i++)
+      children[`skill-${i}`] = dir({ children: {} });
+    const source = sandboxEnvironment({
+      client: new CountingClient(),
+      manifest: new Manifest({ root: '/workspace' }),
+      skills: skills({ from: dir({ children }) }),
+      connect: async (sandbox) =>
+        Environment.lease(
+          new Environment({
+            url: peer.url,
+            headers: peer.headers,
+            cwd: sandbox.state.workspaceRootPath,
+            capabilityDirectories: [
+              join(sandbox.state.workspaceRootPath, '.agents'),
+            ],
+            tools: [],
+          }),
+          async () => {},
+        ),
+    });
+    try {
+      await expect(
+        new Agent({
+          provider,
+          model: 'fixture-skills',
+          instructions: 'Inspect skills.',
+        }).session({ environment: source }),
+      ).rejects.toThrow(/entry limit/);
+      expect(returned).toBe(0);
+      expect(reads).toBe(0);
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      await peer.close();
     }
   },
   20_000,

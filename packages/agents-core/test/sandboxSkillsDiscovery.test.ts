@@ -1,3 +1,5 @@
+import { resolveLazySkillEntry } from '../src/sandbox/skillResources';
+import { captureSkillEntry } from '../src/sandbox/localSkills';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -267,3 +269,59 @@ async function expectDiscoveredSkillIndex(
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+it('captures bounded native Dir bytes without retaining mutable application buffers', async () => {
+  const content = Uint8Array.from([1, 2, 3, 4]);
+  const captured = await captureSkillEntry(
+    {
+      type: 'dir',
+      children: {
+        'SKILL.md': { type: 'file', content },
+      },
+    },
+    { maxMembers: 2, maxDepth: 1, maxBytes: 4 },
+    [],
+  );
+  content.fill(0);
+  expect(captured).toMatchObject({
+    type: 'dir',
+    children: {
+      'SKILL.md': { type: 'file', content: Uint8Array.from([1, 2, 3, 4]) },
+    },
+  });
+});
+
+it('rejects native lazy GitRepo capture without changing ordinary Classic resolution', async () => {
+  expect(
+    resolveLazySkillEntry(
+      { type: 'git_repo', repo: 'fixture.invalid/repo' },
+      'report',
+    ),
+  ).toMatchObject({ type: 'git_repo', subpath: 'report' });
+  await expect(
+    captureSkillEntry(
+      { type: 'git_repo', repo: 'fixture.invalid/repo' },
+      { maxMembers: 4096, maxDepth: 32, maxBytes: 64 * 1024 * 1024 },
+      [],
+    ),
+  ).rejects.toThrow(/bounded git_repo materialization/);
+});
+
+it.each([
+  ['member', { maxMembers: 1, maxDepth: 32, maxBytes: 64 }],
+  ['depth', { maxMembers: 10, maxDepth: 0, maxBytes: 64 }],
+  ['byte', { maxMembers: 10, maxDepth: 32, maxBytes: 3 }],
+] as const)('bounds native Dir %s capture', async (boundary, limits) => {
+  await expect(
+    captureSkillEntry(
+      {
+        type: 'dir',
+        children: {
+          'SKILL.md': { type: 'file', content: 'SAFE' },
+        },
+      },
+      limits,
+      [],
+    ),
+  ).rejects.toThrow(new RegExp(`Skill tree ${boundary} limit`));
+});

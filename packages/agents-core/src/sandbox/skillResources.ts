@@ -143,6 +143,7 @@ export async function resolveSkillRuntimeMetadata(
     entries = await session.listDir({
       path: configuration.skillsPath,
       runAs: runAs,
+      ...(limits ? { maxEntries: limits.maxEntries } : {}),
     });
   } catch (error) {
     if (isSandboxPathNotFoundError(error)) {
@@ -675,10 +676,37 @@ function joinSourcePath(sourceRoot: string, relativePath: string): string {
   return `${trimmedRoot}/${relativePath}`;
 }
 
+export type SkillTreeLimits = Readonly<{
+  maxMembers: number;
+  maxDepth: number;
+  maxBytes: number;
+}>;
+
+type SkillTreeCapture = {
+  limits: SkillTreeLimits;
+  sourceGrants: Manifest['extraPathGrants'];
+};
+
 export function resolveLazySkillEntry(
   source: LocalDirLazySkillSource['source'],
   relativeSkillPath: string,
-): Entry {
+): Entry;
+export function resolveLazySkillEntry(
+  source: LocalDirLazySkillSource['source'],
+  relativeSkillPath: string,
+  capture: SkillTreeCapture,
+): Promise<Entry>;
+export function resolveLazySkillEntry(
+  source: LocalDirLazySkillSource['source'],
+  relativeSkillPath: string,
+  capture?: SkillTreeCapture,
+): Entry | Promise<Entry> {
+  if (capture) {
+    const entry = resolveLazySkillEntry(source, relativeSkillPath);
+    return import('./localSkills').then(({ captureSkillEntry }) =>
+      captureSkillEntry(entry, capture.limits, capture.sourceGrants),
+    );
+  }
   if (source.type === 'local_dir') {
     if (!source.src) {
       throw new SandboxSkillsConfigError(

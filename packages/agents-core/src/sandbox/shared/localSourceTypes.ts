@@ -9,7 +9,7 @@ export interface NativeSourceDirectory {
     name: string,
     enumerate?: boolean,
   ): Promise<NativeSourceDirectory>;
-  readFile(name: string): Promise<Uint8Array>;
-  entries(): Promise<NativeSourceEntry[]>;
+  readFile(name: string, maxBytes?: number): Promise<Uint8Array>;
+  entries(maxEntries?: number): Promise<NativeSourceEntry[]>;
   close(): Promise<void>;
 }

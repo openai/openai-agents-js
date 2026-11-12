@@ -439,7 +439,12 @@ def run(request):
             fd = os.open(name, DIRECTORY, dir_fd=directory)
         try:
             with os.scandir(fd) as entries:
-                result = [{"name": entry.name, "type": "dir" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"} for entry in entries]
+                result = []
+                limit = request.get("limit")
+                for entry in entries:
+                    if limit is not None and len(result) >= limit:
+                        raise OSError(errno.E2BIG, "Directory listing exceeds its entry limit", path)
+                    result.append({"name": entry.name, "type": "dir" if entry.is_dir(follow_symlinks=False) else "file" if entry.is_file(follow_symlinks=False) else "other"})
             sys.stdout.write(json.dumps(result))
         finally:
             close(fd)
