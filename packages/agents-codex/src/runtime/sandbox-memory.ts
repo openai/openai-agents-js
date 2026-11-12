@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
+import { encode } from './binding';
 import { Agent, type AgentOutput } from './public-agent';
 import { NativeError } from './native-error';
 import type { CanonicalHistorySnapshot } from './history';
@@ -31,6 +32,31 @@ const consolidatedMemory = z.object({
   memory: text.min(1),
 });
 const MAX_INPUT_BYTES = 1_000_000;
+const MEMORY_MEDIA_PARTS = new Set([
+  'input_audio',
+  'input_file',
+  'input_image',
+]);
+const MEMORY_TOOL_RECORDS = new Set([
+  'apply_patch_call',
+  'apply_patch_call_output',
+  'code_interpreter_call',
+  'computer_call',
+  'computer_call_output',
+  'custom_tool_call',
+  'file_search_call',
+  'local_shell_call',
+  'local_shell_call_output',
+  'mcp_approval_request',
+  'mcp_approval_response',
+  'mcp_call',
+  'mcp_list_tools',
+  'shell_call',
+  'shell_call_output',
+  'tool_search_call',
+  'tool_search_output',
+  'web_search_call',
+]);
 
 /** @internal Terminal data from the current Session's settled source turn. */
 export interface SandboxMemoryTerminal {
@@ -367,10 +393,18 @@ export class SandboxMemoryOwner {
 }
 
 function boundedJson(value: unknown): string {
-  const encoded = JSON.stringify(value);
-  if (Buffer.byteLength(encoded) > MAX_INPUT_BYTES)
-    throw new RangeError('Native sandbox memory input exceeds 1000000 bytes');
-  return encoded;
+  try {
+    return encode(value, MAX_INPUT_BYTES);
+  } catch (cause) {
+    if (cause instanceof RangeError)
+      throw new RangeError(
+        'Native sandbox memory input exceeds 1000000 bytes',
+        {
+          cause,
+        },
+      );
+    throw cause;
+  }
 }
 
 function memoryTranscript(
@@ -386,7 +420,6 @@ function memoryTranscript(
   const items: Array<Record<string, unknown>> = [];
   for (const item of snapshot.items) {
     if (item.role === 'developer' || item.role === 'system') continue;
-    if (item.type === 'reasoning') continue;
     if (item.type === 'function_call') {
       if (
         typeof item.name !== 'string' ||
@@ -405,30 +438,40 @@ function memoryTranscript(
       });
       continue;
     }
-    if (item.type === 'function_call_output') {
+    if (
+      item.type === 'function_call_output' ||
+      item.type === 'custom_tool_call_output'
+    ) {
       if (
-        typeof item.call_id !== 'string' ||
+        (item.call_id != null && typeof item.call_id !== 'string') ||
         (typeof item.output !== 'string' && !Array.isArray(item.output))
       )
         throw new TypeError('Invalid native memory function output');
       items.push({
         type: item.type,
-        call_id: item.call_id,
+        ...(typeof item.call_id === 'string' ? { call_id: item.call_id } : {}),
+        ...(typeof item.name === 'string' ? { name: item.name } : {}),
         output:
           typeof item.output === 'string'
             ? item.output
-            : item.output.map(memoryTextPart),
+            : item.output
+                .map(memoryContentPart)
+                .filter((part) => part !== null),
       });
       continue;
     }
-    if (item.type !== 'message')
-      throw new TypeError(
-        'Native sandbox memory requires text messages and function tool history',
-      );
+    if (item.type !== 'message') {
+      if (typeof item.type === 'string' && MEMORY_TOOL_RECORDS.has(item.type)) {
+        const record = { ...item };
+        delete record.internal_chat_message_metadata_passthrough;
+        items.push(record);
+      }
+      continue;
+    }
     if (item.role !== 'user' && item.role !== 'assistant') continue;
     if (!Array.isArray(item.content))
       throw new TypeError('Invalid native memory message content');
-    const content: Array<{ type: string; text: string }> = [];
+    const content: Array<Record<string, unknown>> = [];
     const metadata = item.internal_chat_message_metadata_passthrough;
     const origins =
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
@@ -443,7 +486,8 @@ function memoryTranscript(
           !origins[index].startsWith('user.'))
       )
         continue;
-      content.push(memoryTextPart(part));
+      const projected = memoryContentPart(part);
+      if (projected !== null) content.push(projected);
     }
     if (content.length) items.push({ role: item.role, content });
   }
@@ -467,15 +511,20 @@ function memoryTranscript(
   return payload;
 }
 
-function memoryTextPart(part: unknown): { type: string; text: string } {
+function memoryContentPart(part: unknown): Record<string, unknown> | null {
   if (
     !part ||
     typeof part !== 'object' ||
+    Array.isArray(part) ||
     !('type' in part) ||
-    !('text' in part) ||
-    (part.type !== 'input_text' && part.type !== 'output_text') ||
-    typeof part.text !== 'string'
+    typeof part.type !== 'string'
   )
-    throw new TypeError('Native sandbox memory requires text content');
-  return { type: part.type, text: part.text };
+    throw new TypeError('Invalid native memory content');
+  if (part.type === 'input_text' || part.type === 'output_text') {
+    if (!('text' in part) || typeof part.text !== 'string')
+      throw new TypeError('Invalid native memory text');
+    return { type: part.type, text: part.text };
+  }
+  // Core has already decoded these canonical media parts.
+  return MEMORY_MEDIA_PARTS.has(part.type) ? { ...part } : null;
 }
