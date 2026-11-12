@@ -69,6 +69,7 @@ export type {
   Completed,
   RawProviderUsage,
   ProducedItem,
+  ManagedAgentToolOrigin,
   PendingRequests,
   SteeringReceipt,
   TurnNeedsAttention,

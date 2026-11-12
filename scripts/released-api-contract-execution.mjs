@@ -297,6 +297,9 @@ console.log(JSON.stringify({
   const conditionLabel =
     conditions.length > 0 ? ` conditions ${conditions.join(',')}` : '';
   const args = [
+    ...(process.features.require_module === false
+      ? ['--no-experimental-require-module']
+      : []),
     ...conditions.map((condition) => `--conditions=${condition}`),
     ...(format === 'import' ? ['--input-type=module'] : []),
     '--eval',

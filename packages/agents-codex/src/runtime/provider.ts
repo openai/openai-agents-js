@@ -31,7 +31,7 @@ import {
 
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
-  /** Share HTTP clients and quiescent private plain-run Engines until runtime.close(). */
+  /** Share native clients and eligible plain-run Engines until runtime.close(). */
   runtime?: NativeRuntime;
   /** Native phase timeouts in integer milliseconds; zero expires immediately. */
   streamIdleTimeoutMs?: number;
@@ -49,6 +49,7 @@ export interface NativeProviderOptions {
    * Set true to allow WebSockets on every streaming call. When omitted, eligible
    * stateless Agent.run calls use HTTP; other calls allow WebSockets only when
    * baseUrl is omitted.
+   * With runtime, omitted support has been preserving HTTP; true has been enabling WebSockets.
    */
   supportsWebsockets?: boolean;
   /** Read one complete Responses JSON body over API-key HTTP. */
@@ -92,11 +93,20 @@ function cleanFailedOpening(token: LeaseToken): Promise<void> {
  * env values stay omitted. Routing options reject same/cross-origin redirects.
  * Native auth/protocol/private-hop headers remain reserved. A new provider
  * refreshes the captured routing values.
+ * Without runtime, compatible adjacent one-shot API-key WebSocket calls have
+ * been allowing this Provider to retain an Engine. Each run has been preparing
+ * a fresh WebSocket connector and TLS trust configuration, including when its
+ * Engine has been staying retained. Proxy routing has been continuing through
+ * the existing per-dial resolver and its platform cache.
  * Ordinary API-key HTTP clients may retain default/custom trust and ambient proxy
  * state until close. Without runtime, a new Provider forces fresh
  * physical clients. With it, captured native configuration, credentials, private
  * homes and referenced carriers can outlive Providers until runtime.close().
- * A new borrowing Provider does not imply refreshed ambient native configuration.
+ * With runtime, a compatible retained Engine has been allowing its WebSocket
+ * connector and TLS trust configuration to stay captured across runs. A fresh
+ * borrowing Provider has not been guaranteeing refreshed ambient native configuration.
+ * Closing all borrowing Providers and the runtime before creating a new owner
+ * has been providing the guaranteed refresh boundary.
  */
 export class NativeProvider {
   #options: Readonly<NativeProviderOptions>;
@@ -197,8 +207,7 @@ export class NativeProvider {
     const captured = { ...options, ...routing.options };
     if (
       runtime !== undefined &&
-      (captured.supportsWebsockets === true ||
-        captured.modelBackend !== undefined ||
+      (captured.modelBackend !== undefined ||
         captured.chatGPT !== undefined ||
         captured.codexLogin !== undefined ||
         captured.signInWithChatGPT !== undefined ||
@@ -206,13 +215,15 @@ export class NativeProvider {
         this.#getPlanCredential !== undefined)
     )
       throw new TypeError(
-        'runtime requires API-key HTTP without a model backend or ChatGPT authentication',
+        'runtime requires API-key inference without a model backend or ChatGPT authentication',
       );
     this.#options = Object.freeze({
       ...captured,
       runtime,
       supportsWebsockets:
-        runtime === undefined ? captured.supportsWebsockets : false,
+        runtime === undefined
+          ? captured.supportsWebsockets
+          : captured.supportsWebsockets === true,
       chatGPT: captureChatGPTAuth(captured.chatGPT),
       codexLogin,
     });
@@ -322,8 +333,7 @@ export class NativeProvider {
       options.responseMode !== 'buffered' &&
       (options.supportsWebsockets ??
         (options.baseUrl === undefined && !privateCandidate));
-    const eligible = privateCandidate && !websocketsAllowed;
-    let slot = eligible
+    let slot = privateCandidate
       ? this.#nativeRuntimeBorrow
         ? this.#nativeRuntimeBorrow.reserve(token)
         : (this.#runtime ??= {})
@@ -364,10 +374,15 @@ export class NativeProvider {
       reserved && !privateDone && slot!.entry
         ? Promise.resolve()
         : releaseLease();
+    const refreshWebsocketTrust =
+      websocketsAllowed && this.#nativeRuntimeBorrow === undefined;
+    const plainOnly =
+      this.#nativeRuntimeBorrow !== undefined || refreshWebsocketTrust;
     const borrow: PrivateRuntimeBorrow | undefined = !reserved
       ? undefined
       : {
-          plainOnly: this.#nativeRuntimeBorrow !== undefined,
+          plainOnly,
+          refreshWebsocketTrust,
           concurrent: slot!.runs !== undefined,
           invalidate: () => {
             if (!privateDone && ownsReservation() && slot!.runs && slot!.entry)
@@ -428,7 +443,7 @@ export class NativeProvider {
               const canKeep =
                 keep &&
                 !slot!.retiring &&
-                (!this.#nativeRuntimeBorrow || plain) &&
+                (!plainOnly || plain) &&
                 !token.failed &&
                 !this.#closed &&
                 entry !== undefined &&
