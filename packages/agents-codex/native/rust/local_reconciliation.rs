@@ -34,6 +34,7 @@ pub(crate) fn output_identity(item: &ResponseItem) -> Option<(&str, Option<&str>
             ..
         }
         | ResponseItem::CustomToolCallOutput { call_id: call, .. }
+        | ResponseItem::ApplyPatchCallOutput { call_id: call, .. }
         | ResponseItem::ComputerCallOutput { call_id: call, .. }
         | ResponseItem::McpApprovalResponse {
             approval_request_id: call,
@@ -63,6 +64,14 @@ pub(crate) fn output_matches_invocation(call: &ResponseItem, result: &ResponseIt
                 call_id: expected, ..
             },
             ResponseItem::CustomToolCallOutput {
+                call_id: actual, ..
+            },
+        )
+        | (
+            ResponseItem::ApplyPatchCall {
+                call_id: expected, ..
+            },
+            ResponseItem::ApplyPatchCallOutput {
                 call_id: actual, ..
             },
         )
@@ -213,6 +222,18 @@ pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> 
             },
         ) => left == right && left_checks == right_checks,
         (
+            ResponseItem::ApplyPatchCallOutput {
+                status: left_status,
+                output: left_output,
+                ..
+            },
+            ResponseItem::ApplyPatchCallOutput {
+                status: right_status,
+                output: right_output,
+                ..
+            },
+        ) => left_status == right_status && left_output == right_output,
+        (
             ResponseItem::McpApprovalResponse {
                 approval_request_id: left_id,
                 approve: left,
@@ -250,6 +271,34 @@ pub(crate) fn same_output_payload(left: &ResponseItem, right: &ResponseItem) -> 
         }
         _ => false,
     }
+}
+
+pub(crate) fn owns_application_patch(envelope: &codex_history::ResponseItemEnvelope) -> bool {
+    matches!(envelope.item, ResponseItem::ApplyPatchCall { .. })
+        && envelope
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.sdk_application_tool.as_deref())
+            == Some("apply_patch")
+}
+
+pub(crate) fn application_patch_receipt(
+    invocation: &ResponseItem,
+    response: codex_protocol::dynamic_tools::DynamicToolResponse,
+    turn: &str,
+) -> Result<ResponseItem> {
+    use codex_tools::ToolOutput as _;
+    let ResponseItem::ApplyPatchCall { call_id, .. } = invocation else {
+        anyhow::bail!("Application patch receipt requires its original call");
+    };
+    let arguments = serde_json::to_string(invocation)?;
+    let output = codex_tools::ApplyPatchToolOutput::from_dynamic_response(&arguments, response)
+        .map_err(|_| anyhow::anyhow!("Invalid application patch receipt"))?;
+    let mut item: ResponseItem = output
+        .to_response_item(call_id, &codex_tools::ToolPayload::ApplyPatch { arguments })
+        .into();
+    item.set_turn_id_if_missing(turn);
+    Ok(item)
 }
 
 pub(crate) fn computer_receipt(
@@ -471,6 +520,12 @@ fn uncertain_call(
             input,
             ..
         } => (name.clone(), namespace.clone(), input.clone()),
+        ResponseItem::ApplyPatchCall { .. } => (
+            "apply_patch".to_owned(),
+            None,
+            serde_json::to_string(invocation)
+                .map_err(|_| anyhow::anyhow!("Invalid recorded application patch invocation"))?,
+        ),
         ResponseItem::ComputerCall { .. } => (
             "computer".to_owned(),
             None,
@@ -526,6 +581,10 @@ fn tag(item: &ResponseItem) -> Option<&str> {
             internal_chat_message_metadata_passthrough,
             ..
         }
+        | ResponseItem::ApplyPatchCallOutput {
+            internal_chat_message_metadata_passthrough,
+            ..
+        }
         | ResponseItem::ComputerCallOutput {
             internal_chat_message_metadata_passthrough,
             ..
@@ -566,6 +625,11 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
             | ResponseItem::CustomToolCall { call_id, .. }
             | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
             ResponseItem::McpApprovalRequest { id, .. } => id.as_ref().map(|id| id.as_str()),
+            ResponseItem::ApplyPatchCall { call_id, .. }
+                if owns_application_patch(envelope) =>
+            {
+                Some(call_id.as_str())
+            }
             ResponseItem::ShellCall {
                 provider_fields, ..
             } if is_application_shell_call(envelope) => provider_fields
@@ -678,7 +742,10 @@ fn retained_result(invocation: &ResponseItem, item: &ResponseItem, receipt: &Rec
     tag(item) == Some(receipt.outcome.tag())
         && output(item).is_some_and(|(_, payload)| {
             matches!(&payload.body, FunctionCallOutputBody::Text(text) if text == &receipt.result)
-        }) || tag(item) == Some(receipt.outcome.tag()) && computer_result_matches(item, &receipt.result)
+        }) || tag(item) == Some(receipt.outcome.tag()) && (computer_result_matches(item, &receipt.result)
+            || matches!(item, ResponseItem::ApplyPatchCallOutput { status, output, .. }
+                if serde_json::from_str::<codex_protocol::models::ApplyPatchResult>(&receipt.result)
+                    .is_ok_and(|result| result.status == *status && result.output == *output)))
         || tag(item) == Some(receipt.outcome.tag())
             && matches!(invocation, ResponseItem::ShellCall { .. })
             && shell_reconciliation(invocation, &receipt.result, &receipt.turn_id)
@@ -686,6 +753,32 @@ fn retained_result(invocation: &ResponseItem, item: &ResponseItem, receipt: &Rec
 }
 
 fn response(invocation: &ResponseItem, receipt: &Receipt) -> Result<RolloutItem> {
+    if matches!(invocation, ResponseItem::ApplyPatchCall { .. }) {
+        let result: codex_protocol::models::ApplyPatchResult =
+            serde_json::from_str(&receipt.result)
+                .context("Application patch reconciliation requires a typed result")?;
+        let mut item = application_patch_receipt(
+            invocation,
+            codex_protocol::dynamic_tools::DynamicToolResponse {
+                success: result.status == codex_protocol::models::ApplyPatchStatus::Completed,
+                content_items: vec![
+                    codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                        text: receipt.result.clone(),
+                    },
+                ],
+            },
+            &receipt.turn_id,
+        )?;
+        if let ResponseItem::ApplyPatchCallOutput {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = &mut item
+        {
+            metadata.content_item_kinds =
+                Some(vec![ContentItemKind(receipt.outcome.tag().to_owned())]);
+        }
+        return Ok(RolloutItem::ResponseItem(ResponseItemEnvelope::new(item)));
+    }
     if matches!(
         invocation,
         ResponseItem::ComputerCall { .. } | ResponseItem::ShellCall { .. }
