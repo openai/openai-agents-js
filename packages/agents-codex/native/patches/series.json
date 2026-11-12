@@ -1009,9 +1009,13 @@
       "sha256": "1b966cec16e6fc105e52c5675e648d71d906c87bd4dd111ca12583ef75aefcdc"
     },
     {
+      "path": "sdk-websocket-route-auth-scope.patch",
+      "sha256": "7110c4c522ea0afccc9bf42085582fdda64f7bae2c54364ae39de60d2decfa0b"
+    },
+    {
       "path": "sdk-provider-history-lineage.patch",
-      "sha256": "d509f18be4b02862e699ae0b2b975b123b555a670a065e517e64eba049b841df"
+      "sha256": "0944cd3fffef3c661bddd07a9af9cf41ad03ef9a9142e335729c82f5e30fb86a"
     }
   ],
-  "result_tree": "e1902b2a10bea42d89e24f85fe8e49b31774efce"
+  "result_tree": "1731da8a16d529127238b793677b5a089969ae25"
 }

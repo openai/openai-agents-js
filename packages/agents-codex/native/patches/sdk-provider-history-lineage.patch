@@ -1,8 +1,8 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 80e0aa61dc81ce323dcb3b5d8adbd517dd48e614..7074cedb832ad664e5a966154d84a87c46c87040 100644
+index 9913a3665a421fdb5594421225564b63d04cb405..83287bff7813e0ab241837b18b21ac7dfb091bcd 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
-@@ -3364,6 +3364,7 @@ dependencies = [
+@@ -3365,6 +3365,7 @@ dependencies = [
   "codex-utils-absolute-path",
   "codex-utils-path-uri",
   "futures",
@@ -423,7 +423,7 @@ index de6dc8318666ef6eecf9fccb0613bdff587d8018..ec9e5a9115c27855de696a1da7ba7542
                          request_controls: Default::default(),
                          tool_choice: None,
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327fc4581959 100644
+index 5b293d76c2a848ced7251b7e1ebaac79c7555d44..b022a9208366fd3b721150ac5e280a67868bb009 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -34,6 +34,7 @@ use std::sync::atomic::Ordering;
@@ -640,7 +640,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
          let provider = Arc::clone(&self.client.state.provider);
          let auth_manager = provider.auth_manager();
          let mut auth_recovery = auth_manager
-@@ -2265,14 +2373,17 @@ impl ModelClientSession {
+@@ -2275,14 +2383,17 @@ impl ModelClientSession {
                          (
                              dispatch,
                              contributor.preserves_provider_request_window(&url),
@@ -660,7 +660,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              let chatgpt_plan = self.client.uses_chatgpt_plan();
              if chatgpt_plan && direct.is_none() {
                  return Err(CodexErr::Fatal(
-@@ -2350,6 +2461,7 @@ impl ModelClientSession {
+@@ -2360,6 +2471,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -668,7 +668,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2388,16 +2500,6 @@ impl ModelClientSession {
+@@ -2398,16 +2510,6 @@ impl ModelClientSession {
                  prompt.cyber_access_program,
                  self.client.api_key_cyber_access_programs,
              )?;
@@ -685,7 +685,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
              options.extra_headers.extend(responses_headers);
              let interceptors = crate::model_request::prepare_with_attempts(
-@@ -2416,6 +2518,52 @@ impl ModelClientSession {
+@@ -2426,6 +2528,52 @@ impl ModelClientSession {
                              as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
                      }),
              );
@@ -738,7 +738,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              let inference_trace_attempt = inference_trace.start_attempt();
              inference_trace_attempt.add_request_headers(&mut options.extra_headers);
              if let Some(input) = tool_metadata::bounded_input(&request, &request.input) {
-@@ -2424,7 +2572,13 @@ impl ModelClientSession {
+@@ -2434,7 +2582,13 @@ impl ModelClientSession {
                  }
                  request.input = input;
              }
@@ -753,7 +753,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              let client = ApiResponsesClient::new(
                  transport,
                  client_setup.api_provider,
-@@ -2516,6 +2670,15 @@ impl ModelClientSession {
+@@ -2526,6 +2680,15 @@ impl ModelClientSession {
  
              match stream_result {
                  Ok((request_id, interrupt, events, producer_task, producer_stop)) => {
@@ -769,7 +769,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
                      let (mut stream, response) = map_response_events(
                          request_id,
                          crate::model_request::intercept_stream(events, interceptors),
-@@ -2532,8 +2695,13 @@ impl ModelClientSession {
+@@ -2542,8 +2705,13 @@ impl ModelClientSession {
                      stream.producer_task = producer_task;
                      stream.producer_stop = producer_stop;
                      stream.request_observation = request_observation;
@@ -785,7 +785,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
                      return Ok(stream);
                  }
                  Err(ApiError::Transport(unauthorized_transport))
-@@ -2551,6 +2719,7 @@ impl ModelClientSession {
+@@ -2561,6 +2729,7 @@ impl ModelClientSession {
                          response_debug_context.request_id.as_deref(),
                          /*output_items*/ &[],
                      );
@@ -793,7 +793,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
                      auth_recovery.pending_retry = PendingUnauthorizedRetry::from_recovery(
                          handle_unauthorized(
                              unauthorized_transport,
-@@ -2567,6 +2736,11 @@ impl ModelClientSession {
+@@ -2577,6 +2746,11 @@ impl ModelClientSession {
                      continue;
                  }
                  Err(err) => {
@@ -805,7 +805,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
                      let response_debug_context =
                          extract_response_debug_context_from_api_error(&err);
                      let err = if chatgpt_plan {
-@@ -2614,6 +2788,9 @@ impl ModelClientSession {
+@@ -2624,6 +2798,9 @@ impl ModelClientSession {
          inference_trace: &InferenceTraceContext,
          auth_recovery: &mut RequestAuthRecovery,
      ) -> Result<WebsocketStreamOutcome> {
@@ -815,7 +815,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
          let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
          let provider = Arc::clone(&self.client.state.provider);
          loop {
-@@ -2646,6 +2823,7 @@ impl ModelClientSession {
+@@ -2656,6 +2833,7 @@ impl ModelClientSession {
                  responses_metadata,
                  include_internal,
              )?;
@@ -823,7 +823,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              if let Some(attempt) = prompt
                  .tool_admission
                  .as_ref()
-@@ -2748,7 +2926,11 @@ impl ModelClientSession {
+@@ -2759,7 +2937,11 @@ impl ModelClientSession {
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
@@ -836,7 +836,7 @@ index 95f7faa632ed2965548d70fa6c21bd1dc12ffcb9..98af4f929ff1549464a3bddf758e327f
              let (mode, reason) = if continuation.is_some() {
                  ("incremental", "incremental")
              } else {
-@@ -3010,6 +3192,10 @@ impl ModelClientSession {
+@@ -3021,6 +3203,10 @@ impl ModelClientSession {
          service_tier: Option<String>,
          responses_metadata: &CodexResponsesMetadata,
      ) -> Result<()> {
