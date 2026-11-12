@@ -4,7 +4,9 @@ Run the included starter or add the prebuilt SDK packages to an existing applica
 
 ## Requirements
 
-Current source builds: Node.js 22 or later. Optional `SQLiteMemory` helper: Node.js 22.13 or later, with [unflagged SQLite support](https://nodejs.org/en/blog/release/v22.13.0). Alpha.2 starter bundles below: Node.js 24 with its bundled npm.
+- To run a current source-built bundle, use Node.js 22 or later. For the build toolchain, see [Build from source](building.md#build-from-source).
+- To use `SQLiteMemory`, use Node.js 22.13 or later, with [unflagged SQLite support](https://nodejs.org/en/blog/release/v22.13.0).
+- To run the alpha.2 starter below, use Node.js 24 with its bundled npm.
 
 Choose a bundle for your operating system and architecture. The Linux x64 bundle requires glibc 2.39 or later and OpenSSL 3. On a minimal Ubuntu 24.04 system, install `libssl3t64`.
 
@@ -110,7 +112,14 @@ Bun loads the addon without an additional permission flag.
 
 Run the [scripted native check](../../../packages/agents-codex/TESTING.md) from your application directory to exercise the addon, native runtime, and one local tool without a model key. The script exits silently when its assertions pass. It needs loopback HTTP access and the same platform prerequisites as a live run.
 
-If startup fails before the scripted request runs, check the downloaded platform and architecture, the operating-system libraries listed under [Requirements](#requirements), and that the lockfile still selects the matching local SDK tarballs. For a source build, follow the [five-package bundle procedure](building.md#build-a-local-bundle-for-an-application). A successful scripted run establishes local runtime setup; diagnose live credentials, endpoint access, and model availability separately in [session configuration](session-configuration.md#provider-connection-and-credentials).
+### Diagnose an addon load error
+
+The current source build reports the Node.js platform and architecture when the addon fails to load. Read the original loader error included in that message.
+
+- If Node.js cannot find `codex.node`, check that the lockfile selects the matching local SDK tarballs, including `@openai/agents-codex`. For a source build, follow the [five-package bundle procedure](building.md#build-a-local-bundle-for-an-application).
+- If Node.js finds the addon but cannot load it, compare the bundle with the platform and architecture of the running Node.js process. Install any missing system library listed under [Requirements](#requirements).
+
+If the scripted check passes but a live request fails, check credentials, endpoint access, and model availability in [session configuration](session-configuration.md#provider-connection-and-credentials).
 
 ## Next steps
 

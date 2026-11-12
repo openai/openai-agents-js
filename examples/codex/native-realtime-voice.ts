@@ -6,9 +6,14 @@ import { Agent, NativeProvider } from '@openai/agents';
 async function main(): Promise<void> {
   const prompt = process.argv[2];
   const durationMs = Number(process.argv[3] ?? 30) * 1000;
-  if (!prompt || !Number.isFinite(durationMs) || durationMs <= 0)
+  if (
+    !prompt ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0 ||
+    durationMs > 2147483647
+  )
     throw new Error(
-      'Provide a prompt and a positive recording duration in seconds.',
+      'Provide a prompt and a positive recording duration of at most 2147483.647 seconds.',
     );
 
   const provider = new NativeProvider();

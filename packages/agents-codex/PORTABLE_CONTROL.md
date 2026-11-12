@@ -66,6 +66,8 @@ export async function connectMobile<Stream extends NativeVoiceMediaStream>(
 
 Pass the acquired stream as `mediaStream`, construct the native peer in `createPeerConnection`, and handle the received stream through `onRemoteStream`. The SDK closes the peer when the session closes. Stop your microphone tracks even if connecting throws. The [React Native media example](../../examples/codex/react-native-voice.ts) shows a peer factory and stream ownership.
 
+For text-only WebRTC, set `media: { enableAudio: false, createPeerConnection }` and `agent.settings: { output_modalities: ['text'] }`. The connector uses the data channel for text, with no local or remote audio.
+
 ## Connect a Worker
 
 Pass a compiled controller module and a Worker secret. The Worker opens the provider WebSocket and executes the tool callbacks. Connect your own audio source and playback sink to the Worker.
@@ -108,9 +110,13 @@ The connectors resolve after configuration is accepted. Use `sendText()` to send
 
 `session.usage` retains the reported speech-model counts after close. Tool callbacks receive those counts in their context. Providers can omit individual usage counters.
 
-A tool callback receives validated arguments, an `AbortSignal`, and context for its exact call. Return text from the callback. Tools with `needsApproval: true` require an affirmative decision from `onApproval`. An absent handler denies approval.
+A tool callback receives validated arguments, an `AbortSignal`, and context for its exact call. Return text or another JSON value. The connector sends non-string values as JSON text. Return `backgroundResult(value)` to publish a result without requesting a model follow-up. Import it from the same entry point as the connector.
+
+Tools with `needsApproval: true` require an affirmative decision from `onApproval`. An absent handler denies approval. A tool's `before` callback can deny execution and use the denial reason as tool output. Its `after` callback can replace output or return the same value to preserve a prior `backgroundResult` decision. Use `errorFunction` to format argument and execution failures for the model. Setting it to `null` disables that recovery and lets the failure close the connection.
 
 Await `session.close()` in your end-call action or a `finally` block. Close releases owned media or the socket and aborts pending callbacks. Cooperate with each callback's cancellation signal. Invoke close from the outer application rather than from a callback that close has to join.
+
+Use `await session.sendEvent(event)` to send supported provider events through the same controller. `conversation.item.retrieve` returns the provider item. Other supported sends return `null`. Raw `session.update` applies supplied settings after provider acknowledgement. Use `updateAgent()` for model and tool catalog changes. Set `automaticallyTriggerResponseForMcpToolCalls: false` in the initial agent options to disable automatic hosted MCP follow-ups.
 
 ## Input and cancellation limits
 

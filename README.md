@@ -59,6 +59,8 @@ These guides describe the current source checkout, which can include features ad
 | Connect an MCP server or a remote workspace | [MCP tools](examples/codex/guides/mcp.md) and [remote executors](examples/codex/guides/executors.md) |
 | Restore a conversation or handle a pending request | [Session history and state](examples/codex/guides/state.md) and [native interactions](examples/codex/guides/interactions.md) |
 | Supervise a worker or connect a remote Agent | [Supervised workers](examples/codex/supervised-worker/README.md) and [Agent2Agent (A2A)](packages/agents-codex/A2A.md) |
+| Build a voice application | [Native voice](examples/codex/guides/native-voice.md) and [portable Realtime](packages/agents-codex/PORTABLE_CONTROL.md) |
+| Test a native tool loop without a model key | [Native scripted tests](packages/agents-codex/TESTING.md) |
 
 The [native SDK overview](packages/agents-codex/README.md) shows a minimal run. The [native guide index](packages/agents-codex/NATIVE.md) links to individual API topics.
 
