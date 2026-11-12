@@ -56,11 +56,9 @@ it.each(['responses', 'ai-sdk-responses'] as const)(
         total_tokens: 13,
       });
       expect(captured).not.toHaveProperty('original_usage');
-      if (cacheWrite === undefined)
-        expect(captured).not.toHaveProperty(
-          'received_cache_write_input_tokens',
-        );
-      else expect(captured.received_cache_write_input_tokens).toBe(cacheWrite);
+      expect(captured.received_cache_write_usage).toEqual({
+        count: cacheWrite ?? null,
+      });
       expect(captureModelResponse(result, true)).toMatchObject({
         original_usage: { response_id: 'resp_cache', usage: raw.usage },
       });
@@ -123,7 +121,7 @@ it.each(['responses', 'ai-sdk-responses'] as const)(
     const result = await model.complete(request);
     expect(captureModelResponse(result)).toMatchObject({
       response_id: 'resp_getter',
-      received_cache_write_input_tokens: 0,
+      received_cache_write_usage: { count: 0 },
     });
     expect(reads).toBe(0);
     expect(captureModelResponse(result, true)).toMatchObject({
@@ -138,7 +136,7 @@ it.each(['responses', 'ai-sdk-responses'] as const)(
     const unidentified = await model.complete(request);
     expect(captureModelResponse(unidentified)).toMatchObject({
       response_id: expect.any(String),
-      received_cache_write_input_tokens: 0,
+      received_cache_write_usage: { count: 0 },
     });
     expect(captureModelResponse(unidentified, true)).not.toHaveProperty(
       'original_usage',
@@ -147,7 +145,7 @@ it.each(['responses', 'ai-sdk-responses'] as const)(
     delete raw.usage;
     const absent = captureModelResponse(await model.complete(request));
     expect(absent.usage).toBeNull();
-    expect(absent).not.toHaveProperty('received_cache_write_input_tokens');
+    expect(absent.received_cache_write_usage).toEqual({ count: null });
   },
 );
 
@@ -168,7 +166,7 @@ it('keeps incomplete refusal usage partial without raw capture', async () => {
   });
   const result = await model.complete(request);
   expect(captureModelResponse(result)).toMatchObject({
-    received_cache_write_input_tokens: 4,
+    received_cache_write_usage: { count: 4 },
   });
   expect(captureModelResponse(result, true)).not.toHaveProperty(
     'original_usage',
@@ -187,6 +185,56 @@ it('keeps generic custom replies on their existing accounting path', () => {
     expect(captured.usage).toMatchObject({
       cache_write_input_tokens: cacheWrite ?? 0,
     });
-    expect(captured).not.toHaveProperty('received_cache_write_input_tokens');
+    expect(captured).not.toHaveProperty('received_cache_write_usage');
   }
+});
+
+it('rejects malformed adapter-owned counter availability without reading raw usage', async () => {
+  const model = new ResponsesModel({
+    responses: {
+      create: async () => ({
+        status: 'completed',
+        output: [],
+        usage: {},
+      }),
+    },
+  });
+  const result = await model.complete(request);
+  const marker = Object.getOwnPropertySymbols(result).find(
+    (key) => key.description === 'received cache-write usage',
+  );
+  expect(marker).toBeDefined();
+  for (const value of [
+    null,
+    [],
+    [0],
+    [null],
+    [0, 1],
+    {},
+    { count: undefined },
+    { count: '0' },
+    { count: false },
+    { count: -1 },
+    { count: 0.5 },
+    { count: Number.MAX_SAFE_INTEGER + 1 },
+    { count: NaN },
+    { count: Infinity },
+    { count: 0, extra: true },
+  ]) {
+    const response = Object.defineProperty({ output: [] }, marker!, { value });
+    expect(() => captureModelResponse(response)).toThrow(
+      /Received cache-write usage/,
+    );
+  }
+});
+
+it('does not accept a public-looking string property as adapter-owned availability', () => {
+  const response = {
+    output: [],
+    usage: { cache_write_input_tokens: 4 },
+    received_cache_write_usage: { count: 4 },
+  };
+  expect(captureModelResponse(response)).not.toHaveProperty(
+    'received_cache_write_usage',
+  );
 });

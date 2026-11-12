@@ -46,9 +46,7 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
-const receivedCacheWriteInputTokens = Symbol(
-  'received cache-write input tokens',
-);
+const receivedCacheWriteUsage = Symbol('received cache-write usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
 
@@ -152,16 +150,29 @@ export function captureModelResponse(
     if (response.usage.total_tokens === undefined)
       usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
-  const cacheWrite = (
-    response as ModelResponse & { [receivedCacheWriteInputTokens]?: number }
-  )[receivedCacheWriteInputTokens];
-  if (
-    cacheWrite !== undefined &&
-    (!Number.isSafeInteger(cacheWrite) || cacheWrite < 0)
-  )
-    throw new TypeError(
-      'Received cache-write usage requires a nonnegative safe integer token counter',
-    );
+  const received = (
+    response as ModelResponse & { [receivedCacheWriteUsage]?: unknown }
+  )[receivedCacheWriteUsage];
+  let cacheWriteUsage: { count: number | null } | undefined;
+  if (received !== undefined) {
+    if (
+      received === null ||
+      typeof received !== 'object' ||
+      Array.isArray(received) ||
+      Object.keys(received).length !== 1 ||
+      !Object.hasOwn(received, 'count')
+    )
+      throw new TypeError('Received cache-write usage requires a count object');
+    const count = (received as { count: unknown }).count;
+    if (
+      count !== null &&
+      (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0)
+    )
+      throw new TypeError(
+        'Received cache-write usage requires a nonnegative safe integer or null',
+      );
+    cacheWriteUsage = { count };
+  }
   const raw = captureRawProviderEvents
     ? (response as ModelResponse & { [rawChatCompletion]?: JsonObject })[
         rawChatCompletion
@@ -187,9 +198,9 @@ export function captureModelResponse(
     response_id: responseId,
     output: response.output,
     usage,
-    ...(cacheWrite !== undefined
-      ? { received_cache_write_input_tokens: cacheWrite }
-      : {}),
+    ...(cacheWriteUsage === undefined
+      ? {}
+      : { received_cache_write_usage: cacheWriteUsage }),
     ...(raw ? { raw_chat_completion: raw } : {}),
     ...(original
       ? {
@@ -968,10 +979,9 @@ function projectResponsesResponse(response: any): ModelResponse {
         }
       : {}),
   };
-  if (cacheWrite !== undefined)
-    Object.defineProperty(projected, receivedCacheWriteInputTokens, {
-      value: cacheWrite,
-    });
+  Object.defineProperty(projected, receivedCacheWriteUsage, {
+    value: Object.freeze({ count: cacheWrite ?? null }),
+  });
   if (
     response.status === 'completed' &&
     typeof response.id === 'string' &&
