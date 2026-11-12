@@ -1200,6 +1200,25 @@ impl PythonTools {
                             Ok(codex_api::ResponseEvent::ResponseObserved(observation)),
                         );
                     }
+                } else if matches!(
+                    events.last(),
+                    Some(Ok(codex_api::ResponseEvent::Completed { .. }))
+                ) {
+                    // Normalized application output has been supplying a completion
+                    // boundary; original provider identifiers/usage have been remaining unknown.
+                    events.insert(
+                        events.len() - 1,
+                        Ok(codex_api::ResponseEvent::ResponseObserved(
+                            codex_protocol::protocol::ResponseObservation {
+                                response_id: None,
+                                upstream_request_id: None,
+                                status:
+                                    codex_protocol::protocol::ResponseObservationStatus::Completed,
+                                incomplete_reason: None,
+                                usage: None,
+                            },
+                        )),
+                    );
                 }
                 if let Some(raw) = reply.raw_chat_completion {
                     events.insert(
