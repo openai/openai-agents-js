@@ -4289,12 +4289,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                 }) as Box<dyn ToolOutput>);
             }
             if let ToolPayload::Shell { arguments } = &call.payload {
-                return Ok(
-                    Box::new(codex_tools::ApplicationShellOutput::from_dynamic_response(
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ApplicationShellOutput::from_dynamic_response(
                         arguments,
                         response.response,
-                    )?) as Box<dyn ToolOutput>,
-                );
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
             }
             if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
                 return Ok(Box::new(RealtimeToolOutput {

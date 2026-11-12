@@ -10,6 +10,8 @@ import {
   HttpMCP,
   NativeProvider,
   ToolOutput,
+  isFunctionApprovalRequest,
+  parseSessionState,
   type Turn,
   manualTool,
   tool,
@@ -885,5 +887,68 @@ nativeIt.each([false, true])(
     } finally {
       release.resolve();
     }
+  },
+);
+
+nativeIt(
+  'retains accepted metadata in a failed restored callback event',
+  async () => {
+    const server = new ModelServer([
+      [call('owned_callback', {}, { callId: 'failed-restored' })],
+      [message('Settled.')],
+    ]);
+    await using provider = await providerFor(server);
+    const applicationData = { ticket: 'sdk-only-failed-result' };
+    const callback = tool({
+      name: 'owned_callback',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute() {
+        return new ToolOutput(
+          [{ type: 'inputText', text: 'Reported failure.' }],
+          false,
+          applicationData,
+        );
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Use the declared tool.',
+      provider,
+      tools: [callback],
+    });
+    let state;
+    {
+      await using source = await agent.session();
+      await source.submit('Run the callback.');
+      for await (const event of source.interactions()) {
+        if (isFunctionApprovalRequest(event)) break;
+      }
+      state = parseSessionState(JSON.stringify(await source.suspend()));
+    }
+    await using restored = await agent.session({ state });
+    for await (const event of restored.interactions()) {
+      if (isFunctionApprovalRequest(event)) {
+        await restored.respond(event.approve());
+        break;
+      }
+    }
+    const turn = restored.restoredTurn!;
+    expect((await turn.wait()).applicationToolOutputs).toEqual([
+      expect.objectContaining({ callId: 'failed-restored', applicationData }),
+    ]);
+    const events = (
+      await Array.fromAsync(turn.events({ includeExecutionDetails: true }))
+    ).filter(
+      (event) =>
+        event.type === 'tool_finished' && event.callId === 'failed-restored',
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      status: 'failed',
+      output: { applicationData },
+    });
+    expect(JSON.stringify(server.requests)).not.toContain(
+      'sdk-only-failed-result',
+    );
   },
 );
