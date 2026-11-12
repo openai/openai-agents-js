@@ -1011,7 +1011,11 @@
     {
       "path": "sdk-websocket-route-auth-scope.patch",
       "sha256": "7110c4c522ea0afccc9bf42085582fdda64f7bae2c54364ae39de60d2decfa0b"
+    },
+    {
+      "path": "sdk-decision-handoff-admission.patch",
+      "sha256": "c16299166bda18fd3d9cdcc0af0d0d9d5d9911246e8fe20b29d13cee12908450"
     }
   ],
-  "result_tree": "724d06927b5e6192ce99dc9461a70b296a2b9cdb"
+  "result_tree": "29afd5086cf6622372e97bfa3ff0f1a8bbe52fd6"
 }

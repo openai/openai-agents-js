@@ -1,3 +1,4 @@
+export type { AcceptedTextChunk, AcceptText } from './runtime/accepted-text';
 export { retryPolicies } from './runtime/model-retry';
 export type {
   RetryContext,
@@ -537,7 +538,7 @@ export type {
 
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
 
-export { Handoff } from './runtime/handoffs';
+export { Handoff, DecisionHandoff } from './runtime/handoffs';
 export {
   ResponsesCompaction,
   responsesCompaction,

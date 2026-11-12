@@ -1,0 +1,232 @@
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 12e8219..047bc56 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -52,7 +52,7 @@ pub(crate) struct DirectToolResult {
+ 
+ #[derive(Default)]
+ struct AgentHandoffSelection {
+-    first_requested: Option<(String, String)>,
++    first_requested: Option<(String, codex_tools::ToolName)>,
+     accepted: Option<codex_protocol::agent_profile::AgentProfileHandoff>,
+ }
+ 
+@@ -93,6 +93,29 @@ impl WeakToolCallRuntime {
+     }
+ }
+ 
++/// The immutable producing profile owns both the tool and its allowed destinations.
++pub(crate) fn admits_handoff(
++    data: &codex_extension_api::ExtensionDataInit,
++    name: &codex_tools::ToolName,
++    target: Option<&str>,
++) -> bool {
++    let name = name.clone().with_default_namespace();
++    data.get::<codex_extension_api::AgentProfileHandoffTools>()
++        .is_some_and(|tools| {
++            tools
++                .targets
++                .get(&name)
++                .is_some_and(|allowed| target.is_none_or(|target| target == allowed))
++        })
++        || data
++            .get::<codex_extension_api::AgentProfileDecisionHandoffTools>()
++            .is_some_and(|tools| {
++                tools.targets.get(&name).is_some_and(|allowed| {
++                    target.is_none_or(|target| allowed.iter().any(|allowed| allowed == target))
++                })
++            })
++}
++
+ impl ToolCallRuntime {
+     pub(crate) fn downgrade(&self) -> WeakToolCallRuntime {
+         WeakToolCallRuntime {
+@@ -117,24 +140,19 @@ impl ToolCallRuntime {
+         }
+     }
+ 
+-    fn handoff_target(&self, name: &codex_tools::ToolName) -> Option<String> {
+-        let profile = self.step_context.settings.agent_profile.as_ref()?;
+-        profile
+-            .profile
+-            .data
+-            .get::<codex_extension_api::AgentProfileHandoffTools>()?
+-            .targets
+-            .get(&name.clone().with_default_namespace())
+-            .cloned()
+-    }
+-
+     pub(crate) fn observe_requested_handoff(&self, name: &codex_tools::ToolName, call_id: &str) {
+-        if let Some(target) = self.handoff_target(name) {
++        if self
++            .step_context
++            .settings
++            .agent_profile
++            .as_ref()
++            .is_some_and(|profile| admits_handoff(&profile.profile.data, name, None))
++        {
+             self.handoff_selection
+                 .lock()
+                 .unwrap()
+                 .first_requested
+-                .get_or_insert_with(|| (call_id.to_owned(), target));
++                .get_or_insert_with(|| (call_id.to_owned(), name.clone().with_default_namespace()));
+         }
+     }
+ 
+@@ -161,14 +179,20 @@ impl ToolCallRuntime {
+     }
+ 
+     pub(crate) fn ignores_handoff(&self, name: &codex_tools::ToolName, call_id: &str) -> bool {
+-        self.handoff_target(name).is_some()
++        self.step_context
++            .settings
++            .agent_profile
++            .as_ref()
++            .is_some_and(|profile| admits_handoff(&profile.profile.data, name, None))
+             && self
+                 .handoff_selection
+                 .lock()
+                 .unwrap()
+                 .first_requested
+                 .as_ref()
+-                .is_some_and(|(first, _)| first != call_id)
++                .is_some_and(|(first, first_name)| {
++                    first != call_id || first_name != &name.clone().with_default_namespace()
++                })
+     }
+ 
+     pub(crate) fn accepted_handoff(
+@@ -248,13 +272,31 @@ impl ToolCallRuntime {
+                             .agent_profile
+                             .as_ref()
+                             .map(|profile| &profile.receipt);
+-                        if source != Some(&handoff.source)
+-                            || selection.first_requested.as_ref()
+-                                != Some(&(
+-                                    handoff.call_id.clone(),
+-                                    handoff.target_profile_id.clone(),
+-                                ))
+-                        {
++                        let admitted =
++                            selection
++                                .first_requested
++                                .as_ref()
++                                .is_some_and(|(call, name)| {
++                                    call == &handoff.call_id
++                                        && call == &error_call.call_id
++                                        && name
++                                            == &error_call
++                                                .tool_name
++                                                .clone()
++                                                .with_default_namespace()
++                                        && retained_step_context
++                                            .settings
++                                            .agent_profile
++                                            .as_ref()
++                                            .is_some_and(|profile| {
++                                                admits_handoff(
++                                                    &profile.profile.data,
++                                                    name,
++                                                    Some(&handoff.target_profile_id),
++                                                )
++                                            })
++                                });
++                        if source != Some(&handoff.source) || !admitted {
+                             return Err(CodexErr::InvalidRequest(
+                                 "Accepted handoff differs from the first requested native handoff"
+                                     .into(),
+@@ -1057,3 +1099,51 @@ mod tests {
+ #[cfg(test)]
+ #[path = "parallel_observation_tests.rs"]
+ mod observation_tests;
++
++#[cfg(test)]
++mod decision_handoff_tests {
++    use super::admits_handoff;
++    use codex_extension_api::{
++        AgentProfileDecisionHandoffTools, AgentProfileHandoffTools, ExtensionDataInit,
++    };
++    use codex_tools::ToolName;
++
++    #[test]
++    fn static_and_decision_grants_preserve_exact_tool_and_target_membership() {
++        let mut init = ExtensionDataInit::new();
++        init.insert(AgentProfileHandoffTools {
++            targets: [(
++                ToolName::new(None, "fixed").with_default_namespace(),
++                "b".into(),
++            )]
++            .into(),
++        });
++        init.insert(AgentProfileDecisionHandoffTools {
++            targets: [(
++                ToolName::new(None, "choose").with_default_namespace(),
++                vec!["b".into(), "c".into()],
++            )]
++            .into(),
++        });
++        let data = init;
++        for (name, target, admitted) in [
++            ("fixed", "b", true),
++            ("fixed", "c", false),
++            ("choose", "b", true),
++            ("choose", "c", true),
++            ("choose", "missing", false),
++            ("other", "b", false),
++        ] {
++            assert_eq!(
++                admits_handoff(&data, &ToolName::new(None, name), Some(target)),
++                admitted
++            );
++        }
++        assert!(admits_handoff(&data, &ToolName::new(None, "choose"), None));
++        assert!(!admits_handoff(
++            &data,
++            &ToolName::namespaced("other", "choose"),
++            Some("b")
++        ));
++    }
++}
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index 3ee5b1e..d8d8072 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -65,6 +65,7 @@ pub use turn_input::TurnInputEnvironment;
+ pub use turn_lifecycle::AgentProfile;
+ pub use turn_lifecycle::AgentProfileActivation;
+ pub use turn_lifecycle::AgentProfileBoundaryInput;
++pub use turn_lifecycle::AgentProfileDecisionHandoffTools;
+ pub use turn_lifecycle::AgentProfileHandoffTools;
+ pub use turn_lifecycle::AgentProfileInstructions;
+ pub use turn_lifecycle::AgentProfileModelSettings;
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 9634081..a85eb06 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -153,6 +153,13 @@ pub struct AgentProfileHandoffTools {
+     pub targets: std::collections::HashMap<codex_tools::ToolName, String>,
+ }
+ 
++/// Callback-only handoffs whose selected destination requires a live SDK reply.
++/// This attachment never grants Realtime handoff authority.
++#[derive(Clone, Debug, Default)]
++pub struct AgentProfileDecisionHandoffTools {
++    pub targets: std::collections::HashMap<codex_tools::ToolName, Vec<String>>,
++}
++
+ /// Clean application text captured with the accepted profile publication.
+ /// A missing attachment preserves legacy inheritance; `text: None` clears it.
+ #[derive(Clone, Debug)]
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 005bda7..3d3c6a6 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -50,6 +50,7 @@ pub use codex_tools::parse_tool_input_schema_without_compaction;
+ pub use contributors::AgentProfile;
+ pub use contributors::AgentProfileActivation;
+ pub use contributors::AgentProfileBoundaryInput;
++pub use contributors::AgentProfileDecisionHandoffTools;
+ pub use contributors::AgentProfileHandoffTools;
+ pub use contributors::AgentProfileInstructions;
+ pub use contributors::AgentProfileModelSettings;
