@@ -832,7 +832,7 @@ async function* readLocalWorkspaceEntryContents(
             `git_repo subpath must resolve to a file or directory: ${entry.subpath}`,
           );
         }
-        if (beforeCopy) await beforeCopy(await gitRepoCopyChildren(source));
+        if (beforeCopy) await prepareGitRepoCopy(source, beforeCopy);
         // SHA/subpath copies retain existing target modes; direct clones retain Git modes.
         const contents = copiesTree
           ? readLocalDirectoryContents(source, '')
@@ -1047,13 +1047,19 @@ function sameFilesystemEntry(left: Stats, right: Stats): boolean {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
-async function gitRepoCopyChildren(source: string): Promise<string[]> {
+async function prepareGitRepoCopy(
+  source: string,
+  beforeCopy: BeforeGitRepoCopy,
+): Promise<void> {
   const directory = await openLocalSourceDirectory(source);
   try {
     const entries = await readLocalSourceEntriesAt(directory, []);
     if (entries.some(({ type }) => type !== 'directory' && type !== 'file'))
       throw new UserError('Skill trees require regular files and directories.');
-    return entries.map(({ name }) => name);
+    await beforeCopy(
+      entries.map(({ name }) => name),
+      entries.filter(({ type }) => type === 'file').map(({ name }) => name),
+    );
   } finally {
     await directory.close();
   }
@@ -1111,7 +1117,7 @@ async function materializeGitRepoEntry(
     if (beforeCopy && !sourceInfo.isDirectory())
       throw new UserError('Eager skill sources require a directory.');
     if (sourceInfo.isDirectory()) {
-      if (beforeCopy) await beforeCopy(await gitRepoCopyChildren(sourcePath));
+      if (beforeCopy) await prepareGitRepoCopy(sourcePath, beforeCopy);
       await copyLocalDirectory(
         sourcePath,
         destination,

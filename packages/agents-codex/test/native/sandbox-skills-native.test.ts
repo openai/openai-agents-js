@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   access,
+  chmod,
+  stat,
   mkdir,
   mkdtemp,
   readFile,
@@ -738,8 +740,10 @@ nativeIt.each([
   { kind: 'from', savedSkills: true, conflict: 'none' },
   { kind: 'from', savedSkills: true, conflict: 'missing-sentinel' },
   { kind: 'from', savedSkills: true, conflict: 'directory-to-file' },
+  { kind: 'from', savedSkills: true, conflict: 'root-directory-to-file' },
   { kind: 'git-repo', savedSkills: true, conflict: 'missing-sentinel' },
   { kind: 'git-repo', savedSkills: true, conflict: 'directory-to-file' },
+  { kind: 'git-repo', savedSkills: true, conflict: 'root-directory-to-file' },
 ] as const)(
   'stages $kind eager skills on an authorized cold resume with savedSkills=$savedSkills and conflict=$conflict',
   async ({ kind, savedSkills, conflict }) => {
@@ -779,6 +783,22 @@ nativeIt.each([
                         : {}),
                     },
                   }),
+                  ...(conflict === 'root-directory-to-file'
+                    ? {
+                        'replaced-root': dir({
+                          children: {
+                            old: file({ content: 'obsolete root member' }),
+                            ...(kind === 'from'
+                              ? {
+                                  'SKILL.md': file({
+                                    content: 'retired skill',
+                                  }),
+                                }
+                              : {}),
+                          },
+                        }),
+                      }
+                    : {}),
                   retired: dir({
                     children: {
                       'SKILL.md': file({
@@ -820,6 +840,22 @@ nativeIt.each([
       },
     });
     const state = await resumedClient.deserializeSessionState(saved);
+    if (conflict === 'root-directory-to-file') {
+      const resume = resumedClient.resume.bind(resumedClient);
+      resumedClient.resume = async (...args) => {
+        const resumed = await resume(...args);
+        await chmod(
+          join(resumed.state.workspaceRootPath, '.agents/unrelated'),
+          0o700,
+        );
+        if (kind === 'git-repo')
+          await chmod(
+            join(resumed.state.workspaceRootPath, '.agents/report'),
+            0o700,
+          );
+        return resumed;
+      };
+    }
     const peer = await startPublicExecutor();
     const server = new ModelServer([[message('resumed index')]]);
     await using provider = await providerFor(server);
@@ -840,6 +876,11 @@ nativeIt.each([
         join(currentSource, 'skill-root', 'report', 'replaced'),
         'replacement file',
       );
+      if (conflict === 'root-directory-to-file')
+        await writeFile(
+          join(currentSource, 'skill-root', 'replaced-root'),
+          'replacement root file',
+        );
       const git = promisify(execFile);
       await git('git', ['-C', currentSource, 'init']);
       await git('git', ['-C', currentSource, 'add', '.']);
@@ -886,6 +927,13 @@ nativeIt.each([
                       })
                     : dir({
                         children: {
+                          ...(conflict === 'root-directory-to-file'
+                            ? {
+                                'replaced-root': file({
+                                  content: 'replacement root file',
+                                }),
+                              }
+                            : {}),
                           report: dir({
                             children: {
                               'SKILL.md': file({ content: document }),
@@ -904,6 +952,12 @@ nativeIt.each([
         ),
         connect: async (sandbox) => {
           resumedRoot = sandbox.state.workspaceRootPath;
+          if (kind === 'git-repo')
+            expect(sandbox.state.manifest.entries['.agents']).toMatchObject({
+              type: 'git_repo',
+              repo: `file://${currentSource}`,
+              subpath: 'skill-root',
+            });
           expect(
             await readFile(
               join(resumedRoot, '.agents/report/SKILL.md'),
@@ -945,6 +999,18 @@ nativeIt.each([
         await expect(
           access(join(resumedRoot, '.agents/report/removed.sh')),
         ).rejects.toMatchObject({ code: 'ENOENT' });
+        if (conflict === 'root-directory-to-file') {
+          expect(
+            await readFile(join(resumedRoot, '.agents/replaced-root'), 'utf8'),
+          ).toBe('replacement root file');
+          expect(
+            (await stat(join(resumedRoot, '.agents/unrelated'))).mode & 0o777,
+          ).toBe(0o700);
+          if (kind === 'git-repo')
+            expect(
+              (await stat(join(resumedRoot, '.agents/report'))).mode & 0o777,
+            ).toBe(0o700);
+        }
         if (replaceDirectory) {
           expect(
             await readFile(

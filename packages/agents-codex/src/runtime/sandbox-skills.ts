@@ -256,11 +256,26 @@ export class SandboxSkillBinding<Context = any> {
     const expectedGrants = grantStamp(trustedManifest);
     if (grantStamp(sandbox.state.manifest) !== expectedGrants)
       throw new Error('Sandbox skill grants do not match the current manifest');
-    const cleanRestored = async (declaredPaths: readonly string[]) => {
+    const declaredFilePaths = entries.flatMap(([path, entry]) =>
+      path === this.configuration.skillsPath && entry.type === 'dir'
+        ? Object.entries(entry.children ?? {}).flatMap(([name, child]) =>
+            child.type === 'file' || child.type === 'local_file'
+              ? [joinRelativePaths(path, name)]
+              : [],
+          )
+        : entry.type === 'file' || entry.type === 'local_file'
+          ? [path]
+          : [],
+    );
+    const cleanRestored = async (
+      declaredPaths: readonly string[],
+      filePaths: readonly string[] = declaredFilePaths,
+    ) => {
       const stale = await this.restoredEagerSkillFiles(
         sandbox,
         declaredPaths,
         signal,
+        filePaths,
       );
       if (stale.length) {
         const remove = sandbox.removeEntryNoFollow?.bind(sandbox);
@@ -314,14 +329,17 @@ export class SandboxSkillBinding<Context = any> {
       let prepared = false;
       const prepare =
         copiedGitRoot?.[1] === entry
-          ? async (children: readonly string[]) => {
+          ? async (children: readonly string[], files: readonly string[]) => {
               if (prepared)
                 throw new Error('Git skill source was prepared more than once');
               prepared = true;
-              await cleanRestored([
-                path,
-                ...children.map((name) => joinRelativePaths(path, name)),
-              ]);
+              await cleanRestored(
+                [
+                  path,
+                  ...children.map((name) => joinRelativePaths(path, name)),
+                ],
+                files.map((name) => joinRelativePaths(path, name)),
+              );
             }
           : undefined;
       await sandbox.materializeEntry({
@@ -343,6 +361,7 @@ export class SandboxSkillBinding<Context = any> {
     sandbox: SandboxSessionLike,
     declaredPaths: readonly string[],
     signal: AbortSignal,
+    filePaths: readonly string[],
   ): Promise<{ path: string; directory: boolean }[]> {
     const listDir = sandbox.listDir?.bind(sandbox);
     if (!listDir)
@@ -423,6 +442,8 @@ export class SandboxSkillBinding<Context = any> {
         } else
           throw new Error('Restored skill tree contains an unsupported member');
       }
+      if (filePaths.includes(root.path))
+        files.push({ path: root.path, directory: true });
     }
     return files.sort(
       (a, b) => b.path.split('/').length - a.path.split('/').length,
