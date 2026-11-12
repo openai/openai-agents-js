@@ -8,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   truncate,
+  symlink,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -1624,4 +1625,216 @@ nativeIt(
     }
   },
   20_000,
+);
+
+nativeIt.each(['regular', 'nested-symlink'] as const)(
+  'stages an unqualified direct Git clone on an owned cold resume: %s',
+  async (kind) => {
+    const base = await mkdtemp(join(tmpdir(), 'direct-git-skill-resume-'));
+    const repository = join(base, 'repository');
+    await mkdir(join(repository, 'report'), { recursive: true });
+    await writeFile(
+      join(repository, 'report/SKILL.md'),
+      '---\nname: report\ndescription: PREVIOUS_DIRECT_GIT_INDEX\n---\nold document\n',
+    );
+    await writeFile(join(repository, 'report/removed.sh'), 'obsolete member');
+    const git = promisify(execFile);
+    await git('git', ['-C', repository, 'init']);
+    const commit = async () => {
+      await git('git', ['-C', repository, 'add', '.']);
+      await git('git', [
+        '-C',
+        repository,
+        '-c',
+        'user.name=Fixture',
+        '-c',
+        'user.email=fixture@example.invalid',
+        'commit',
+        '-m',
+        'skills',
+      ]);
+    };
+    await commit();
+    const client = new UnixLocalSandboxClient();
+    const entry = gitRepo({ repo: `file://${repository}` });
+    const seed = await client.create({
+      manifest: new Manifest({
+        entries: {
+          '.agents': entry,
+          'workspace.txt': file({ content: 'unrelated workspace file' }),
+        },
+      }),
+      snapshot: { type: 'local', baseDir: base },
+    });
+    await writeFile(
+      join(seed.state.workspaceRootPath, '.agents/keep.txt'),
+      'untracked namespace file',
+    );
+    await mkdir(join(seed.state.workspaceRootPath, '.agents/unrelated'));
+    await writeFile(
+      join(seed.state.workspaceRootPath, '.agents/unrelated/config.txt'),
+      'untracked directory',
+    );
+    const saved = JSON.parse(
+      JSON.stringify(await client.serializeSessionState(seed.state)),
+    );
+    await seed.close();
+    const document =
+      '---\nname: report\ndescription: CURRENT_DIRECT_GIT_INDEX\n---\ncurrent document\n';
+    await writeFile(join(repository, 'report/SKILL.md'), document);
+    await rm(join(repository, 'report/removed.sh'));
+    await writeFile(
+      join(repository, 'report/run.sh'),
+      '#!/bin/sh\nprintf current\n',
+    );
+    await chmod(join(repository, 'report/run.sh'), 0o755);
+    if (kind === 'nested-symlink') {
+      await mkdir(join(repository, 'report/nested'));
+      await symlink('../SKILL.md', join(repository, 'report/nested/link'));
+    }
+    await commit();
+    const currentCommit = (
+      await git('git', ['-C', repository, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+    const resumedClient = new UnixLocalSandboxClient({
+      resumeAuthority: {
+        workspaceRootPath: saved.workspaceRootPath,
+        workspaceRootOwned: true,
+        localSnapshotPath: saved.snapshot.path,
+      },
+    });
+    const state = await resumedClient.deserializeSessionState(saved);
+    const removals: string[] = [];
+    let retainedBeforeDelete: string[] | undefined;
+    const resume = resumedClient.resume.bind(resumedClient);
+    resumedClient.resume = async (...args) => {
+      const sandbox = await resume(...args);
+      const remove = sandbox.removeEntryNoFollow!.bind(sandbox);
+      Object.defineProperty(sandbox, 'removeEntryNoFollow', {
+        value: async (path: string) => {
+          removals.push(path);
+          await remove(path);
+        },
+      });
+      const dispose = sandbox.close.bind(sandbox);
+      sandbox.close = async () => {
+        if (kind !== 'nested-symlink' || retainedBeforeDelete) return dispose();
+        retainedBeforeDelete = await Promise.all(
+          [
+            '.agents/report/SKILL.md',
+            '.agents/report/removed.sh',
+            '.agents/keep.txt',
+            '.agents/unrelated/config.txt',
+            'workspace.txt',
+          ].map((path) =>
+            readFile(join(sandbox.state.workspaceRootPath, path), 'utf8').catch(
+              (error) => {
+                if (error.code === 'ENOENT') return '<missing>';
+                throw error;
+              },
+            ),
+          ),
+        );
+        await dispose();
+      };
+      return sandbox;
+    };
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([[message('current direct Git skill')]]);
+    await using provider = await providerFor(server);
+    let workspace = '';
+    try {
+      const source = sandboxEnvironment({
+        client: resumedClient,
+        manifest: new Manifest({
+          extraPathGrants: [{ path: repository, readOnly: true }],
+        }),
+        authorizedResumeState: { backendId: resumedClient.backendId, state },
+        skills: skills({ from: entry }),
+        connect: async (sandbox) => {
+          workspace = sandbox.state.workspaceRootPath;
+          expect(sandbox.state.manifest.entries['.agents']).toMatchObject(
+            entry,
+          );
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: workspace,
+              tools: [],
+              capabilityDirectories: [join(workspace, '.agents')],
+            }),
+            async () => {},
+          );
+        },
+      });
+      const opening = new Agent({
+        provider,
+        model: 'fixture-skills',
+        instructions: 'Read the current skill index.',
+      }).session({ environment: source });
+      if (kind === 'nested-symlink') {
+        await expect(opening).rejects.toThrow(/regular files|symbolic links/);
+        expect(removals).toEqual([]);
+        expect(retainedBeforeDelete).toEqual([
+          '---\nname: report\ndescription: PREVIOUS_DIRECT_GIT_INDEX\n---\nold document\n',
+          'obsolete member',
+          'untracked namespace file',
+          'untracked directory',
+          'unrelated workspace file',
+        ]);
+        expect(server.requests).toHaveLength(0);
+        return;
+      }
+      await using session = await opening;
+      await (await session.submit('Inspect the index.')).wait();
+      expect(workspace).not.toBe(saved.workspaceRootPath);
+      expect(
+        await readFile(join(workspace, '.agents/report/SKILL.md'), 'utf8'),
+      ).toBe(document);
+      expect(
+        (await stat(join(workspace, '.agents/report/run.sh'))).mode & 0o111,
+      ).toBe(0o111);
+      await git('git', [
+        '-C',
+        join(workspace, '.agents'),
+        'diff',
+        '--exit-code',
+        'HEAD',
+      ]);
+      expect(
+        (
+          await git('git', [
+            '-C',
+            join(workspace, '.agents'),
+            'rev-parse',
+            'HEAD',
+          ])
+        ).stdout.trim(),
+      ).toBe(currentCommit);
+      await expect(
+        access(join(workspace, '.agents/report/removed.sh')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(join(workspace, '.agents/keep.txt'), 'utf8')).toBe(
+        'untracked namespace file',
+      );
+      expect(
+        await readFile(join(workspace, '.agents/unrelated/config.txt'), 'utf8'),
+      ).toBe('untracked directory');
+      expect(await readFile(join(workspace, 'workspace.txt'), 'utf8')).toBe(
+        'unrelated workspace file',
+      );
+      expect(JSON.stringify(server.requests)).toContain(
+        'CURRENT_DIRECT_GIT_INDEX',
+      );
+      expect(JSON.stringify(server.requests)).not.toContain(
+        'PREVIOUS_DIRECT_GIT_INDEX',
+      );
+      server.assertExhausted();
+    } finally {
+      await peer.close();
+      await rm(base, { recursive: true, force: true });
+    }
+  },
+  30_000,
 );

@@ -3,7 +3,6 @@ import { z } from 'zod';
 import {
   createSkillConfiguration,
   beforeGitRepoCopy,
-  gitRepoCopiesTree,
   getSandboxStateIdentity,
   getLocalSandboxStateAuthority,
   isDeserializedSandboxState,
@@ -326,17 +325,15 @@ export class SandboxSkillBinding<Context = any> {
         }
       }
     };
-    const copiedGitRoot = entries.find(
+    const gitRoot = entries.find(
       ([path, entry]) =>
-        path === this.configuration.skillsPath &&
-        entry.type === 'git_repo' &&
-        gitRepoCopiesTree(entry),
+        path === this.configuration.skillsPath && entry.type === 'git_repo',
     );
-    if (copiedGitRoot && !sandbox[beforeGitRepoCopy])
+    if (gitRoot && !sandbox[beforeGitRepoCopy])
       throw new Error(
         'Restored eager Git Skills require source preparation support',
       );
-    if (!copiedGitRoot)
+    if (!gitRoot)
       await cleanRestored(
         entries.flatMap(([path, entry]) =>
           path === this.configuration.skillsPath && entry.type === 'dir'
@@ -354,7 +351,7 @@ export class SandboxSkillBinding<Context = any> {
         );
       let prepared = false;
       const prepare =
-        copiedGitRoot?.[1] === entry
+        gitRoot?.[1] === entry
           ? async (children: readonly string[], files: readonly string[]) => {
               if (prepared)
                 throw new Error('Git skill source was prepared more than once');
@@ -371,7 +368,9 @@ export class SandboxSkillBinding<Context = any> {
       await sandbox.materializeEntry({
         path,
         entry,
-        [beforeGitRepoCopy]: prepare,
+        [beforeGitRepoCopy]: prepare
+          ? { prepare, limits: treeLimits }
+          : undefined,
       });
       if (prepare && !prepared)
         throw new Error(

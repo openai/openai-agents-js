@@ -113,3 +113,34 @@ it('rejects a special-file sentinel in a retired skill root', async () => {
     ),
   ).rejects.toThrow('unsupported member');
 });
+
+it('rejects direct-clone eager Git restore before cleanup without source preparation', async () => {
+  const manifest = new Manifest();
+  const listDir = vi.fn(async () => []);
+  const removeEntryNoFollow = vi.fn(async () => {});
+  const materializeEntry = vi.fn(async () => {});
+  const binding = new SandboxSkillBinding(
+    skills({
+      from: {
+        type: 'git_repo',
+        repo: 'fixture/skills',
+      },
+    }),
+  );
+  await expect(
+    binding.stageOwnedResume(
+      {
+        state: { manifest },
+        listDir,
+        removeEntryNoFollow,
+        materializeEntry,
+      },
+      manifest,
+      [['.agents', { type: 'git_repo', repo: 'fixture/skills' }]],
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow(/source preparation support/);
+  expect(listDir).not.toHaveBeenCalled();
+  expect(removeEntryNoFollow).not.toHaveBeenCalled();
+  expect(materializeEntry).not.toHaveBeenCalled();
+});

@@ -303,10 +303,22 @@ export async function readLocalSourceEntriesAt(
 /** Walk with entry lists and relative names, retaining no directory per depth. */
 export async function* walkLocalSourceDirectoryEntries(
   root: NativeSourceDirectory,
+  limits?: { maxMembers: number; maxDepth: number },
 ): AsyncGenerator<{ components: string[]; type: NativeSourceEntry['type'] }> {
+  let remaining = limits?.maxMembers;
+  if (remaining !== undefined) {
+    if (remaining < 1)
+      throw new RangeError('Source tree member limit exceeded');
+    remaining--;
+  }
+  const entriesAt = async (components: string[]) => {
+    const entries = await readLocalSourceEntriesAt(root, components, remaining);
+    if (remaining !== undefined) remaining -= entries.length;
+    return entries;
+  };
   yield { components: [], type: 'directory' };
   const stack = [
-    { components: [] as string[], entries: await root.entries(), index: 0 },
+    { components: [] as string[], entries: await entriesAt([]), index: 0 },
   ];
   while (stack.length > 0) {
     const frame = stack[stack.length - 1];
@@ -316,9 +328,11 @@ export async function* walkLocalSourceDirectoryEntries(
       continue;
     }
     const components = [...frame.components, entry.name];
+    if (limits && components.length > limits.maxDepth)
+      throw new RangeError('Source tree depth limit exceeded');
     yield { components, type: entry.type };
     if (entry.type === 'directory') {
-      const entries = await readLocalSourceEntriesAt(root, components);
+      const entries = await entriesAt(components);
       stack.push({ components, entries, index: 0 });
     }
   }
