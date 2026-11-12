@@ -1,14 +1,58 @@
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeProvider, parseSessionState, tool } from '../../src';
+import {
+  Agent,
+  type ModelSettings,
+  NativeProvider,
+  parseSessionState,
+  tool,
+} from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(() => ModelServer.closeAll());
 
-nativeIt(
-  'projects the latest provider compaction across a tool and cold restore while retaining audit history',
-  async () => {
+const thresholdCases: Array<{
+  mode: string;
+  modelSettings: ModelSettings;
+  expectedThreshold?: number;
+}> = [
+  {
+    mode: 'raw override',
+    modelSettings: {
+      contextManagement: [{ type: 'compaction', compact_threshold: 1024 }],
+      providerCompaction: { type: 'static', threshold: 2048 },
+    },
+    expectedThreshold: 1024,
+  },
+  {
+    mode: 'fixed',
+    modelSettings: { providerCompaction: { type: 'static', threshold: 1024 } },
+    expectedThreshold: 1024,
+  },
+  {
+    mode: 'unknown-model fallback',
+    modelSettings: {
+      providerCompaction: {
+        type: 'dynamic',
+        thresholdRatio: 0.8,
+        fallbackThreshold: 2048,
+      },
+    },
+    expectedThreshold: 2048,
+  },
+  {
+    mode: 'explicit clear',
+    modelSettings: {
+      contextManagement: null,
+      providerCompaction: { type: 'static', threshold: 1024 },
+    },
+  },
+];
+
+nativeIt.each(thresholdCases)(
+  'projects provider compaction across a tool and cold restore with $mode',
+  async ({ modelSettings, expectedThreshold }) => {
     const server = new ModelServer([
       [message('OLD_ASSISTANT_SENTINEL')],
       [
@@ -32,9 +76,7 @@ nativeIt(
       instructions: 'CURRENT_APPLICATION_INSTRUCTION_SENTINEL',
       model: 'fixture-provider-compaction',
       provider,
-      modelSettings: {
-        contextManagement: [{ type: 'compaction', compact_threshold: 1024 }],
-      },
+      modelSettings,
       tools: [
         tool({
           name: 'lookup',
@@ -56,6 +98,16 @@ nativeIt(
       await (await restored.submit('LATER_USER_SENTINEL')).wait();
     }
     expect(server.requests).toHaveLength(4);
+    for (const request of server.requests) {
+      if (expectedThreshold === undefined) {
+        expect(request).not.toHaveProperty('context_management');
+      } else {
+        expect(request.context_management).toEqual([
+          { type: 'compaction', compact_threshold: expectedThreshold },
+        ]);
+      }
+      expect(request).not.toHaveProperty('provider_compaction');
+    }
     const followup = server.requests[2]!;
     const later = server.requests[3]!;
     const input = followup.input as { type?: string; call_id?: string }[];
