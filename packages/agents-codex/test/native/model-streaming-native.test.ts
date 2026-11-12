@@ -519,3 +519,74 @@ it('closes a returned iterator when cancellation wins during its asynchronous fa
   expect(advances).toBe(0);
   expect(closed).toBe(true);
 }, 20_000);
+
+it.each([false, true])(
+  'retains completed usage after iterator cleanup failure with a tool suffix %s',
+  async (withTool) => {
+    const effects: string[] = [];
+    let attempts = 0;
+    let cleaned = false;
+    const cleanupError = new Error('synthetic iterator cleanup failure');
+    const record = tool({
+      name: 'record',
+      parameters: z.object({ value: z.string() }),
+      execute({ value }) {
+        effects.push(value);
+        return 'recorded';
+      },
+    });
+    await using provider = new NativeProvider({
+      modelBackend: {
+        complete,
+        async *stream(): AsyncGenerator<JsonObject> {
+          attempts++;
+          try {
+            if (withTool) yield call();
+            else
+              for (const event of text('cleanup-text', 'withheld final output'))
+                yield event;
+            yield {
+              type: 'response.completed',
+              response: {
+                id: 'cleanup-usage-response',
+                status: 'completed',
+                usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+              },
+            };
+          } finally {
+            cleaned = true;
+            // eslint-disable-next-line no-unsafe-finally -- Cleanup failure is the regression trigger.
+            throw cleanupError;
+          }
+        },
+      },
+    });
+    await using session = await new Agent({
+      model: 'fixture-stream-model',
+      instructions: 'Answer.',
+      provider,
+      tools: withTool ? [record] : [],
+    }).session();
+    const turn = await session.submit('Begin.');
+    await expect(turn.wait()).rejects.toBe(cleanupError);
+    expect(attempts).toBe(1);
+    expect(cleaned).toBe(true);
+    expect(effects).toEqual([]);
+    const expectedUsage = {
+      requests: 1,
+      missingUsageRequests: 0,
+      inputTokens: 3,
+      outputTokens: 2,
+      totalTokens: 5,
+    };
+    expect(turn.runUsage).toMatchObject(expectedUsage);
+    const turns = [];
+    for await (const recorded of session.turns()) turns.push(recorded);
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({
+      status: 'failed',
+      runUsage: expectedUsage,
+    });
+  },
+  20_000,
+);

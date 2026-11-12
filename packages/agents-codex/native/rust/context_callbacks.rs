@@ -1421,21 +1421,16 @@ impl PythonTools {
             ModelDelivery::Streaming {
                 finish, projection, ..
             } => {
-                let result = projection.finish(
+                let usage = projection.completed_usage().cloned();
+                let mut result = projection.finish(
                     parsed
                         .is_err()
                         .then_some("Native model stream producer failed"),
                 );
-                if let (Some(attempt), Ok(events)) = (&attempt, &result) {
-                    for event in events {
-                        if let codex_api::ResponseEvent::Completed {
-                            token_usage: Some(usage),
-                            ..
-                        } = event
-                        {
-                            attempt
-                                .report_usage(usage.clone())
-                                .map_err(anyhow::Error::msg)?;
+                if let (Some(attempt), Some(usage)) = (&attempt, usage) {
+                    if let Err(error) = attempt.report_usage(usage) {
+                        if result.is_ok() {
+                            result = Err(model_stream_error(error));
                         }
                     }
                 }
