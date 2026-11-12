@@ -1,4 +1,6 @@
 import type { SandboxSkillLease } from './sandbox-skills';
+import type { SandboxMemoryOwner } from './sandbox-memory';
+import type { CanonicalHistorySnapshot } from './history';
 import type { ManagedWorkspaceBinding } from './managed-workspace';
 import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
 import { Environment } from './environment';
@@ -31,6 +33,7 @@ interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
+  readonly sandboxMemory?: SandboxMemoryOwner;
   readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly skillLease?: SandboxSkillLease;
   readonly signal?: AbortSignal;
@@ -52,6 +55,7 @@ export function createEnvironmentLease<Context>(
   workspaceInstructions?: string,
   observeSandboxOperation?: SandboxOperationObserver,
   skillLease?: SandboxSkillLease,
+  sandboxMemory?: SandboxMemoryOwner,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -62,6 +66,7 @@ export function createEnvironmentLease<Context>(
     signal: sourceSignal,
     managedWorkspace,
     workspaceInstructions,
+    sandboxMemory,
     observeSandboxOperation,
     skillLease,
   };
@@ -129,6 +134,32 @@ export class EnvironmentAcquisition {
   /** @internal Current resource authority, carried by this exact acquisition. */
   get skillLease(): SandboxSkillLease | undefined {
     return this.state?.skillLease;
+  }
+
+  /** @internal Fresh declaration presence; never restored from checkpoint data. */
+  get hasSandboxMemory(): boolean {
+    return this.state?.sandboxMemory !== undefined;
+  }
+
+  /** @internal Keep all resource IO inside the exact acquisition's scope. */
+  flushMemory(
+    thread: string,
+    snapshot: CanonicalHistorySnapshot,
+  ): Promise<void> {
+    const owner = this.state?.sandboxMemory;
+    if (!owner || !this.state)
+      throw new TypeError('This Environment has no native sandbox memory');
+    return this.state.scope(() => owner.flush(thread, snapshot));
+  }
+
+  /** @internal Guard active phase callbacks across Sessions sharing this resource. */
+  checkMemoryOperation(operation: string): void {
+    this.state?.sandboxMemory?.checkOperation(operation);
+  }
+
+  /** @internal Session close cancels generation before joining its mutation. */
+  cancelMemory(): void {
+    this.state?.sandboxMemory?.cancel();
   }
 
   attachSession(session: { close(): Promise<void> }): void {

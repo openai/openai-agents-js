@@ -174,5 +174,15 @@ export { skillWorkspaceRoot } from './skillResources';
 
 export {
   getSandboxStateIdentity,
+  getLocalSandboxStateAuthority,
   isDeserializedSandboxState,
 } from './internal/sessionStateTrust';
+
+export { SandboxMemoryStorage } from './memory/storage';
+export { memory } from './capabilities/memory';
+export {
+  RolloutExtractionArtifactsSchema,
+  validateRolloutArtifacts,
+  formatRawMemory,
+  formatRolloutSummary,
+} from './memory/artifacts';

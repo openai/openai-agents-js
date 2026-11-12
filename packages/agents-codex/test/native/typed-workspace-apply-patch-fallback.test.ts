@@ -23,7 +23,12 @@ const operations = [
 ];
 const receipts = ['created', 'editor rejected move', 'deleted'];
 
-const routes = ['native-chat', 'ai-sdk-chat', 'ai-sdk-responses'] as const;
+const routes = [
+  'native-chat',
+  'native-chat-stream',
+  'ai-sdk-chat',
+  'ai-sdk-responses',
+] as const;
 it.each(
   routes.flatMap((route) => [
     { route, batch: false },
@@ -115,16 +120,46 @@ it.each(
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
       };
     };
+    async function* streamResponse(request: JsonObject) {
+      expect(request.stream).toBe(true);
+      const completion = response(request);
+      const choice = completion.choices?.[0];
+      if (!choice) throw new Error('Expected a Chat Completions choice');
+      const { message, finish_reason } = choice;
+      yield {
+        id: completion.id,
+        choices: [
+          {
+            index: 0,
+            delta: {
+              ...message,
+              tool_calls: message.tool_calls?.map((call, index) => ({
+                ...call,
+                index,
+              })),
+            },
+            finish_reason,
+          },
+        ],
+      };
+    }
     const openai = createOpenAI({
       apiKey: 'synthetic',
       fetch: async (_url, init) =>
         Response.json(response(JSON.parse(String(init?.body)))),
     });
+    const streaming = route === 'native-chat-stream';
     const backend =
-      route === 'native-chat'
-        ? new ChatCompletionsModel({
-            chat: { completions: { create: response } },
-          })
+      route === 'native-chat' || streaming
+        ? new ChatCompletionsModel(
+            {
+              chat: {
+                completions: { create: streaming ? streamResponse : response },
+              },
+            },
+            undefined,
+            { stream: streaming },
+          )
         : new AiSdkModel(
             route === 'ai-sdk-chat'
               ? openai.chat('gpt-4.1')

@@ -98,6 +98,20 @@
         "default": "./a2a/index.cjs"
       }
     },
+    "./a2a/client": {
+      "node": {
+        "types": "./dist/a2a/public-client.d.ts",
+        "module-sync": "./dist/a2a/public-client.js"
+      },
+      "import": {
+        "types": "./dist/a2a/public-client.d.mts",
+        "default": "./dist/a2a/public-client.mjs"
+      },
+      "require": {
+        "types": "./dist/a2a/public-client.d.ts",
+        "default": "./dist/a2a/public-client.js"
+      }
+    },
     "./voice": {
       "node": {
         "types": "./dist/voice/index.d.ts",
@@ -330,6 +344,9 @@
       ],
       "a2a": [
         "dist/a2a/index.d.ts"
+      ],
+      "a2a/client": [
+        "dist/a2a/public-client.d.ts"
       ],
       "voice": [
         "dist/voice/index.d.ts"

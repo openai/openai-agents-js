@@ -1694,3 +1694,37 @@ os.mkfifo(${JSON.stringify(note)})
     });
   },
 );
+
+it.skipIf(process.platform === 'win32')(
+  'writes complete resource-owned text and byte files',
+  async () => {
+    const session = await new UnixLocalSandboxClient().create(new Manifest());
+    try {
+      await session.writeFileNoFollow!({
+        path: 'memories/value.txt',
+        entry: { type: 'file', content: 'initial value' },
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'memories/value.txt'),
+          'utf8',
+        ),
+      ).toBe('initial value');
+      await session.writeFileNoFollow!({
+        path: 'memories/value.txt',
+        entry: {
+          type: 'file',
+          content: new TextEncoder().encode('updated value\n'),
+        },
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'memories/value.txt'),
+          'utf8',
+        ),
+      ).toBe('updated value\n');
+    } finally {
+      await session.close();
+    }
+  },
+);

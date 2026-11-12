@@ -177,6 +177,8 @@ it.each([
       ...(phase === 'environment disposal'
         ? {
             environmentOwner: {
+              checkMemoryOperation() {},
+              cancelMemory() {},
               dispose: async () => {
                 throw cleanupError;
               },

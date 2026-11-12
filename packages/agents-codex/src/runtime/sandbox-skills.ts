@@ -3,7 +3,9 @@ import { z } from 'zod';
 import {
   createSkillConfiguration,
   getSandboxStateIdentity,
+  getLocalSandboxStateAuthority,
   isDeserializedSandboxState,
+  isSandboxPathNotFoundError,
   resolveSkillRuntimeMetadata,
   resolveSkillsMetadata,
   renderSkillsDiscoveryInstructions,
@@ -85,7 +87,10 @@ type SandboxSkillBudget = {
 // Retained manifest entries outlive acquisition leases. Trusted state aliases
 // share their physical owner; dropping an Environment never resets its budget.
 const sandboxSkillBudgets = new WeakMap<object, SandboxSkillBudget>();
-function sandboxSkillBudget(sandbox: SandboxSessionLike): SandboxSkillBudget {
+function sandboxSkillBudget(
+  sandbox: SandboxSessionLike,
+  created?: boolean,
+): SandboxSkillBudget {
   const owner = getSandboxStateIdentity(sandbox.state);
   let budget = sandboxSkillBudgets.get(owner);
   if (!budget) {
@@ -94,22 +99,48 @@ function sandboxSkillBudget(sandbox: SandboxSessionLike): SandboxSkillBudget {
       bytes: 0,
       members: 0,
       tail: Promise.resolve(),
-      needsRecount: isDeserializedSandboxState(sandbox.state),
+      needsRecount:
+        created === false ||
+        isDeserializedSandboxState(sandbox.state) ||
+        (created !== true && !getLocalSandboxStateAuthority(sandbox.state)),
     };
     sandboxSkillBudgets.set(owner, budget);
   }
   return budget;
 }
 
-// Restored captures already carry their accepted payloads in the provider manifest.
-// Saved manifests do not distinguish captured skills from other inline files.
-// Charge retained File/Dir payloads across namespaces only when lineage is lost.
+// The Source rebind may replace saved declarations before resume. Measure the
+// current authorized workspace, and cover retained manifest payloads as well.
+// Unknown cold lineage conservatively includes unrelated workspace files.
 // Seed inside the shared load queue; acquisition inspection must never await it.
-function seedRestoredSkillBudget(
+async function seedRestoredSkillBudget(
   budget: SandboxSkillBudget,
-  manifest: Manifest,
-): void {
+  sandbox: SandboxSessionLike,
+  signal: AbortSignal,
+  admit: () => void,
+): Promise<void> {
   if (!budget.needsRecount) return;
+  signal.throwIfAborted();
+  admit();
+  const authority = getLocalSandboxStateAuthority(sandbox.state);
+  if (!authority)
+    throw new Error(
+      'The configured native Skills quota cannot be measured for this restored provider; use a fresh owned source',
+    );
+  // The verified provider binding supplies this root, never saved path fields.
+  // The existing capture bounds traversal and uses retained, nonblocking reads.
+  const restored = await resolveLazySkillEntry(
+    { type: 'local_dir', src: authority.workspaceRootPath },
+    '',
+    {
+      limits: treeLimits,
+      sourceGrants: [{ path: authority.workspaceRootPath, readOnly: true }],
+    },
+  );
+  signal.throwIfAborted();
+  admit();
+  const physical = capturedTreeUsage(restored);
+  const manifest = sandbox.state.manifest;
   const additions = new Set<string>();
   let members = budget.members,
     bytes = budget.bytes;
@@ -133,8 +164,8 @@ function seedRestoredSkillBudget(
     additions.add(path);
   }
   for (const path of additions) budget.retained.add(path);
-  budget.members = members;
-  budget.bytes = bytes;
+  budget.members = Math.max(members, physical.members);
+  budget.bytes = Math.max(bytes, physical.bytes);
   budget.needsRecount = false;
 }
 
@@ -221,6 +252,22 @@ export class SandboxSkillBinding<Context = any> {
         'Eager resumed Skills require sandbox materializeEntry()',
       );
     const expectedGrants = grantStamp(trustedManifest);
+    if (grantStamp(sandbox.state.manifest) !== expectedGrants)
+      throw new Error('Sandbox skill grants do not match the current manifest');
+    const stale = await this.restoredEagerSkillFiles(sandbox, signal);
+    if (stale.length) {
+      const editor = sandbox.createEditor?.();
+      if (!editor)
+        throw new Error('Restored eager Skills require sandbox createEditor()');
+      for (const path of stale) {
+        signal.throwIfAborted();
+        if (grantStamp(sandbox.state.manifest) !== expectedGrants)
+          throw new Error('Sandbox skill grants changed before cleanup');
+        const result = await editor.deleteFile({ type: 'delete_file', path });
+        if (result?.status === 'failed')
+          throw new Error('Could not remove a restored eager skill file');
+      }
+    }
     for (const [path, entry] of entries) {
       signal.throwIfAborted();
       if (grantStamp(sandbox.state.manifest) !== expectedGrants)
@@ -232,6 +279,72 @@ export class SandboxSkillBinding<Context = any> {
       if (grantStamp(sandbox.state.manifest) !== expectedGrants)
         throw new Error('Sandbox skill grants changed during materialization');
     }
+  }
+
+  private async restoredEagerSkillFiles(
+    sandbox: SandboxSessionLike,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const listDir = sandbox.listDir?.bind(sandbox);
+    if (!listDir)
+      throw new Error('Restored eager Skills require sandbox listDir()');
+    let remaining = treeLimits.maxMembers;
+    const list = async (path: string, missingAllowed = false) => {
+      signal.throwIfAborted();
+      const children = await listDir({ path, maxEntries: remaining }).catch(
+        (error: unknown) => {
+          if (missingAllowed && isSandboxPathNotFoundError(error)) return [];
+          throw error;
+        },
+      );
+      remaining -= children.length;
+      if (remaining < 0) throw new Error('Skill tree member limit exceeded');
+      return children.map(({ name, type }) => {
+        if (
+          !name ||
+          name === '.' ||
+          name === '..' ||
+          name.includes('/') ||
+          name.includes('\\') ||
+          name.includes('\0')
+        )
+          throw new Error(
+            'Restored skill tree contains an invalid member name',
+          );
+        return { name, type, path: joinRelativePaths(path, name) };
+      });
+    };
+    const files: string[] = [];
+    for (const root of await list(this.configuration.skillsPath, true)) {
+      if (root.type !== 'dir') continue;
+      if (
+        sandbox.pathExists &&
+        !(await sandbox.pathExists(joinRelativePaths(root.path, 'SKILL.md')))
+      )
+        continue;
+      const children = await list(root.path);
+      if (
+        !children.some(
+          ({ name, type }) => name === 'SKILL.md' && type !== 'dir',
+        )
+      )
+        continue;
+      const pending = children.map((child) => ({ ...child, depth: 1 }));
+      while (pending.length) {
+        const member = pending.pop()!;
+        if (member.depth > treeLimits.maxDepth)
+          throw new Error('Skill tree depth limit exceeded');
+        if (member.type === 'file') files.push(member.path);
+        else if (member.type === 'dir') {
+          const children = await list(member.path);
+          pending.push(
+            ...children.map((child) => ({ ...child, depth: member.depth + 1 })),
+          );
+        } else
+          throw new Error('Restored skill tree contains an unsupported member');
+      }
+    }
+    return files;
   }
 
   private admit(context: ToolCallContext): SandboxSkillLease {
@@ -259,9 +372,10 @@ export class SandboxSkillLease {
     environment: Environment,
     trustedManifest: Manifest,
     readonly workspaceRoot: string,
+    created?: boolean,
   ) {
     this.#sandbox = sandbox;
-    this.#budget = sandboxSkillBudget(sandbox);
+    this.#budget = sandboxSkillBudget(sandbox, created);
     this.#environment = environment;
     this.#grants = grantStamp(trustedManifest);
   }
@@ -384,7 +498,6 @@ export class SandboxSkillLease {
     const configuration = this.binding.configuration;
     const destination = match.path ?? match.name;
     const sandbox = this.#sandbox!;
-    seedRestoredSkillBudget(this.#budget, sandbox.state.manifest);
     if (!sandbox.pathExists || !sandbox.materializeEntry)
       throw new Error(
         'Skills require sandbox pathExists() and materializeEntry()',
@@ -395,6 +508,9 @@ export class SandboxSkillLease {
     this.admit();
     signal.throwIfAborted();
     if (!exists) {
+      await seedRestoredSkillBudget(this.#budget, sandbox, signal, () =>
+        this.admit(),
+      );
       const relative = configuration.skillsPath
         ? destination.slice(configuration.skillsPath.length + 1)
         : destination;

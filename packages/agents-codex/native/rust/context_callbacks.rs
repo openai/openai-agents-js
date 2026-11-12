@@ -1007,6 +1007,7 @@ pub(super) enum ModelDelivery {
         events: tokio::sync::mpsc::Sender<codex_api::ResponseEvent>,
         finish: oneshot::Sender<ModelStreamFinish>,
         projection: codex_api::ApplicationModelStream,
+        observe_raw_chat: bool,
     },
 }
 struct ModelStreamCursor {
@@ -1020,6 +1021,13 @@ fn model_stream_error(error: impl std::fmt::Display) -> codex_api::ApiError {
     codex_api::ApiError::InvalidRequest {
         message: error.to_string(),
     }
+}
+fn raw_chat_provider_event(payload: serde_json::Map<String, Value>) -> codex_api::ResponseEvent {
+    codex_api::ResponseEvent::RawProvider(codex_protocol::protocol::SdkRawProviderEvent {
+        source: codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+        transport: codex_protocol::protocol::ResponsesEventTransport::Json,
+        payload: Value::Object(payload),
+    })
 }
 impl ModelStreamCursor {
     fn into_stream(self) -> codex_extension_api::ModelResponseStream {
@@ -1241,17 +1249,7 @@ impl PythonTools {
                     );
                 }
                 if let Some(raw) = reply.raw_chat_completion {
-                    events.insert(
-                        events.len() - 1,
-                        Ok(codex_api::ResponseEvent::RawProvider(
-                            codex_protocol::protocol::SdkRawProviderEvent {
-                                source:
-                                    codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
-                                transport: codex_protocol::protocol::ResponsesEventTransport::Json,
-                                payload: Value::Object(raw),
-                            },
-                        )),
-                    );
+                    events.insert(events.len() - 1, Ok(raw_chat_provider_event(raw)));
                 }
                 Ok(futures_util::stream::iter(events).boxed())
             }
@@ -1271,6 +1269,7 @@ impl PythonTools {
         &self,
         response: &StepReply,
         observe_raw: bool,
+        chat_stream: bool,
     ) -> Result<()> {
         let active = self
             .selection
@@ -1301,7 +1300,8 @@ impl PythonTools {
             PreparationReply::Model(ModelDelivery::Streaming {
                 events,
                 finish,
-                projection: codex_api::ApplicationModelStream::new(observe_raw),
+                projection: codex_api::ApplicationModelStream::new(observe_raw && !chat_stream),
+                observe_raw_chat: observe_raw && chat_stream,
             }),
         ) else {
             unreachable!()
@@ -1317,6 +1317,7 @@ impl PythonTools {
         &self,
         response: &StepReply,
         data: &str,
+        raw_chat_chunk: bool,
     ) -> Result<bool> {
         let id = crate::native_id(&response.request_id)?;
         let (projected, sender, continuing) = {
@@ -1344,19 +1345,36 @@ impl PythonTools {
                 .and_then(|callback| callback.model_attempt.as_ref())
                 .cloned();
             let PreparationReply::Model(ModelDelivery::Streaming {
-                events, projection, ..
+                events,
+                projection,
+                observe_raw_chat,
+                ..
             }) = &mut pending.reply
             else {
                 anyhow::bail!("Model stream has not started")
             };
-            let had_usage = projection.completed_usage().is_some();
-            let (projected, continuing) = projection.push(data);
-            if !had_usage {
-                if let (Some(attempt), Some(usage)) = (attempt, projection.completed_usage()) {
-                    // Retirement can drop the projection before the normal reply reports usage.
-                    let _ = attempt.report_usage(usage.clone());
+            let (projected, continuing) = if raw_chat_chunk {
+                ensure!(
+                    *observe_raw_chat,
+                    "Raw Chat chunks require an opted-in Chat stream"
+                );
+                ensure!(
+                    data.len() <= 8 * 1024 * 1024,
+                    "Raw Chat chunk exceeds the stream frame limit"
+                );
+                let raw = serde_json::from_str(data).context("Invalid raw Chat chunk")?;
+                (vec![raw_chat_provider_event(raw)], true)
+            } else {
+                let had_usage = projection.completed_usage().is_some();
+                let (projected, continuing) = projection.push(data);
+                if !had_usage {
+                    if let (Some(attempt), Some(usage)) = (attempt, projection.completed_usage()) {
+                        // Retirement can drop the projection before the normal reply reports usage.
+                        let _ = attempt.report_usage(usage.clone());
+                    }
                 }
-            }
+                (projected, continuing)
+            };
             (projected, events.clone(), continuing)
         };
         for event in projected {

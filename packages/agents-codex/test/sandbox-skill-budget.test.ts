@@ -16,6 +16,8 @@ import {
   localDirLazySkillSource,
 } from '@openai/agents-core/sandbox/local';
 import { Environment } from '../src/runtime/environment';
+import { acquireEnvironment } from '../src/runtime/environment-source';
+import { sandboxEnvironment } from '../src/runtime/sandbox-environment';
 import {
   SandboxSkillBinding,
   SandboxSkillLease,
@@ -196,6 +198,7 @@ unixIt(
     const started = new Promise<void>((resolve) => {
       entered = resolve;
     });
+    const exists = f.sandbox.pathExists.bind(f.sandbox);
     let checks = 0;
     f.sandbox.pathExists = async (path) => {
       const result = await exists(path);
@@ -508,6 +511,117 @@ unixIt(
         false,
       );
     } finally {
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'preserves the allowance through the generic authorized source resume',
+  async () => {
+    const f = await fixture(33, true);
+    let owner: Awaited<ReturnType<typeof acquireEnvironment>> | undefined;
+    try {
+      await f.load('alpha');
+      f.lease.retire();
+      const saved = JSON.parse(
+        JSON.stringify(await f.client.serializeSessionState(f.sandbox.state)),
+      );
+      const original = f.sandbox.state.workspaceRootPath;
+      await f.sandbox.close();
+      const client = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: original,
+          workspaceRootOwned: true,
+          localSnapshotPath: saved.snapshot.path,
+        },
+      });
+      const state = await client.deserializeSessionState(saved);
+      const source = sandboxEnvironment({
+        client,
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants: f.sandbox.state.manifest.extraPathGrants,
+        }),
+        authorizedResumeState: { backendId: client.backendId, state },
+        skills: f.lease.binding.configuration,
+        connect: async (resource) =>
+          Environment.lease(
+            new Environment({
+              url: 'wss://fixture.invalid',
+              cwd: String(resource.state.workspaceRootPath),
+              capabilityDirectories: [
+                join(String(resource.state.workspaceRootPath), '.agents'),
+              ],
+              tools: [],
+            }),
+            async () => {},
+          ),
+      });
+      owner = await acquireEnvironment(source);
+      await expect(
+        owner.skillLease!.load('beta', new AbortController().signal),
+      ).rejects.toThrow(/skill tree byte limit/i);
+    } finally {
+      await owner?.dispose();
+      await f.close();
+    }
+  },
+  60_000,
+);
+
+unixIt.each([false, true])(
+  'measures only owned fresh opaque resources with created=%s',
+  async (created) => {
+    const f = await fixture(created ? 0 : 33, false, created ? 0 : 33);
+    let next: SandboxSkillLease | undefined;
+    try {
+      if (!created) await f.load('alpha');
+      f.lease.retire();
+      let writes = 0;
+      const opaque = {
+        state: { ...f.sandbox.state },
+        pathExists: f.sandbox.pathExists.bind(f.sandbox),
+        materializeEntry: async (
+          args: Parameters<typeof f.sandbox.materializeEntry>[0],
+        ) => {
+          writes++;
+          await f.sandbox.materializeEntry(args);
+        },
+      };
+      const root = f.sandbox.state.workspaceRootPath;
+      const environment = new Environment({
+        url: 'wss://fixture.invalid',
+        cwd: root,
+        capabilityDirectories: [join(root, '.agents')],
+        tools: [],
+      });
+      next = new SandboxSkillLease(
+        f.lease.binding,
+        opaque,
+        environment,
+        opaque.state.manifest,
+        root,
+        created ? true : undefined,
+      );
+      await next.activate();
+      const pending = next.load(
+        created ? 'alpha' : 'beta',
+        new AbortController().signal,
+      );
+      if (created) {
+        expect((await pending).status).toBe('loaded');
+        expect(writes).toBe(1);
+      } else {
+        await expect(pending).rejects.toThrow(
+          /configured native Skills quota cannot be measured/,
+        );
+        expect(writes).toBe(0);
+        expect(await f.sandbox.pathExists('.agents/beta/SKILL.md')).toBe(false);
+      }
+    } finally {
+      next?.retire();
       await f.close();
     }
   },

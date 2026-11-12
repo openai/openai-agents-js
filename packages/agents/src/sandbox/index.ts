@@ -13,4 +13,5 @@ export type {
   SkillDescriptor,
   SkillIndexEntry,
   LocalDirLazySkillSource,
+  SandboxMemoryOptions,
 } from '@openai/agents-codex';

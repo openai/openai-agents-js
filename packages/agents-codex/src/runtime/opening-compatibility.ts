@@ -22,3 +22,26 @@ export function validateCustomStorageCompatibility(
       'Custom canonical storage does not support environments, standalone native search, checklists, goals, child agents, or manual tools',
     );
 }
+
+/** @internal Compatibility for captured prepareRequest declarations. */
+export function validatePrepareRequestCompatibility(
+  prepareRequest: unknown,
+  outputRepair: boolean,
+  websocketsAllowed: boolean,
+  hasUnsupportedFeatures: boolean,
+): void {
+  if (typeof prepareRequest !== 'function')
+    throw new TypeError('prepareRequest must be callable');
+  if (outputRepair)
+    throw new TypeError(
+      'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
+    );
+  if (websocketsAllowed)
+    throw new TypeError(
+      'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
+    );
+  if (hasUnsupportedFeatures)
+    throw new TypeError(
+      'prepareRequest supports only direct root eager function and ordinary MCP tools',
+    );
+}

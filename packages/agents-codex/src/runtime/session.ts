@@ -1,3 +1,5 @@
+import { NativeTurn, type NativeRunResult } from './native-turn';
+import { validatePrepareRequestCompatibility } from './opening-compatibility';
 import {
   captureHostedPromptReference,
   type HostedPromptSource,
@@ -25,7 +27,6 @@ import {
   modelAttemptTerminalError,
   releaseModelAttemptPayload,
   restoreModelUsageOffset,
-  type ModelAttemptState,
 } from './model-attempts';
 import { parseRequestAttempts, type RequestAttempts } from './request-attempts';
 import type { ResponsesCompaction } from './responses-compaction';
@@ -56,6 +57,8 @@ import {
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
+  isChatModelStream,
+  isRawChatChunk,
   markRawProviderRequest,
   type NativeModel,
   type ModelRequest,
@@ -638,7 +641,8 @@ export function validateMaxModelSteps(
   return value;
 }
 
-interface OperationSelection {
+/** @internal */
+export interface OperationSelection {
   readonly modelOverride?: string;
   readonly modelSettingsOverride?: JsonObject;
   readonly retryPolicyOverride?: RetryPolicy | null;
@@ -1107,12 +1111,6 @@ interface SessionStartup {
   cause?: { value: unknown };
 }
 
-interface NativeRunResult {
-  finalOutput: string;
-  turnId: string;
-  usage: JsonValue | null;
-}
-
 export class TurnAborted extends NativeError {}
 export class StaleTurnError extends NativeError {}
 export class TurnNotSubmitted extends NativeError {
@@ -1281,63 +1279,6 @@ const clientSearchCatalogSource = Symbol('client tool search source');
 type ClientSearchCatalog = ToolCatalog & {
   readonly [clientSearchCatalogSource]: string;
 };
-
-class NativeTurn {
-  captureRequestAttempts = false;
-  requestAttemptsStarted = false;
-  borrowedRequestAttempts = false;
-  requestAttempts?: RequestAttempts;
-  clientSearchCatalogKeys?: Set<string>;
-  readonly guardrailResults: GuardrailRecord[] = [];
-  guardrailInput?: UserInput;
-  inputGuardrailsStarted = false;
-  inputGuardrailsTask?: Promise<void>;
-  parentTrace?: TraceContext;
-  readonly accepted = Promise.withResolvers<AcceptedSubmission>();
-  readonly completion = Promise.withResolvers<NativeRunResult>();
-  readonly controller = new AbortController();
-  mcpPublication?: Promise<void>;
-  readonly pending: NativeEvent[] = [];
-  readonly manualReplies = new Set<Promise<void>>();
-  readonly callbacks = new Set<Promise<void>>();
-  readonly toolInvocations = new Set<Promise<void>>();
-  readonly toolCallIds = new Set<string>();
-  readonly toolCleanupErrors: unknown[] = [];
-  readonly executing = new Set<string>();
-  tracing?: TraceCapture;
-  // Keep workflow ownership when a retained successor takes completion tracing.
-  issuedTracing?: TraceCapture;
-  selection?: OperationSelection;
-  writableRoots?: readonly string[];
-  preparation?: AbortController;
-  id: string | null = null;
-  usage: JsonValue | null = null;
-  modelAttempts?: ModelAttemptState;
-  tokenUsage: TokenUsage | null = null;
-  requests: TokenCount = 0;
-  missingUsageRequests: TokenCount = 0;
-  addUsage(
-    raw: JsonObject,
-    requests: TokenCount = 1,
-    missing: TokenCount = 0,
-  ): void {
-    addModelReportedUsage(this, raw, requests, missing);
-  }
-  failure: unknown;
-  nativeFailure?: NativeError;
-  constructor(
-    private readonly beforeWait: () => void,
-    usageParent?: NativeTurn,
-  ) {
-    if (usageParent) attachModelUsageSource(usageParent, this);
-    this.accepted.promise.catch(() => {});
-    this.completion.promise.catch(() => {});
-  }
-  wait(): Promise<NativeRunResult> {
-    this.beforeWait();
-    return afterSubmissionRetirement(this, this.completion.promise);
-  }
-}
 
 type Lifecycle =
   | { kind: 'idle' }
@@ -2945,6 +2886,7 @@ export class Session<OutputT = string, Context = unknown> {
   };
   private changedExecutorRoots = false;
   private lastRun: NativeTurn | null = null;
+  private memoryFlush?: Promise<void>;
   private readonly childCallbacks = new ChildCallbacks(
     () => this.observations.currentSequence,
   );
@@ -5264,29 +5206,21 @@ export class Session<OutputT = string, Context = unknown> {
     )
       return;
     if (options?.prepareRequest !== undefined) {
-      if (typeof options.prepareRequest !== 'function')
-        throw new TypeError('prepareRequest must be callable');
-      if (output.repair)
-        throw new TypeError(
-          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
-        );
-      if (this.options.websocketsAllowed !== false)
-        throw new TypeError(
-          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
-        );
-      if (
-        this.options.nativeAgents ||
-        this.codeModeEnabled ||
-        this.environment ||
-        this.options.webSearch ||
-        !!this.options.hostedTools?.length ||
-        this.options.nativeGoals ||
-        this.options.checklist ||
-        this.openingMcpTools.some(isHostedRegistration)
-      )
-        throw new TypeError(
-          'prepareRequest supports only direct root eager function and ordinary MCP tools',
-        );
+      validatePrepareRequestCompatibility(
+        options.prepareRequest,
+        !!output.repair,
+        this.options.websocketsAllowed !== false,
+        !!(
+          this.options.nativeAgents ||
+          this.codeModeEnabled ||
+          this.environment ||
+          this.options.webSearch ||
+          !!this.options.hostedTools?.length ||
+          this.options.nativeGoals ||
+          this.options.checklist ||
+          this.openingMcpTools.some(isHostedRegistration)
+        ),
+      );
     }
     return {
       originCatalog: this.catalog,
@@ -6029,8 +5963,9 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
-    const run = new NativeTurn(
+    const run: NativeTurn = new NativeTurn(
       () => this.assertCanWait(run),
+      (completion) => afterSubmissionRetirement(run, completion),
       this.repairUsageParent,
     );
     run.controller.signal.addEventListener(
@@ -9249,7 +9184,10 @@ export class Session<OutputT = string, Context = unknown> {
                   try {
                     check();
                     const streamOwner = encode(receipt);
-                    sourceNative._start_model_producer(streamOwner);
+                    sourceNative._start_model_producer(
+                      streamOwner,
+                      isChatModelStream(stream),
+                    );
                     while (true) {
                       check();
                       const next = await iterator.next();
@@ -9264,6 +9202,7 @@ export class Session<OutputT = string, Context = unknown> {
                           JSON.stringify(
                             losslessJsonObjectSchema.parse(next.value),
                           ),
+                          isRawChatChunk(next.value),
                         );
                       check();
                       if (!continuing) break;
@@ -10484,6 +10423,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private checkCallbackOperation(operation: string): void {
+    this.options.environmentOwner?.checkMemoryOperation(operation);
     for (let scope = toolInvocation.getStore(); scope; scope = scope.parent)
       if (scope.active && scope.session === this)
         throw new NativeError(
@@ -14540,6 +14480,57 @@ export class Session<OutputT = string, Context = unknown> {
     return this.#readHistory();
   }
 
+  /**
+   * Generate sandbox memory explicitly from a successful, settled text conversation.
+   * Requires memory on this resource acquisition. Concurrent calls share one flush.
+   * Native checkpoint restore, non-text history and automatic close generation are unsupported.
+   */
+  flushMemory(): Promise<void> {
+    this.checkCallbackOperation('flush sandbox memory');
+    if (this.memoryFlush) return this.memoryFlush;
+    this.idle('flush sandbox memory');
+    const pending = this.mutate(() => this.prepareMemory());
+    this.memoryFlush = pending;
+    void pending
+      .finally(() => {
+        if (this.memoryFlush === pending) this.memoryFlush = undefined;
+      })
+      .catch(() => {});
+    return pending;
+  }
+
+  private async prepareMemory(): Promise<void> {
+    const owner = this.options.environmentOwner;
+    if (!owner?.hasSandboxMemory)
+      throw new TypeError(
+        'Configure memory on sandboxEnvironment before flushing',
+      );
+    if (this.options.state || this.options.localResume)
+      throw new NativeError(
+        'Native sandbox memory is unavailable on restored Sessions',
+      );
+    const run = this.lastRun;
+    if (!run)
+      throw new NativeError(
+        'Native sandbox memory requires a successful source turn',
+      );
+
+    await run.wait();
+    // Reuse native replay's predecode budget, then enforce the memory record bound.
+    const snapshot: { revision: string; total: number; items: string[] } =
+      JSON.parse(await this.#native._canonical_history(256, true));
+    if (snapshot.total > 256)
+      throw new RangeError(
+        'Native sandbox memory supports at most 256 original records',
+      );
+    await owner.flushMemory(this.id, {
+      ...snapshot,
+      items: snapshot.items.map(
+        (item) => JSON.parse(item) as Record<string, unknown>,
+      ),
+    });
+  }
+
   /** Core has been retaining original JSON object records independently of model
    * context truncation. A limit has been selecting the latest original records;
    * zero has been returning only the content revision and full count. Hot reads
@@ -15312,12 +15303,21 @@ export class Session<OutputT = string, Context = unknown> {
       );
     if (managed.capture) return managed.capture;
     managed.captureRequested = true;
+    let memoryPrepared = true;
+    const prepareMemory =
+      this.options.environmentOwner?.hasSandboxMemory && this.lastRun
+        ? async () => {
+            memoryPrepared = false;
+            await this.prepareMemory();
+            memoryPrepared = true;
+          }
+        : undefined;
     let capture: Promise<SessionState>;
     try {
       capture =
         this.lifecycle.kind === 'turn'
           ? this.captureSuspendedState()
-          : this.captureIdleState(true);
+          : this.captureIdleState(true, prepareMemory);
     } catch (error) {
       managed.captureRequested = false;
       throw error;
@@ -15342,6 +15342,11 @@ export class Session<OutputT = string, Context = unknown> {
         return captureRetiredWorkspace(state, managed.receipt);
       },
       async (error) => {
+        if (!memoryPrepared) {
+          managed.captureRequested = false;
+          managed.capture = undefined;
+          throw error;
+        }
         try {
           await this.close();
         } catch (cleanupError) {
@@ -15362,7 +15367,10 @@ export class Session<OutputT = string, Context = unknown> {
   async saveState(): Promise<SessionState> {
     return this.captureIdleState(false);
   }
-  private captureIdleState(retire: boolean): Promise<SessionState> {
+  private captureIdleState(
+    retire: boolean,
+    prepareMemory?: () => Promise<void>,
+  ): Promise<SessionState> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
@@ -15379,6 +15387,13 @@ export class Session<OutputT = string, Context = unknown> {
     this.idle('saveState');
     let snapshot: SessionState | null = null;
     return this.mutate(async () => {
+      if (prepareMemory) {
+        await prepareMemory();
+        if (this.lifecycle.kind !== 'mutation')
+          throw new NativeError(
+            'Managed memory capture was interrupted before checkpoint',
+          );
+      }
       const state = this.decorateState(
         parseNativeCheckpoint(
           await this.#native._export_checkpoint(null, false),
@@ -16815,6 +16830,7 @@ export class Session<OutputT = string, Context = unknown> {
         : Promise.resolve();
     }
     if (state.kind === 'closing') return state.completion;
+    this.options.environmentOwner?.cancelMemory();
     const realtime = this.realtimeOwner;
     realtime?._retireFromSession();
     let realtimeShutdown: Promise<void> | undefined;

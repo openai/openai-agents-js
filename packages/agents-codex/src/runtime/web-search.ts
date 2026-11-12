@@ -1,3 +1,5 @@
+import type { JsonObject } from './binding';
+
 /** Approximate user location for hosted Responses web search. */
 export interface WebSearchLocation {
   /** Two-letter ISO country code. */
@@ -151,4 +153,34 @@ export function webSearchName(search: WebSearch) {
   return search.route === 'standalone'
     ? { name: 'run', namespace: 'web' }
     : { name: 'web_search', namespace: 'functions' };
+}
+
+/** @internal Project the captured search grant into native configuration. */
+export function webSearchConfig(search: WebSearch | undefined): JsonObject {
+  const config: JsonObject = {
+    web_search: search?.mode ?? 'disabled',
+    'features.standalone_web_search': search?.route === 'standalone',
+  };
+  if (search?.searchContextSize !== undefined)
+    config['tools.web_search.context_size'] = search.searchContextSize;
+  if (search?.allowedDomains !== undefined)
+    config['tools.web_search.allowed_domains'] = [...search.allowedDomains];
+  if (search?.blockedDomains !== undefined)
+    config['tools.web_search.blocked_domains'] = [...search.blockedDomains];
+  if (search?.location !== undefined)
+    config['tools.web_search.location'] = { ...search.location };
+  if (search?.searchContentTypes !== undefined)
+    config['tools.web_search.search_content_types'] = [
+      ...search.searchContentTypes,
+    ];
+  if (search?.imageSettings !== undefined)
+    config['tools.web_search.image_settings'] = {
+      ...(search.imageSettings.maxResults === undefined
+        ? {}
+        : { max_results: search.imageSettings.maxResults }),
+      ...(search.imageSettings.caption === undefined
+        ? {}
+        : { caption: search.imageSettings.caption }),
+    };
+  return config;
 }

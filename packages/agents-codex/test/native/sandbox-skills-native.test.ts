@@ -728,17 +728,59 @@ nativeIt(
   20_000,
 );
 
-nativeIt.each(['inline', 'from'] as const)(
-  'stages %s eager skills before publishing an authorized cold UnixLocal resume',
-  async (kind) => {
+nativeIt.each([
+  { kind: 'inline', savedSkills: false },
+  { kind: 'inline', savedSkills: true },
+  { kind: 'from', savedSkills: false },
+  { kind: 'from', savedSkills: true },
+] as const)(
+  'stages $kind eager skills on an authorized cold resume with savedSkills=$savedSkills',
+  async ({ kind, savedSkills }) => {
     const client = new UnixLocalSandboxClient();
     const archiveBase = await mkdtemp(
       join(tmpdir(), 'skills-resume-snapshot-'),
     );
     const seed = await client.create({
-      manifest: new Manifest({ root: '/workspace' }),
+      manifest: new Manifest({
+        root: '/workspace',
+        entries: savedSkills
+          ? {
+              '.agents': dir({
+                children: {
+                  report: dir({
+                    children: {
+                      'SKILL.md': file({
+                        content:
+                          '---\nname: report\ndescription: OLD_REPORT_INDEX\n---\n',
+                      }),
+                      'removed.sh': file({ content: 'obsolete member' }),
+                    },
+                  }),
+                  retired: dir({
+                    children: {
+                      'SKILL.md': file({
+                        content:
+                          '---\nname: retired\ndescription: RETIRED_OLD_INDEX\n---\n',
+                      }),
+                    },
+                  }),
+                  'keep.txt': file({ content: 'unrelated namespace file' }),
+                },
+              }),
+              'workspace.txt': file({ content: 'unrelated workspace file' }),
+            }
+          : {},
+      }),
       snapshot: { type: 'local', baseDir: archiveBase },
     });
+    if (savedSkills) {
+      expect(
+        await readFile(
+          join(seed.state.workspaceRootPath, '.agents/report/removed.sh'),
+          'utf8',
+        ),
+      ).toBe('obsolete member');
+    }
     const saved = await client.serializeSessionState(seed.state);
     const snapshot = saved.snapshot as { type: 'local'; path: string };
     await seed.close();
@@ -817,6 +859,23 @@ nativeIt.each(['inline', 'from'] as const)(
       expect(JSON.stringify(server.requests[0])).toContain(
         `file: ${resumedRoot}/.agents/report`,
       );
+      if (savedSkills) {
+        expect(JSON.stringify(server.requests[0])).not.toContain(
+          'RETIRED_OLD_INDEX',
+        );
+        await expect(
+          access(join(resumedRoot, '.agents/retired/SKILL.md')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(
+          access(join(resumedRoot, '.agents/report/removed.sh')),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(
+          await readFile(join(resumedRoot, '.agents/keep.txt'), 'utf8'),
+        ).toBe('unrelated namespace file');
+        expect(await readFile(join(resumedRoot, 'workspace.txt'), 'utf8')).toBe(
+          'unrelated workspace file',
+        );
+      }
       server.assertExhausted();
     } finally {
       await peer.close();
@@ -1202,4 +1261,103 @@ nativeIt(
     }
   },
   20_000,
+);
+
+nativeIt(
+  'rejects a new lazy copy after authorized cold Source restoration reaches its quota',
+  async () => {
+    const catalog = await mkdtemp(join(tmpdir(), 'skill-quota-catalog-'));
+    const archives = await mkdtemp(join(tmpdir(), 'skill-quota-archives-'));
+    const client = new UnixLocalSandboxClient();
+    const seed = await client.create({
+      manifest: new Manifest({
+        root: '/workspace',
+        entries: {
+          '.agents/alpha': dir({
+            children: {
+              'SKILL.md': file({ content: 'previously loaded skill' }),
+              asset: file({ content: new Uint8Array(33 * 1024 * 1024) }),
+            },
+          }),
+        },
+      }),
+      snapshot: { type: 'local', baseDir: archives },
+    });
+    const saved = JSON.parse(
+      JSON.stringify(await client.serializeSessionState(seed.state)),
+    );
+    await seed.close();
+    const peer = await startPublicExecutor();
+    const server = new ModelServer([
+      [
+        call(
+          'load_skill',
+          { skill_name: 'beta' },
+          { callId: 'call_cold_skill_quota' },
+        ),
+      ],
+    ]);
+    await using provider = await providerFor(server);
+    let resumedRoot = '';
+    try {
+      await mkdir(join(catalog, 'beta'));
+      await writeFile(
+        join(catalog, 'beta', 'SKILL.md'),
+        '---\nname: beta\ndescription: CURRENT_QUOTA_INDEX\n---\n',
+      );
+      await writeFile(join(catalog, 'beta', 'asset'), '');
+      await truncate(join(catalog, 'beta', 'asset'), 33 * 1024 * 1024);
+      const resumed = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: saved.workspaceRootPath,
+          workspaceRootOwned: true,
+          localSnapshotPath: saved.snapshot.path,
+        },
+      });
+      const state = await resumed.deserializeSessionState(saved);
+      const source = sandboxEnvironment({
+        client: resumed,
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants: [{ path: catalog, readOnly: true }],
+        }),
+        authorizedResumeState: { backendId: resumed.backendId, state },
+        skills: skills({
+          lazyFrom: localDirLazySkillSource({ src: catalog, baseDir: catalog }),
+        }),
+        connect: async (resource) => {
+          resumedRoot = resource.state.workspaceRootPath;
+          return Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: resumedRoot,
+              capabilityDirectories: [join(resumedRoot, '.agents')],
+              tools: [],
+            }),
+            async () => {},
+          );
+        },
+      });
+      await using session = await new Agent({
+        provider,
+        model: 'fixture-skills',
+        tools: source.skillTools,
+        instructions: 'Load only selected skills.',
+      }).session({ environment: source });
+      await expect((await session.submit('Load beta.')).wait()).rejects.toThrow(
+        /skill tree byte limit/i,
+      );
+      await expect(
+        access(join(resumedRoot, '.agents/beta/SKILL.md')),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(JSON.stringify(server.requests)).toContain('CURRENT_QUOTA_INDEX');
+      server.assertExhausted();
+    } finally {
+      await peer.close();
+      await rm(catalog, { recursive: true, force: true });
+      await rm(archives, { recursive: true, force: true });
+    }
+  },
+  60_000,
 );
