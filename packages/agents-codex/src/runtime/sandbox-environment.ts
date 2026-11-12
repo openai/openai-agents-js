@@ -114,14 +114,15 @@ async function observeSandboxLifecycle<T>(
     name,
     data: { backend_id: backendId },
   };
-  await runtime.emitSandboxEvent({
+  // Sink completion never controls acquisition or cleanup.
+  void runtime.emitSandboxEvent({
     ...event,
     phase: 'start',
     timestamp: new Date(startedAt).toISOString(),
   });
   try {
     const result = await operation();
-    await runtime.emitSandboxEvent({
+    void runtime.emitSandboxEvent({
       ...event,
       data: { backend_id: backendId },
       phase: 'end',
@@ -130,7 +131,7 @@ async function observeSandboxLifecycle<T>(
     });
     return result;
   } catch (error) {
-    await runtime.emitSandboxEvent({
+    void runtime.emitSandboxEvent({
       ...event,
       data: { backend_id: backendId },
       phase: 'error',
@@ -362,19 +363,28 @@ function createSandboxEnvironment<
         throw new TypeError('authorizedResumeState has already been acquired');
       resumeConsumed = true;
     }
-    let sandbox: SandboxSessionLike<State> | undefined;
+    let ownedSandbox: SandboxSessionLike<State> | undefined;
+    const acquireSandbox = (
+      name: string,
+      operation: () => Promise<SandboxSessionLike<State>>,
+    ) =>
+      observe(name, async () => {
+        const sandbox = await operation();
+        ownedSandbox = sandbox;
+        return sandbox;
+      });
     let gateway: EnvironmentAcquisition | undefined;
     let disposal: Promise<void> | undefined;
     const dispose = (guard?: DisposeGuard) =>
       (disposal ??= Promise.resolve().then(() => {
-        if (!gateway && (borrowed || !sandbox)) return;
+        const sandbox = ownedSandbox;
+        if (!gateway && !sandbox) return;
         return observe('sandbox.cleanup', async () => {
           const errors: unknown[] = [];
           for (const release of [
             // The gateway restores its own scope before reinstalling this guard.
             () => gateway?.dispose(guard),
             () =>
-              !borrowed &&
               sandbox &&
               cleanupSandboxSession(
                 sandbox,
@@ -399,7 +409,7 @@ function createSandboxEnvironment<
                   });
                 },
               ),
-            () => !borrowed && sandbox && deleteResource?.(sandbox.state),
+            () => sandbox && deleteResource?.(sandbox.state),
           ]) {
             try {
               await release();
@@ -457,6 +467,7 @@ function createSandboxEnvironment<
           providerOptions === undefined
             ? undefined
             : captureOptions(providerOptions);
+        let sandbox: SandboxSessionLike<State>;
         if (resumeState) {
           const state = captureResumeState(
             resumeState,
@@ -482,14 +493,14 @@ function createSandboxEnvironment<
             throw new TypeError(
               'provider requires fresh resource creation for this resume state',
             );
-          sandbox = await observe('sandbox.resume_session', () => {
+          sandbox = await acquireSandbox('sandbox.resume_session', () => {
             signal.throwIfAborted();
             return client.resume!(state, resumeOptions);
           });
         } else {
           sandbox =
             borrowed ??
-            (await observe('sandbox.create_session', () => {
+            (await acquireSandbox('sandbox.create_session', () => {
               signal.throwIfAborted();
               return create!({
                 manifest: cloneManifest(manifest),

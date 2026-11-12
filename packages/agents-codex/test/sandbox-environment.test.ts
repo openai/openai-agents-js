@@ -232,6 +232,57 @@ describe('native sandbox environment', () => {
     }
   });
 
+  it('retires an acquired session when a terminal sink stalls', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const reason = new Error('cancel after provider creation');
+    const stalled = new Promise<void>(() => {});
+    const remove = addSandboxEventSink(({ name, phase }) => {
+      if (name === 'sandbox.create_session' && phase === 'end') {
+        controller.abort(reason);
+        return stalled;
+      }
+    });
+    try {
+      const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+      const rejected = vi.fn();
+      void source({ signal: controller.signal }).catch(rejected);
+      await vi.waitFor(() => expect(rejected).toHaveBeenCalledWith(reason), {
+        timeout: 750,
+      });
+      expect(f.events).toEqual(['create', 'close', 'delete']);
+    } finally {
+      remove();
+    }
+  });
+
+  it('cleans up when a cleanup sink joins the same lease', async () => {
+    const f = fixture();
+    const source = sandboxEnvironment({ ...f, manifest: new Manifest() });
+    const lease = await source({ signal: new AbortController().signal });
+    const remove = addSandboxEventSink(({ name, phase }) => {
+      if (name === 'sandbox.cleanup' && phase === 'start') return lease.close();
+    });
+    try {
+      const settled = vi.fn();
+      const closing = lease.close();
+      void closing.then(settled, settled);
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce(), {
+        timeout: 750,
+      });
+      await closing;
+      expect(f.events).toEqual([
+        'create',
+        'connect',
+        'gateway',
+        'close',
+        'delete',
+      ]);
+    } finally {
+      remove();
+    }
+  });
+
   it('borrows a live session without starting, closing or deleting it', async () => {
     const f = fixture();
     f.resource.start = vi.fn();
