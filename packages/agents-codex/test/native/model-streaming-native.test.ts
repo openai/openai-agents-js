@@ -590,3 +590,89 @@ it.each([false, true])(
   },
   20_000,
 );
+
+it.each(['force-cancel', 'timeout'] as const)(
+  'retains accepted completion usage after %s while joining iterator cleanup',
+  async (retirement) => {
+    const accepted = Promise.withResolvers<void>();
+    const cleaning = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const effects: string[] = [];
+    let cleaned = false;
+    const record = tool({
+      name: 'record',
+      parameters: z.object({ value: z.string() }),
+      execute({ value }) {
+        effects.push(value);
+        return 'recorded';
+      },
+    });
+    await using provider = new NativeProvider({
+      modelBackend: {
+        complete,
+        async *stream(request: ModelRequest): AsyncGenerator<JsonObject> {
+          try {
+            yield call();
+            yield {
+              type: 'response.completed',
+              response: {
+                id: 'retired-completion-usage',
+                status: 'completed',
+                usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+              },
+            };
+            accepted.resolve();
+            if (!request.signal.aborted)
+              await new Promise<void>((resolve) =>
+                request.signal.addEventListener('abort', () => resolve(), {
+                  once: true,
+                }),
+              );
+          } finally {
+            cleaning.resolve();
+            await release.promise;
+            cleaned = true;
+          }
+        },
+      },
+    });
+    await using session = await new Agent({
+      provider,
+      model: 'fixture-stream-model',
+      modelSettings:
+        retirement === 'timeout' ? { invocationTimeoutMs: 1000 } : {},
+      instructions: 'Use record.',
+      tools: [record],
+    }).session();
+    const turn = await session.submit('Begin.');
+    const completion = turn.wait();
+    void completion.catch(() => {});
+    let stopping: Promise<void> | undefined;
+    try {
+      await accepted.promise;
+      if (retirement === 'force-cancel') stopping = turn.cancel();
+      await cleaning.promise;
+      expect(cleaned).toBe(false);
+      expect(effects).toEqual([]);
+    } finally {
+      release.resolve();
+    }
+    await stopping;
+    await expect(completion).rejects.toThrow();
+    expect(cleaned).toBe(true);
+    expect(effects).toEqual([]);
+    const expectedUsage = {
+      requests: 1,
+      missingUsageRequests: 0,
+      inputTokens: 3,
+      outputTokens: 2,
+      totalTokens: 5,
+    };
+    expect(turn.runUsage).toMatchObject(expectedUsage);
+    const turns = [];
+    for await (const recorded of session.turns()) turns.push(recorded);
+    expect(turns).toHaveLength(1);
+    expect(turns[0].runUsage).toMatchObject(expectedUsage);
+  },
+  20_000,
+);
