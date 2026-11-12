@@ -40,7 +40,7 @@ function capturedTreeUsage(
   maxMembers: number = treeLimits.maxMembers,
   maxBytes: number = treeLimits.maxBytes,
   path = '',
-  known?: ReadonlySet<string>,
+  known?: ReadonlyMap<string, unknown>,
 ): SkillTreeUsage {
   const usage = { members: 0, bytes: 0 };
   const pending = [{ entry, path }];
@@ -78,7 +78,7 @@ function capturedTreeUsage(
 }
 
 type SandboxSkillBudget = {
-  readonly retained: Set<string>;
+  readonly retained: Map<string, 'incomplete' | 'complete'>;
   bytes: number;
   members: number;
   tail: Promise<void>;
@@ -95,7 +95,7 @@ function sandboxSkillBudget(
   let budget = sandboxSkillBudgets.get(owner);
   if (!budget) {
     budget = {
-      retained: new Set(),
+      retained: new Map(),
       bytes: 0,
       members: 0,
       tail: Promise.resolve(),
@@ -163,7 +163,7 @@ async function seedRestoredSkillBudget(
     bytes += usage.bytes;
     additions.add(path);
   }
-  for (const path of additions) budget.retained.add(path);
+  for (const path of additions) budget.retained.set(path, 'complete');
   budget.members = Math.max(members, physical.members);
   budget.bytes = Math.max(bytes, physical.bytes);
   budget.needsRecount = false;
@@ -545,6 +545,10 @@ export class SandboxSkillLease {
       throw new Error(
         'Skills require sandbox pathExists() and materializeEntry()',
       );
+    if (this.#budget.retained.get(destination) === 'incomplete')
+      throw new Error(
+        'Skill materialization is incomplete in this workspace; use a fresh workspace',
+      );
     const exists = await sandbox.pathExists(
       joinRelativePaths(destination, 'SKILL.md'),
     );
@@ -593,11 +597,13 @@ export class SandboxSkillLease {
         throw new Error('Captured skill requires a regular SKILL.md');
       }
       const usage = capturedTreeUsage(entry);
-      await sandbox.materializeEntry({ path: destination, entry });
-      // Successful writes retain these bytes even if the caller then observes cancellation.
+      // Reserve under the shared load queue before provider I/O: a failed
+      // materialization can leave partial files. Never refund an attempted write.
       this.#budget.members += usage.members;
       this.#budget.bytes += usage.bytes;
-      this.#budget.retained.add(destination);
+      this.#budget.retained.set(destination, 'incomplete');
+      await sandbox.materializeEntry({ path: destination, entry });
+      this.#budget.retained.set(destination, 'complete');
       this.admit();
       signal.throwIfAborted();
     }
