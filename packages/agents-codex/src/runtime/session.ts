@@ -1,3 +1,4 @@
+import { configuredAgentTool, type ConfiguredAgentTool } from './agent-tool';
 import { QueuedRoots } from './queued-roots';
 import {
   CallbackDeliveries,
@@ -270,6 +271,7 @@ import {
   isFunctionApprovalRequest,
   type ApprovalDecision,
   isManualReply,
+  manualReplyMatchesRequest,
   manualResultSchema,
   supportsManualCheckpoint,
   type ManualTool,
@@ -2858,6 +2860,15 @@ export class Session<OutputT = string, Context = unknown> {
     () => this.observations.currentSequence,
   );
   private readonly toolSessionOwner = Object.freeze({});
+  private readonly configuredChildren = new Map<
+    string,
+    {
+      session: import('./public-agent').Session<unknown>;
+      owner: NativeTurn | ChildCallbackOwner;
+      signal: AbortSignal;
+      active: boolean;
+    }
+  >();
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -3477,6 +3488,7 @@ export class Session<OutputT = string, Context = unknown> {
         requests.push(...this.pendingEnteredManual(owner));
       requests.push(...this.pendingNativeQuestions(owner));
     }
+    requests.push(...(await this.pendingConfiguredChildRequests()));
     return Object.freeze(requests);
   }
 
@@ -5206,6 +5218,28 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError(
         'respond accepts a manual reply without operation options',
       );
+    if (isManualReply(input) || isNativeQuestionReply(input)) {
+      for (const child of this.configuredChildren.values()) {
+        if (!child.active || child.signal.aborted || !this.current(child.owner))
+          continue;
+        const pending = await child.session.pendingInteractions();
+        const matched = pending.some((request) =>
+          isManualReply(input)
+            ? manualReplyMatchesRequest(input, request)
+            : nativeReplyRequest(input) === request,
+        );
+        if (
+          !matched ||
+          !child.active ||
+          child.signal.aborted ||
+          !this.current(child.owner)
+        )
+          continue;
+        await child.session.respond(input);
+        this.observations.notify();
+        return;
+      }
+    }
     if (isNativeQuestionReply(input)) {
       await this.submitNativeQuestion(input);
       return;
@@ -5505,8 +5539,10 @@ export class Session<OutputT = string, Context = unknown> {
         if (completion.outcome) return completion.promise;
         signal?.throwIfAborted();
         const current = owner();
+        let children: Interaction[] = [];
         if (until === 'interaction' && current) {
           await this.refreshNativeQuestions(current);
+          children = await this.pendingConfiguredChildRequests(current);
           if (completion.outcome) return completion.promise;
           signal?.throwIfAborted();
         }
@@ -5520,6 +5556,9 @@ export class Session<OutputT = string, Context = unknown> {
           const requests = [
             ...this.pendingEnteredManual(current),
             ...this.pendingNativeQuestions(current, true),
+            ...(owner() === current && this.canAnswerNativeQuestions(current)
+              ? children
+              : []),
           ];
           if (requests.length)
             return Object.freeze({ turn, requests: Object.freeze(requests) });
@@ -5574,8 +5613,11 @@ export class Session<OutputT = string, Context = unknown> {
               const request = call.grant.request();
               return request ? [request] : [];
             });
-            if (until === 'interaction')
+            if (until === 'interaction') {
               requests.push(...this.pendingNativeQuestions(current, true));
+              if (owner() === current && this.canAnswerNativeQuestions(current))
+                requests.push(...children);
+            }
             // No await separates the native snapshot, current grant checks,
             // ownership checks and public settlement check from publication.
             if (completion.outcome) return completion.promise;
@@ -11899,6 +11941,119 @@ export class Session<OutputT = string, Context = unknown> {
       this.executeCallbackRequest(owner, event, signal, delivery),
     );
   }
+  private async pendingConfiguredChildRequests(
+    owner?: NativeTurn | ChildCallbackOwner,
+  ): Promise<Interaction[]> {
+    const requests: Interaction[] = [];
+    for (const child of this.configuredChildren.values()) {
+      if (
+        !child.active ||
+        child.signal.aborted ||
+        !this.current(child.owner) ||
+        (owner && child.owner !== owner)
+      )
+        continue;
+      const pending = await child.session.pendingInteractions();
+      if (child.active && !child.signal.aborted && this.current(child.owner))
+        requests.push(...pending);
+    }
+    return requests;
+  }
+
+  private async invokeConfiguredChild(
+    owner: NativeTurn | ChildCallbackOwner,
+    context: ToolCallContext,
+    declaration: ConfiguredAgentTool,
+    input: string,
+  ): Promise<string> {
+    context.signal.throwIfAborted();
+    if (!this.current(owner))
+      throw new NativeError('Configured child parent is no longer active');
+    const session = await declaration.open(context.context, this.environment);
+    const child = { session, owner, signal: context.signal, active: true };
+    let closing: Promise<void> | undefined;
+    const close = () => {
+      child.active = false;
+      this.observations.notify();
+      return (closing ??= session.close());
+    };
+    const abort = () => {
+      void close().catch(() => {});
+    };
+    this.configuredChildren.set(session.id, child);
+    context.signal.addEventListener('abort', abort, { once: true });
+    let reader: AsyncIterableIterator<Interaction> | undefined;
+    let relay = Promise.resolve();
+    let relayFailure: { error: unknown } | undefined;
+    let output: string | undefined;
+    const errors: unknown[] = [];
+    try {
+      context.signal.throwIfAborted();
+      if (!this.current(owner))
+        throw new NativeError('Configured child parent is no longer active');
+      reader = session.interactions();
+      const interactions = reader;
+      relay = (async () => {
+        for await (const request of interactions) {
+          if (!child.active || context.signal.aborted || !this.current(owner))
+            return;
+          this.observations.notify();
+          const handler = this.options.onInteraction;
+          if (handler) {
+            const reply = await toolInvocation.exit(() =>
+              handler(request, context.signal),
+            );
+            if (child.active && !context.signal.aborted && this.current(owner))
+              await session.respond(reply);
+            this.observations.notify();
+          }
+        }
+      })().catch((error) => {
+        if (context.signal.aborted && Object.is(error, context.signal.reason))
+          return;
+        relayFailure = { error };
+        abort();
+      });
+      const turn = await session.submit(input);
+      const result = await turn.wait().catch((error) => {
+        if (
+          context.signal.aborted &&
+          error instanceof TurnAborted &&
+          error.message === 'Session closed'
+        )
+          throw context.signal.reason;
+        throw error;
+      });
+      context.signal.throwIfAborted();
+      if (!this.current(owner))
+        throw new NativeError('Configured child parent is no longer active');
+      output = await declaration.extract(result);
+      context.signal.throwIfAborted();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      context.signal.removeEventListener('abort', abort);
+      this.configuredChildren.delete(session.id);
+      const cleanup = await Promise.allSettled([
+        close(),
+        reader?.return?.(),
+        relay,
+      ]);
+      for (const result of cleanup)
+        if (result.status === 'rejected') errors.push(result.reason);
+    }
+    if (relayFailure) errors.push(relayFailure.error);
+    const unexpected = errors.filter(
+      (error) =>
+        !context.signal.aborted || !Object.is(error, context.signal.reason),
+    );
+    const failures = [...new Set(unexpected.length ? unexpected : errors)];
+    if (failures.length > 1)
+      throw new AggregateError(failures, 'Configured child cleanup failed');
+    if (failures.length) throw failures[0];
+    return output!;
+  }
+
   private async executeCallbackRequest(
     owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
@@ -12009,6 +12164,15 @@ export class Session<OutputT = string, Context = unknown> {
               )
           : undefined,
         skillLease?.environment === this.environment ? skillLease : undefined,
+        configuredAgentTool(tool)
+          ? (input) =>
+              this.invokeConfiguredChild(
+                owner,
+                context,
+                configuredAgentTool(tool)!,
+                input,
+              )
+          : undefined,
       );
       const identity: ToolIdentity = {
         callId: context.callId,

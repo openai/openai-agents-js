@@ -147,6 +147,7 @@ export interface ManualTool<
 }
 
 interface RequestAuthority {
+  replyIdentity: object;
   definition: Definition;
   current(): boolean;
   approvalInput?: unknown;
@@ -370,6 +371,7 @@ export function createManualRequest<Input, Result>(
   const replyIdentity = {};
   const definition = tool[manualDefinition];
   const authority: RequestAuthority = {
+    replyIdentity,
     definition,
     current: () => active && isCurrent(),
   };
@@ -545,4 +547,21 @@ export function createManualRequest<Input, Result>(
 /** @internal Only candidates issued by this runtime carry reply authority. */
 export function isManualReply(value: unknown): value is ManualToolReply {
   return isObject(value) && replies.has(value) && !replies.get(value)!.consumed;
+}
+
+/** @internal Relays have been matching the original live grant without consuming it. */
+export function manualReplyMatchesRequest(
+  reply: unknown,
+  request: unknown,
+): boolean {
+  if (!isObject(reply) || !isObject(request)) return false;
+  const found = replies.get(reply);
+  const authority = requests.get(request);
+  return (
+    found !== undefined &&
+    !found.consumed &&
+    authority !== undefined &&
+    authority.current() &&
+    found.identity === authority.replyIdentity
+  );
 }
