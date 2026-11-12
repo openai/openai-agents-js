@@ -68,6 +68,7 @@ pub(crate) struct Generation {
     specs: Vec<DynamicToolSpec>,
     defaults: Vec<usize>,
     terminal_slots: HashSet<usize>,
+    input_error_slots: HashSet<usize>,
 }
 
 /// Exact manual classification from the same retained declaration capture.
@@ -149,20 +150,47 @@ pub(crate) struct NativeMediaContext {
 /// Physical callback ownership attached to an existing native pending entry.
 struct CallbackRelease {
     receipt: Value,
+    model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
     entered: std::sync::atomic::AtomicBool,
     cancelled: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
+    cleanup_failed: std::sync::atomic::AtomicBool,
     changed: tokio::sync::Notify,
 }
 impl CallbackRelease {
     fn new(receipt: Value) -> Arc<Self> {
+        Self::with_model_attempt(receipt, None)
+    }
+    fn with_model_attempt(
+        receipt: Value,
+        model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             receipt,
+            model_attempt,
             entered: std::sync::atomic::AtomicBool::new(false),
             cancelled: std::sync::atomic::AtomicBool::new(false),
             released: std::sync::atomic::AtomicBool::new(false),
+            cleanup_failed: std::sync::atomic::AtomicBool::new(false),
             changed: tokio::sync::Notify::new(),
         })
+    }
+    fn admits_reply(&self) -> bool {
+        !self.cancelled.load(Ordering::Acquire)
+            && !self.released.load(Ordering::Acquire)
+            && self.model_attempt.as_ref().is_none_or(|attempt| {
+                !attempt.cancellation().is_cancelled() && !attempt.sampling_stop().requested()
+            })
+    }
+    fn retains_failed_attempt(&self) -> bool {
+        self.model_attempt.is_some() && self.cleanup_failed.load(Ordering::Acquire)
+    }
+    fn release_failed(&self) -> bool {
+        if !self.entered.load(Ordering::Acquire) || self.released.load(Ordering::Acquire) {
+            return false;
+        }
+        self.cleanup_failed.store(true, Ordering::Release);
+        self.release()
     }
     fn release(&self) -> bool {
         let first = !self.released.swap(true, Ordering::AcqRel);
@@ -192,6 +220,8 @@ struct ClientToolSearchCapture {
     specs: Vec<DynamicToolSpec>,
     manual_slots: Vec<usize>,
     terminal_slots: Vec<usize>,
+    #[serde(default)]
+    input_error_slots: Vec<usize>,
 }
 
 struct ClientToolSearchWork {
@@ -307,7 +337,6 @@ enum FamilyRequest {
     Step(Weak<PythonTools>, u64, Value),
     Completion(Weak<PythonTools>, u64, Value),
     CompletionFailed(Weak<PythonTools>, Weak<crate::turn_settlement::Turn>, Value),
-    Prepared(Weak<prepared_requests::Owner>, u64, Value),
     Call(Weak<PythonTools>, PendingKey, Value),
     Callback(Value),
     Retired { thread: String, instance: String },
@@ -555,20 +584,108 @@ fn preparation_callback_claim(
         "enter" => {
             !closed
                 && !cancelled
-                && !callback.cancelled.load(Ordering::Acquire)
-                && !callback.released.load(Ordering::Acquire)
+                && callback.admits_reply()
                 && callback
                     .entered
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
         }
-        "cancelled" => cancelled || callback.cancelled.load(Ordering::Acquire),
+        "cancelled" => cancelled || !callback.admits_reply(),
         "release" => callback.release(),
+        "release_failed" => callback.release_failed(),
         _ => false,
     }
 }
 
 impl PythonTools {
+    pub(crate) fn report_model_attempt_usage(
+        self: &Arc<Self>,
+        root: &str,
+        attempt_id: &str,
+        receipt: &Value,
+        usage: codex_protocol::protocol::TokenUsage,
+    ) -> Result<bool> {
+        if receipt.get("kind").and_then(Value::as_str) != Some("preparation") {
+            return Ok(false);
+        }
+        let Some(thread) = receipt.get("thread").and_then(Value::as_str) else {
+            return Ok(false);
+        };
+        let instance = receipt
+            .get("instance")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let Some(id) = receipt
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            return Ok(false);
+        };
+        let Some(owner) = self.exact_owner(root, thread, &instance) else {
+            return Ok(false);
+        };
+        let replies = owner.step_replies.lock().expect("Step replies poisoned");
+        let Some(callback) = replies
+            .get(&id)
+            .and_then(|pending| pending.callback.as_ref())
+        else {
+            return Ok(false);
+        };
+        if callback.receipt != *receipt
+            || !callback.entered.load(Ordering::Acquire)
+            || callback.released.load(Ordering::Acquire)
+        {
+            return Ok(false);
+        }
+        let Some(attempt) = &callback.model_attempt else {
+            return Ok(false);
+        };
+        if attempt.id() != attempt_id {
+            return Ok(false);
+        }
+        attempt.report_usage(usage).map_err(anyhow::Error::msg)?;
+        Ok(true)
+    }
+
+    pub(crate) async fn retire_model_attempt_callbacks(
+        &self,
+        attempt: &Arc<dyn codex_extension_api::ModelAttemptAdmission>,
+    ) -> Result<()> {
+        let callbacks = {
+            let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+            replies
+                .iter_mut()
+                .filter_map(|(id, pending)| {
+                    let callback = pending.callback.as_ref()?;
+                    if !callback
+                        .model_attempt
+                        .as_ref()
+                        .is_some_and(|captured| Arc::ptr_eq(captured, attempt))
+                    {
+                        return None;
+                    }
+                    let callback = Arc::clone(callback);
+                    drop(std::mem::replace(&mut pending.reply, closed_step_sender()));
+                    self.cancel_step_callback(&pending.turn, &callback);
+                    Some((*id, callback))
+                })
+                .collect::<Vec<_>>()
+        };
+        // Never hold the pending mutex while waiting for application finally blocks.
+        let mut cleanup_failed = false;
+        for (id, callback) in callbacks {
+            callback.wait().await;
+            cleanup_failed |= callback.cleanup_failed.load(Ordering::Acquire);
+            self.step_replies
+                .lock()
+                .expect("Step replies poisoned")
+                .remove(&id);
+        }
+        ensure!(!cleanup_failed, "Model callback cleanup failed");
+        Ok(())
+    }
+
     fn preparation_callback_operation(
         self: &Arc<Self>,
         root: &str,
@@ -724,8 +841,12 @@ impl PythonTools {
                     .is_ok()
             }
             "cancelled" => callback.cancelled.load(Ordering::Acquire),
-            "release" => {
-                let released = callback.release();
+            "release" | "release_failed" => {
+                let released = if operation == "release_failed" {
+                    callback.release_failed()
+                } else {
+                    callback.release()
+                };
                 // A restored approval owns a synthetic waiter, not a live Core
                 // PendingReply. Retire it after receipt and physical callback release.
                 if call._approval_receiver.is_some() && call.sender.is_closed() {
@@ -866,11 +987,20 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
         terminal_slots: &[usize],
+        input_error_slots: &[usize],
         defaults: Option<&[usize]>,
         flags: [bool; 4],
         _reuse_initial: bool,
     ) -> Result<ProfileCatalog> {
-        self.allocate_profile_catalog(specs, manual_slots, terminal_slots, defaults, flags, true)
+        self.allocate_profile_catalog(
+            specs,
+            manual_slots,
+            terminal_slots,
+            input_error_slots,
+            defaults,
+            flags,
+            true,
+        )
     }
 
     pub(crate) fn voice_profile_catalog(
@@ -878,10 +1008,19 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
         terminal_slots: &[usize],
+        input_error_slots: &[usize],
         defaults: Option<&[usize]>,
         flags: [bool; 4],
     ) -> Result<ProfileCatalog> {
-        self.allocate_profile_catalog(specs, manual_slots, terminal_slots, defaults, flags, false)
+        self.allocate_profile_catalog(
+            specs,
+            manual_slots,
+            terminal_slots,
+            input_error_slots,
+            defaults,
+            flags,
+            false,
+        )
     }
 
     fn allocate_profile_catalog(
@@ -889,6 +1028,7 @@ impl PythonTools {
         specs: Vec<DynamicToolSpec>,
         manual_slots: &[usize],
         terminal_slots: &[usize],
+        input_error_slots: &[usize],
         defaults: Option<&[usize]>,
         flags: [bool; 4],
         durable: bool,
@@ -910,6 +1050,12 @@ impl PythonTools {
             ensure!(
                 slot < generation.entries.len() && generation.terminal_slots.insert(slot),
                 "Invalid or duplicate terminal tool slot"
+            );
+        }
+        for &slot in input_error_slots {
+            ensure!(
+                slot < generation.entries.len() && generation.input_error_slots.insert(slot),
+                "Invalid or duplicate input recovery slot"
             );
         }
         generation.defaults = defaults
@@ -978,10 +1124,12 @@ impl PythonTools {
             .map(&rebind)
             .unwrap_or_default();
         let terminal = rebind(&source.generation.terminal_slots);
+        let input_errors = rebind(&source.generation.input_error_slots);
         self.profile_catalog(
             generation.specs.clone(),
             &manual,
             &terminal,
+            &input_errors,
             Some(&generation.defaults),
             flags,
             false,
@@ -1307,6 +1455,7 @@ impl PythonTools {
                 specs: Vec::new(),
                 defaults: Vec::new(),
                 terminal_slots: HashSet::new(),
+                input_error_slots: HashSet::new(),
             })),
             generation_high_water: AtomicU64::new(0),
             profile_catalogs: RwLock::new(HashMap::new()),
@@ -1433,6 +1582,7 @@ impl PythonTools {
             child.prepare(parent_generation.id, parent_generation.specs.clone())?;
         generation.defaults = parent_generation.defaults.clone();
         generation.terminal_slots = parent_generation.terminal_slots.clone();
+        generation.input_error_slots = parent_generation.input_error_slots.clone();
         generation.manual_slots = parent_generation.manual_slots.clone();
         let generation = Arc::new(generation);
         child.schema_receipts.register(&generation);
@@ -1595,6 +1745,7 @@ impl PythonTools {
             entries,
             specs,
             terminal_slots: HashSet::new(),
+            input_error_slots: HashSet::new(),
         })
     }
 
@@ -1630,6 +1781,7 @@ impl PythonTools {
         let mut seed = self.prepare(original.id, current.specs.clone())?;
         seed.defaults = original.defaults.clone();
         seed.terminal_slots = current.terminal_slots.clone();
+        seed.input_error_slots = current.input_error_slots.clone();
         let seed = Arc::new(seed);
         self.schema_receipts.register(&seed);
         *current = seed;
@@ -1684,14 +1836,14 @@ impl PythonTools {
         } else {
             id
         };
-        let terminal_slots = if let Some(config) = terminal {
+        let (terminal_slots, input_error_slots) = if let Some(config) = terminal {
             ensure!(
                 config.generation == id.to_string(),
                 "Expired terminal replacement generation"
             );
-            config.slots
+            (config.slots, config.input_error_slots)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         if let Some(id) = crate::agent_profiles::replace_tools(
             thread,
@@ -1699,6 +1851,7 @@ impl PythonTools {
             specs.clone(),
             defaults.clone(),
             &terminal_slots,
+            &input_error_slots,
         )
         .await?
         {
@@ -1711,6 +1864,12 @@ impl PythonTools {
                 "Invalid terminal tool slot"
             );
         }
+        for slot in input_error_slots {
+            ensure!(
+                slot < candidate.entries.len() && candidate.input_error_slots.insert(slot),
+                "Invalid input recovery slot"
+            );
+        }
         if let Some(defaults) = defaults {
             validate_selection(&defaults, &(0..candidate.entries.len()).collect::<Vec<_>>())?;
             candidate.defaults = defaults;
@@ -1721,7 +1880,9 @@ impl PythonTools {
             id == self.allocate_generation()?,
             "JavaScript tool generation is out of sequence"
         );
-        self.publish(candidate)
+        let generation = self.publish(candidate)?;
+        crate::hosted_prompt::explicit_root_tools(thread).await?;
+        Ok(generation)
     }
 
     fn publish(&self, candidate: Generation) -> Result<u64> {
@@ -1845,6 +2006,7 @@ impl PythonTools {
             mut specs,
             manual_slots,
             terminal_slots,
+            input_error_slots,
         } = serde_json::from_str(specs_json)?;
         ensure!(
             specs.len() <= MAX_TOOLS,
@@ -1881,6 +2043,7 @@ impl PythonTools {
                 specs,
                 &manual_slots,
                 &terminal_slots,
+                &input_error_slots,
                 None,
                 [false; 4],
                 false,
@@ -2008,11 +2171,6 @@ impl PythonTools {
                     }
                 }
                 Some(FamilyRequest::Callback(request)) => return request,
-                Some(FamilyRequest::Prepared(owner, id, request)) => {
-                    if owner.upgrade().is_some_and(|owner| owner.queued(id)) {
-                        return request;
-                    }
-                }
                 Some(FamilyRequest::Step(owner, id, request)) => {
                     if owner.upgrade().is_some_and(|tools| {
                         if tools.instance.is_some() {
@@ -2124,8 +2282,8 @@ impl PythonTools {
         admission: Option<Arc<crate::turn_settlement::Turn>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
-            thread, generation, slot, turn, call, arguments, source, model, media, admission, None,
-            None, None, None,
+            thread, generation, slot, turn, call, arguments, None, source, model, media, admission,
+            None, None, None, None,
         )
     }
 
@@ -2137,6 +2295,7 @@ impl PythonTools {
         turn: &str,
         call: &str,
         arguments: Value,
+        argument_error: Option<String>,
         source: &ToolCallSource,
         model: &str,
         media: Option<NativeMediaContext>,
@@ -2202,6 +2361,9 @@ impl PythonTools {
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
+        if let Some(error) = argument_error {
+            request["msg"]["_sdk_argument_error"] = json!(error);
+        }
         if let Some(callback) = &callback {
             request["msg"]["_sdk_callback"] = callback.receipt.clone();
         }
@@ -2601,7 +2763,7 @@ impl PythonTools {
                 if let Some(callback) = &pending.callback {
                     drop(std::mem::replace(&mut pending.reply, closed_step_sender()));
                     self.cancel_step_callback(&pending.turn, callback);
-                    !callback.released.load(Ordering::Acquire)
+                    !callback.released.load(Ordering::Acquire) || callback.retains_failed_attempt()
                 } else {
                     false
                 }
@@ -2660,6 +2822,10 @@ impl PythonTools {
             && response.generation == pending.generation.to_string()
             && self.resolve_generation(pending.generation).is_some()
             && !pending.reply.is_closed()
+            && pending
+                .callback
+                .as_ref()
+                .is_none_or(|callback| callback.admits_reply())
             && if let Some(cancellation) = &pending.source_cancellation {
                 !cancellation.is_cancelled()
                     && (active.is_none()
@@ -2900,12 +3066,7 @@ impl PythonContributor {
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>;
                 if wrap_profile_handoffs {
-                    crate::agent_profiles::wrap_handoff_callback(
-                        thread,
-                        profile.as_ref(),
-                        slot,
-                        callback,
-                    )
+                    crate::agent_profiles::wrap_handoff_callback(thread, profile.as_ref(), callback)
                 } else {
                     callback
                 }
@@ -3814,10 +3975,20 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
             } else {
                 None
             };
-            let arguments: Value = match &client_search {
-                Some(search) => search.call.arguments.clone(),
-                None => serde_json::from_str(call.function_arguments()?)
-                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?,
+            let (arguments, argument_error) = match &client_search {
+                Some(search) => (search.call.arguments.clone(), None),
+                None => {
+                    let raw = call.function_arguments()?;
+                    match serde_json::from_str::<Value>(raw) {
+                        Ok(value) => (value, None),
+                        Err(error) if self.generation.input_error_slots.contains(&self.slot) => {
+                            (Value::String(raw.to_owned()), Some(error.to_string()))
+                        }
+                        Err(error) => {
+                            return Err(FunctionCallError::RespondToModel(error.to_string()));
+                        }
+                    }
+                }
             };
             if let Some(store) = &self.tools.local_store {
                 let id = codex_protocol::ThreadId::from_string(&self.thread)
@@ -3844,6 +4015,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     &call.turn_id,
                     &call.call_id,
                     arguments,
+                    argument_error,
                     &call.source,
                     &call.model,
                     Some(NativeMediaContext {
@@ -4066,6 +4238,8 @@ impl TurnLifecycleContributor for PythonContributor {
             }
 
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
+                // The original turn keeps provenance without keeping the thread owner alive.
+                input.turn_store.insert(Arc::downgrade(&tools));
                 if tools.instance.is_some() && tools.child_before_step {
                     input
                         .turn_store
@@ -4383,6 +4557,7 @@ mod pending_tests {
                 "turn",
                 "captured-manual",
                 json!({}),
+                None,
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
@@ -4429,6 +4604,7 @@ mod pending_tests {
                 specs: Vec::new(),
                 defaults: Vec::new(),
                 terminal_slots: HashSet::new(),
+                input_error_slots: HashSet::new(),
             })),
             generation_high_water: AtomicU64::new(0),
             profile_catalogs: RwLock::new(HashMap::new()),
@@ -5901,6 +6077,7 @@ mod pending_tests {
                 tools.snapshot().specs.clone(),
                 &[],
                 &[],
+                &[],
                 None,
                 [false; 4],
                 false,
@@ -5942,6 +6119,7 @@ mod pending_tests {
                 tools.snapshot().specs.clone(),
                 &[],
                 &[0],
+                &[],
                 None,
                 [false; 4],
                 false,
@@ -5952,6 +6130,7 @@ mod pending_tests {
             .configure_terminal(TerminalSlots {
                 generation: source.generation.id.to_string(),
                 slots: vec![0],
+                input_error_slots: Vec::new(),
             })
             .unwrap();
         assert!(Arc::ptr_eq(&default, &tools.snapshot()));
@@ -5960,6 +6139,7 @@ mod pending_tests {
                 .configure_terminal(TerminalSlots {
                     generation: source.generation.id.to_string(),
                     slots: vec![],
+                    input_error_slots: Vec::new(),
                 })
                 .is_err()
         );
@@ -5969,6 +6149,7 @@ mod pending_tests {
             .configure_terminal(TerminalSlots {
                 generation: source.generation.id.to_string(),
                 slots: vec![0],
+                input_error_slots: Vec::new(),
             })
             .unwrap();
         assert!(Arc::ptr_eq(&source.generation, &tools.snapshot()));
@@ -5980,6 +6161,7 @@ mod pending_tests {
                     tools.snapshot().specs.clone(),
                     &[],
                     &[1],
+                    &[],
                     None,
                     [false; 4],
                     false
@@ -5992,6 +6174,7 @@ mod pending_tests {
                     tools.snapshot().specs.clone(),
                     &[],
                     &[0, 0],
+                    &[],
                     None,
                     [false; 4],
                     false

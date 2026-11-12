@@ -341,6 +341,7 @@ pub(super) async fn plan_recovery_tree(
 
 fn interruption(turn: String) -> RolloutItem {
     RolloutItem::EventMsg(EventMsg::TurnAborted(TurnAbortedEvent {
+        model_attempt: None,
         turn_id: Some(turn),
         reason: TurnAbortReason::Interrupted,
         error: None,
