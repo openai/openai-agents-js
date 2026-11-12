@@ -828,17 +828,19 @@ nativeIt.each(['inline', 'from'] as const)(
 it.each(['count', 'aggregate', 'header'] as const)(
   'bounds %s metadata before publishing a from-source index',
   async (kind) => {
-    const workspace = await mkdtemp(join(tmpdir(), 'skills-metadata-'));
+    const workspace = '/workspace';
     const f = clientFixture();
-    const originalCreate = f.client.create!.bind(f.client);
     let reads = 0;
     const document = new TextEncoder().encode(
       `---\ndescription: ${'x'.repeat(kind === 'header' ? 100_000 : 60_000)}\n---\n`,
     );
     f.client.create = async (args) => {
-      const sandbox = await originalCreate(
-        normalizeSandboxClientCreateArgs(args),
-      );
+      const sandbox: SandboxSessionLike = {
+        state: { manifest: normalizeSandboxClientCreateArgs(args).manifest },
+        async close() {
+          f.closed.push(sandbox);
+        },
+      };
       sandbox.listDir = async () =>
         Array.from(
           { length: kind === 'count' ? 1025 : kind === 'aggregate' ? 100 : 1 },
@@ -868,16 +870,12 @@ it.each(['count', 'aggregate', 'header'] as const)(
           async () => {},
         ),
     });
-    try {
-      await expect(
-        acquireEnvironment(source, new AbortController().signal),
-      ).rejects.toThrow(/Skill metadata.*limit/);
-      if (kind === 'count') expect(reads).toBe(0);
-      if (kind === 'aggregate') expect(reads).toBeLessThan(100);
-      expect(f.closed).toHaveLength(1);
-    } finally {
-      await rm(workspace, { recursive: true, force: true });
-    }
+    await expect(
+      acquireEnvironment(source, new AbortController().signal),
+    ).rejects.toThrow(/Skill metadata.*limit/);
+    if (kind === 'count') expect(reads).toBe(0);
+    if (kind === 'aggregate') expect(reads).toBeLessThan(100);
+    expect(f.closed).toHaveLength(1);
   },
 );
 
