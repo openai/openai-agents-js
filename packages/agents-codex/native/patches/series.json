@@ -947,7 +947,11 @@
     {
       "path": "sdk-plan-backed-model-retry.patch",
       "sha256": "c3dead552ab58c35a5709ad8cec54e17570f9d19643ea00d7273e1963488d94b"
+    },
+    {
+      "path": "sdk-retain-stream-cleanup-usage.patch",
+      "sha256": "d5e710cc89814d5ea76e11cf4267be295cff3f626030fee281585a9a109f8563"
     }
   ],
-  "result_tree": "ebbc5c1d1633b155804700e7521b87438c3b41a5"
+  "result_tree": "9104ca63c2c66974c901ecb2019fa886a2692b15"
 }

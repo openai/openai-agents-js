@@ -1298,13 +1298,26 @@ impl PythonTools {
                 )),
                 "Expired model stream event"
             );
+            let pending = replies.get_mut(&id).expect("checked model request");
+            let attempt = pending
+                .callback
+                .as_ref()
+                .and_then(|callback| callback.model_attempt.as_ref())
+                .cloned();
             let PreparationReply::Model(ModelDelivery::Streaming {
                 events, projection, ..
-            }) = &mut replies.get_mut(&id).expect("checked model request").reply
+            }) = &mut pending.reply
             else {
                 anyhow::bail!("Model stream has not started")
             };
+            let had_usage = projection.completed_usage().is_some();
             let (projected, continuing) = projection.push(data);
+            if !had_usage {
+                if let (Some(attempt), Some(usage)) = (attempt, projection.completed_usage()) {
+                    // Retirement can drop the projection before the normal reply reports usage.
+                    let _ = attempt.report_usage(usage.clone());
+                }
+            }
             (projected, events.clone(), continuing)
         };
         for event in projected {
@@ -1421,21 +1434,16 @@ impl PythonTools {
             ModelDelivery::Streaming {
                 finish, projection, ..
             } => {
-                let result = projection.finish(
+                let usage = projection.completed_usage().cloned();
+                let mut result = projection.finish(
                     parsed
                         .is_err()
                         .then_some("Native model stream producer failed"),
                 );
-                if let (Some(attempt), Ok(events)) = (&attempt, &result) {
-                    for event in events {
-                        if let codex_api::ResponseEvent::Completed {
-                            token_usage: Some(usage),
-                            ..
-                        } = event
-                        {
-                            attempt
-                                .report_usage(usage.clone())
-                                .map_err(anyhow::Error::msg)?;
+                if let (Some(attempt), Some(usage)) = (&attempt, usage) {
+                    if let Err(error) = attempt.report_usage(usage) {
+                        if result.is_ok() {
+                            result = Err(model_stream_error(error));
                         }
                     }
                 }
