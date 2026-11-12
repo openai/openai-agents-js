@@ -1244,6 +1244,7 @@ async fn update_active_inner(
         if let Some(choice) = settings.tool_choice {
             target.model.tool_choice = Some(choice);
             target.model.request_controls.named_tool_choice = Some(None);
+            target.model.request_controls.hosted_tool_choice = Some(None);
         }
         if let Some(timeout) = settings.invocation_timeout_ms {
             target.model.invocation_timeout_ms = timeout;
