@@ -121,7 +121,7 @@ async function bundledNpmCli() {
   );
 }
 
-export async function verifyAlphaPackage(directory) {
+export async function verifyAlphaPackage(directory, { retainedExecutor } = {}) {
   assert.equal(process.versions.node.split('.')[0], '24', 'Use Node.js 24');
   const platform = `${process.platform}-${process.arch}`;
   for (const profile of ['starter', 'app']) {
@@ -204,6 +204,7 @@ export async function verifyAlphaPackage(directory) {
     );
     await verifyConsumer('starter', consumer);
     const types = await verifyTypes(consumer, env);
+    await retainedExecutor?.({ profile: 'starter', consumer, receipt, env });
     const record = async (profile) =>
       writeFile(
         join(directory, `installed-${profile}-${receipt.platform}.json`),
@@ -261,6 +262,7 @@ export async function verifyAlphaPackage(directory) {
     );
     await verifyConsumer('app', existing);
     await verifyTypes(existing, env);
+    await retainedExecutor?.({ profile: 'app', consumer: existing, receipt, env });
     await record('app');
     console.log(
       `Alpha consumer verification passed: ${receipt.version} ${receipt.platform}`,
