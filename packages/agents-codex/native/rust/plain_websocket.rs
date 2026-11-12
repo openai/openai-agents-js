@@ -4,9 +4,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use base64::Engine as _;
 use codex_api::{ApiError, ResponsesWebsocketCommand, ResponsesWebsocketMessageTransport};
-use codex_extension_api::TurnSamplingStop;
-use codex_protocol::error::CodexErr;
-use futures_util::FutureExt;
+use codex_extension_api::{ModelResponseInterceptor, ModelResponseStream, TurnSamplingStop};
+use futures_util::{FutureExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Error as WsError, Message};
@@ -17,12 +16,61 @@ use crate::engine::EngineState;
 use crate::model_websocket::{
     Frame, MAX_REQUEST_BYTES, NativeModelWebSocket, open_message_transport,
 };
+use crate::native_interception::SentinelFailure;
+
+#[derive(Debug, Default)]
+enum DispatchState {
+    #[default]
+    NotStarted,
+    Started,
+    Oversized,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Dispatch(Arc<Mutex<DispatchState>>);
+
+impl Dispatch {
+    fn mark(&self, state: DispatchState) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = state;
+    }
+}
+
+impl ModelResponseInterceptor for Dispatch {
+    fn preserves_provider_message_window(&self) -> bool {
+        true
+    }
+
+    fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream {
+        Box::pin(stream.map(move |event| {
+            event.map_err(|error| {
+                // A typed provider rejection can still permit retry. A generic
+                // stream failure after a physical send has no such proof.
+                if !matches!(&error, ApiError::Stream(_)) {
+                    return error;
+                }
+                let oversized = match *self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
+                    DispatchState::NotStarted => return error,
+                    DispatchState::Started => false,
+                    DispatchState::Oversized => true,
+                };
+                SentinelFailure::WebSocket { oversized }.into_response_error()
+            })
+        }))
+    }
+}
 
 #[derive(Debug, Default)]
 struct State {
     tasks: TaskTracker,
     closing: bool,
-    oversized: bool,
+    dispatch: Option<Dispatch>,
     cleanup_error: Option<String>,
 }
 
@@ -50,14 +98,21 @@ impl PlainWebSocket {
         Self::default()
     }
 
-    pub(crate) fn terminal_error(&self) -> Option<CodexErr> {
-        let state = self
+    pub(crate) fn interceptor(&self) -> Option<Box<dyn ModelResponseInterceptor>> {
+        let dispatch = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.oversized.then(|| CodexErr::InvalidRequest(
-            "Native WebSocket request exceeds the 64 MiB UTF-8 transport limit; model context limits are separate.".into()
-        ))
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dispatch
+            .clone()?;
+        Some(Box::new(dispatch))
+    }
+
+    pub(crate) fn clear_dispatch(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dispatch = None;
     }
 
     pub(crate) async fn connect(
@@ -73,13 +128,15 @@ impl PlainWebSocket {
         let (ready, connected) = oneshot::channel();
         let state = Arc::clone(&self.state);
         let driver = {
-            let slot = self
+            let mut slot = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if slot.closing || slot.cleanup_error.is_some() || cancel.is_cancelled() {
                 return Err(unavailable());
             }
+            let dispatch = Dispatch::default();
+            slot.dispatch = Some(dispatch.clone());
             // Enroll before spawning, including cancellation before the first poll.
             let tracked = slot.tasks.track_future(async move {
                 // Keep the endpoints alive until a panic fences the next attempt.
@@ -105,7 +162,7 @@ impl PlainWebSocket {
                         }
                     };
                     let result = if ready.send(Ok(headers)).is_ok() {
-                        relay(&socket, &mut channels, &state, &stop, &cancel).await
+                        relay(&socket, &mut channels, &dispatch, &stop, &cancel).await
                     } else {
                         Ok(None)
                     };
@@ -215,7 +272,7 @@ async fn dial(
 async fn relay(
     socket: &NativeModelWebSocket,
     channels: &mut DriverChannels,
-    state: &Mutex<State>,
+    dispatch: &Dispatch,
     stop: &TurnSamplingStop,
     cancel: &CancellationToken,
 ) -> Result<Option<Message>, WsError> {
@@ -239,9 +296,7 @@ async fn relay(
                 if text.len() > MAX_REQUEST_BYTES {
                     stop.try_commit(|| {
                         if !cancel.is_cancelled() {
-                            // Publish the classification before waking Core's sender.
-                            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .oversized = true;
+                            dispatch.mark(DispatchState::Oversized);
                         }
                     });
                     return Err(operation_failed());
@@ -249,7 +304,14 @@ async fn relay(
                 // Copy outside the synchronous sampling-admission lock.
                 let text = text.to_string();
                 let admitted = stop.try_commit(|| {
-                    if cancel.is_cancelled() { return Err(operation_failed()); }
+                    if cancel.is_cancelled()
+                        || channels.pending_send.as_ref().expect("pending WebSocket send").is_closed()
+                    {
+                        return Err(operation_failed());
+                    }
+                    // Publish before polling the write: a partial write may
+                    // already have reached the provider when the send fails.
+                    dispatch.mark(DispatchState::Started);
                     Ok(socket.send_text(text))
                 });
                 match admitted {

@@ -364,7 +364,7 @@ impl ModelRequestContributor for Route {
     }
 
     fn request(&self, _input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>> {
-        None
+        self.websocket.as_ref()?.owner.interceptor()
     }
 }
 
@@ -705,10 +705,6 @@ async fn prepare_and_collect(
             }
             Err(error) => Err(error.into()),
         };
-        if let Some(error) = websocket.and_then(|owner| owner.terminal_error()) {
-            stop.request();
-            return Ok((Err(error.into()), None));
-        }
         let Err(error) = result else {
             stop.request();
             return Ok((Ok(()), None));
@@ -738,9 +734,11 @@ async fn prepare_and_collect(
         };
         let retry_after = native.retry_after().map(|advice| advice.deadline());
         if retries >= max_retries {
-            if websocket.is_none()
-                || !sdk_plain_run::switch_to_http(&mut session, &telemetry, &model)
+            if let Some(websocket) = websocket
+                && sdk_plain_run::switch_to_http(&mut session, &telemetry, &model)
             {
+                websocket.clear_dispatch();
+            } else {
                 stop.request();
                 return Ok((Err(error), None));
             }
