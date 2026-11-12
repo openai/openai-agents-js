@@ -1314,13 +1314,19 @@ nativeIt.each([
   30000,
 );
 
-nativeIt.each(['invalid', 'null', 'exception'] as const)(
-  'validates native approval formatter returns and joins cleanup (%s)',
-  async (outcome) => {
+nativeIt.each(
+  (['invalid', 'null', 'undefined', 'exception', 'string'] as const).flatMap(
+    (outcome) => [[outcome, false] as const, [outcome, true] as const],
+  ),
+)(
+  'falls back for native approval formatter returns and preserves denial (%s, async=%s)',
+  async (outcome, asynchronous) => {
     const execute = vi.fn(() => 'forbidden');
-    const formatter = vi.fn(async () => {
+    const formatter = vi.fn((_error: unknown) => {
       if (outcome === 'exception')
         throw new Error('Application formatter failure');
+      if (outcome === 'string') return 'Application declined';
+      if (outcome === 'undefined') return undefined;
       return outcome === 'null' ? null : 42;
     });
     const selected = tool({
@@ -1341,7 +1347,9 @@ nativeIt.each(['invalid', 'null', 'exception'] as const)(
       const voice = await session.realtime({
         model: 'fixture-realtime',
         // Exercise an unchecked application return through the public runtime boundary.
-        toolErrorFormatter: formatter as never,
+        toolErrorFormatter: (asynchronous
+          ? async (error: unknown) => formatter(error)
+          : formatter) as never,
       });
       const reader = session.interactions();
       try {
@@ -1349,37 +1357,21 @@ nativeIt.each(['invalid', 'null', 'exception'] as const)(
         const { value: request } = await reader.next();
         if (!isFunctionApprovalRequest(request))
           throw new Error('Native approval missing');
-        if (outcome === 'invalid') {
-          await expect(session.respond(request.reject())).rejects.toThrow(
-            'formatter must return a string, null or undefined',
-          );
-          // Closing the voice can discard output still queued for delivery.
-          expect(await peer.output('formatter-return')).toBe(
-            'The function failed.',
-          );
-          await voice.close();
-          await peer.disconnected.promise;
-          expect(await session.pendingInteractions()).toEqual([]);
-          expect(
-            peer.frames
-              .filter(
-                (frame) =>
-                  frame.item?.type === 'function_call_output' &&
-                  frame.item.call_id === 'formatter-return',
-              )
-              .map((frame) => frame.item.output),
-          ).toEqual(['The function failed.']);
-          expect(formatter).toHaveBeenCalledTimes(1);
-          expect(execute).not.toHaveBeenCalled();
-          expect(model.requests).toHaveLength(0);
-          return;
-        } else {
-          await session.respond(request.reject());
-        }
+        await session.respond(request.reject());
         expect(await peer.output('formatter-return')).toBe(
-          'Tool execution was rejected',
+          outcome === 'string'
+            ? 'Application declined'
+            : 'Tool execution was rejected',
         );
         expect(formatter).toHaveBeenCalledTimes(1);
+        expect(formatter.mock.calls[0][0]).toMatchObject({
+          kind: 'approval_rejected',
+          toolType: 'function',
+          toolName: 'risky',
+          callId: request.callId,
+          defaultMessage: 'Tool execution was rejected',
+          runContext: { agent: await session.getActiveAgent() },
+        });
         expect(execute).not.toHaveBeenCalled();
         expect(await session.pendingInteractions()).toEqual([]);
         expect(model.requests).toHaveLength(0);

@@ -27,6 +27,7 @@ import {
   restoreModelUsageOffset,
   type ModelAttemptState,
 } from './model-attempts';
+import type { ResponsesCompaction } from './responses-compaction';
 import { audioInputByteLimit } from './media';
 import {
   ManagedWorkspaceCheckpoint,
@@ -134,7 +135,7 @@ import {
   checkpointResourceServers,
   type CheckpointSelections,
 } from './selection-state';
-import { readCheckpointSelections } from './state';
+import { guardrailCheckpointSchema, readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import {
@@ -437,6 +438,7 @@ export interface SessionOptions {
   /** @internal Captured root declaration; profile declarations own child guards. */
   agentOutputGuardrails?: readonly OutputGuardrail<any>[];
   beforeCompact?: BeforeCompact<any>;
+  compaction?: ResponsesCompaction<any>;
   transformContext?: ContextTransform<any>;
   contextTransformPurpose?: 'turn' | 'output_repair';
   /** @internal Detached fresh-opening data; removed before Session construction. */
@@ -4503,14 +4505,16 @@ export class Session<OutputT = string, Context = unknown> {
       const captured = captureUsageReport(usage, options?.requests);
       if (!check())
         throw new NativeError('Usage report invocation is no longer admitted');
-      if (!(owner instanceof NativeTurn)) this.attachChildUsage(owner);
-      addModelReportedUsage(
-        owner,
-        captured.raw,
-        captured.requests,
-        captured.missing,
-      );
+      this.addOwnerUsage(owner, captured);
     };
+  }
+
+  private addOwnerUsage(
+    owner: NativeTurn | ChildCallbackOwner,
+    report: ReturnType<typeof captureUsageReport>,
+  ): void {
+    if (!(owner instanceof NativeTurn)) this.attachChildUsage(owner);
+    addModelReportedUsage(owner, report.raw, report.requests, report.missing);
   }
 
   private rootRun(run: NativeTurn): NativeTurn {
@@ -7319,6 +7323,7 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === '_sdk_model_retry' ||
       msg.type === '_sdk_model_produce' ||
       msg.type === '_sdk_before_compact' ||
+      msg.type === '_sdk_before_compact_policy' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -7695,6 +7700,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === '_sdk_model_retry' ||
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
+      kind === '_sdk_before_compact_policy' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -8678,6 +8684,7 @@ export class Session<OutputT = string, Context = unknown> {
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
     beforeCompact?: BeforeCompact<any>;
+    compaction?: ResponsesCompaction<any>;
     transformContext?: ContextTransform<any>;
     hostedPrompt?: HostedPromptSource<any>;
     hostedPromptControls?: JsonObject;
@@ -8688,6 +8695,7 @@ export class Session<OutputT = string, Context = unknown> {
     return {
       beforeComplete: captured.declaration.beforeComplete,
       beforeCompact: captured.declaration.beforeCompact,
+      compaction: captured.declaration.compaction,
       transformContext: captured.declaration.transformContext,
       hostedPrompt: captured.declaration.hostedPrompt,
       hostedPromptControls: captured.hostedPromptControls,
@@ -8716,7 +8724,8 @@ export class Session<OutputT = string, Context = unknown> {
             request_id: msg.request_id,
           };
           const contextEdit = msg.type === '_sdk_transform_context';
-          const compact = msg.type === '_sdk_before_compact';
+          const compactPolicy = msg.type === '_sdk_before_compact_policy';
+          const compact = compactPolicy || msg.type === '_sdk_before_compact';
           const produce = msg.type === '_sdk_model_produce';
           const retry = msg.type === '_sdk_model_retry';
           const sourceCatalog = this.sourceCatalog(
@@ -8728,6 +8737,7 @@ export class Session<OutputT = string, Context = unknown> {
             beforeCompact,
             transformContext,
             hostedPrompt,
+            compaction,
           } = this.sourceModelCallbacks(msg);
           let replied = false;
           const reply = (result: Record<string, unknown>, failed = false) => {
@@ -9005,28 +9015,116 @@ export class Session<OutputT = string, Context = unknown> {
               }
             } else if (compact) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
-              const returned = beforeCompact?.(
-                Object.freeze({
-                  ...base,
-                  items: Object.freeze(items),
-                  requestId: z.string().parse(msg.request_id),
-                  automatic: z.boolean().parse(msg.automatic),
-                }),
-              );
-              const settled =
-                returned &&
-                typeof (returned as Promise<unknown>).then === 'function'
-                  ? await returned
-                  : returned;
-              if (
-                settled !== undefined &&
-                (typeof settled !== 'string' || !settled.trim())
-              )
-                throw new TypeError(
-                  'beforeCompact must return a nonempty summary or undefined',
-                );
-              check();
-              reply(settled === undefined ? {} : { summary: settled });
+              const context = Object.freeze({
+                ...base,
+                items: Object.freeze(items),
+                requestId: z.string().parse(msg.request_id),
+                automatic: z.boolean().parse(msg.automatic),
+              });
+              if (compaction !== undefined) {
+                const budget =
+                  owner instanceof NativeTurn
+                    ? owner.selection?.budget
+                    : undefined;
+                try {
+                  const providerResponse =
+                    msg.provider_response == null
+                      ? undefined
+                      : z
+                          .object({
+                            response_id: z.string().trim().min(1),
+                            model: z.string().trim().min(1).optional(),
+                          })
+                          .strict()
+                          .parse(msg.provider_response);
+                  const prepared = compaction.prepareContext(
+                    context,
+                    z
+                      .array(z.number().int().nonnegative())
+                      .parse(msg.candidate_indexes),
+                    providerResponse,
+                    z.boolean().parse(msg.model_omitted),
+                  );
+                  if (compactPolicy) {
+                    const admitted =
+                      compaction.shouldCompact === undefined
+                        ? prepared.candidates.length >= 10
+                        : await compaction.shouldCompact(prepared);
+                    if (typeof admitted !== 'boolean')
+                      throw new TypeError(
+                        'shouldCompact must return a boolean',
+                      );
+                    check();
+                    reply({ admitted });
+                  } else {
+                    let canonicalItems: typeof prepared.items | undefined;
+                    let requestContext = prepared;
+                    if (prepared.mode === 'input' && transformContext) {
+                      canonicalItems = JSON.parse(
+                        JSON.stringify(
+                          prepared.items.filter(
+                            (item) =>
+                              item.type === 'message' &&
+                              (item.role === 'developer' ||
+                                item.role === 'system'),
+                          ),
+                        ),
+                      ) as typeof prepared.items;
+                      const replacement = await transformContext(
+                        Object.freeze({
+                          ...base,
+                          model: prepared.model,
+                          items: prepared.items,
+                          requestId: prepared.requestId,
+                          purpose: 'compaction' as const,
+                        }),
+                      );
+                      check();
+                      if (replacement !== undefined)
+                        requestContext = Object.freeze({
+                          ...prepared,
+                          items: Object.freeze(
+                            z
+                              .array(losslessJsonObjectSchema)
+                              .parse(replacement),
+                          ),
+                        });
+                    }
+                    const window = await compaction.requestWindow(
+                      requestContext,
+                      providerResponse,
+                      (usage) => {
+                        const report = captureUsageReport(usage);
+                        this.addOwnerUsage(owner, report);
+                        budget?.observe(
+                          usage === null ? undefined : report.raw,
+                        );
+                      },
+                      canonicalItems,
+                    );
+                    check();
+                    reply({ window });
+                  }
+                } catch (error) {
+                  check();
+                  if (!compactPolicy && msg.optional !== true) throw error;
+                  // Failed optional work never changes the accepted answer.
+                  reply({}, true);
+                }
+              } else if (compactPolicy) {
+                reply({});
+              } else {
+                const settled = await beforeCompact?.(context);
+                if (
+                  settled !== undefined &&
+                  (typeof settled !== 'string' || !settled.trim())
+                )
+                  throw new TypeError(
+                    'beforeCompact must return a nonempty summary or undefined',
+                  );
+                check();
+                reply(settled === undefined ? {} : { summary: settled });
+              }
             } else if (contextEdit) {
               const items = z.array(losslessJsonObjectSchema).parse(msg.items);
               const requestContext = Object.freeze({
@@ -11196,6 +11294,9 @@ export class Session<OutputT = string, Context = unknown> {
               : losslessJsonValueSchema.parse(call.event.msg.arguments),
         })),
       );
+      const guardrailRecords = z
+        .array(guardrailCheckpointSchema)
+        .parse(this.checkpointGuardrailRecords(run));
       signal?.throwIfAborted();
       if (
         this.manualProgress !== progress ||
@@ -11268,6 +11369,7 @@ export class Session<OutputT = string, Context = unknown> {
           {
             manual_continuation: result.manual_continuation,
             manual_context: {
+              guardrail_results: guardrailRecords,
               ...(run.selection?.maxModelSteps === undefined
                 ? {}
                 : {
@@ -11332,8 +11434,86 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** @internal Restore original pending calls with new native and JavaScript reply authority. */
+  private checkpointGuardrailRecords(run: NativeTurn) {
+    const runtimes = new Map(this.profileRuntimes);
+    for (const [id, graph] of this.voiceProfileGraphs) {
+      const runtime = graph.profiles.get(id);
+      if (runtime) runtimes.set(id, runtime);
+    }
+    const profiles = new Map(
+      [...runtimes].map(
+        ([id, runtime]) => [runtime.profile.agent, id] as const,
+      ),
+    );
+    return [...this.rootSteps(this.rootRun(run))]
+      .flatMap((step) => step.guardrailResults)
+      .map((record) => {
+        const outputInfo = losslessJsonValueSchema.safeParse(
+          record.result.outputInfo,
+        );
+        const profile =
+          record.agent === this.options.applicationAgent
+            ? null
+            : profiles.get(record.agent);
+        if (profile === undefined)
+          throw new NativeError(
+            'Guardrail checkpoint has no captured source Agent',
+          );
+        return {
+          kind: record.kind,
+          name: record.name,
+          agent_profile: profile,
+          session_id: record.sessionId,
+          turn_id: record.turnId,
+          ...(record.subagentId === undefined
+            ? {}
+            : { subagent_id: record.subagentId }),
+          result: {
+            tripwireTriggered: record.result.tripwireTriggered,
+            ...(outputInfo.success ? { outputInfo: outputInfo.data } : {}),
+          },
+          ...(record.toolCall === undefined
+            ? {}
+            : { tool_call: record.toolCall }),
+        };
+      });
+  }
+  private restoreGuardrailRecords(
+    state: ManualSessionState,
+  ): readonly GuardrailRecord[] {
+    return (state.manual_context.guardrail_results ?? []).map((record) => {
+      const agent =
+        record.agent_profile === null
+          ? this.options.applicationAgent
+          : this.callbackProfileRuntime(record.agent_profile)?.profile.agent;
+      if (!agent)
+        throw new NativeError(
+          'Guardrail checkpoint source Agent is unavailable',
+        );
+      return Object.freeze({
+        kind: record.kind,
+        name: record.name,
+        agent,
+        sessionId: record.session_id,
+        turnId: record.turn_id,
+        ...(record.subagent_id === undefined
+          ? {}
+          : { subagentId: record.subagent_id }),
+        result: Object.freeze({ ...record.result }),
+        ...(record.tool_call === undefined
+          ? {}
+          : {
+              toolCall: Object.freeze({
+                ...record.tool_call,
+                tool: Object.freeze({ ...record.tool_call.tool }),
+              }),
+            }),
+      });
+    });
+  }
   async _restoreManualContinuation(state: ManualSessionState): Promise<void> {
     this.idle('restore manual continuation');
+    const guardrailRecords = this.restoreGuardrailRecords(state);
     const tracing = this.captureRootTracing();
     let requests: JsonObject[];
     try {
@@ -11357,6 +11537,7 @@ export class Session<OutputT = string, Context = unknown> {
       restoredOutput.output,
       restoredOutput.outputOverride,
     );
+    run.guardrailResults.push(...guardrailRecords);
     run.tracing = tracing;
 
     run.parentTrace = this.options.parentTrace;
@@ -13604,13 +13785,29 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   /** Core has been closing this Session before deleting its stored conversation.
-   * LocalStorage only; native writer/reference exclusion and sidecar cleanup.
+   * LocalStorage only. Default: physical deletion with native reference checks.
+   * preserveDescendants: logical owner retirement; exact shared journal paths and
+   * prior descendant checkpoints retained. Retired source admission/discovery
+   * in this LocalStorage: rejected. Portable exports: valid independent memory copies.
+   * No secure erasure, cross-version revocation or source ID reuse.
    * Explicit rejection after a concurrent prior close; no silent success. */
-  async deleteStored(): Promise<void> {
-    return this.closeStoredHistory({ kind: 'delete' });
+  async deleteStored(
+    options: { preserveDescendants?: boolean } = {},
+  ): Promise<void> {
+    if (!options || typeof options !== 'object' || Array.isArray(options))
+      throw new TypeError('deleteStored options must be an object');
+    const { preserveDescendants = false } = options;
+    if (typeof preserveDescendants !== 'boolean')
+      throw new TypeError('preserveDescendants must be a boolean');
+    return this.closeStoredHistory({
+      kind: 'delete',
+      preserve_descendants: preserveDescendants,
+    });
   }
 
-  private closeStoredHistory(action: Record<string, string>): Promise<void> {
+  private closeStoredHistory(
+    action: Record<string, string | boolean>,
+  ): Promise<void> {
     this.checkCallbackOperation('change stored history while closing');
     this.idle('change stored history while closing');
     this.storedHistoryClose = this.#native._stored_history_close_action(

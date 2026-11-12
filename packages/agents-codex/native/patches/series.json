@@ -1,5 +1,4 @@
 {
-  "result_tree": "80ce239b888f817ee65747c563bc1f6c51f33266",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -878,8 +877,25 @@
       "sha256": "c5c9091d345a617aa2ed22de31f4d3144a523d3918eee6a34159d7d19c883cfa"
     },
     {
+      "path": "sdk-stored-owner-retirement.patch",
+      "sha256": "ff699915fddb64f4d511f88378ca9c1b874153dd8ef628b430b38dedebd8eb58"
+    },
+    {
+      "path": "sdk-borrowed-responses-compaction.patch",
+      "sha256": "3405e12b2b7162666f85aaa83c7e9742282361129bd9869902b9647c30693a43"
+    },
+    {
+      "path": "sdk-managed-original-receipt-identity.patch",
+      "sha256": "d156a9f439a84e42dfe1191725b015145fdc4f1079d5d543ece1f18e548230e5"
+    },
+    {
+      "path": "sdk-native-cancellation-receipt.patch",
+      "sha256": "56d5aa542f560debf89b2bde6adc2b8c5daebbf9a3af890cce9d52adbf689f6a"
+    },
+    {
       "path": "sdk-trace-provider-restart.patch",
       "sha256": "f34d52ce9a626d24097742c98dd36bd599313bbe8bf3c5a67e6c4386e5770ec3"
     }
-  ]
+  ],
+  "result_tree": "56b3800d3a7d70b3ed6058ff27fa0673fc5e1c89"
 }
