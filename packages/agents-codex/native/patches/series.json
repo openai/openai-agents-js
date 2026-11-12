@@ -991,7 +991,11 @@
     {
       "path": "sdk-generic-provider-hosted-tools.patch",
       "sha256": "86489613d82d450619641aa6e11a682d5e29fc87ca064b0fc48419f3df7d47c6"
+    },
+    {
+      "path": "sdk-tracing-annotation-shapes.patch",
+      "sha256": "a8ca9902c1041e980d996af7235c31ff00aba450a3b606053add632982c6d0ee"
     }
   ],
-  "result_tree": "9197940c8e607c73ec0f27bbef53770367537a4a"
+  "result_tree": "c68a8f3f7260417faa9270eb0c7d6e2306777437"
 }
