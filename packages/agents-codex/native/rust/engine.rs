@@ -1161,6 +1161,9 @@ impl EngineState {
                         .thread_extension_init
                         .get::<crate::agent_profiles::OpeningProfiles>(
                     ) {
+                        let source =
+                            crate::agent_profiles::restore_source(&opening, &history.history)?;
+                        opening.validate_pending_source(&source)?;
                         Some(crate::agent_profiles::validate_restored(
                             &opening,
                             &history.history,
@@ -3141,8 +3144,9 @@ async fn read_child(
     ((id, reader.instance), event, terminal_error, question)
 }
 
-fn retired_realtime_output(event: &Event) -> bool {
-    matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
+fn skip_live_native_event(event: &Event) -> bool {
+    matches!(&event.msg, EventMsg::SdkModelAttempt(_))
+        || matches!(&event.msg, EventMsg::RealtimeConversationRealtime(realtime)
         if realtime.payload.is_output_retired())
 }
 
@@ -4043,7 +4047,7 @@ impl ThreadState {
                 return graph_event(event);
             }
             if let Some((source, event)) = events.pending.pop_front() {
-                if retired_realtime_output(&event) {
+                if skip_live_native_event(&event) {
                     continue;
                 }
                 return self.child_event(source, event, None, None);
@@ -4156,7 +4160,7 @@ impl ThreadState {
                     events.native_dequeued.store(false, Ordering::Release);
                     events.native = Some(next_native_event(self.thread.clone(), events.native_dequeued.clone()));
                     let (event, question) = event?;
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     if let Some(tools) = &python_tools {
                         tools.observe_manual_event(&event);
                     }
@@ -4188,7 +4192,7 @@ impl ThreadState {
                     if let Some(prefix) = &mut events.publication_prefix {
                         prefix.consume_child(source)?;
                     }
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     return self.child_event(source, event, error, question);
                 },
                 Some(event) = graph.recv(), if !bounded => {
@@ -4209,7 +4213,7 @@ impl ThreadState {
                             .context("Native publication extension prefix was exhausted")?;
                     }
                     let (target, event) = event?;
-                    if retired_realtime_output(&event) { continue; }
+                    if skip_live_native_event(&event) { continue; }
                     if target.is_empty() || target == self.id.to_string() {
                         return self.root_event(event, None);
                     }
@@ -4474,6 +4478,7 @@ mod question_lifecycle_tests {
         let canceled = Event {
             id: "transport-id".to_owned(),
             msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                model_attempt: None,
                 turn_id: Some("original-turn".to_owned()),
                 reason: TurnAbortReason::Interrupted,
                 error: None,

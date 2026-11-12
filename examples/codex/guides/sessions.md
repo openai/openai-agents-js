@@ -83,6 +83,44 @@ An idle Session can update one category at a time: instructions, model and setti
 
 The current source build also supports captured Agent handoff graphs. Declare reachable Agents through `Agent.handoffs` before opening. While idle, call `await session.update({ agent: target })` to activate one of those original Agent objects, separately from other updates. The target supplies its captured declaration defaults. `await session.getActiveAgent()` returns the currently active Agent. A same-named replacement object is not an admitted target. See [live Agent and voice settings](native-voice.md#settings-tools-and-live-agents) for tool-selection and restore constraints.
 
+### Callback-backed handoffs
+
+The current source build has been accepting `new Handoff(target, callback)` for a custom tool name, description, typed arguments and acknowledgement. The callback has been using the ordinary `tool()` validation and tool hooks. This example has been using the [installation setup](installation.md), including `OPENAI_API_KEY`, and has been printing the final answer and the selected Agent identity:
+
+```ts
+import { Agent, Handoff, NativeProvider, tool } from '@openai/agents';
+import { z } from 'zod';
+
+const routeIssue = tool({
+  name: 'route_issue',
+  description: 'Route an issue by its ticket number.',
+  parameters: z.object({ ticket: z.number().int() }),
+  execute: ({ ticket }) => `Accepted ticket ${ticket}`,
+});
+
+await using provider = new NativeProvider();
+const specialist = new Agent({
+  model: 'gpt-5.5',
+  provider,
+  instructions: 'Resolve the routed ticket using the conversation.',
+});
+const triage = new Agent({
+  model: 'gpt-5.5',
+  provider,
+  instructions: 'Route ticket requests with route_issue.',
+  handoffs: [new Handoff(specialist, routeIssue)],
+});
+await using session = await triage.session();
+console.log(
+  (await (await session.submit('Route ticket 7.')).wait()).finalOutput,
+);
+console.log((await session.getActiveAgent()) === specialist);
+```
+
+The native tool owner has been awaiting the callback and its cleanup before publishing an accepted target. Failed, denied or cancelled callbacks have not been activating that target. The callback has been supplying a tool acknowledgement; the target Agent has been producing the conversation's final answer.
+
+`Handoff` has been requiring an automatic callback in the default function namespace, with `finishTurn: false`. Callback identity has been staying captured across tool updates; a same-key replacement has not been acquiring handoff authority. [Function tool cancellation](tools.md#function-tools) has been retaining its ordinary cleanup rules. Plain Agent targets and synchronous target resolvers have been remaining available for handoffs without custom callbacks.
+
 ## Observations and interruption
 
 Each `session.events({ after })` reader independently observes retained session events. Closing a reader does not stop work. Sequence numbers support resuming a reader. Pending manual requests are also visible to each reader.

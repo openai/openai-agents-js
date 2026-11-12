@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NativeVoiceWebRTC } from '@openai/agents/voice/react-native';
+import { connectReactNativeDirectText } from '../../../examples/codex/react-native-direct-voice';
 import { connectReactNativeVoice } from '../../../examples/codex/react-native-voice';
 
 function microphone() {
@@ -57,6 +58,30 @@ function setup() {
 }
 describe('app-owned React Native media', () => {
   afterEach(() => vi.unstubAllGlobals());
+  it.each(['sk_synthetic-project-key', 'ek_', 'ek_invalid\n'])(
+    'rejects credential %j before acquiring a peer or making a request',
+    async (clientSecret) => {
+      const createPeerConnection = vi.fn(() => {
+        throw new Error('Peer acquired before credential validation.');
+      });
+      const fetch = vi.fn();
+      vi.stubGlobal('fetch', fetch);
+
+      await expect(
+        connectReactNativeDirectText({
+          createPeerConnection,
+          clientSecret,
+          agent: {
+            model: 'synthetic-voice',
+            instructions: 'Keep answers brief.',
+          },
+        }),
+      ).rejects.toThrow('requires an ephemeral client key');
+      expect(createPeerConnection).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(['close', 'setup failure', 'media error'])(
     'releases the example-owned microphone once after %s',
     async (ending) => {

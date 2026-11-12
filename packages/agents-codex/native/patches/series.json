@@ -1,5 +1,5 @@
 {
-  "result_tree": "4596146d57ae644280ce10c55994be039f539f17",
+  "result_tree": "65a369bdb5267a2f6a2e1aab5668e198d2ce0940",
   "patches": [
     {
       "path": "0001-native-schema-recovery.patch",
@@ -820,6 +820,62 @@
     {
       "path": "sdk-client-tool-search-discovery-admission.patch",
       "sha256": "137b34494fb5240f00e811a56b930e1e565c82f1bcf2cc01c1fef8810fc59e2c"
+    },
+    {
+      "path": "sdk-mcp-forced-choice-captured-binding.patch",
+      "sha256": "9504401df266bc7f6b4f14f9657b0a899f3a9bed06149d42fbc4d01d4316b595"
+    },
+    {
+      "path": "sdk-native-hosted-prompts-request-ownership.patch",
+      "sha256": "8b59e1ee08e56daae315daf79c2ad9ea762d190e4597288031aebfa9fa093ad3"
+    },
+    {
+      "path": "sdk-model-response-omission-admission.patch",
+      "sha256": "0646d01ad045e1959f3c6d8b4708c71c1ada10eda6f848f84d87b8f2eb043c03"
+    },
+    {
+      "path": "sdk-native-model-attempt-retry.patch",
+      "sha256": "4a692bc289d4e8b82c142c66f3404600e78a47a69004e71eb6b9c90750b77569"
+    },
+    {
+      "path": "sdk-realtime-incarnation-ownership.patch",
+      "sha256": "4e6c23fd6ccf170546fbd80a2d032b450412fb228c43d22d03b097f30464bf10"
+    },
+    {
+      "path": "sdk-preserved-speech-tool-continuation.patch",
+      "sha256": "0eec334d147caa10bab871eb2caee86e4173791ffae6e19b5e09127ce78074c0"
+    },
+    {
+      "path": "sdk-model-invocation-terminal-clock.patch",
+      "sha256": "06fa9030c898b52eb5a499e6cb7fe4b4ee30233cb898243d446260d417a4d110"
+    },
+    {
+      "path": "sdk-model-attempt-settlement.patch",
+      "sha256": "10542c2f8ef8c766bba5ace407bf991c25bb42e5074ee881e70f1a42f7437356"
+    },
+    {
+      "path": "sdk-model-attempt-test-fixtures.patch",
+      "sha256": "3a81b24c463d52a7f4aa7caf2fe26d51cc04d1e11f6af8fb05bdf8bb59fa5a20"
+    },
+    {
+      "path": "sdk-model-deadline-admission-type.patch",
+      "sha256": "e17072825b736731573a60583c4ee557d39d7ef0b8ef06e49de89ec90a05a038"
+    },
+    {
+      "path": "sdk-provider-hosted-effect-replay-fence.patch",
+      "sha256": "cc46a7a1c697e833784f9f5ffa7245b0e2354e5bbc5a0a8bb892fae7ae55c53e"
+    },
+    {
+      "path": "sdk-native-owned-stop-durability-report.patch",
+      "sha256": "3418e9344d345661a8857558750dd00552d03e6718f6ea899f5f4a54f988d2a8"
+    },
+    {
+      "path": "sdk-provider-hosted-shell-replay-compat.patch",
+      "sha256": "def8fda0b26fa182be8cb6e3c82ac8375455d1eef40642549a53a3285222d1bd"
+    },
+    {
+      "path": "sdk-trace-lifecycle-dispatch.patch",
+      "sha256": "c5c9091d345a617aa2ed22de31f4d3144a523d3918eee6a34159d7d19c883cfa"
     },
     {
       "path": "sdk-chat-completions-raw-response.patch",
