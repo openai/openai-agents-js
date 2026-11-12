@@ -6346,6 +6346,22 @@ export class Session<OutputT = string, Context = unknown> {
     if (captured.service_tier !== undefined)
       settings.serviceTier =
         captured.service_tier as ModelSettings['serviceTier'];
+    // Correction sessions have been running without tools. Their overrides
+    // have been retaining sampling/retry settings without reviving tool forcing.
+    const repairSettingsOverride = run.selection?.modelSettingsOverride
+      ? { ...run.selection.modelSettingsOverride }
+      : undefined;
+    if (repairSettingsOverride) {
+      delete repairSettingsOverride.tool_choice;
+      if (repairSettingsOverride.request_controls !== undefined) {
+        const controls = {
+          ...(repairSettingsOverride.request_controls as JsonObject),
+        };
+        delete controls.named_tool_choice;
+        delete controls.reset_tool_choice;
+        repairSettingsOverride.request_controls = controls;
+      }
+    }
     const open = this.options.openCorrection;
     if (!open)
       throw new NativeError('This Session does not support output repair');
@@ -6398,7 +6414,7 @@ export class Session<OutputT = string, Context = unknown> {
             false,
             repairSelection && {
               ...repairSelection,
-              modelSettingsOverride: run.selection?.modelSettingsOverride,
+              modelSettingsOverride: repairSettingsOverride,
               retryPolicyOverride: run.selection?.retryPolicyOverride,
             },
           );

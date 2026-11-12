@@ -9,6 +9,7 @@ import {
   InteractionRequired,
   NativeProvider,
   manualTool,
+  tool,
   toolRef,
   type ModelResponse,
 } from '../../src';
@@ -589,6 +590,62 @@ nativeIt(
     ]);
     expect(policy).toHaveBeenCalledOnce();
     expect(policy.mock.calls[0][0]).toMatchObject({ threadId: restored.id });
+  },
+  30_000,
+);
+
+nativeIt.each(['named', 'required'] as const)(
+  'keeps output repair tool-free after %s forcing while retaining sampling overrides',
+  async (choice) => {
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Retrieve a record.',
+      parameters: z.object({}),
+      execute: async () => 'accepted',
+    });
+    const server = new ModelServer([
+      [call('lookup', {}, { callId: 'lookup' })],
+      [message('invalid JSON')],
+      [message('{"count":2}')],
+    ]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-settings-repair',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({
+      model: initialModel,
+      instructions: 'Use lookup, then answer with JSON.',
+      tools: [lookup],
+      provider,
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ count: z.number() }),
+        maxRetries: 1,
+      },
+    });
+    const result = await agent.run('lookup', {
+      modelSettingsOverride: {
+        toolChoice: choice === 'named' ? toolRef('lookup') : 'required',
+        resetToolChoice: true,
+        maxOutputTokens: 33,
+        reasoningEffort: 'medium',
+        retry: { maxRetries: 0 },
+      },
+    });
+    expect(result.finalOutput).toEqual({ count: 2 });
+    expect(server.requests).toHaveLength(3);
+    expect(server.requests.map((request) => request.max_output_tokens)).toEqual(
+      [33, 33, 33],
+    );
+    for (const request of server.requests)
+      expect(request.reasoning).toMatchObject({ effort: 'medium' });
+    const correction = server.requests.at(-1)!;
+    expect(correction.tools ?? []).toEqual([]);
+    expect(correction.tool_choice ?? 'auto').toBe('auto');
+    server.assertExhausted();
   },
   30_000,
 );
