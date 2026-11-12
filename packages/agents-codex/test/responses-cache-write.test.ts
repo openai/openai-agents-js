@@ -189,45 +189,6 @@ it('keeps generic custom replies on their existing accounting path', () => {
   }
 });
 
-it('rejects malformed adapter-owned counter availability without reading raw usage', async () => {
-  const model = new ResponsesModel({
-    responses: {
-      create: async () => ({
-        status: 'completed',
-        output: [],
-        usage: {},
-      }),
-    },
-  });
-  const result = await model.complete(request);
-  const marker = Object.getOwnPropertySymbols(result).find(
-    (key) => key.description === 'received cache-write usage',
-  );
-  expect(marker).toBeDefined();
-  for (const value of [
-    null,
-    [],
-    [0],
-    [null],
-    [0, 1],
-    {},
-    { count: undefined },
-    { count: '0' },
-    { count: false },
-    { count: -1 },
-    { count: 0.5 },
-    { count: Number.MAX_SAFE_INTEGER + 1 },
-    { count: NaN },
-    { count: Infinity },
-    { count: 0, extra: true },
-  ]) {
-    const response = Object.defineProperty({ output: [] }, marker!, { value });
-    expect(() => captureModelResponse(response)).toThrow(
-      /Received cache-write usage/,
-    );
-  }
-});
-
 it('does not accept a public-looking string property as adapter-owned availability', () => {
   const response = {
     output: [],

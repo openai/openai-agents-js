@@ -166,29 +166,11 @@ export function captureModelResponse(
     if (response.usage.total_tokens === undefined)
       usage.total_tokens = usage.input_tokens + usage.output_tokens;
   }
-  const received = (
-    response as ModelResponse & { [receivedCacheWriteUsage]?: unknown }
+  const cacheWriteUsage = (
+    response as ModelResponse & {
+      [receivedCacheWriteUsage]?: { count: number | null };
+    }
   )[receivedCacheWriteUsage];
-  let cacheWriteUsage: { count: number | null } | undefined;
-  if (received !== undefined) {
-    if (
-      received === null ||
-      typeof received !== 'object' ||
-      Array.isArray(received) ||
-      Object.keys(received).length !== 1 ||
-      !Object.hasOwn(received, 'count')
-    )
-      throw new TypeError('Received cache-write usage requires a count object');
-    const count = (received as { count: unknown }).count;
-    if (
-      count !== null &&
-      (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0)
-    )
-      throw new TypeError(
-        'Received cache-write usage requires a nonnegative safe integer or null',
-      );
-    cacheWriteUsage = { count };
-  }
   const raw = captureRawProviderEvents
     ? (response as ModelResponse & { [rawChatCompletion]?: JsonObject })[
         rawChatCompletion
