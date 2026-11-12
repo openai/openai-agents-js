@@ -921,9 +921,13 @@
       "sha256": "93501d00c9fcbf0d00da39a27036e613dee51d1a2ec2490db28e7fa3c4e320c7"
     },
     {
+      "path": "sdk-v2-interrupt-residency.patch",
+      "sha256": "cbc37c09cca0012ceccca17cf8f8e45cc41f642725acaf450bc90e59fcdb6326"
+    },
+    {
       "path": "sdk-preserve-native-reasoning-provider-metadata.patch",
       "sha256": "dd2c6016c3fe79373b2ba5d16953008eed810266a9bd669fb23d74e4544812bd"
     }
   ],
-  "result_tree": "86f7bcddafa252487a5005975a1946ac45fd83d4"
+  "result_tree": "2c8b6dc48b406edf0fd2b733fa18ec5f66816180"
 }
