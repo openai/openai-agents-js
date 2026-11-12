@@ -27,32 +27,36 @@ import {
   jsonObject,
   parseNative,
 } from './binding';
-const goalSnapshotSchema = z
-  .object({
-    thread_id: z.string().min(1),
-    // Codex trims Unicode White_Space before counting Rust chars(), rather
-    // than JS UTF-16 code units. Keep imported goal intent under that limit.
-    objective: z.string().refine((value) => {
-      const length = [
-        ...value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ''),
-      ].length;
-      return length > 0 && length <= 4000;
-    }, 'goal objective must contain 1 to 4000 characters'),
-    status: z.enum(['paused', 'complete']),
-    token_budget: z.number().int().positive().safe().nullable().optional(),
-    tokens_used: z.number().int().nonnegative().safe().optional(),
-    time_used_seconds: z.number().int().nonnegative().safe().optional(),
-    created_at: z.number().int().nonnegative().safe().nullable().optional(),
-    updated_at: z.number().int().nonnegative().safe().nullable().optional(),
-  })
-  .strict();
+
+const stringSchema = z.string();
+const nullableStringSchema = stringSchema.nullable();
+const optionalStringSchema = stringSchema.optional();
+const optionalNullableStringSchema = nullableStringSchema.optional();
+
+const goalSnapshotSchema = z.strictObject({
+  thread_id: z.string().min(1),
+  // Codex trims Unicode White_Space before counting Rust chars(), rather
+  // than JS UTF-16 code units. Keep imported goal intent under that limit.
+  objective: z.string().refine((value) => {
+    const length = [
+      ...value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, ''),
+    ].length;
+    return length > 0 && length <= 4000;
+  }, 'goal objective must contain 1 to 4000 characters'),
+  status: z.enum(['paused', 'complete']),
+  token_budget: z.number().int().positive().safe().nullable().optional(),
+  tokens_used: z.number().int().nonnegative().safe().optional(),
+  time_used_seconds: z.number().int().nonnegative().safe().optional(),
+  created_at: z.number().int().nonnegative().safe().nullable().optional(),
+  updated_at: z.number().int().nonnegative().safe().nullable().optional(),
+});
 const checklistSchema = z.object({
-  thread_id: z.string(),
-  turn_id: z.string(),
-  explanation: z.string().nullable().optional(),
+  thread_id: stringSchema,
+  turn_id: stringSchema,
+  explanation: optionalNullableStringSchema,
   plan: z.array(
     z.object({
-      step: z.string(),
+      step: stringSchema,
       status: z.enum(['pending', 'in_progress', 'completed']),
     }),
   ),
@@ -111,77 +115,54 @@ const snapshotImageSchema = z.unknown().transform((value, context) => {
   }
 });
 const cellOutputSchema = z.union([
-  z.object({ File: z.object({ file: snapshotFileSchema }).strict() }).strict(),
-  z
-    .object({
-      RichImage: z
-        .object({
-          image: snapshotImageSchema,
-          detail: z
-            .enum(['Auto', 'Low', 'High', 'Original'])
-            .nullable()
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z.object({ Text: z.object({ text: z.string() }).strict() }).strict(),
-  z
-    .object({
-      Image: z
-        .object({
-          image_url: z.string(),
-          detail: z
-            .enum(['Auto', 'Low', 'High', 'Original'])
-            .nullable()
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z.object({ Audio: z.object({ audio_url: z.string() }).strict() }).strict(),
+  z.strictObject({ File: z.strictObject({ file: snapshotFileSchema }) }),
+  z.strictObject({
+    RichImage: z.strictObject({
+      image: snapshotImageSchema,
+      detail: z.enum(['Auto', 'Low', 'High', 'Original']).nullable().optional(),
+    }),
+  }),
+  z.strictObject({ Text: z.strictObject({ text: stringSchema }) }),
+  z.strictObject({
+    Image: z.strictObject({
+      image_url: stringSchema,
+      detail: z.enum(['Auto', 'Low', 'High', 'Original']).nullable().optional(),
+    }),
+  }),
+  z.strictObject({ Audio: z.strictObject({ audio_url: stringSchema }) }),
 ]);
 const codeModeSnapshotSchema = z
-  .object({
+  .strictObject({
     format_version: z.literal(1),
     // Like native reply IDs, counters retain their exact decimal text in JS.
     next_cell_id: z.string().refine(isCellNumber, 'Invalid next cell ID'),
     stored_values: losslessJsonObjectSchema,
     completed_cells: codeModeCellKeysSchema.pipe(
       z.record(
-        z.string(),
-        z
-          .object({
-            public_cell_id: z.string().nullable().optional(),
-            pending_initial_yield_items: z
-              .array(cellOutputSchema)
-              .nullable()
-              .optional(),
-            event: z.union([
-              z
-                .object({
-                  Completed: z
-                    .object({
-                      content_items: z.array(cellOutputSchema),
-                      error_text: z.string().nullable().optional(),
-                    })
-                    .strict(),
-                })
-                .strict(),
-              z
-                .object({
-                  Terminated: z
-                    .object({ content_items: z.array(cellOutputSchema) })
-                    .strict(),
-                })
-                .strict(),
-            ]),
-          })
-          .strict(),
+        stringSchema,
+        z.strictObject({
+          public_cell_id: optionalNullableStringSchema,
+          pending_initial_yield_items: z
+            .array(cellOutputSchema)
+            .nullable()
+            .optional(),
+          event: z.union([
+            z.strictObject({
+              Completed: z.strictObject({
+                content_items: z.array(cellOutputSchema),
+                error_text: optionalNullableStringSchema,
+              }),
+            }),
+            z.strictObject({
+              Terminated: z.strictObject({
+                content_items: z.array(cellOutputSchema),
+              }),
+            }),
+          ]),
+        }),
       ),
     ),
   })
-  .strict()
   .superRefine((snapshot, ctx) => {
     for (const [id, cell] of Object.entries(snapshot.completed_cells)) {
       const publicId = cell.public_cell_id;
@@ -212,8 +193,8 @@ const codeModeSnapshotSchema = z
 const childStateSchema = z.discriminatedUnion('status', [
   z.object({
     status: z.literal('active'),
-    thread_id: z.string(),
-    parent_thread_id: z.string(),
+    thread_id: stringSchema,
+    parent_thread_id: stringSchema,
     closed_at: z.null().optional(),
     metadata: jsonObject,
     history: z.array(losslessJsonObjectSchema),
@@ -224,8 +205,8 @@ const childStateSchema = z.discriminatedUnion('status', [
   }),
   z.object({
     status: z.literal('closed'),
-    thread_id: z.string(),
-    parent_thread_id: z.string(),
+    thread_id: stringSchema,
+    parent_thread_id: stringSchema,
     closed_at: z.number().nonnegative().nullable().optional(),
     metadata: jsonObject,
     history: z.array(losslessJsonObjectSchema),
@@ -247,7 +228,7 @@ const rootState = {
   pending_actions: z.array(losslessJsonObjectSchema).default([]),
   recovery: z
     .object({
-      interrupted_thread_ids: z.array(z.string()),
+      interrupted_thread_ids: z.array(stringSchema),
       expired_actions: z.array(losslessJsonObjectSchema),
     })
     .nullable()
@@ -259,10 +240,10 @@ const treeState = {
   root_checklist: checklistSchema.nullable().optional(),
   root_goal: goalSnapshotSchema.nullable().optional(),
   descendants: z.array(childStateSchema).default([]),
-  interrupted_thread_ids: z.array(z.string()).default([]),
+  interrupted_thread_ids: z.array(stringSchema).default([]),
   root_tool_origins: z
     .record(
-      z.string(),
+      stringSchema,
       z.object({
         turn_id: z.string().min(1),
         originating_item_id: z.string().min(1),
@@ -296,9 +277,9 @@ const manualContinuationSchema = z.object({
   // Legacy format3 stored text function outputs; new checked receipts retain
   // native content and custom output without another JS transform.
   accepted_replies: z.record(
-    z.string(),
+    stringSchema,
     z.union([
-      z.string(),
+      stringSchema,
       z
         .object({
           type: z.literal('response_item'),
@@ -326,10 +307,10 @@ const manualContinuationSchema = z.object({
       z.object({
         call_id: z.string().min(1),
         name: z.string().min(1),
-        namespace: z.string().optional(),
-        arguments: z.string(),
+        namespace: optionalStringSchema,
+        arguments: stringSchema,
         approval_required: z.boolean().optional(),
-        effective_arguments: z.string().optional(),
+        effective_arguments: optionalStringSchema,
       }),
     )
     .min(1),
@@ -347,29 +328,29 @@ const manualUsageSchema = z.object({
 /** @internal Validate the durable diagnostic snapshot before native sealing. */
 export const guardrailCheckpointSchema = z.object({
   kind: z.enum(['input', 'output']),
-  name: z.string(),
-  agent_profile: z.string().nullable(),
-  session_id: z.string(),
-  turn_id: z.string(),
-  subagent_id: z.string().optional(),
+  name: stringSchema,
+  agent_profile: nullableStringSchema,
+  session_id: stringSchema,
+  turn_id: stringSchema,
+  subagent_id: optionalStringSchema,
   result: z.object({
     tripwireTriggered: z.boolean(),
     outputInfo: jsonValue.optional(),
   }),
   tool_call: z
     .object({
-      tool: z.object({ name: z.string(), namespace: z.string().nullable() }),
-      sessionId: z.string(),
-      turnId: z.string(),
-      callId: z.string().nullable(),
-      childId: z.string().nullable(),
-      childIncarnation: z.string().nullable(),
-      role: z.string().nullable(),
-      model: z.string().nullable(),
+      tool: z.object({ name: stringSchema, namespace: nullableStringSchema }),
+      sessionId: stringSchema,
+      turnId: stringSchema,
+      callId: nullableStringSchema,
+      childId: nullableStringSchema,
+      childIncarnation: nullableStringSchema,
+      role: nullableStringSchema,
+      model: nullableStringSchema,
       route: z.enum(['direct', 'code']),
-      outerCallId: z.string().nullable(),
-      cellId: z.string().nullable(),
-      nestedCallId: z.string().nullable(),
+      outerCallId: nullableStringSchema,
+      cellId: nullableStringSchema,
+      nestedCallId: nullableStringSchema,
     })
     .optional(),
 });
@@ -386,11 +367,11 @@ const manualContextSchema = z.object({
   guardrail_results: z.array(guardrailCheckpointSchema).optional(),
   original_input: originalInputSchema.optional(),
   remaining_model_steps: z.number().int().nonnegative().safe().optional(),
-  instructions: z.string().nullable(),
+  instructions: nullableStringSchema,
   result_schemas: z.array(
     z.object({
-      name: z.string(),
-      namespace: z.string().optional(),
+      name: stringSchema,
+      namespace: optionalStringSchema,
       schema: jsonValue,
     }),
   ),
@@ -398,39 +379,33 @@ const manualContextSchema = z.object({
   model_attempt: modelAttemptSnapshotSchema.optional(),
   model_usage_offset: manualUsageSchema.optional(),
 });
-const outputContextSchema = z
-  .object({
-    version: z.literal(1),
-    mode: z.enum(['plain', 'native', 'prompted']),
-    budget: z.number().int().nonnegative().safe().default(0),
-    fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
-  })
-  .strict();
-const applicationToolOutputSchema = z
-  .object({
-    submissionId: z.string(),
-    turnId: z.string(),
-    callId: z.string(),
-    name: z.string(),
-    namespace: z.string().nullable(),
-    rootTurnId: z.string().optional(),
-    applicationData: losslessJsonObjectSchema,
-  })
-  .strict();
+const outputContextSchema = z.strictObject({
+  version: z.literal(1),
+  mode: z.enum(['plain', 'native', 'prompted']),
+  budget: z.number().int().nonnegative().safe().default(0),
+  fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+});
+const applicationToolOutputSchema = z.strictObject({
+  submissionId: stringSchema,
+  turnId: stringSchema,
+  callId: stringSchema,
+  name: stringSchema,
+  namespace: nullableStringSchema,
+  rootTurnId: optionalStringSchema,
+  applicationData: losslessJsonObjectSchema,
+});
 
 /** Passive accepted tool data. Display identities never authorize tool execution. */
 export type ApplicationToolOutput = z.infer<typeof applicationToolOutputSchema>;
 
-const rememberedApprovalSchema = z
-  .object({
-    profile_id: z.string().nullable(),
-    profile: z.string().regex(/^[0-9a-f]{64}$/),
-    key: z.string().min(1),
-    signature: z.string().regex(/^[0-9a-f]{64}$/),
-    approve: z.boolean(),
-    reason: z.string().nullable(),
-  })
-  .strict();
+const rememberedApprovalSchema = z.strictObject({
+  profile_id: nullableStringSchema,
+  profile: z.string().regex(/^[0-9a-f]{64}$/),
+  key: z.string().min(1),
+  signature: z.string().regex(/^[0-9a-f]{64}$/),
+  approve: z.boolean(),
+  reason: nullableStringSchema,
+});
 /** @internal Application-keyed future policy, never a native invocation grant. */
 export type RememberedApproval = z.infer<typeof rememberedApprovalSchema>;
 
