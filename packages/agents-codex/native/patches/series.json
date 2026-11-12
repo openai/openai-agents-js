@@ -915,7 +915,11 @@
     {
       "path": "sdk-imported-provider-item-cleanup.patch",
       "sha256": "224a45ca3ef842c473c57e4b3112311b2430ba178956ac066549b9bed6d21d65"
+    },
+    {
+      "path": "sdk-application-model-raw-events.patch",
+      "sha256": "fc99d550ba9948829fc1fad79d8eb907da293d2aa78a79152d37a0d166091a7e"
     }
   ],
-  "result_tree": "88158072b754edcc7c5da86a408e958950749960"
+  "result_tree": "27071719c18681ed0cc9158c7f88ea63aa1113b4"
 }
