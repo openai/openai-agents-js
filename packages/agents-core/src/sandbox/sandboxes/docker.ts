@@ -6,6 +6,7 @@ import {
 import { UserError } from '../../errors';
 import {
   copyRemoteSnapshotAuthority,
+  markDeserializedSandboxState,
   getRemoteSnapshotPolicyAuthority,
   setRemoteSnapshotPolicyAuthority,
 } from '../internal/sessionStateTrust';
@@ -120,7 +121,7 @@ import {
   sanitizeEnvironmentForPersistence,
   serializeHostPathGrantRedactionMetadata,
   serializeMountCredentialRedactionMetadata,
-  serializeManifest,
+  serializeManifestRecord,
 } from './shared/manifestPersistence';
 import {
   assertExistingMountTopologyPreserved,
@@ -1940,7 +1941,7 @@ export class DockerSandboxClient implements SandboxClient<
     const serialized = {
       ...serializeHostPathGrantRedactionMetadata(state),
       ...serializeMountCredentialRedactionMetadata(state),
-      manifest: serializeManifest(sanitizedMountEnvironment.manifest),
+      manifest: serializeManifestRecord(sanitizedMountEnvironment.manifest),
       sessionIdentity: state.sessionIdentity,
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
@@ -1978,7 +1979,7 @@ export class DockerSandboxClient implements SandboxClient<
       state,
       this.options.snapshot,
     );
-    return {
+    return markDeserializedSandboxState({
       ...baseState,
       sessionIdentity: readOptionalString(state, 'sessionIdentity'),
       image: readString(state, 'image'),
@@ -1991,7 +1992,7 @@ export class DockerSandboxClient implements SandboxClient<
         'Serialized Docker sandbox session state labels',
       ),
       dockerVolumeNames: readStringArray(state.dockerVolumeNames),
-    };
+    });
   }
 
   private async restoreIfNeeded(

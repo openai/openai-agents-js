@@ -964,6 +964,39 @@ describe('DockerSandboxClient unit behavior', () => {
     await expect(stat(session.state.workspaceRootPath)).rejects.toThrow();
   });
 
+  it('preserves binary manifest payloads through JSON serialization', async () => {
+    processMocks.runSandboxProcess.mockImplementation(
+      async (_command: string, args: string[]) => {
+        if (args[0] === 'version') return success('Docker version test');
+        if (args[0] === 'run') return success('container-binary\n');
+        if (args[0] === 'rm') return success();
+        return failure('unexpected docker command');
+      },
+    );
+    const client = new DockerSandboxClient({
+      workspaceBaseDir: rootDir,
+      snapshot: new NoopSnapshotSpec(),
+    });
+    const payload = new Uint8Array([0, 255, 128, 10]);
+    const session = await client.create(
+      new Manifest({
+        entries: { 'data.bin': { type: 'file', content: payload } },
+      }),
+    );
+    try {
+      const saved = JSON.parse(
+        JSON.stringify(await client.serializeSessionState(session.state)),
+      );
+      const restored = await client.deserializeSessionState(saved);
+      expect(restored.manifest.entries['data.bin']).toEqual({
+        type: 'file',
+        content: payload,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
   it('applies, copies, overrides, and serializes user-defined labels', async () => {
     let runCount = 0;
     processMocks.runSandboxProcess.mockImplementation(

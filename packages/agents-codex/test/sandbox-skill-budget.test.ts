@@ -16,10 +16,14 @@ import {
 
 const MiB = 1024 * 1024;
 
-async function fixture(secondMiB = 33) {
+async function fixture(
+  secondMiB = 33,
+  snapshot: boolean | 'noop' = false,
+  firstMiB = 33,
+) {
   const root = await mkdtemp(join(tmpdir(), 'skill-lease-budget-'));
   for (const [name, size] of [
-    ['alpha', 33],
+    ['alpha', firstMiB],
     ['beta', secondMiB],
   ] as const) {
     await mkdir(join(root, name));
@@ -31,26 +35,37 @@ async function fixture(secondMiB = 33) {
     await writeFile(asset, '');
     await truncate(asset, size * MiB);
   }
-  const sandbox = await new UnixLocalSandboxClient().create(
-    new Manifest({
+  const archiveBase =
+    snapshot === true
+      ? await mkdtemp(join(tmpdir(), 'skill-budget-snapshot-'))
+      : undefined;
+  const client = new UnixLocalSandboxClient();
+  const sandbox = await client.create({
+    manifest: new Manifest({
       root: '/workspace',
       extraPathGrants: [{ path: root, readOnly: true }],
     }),
-  );
-  const workspace = sandbox.state.workspaceRootPath;
-  const environment = new Environment({
-    url: 'wss://fixture.invalid',
-    cwd: workspace,
-    capabilityDirectories: [join(workspace, '.agents')],
-    tools: [],
+    ...(snapshot === 'noop' ? { snapshot: { type: 'noop' as const } } : {}),
+    ...(archiveBase
+      ? { snapshot: { type: 'local' as const, baseDir: archiveBase } }
+      : {}),
   });
   const binding = new SandboxSkillBinding(
     skills({ lazyFrom: localDirLazySkillSource({ src: root, baseDir: root }) }),
   );
   const leases: SandboxSkillLease[] = [];
-  const newLease = (resource = sandbox) => {
+  const newLease = (resource = sandbox, activeBinding = binding) => {
+    const workspace = resource.state.workspaceRootPath;
+    const environment = new Environment({
+      url: 'wss://fixture.invalid',
+      cwd: workspace,
+      capabilityDirectories: [
+        join(workspace, activeBinding.configuration.skillsPath),
+      ],
+      tools: [],
+    });
     const lease = new SandboxSkillLease(
-      binding,
+      activeBinding,
       resource,
       environment,
       resource.state.manifest,
@@ -64,6 +79,7 @@ async function fixture(secondMiB = 33) {
   const load = (name: string) => lease.load(name, new AbortController().signal);
   return {
     sandbox,
+    client,
     lease,
     load,
     newLease,
@@ -71,6 +87,7 @@ async function fixture(secondMiB = 33) {
       for (const lease of leases) lease.retire();
       await sandbox.close();
       await rm(root, { recursive: true, force: true });
+      if (archiveBase) await rm(archiveBase, { recursive: true, force: true });
     },
   };
 }
@@ -275,6 +292,148 @@ unixIt(
         next.load('beta', new AbortController().signal),
       ).rejects.toThrow(/skill tree byte limit/i);
       expect(await resumed.pathExists('.agents/beta/SKILL.md')).toBe(false);
+    } finally {
+      await resumed?.close();
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt.each(['.agents', '.other'])(
+  'seeds capture admission from a serialized cold sandbox resume with %s',
+  async (namespace) => {
+    const f = await fixture(33, true);
+    let resumed: typeof f.sandbox | undefined;
+    try {
+      await f.load('alpha');
+      f.lease.retire();
+      const saved = JSON.parse(
+        JSON.stringify(await f.client.serializeSessionState(f.sandbox.state)),
+      );
+      const snapshot = saved.snapshot as { path: string };
+      const originalRoot = f.sandbox.state.workspaceRootPath;
+      await f.sandbox.close();
+      const client = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: originalRoot,
+          workspaceRootOwned: true,
+          localSnapshotPath: snapshot.path,
+        },
+      });
+      resumed = await client.resume(
+        await client.deserializeSessionState(saved),
+      );
+      expect(resumed.state.workspaceRootPath).not.toBe(originalRoot);
+      const binding = new SandboxSkillBinding(
+        skills({
+          skillsPath: namespace,
+          lazyFrom: f.lease.binding.configuration.lazyFrom,
+        }),
+      );
+      const next = f.newLease(resumed, binding);
+      await next.activate();
+      await expect(
+        next.load('beta', new AbortController().signal),
+      ).rejects.toThrow(/skill tree byte limit/i);
+      expect(await resumed.pathExists('.agents/alpha/SKILL.md')).toBe(true);
+      expect(await resumed.pathExists(`${namespace}/beta/SKILL.md`)).toBe(
+        false,
+      );
+    } finally {
+      await resumed?.close();
+      await f.close();
+    }
+  },
+  60_000,
+);
+
+unixIt(
+  'preserves captured binary payloads through provider JSON serialization',
+  async () => {
+    const f = await fixture(0, true, 0);
+    try {
+      await f.load('alpha');
+      const saved = JSON.parse(
+        JSON.stringify(await f.client.serializeSessionState(f.sandbox.state)),
+      );
+      const restored = await f.client.deserializeSessionState(saved);
+      const file = (
+        restored.manifest.entries['.agents/alpha'] as {
+          children: Record<string, { content: unknown }>;
+        }
+      ).children['SKILL.md'];
+      expect(file.content).toBeInstanceOf(Uint8Array);
+    } finally {
+      await f.close();
+    }
+  },
+  30_000,
+);
+
+unixIt.each([false, true])(
+  'preserves fresh trusted inline resources with snapshot policy %s',
+  async (snapshot) => {
+    const f = await fixture(0, false, 0);
+    const snapshotBase = await mkdtemp(join(tmpdir(), 'fresh-skill-snapshot-'));
+    let fresh: typeof f.sandbox | undefined;
+    try {
+      fresh = await f.client.create({
+        manifest: new Manifest({
+          root: '/workspace',
+          extraPathGrants: f.sandbox.state.manifest.extraPathGrants,
+          entries: {
+            'unrelated.txt': { type: 'file', content: 'x'.repeat(65 * MiB) },
+          },
+        }),
+        snapshot: snapshot
+          ? { type: 'local', baseDir: snapshotBase }
+          : { type: 'noop' },
+      });
+      if (snapshot) {
+        await f.client.serializeSessionState(fresh.state);
+        expect(fresh.state.snapshot?.type).toBe('local');
+      }
+      const lease = f.newLease(fresh);
+      await lease.activate();
+      expect(
+        (await lease.load('alpha', new AbortController().signal)).status,
+      ).toBe('loaded');
+    } finally {
+      await fresh?.close();
+      await f.close();
+      await rm(snapshotBase, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
+
+unixIt(
+  'recounts serialized restoration without a durable snapshot',
+  async () => {
+    const f = await fixture(33, 'noop');
+    let resumed: typeof f.sandbox | undefined;
+    try {
+      await f.load('alpha');
+      f.lease.retire();
+      const saved = JSON.parse(
+        JSON.stringify(await f.client.serializeSessionState(f.sandbox.state)),
+      );
+      expect(saved.snapshot).toBeNull();
+      const client = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: f.sandbox.state.workspaceRootPath,
+          workspaceRootOwned: false,
+        },
+      });
+      resumed = await client.resume(
+        await client.deserializeSessionState(saved),
+      );
+      const next = f.newLease(resumed);
+      await next.activate();
+      await expect(
+        next.load('beta', new AbortController().signal),
+      ).rejects.toThrow(/skill tree byte limit/i);
     } finally {
       await resumed?.close();
       await f.close();

@@ -1,5 +1,6 @@
 import {
   copyRemoteSnapshotAuthority,
+  markDeserializedSandboxState,
   getRunStateSessionTrustedConfig,
   getLocalSandboxStateAuthority,
   getRemoteSnapshotStoreAuthority,
@@ -79,7 +80,7 @@ import {
   mergeManifestDelta,
   sanitizeEnvironmentForPersistence,
   serializeMountCredentialRedactionMetadata,
-  serializeManifest,
+  serializeManifestRecord,
 } from './shared/manifestPersistence';
 import {
   assertExistingMountTopologyPreserved,
@@ -1487,7 +1488,7 @@ export class UnixLocalSandboxClient implements SandboxClient<
 
     const serialized = {
       ...serializeMountCredentialRedactionMetadata(state),
-      manifest: serializeManifest(state.manifest),
+      manifest: serializeManifestRecord(state.manifest),
       workspaceRootPath: state.workspaceRootPath,
       workspaceRootOwned: state.workspaceRootOwned,
       environment: sanitizeEnvironmentForPersistence(state),
@@ -1504,9 +1505,11 @@ export class UnixLocalSandboxClient implements SandboxClient<
   async deserializeSessionState(
     state: Record<string, unknown>,
   ): Promise<UnixLocalSandboxSessionState> {
-    return deserializeLocalSandboxSessionStateValues(
-      state,
-      this.options.snapshot,
+    return markDeserializedSandboxState(
+      await deserializeLocalSandboxSessionStateValues(
+        state,
+        this.options.snapshot,
+      ),
     );
   }
 

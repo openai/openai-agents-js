@@ -172,4 +172,7 @@ export { modelWorkspaceResourcePath } from './workspacePaths';
 
 export { skillWorkspaceRoot } from './skillResources';
 
-export { getSandboxStateIdentity } from './internal/sessionStateTrust';
+export {
+  getSandboxStateIdentity,
+  isDeserializedSandboxState,
+} from './internal/sessionStateTrust';

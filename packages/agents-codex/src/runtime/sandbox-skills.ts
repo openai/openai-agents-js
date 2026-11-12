@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   createSkillConfiguration,
   getSandboxStateIdentity,
+  isDeserializedSandboxState,
   resolveSkillRuntimeMetadata,
   resolveSkillsMetadata,
   renderSkillsDiscoveryInstructions,
@@ -32,22 +33,44 @@ const treeLimits = Object.freeze({
   maxBytes: 64 * 1024 * 1024,
 });
 
-function capturedTreeUsage(entry: Entry): SkillTreeUsage {
-  if (entry.type === 'file')
-    return {
-      members: 1,
-      bytes:
-        typeof entry.content === 'string'
-          ? Buffer.byteLength(entry.content)
-          : entry.content.byteLength,
-    };
-  if (entry.type !== 'dir')
-    throw new Error('Captured skill tree contains an unsupported entry');
-  const usage = { members: 1, bytes: 0 };
-  for (const child of Object.values(entry.children ?? {})) {
-    const next = capturedTreeUsage(child);
-    usage.members += next.members;
-    usage.bytes += next.bytes;
+function capturedTreeUsage(
+  entry: Entry,
+  maxMembers: number = treeLimits.maxMembers,
+  maxBytes: number = treeLimits.maxBytes,
+  path = '',
+  known?: ReadonlyMap<string, SkillTreeUsage>,
+): SkillTreeUsage {
+  const usage = { members: 0, bytes: 0 };
+  const pending = [{ entry, path }];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (known?.has(current.path)) continue;
+    if (++usage.members > maxMembers)
+      throw new Error('Skill tree member limit exceeded');
+    if (current.entry.type === 'file') {
+      const content = current.entry.content;
+      if (typeof content !== 'string' && !(content instanceof Uint8Array))
+        throw new Error('Captured skill file requires bytes or text');
+      const remaining = maxBytes - usage.bytes;
+      if (content.length > remaining)
+        throw new Error('Skill tree byte limit exceeded');
+      usage.bytes +=
+        typeof content === 'string'
+          ? Buffer.byteLength(content)
+          : content.byteLength;
+      if (usage.bytes > maxBytes)
+        throw new Error('Skill tree byte limit exceeded');
+    } else if (current.entry.type === 'dir') {
+      for (const name in current.entry.children ?? {}) {
+        if (!Object.prototype.hasOwnProperty.call(current.entry.children, name))
+          continue;
+        const childPath = joinRelativePaths(current.path, name);
+        if (known?.has(childPath)) continue;
+        if (usage.members + pending.length >= maxMembers)
+          throw new Error('Skill tree member limit exceeded');
+        pending.push({ entry: current.entry.children![name], path: childPath });
+      }
+    } else throw new Error('Captured skill tree contains an unsupported entry');
   }
   return usage;
 }
@@ -57,6 +80,7 @@ type SandboxSkillBudget = {
   bytes: number;
   members: number;
   tail: Promise<void>;
+  needsRecount: boolean;
 };
 // Retained manifest entries outlive acquisition leases. Trusted state aliases
 // share their physical owner; dropping an Environment never resets its budget.
@@ -70,10 +94,48 @@ function sandboxSkillBudget(sandbox: SandboxSessionLike): SandboxSkillBudget {
       bytes: 0,
       members: 0,
       tail: Promise.resolve(),
+      needsRecount: isDeserializedSandboxState(sandbox.state),
     };
     sandboxSkillBudgets.set(owner, budget);
   }
   return budget;
+}
+
+// Restored captures already carry their accepted payloads in the provider manifest.
+// Saved manifests do not distinguish captured skills from other inline files.
+// Charge retained File/Dir payloads across namespaces only when lineage is lost.
+// Seed inside the shared load queue; acquisition inspection must never await it.
+function seedRestoredSkillBudget(
+  budget: SandboxSkillBudget,
+  manifest: Manifest,
+): void {
+  if (!budget.needsRecount) return;
+  const additions = new Map<string, SkillTreeUsage>();
+  let members = budget.members,
+    bytes = budget.bytes;
+  for (const path in manifest.entries) {
+    if (
+      !Object.prototype.hasOwnProperty.call(manifest.entries, path) ||
+      budget.retained.has(path)
+    )
+      continue;
+    const entry = manifest.entries[path];
+    if (entry.type !== 'file' && entry.type !== 'dir') continue;
+    const usage = capturedTreeUsage(
+      entry,
+      treeLimits.maxMembers - members,
+      treeLimits.maxBytes - bytes,
+      path,
+      budget.retained,
+    );
+    members += usage.members;
+    bytes += usage.bytes;
+    additions.set(path, usage);
+  }
+  for (const [path, usage] of additions) budget.retained.set(path, usage);
+  budget.members = members;
+  budget.bytes = bytes;
+  budget.needsRecount = false;
 }
 
 const metadataLimits = Object.freeze({
@@ -322,6 +384,7 @@ export class SandboxSkillLease {
     const configuration = this.binding.configuration;
     const destination = match.path ?? match.name;
     const sandbox = this.#sandbox!;
+    seedRestoredSkillBudget(this.#budget, sandbox.state.manifest);
     if (!sandbox.pathExists || !sandbox.materializeEntry)
       throw new Error(
         'Skills require sandbox pathExists() and materializeEntry()',
