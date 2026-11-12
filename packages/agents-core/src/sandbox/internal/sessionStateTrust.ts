@@ -23,6 +23,7 @@ const remoteSnapshotAuthorities = new WeakMap<
   }
 >();
 const stateIdentities = new WeakMap<object, object>();
+const deserializedStates = new WeakSet<object>();
 
 export function getRemoteSnapshotIdAuthority(
   state: object,
@@ -71,6 +72,7 @@ export function copyRemoteSnapshotAuthority(
   source: object,
   target: object,
 ): void {
+  if (isDeserializedSandboxState(source)) deserializedStates.add(target);
   const authority = remoteSnapshotAuthorities.get(source);
   if (authority)
     remoteSnapshotAuthorities.set(target, {
@@ -80,6 +82,19 @@ export function copyRemoteSnapshotAuthority(
         : authority.snapshotSpec,
     });
   else remoteSnapshotAuthorities.delete(target);
+}
+
+/** Runtime provenance only; parsing never grants workspace authority. */
+export function markDeserializedSandboxState<T extends object>(state: T): T {
+  deserializedStates.add(state);
+  return state;
+}
+
+export function isDeserializedSandboxState(state: object): boolean {
+  return (
+    deserializedStates.has(state) ||
+    deserializedStates.has(getSandboxStateIdentity(state))
+  );
 }
 
 export function getSandboxStateIdentity(state: object): object {

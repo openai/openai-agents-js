@@ -1,3 +1,6 @@
+import { z } from 'zod';
+import type { JsonObject, JsonValue } from './binding';
+
 /** Approximate user location for hosted Responses web search. */
 export interface WebSearchLocation {
   /** Two-letter ISO country code. */
@@ -151,4 +154,106 @@ export function webSearchName(search: WebSearch) {
   return search.route === 'standalone'
     ? { name: 'run', namespace: 'web' }
     : { name: 'web_search', namespace: 'functions' };
+}
+
+export const webSearchSourcesSchema = z.array(
+  z.object({ type: z.literal('url'), url: z.string() }),
+);
+export type WebSearchSource = z.infer<typeof webSearchSourcesSchema>[number];
+export type WebSearchAction =
+  | {
+      type: 'search';
+      query: string | null;
+      queries: string[] | null;
+      /** URLs reported by the provider, when available. */
+      sources?: WebSearchSource[];
+    }
+  | { type: 'open_page'; url: string | null }
+  | { type: 'find_in_page'; url: string | null; pattern: string | null }
+  | { type: 'other' };
+
+function object(value: JsonValue | undefined): JsonObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : undefined;
+}
+function text(value: JsonValue | undefined): string | null {
+  return typeof value === 'string' ? value : null;
+}
+function webAction(raw: JsonObject): WebSearchAction | null {
+  const action = object(raw.action);
+  if (!action)
+    return typeof raw.query === 'string'
+      ? { type: 'search', query: raw.query, queries: null }
+      : null;
+  switch (action.type) {
+    case 'search': {
+      const sources = webSearchSourcesSchema.safeParse(action.sources);
+      return {
+        type: 'search',
+        query: text(action.query),
+        queries: Array.isArray(action.queries)
+          ? action.queries.filter(
+              (value): value is string => typeof value === 'string',
+            )
+          : null,
+        ...(sources.success ? { sources: sources.data } : {}),
+      };
+    }
+    case 'open_page':
+    case 'openPage':
+      return { type: 'open_page', url: text(action.url) };
+    case 'find_in_page':
+    case 'findInPage':
+      return {
+        type: 'find_in_page',
+        url: text(action.url),
+        pattern: text(action.pattern),
+      };
+    default:
+      return { type: 'other' };
+  }
+}
+
+/** @internal Project observed search fields without assigning history identity. */
+export function projectWebSearchCall(
+  raw: JsonObject,
+  status: 'completed' | 'in_progress',
+) {
+  return {
+    type: 'web_search_call' as const,
+    status,
+    action: webAction(raw),
+    ...(raw.results == null ? {} : { results: raw.results as JsonValue[] }),
+  };
+}
+
+/** @internal Project the captured search grant into native configuration. */
+export function webSearchConfig(search: WebSearch | undefined): JsonObject {
+  const config: JsonObject = {
+    web_search: search?.mode ?? 'disabled',
+    'features.standalone_web_search': search?.route === 'standalone',
+  };
+  if (search?.searchContextSize !== undefined)
+    config['tools.web_search.context_size'] = search.searchContextSize;
+  if (search?.allowedDomains !== undefined)
+    config['tools.web_search.allowed_domains'] = [...search.allowedDomains];
+  if (search?.blockedDomains !== undefined)
+    config['tools.web_search.blocked_domains'] = [...search.blockedDomains];
+  if (search?.location !== undefined)
+    config['tools.web_search.location'] = { ...search.location };
+  if (search?.searchContentTypes !== undefined)
+    config['tools.web_search.search_content_types'] = [
+      ...search.searchContentTypes,
+    ];
+  if (search?.imageSettings !== undefined)
+    config['tools.web_search.image_settings'] = {
+      ...(search.imageSettings.maxResults === undefined
+        ? {}
+        : { max_results: search.imageSettings.maxResults }),
+      ...(search.imageSettings.caption === undefined
+        ? {}
+        : { caption: search.imageSettings.caption }),
+    };
+  return config;
 }

@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -240,4 +241,39 @@ test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
       await chmod(parent, 0o700);
     }
   },
+);
+
+test('bounds retained-handle reads and enumeration without retiring the source', async () => {
+  const { source } = await fixture();
+  await writeFile(join(source, 'second.txt'), 'NEXT');
+  const directory = await openLocalSourceDirectory(source);
+  try {
+    await expect(directory.entries(1)).rejects.toThrow(/member limit/);
+    expect(await directory.entries(2)).toHaveLength(2);
+    await expect(directory.readFile('input.txt', 3)).rejects.toMatchObject({
+      code: 'ERR_FS_FILE_TOO_LARGE',
+    });
+    expect(
+      Buffer.from(await directory.readFile('input.txt', 4)).toString(),
+    ).toBe('SAFE');
+  } finally {
+    await directory.close();
+  }
+});
+
+test.skipIf(process.platform === 'win32')(
+  'rejects a selected file replaced by a FIFO before opening',
+  async () => {
+    const { source } = await fixture();
+    const directory = await openLocalSourceDirectory(source);
+    try {
+      expect((await directory.entries(1))[0].type).toBe('file');
+      await rm(join(source, 'input.txt'));
+      execFileSync('mkfifo', [join(source, 'input.txt')], { stdio: 'pipe' });
+      await expect(directory.readFile('input.txt', 4)).rejects.toThrow();
+    } finally {
+      await directory.close();
+    }
+  },
+  3_000,
 );

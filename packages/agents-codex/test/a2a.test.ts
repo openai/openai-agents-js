@@ -377,6 +377,7 @@ it.each([
 it('refuses redirects and oversized discovery before credentials', async () => {
   const remote = await peer();
   let credentials = 0;
+  const redirectModes: (RequestRedirect | undefined)[] = [];
   for (const response of [
     new Response(null, {
       status: 302,
@@ -391,10 +392,14 @@ it('refuses redirects and oversized discovery before credentials', async () => {
           return 'synthetic';
         },
         limits: { bodyBytes: 50 },
-        fetch: async () => response,
+        fetch: async (_url, init) => {
+          redirectModes.push(init?.redirect);
+          return response;
+        },
       }),
     ).rejects.toThrow('A2A');
   }
+  expect(redirectModes).toEqual(['manual', 'manual']);
   expect(credentials).toBe(0);
 });
 

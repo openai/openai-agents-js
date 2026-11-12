@@ -174,7 +174,7 @@ export class ConversationsHistory {
     const capturedInput = structuredClone(input);
     const preparedInput = nativeInput(capturedInput);
     if (
-      ['state', 'resume', 'storage', 'initialMessages'].some(
+      ['state', 'resume', 'storage', 'initialMessages', 'providerHistory'].some(
         (key) => (supplied as Record<string, unknown>)[key] !== undefined,
       )
     )

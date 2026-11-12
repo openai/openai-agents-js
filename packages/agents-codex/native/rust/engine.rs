@@ -169,6 +169,7 @@ impl EngineState {
         let mut controls = current.request_controls;
         if settings.tool_choice.is_some() {
             controls.named_tool_choice = Some(None);
+            controls.hosted_tool_choice = Some(None);
         }
         if let Some(patch) = &settings.request_controls {
             controls.apply_patch(patch);
@@ -1516,6 +1517,10 @@ impl EngineState {
         let mut metadata = if boundary.is_none() {
             let captured = crate::checkpoint::export(source, None).await?;
             ensure!(
+                crate::python_tools::PythonTools::staged_retry(source, &captured).is_none(),
+                "fork requires settled staged input"
+            );
+            ensure!(
                 captured["descendants"]
                     .as_array()
                     .is_some_and(Vec::is_empty),
@@ -2527,6 +2532,8 @@ impl EngineState {
                         base.trim_end_matches('/'),
                         URL_SAFE_NO_PAD.encode(id.as_bytes())
                     ));
+                    // The original provider owns the upstream WebSocket route.
+                    info.websocket_base_url = None;
                     info.query_params = None;
                     // Only the private hop has no request retry budget.
                     // The original provider's native transport owns that

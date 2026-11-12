@@ -23,10 +23,14 @@ struct ManualCall {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     namespace: Option<String>,
     arguments: String,
-    // Pending grants remain ordinary function calls. Only a checked, completed
-    // native apply_patch call can use this internal history marker.
+    // Only current function, application Shell, or editor declarations can own a grant.
+    // Completed custom calls retain their separate native history marker.
     #[serde(default, skip_serializing_if = "is_false")]
     custom: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    shell: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    patch: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     approval_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,6 +47,9 @@ fn manual_request(key: &PendingKey, call: &ManualCall, model: Option<&str>) -> R
         "turnId":key.turn,"callId":call.call_id,"namespace":call.namespace,
         "tool":call.name,"arguments":arguments,"_sdk_python_tool":key.reply,
         "_sdk_code_origin":null,"_sdk_model":model, "_sdk_restored_approval":true, "_sdk_approval_required":call.approval_required}});
+    if !call.custom && !call.shell && !call.patch {
+        request["msg"]["_sdk_raw_function_arguments"] = json!(call.arguments);
+    }
     if let Some(arguments) = &call.effective_arguments {
         request["msg"]["_sdk_effective_arguments"] = serde_json::from_str(arguments)?;
     }
@@ -74,7 +81,10 @@ impl<'de> Deserialize<'de> for CanonicalResult {
         };
         if !matches!(
             envelope.item,
-            ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
+            ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::ShellCallOutput { .. }
+                | ResponseItem::ApplyPatchCallOutput { .. }
         ) {
             return Err(serde::de::Error::custom(
                 "manual result must be a tool output",
@@ -102,8 +112,8 @@ impl Receipt {
         let item = match self {
             Self::Text(text) => {
                 ensure!(
-                    !call.custom,
-                    "legacy text cannot represent a custom call output"
+                    !call.custom && !call.shell && !call.patch,
+                    "legacy text cannot represent a typed call output"
                 );
                 let key = PendingKey {
                     reply: ReplyKey {
@@ -128,10 +138,44 @@ impl Receipt {
             }
         };
         ensure!(
-            matches!((&item, call.custom),
-                (ResponseItem::FunctionCallOutput {call_id: Some(id), ..}, false)
-                | (ResponseItem::CustomToolCallOutput {call_id: id, ..}, true)
-                if *id == call.call_id),
+            match (&item, call.custom, call.shell, call.patch) {
+                (
+                    ResponseItem::FunctionCallOutput {
+                        call_id: Some(id), ..
+                    },
+                    false,
+                    false,
+                    false,
+                )
+                | (ResponseItem::CustomToolCallOutput { call_id: id, .. }, true, false, false) =>
+                    *id == call.call_id,
+                (
+                    ResponseItem::ShellCallOutput {
+                        provider_fields, ..
+                    },
+                    false,
+                    true,
+                    false,
+                ) => {
+                    let mut output = json!({"output": provider_fields.get("output")});
+                    if let Some(limit) = provider_fields.get("max_output_length") {
+                        output["max_output_length"] = limit.clone();
+                    }
+                    let original: ResponseItem = serde_json::from_str(&call.arguments)?;
+                    let expected = crate::local_reconciliation::shell_receipt(&original,
+                        DynamicToolResponse { success: true, content_items: vec![
+                            codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText {
+                                text: serde_json::to_string(&output)?
+                            }] }, turn)?;
+                    provider_fields.get("call_id").and_then(Value::as_str)
+                        == Some(call.call_id.as_str())
+                        && crate::local_reconciliation::same_output_payload(&expected, &item)
+                }
+                (ResponseItem::ApplyPatchCallOutput { call_id, .. }, false, false, true) => {
+                    *call_id == call.call_id
+                }
+                _ => false,
+            },
             "manual result does not match original call kind and ID"
         );
         Ok(item)
@@ -158,6 +202,16 @@ impl Receipt {
             return self.matches(&Self::Native(right.0.item.clone()), call, turn);
         }
 
+        if call.shell || call.patch {
+            let left = match self {
+                Self::Provisional(item) => Self::Native(item.clone()).item(call, turn)?,
+                _ => self.item(call, turn)?,
+            };
+            let right = written.item(call, turn)?;
+            return Ok(crate::local_reconciliation::same_acknowledged_output(
+                &left, &right,
+            ));
+        }
         match (self, written) {
             // Legacy text frames predate native metadata and success storage.
             (Self::Text(left), Self::Text(right)) => Ok(left == right),
@@ -206,6 +260,10 @@ impl Receipt {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Continuation {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pending_input: Vec<Value>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) staged_retry: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) model_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -224,6 +282,31 @@ pub(crate) struct Continuation {
 }
 
 impl Continuation {
+    pub(crate) fn staged_items(&self) -> Result<Vec<ResponseItem>> {
+        let items = self
+            .pending_input
+            .iter()
+            .cloned()
+            .map(serde_json::from_value::<ResponseItem>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for item in &items {
+            crate::checkpoint::validate_external_response_item(item)?;
+        }
+        ensure!(
+            !items.iter().any(|item| matches!(item, ResponseItem::Other)),
+            "Unsupported staged response item"
+        );
+        for item in &self.pending_input {
+            if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+                ensure!(
+                    !self.reply_order.iter().any(|original| original == id),
+                    "Staged input cannot reuse a manual call identity"
+                );
+            }
+        }
+        Ok(items)
+    }
+
     pub(crate) fn terminal_seed(
         &mut self,
         raw: &Value,
@@ -255,7 +338,7 @@ impl Continuation {
                 held.push((receipt.envelope(call, &self.turn_id)?, success));
             }
         }
-        Ok(match self.tool_outcomes.take() {
+        Ok(match self.tool_outcomes.clone() {
             Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),
@@ -524,6 +607,69 @@ fn history(value: &Value) -> Result<History> {
                         arguments,
                         call_id,
                         custom: false,
+                        shell: false,
+                        patch: false,
+                        approval_required: false,
+                        effective_arguments: None,
+                    });
+                }
+                item @ ResponseItem::ApplyPatchCall { .. } => {
+                    let envelope = canonical.as_ref().context("Missing canonical patch call")?;
+                    ensure!(
+                        crate::local_reconciliation::owns_application_patch(envelope),
+                        "Provider patch cannot own a manual grant"
+                    );
+                    let ResponseItem::ApplyPatchCall { call_id, .. } = &item else {
+                        unreachable!()
+                    };
+                    ensure!(
+                        !result.turn.is_empty()
+                            && !result.calls.iter().any(|call| &call.call_id == call_id),
+                        "invalid or duplicate manual checkpoint call"
+                    );
+                    if let Some(source) = &source {
+                        result.sources.insert(call_id.clone(), source.clone());
+                    }
+                    result.calls.push(ManualCall {
+                        call_id: call_id.clone(),
+                        name: "apply_patch".into(),
+                        namespace: None,
+                        arguments: serde_json::to_string(&item)?,
+                        custom: false,
+                        shell: false,
+                        patch: true,
+                        approval_required: false,
+                        effective_arguments: None,
+                    });
+                }
+                item @ ResponseItem::ShellCall { .. } => {
+                    let envelope = canonical.as_ref().context("Missing canonical Shell call")?;
+                    ensure!(
+                        crate::local_reconciliation::is_application_shell_call(envelope),
+                        "Provider Shell cannot own a manual grant"
+                    );
+                    let data = serde_json::to_value(&item)?;
+                    let call_id = data["call_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .context("Manual Shell lacks identity")?
+                        .to_owned();
+                    ensure!(
+                        !result.turn.is_empty()
+                            && !result.calls.iter().any(|call| call.call_id == call_id),
+                        "invalid or duplicate manual checkpoint call"
+                    );
+                    if let Some(source) = &source {
+                        result.sources.insert(call_id.clone(), source.clone());
+                    }
+                    result.calls.push(ManualCall {
+                        call_id,
+                        name: "shell".into(),
+                        namespace: None,
+                        arguments: serde_json::to_string(&item)?,
+                        custom: false,
+                        shell: true,
+                        patch: false,
                         approval_required: false,
                         effective_arguments: None,
                     });
@@ -552,26 +698,52 @@ fn history(value: &Value) -> Result<History> {
                         arguments: input,
                         call_id,
                         custom: true,
+                        shell: false,
+                        patch: false,
                         approval_required: false,
                         effective_arguments: None,
                     });
                 }
                 item @ (ResponseItem::FunctionCallOutput { .. }
-                | ResponseItem::CustomToolCallOutput { .. }) => {
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::ShellCallOutput { .. }
+                | ResponseItem::ApplyPatchCallOutput { .. }) => {
+                    let shell = matches!(item, ResponseItem::ShellCallOutput { .. });
+                    let patch = matches!(item, ResponseItem::ApplyPatchCallOutput { .. });
                     let (id, custom) = match &item {
                         ResponseItem::FunctionCallOutput { call_id, .. } => (
                             call_id
                                 .as_ref()
-                                .context("manual checkpoint output has no call ID")?,
+                                .context("manual checkpoint output has no call ID")?
+                                .as_str(),
                             false,
                         ),
-                        ResponseItem::CustomToolCallOutput { call_id, .. } => (call_id, true),
+                        ResponseItem::ApplyPatchCallOutput { call_id, .. } => {
+                            (call_id.as_str(), false)
+                        }
+                        ResponseItem::CustomToolCallOutput { call_id, .. } => {
+                            (call_id.as_str(), true)
+                        }
+                        ResponseItem::ShellCallOutput {
+                            provider_fields, ..
+                        } => (
+                            provider_fields
+                                .get("call_id")
+                                .and_then(Value::as_str)
+                                .context("Manual Shell output lacks identity")?,
+                            false,
+                        ),
                         _ => unreachable!(),
                     };
                     let ordinal = result
                         .calls
                         .iter()
-                        .position(|call| call.call_id == *id && call.custom == custom)
+                        .position(|call| {
+                            call.call_id == id
+                                && call.custom == custom
+                                && call.shell == shell
+                                && call.patch == patch
+                        })
                         .context(
                             "manual checkpoint output is orphaned or has the wrong call kind",
                         )?;
@@ -583,7 +755,7 @@ fn history(value: &Value) -> Result<History> {
                         result
                             .outputs
                             .insert(
-                                id.clone(),
+                                id.to_owned(),
                                 Receipt::Canonical(CanonicalResult(
                                     canonical.context("Missing canonical tool result")?
                                 ))
@@ -663,8 +835,22 @@ fn restored_profile_plan(
             "Pending call differs from the active admitted Agent source"
         );
     }
+    let settled_retry = frame.staged_retry
+        && frame.pending_manual.is_empty()
+        && frame.turn_id == history.turn
+        && !frame.reply_order.is_empty()
+        && frame.reply_order.len() == frame.accepted_replies.len()
+        && frame
+            .reply_order
+            .iter()
+            .all(|id| frame.accepted_replies.contains_key(id))
+        && frame
+            .reply_order
+            .iter()
+            .map(String::as_str)
+            .eq(history.calls.iter().map(|call| call.call_id.as_str()));
     ensure!(
-        !pending_ids.is_empty(),
+        !pending_ids.is_empty() || settled_retry,
         "Manual continuation has no pending calls"
     );
     let mut proofs = history.handoffs.clone();
@@ -967,9 +1153,17 @@ impl PythonTools {
             }
             EventMsg::RawResponseItem(item) if manual.attempt.as_ref() == Some(&event.id) => {
                 if let ResponseItem::FunctionCall { call_id, .. }
-                | ResponseItem::CustomToolCall { call_id, .. } = &item.item
+                | ResponseItem::CustomToolCall { call_id, .. }
+                | ResponseItem::ApplyPatchCall { call_id, .. } = &item.item
                 {
                     manual.observed_calls.insert(call_id.clone());
+                } else if let ResponseItem::ShellCall {
+                    provider_fields, ..
+                } = &item.item
+                {
+                    if let Some(id) = provider_fields.get("call_id").and_then(Value::as_str) {
+                        manual.observed_calls.insert(id.to_owned());
+                    }
                 }
             }
             EventMsg::RawResponseCompleted(_) if manual.attempt.as_ref() == Some(&event.id) => {
@@ -990,7 +1184,21 @@ impl PythonTools {
         }
     }
 
-    pub(crate) fn record_manual_receipt(&self, key: &PendingKey, response: DynamicToolResponse) {
+    pub(crate) fn record_manual_receipt(
+        &self,
+        key: &PendingKey,
+        response: DynamicToolResponse,
+        native: Option<ResponseItem>,
+    ) {
+        let item = native
+            .filter(|item| {
+                matches!(
+                    item,
+                    ResponseItem::ShellCallOutput { .. }
+                        | ResponseItem::ApplyPatchCallOutput { .. }
+                )
+            })
+            .unwrap_or_else(|| PythonOutput(response.clone()).receipt(key));
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         if let Some((frame, keys)) = manual.restored.as_mut() {
             if keys.remove(key).is_some() {
@@ -1003,10 +1211,9 @@ impl PythonTools {
                         FreshTerminalReceipts::record(&mut frame.fresh, generation, key);
                     }
                 }
-                frame.accepted_replies.insert(
-                    key.call.clone(),
-                    Receipt::Native(PythonOutput(response).receipt(key)),
-                );
+                frame
+                    .accepted_replies
+                    .insert(key.call.clone(), Receipt::Native(item));
                 return;
             }
         }
@@ -1023,10 +1230,9 @@ impl PythonTools {
             return;
         }
         manual.receipts.retain(|key_, _| key_.turn == key.turn);
-        manual.receipts.insert(
-            key.clone(),
-            Receipt::Provisional(PythonOutput(response).receipt(key)),
-        );
+        manual
+            .receipts
+            .insert(key.clone(), Receipt::Provisional(item));
     }
 
     pub(crate) fn has_restored_manual(&self) -> bool {
@@ -1194,6 +1400,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    executor_tools: None,
                     client_search: None,
                     original_payload: self.resolve_generation(key.reply.generation).and_then(
                         |generation| {
@@ -1265,6 +1472,17 @@ impl PythonTools {
             .iter()
             .position(|entry| entry.name.clone().with_default_namespace() == name)
             .context("manual tool absent from captured source catalog")?;
+        ensure!(
+            matches!(
+                &generation.entries[slot].spec,
+                ToolSpec::ApplicationShell { .. }
+            ) == call.shell,
+            "manual call kind differs from its current declaration"
+        );
+        ensure!(
+            matches!(&generation.entries[slot].spec, ToolSpec::ApplyPatch {}) == call.patch,
+            "manual patch kind differs from its current declaration"
+        );
         ensure!(
             generation.manual_slots.as_ref().map_or_else(
                 || manual.slots.contains(&name),
@@ -1338,6 +1556,8 @@ impl PythonTools {
             return Ok(None);
         }
         let mut frame = Continuation {
+            pending_input: Vec::new(),
+            staged_retry: false,
             model_settings_override: history
                 .context
                 .as_ref()
@@ -1550,7 +1770,8 @@ impl PythonTools {
                 .accepted_replies
                 .keys()
                 .all(|id| frame.reply_order.contains(id))
-                && !expected.is_empty()
+                && !frame.reply_order.is_empty()
+                && expected.is_empty() == frame.staged_retry
                 && expected.len() == frame.pending_manual.len(),
             "manual checkpoint has invalid pending/result partition"
         );
@@ -1559,7 +1780,40 @@ impl PythonTools {
                 expected.call_id == pending.call_id
                     && expected.name == pending.name
                     && expected.namespace == pending.namespace
-                    && expected.arguments == pending.arguments,
+                    && expected.arguments == pending.arguments
+                    && expected.custom == pending.custom
+                    && expected.shell == pending.shell
+                    && expected.patch == pending.patch
+                    && (!(pending.shell || pending.patch)
+                        || pending
+                            .effective_arguments
+                            .as_ref()
+                            .is_none_or(|arguments| {
+                                let Ok(value) = serde_json::from_str::<Value>(arguments) else {
+                                    return false;
+                                };
+                                let Ok(mut original) =
+                                    serde_json::from_str::<Value>(&pending.arguments)
+                                else {
+                                    return false;
+                                };
+                                if value
+                                    .get("internal_chat_message_metadata_passthrough")
+                                    .is_none()
+                                {
+                                    original
+                                        .as_object_mut()
+                                        .expect("canonical Shell call")
+                                        .remove("internal_chat_message_metadata_passthrough");
+                                }
+                                if pending.patch {
+                                    value.get("type") == original.get("type")
+                                        && value.get("call_id") == original.get("call_id")
+                                        && value.get("operation") == original.get("operation")
+                                } else {
+                                    value == original
+                                }
+                            })),
                 "manual pending call differs from original history"
             );
         }
@@ -1614,8 +1868,17 @@ impl PythonTools {
                     ResponseItem::FunctionCallOutput {
                         call_id: Some(id), ..
                     }
-                    | ResponseItem::CustomToolCallOutput { call_id: id, .. } => {
+                    | ResponseItem::CustomToolCallOutput { call_id: id, .. }
+                    | ResponseItem::ApplyPatchCallOutput { call_id: id, .. } => {
                         return !later.contains(id.as_str());
+                    }
+                    ResponseItem::ShellCallOutput {
+                        provider_fields, ..
+                    } => {
+                        return provider_fields
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .is_none_or(|id| !later.contains(id));
                     }
                     _ => {}
                 },
@@ -1634,6 +1897,7 @@ impl PythonTools {
         mut frame: Continuation,
         raw: &Value,
     ) -> Result<Value> {
+        frame.staged_items()?;
         let history = history(raw)?;
         if let Some(outcomes) = &frame.tool_outcomes {
             outcomes.validate(
@@ -1686,6 +1950,23 @@ impl PythonTools {
         } else {
             self.snapshot()
         };
+        if !frame.pending_input.is_empty() {
+            let terminal = history.calls.iter().any(|call| {
+                let name = ToolName::new(call.namespace.clone(), call.name.clone())
+                    .with_default_namespace();
+                generation.terminal_slots.iter().any(|slot| {
+                    generation.entries[*slot]
+                        .name
+                        .clone()
+                        .with_default_namespace()
+                        == name
+                })
+            });
+            ensure!(
+                !terminal,
+                "Staged input requires a model continuation after the manual replies"
+            );
+        }
         frame.generation = Some(generation.clone());
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         ensure!(
@@ -1760,12 +2041,31 @@ impl PythonTools {
     ) -> Result<()> {
         self.check_restored_manual(owner, &key)?;
         let success = response.success;
-        let receipt = Receipt::Native(PythonOutput(response).receipt(&key));
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         let (frame, keys) = manual
             .restored
             .as_mut()
             .context("manual continuation expired")?;
+        let call = frame
+            .pending_manual
+            .iter()
+            .find(|call| call.call_id == key.call)
+            .context("manual request has no original call")?;
+        let receipt = Receipt::Native(if call.shell {
+            crate::local_reconciliation::shell_receipt(
+                &serde_json::from_str::<ResponseItem>(&call.arguments)?,
+                response,
+                &key.turn,
+            )?
+        } else if call.patch {
+            crate::local_reconciliation::application_patch_receipt(
+                &serde_json::from_str::<ResponseItem>(&call.arguments)?,
+                response,
+                &key.turn,
+            )?
+        } else {
+            PythonOutput(response).receipt(&key)
+        });
         ensure!(
             keys.remove(&key).is_some(),
             "manual request already answered"
@@ -2094,6 +2394,8 @@ mod canonical_result_tests {
             namespace: None,
             arguments: "{}".into(),
             custom: false,
+            shell: false,
+            patch: false,
             approval_required: false,
             effective_arguments: None,
         }
@@ -2145,5 +2447,79 @@ mod canonical_result_tests {
         assert!(legacy.envelope(&call("legacy"), "turn").is_ok());
         let text: Receipt = serde_json::from_value(json!("old text")).unwrap();
         assert!(text.envelope(&call("legacy"), "turn").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod staged_input_tests {
+    use super::*;
+    fn frame(items: Vec<Value>) -> Continuation {
+        serde_json::from_value(json!({"turn_id":"turn","reply_order":["pending"],"accepted_replies":{},"pending_manual":[{"call_id":"pending","name":"lookup","arguments":"{}"}],"pending_input":items})).unwrap()
+    }
+    #[test]
+    fn staged_input_keeps_duplicate_occurrences() {
+        let item = json!({"type":"message","role":"user","content":[{"type":"input_text","text":"repeat"}]});
+        assert_eq!(
+            frame(vec![item.clone(), item])
+                .staged_items()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+    #[test]
+    fn staged_input_rejects_unknown_items_and_manual_identity_reuse() {
+        assert!(
+            frame(vec![json!({"type":"unknown_item"})])
+                .staged_items()
+                .is_err()
+        );
+        assert!(
+            frame(vec![
+                json!({"type":"function_call_output","call_id":"pending","output":"forged"})
+            ])
+            .staged_items()
+            .is_err()
+        );
+    }
+}
+
+struct StagedRetry {
+    turn: String,
+    continuation: Value,
+    batch: codex_extension_api::StagedInputBatch,
+}
+impl PythonTools {
+    pub(crate) fn retain_staged_retry(
+        state: &crate::engine::ThreadState,
+        frame: &Continuation,
+        batch: codex_extension_api::StagedInputBatch,
+    ) -> Result<()> {
+        let mut continuation = serde_json::to_value(frame)?;
+        continuation["staged_retry"] = Value::Bool(true);
+        state.thread.thread_extension_data().insert(StagedRetry {
+            turn: frame.turn_id.clone(),
+            continuation,
+            batch,
+        });
+        Ok(())
+    }
+    pub(crate) fn staged_retry(
+        state: &crate::engine::ThreadState,
+        checkpoint: &Value,
+    ) -> Option<Value> {
+        let retry = state.thread.thread_extension_data().get::<StagedRetry>()?;
+        if !retry.batch.is_pending() {
+            return None;
+        }
+        let last = checkpoint["history"]
+            .as_array()?
+            .iter()
+            .rev()
+            .find(|record| {
+                record["type"] == "event_msg" && record["payload"]["type"] == "task_started"
+            })?["payload"]["turn_id"]
+            .as_str()?;
+        (last == retry.turn).then(|| retry.continuation.clone())
     }
 }

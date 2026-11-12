@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
@@ -452,7 +452,7 @@ it('keeps the completed role tool result across a root manual checkpoint', async
 }, 30000);
 
 it('retires the exact managed child when its parent turn is cancelled', async () => {
-  const started = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<string>();
   const release = Promise.withResolvers<void>();
   const server = new ModelServer([
     [
@@ -462,8 +462,11 @@ it('retires the exact managed child when its parent turn is cancelled', async ()
         { namespace: 'collaboration', callId: 'managed' },
       ),
     ],
-    async () => {
-      started.resolve();
+    async (request) => {
+      const metadata = request.client_metadata as Record<string, string>;
+      started.resolve(
+        String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id),
+      );
       await release.promise;
       return [message('abandoned child result')];
     },
@@ -503,10 +506,16 @@ it('retires the exact managed child when its parent turn is cancelled', async ()
       }),
     });
     const root = await session.submit('Research the record.');
-    await started.promise;
-    const [child] = await Array.fromAsync(session.subagents());
-    if (!child?.turn) throw new Error('Expected the exact managed child turn');
-    const outcome = child.turn.wait().catch((error: unknown) => error);
+    const childId = await started.promise;
+    // The HTTP request can arrive before the native reader publishes TurnStarted.
+    const childTurn = await vi.waitUntil(
+      async () => {
+        const children = await Array.fromAsync(session.subagents());
+        return children.find(({ id }) => id === childId)?.turn ?? false;
+      },
+      { timeout: 3000 },
+    );
+    const outcome = childTurn.wait().catch((error: unknown) => error);
     await root.cancel({ mode: 'force' });
     expect(await outcome).toBeInstanceOf(NativeError);
     const next = await session.submit('Continue without the tool.');
@@ -789,7 +798,31 @@ it('captures a reloaded child when its row is issued by an open iterator', async
       await finishChildren(source, 'Start both workers.', 2);
       state = await source.saveState();
     }
-    await using restored = await agent.session({ environment, state });
+    const savedChild = state.descendants[0]!;
+    const context = savedChild.history.find(
+      (item) =>
+        item.type === 'turn_context' &&
+        (item.payload as JsonObject).sdk_receipt,
+    )!.payload as JsonObject;
+    const receipt = context.sdk_receipt as JsonObject;
+    expect(receipt.thread_id).toBe(savedChild.thread_id);
+    expect(receipt).not.toHaveProperty('sandbox_memory_input_admitted');
+    const expectedReceipt = structuredClone(receipt);
+    receipt.sandbox_memory_input_admitted = true;
+
+    await using restored = await agent.session({
+      environment,
+      state: parseSessionState(JSON.stringify(state)),
+    });
+    const roundTrip = await restored.saveState();
+    const restoredContext = roundTrip.descendants
+      .find((child) => child.thread_id === savedChild.thread_id)
+      ?.history.find(
+        (item) =>
+          item.type === 'turn_context' &&
+          (item.payload as JsonObject).turn_id === context.turn_id,
+      )?.payload as JsonObject | undefined;
+    expect(restoredContext?.sdk_receipt).toEqual(expectedReceipt);
     const iterator = restored.subagents();
     const first = (await iterator.next()).value!;
     expect(first.isLive).toBe(false);

@@ -58,11 +58,7 @@ export class SandboxWorkspaceScope {
     if (this.cwd === undefined) {
       return path;
     }
-    const normalizedRoot = normalizeWorkspaceRoot(workspaceRoot);
-    const normalizedPath = normalizeWorkspaceRelativeResourcePath(path);
-    return normalizedPath
-      ? joinPosixPath(normalizedRoot, normalizedPath)
-      : normalizedRoot;
+    return modelWorkspaceResourcePath(workspaceRoot, path);
   }
 
   absoluteCwd(workspaceRoot: string): string | undefined {
@@ -232,4 +228,16 @@ function normalizeSandboxPath(path: string, originalPath: string): string {
     );
   }
   return normalizePosixPath(path);
+}
+
+/** Absolute model-facing resource path under the declared workspace root. */
+export function modelWorkspaceResourcePath(
+  workspaceRoot: string,
+  path: string,
+): string {
+  const normalizedRoot = normalizeWorkspaceRoot(workspaceRoot);
+  const normalizedPath = normalizeWorkspaceRelativeResourcePath(path);
+  return normalizedPath
+    ? joinPosixPath(normalizedRoot, normalizedPath)
+    : normalizedRoot;
 }

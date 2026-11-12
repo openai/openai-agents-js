@@ -1,4 +1,9 @@
-import { Handoff } from './handoffs';
+import {
+  captureProviderHistory,
+  type ProviderHistory,
+} from './provider-history';
+import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
+import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
 import {
   ResponsesCompaction,
   responsesCompaction,
@@ -11,6 +16,7 @@ import {
 } from './managed-workspace';
 import {
   captureRealtimeConfig,
+  hasRealtimeAgentConfiguration,
   isRealtimeHandoff,
   realtimeHandoffTool,
   type RealtimeAgentConfig,
@@ -62,6 +68,7 @@ import {
   assertOutputState,
   sessionStateSchema,
   isManualSessionState,
+  isOutputAwareState,
   isBudgetedManualSessionState,
   readCheckpointSelections,
 } from './state';
@@ -85,8 +92,8 @@ import {
   type OutputSpec,
   type PreparedOutput,
 } from './output';
-import { webSearchName } from './web-search';
-import { hostedToolSpecs } from './hosted-tools';
+import { webSearchConfig, webSearchName } from './web-search';
+import { hostedToolSpecs, hostedToolType } from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
@@ -123,6 +130,7 @@ import { splitToolDeclarations } from './tool-declarations';
 import {
   NativeProvider,
   captureModelSettings,
+  requestTransportWire,
   type ModelSettings,
   type ProviderLease,
 } from './provider';
@@ -131,7 +139,10 @@ import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
-import { validateCustomStorageCompatibility } from './opening-compatibility';
+import {
+  validateCustomStorageCompatibility,
+  validatePrepareRequestCompatibility,
+} from './opening-compatibility';
 import { captureReconciledCalls } from './local-recovery';
 import {
   captureTools,
@@ -183,6 +194,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
   handoffs?: readonly (
     | Agent<Context, Output>
     | Handoff<Context, Output>
+    | DecisionHandoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
@@ -198,6 +210,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
     : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Select current provider-owned HTTP history; restore requires its exact accepted anchor. */
+  providerHistory?: ProviderHistory;
   /** Restore has been requiring the original trusted limits and effective missing-usage policy. */
   resumeBudget?: RunBudget;
   /** Format original function argument/body failures; omission preserves propagation.
@@ -482,6 +496,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'update'
   | 'interrupt'
   | 'historySnapshot'
+  | 'flushMemory'
   | 'transactHistory'
   | 'modelContext'
   | 'compact'
@@ -527,6 +542,7 @@ export class Agent<Context = undefined, Output = string> {
   handoffs: readonly (
     | Agent<Context, Output>
     | Handoff<Context, Output>
+    | DecisionHandoff<Context, Output>
     | RealtimeHandoff<Context>
     | (() => Agent<Context, Output>)
   )[];
@@ -607,6 +623,7 @@ export class Agent<Context = undefined, Output = string> {
         (target) =>
           !(target instanceof Agent) &&
           !(target instanceof Handoff) &&
+          !(target instanceof DecisionHandoff) &&
           !isRealtimeHandoff(target) &&
           typeof target !== 'function',
       )
@@ -615,6 +632,16 @@ export class Agent<Context = undefined, Output = string> {
         'handoffs must contain native Agents or synchronous target resolvers',
       );
     this.programmaticToolCalling = options.programmaticToolCalling ?? false;
+  }
+
+  /**
+   * A configured child has been retaining its own provider, tools and guards.
+   * Pending child approvals have been requiring live replies.
+   */
+  asTool(
+    options: AgentAsToolOptions<Output>,
+  ): import('./tools').FunctionTool<Context> {
+    return createAgentTool(this, options);
   }
 
   /**
@@ -713,6 +740,7 @@ export class Agent<Context = undefined, Output = string> {
       ...(managedOpening
         ? { state: managedOpening.state, [managedWorkspaceRestore]: true }
         : {}),
+      providerHistory: captureProviderHistory(suppliedOptions?.providerHistory),
       parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
     } as OwnedSessionOptions<Context>;
     if (
@@ -840,7 +868,10 @@ export class Agent<Context = undefined, Output = string> {
     input: UserInput | null,
     ...args: RunArguments<Context>
   ): Promise<Completed<Output>> {
-    const options = { ...(args[0] ?? {}) };
+    const options = {
+      ...(args[0] ?? {}),
+      providerHistory: captureProviderHistory(args[0]?.providerHistory),
+    };
     const modelOverride = validateModelOverride(options.modelOverride);
     const modelSettingsOverride =
       options.modelSettingsOverride === undefined
@@ -912,6 +943,7 @@ export class Agent<Context = undefined, Output = string> {
         : undefined;
     const errorInput = captureErrorDetails ? structuredClone(input) : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
+      providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
       ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
@@ -967,6 +999,7 @@ export class Agent<Context = undefined, Output = string> {
       options.prepareRequest === undefined &&
       modelOverride === undefined &&
       modelSettingsOverride === undefined &&
+      options.providerHistory === undefined &&
       options.onInteraction === undefined &&
       options.context === undefined &&
       (options as OwnedSessionOptions<Context>)[outputSelection] === undefined
@@ -1136,6 +1169,16 @@ export class Agent<Context = undefined, Output = string> {
     const provider = opening
       ? opening.provider
       : (openingProvider ?? this.provider);
+    if (
+      options.providerHistory !== undefined &&
+      provider.modelBackend !== undefined
+    )
+      throw new TypeError(
+        'Provider history requires a supported owning Responses transport',
+      );
+    const historyHttpOnly =
+      options.providerHistory !== undefined &&
+      provider.supportsWebsockets === undefined;
     const model = opening ? opening.model : (openingModel ?? this.model);
     const settings = opening
       ? opening.settings
@@ -1294,36 +1337,27 @@ export class Agent<Context = undefined, Output = string> {
       const prepareRequest = (options as OwnedSessionOptions<Context>)[
         ownedRun
       ]!.prepareRequest;
-      if (typeof prepareRequest !== 'function')
-        throw new TypeError('prepareRequest must be callable');
-      if (output.repair)
-        throw new TypeError(
-          'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
-        );
-      if (
-        provider.responseMode !== 'buffered' &&
-        (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
-          false
-      )
-        throw new TypeError(
-          'prepareRequest requires NativeProvider({ supportsWebsockets: false })',
-        );
-      if (
-        programmaticToolCalling ||
-        environmentInput ||
-        declarations.nativeAgents ||
-        declarations.nativeGoals ||
-        declarations.checklist ||
-        declarations.webSearch ||
-        declarations.hostedTools.length > 0 ||
-        declarations.tools.some((tool) => tool.deferLoading) ||
-        declarations.mcp.some(
-          (tool) => tool.deferLoading || isHostedRegistration(tool),
-        )
-      )
-        throw new TypeError(
-          'prepareRequest supports only direct root eager function and ordinary MCP tools',
-        );
+      validatePrepareRequestCompatibility(
+        prepareRequest,
+        !!output.repair,
+        !historyHttpOnly &&
+          provider.responseMode !== 'buffered' &&
+          (provider.supportsWebsockets ?? provider.baseUrl === undefined) !==
+            false,
+        !!(
+          programmaticToolCalling ||
+          environmentInput ||
+          declarations.nativeAgents ||
+          declarations.nativeGoals ||
+          declarations.checklist ||
+          declarations.webSearch ||
+          declarations.hostedTools.length > 0 ||
+          declarations.tools.some((tool) => tool.deferLoading) ||
+          declarations.mcp.some(
+            (tool) => tool.deferLoading || isHostedRegistration(tool),
+          )
+        ),
+      );
     }
     const { instructions, files } =
       !opening && options.instructionFiles !== undefined
@@ -1462,7 +1496,8 @@ export class Agent<Context = undefined, Output = string> {
     assertOutputState(state, activeOutput.identity);
     if (
       (activeOutput.prompt || activeOutput.schema != null) &&
-      state?.format_version === 3
+      isManualSessionState(state) &&
+      !isOutputAwareState(state)
     )
       throw new TypeError(
         'Cannot restore a legacy pending manual checkpoint with structured or prompted output',
@@ -1484,7 +1519,7 @@ export class Agent<Context = undefined, Output = string> {
         : []),
       ...(search ? [webSearchName(search)] : []),
       ...declarations.hostedTools.map((tool) => ({
-        name: tool.kind,
+        name: hostedToolType(tool),
         namespace: 'functions',
       })),
       ...declarations.tools
@@ -1578,30 +1613,8 @@ export class Agent<Context = undefined, Output = string> {
             },
           }
         : {}),
-      web_search: search?.mode ?? 'disabled',
-      'features.standalone_web_search': search?.route === 'standalone',
+      ...webSearchConfig(search),
     };
-    if (search?.searchContextSize !== undefined)
-      config['tools.web_search.context_size'] = search.searchContextSize;
-    if (search?.allowedDomains !== undefined)
-      config['tools.web_search.allowed_domains'] = [...search.allowedDomains];
-    if (search?.blockedDomains !== undefined)
-      config['tools.web_search.blocked_domains'] = [...search.blockedDomains];
-    if (search?.location !== undefined)
-      config['tools.web_search.location'] = { ...search.location };
-    if (search?.searchContentTypes !== undefined)
-      config['tools.web_search.search_content_types'] = [
-        ...search.searchContentTypes,
-      ];
-    if (search?.imageSettings !== undefined)
-      config['tools.web_search.image_settings'] = {
-        ...(search.imageSettings.maxResults === undefined
-          ? {}
-          : { max_results: search.imageSettings.maxResults }),
-        ...(search.imageSettings.caption === undefined
-          ? {}
-          : { caption: search.imageSettings.caption }),
-      };
     if (settings) {
       if (settings.reasoningEffort !== undefined)
         config.model_reasoning_effort = settings.reasoningEffort;
@@ -1624,6 +1637,21 @@ export class Agent<Context = undefined, Output = string> {
     ];
 
     const native = graphNative ?? (await binding());
+    if (options.providerHistory?.type === 'previous_response' && graph) {
+      const pending = [graph.rootId];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const id = pending.pop()!;
+        if (visited.has(id)) continue;
+        visited.add(id);
+        const profile = graph.profiles.get(id)!.profile;
+        if (profile.declaration.modelSettings?.store !== true)
+          throw new TypeError(
+            'Every reachable handoff profile requires current store=true',
+          );
+        pending.push(...Object.values(profile.handoffs));
+      }
+    }
     const completedGraph = graph
       ? Object.freeze({
           ...graph,
@@ -1718,6 +1746,7 @@ export class Agent<Context = undefined, Output = string> {
           await nativeAgentConfig(nativeAgents, instructions, home.codex_home),
         );
       if (projectGuidance) config['features.view_image'] = true;
+      const startupTransport = requestTransportWire(settings);
       const setup: SessionSetup = {
         name: name ?? '',
         instructions,
@@ -1738,6 +1767,7 @@ export class Agent<Context = undefined, Output = string> {
           'model_providers.native_agent': {
             ...(lease.config['model_providers.native_agent'] as JsonObject),
             supports_standalone_web_search: search?.route === 'standalone',
+            ...(historyHttpOnly ? { supports_websockets: false } : {}),
           },
         },
         runtime: {
@@ -1776,6 +1806,12 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          ...(options.providerHistory === undefined
+            ? {}
+            : { _provider_history: options.providerHistory }),
+          ...(startupTransport === undefined
+            ? {}
+            : { _sdk_request_transport: startupTransport }),
           ...(completedGraph
             ? {
                 _agent_profiles: {
@@ -1931,10 +1967,11 @@ export class Agent<Context = undefined, Output = string> {
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
+        providerHistory: options.providerHistory,
         hostedPrompt,
         hostedPromptControls: promptControls,
         checklist: declarations.checklist,
-        websocketsAllowed: lease.websocketsAllowed,
+        websocketsAllowed: lease.websocketsAllowed && !historyHttpOnly,
         onClose: lease.release,
         managedWorkspace: environmentOwner.managedWorkspace,
         [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[
@@ -2111,6 +2148,7 @@ export function captureAgentProfiles<Context, Output>(
   captureProvider = true,
   idPrefix = 'agent_',
   rootPromptControls?: JsonObject,
+  realtimeGraph = hasRealtimeAgentConfiguration(rootDeclaration),
 ): readonly CapturedAgentProfile<Context, Output>[] {
   const wireIdentity = (agent: Agent<Context, Output>) => {
     const spec = agent.outputType;
@@ -2209,12 +2247,55 @@ export function captureAgentProfiles<Context, Output>(
       );
     const targets: Record<string, string> = Object.create(null);
     const handoffCallbacks: Record<string, number> = Object.create(null);
+    const decisionHandoffs: Record<
+      string,
+      Readonly<{ slot: number; targets: readonly string[] }>
+    > = Object.create(null);
     const handoffOptions: Record<
       string,
       RealtimeHandoff<Context>
     > = Object.create(null);
     const callbackTools: import('./tools').FunctionTool<Context>[] = [];
     for (const reference of declaration.handoffs) {
+      if (reference instanceof DecisionHandoff) {
+        if (realtimeGraph || hasRealtimeAgentConfiguration(declaration))
+          throw new TypeError(
+            'DecisionHandoff supports text Agents; use realtimeHandoff for Realtime routing',
+          );
+        const name = reference.name;
+        if (
+          Object.hasOwn(targets, name) ||
+          Object.hasOwn(decisionHandoffs, name) ||
+          capturedTools.some(
+            (entry) =>
+              toolIdentity(entry).namespace === 'functions' &&
+              entry.name === name,
+          )
+        )
+          throw new TypeError('Duplicate or conflicting DecisionHandoff name');
+        const roster: Record<string, string> = Object.create(null);
+        for (const [choice, candidate] of Object.entries(reference.targets)) {
+          if (!(candidate instanceof Agent))
+            throw new TypeError(
+              'DecisionHandoff targets must be native Agents',
+            );
+          let targetIndex = indices.get(candidate);
+          if (targetIndex === undefined) {
+            targetIndex = agents.length;
+            indices.set(candidate, targetIndex);
+            agents.push(candidate);
+          }
+          roster[choice] = `${idPrefix}${targetIndex}`;
+        }
+        decisionHandoffs[name] = Object.freeze({
+          slot: capturedTools.length + callbackTools.length,
+          targets: Object.freeze([...new Set(Object.values(roster))]),
+        });
+        callbackTools.push(
+          decisionHandoffTool(reference, Object.freeze(roster)),
+        );
+        continue;
+      }
       let target: Agent<Context, Output>;
       if (reference instanceof Handoff) target = reference.target;
       else if (isRealtimeHandoff(reference)) target = reference.agent;
@@ -2254,6 +2335,8 @@ export function captureAgentProfiles<Context, Output>(
                 .replace(/[^a-zA-Z0-9_-]/g, '_')
                 .toLowerCase()
                 .slice(0, 64);
+      if (Object.hasOwn(decisionHandoffs, name))
+        throw new TypeError('Duplicate or conflicting DecisionHandoff name');
       if (!/^[a-zA-Z0-9_-]{1,64}$/.test(name))
         throw new TypeError('Invalid Realtime handoff name');
       let index = indices.get(target);
@@ -2318,6 +2401,7 @@ export function captureAgentProfiles<Context, Output>(
         declaration,
         handoffs: Object.freeze(targets),
         handoffCallbacks: Object.freeze(handoffCallbacks),
+        decisionHandoffs: Object.freeze(decisionHandoffs),
         handoffOptions: Object.freeze(handoffOptions),
         callbackTools: Object.freeze(callbackTools),
         hostedPromptControls:
@@ -2390,7 +2474,14 @@ export function captureRealtimeAgentGraph(
     instructions: candidate.instructions,
     provider: opening.provider,
   });
-  const profiles = captureAgentProfiles(candidate, declaration, true, idPrefix);
+  const profiles = captureAgentProfiles(
+    candidate,
+    declaration,
+    true,
+    idPrefix,
+    undefined,
+    true,
+  );
   return captureProfileRuntimes(
     profiles,
     captureTools(splitToolDeclarations(declaration.tools).tools),

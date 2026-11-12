@@ -293,3 +293,55 @@ async fn provider_failure_wrapper_reports_the_original_frame() {
     assert!(tools.callback_operation("root", &callback, "release"));
     assert!(produce.await.is_err());
 }
+
+#[test]
+fn borrowed_cache_write_usage_preserves_availability() {
+    let generic: ModelReply = serde_json::from_value(json!({
+        "response_id": "sdk-id", "output": []
+    }))
+    .unwrap();
+    assert!(generic.received_cache_write_usage.is_none());
+    for count in [
+        Value::Null,
+        json!(0),
+        json!(4),
+        json!(9_007_199_254_740_991_i64),
+    ] {
+        let reply: ModelReply = serde_json::from_value(json!({
+            "response_id": "sdk-id", "output": [],
+            "received_cache_write_usage": {"count": count.clone()}
+        }))
+        .unwrap();
+        assert_eq!(
+            reply.received_cache_write_usage.unwrap().count,
+            count.as_i64()
+        );
+    }
+}
+
+#[test]
+fn borrowed_omitted_usage_remains_an_empty_object_in_observation_wire() {
+    let reply: ModelReply = serde_json::from_value(json!({
+        "response_id": "sdk-id", "output": [],
+        "received_cache_write_usage": {"count": null}
+    }))
+    .unwrap();
+    let received = reply.received_cache_write_usage.unwrap();
+    let observation = codex_protocol::protocol::ResponseObservation {
+        response_id: None,
+        upstream_request_id: None,
+        status: codex_protocol::protocol::ResponseObservationStatus::Completed,
+        incomplete_reason: None,
+        usage: Some(codex_protocol::protocol::ReceivedResponseUsage {
+            cache_write_input_tokens: received.count,
+            ..Default::default()
+        }),
+    };
+    let encoded = serde_json::to_value(observation).unwrap();
+    assert_eq!(encoded["usage"], json!({}));
+    assert!(encoded["response_id"].is_null());
+    let decoded: codex_protocol::protocol::ResponseObservation =
+        serde_json::from_value(encoded).unwrap();
+    assert!(decoded.usage.is_some());
+    assert_eq!(decoded.usage.unwrap().cache_write_input_tokens, None);
+}

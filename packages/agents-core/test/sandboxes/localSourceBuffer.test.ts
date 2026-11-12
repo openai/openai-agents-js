@@ -63,3 +63,60 @@ test.each([-1, 2, Number.NaN])(
     ).rejects.toMatchObject({ code: 'EIO' });
   },
 );
+
+test('rejects a known file above the budget before reading', async () => {
+  let reads = 0;
+  await expect(
+    readLocalSourceBuffer(
+      5,
+      async () => {
+        reads++;
+        return 0;
+      },
+      4,
+    ),
+  ).rejects.toMatchObject({ code: 'ERR_FS_FILE_TOO_LARGE' });
+  expect(reads).toBe(0);
+});
+
+test('bounds actual reads of an unknown-size growing file', async () => {
+  let bytes = 0;
+  await expect(
+    readLocalSourceBuffer(
+      undefined,
+      async (target) => {
+        target.fill(0x41);
+        bytes += target.length;
+        return target.length;
+      },
+      4,
+    ),
+  ).rejects.toMatchObject({ code: 'ERR_FS_FILE_TOO_LARGE' });
+  expect(bytes).toBe(5);
+});
+
+test('accepts exactly the byte budget and retains initial-size snapshot semantics', async () => {
+  expect(
+    Buffer.from(
+      await readLocalSourceBuffer(4, reader(Buffer.from('SAFE more')), 4),
+    ).toString(),
+  ).toBe('SAFE');
+  expect(
+    Buffer.from(
+      await readLocalSourceBuffer(undefined, reader(Buffer.from('SAFE')), 4),
+    ).toString(),
+  ).toBe('SAFE');
+});
+
+test.each([100, 0, undefined])(
+  'reads only the requested metadata prefix with reported size %s',
+  async (size) => {
+    const actual = await readLocalSourceBuffer(
+      size,
+      reader(Buffer.from('SAFE private tail')),
+      4,
+      true,
+    );
+    expect(Buffer.from(actual).toString()).toBe('SAFE');
+  },
+);

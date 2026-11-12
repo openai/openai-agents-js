@@ -75,6 +75,16 @@ describe.skipIf(process.platform === 'win32')(
       await rm(root, { recursive: true, force: true });
     });
 
+    it('bounds directory enumeration in the provider before returning entries', async () => {
+      await expect(
+        session.listDir({ path: 'nested', maxEntries: 1 }),
+      ).rejects.toThrow(/entry limit/);
+      expect(
+        await session.listDir({ path: 'nested', maxEntries: 2 }),
+      ).toHaveLength(2);
+      expect(await session.listDir({ path: 'nested' })).toHaveLength(2);
+    });
+
     // Inject a swap at an OS boundary inside the real worker, while calling the public API.
     // This avoids scheduler-dependent loops and keeps every filesystem primitive real.
     function workerHook(source: string) {
@@ -1682,5 +1692,39 @@ os.mkfifo(${JSON.stringify(note)})
         await chmod(nested, 0o755);
       }
     });
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'writes complete resource-owned text and byte files',
+  async () => {
+    const session = await new UnixLocalSandboxClient().create(new Manifest());
+    try {
+      await session.writeFileNoFollow!({
+        path: 'memories/value.txt',
+        entry: { type: 'file', content: 'initial value' },
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'memories/value.txt'),
+          'utf8',
+        ),
+      ).toBe('initial value');
+      await session.writeFileNoFollow!({
+        path: 'memories/value.txt',
+        entry: {
+          type: 'file',
+          content: new TextEncoder().encode('updated value\n'),
+        },
+      });
+      expect(
+        await readFile(
+          join(session.state.workspaceRootPath, 'memories/value.txt'),
+          'utf8',
+        ),
+      ).toBe('updated value\n');
+    } finally {
+      await session.close();
+    }
   },
 );

@@ -21,6 +21,8 @@ import * as facadeTasks from '@openai/agents/experimental/mcp-tasks';
 import * as runtimeTasks from '@openai/agents-codex/experimental/mcp-tasks';
 import * as facadeA2A from '@openai/agents/a2a';
 import * as runtimeA2A from '@openai/agents-codex/a2a';
+import * as facadeA2AClient from '@openai/agents/a2a/client';
+import * as runtimeA2AClient from '@openai/agents-codex/a2a/client';
 import * as facadeMemory from '@openai/agents/memory';
 import * as runtimeMemory from '@openai/agents-codex/memory';
 import * as facadeArtifacts from '@openai/agents/artifacts';
@@ -50,6 +52,9 @@ const tasks: typeof facadeTasks = runtimeTasks;
 const reverseTasks: RuntimeExports<typeof runtimeTasks> = facadeTasks;
 const a2a: typeof facadeA2A = runtimeA2A;
 const reverseA2A: RuntimeExports<typeof runtimeA2A> = facadeA2A;
+const a2aClient: typeof facadeA2AClient = runtimeA2AClient;
+const reverseA2AClient: RuntimeExports<typeof runtimeA2AClient> =
+  facadeA2AClient;
 const memory: typeof facadeMemory = runtimeMemory;
 const reverseMemory: RuntimeExports<typeof runtimeMemory> = facadeMemory;
 const artifacts: typeof facadeArtifacts = runtimeArtifacts;
@@ -69,6 +74,8 @@ void [
   reverseTasks,
   a2a,
   reverseA2A,
+  a2aClient,
+  reverseA2AClient,
   memory,
   reverseMemory,
   artifacts,
