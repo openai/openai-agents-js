@@ -10,7 +10,7 @@ import {
   webSearch,
   type WebSearch,
 } from '../../src';
-import { splitToolDeclarations } from '../../src/runtime/mcp';
+import { splitToolDeclarations } from '../../src/runtime/tool-declarations';
 import { Session as OwnedSession } from '../../src/runtime/session';
 import { captureTools } from '../../src/runtime/tools';
 import * as native from '../../src/runtime/binding';

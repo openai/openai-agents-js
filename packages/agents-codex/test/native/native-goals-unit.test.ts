@@ -8,7 +8,7 @@ import {
   tool,
 } from '../../src';
 import { nativeGoal } from '../../src/runtime/goals';
-import { splitToolDeclarations } from '../../src/runtime/mcp';
+import { splitToolDeclarations } from '../../src/runtime/tool-declarations';
 import { Session } from '../../src/runtime/session';
 import { captureTools } from '../../src/runtime/tools';
 import type { Engine, NativeThread } from '../../src/runtime/binding';
