@@ -1,13 +1,14 @@
 import { groupWitness } from './retained-process-owner.mjs';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
-import { isHostedAdmission } from './retained-hosted-admission.mjs';
+import { baselineSourceCommit, isHostedAdmission, prepareHostedAdmission } from './retained-hosted-admission.mjs';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath, URL } from 'node:url';
+import { fileURLToPath, pathToFileURL, URL } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import test from 'node:test';
 import { adaptSources, assertPassed, checkedFile, hostFailures, preflight, replaceOnce, retainedAdapter, runClosed, sourceCommit, title } from './verify-alpha-retained-executor.mjs';
 
@@ -197,3 +198,71 @@ test('group signalling has been requiring the original birth and owned group', (
   assert.equal(groupWitness(original, { ...original, group: 43 }, 42), false);
   assert.equal(groupWitness(original, undefined, 42), false);
 });
+
+// Only this admission body has been running against synthetic Git sources.
+for (const mode of ['present', 'missing', 'unavailable', 'invalid', 'no-object', 'wrong-object', 'gate-closed']) {
+  test(`shallow hosted source baseline has been failing closed or recovering (${mode})`, async () => scratch(async (root) => {
+    assert.equal(baselineSourceCommit, 'd6c6d345bdf6902311fd04fd9c6366dd0cf9799f');
+    const emptyConfig = join(root, 'empty-git-config');
+    await writeFile(emptyConfig, '');
+    const env = { ...process.env, GIT_ALLOW_PROTOCOL: 'file', GIT_CONFIG_GLOBAL: emptyConfig, GIT_CONFIG_NOSYSTEM: '1' };
+    const git = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    const source = join(root, 'origin-source');
+    const origin = join(root, 'origin.git');
+    const workspace = join(root, 'checkout');
+    await mkdir(source);
+    git(source, 'init', '-q');
+    await writeFile(join(source, 'tracked.txt'), 'fixed synthetic source\n');
+    git(source, 'add', 'tracked.txt');
+    const commit = () => git(source, '-c', 'user.name=local fixture', '-c', 'user.email=fixture@invalid', 'commit', '-q', '--allow-empty', '-m', 'synthetic baseline control');
+    commit();
+    const baseline = git(source, 'rev-parse', 'HEAD');
+    commit(); commit();
+    git(root, 'clone', '-q', '--bare', source, origin);
+    const originURL = pathToFileURL(origin).href;
+    git(root, 'clone', '-q', '--depth=2', originURL, workspace);
+    assert.equal(git(workspace, 'rev-parse', '--is-shallow-repository'), 'true');
+    assert.throws(() => git(workspace, 'cat-file', '-e', baseline + '^{commit}'));
+    git(workspace, 'config', 'url.' + pathToFileURL(mode === 'unavailable' ? join(root, 'absent.git') : origin).href + '.insteadOf', 'https://github.com/openai/openai-agents-js.git');
+    if (mode === 'present') git(workspace, 'fetch', '--no-tags', '--depth=1', 'origin', baseline);
+    const sourceCommit = git(workspace, 'rev-parse', 'HEAD');
+    const trackedBlob = git(workspace, 'rev-parse', 'HEAD:tracked.txt');
+    const selectedBaseline = mode === 'invalid' ? trackedBlob : baseline;
+    const snapshot = () => ({ head: git(workspace, 'rev-parse', 'HEAD'), status: git(workspace, 'status', '--porcelain', '--untracked-files=all'), index: git(workspace, 'ls-files', '--stage'), refs: git(workspace, 'show-ref') });
+    const before = snapshot();
+    const calls = [];
+    let selectorCalls = 0;
+    const stop = new Error('synthetic baseline admitted before artifact access');
+    const context = {
+      assert, realpath, baselineSourceCommit: selectedBaseline,
+      externalBaseline: { 'tracked.txt': trackedBlob }, allowedChanges: new Set(),
+      process: { cwd: () => workspace, env: { GITHUB_ACTIONS: mode === 'gate-closed' ? 'false' : 'true', GITHUB_REPOSITORY: 'openai/openai-agents-js', EXPECTED_PLATFORM: 'linux-x64', GITHUB_SHA: sourceCommit, GITHUB_RUN_ID: '1', GITHUB_RUN_ATTEMPT: '1', GITHUB_WORKSPACE: workspace } },
+      execFileSync(command, args, options) {
+        assert.equal(command, 'git');
+        calls.push(Array.from(args));
+        if (args[0] === 'fetch' && mode === 'no-object') return '';
+        if (args[0] === 'rev-parse' && args[1] === '--verify' && mode === 'wrong-object') return sourceCommit;
+        return execFileSync(command, args, { ...options, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      },
+      nativeInputs() { selectorCalls += 1; throw stop; },
+    };
+    const prepare = runInNewContext('(' + prepareHostedAdmission.toString() + ')', context);
+    let failure;
+    try { await prepare(workspace, root); } catch (error) { failure = error; }
+    assert(failure);
+    if (mode === 'present' || mode === 'missing') {
+      assert.equal(failure, stop);
+      assert.equal(selectorCalls, 1);
+      assert.equal(git(workspace, 'rev-parse', '--verify', baseline + '^{commit}'), baseline);
+    } else {
+      assert.notEqual(failure, stop);
+      assert.equal(selectorCalls, 0);
+      assert(!calls.some((args) => args[0] === 'diff'));
+    }
+    const fetches = calls.filter((args) => args[0] === 'fetch');
+    assert.deepEqual(fetches, mode === 'present' || mode === 'gate-closed' ? [] : [['fetch', '--no-tags', '--depth=1', 'https://github.com/openai/openai-agents-js.git', selectedBaseline]]);
+    if (mode === 'gate-closed') assert.equal(calls.length, 0);
+    assert.deepEqual(snapshot(), before);
+    assert.equal(await readFile(join(workspace, 'tracked.txt'), 'utf8'), 'fixed synthetic source\n');
+  }));
+}

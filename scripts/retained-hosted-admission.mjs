@@ -42,6 +42,12 @@ export async function prepareHostedAdmission(checkout, evidence) {
   assert.equal(git('status', '--porcelain', '--untracked-files=all'), '', 'Clean hosted source required');
   for (const [path, blob] of Object.entries(externalBaseline))
     assert.equal(git('rev-parse', sourceCommit + ':' + path), blob, `External baseline drift: ${path}`);
+  try {
+    git('cat-file', '-e', baselineSourceCommit + '^{commit}');
+  } catch {
+    git('fetch', '--no-tags', '--depth=1', 'https://github.com/openai/openai-agents-js.git', baselineSourceCommit);
+  }
+  assert.equal(git('rev-parse', '--verify', baselineSourceCommit + '^{commit}'), baselineSourceCommit, 'Pinned baseline commit unavailable');
   const changes = git('diff', '--name-only', baselineSourceCommit, sourceCommit).split('\n').filter(Boolean);
   for (const path of changes) assert(allowedChanges.has(path), `Unsupported source change: ${path}`);
   const selector = nativeInputs();
