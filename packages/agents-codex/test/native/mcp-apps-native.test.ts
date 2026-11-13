@@ -19,7 +19,14 @@ const preservedJson = JSON.parse(
 
 async function peer(
   linked: boolean,
-  policy: 'plain' | 'before' | 'approval' | 'transform' | 'native' = 'plain',
+  policy:
+    | 'plain'
+    | 'before'
+    | 'approval'
+    | 'transform'
+    | 'native'
+    | 'toolPreapproved'
+    | 'toolNative' = 'plain',
   resourceFields: JsonObject = {},
   holdAction?: Promise<void>,
   toolMetadata?: JsonObject,
@@ -117,7 +124,16 @@ async function peer(
     name: 'apps',
     url: `http://127.0.0.1:${address.port}/mcp`,
     tools: ['display'],
-    approvalMode: policy === 'native' ? 'native' : 'preapproved',
+    approvalMode:
+      policy === 'native' || policy === 'toolPreapproved'
+        ? 'native'
+        : 'preapproved',
+    ...(policy === 'toolPreapproved'
+      ? { toolApprovalOverrides: { display: 'preapproved' as const } }
+      : {}),
+    ...(policy === 'toolNative'
+      ? { toolApprovalOverrides: { display: 'native' as const } }
+      : {}),
     ...(policy === 'before'
       ? { before: () => ({ action: 'allow' as const }) }
       : {}),
@@ -271,7 +287,20 @@ it('rejects same-name endpoint replacement and change-and-revert', async () => {
   ).toHaveLength(0);
 });
 
-it.each(['before', 'approval', 'transform', 'native'] as const)(
+it('opens the selected tool when only that tool is preapproved', async () => {
+  const remote = await peer(false, 'toolPreapproved');
+  const { session, turn } = await open(remote.declaration);
+  const app = await MCPApp.open(session, turn, 'app-origin');
+  expect(app.view.toolName).toBe('display');
+  await expect(app.callTool('display', { count: 2 })).resolves.toMatchObject({
+    structuredContent: { count: 2 },
+  });
+  expect(
+    remote.calls.filter((rpc) => rpc.method === 'tools/call'),
+  ).toHaveLength(2);
+});
+
+it.each(['before', 'approval', 'transform', 'native', 'toolNative'] as const)(
   'rejects unsupported %s policy before action dispatch',
   async (policy) => {
     const remote = await peer(false, policy);

@@ -1087,6 +1087,64 @@ it('does not turn application approval into native approval authority', async ()
   model.assertExhausted();
 }, 10_000);
 
+it('keeps a required per-tool native approval after narrowing to a raw leaf', async () => {
+  const remote = await peer('read-one', undefined, undefined, undefined, [
+    'read-two',
+    'unselected',
+  ]);
+  const approvals = {
+    'read-one': 'prompt',
+    'read-two': 'preapproved',
+    unselected: 'prompt',
+  } as const;
+  const descriptor = new HttpMCP({
+    name: 'fixture',
+    url: remote.url,
+    tools: ['read-one', 'read-two'],
+    toolNameOverrides: { 'read-one': 'reviewed' },
+    toolApprovalOverrides: approvals,
+  });
+  const { session, model } = await open(descriptor, [
+    [
+      call(
+        'reviewed',
+        { key: 'one' },
+        { namespace: 'mcp__fixture', callId: 'first' },
+      ),
+    ],
+    [message('denied')],
+    [
+      call(
+        'read_two',
+        { key: 'two' },
+        { namespace: 'mcp__fixture', callId: 'second' },
+      ),
+    ],
+    [message('allowed')],
+  ]);
+  const first = await session.submit('review', {
+    tools: [descriptor.tool('read-one')],
+  });
+  const pending = await first.wait({ until: 'interaction' });
+  if (
+    !('requests' in pending) ||
+    pending.requests[0]?.type !== 'approval_request'
+  )
+    throw new Error(
+      'Expected the selected read-only tool to require native approval',
+    );
+  expect(remote.effects).toEqual([]);
+  await session.respond(pending.requests[0].reply('deny'));
+  expect((await first.wait()).finalOutput).toBe('denied');
+  expect(remote.effects).toEqual([]);
+  const allowed = await session.submit('allow', {
+    tools: [descriptor.tool('read-two')],
+  });
+  expect((await allowed.wait()).finalOutput).toBe('allowed');
+  expect(remote.effects.map((effect) => effect.name)).toEqual(['read-two']);
+  model.assertExhausted();
+}, 10_000);
+
 it('adds and removes the last policy then returns to ordinary MCP updates', async () => {
   const remote = await peer();
   const before = vi.fn(() => ({ action: 'allow' as const }));
