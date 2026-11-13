@@ -12,7 +12,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import process from 'node:process';
@@ -38,6 +39,7 @@ const { values, positionals } = parseArgs({
     'rmcp-source': { type: 'string' },
     release: { type: 'boolean', default: false },
     'test-fixture': { type: 'boolean', default: false },
+    'parallel-windows': { type: 'boolean', default: false },
   },
   allowPositionals: true,
 });
@@ -45,10 +47,11 @@ const [command] = positionals;
 if (
   positionals.length !== 1 ||
   !['prepare', 'audit', 'build', 'package'].includes(command) ||
-  ((values.release || values['test-fixture']) && command !== 'build')
+  ((values.release || values['test-fixture']) && command !== 'build') ||
+  (values['parallel-windows'] && !['build', 'package'].includes(command))
 ) {
   throw new Error(
-    'Usage: node scripts/native.mjs prepare|audit|build|package [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture]',
+    'Usage: node scripts/native.mjs prepare|audit|build|package [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture] [--parallel-windows]',
   );
 }
 if (command === 'build' || command === 'package')
@@ -75,6 +78,18 @@ function run(program, args, options = {}) {
     throw new Error(`${program} ${args.join(' ')} failed (${result.status})`);
   }
   return result.stdout;
+}
+
+async function runCargoBuild(args, environment) {
+  const child = spawn('cargo', args, {
+    cwd: root,
+    env: environment,
+    stdio: 'inherit',
+  });
+  return once(child, 'close').then(([status]) => {
+    if (status !== 0)
+      throw new Error(`cargo ${args.join(' ')} failed (${status})`);
+  });
 }
 
 const cargoManifest = readFileSync(join(root, 'Cargo.toml'), 'utf8');
@@ -319,6 +334,9 @@ async function build() {
     );
   }
   const windows = host.endsWith('-windows-msvc');
+  const parallelWindows = values['parallel-windows'];
+  if (parallelWindows && !windows)
+    throw new Error('--parallel-windows requires a Windows Rust host');
   const archiveName = windows
     ? `rusty_v8_ptrcomp_sandbox_release_${host}.lib.gz`
     : `librusty_v8_ptrcomp_sandbox_release_${host}.a.gz`;
@@ -331,6 +349,12 @@ async function build() {
     bindingName,
     environment.RUSTY_V8_SRC_BINDING_PATH,
   );
+  const helperEnvironment = parallelWindows
+    ? {
+        ...environment,
+        CARGO_TARGET_DIR: join(environment.CARGO_TARGET_DIR, 'windows-helpers'),
+      }
+    : environment;
   // Keep the regression graph and its outputs separate from the Core build.
   run(
     'cargo',
@@ -363,9 +387,9 @@ async function build() {
     ...(release ? ['--release'] : []),
   ];
   run('cargo', clean, { env: environment, stdio: 'inherit' });
-  if (windows && !environment.CARGO_BUILD_TARGET) {
+  if (windows && (parallelWindows || !environment.CARGO_BUILD_TARGET)) {
     run('cargo', [...clean, '--target', host], {
-      env: environment,
+      env: helperEnvironment,
       stdio: 'inherit',
     });
   }
@@ -379,37 +403,47 @@ async function build() {
   const profile = release ? ['--release'] : [];
   const timings =
     environment.OPENAI_AGENTS_NATIVE_TIMINGS === '1' ? ['--timings'] : [];
-  run(
-    'cargo',
-    [
-      'build',
-      '--locked',
-      '--lib',
-      ...(windows ? [] : helpers),
-      ...profile,
-      ...timings,
-    ],
-    { env: environment, stdio: 'inherit' },
-  );
-  if (windows) {
-    // V8 executables need Codex's MSVC settings. Keep them off the Node addon:
-    // its cdylib must retain the DLL-compatible CRT. Dependency Cargo configs
-    // are not inherited, so select the unchanged upstream config explicitly.
-    run(
-      'cargo',
-      [
-        'build',
-        '--locked',
-        ...helpers,
-        '--config',
-        join(archive, 'codex-rs', '.cargo', 'config.toml'),
-        '--target',
-        host,
-        ...profile,
-        ...timings,
-      ],
-      { env: environment, stdio: 'inherit' },
-    );
+  const addonArgs = [
+    'build',
+    '--locked',
+    '--lib',
+    ...(windows ? [] : helpers),
+    ...(release &&
+    parallelWindows &&
+    environment.NATIVE_WINDOWS_ADDON_CGU_PROBE === '1'
+      ? [
+          '--config',
+          'profile.release.package.codex-agents-node.codegen-units=2',
+        ]
+      : []),
+    ...profile,
+    ...timings,
+  ];
+  // V8 executables need Codex's MSVC settings. Keep them off the Node addon:
+  // its cdylib must retain the DLL-compatible CRT.
+  const helperArgs = [
+    'build',
+    '--locked',
+    ...helpers,
+    '--config',
+    join(archive, 'codex-rs', '.cargo', 'config.toml'),
+    '--target',
+    host,
+    ...profile,
+    ...timings,
+  ];
+  if (parallelWindows) {
+    // Await both terminal states before auditing or publishing any products.
+    const results = await Promise.allSettled([
+      runCargoBuild(addonArgs, environment),
+      runCargoBuild(helperArgs, helperEnvironment),
+    ]);
+    for (const result of results)
+      if (result.status === 'rejected') throw result.reason;
+  } else {
+    run('cargo', addonArgs, { env: environment, stdio: 'inherit' });
+    if (windows)
+      run('cargo', helperArgs, { env: environment, stdio: 'inherit' });
   }
   equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
   equalSnapshot(buildInputs(), inputs, 'Native inputs');
@@ -419,7 +453,11 @@ async function build() {
     release ? 'release' : 'debug',
   );
   const helperOutput = windows
-    ? join(environment.CARGO_TARGET_DIR, host, release ? 'release' : 'debug')
+    ? join(
+        helperEnvironment.CARGO_TARGET_DIR,
+        host,
+        release ? 'release' : 'debug',
+      )
     : output;
   const library = windows
     ? 'agents_codex.dll'
