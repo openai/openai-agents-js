@@ -1,0 +1,201 @@
+name: Platform alpha qualification
+
+on:
+  workflow_call:
+    inputs:
+      platform:
+        required: true
+        type: string
+      runner:
+        required: true
+        type: string
+      cargo_jobs:
+        required: true
+        type: number
+      artifact:
+        required: true
+        type: string
+      inputs_hash:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    name: Package and test (${{ inputs.platform }})
+    runs-on: >-
+      ${{ fromJSON(
+        github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'linux-arm64' && '{"group":"codex-runners","labels":"codex-linux-arm64"}' ||
+        toJSON(inputs.runner)
+      ) }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      ALPHA_VERSION: 0.22.0-alpha.2
+      EXPECTED_PLATFORM: ${{ inputs.platform }}
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      CARGO_BUILD_JOBS: ${{ inputs.cargo_jobs }}
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check runner platform
+        run: node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+      - name: Restore the current-run native transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_ARTIFACT: ${{ inputs.artifact }}
+          NATIVE_INPUTS: ${{ inputs.inputs_hash }}
+        run: node scripts/restore-native-bundle.mjs
+      - name: Install Linux worker prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/use-ubuntu-archive-if-needed.sh
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
+          if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
+            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+              /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          fi
+          uname -sr
+          bwrap --version
+          bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Build the current SDK
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Qualify native browser interactions, audio, and MCP Apps
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+          OPENAI_AGENTS_BROWSER_TESTS: '1'
+        run: |
+          npm ci --prefix examples/codex/mcp-ui --ignore-scripts
+          npm run build --prefix examples/codex/mcp-ui
+          node node_modules/playwright/cli.js install chromium
+          node examples/codex/mcp-ui/node_modules/playwright/cli.js install chromium
+          env -u OPENAI_API_KEY node node_modules/vitest/vitest.mjs run --pool=forks \
+            --project @openai/agents-codex \
+            packages/agents-codex/test/native/browser-interaction-audio.test.ts \
+            packages/agents-codex/test/native/mcp-ui-browser.test.ts --maxWorkers 1
+      - name: Qualify checkpoint compatibility on macOS and Windows
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        env:
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+        run: >-
+          pnpm exec vitest run --pool=forks --project @openai/agents-codex
+          packages/agents-codex/test/native/checkpoint-upgrades-native.test.ts
+          --maxWorkers=1 --reporter=verbose
+      - name: Qualify canonical native storage
+        if: runner.os == 'Linux' || runner.os == 'macOS'
+        run: >-
+          pnpm test:native
+          packages/agents-codex/test/native/custom-storage-durability-native.test.ts
+          packages/agents-codex/test/custom-thread-store.test.ts
+          packages/agents-codex/test/file-thread-store.test.ts
+          --maxWorkers=4 --reporter=verbose
+      - name: Qualify MCP environment names on Windows
+        if: runner.os == 'Windows'
+        env:
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture.exe
+        run: >-
+          pnpm exec vitest run --pool=forks --project @openai/agents-codex
+          packages/agents-codex/test/native/mcp-owned-stdio-native.test.ts
+          -t 'environment name rules' --maxWorkers=1 --reporter=verbose
+      - name: Qualify the Linux worker
+        if: runner.os == 'Linux'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: |
+          pnpm test:native \
+            packages/agents-codex/test/native/supervised-worker-example.test.ts \
+            packages/agents-codex/test/native/supervised-worker-cleanup.test.ts \
+            --reporter=verbose
+          pnpm test:native \
+            packages/agents-codex/test/native/local-executor-policy-native.test.ts \
+            -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home' \
+            --reporter=verbose
+          pnpm test:native \
+            packages/agents-codex/test/native/storage-mounts.test.ts \
+            packages/agents-codex/test/native/storage-mounts-native.test.ts \
+            --reporter=verbose
+          pnpm test:native --mode full --maxWorkers=${{ inputs.platform == 'linux-arm64' && (github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/'))) && 8 || 4 }} --reporter=verbose
+      - name: Qualify local executor grants on macOS
+        if: runner.os == 'macOS'
+        env:
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents-codex/test/native/local-executor-policy-native.test.ts
+          -t 'blocks delegation from a local command to launchd|scopes trusted local workspace writes, private authentication and command temp|scopes Git and SSH settings for local commands|keeps telemetry configurable after rejecting trusted writes for a remote environment|joins a detached local child at|joins an interrupted local command|joins a yielded local process|confirms Session close with a stopped macOS command wrapper|applies a per-turn write policy|keeps the opening write policy on a WSS executor that reports macOS|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home'
+          --reporter=verbose
+      - name: Qualify completed child history on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents-codex/test/native/local-descendant-reopen-native.test.ts
+          -t settled --maxWorkers=4 --reporter=verbose
+      - name: Qualify executor stop and process cleanup on macOS
+        if: runner.os == 'macOS'
+        env:
+          OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+        run: >-
+          pnpm test:native packages/agents-codex/test/native/executor-stop-native.test.ts
+          packages/agents-codex/test/native/project-search-native.test.ts
+          packages/agents-codex/test/native/selected-process-termination-native.test.ts
+          --maxWorkers=4 --reporter=verbose
+      - name: Qualify owned child tracing on macOS
+        if: runner.os == 'macOS'
+        run: |
+          pnpm test:native packages/agents-codex/test/native/child-turn-events-native.test.ts -t 'keeps child tracing policy for explicit starts and active steering'
+          pnpm test:native packages/agents-codex/test/native/native-questions.test.ts -t 'keeps original child tracing through question reply and physical handler cleanup'
+      - name: Qualify native tracing and decoded OTLP transports
+        if: runner.os == 'Linux'
+        env:
+          AGENTS_REQUIRE_TRACING_QUALIFICATION: '1'
+          OPENAI_AGENTS_NATIVE_TESTS: '1'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/agents-otel-collector"
+          "$RUNNER_TEMP/agents-otel-collector/bin/python" -m pip install grpcio==1.85.0 opentelemetry-proto==1.45.1
+          OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/tracing-parity.test.ts packages/agents-codex/test/native/telemetry-transports.test.ts
+          pnpm test:native packages/agents-codex/test/native/mcp-policy-native.test.ts -t 'restores the native MCP carrier'
+      - name: Create the release bundles
+        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+      - name: Test the extracted bundles
+        run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ${{ github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && github.ref == 'refs/heads/ci/hillclimb/js-cold-test-profile-26' && 'agents-diagnostic-' || 'agents-alpha-' }}${{ inputs.platform }}
+          path: |
+            ${{ runner.temp }}/agents-alpha/*.tgz
+            ${{ runner.temp }}/agents-alpha/*.tar.gz
+            ${{ runner.temp }}/agents-alpha/SHA256SUMS-*
+            ${{ runner.temp }}/agents-alpha/build-*.json
+            ${{ runner.temp }}/agents-alpha/installed-*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
