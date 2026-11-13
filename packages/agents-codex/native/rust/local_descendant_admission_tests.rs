@@ -755,6 +755,179 @@ async fn cold_safe_descendant_interruption_survives_partial_publication_and_reop
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_earlier_owned_commands_before_interruption() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let edges = edges(&store, &ids).await;
+    let mut histories = snapshots(&store, &ids).await;
+    for (id, turn) in ids
+        .into_iter()
+        .zip(["settled-root", "settled-child", "settled-leaf"])
+    {
+        histories
+            .get_mut(&id)
+            .unwrap()
+            .extend([started(turn), completed(turn)]);
+    }
+    let leaf = ids[2];
+    let command = |item| {
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+            serde_json::from_value(item).unwrap(),
+        ))
+    };
+    histories.get_mut(&leaf).unwrap().extend([
+        started("older"),
+        command(json!({"type": "function_call", "name": "exec_command", "call_id": "command", "arguments": "{}"})),
+        command(json!({"type": "function_call_output", "call_id": "command", "output": "Process running with session ID 42"})),
+        completed("older"),
+        started("sampling"),
+    ]);
+    let error = validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("unfinished native execution"),
+        "{error}"
+    );
+    histories.get_mut(&leaf).unwrap().push(RolloutItem::EventMsg(serde_json::from_value(json!({"type": "item_completed", "thread_id": leaf, "turn_id": "older", "item": {"type": "CommandExecution", "id": "command", "command": ["synthetic"], "cwd": "file:///synthetic", "parsed_cmd": [], "source": "unified_exec_startup", "status": "completed"}})).unwrap()));
+    validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap();
+    for id in ids {
+        store.shutdown_thread(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_links_followups_to_the_retained_child_root_turn() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let edges = edges(&store, &ids).await;
+    let mut histories = snapshots(&store, &ids).await;
+    let [root, child, leaf] = ids;
+    histories.get_mut(&root).unwrap().extend([
+        started("root-current"),
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","namespace":"collaboration","name":"followup_task","call_id":"follow","arguments":"{}"})).unwrap())),
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call_output","call_id":"follow","output":"accepted"})).unwrap())),
+        RolloutItem::EventMsg(serde_json::from_value(json!({"type":"item_completed","thread_id":root,"turn_id":"root-current","item":{"type":"SubAgentActivity","id":"follow","kind":"interacted","agent_thread_id":child,"agent_path":"/root/child"}})).unwrap()),
+    ]);
+    let child_start = |root_turn| {
+        RolloutItem::EventMsg(
+            serde_json::from_value(
+                json!({"type":"task_started","turn_id":"child","root_turn_id":root_turn}),
+            )
+            .unwrap(),
+        )
+    };
+    histories
+        .get_mut(&child)
+        .unwrap()
+        .push(child_start("root-older"));
+    histories
+        .get_mut(&leaf)
+        .unwrap()
+        .extend([started("leaf"), completed("leaf")]);
+    let error = validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unrelated active"), "{error}");
+    *histories.get_mut(&child).unwrap().last_mut().unwrap() = child_start("root-current");
+    validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap();
+    for id in ids {
+        store.shutdown_thread(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_preserves_exact_command_receipts_with_automatic_children() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, [root, child]) = recovery_family(home.path()).await;
+    append(&store, root, [vec![started("root"), legacy_context(home.path(), "root"), RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","name":"exec_command","call_id":"effect","arguments":"{}"})).unwrap()))], spawn("spawn-child", child)].concat()).await;
+    append(&store, child, vec![started("child")]).await;
+    for id in [child, root] {
+        store.shutdown_thread(id).await.unwrap();
+    }
+    let store = Arc::new(store);
+    let admitted = prepare_recovery(
+        &store,
+        home.path(),
+        root,
+        vec![recovery_receipt(root, "root")],
+    )
+    .await
+    .unwrap();
+    assert!(admitted.protected_call_ids().contains("effect"));
+    let prepared = admitted.prepared_params().unwrap().clone();
+    store.resume_thread(prepared).await.unwrap();
+    drop(admitted);
+    store.shutdown_thread(root).await.unwrap();
+    let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+        .await
+        .unwrap();
+    drop(admitted);
+    store.close_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_hosted_mcp_alongside_application_receipts() {
+    for completed_mcp in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        append(
+            &store,
+            root,
+            [
+                vec![started("root"), legacy_context(home.path(), "root")],
+                spawn("spawn-child", child),
+                vec![completed("root")],
+            ]
+            .concat(),
+        )
+        .await;
+        let response = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let mut child_rows = vec![
+            started("child"),
+            legacy_context(home.path(), "child"),
+            call("effect"),
+            response(
+                json!({"type":"mcp_approval_request","id":"approval","server_label":"crm","name":"save","arguments":"{}"}),
+            ),
+            response(
+                json!({"type":"mcp_approval_response","approval_request_id":"approval","approve":true}),
+            ),
+        ];
+        if completed_mcp {
+            child_rows.push(response(json!({"type":"mcp_call","id":"provider-call","server_label":"crm","name":"save","arguments":"{}","approval_request_id":"approval","status":"completed","output":"done"})));
+        }
+        append(&store, child, child_rows).await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(
+            &store,
+            home.path(),
+            root,
+            vec![recovery_receipt(child, "child")],
+        )
+        .await;
+        if completed_mcp {
+            drop(result.unwrap());
+        } else {
+            let error = result.err().unwrap();
+            assert!(error.to_string().contains("approved hosted MCP"), "{error}");
+        }
+        store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn copied_legacy_calls_keep_their_owner_across_partial_replacement_and_retry() {
     let home = tempfile::tempdir().unwrap();
     let (store, ids) = family(home.path()).await;

@@ -311,10 +311,39 @@ pub(super) async fn plan_recovery_tree(
         {
             affected[parent] = true;
             let parent_source = &sources[parent];
-            let spawn_turns = local_reconciliation::completed_spawn_turns(
+            let child_roots: HashSet<_> = source
+                .own()
+                .iter()
+                .filter_map(|row| match row {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                        if affected_turns[index].contains(&event.turn_id) =>
+                    {
+                        event.root_turn_id.clone()
+                    }
+                    _ => None,
+                })
+                .collect();
+            let followup_turns = parent_source
+                .own()
+                .iter()
+                .filter_map(|row| match row {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                        if child_roots.contains(if parent == 0 {
+                            &event.turn_id
+                        } else {
+                            event.root_turn_id.as_ref()?
+                        }) =>
+                    {
+                        Some(event.turn_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let spawn_turns = local_reconciliation::completed_child_turns(
                 parent_source.id,
                 source.id,
                 parent_source.own(),
+                &followup_turns,
             )?;
             // An earlier attempt can replace an abort-only ancestor and fail
             // before syncing its directory. Confirm it before the leaf write.
@@ -346,17 +375,35 @@ pub(super) async fn plan_recovery_tree(
                     && event.started_at.is_none() && event.completed_at.is_none() && event.duration_ms.is_none()));
     }
     if recovering_descendants {
+        let automatic = automatic_turns.iter().any(|turns| !turns.is_empty());
         for (index, source) in sources.iter().enumerate() {
             let active: HashSet<_> = own_turns[index]
                 .iter()
                 .filter_map(|(turn, active)| {
-                    (*active && automatic_turns[index].contains(turn)).then_some(turn.clone())
+                    (*active && affected_turns[index].contains(turn)).then_some(turn.clone())
                 })
                 .collect();
-            if !active.is_empty() {
-                local_reconciliation::validate_native_effects(source.own(), &active)?;
+            let mut history = source.own().to_vec();
+            history.extend(
+                if index == 0 {
+                    &root.append
+                } else {
+                    &writes[index].rows
+                }
+                .iter()
+                .cloned(),
+            );
+            local_reconciliation::validate_hosted_effects(&history, &active)?;
+            if automatic {
+                let automatic_active = active
+                    .intersection(&automatic_turns[index])
+                    .cloned()
+                    .collect();
+                local_reconciliation::validate_native_effects(&history, &automatic_active)?;
             }
         }
+    }
+    if recovering_descendants {
         let aborts = std::mem::take(&mut writes[0].rows);
         writes[0].rows = std::mem::take(&mut root.append);
         writes[0].rows.extend(aborts);

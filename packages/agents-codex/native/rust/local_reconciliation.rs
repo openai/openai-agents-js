@@ -5,13 +5,13 @@ use std::fmt;
 
 use anyhow::{Context, Result, ensure};
 use codex_history::{ResponseItemEnvelope, RolloutItem};
-use codex_protocol::ThreadId;
 use codex_protocol::items::{CollabAgentTool, CollabAgentToolCallStatus, TurnItem};
 use codex_protocol::models::{
     ContentItemKind, FunctionCallOutputBody, FunctionCallOutputPayload,
     InternalChatMessageMetadataPassthrough, ResponseItem,
 };
 use codex_protocol::protocol::{EventMsg, SubAgentActivityKind};
+use codex_protocol::{ThreadId, ToolName};
 use serde::{Deserialize, Serialize};
 
 const APPLIED: &str = "sdk_reconciliation.applied";
@@ -614,8 +614,59 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
     index_calls(history, false)
 }
 
-// Native effects cannot be reconciled by application receipts. Cold interruption
-// requires their retained outputs before discarding a dead descendant runtime.
+fn completed_hosted_call(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::McpCall { provider_fields, .. }
+        if provider_fields.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+            && provider_fields.get("output").and_then(serde_json::Value::as_str).is_some()
+            && provider_fields.get("error").is_none_or(serde_json::Value::is_null))
+}
+
+pub(crate) fn validate_hosted_effects(
+    history: &[RolloutItem],
+    turns: &HashSet<String>,
+) -> Result<()> {
+    let application = calls(history)?;
+    let mut hosted = BTreeMap::new();
+    let mut active = None;
+    for row in history {
+        crate::local_storage::observe_turn(&mut active, row);
+        if let RolloutItem::ResponseItem(envelope) = row
+            && let ResponseItem::McpCall { id, .. } = &envelope.item
+        {
+            let owner = envelope
+                .item
+                .turn_id()
+                .map(str::to_owned)
+                .or_else(|| active.clone());
+            if owner.as_ref().is_some_and(|turn| turns.contains(turn)) {
+                let id = id
+                    .as_ref()
+                    .filter(|id| !id.as_str().is_empty())
+                    .context("hosted MCP call has no retained identity")?;
+                hosted.insert((owner, id.as_str()), &envelope.item);
+            }
+        }
+    }
+    ensure!(
+        hosted.values().all(|item| completed_hosted_call(item)),
+        "local history contains unfinished hosted MCP effects; automatic interruption is unsupported"
+    );
+    ensure!(application.iter().all(|(key, call)| {
+        let ResponseItem::McpApprovalRequest { id: Some(id), server_label, name, arguments, provider_fields, .. } = call.invocation else { return true; };
+        !key.0.as_ref().is_some_and(|turn| turns.contains(turn))
+            || matches!(call.output, Some(ResponseItem::McpApprovalResponse { approve: false, .. }))
+            || hosted.iter().any(|((owner, _), item)| {
+                owner == &key.0 && matches!(item, ResponseItem::McpCall { server_label: actual_server, name: actual_name, arguments: actual_arguments, provider_fields: actual_fields, .. }
+                    if server_label == actual_server && name == actual_name && arguments == actual_arguments
+                        && actual_fields.get("approval_request_id").and_then(serde_json::Value::as_str) == Some(id.as_str())
+                        && actual_fields.get("caller").filter(|value| !value.is_null()) == provider_fields.get("caller").filter(|value| !value.is_null()))
+            })
+    }), "local history contains an approved hosted MCP call without a retained result; automatic interruption is unsupported");
+    Ok(())
+}
+
+// A completed model turn does not prove its native commands have exited. Cold
+// interruption checks owned command lifetimes, including earlier turns.
 pub(crate) fn validate_native_effects(
     history: &[RolloutItem],
     turns: &HashSet<String>,
@@ -640,30 +691,34 @@ pub(crate) fn validate_native_effects(
         .collect();
     ensure!(
         application.iter().all(|(key, call)| {
-            !key.0.as_ref().is_some_and(|turn| turns.contains(turn))
-                || match call.invocation {
-                    ResponseItem::FunctionCall { name, .. } if name == "write_stdin" => false,
-                    ResponseItem::FunctionCall { name, .. }
-                        if matches!(name.as_str(), "exec_command" | "shell" | "shell_command") =>
-                    {
-                        key.0.as_ref().is_some_and(|turn| {
-                            terminal_commands.contains(&(turn.clone(), key.1.clone()))
-                        })
+            match call.invocation {
+                ResponseItem::FunctionCall {
+                    name, namespace, ..
+                } if ToolName::new(namespace.clone(), name).is_default_namespace() => {
+                    match name.as_str() {
+                        "write_stdin" => !key.0.as_ref().is_some_and(|turn| turns.contains(turn)),
+                        "exec_command" | "shell" | "shell_command" => {
+                            call.output.is_some_and(|output| tag(output).is_some())
+                                || key.0.as_ref().is_some_and(|turn| {
+                                    terminal_commands.contains(&(turn.clone(), key.1.clone()))
+                                })
+                        }
+                        _ => true,
                     }
-                    _ => true,
                 }
+                _ => true,
+            }
         }),
         "local history contains unfinished native execution; automatic interruption is unsupported"
     );
     ensure!(
         index_calls(history, true)?.iter().all(|(key, call)| {
             application.contains_key(key)
-                || key.0.as_ref().is_some_and(|turn| !turns.contains(turn))
-                || (call.output.is_some()
-                    && !matches!(
-                        call.invocation,
-                        ResponseItem::ShellCall { .. } | ResponseItem::LocalShellCall { .. }
-                    ))
+                || (!matches!(
+                    call.invocation,
+                    ResponseItem::ShellCall { .. } | ResponseItem::LocalShellCall { .. }
+                ) && (key.0.as_ref().is_some_and(|turn| !turns.contains(turn))
+                    || call.output.is_some()))
         }),
         "local history contains unknown native tool effects; automatic interruption is unsupported"
     );
@@ -738,24 +793,32 @@ fn index_calls(history: &[RolloutItem], include_native: bool) -> Result<Calls<'_
     Ok(calls)
 }
 
-pub(crate) fn completed_spawn_turns(
+pub(crate) fn completed_child_turns(
     parent: ThreadId,
     child: ThreadId,
     history: &[RolloutItem],
+    followup_turns: &HashSet<String>,
 ) -> Result<HashSet<String>> {
     let calls = calls(history)?;
     let mut turns = HashSet::new();
+    let mut spawn_turns = HashSet::new();
     let mut active = None;
     for row in history {
         crate::local_storage::observe_turn(&mut active, row);
-        let (turn, call) = match row {
+        let (turn, call, spawn) = match row {
             RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) if event.thread_id == parent => {
                 match &event.item {
                     TurnItem::SubAgentActivity(item)
-                        if item.kind == SubAgentActivityKind::Started
-                            && item.agent_thread_id == child =>
+                        if matches!(
+                            item.kind,
+                            SubAgentActivityKind::Started | SubAgentActivityKind::Interacted
+                        ) && item.agent_thread_id == child =>
                     {
-                        (&event.turn_id, &item.id)
+                        (
+                            &event.turn_id,
+                            &item.id,
+                            item.kind == SubAgentActivityKind::Started,
+                        )
                     }
                     TurnItem::CollabAgentToolCall(item)
                         if item.tool == CollabAgentTool::SpawnAgent
@@ -763,7 +826,7 @@ pub(crate) fn completed_spawn_turns(
                             && item.sender_thread_id == parent
                             && item.receiver_thread_ids == [child] =>
                     {
-                        (&event.turn_id, &item.id)
+                        (&event.turn_id, &item.id, true)
                     }
                     _ => continue,
                 }
@@ -771,28 +834,39 @@ pub(crate) fn completed_spawn_turns(
             // Legacy V2 rollouts persist the completed item's legacy activity
             // in the emitting turn instead of persisting the canonical item.
             RolloutItem::EventMsg(EventMsg::SubAgentActivity(event))
-                if event.kind == SubAgentActivityKind::Started
-                    && event.agent_thread_id == child =>
+                if matches!(
+                    event.kind,
+                    SubAgentActivityKind::Started | SubAgentActivityKind::Interacted
+                ) && event.agent_thread_id == child =>
             {
                 let Some(turn) = active.as_ref() else {
                     continue;
                 };
-                (turn, &event.event_id)
+                (
+                    turn,
+                    &event.event_id,
+                    event.kind == SubAgentActivityKind::Started,
+                )
             }
             _ => continue,
         };
-        if calls.get(&(Some(turn.clone()), call.clone())).is_some_and(|entry|
+        if (spawn || followup_turns.contains(turn))
+            && calls.get(&(Some(turn.clone()), call.clone())).is_some_and(|entry|
             matches!(entry.invocation, ResponseItem::FunctionCall { name, namespace, .. }
-                if name == "spawn_agent" && matches!(namespace.as_deref(), None | Some("collaboration" | "multi_agent_v1")))
+                if name == (if spawn { "spawn_agent" } else { "followup_task" })
+                    && matches!(namespace.as_deref(), None | Some("collaboration" | "multi_agent_v1")))
                 && matches!(entry.output, Some(ResponseItem::FunctionCallOutput { output, .. })
                     if output.success != Some(false))
                 && entry.output.is_some_and(|output| tag(output).is_none())
         ) {
+            if spawn {
+                spawn_turns.insert(turn.clone());
+            }
             turns.insert(turn.clone());
         }
     }
     ensure!(
-        turns.len() <= 1,
+        spawn_turns.len() <= 1,
         "descendant has ambiguous completed spawn history"
     );
     Ok(turns)
@@ -1060,6 +1134,8 @@ mod tests {
         ];
         let turns = HashSet::from(["turn".to_owned()]);
         assert!(validate_native_effects(&history, &turns).is_err());
+        let later = HashSet::from(["another".to_owned()]);
+        assert!(validate_native_effects(&history, &later).is_err());
         let completion = |status| {
             RolloutItem::EventMsg(serde_json::from_value(json!({"type": "item_completed", "thread_id": ThreadId::new(), "turn_id": "turn", "item": {"type": "CommandExecution", "id": "command", "command": ["synthetic"], "cwd": "file:///synthetic", "parsed_cmd": [], "source": "unified_exec_startup", "status": status}})).unwrap())
         };
@@ -1070,8 +1146,130 @@ mod tests {
         history.push(row(json!({"type": "function_call", "name": "write_stdin", "call_id": "stdin", "arguments": "{}", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}})));
         history.push(row(json!({"type": "function_call_output", "call_id": "stdin", "output": "Process exited with code 0", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}})));
         assert!(validate_native_effects(&history, &turns).is_err());
-        // A settled older command does not block an unrelated newly interrupted turn.
-        validate_native_effects(&history, &HashSet::from(["another".to_owned()])).unwrap();
+        // An older poll is safe once the original command has durably exited.
+        validate_native_effects(&history, &later).unwrap();
+    }
+
+    #[test]
+    fn cold_interruption_distinguishes_namespaced_callbacks_and_exact_command_receipts() {
+        let row = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let turns = HashSet::from(["turn".to_owned()]);
+        for name in ["exec_command", "write_stdin", "shell", "shell_command"] {
+            let history = [
+                row(
+                    json!({"type": "function_call", "namespace": "crm", "name": name, "call_id": "call", "arguments": "{}", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}}),
+                ),
+                row(
+                    json!({"type": "function_call_output", "call_id": "call", "output": "done", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}}),
+                ),
+            ];
+            validate_native_effects(&history, &turns).unwrap();
+        }
+        for namespace in [None, Some(""), Some("functions")] {
+            let invocation = row(
+                json!({"type": "function_call", "namespace": namespace, "name": "exec_command", "call_id": "command", "arguments": "{}", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}}),
+            );
+            assert!(validate_native_effects(std::slice::from_ref(&invocation), &turns).is_err());
+            for (turn, call, accepted) in [
+                ("other", "command", false),
+                ("turn", "other", false),
+                ("turn", "command", true),
+            ] {
+                let output = row(
+                    json!({"type": "function_call_output", "call_id": call, "output": "confirmed absent", "internal_chat_message_metadata_passthrough": {"turn_id": turn, "content_item_kinds": [NOT_APPLIED]}}),
+                );
+                assert_eq!(
+                    validate_native_effects(&[invocation.clone(), output], &turns).is_ok(),
+                    accepted
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cold_interruption_requires_completed_hosted_mcp_execution() {
+        let row = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let turns = HashSet::from(["turn".to_owned()]);
+        let approval = row(
+            json!({"type":"mcp_approval_request","id":"approval","server_label":"crm","name":"save","arguments":"{}","internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}),
+        );
+        let decision = |approve| {
+            row(
+                json!({"type":"mcp_approval_response","approval_request_id":"approval","approve":approve,"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}),
+            )
+        };
+        validate_hosted_effects(&[approval.clone(), decision(false)], &turns).unwrap();
+        assert!(validate_hosted_effects(&[approval.clone(), decision(true)], &turns).is_err());
+        for (status, output, accepted) in [
+            ("in_progress", json!(null), false),
+            ("completed", json!(null), false),
+            ("completed", json!(""), true),
+        ] {
+            let call = row(
+                json!({"type":"mcp_call","id":"provider-call","server_label":"crm","name":"save","arguments":"{}","approval_request_id":"approval","status":status,"output":output,"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}),
+            );
+            assert_eq!(
+                validate_hosted_effects(std::slice::from_ref(&call), &turns).is_ok(),
+                accepted
+            );
+            assert_eq!(
+                validate_hosted_effects(&[approval.clone(), decision(true), call], &turns).is_ok(),
+                accepted
+            );
+        }
+        for (turn, approval_id, name) in [
+            ("other", "approval", "save"),
+            ("turn", "other", "save"),
+            ("turn", "approval", "other"),
+        ] {
+            let call = row(
+                json!({"type":"mcp_call","id":"provider-call","server_label":"crm","name":name,"arguments":"{}","approval_request_id":approval_id,"status":"completed","output":"done","internal_chat_message_metadata_passthrough":{"turn_id":turn}}),
+            );
+            assert!(
+                validate_hosted_effects(&[approval.clone(), decision(true), call], &turns).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn cold_interruption_links_followups_without_accepting_messages_or_duplicate_spawns() {
+        let parent = ThreadId::new();
+        let child = ThreadId::new();
+        let activity = |turn: &str, name: &str, kind: &str| {
+            vec![
+                RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","namespace":"collaboration","name":name,"call_id":turn,"arguments":"{}","internal_chat_message_metadata_passthrough":{"turn_id":turn}})).unwrap())),
+                RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call_output","call_id":turn,"output":"accepted","internal_chat_message_metadata_passthrough":{"turn_id":turn}})).unwrap())),
+                RolloutItem::EventMsg(serde_json::from_value(json!({"type":"item_completed","thread_id":parent,"turn_id":turn,"item":{"type":"SubAgentActivity","id":turn,"kind":kind,"agent_thread_id":child,"agent_path":"/root/child"}})).unwrap()),
+            ]
+        };
+        let mut history = activity("spawn", "spawn_agent", "started");
+        history.extend(activity("follow-one", "followup_task", "interacted"));
+        history.extend(activity("follow-two", "followup_task", "interacted"));
+        history.extend(activity("message", "send_message", "interacted"));
+        assert_eq!(
+            completed_child_turns(
+                parent,
+                child,
+                &history,
+                &HashSet::from(["follow-one".to_owned(), "follow-two".to_owned()])
+            )
+            .unwrap(),
+            HashSet::from([
+                "spawn".to_owned(),
+                "follow-one".to_owned(),
+                "follow-two".to_owned()
+            ])
+        );
+        history.extend(activity("duplicate-spawn", "spawn_agent", "started"));
+        assert!(completed_child_turns(parent, child, &history, &HashSet::new()).is_err());
     }
 
     fn invocation(call_id: &str) -> RolloutItem {
