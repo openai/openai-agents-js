@@ -140,7 +140,7 @@ async function completeDisplay(
       const text =
         item.displayText ??
         item.content
-          .map((part) => (part.type === 'input_image' ? '' : part.text))
+          .map((part) => ('text' in part ? part.text : ''))
           .join('');
       const bytes = utf8.encode(text).length;
       recordedBytes += bytes - (recorded.get(item.id)?.bytes ?? 0);
