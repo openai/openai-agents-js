@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
-import { Agent, AiSdkModel, NativeProvider } from '../../src';
+import { z } from 'zod';
+import { Agent, AiSdkModel, NativeProvider, tool } from '../../src';
 
 it.each([false, true])(
   'replays non-Responses reasoning only to its exact provider and model (stream=%s)',
@@ -108,5 +109,80 @@ it.each([false, true])(
     ).toBe('next answer');
     expect(JSON.stringify(prompts[2])).not.toContain(token);
     expect(JSON.stringify(prompts[2])).not.toContain(part.text);
+  },
+);
+
+it.each([
+  { modelId: 'deepseek-reasoner', providerOptions: {} },
+  {
+    modelId: 'deepseek-chat',
+    providerOptions: { deepseek: { thinking: { type: 'enabled' } } },
+  },
+])(
+  'keeps $modelId reasoning and its tool call on the same assistant message',
+  async ({ modelId, providerOptions }) => {
+    let requests = 0;
+    const backend = new AiSdkModel(
+      {
+        specificationVersion: 'v3',
+        provider: 'deepseek.chat',
+        modelId,
+        doGenerate({ prompt }) {
+          if (++requests === 1) {
+            return {
+              content: [
+                { type: 'reasoning', text: 'Retained reasoning.' },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'lookup-id',
+                  toolName: 'lookup',
+                  input: '{}',
+                },
+              ],
+              finishReason: 'tool-calls',
+            };
+          }
+          expect(prompt).toContainEqual(
+            expect.objectContaining({
+              role: 'assistant',
+              content: [
+                expect.objectContaining({
+                  type: 'reasoning',
+                  text: 'Retained reasoning.',
+                }),
+                expect.objectContaining({
+                  type: 'tool-call',
+                  toolCallId: 'lookup-id',
+                }),
+              ],
+            }),
+          );
+          return {
+            content: [{ type: 'text', text: 'done' }],
+            finishReason: 'stop',
+          };
+        },
+      },
+      providerOptions,
+    );
+    await using provider = new NativeProvider({
+      apiKey: 'synthetic',
+      modelBackend: backend,
+    });
+    const agent = new Agent({
+      instructions: 'Use lookup.',
+      model: modelId,
+      provider,
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Look up the fixture.',
+          parameters: z.object({}),
+          execute: () => 'fixture result',
+        }),
+      ],
+    });
+    expect((await agent.run('Begin.')).finalOutput).toBe('done');
+    expect(requests).toBe(2);
   },
 );

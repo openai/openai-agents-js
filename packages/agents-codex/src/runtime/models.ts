@@ -1805,10 +1805,36 @@ export class AiSdkModel implements NativeModel {
     const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
     const thinking = (providerOptions.anthropic as JsonObject | undefined)
       ?.thinking as JsonObject | undefined;
-    if (thinking != null && thinking.type !== 'disabled')
+    if (
+      thinking != null &&
+      !['disabled', 'enabled', 'adaptive'].includes(String(thinking.type))
+    )
       throw new TypeError(
-        'AiSdkModel does not support configured Anthropic thinking',
+        'AiSdkModel received invalid Anthropic thinking mode',
       );
+    const provider = this.model.provider.toLowerCase();
+    const model = this.model.modelId.toLowerCase();
+    const thinkingMode = providerOptions.deepseek;
+    const nestedThinking =
+      thinkingMode &&
+      typeof thinkingMode === 'object' &&
+      !Array.isArray(thinkingMode)
+        ? thinkingMode.thinking
+        : undefined;
+    const deepSeekThinking = providerOptions.thinking ?? nestedThinking;
+    const mode =
+      deepSeekThinking &&
+      typeof deepSeekThinking === 'object' &&
+      !Array.isArray(deepSeekThinking)
+        ? (deepSeekThinking.type ??
+          deepSeekThinking.mode ??
+          deepSeekThinking.status)
+        : deepSeekThinking;
+    const groupReasoning =
+      model.includes('deepseek-reasoner') ||
+      ((provider.includes('deepseek') || model.includes('deepseek')) &&
+        (mode === true ||
+          (typeof mode === 'string' && mode.toLowerCase() === 'enabled')));
     if (this.#openai) {
       if (
         body.prompt_cache_retention != null &&
@@ -1855,6 +1881,16 @@ export class AiSdkModel implements NativeModel {
     )
       throw new TypeError('AiSdkModel received unsupported request controls');
     const prompt: any[] = [];
+    let pendingReasoning:
+      | {
+          content: {
+            type: 'reasoning';
+            text: string;
+            providerOptions?: JsonObject;
+          }[];
+          providerOptions?: JsonObject;
+        }
+      | undefined;
     const declarations = [...((body.tools ?? []) as JsonObject[])];
     const names = new Map<string, string>();
     const patchCalls = new Map<string, ApplyPatchWire>();
@@ -1871,6 +1907,19 @@ export class AiSdkModel implements NativeModel {
         continue;
       }
       if (item.type === 'configuration_update') continue;
+      const toolCall =
+        item.type === 'function_call' ||
+        item.type === 'apply_patch_call' ||
+        (item.type === 'custom_tool_call' && item.name === 'apply_patch');
+      if (
+        pendingReasoning &&
+        !toolCall &&
+        item.type !== 'reasoning' &&
+        !(item.type === 'message' && item.role === 'assistant')
+      ) {
+        prompt.push({ role: 'assistant', ...pendingReasoning });
+        pendingReasoning = undefined;
+      }
       if (item.type === 'message') {
         const parts = (item.content ?? []) as JsonObject[];
         const scopedMetadata = providerMetadata?.[modelTextPartMetadataKey];
@@ -1951,17 +2000,21 @@ export class AiSdkModel implements NativeModel {
               })
               .join(''),
           });
-        } else
+        } else {
+          const pending =
+            item.role === 'assistant' ? pendingReasoning : undefined;
+          if (pending) pendingReasoning = undefined;
+          const messageOptions = mergeModelProviderMetadata(
+            pending?.providerOptions,
+            messageMetadata,
+          );
           prompt.push({
             role: item.role,
-            content,
-            ...(messageMetadata ? { providerOptions: messageMetadata } : {}),
+            content: pending ? [...pending.content, ...content] : content,
+            ...(messageOptions ? { providerOptions: messageOptions } : {}),
           });
-      } else if (
-        item.type === 'function_call' ||
-        item.type === 'apply_patch_call' ||
-        (item.type === 'custom_tool_call' && item.name === 'apply_patch')
-      ) {
+        }
+      } else if (toolCall) {
         const patchCall = patchCallReplay(item);
         if (item.namespace != null && item.namespace !== 'functions')
           throw new TypeError(
@@ -1970,11 +2023,19 @@ export class AiSdkModel implements NativeModel {
         const name = patchCall ? 'apply_patch' : (item.name as string);
         names.set(item.call_id as string, name);
         if (patchCall) patchCalls.set(item.call_id as string, patchCall.wire);
+        const pending = pendingReasoning;
+        pendingReasoning = undefined;
         const previous =
-          providerMetadata || prompt.at(-1)?.providerOptions
+          pending || providerMetadata || prompt.at(-1)?.providerOptions
             ? undefined
             : prompt.at(-1);
-        const content = previous?.role === 'assistant' ? previous.content : [];
+        const content =
+          pending?.content ??
+          (previous?.role === 'assistant' ? previous.content : []);
+        const messageOptions = mergeModelProviderMetadata(
+          pending?.providerOptions,
+          providerMetadata,
+        );
         content.push({
           type: 'tool-call',
           toolCallId: item.call_id,
@@ -1988,7 +2049,7 @@ export class AiSdkModel implements NativeModel {
           prompt.push({
             role: 'assistant',
             content,
-            ...(providerMetadata ? { providerOptions: providerMetadata } : {}),
+            ...(messageOptions ? { providerOptions: messageOptions } : {}),
           });
       } else if (item.type === 'reasoning') {
         const recorded = hasModelProviderMetadata(request, inputIndex, item);
@@ -2015,7 +2076,7 @@ export class AiSdkModel implements NativeModel {
             })
           : providerMetadata;
         const previous =
-          providerMetadata || prompt.at(-1)?.providerOptions
+          groupReasoning || providerMetadata || prompt.at(-1)?.providerOptions
             ? undefined
             : prompt.at(-1);
         const content = previous?.role === 'assistant' ? previous.content : [];
@@ -2027,7 +2088,15 @@ export class AiSdkModel implements NativeModel {
             text,
             ...(metadata === undefined ? {} : { providerOptions: metadata }),
           });
-        if (previous?.role !== 'assistant')
+        if (groupReasoning) {
+          pendingReasoning = {
+            content: [...(pendingReasoning?.content ?? []), ...content],
+            providerOptions: mergeModelProviderMetadata(
+              pendingReasoning?.providerOptions,
+              providerMetadata,
+            ),
+          };
+        } else if (previous?.role !== 'assistant')
           prompt.push({
             role: 'assistant',
             content,
@@ -2163,6 +2232,8 @@ export class AiSdkModel implements NativeModel {
             description: format.description,
           }
         : { type: 'text' };
+    if (pendingReasoning)
+      prompt.push({ role: 'assistant', ...pendingReasoning });
     const options: any = {
       prompt,
       ...(tools.length ? { tools, toolChoice } : {}),
