@@ -226,7 +226,7 @@ const RESERVED_DOCKER_LABELS = new Set([
 type DockerInvocation = {
   executable: string;
   args: string[];
-  env: NodeJS.ProcessEnv;
+  env?: NodeJS.ProcessEnv;
 };
 const dockerInvocation = new AsyncLocalStorage<DockerInvocation>();
 const dockerGatewayResources = new WeakMap<object, DockerInvocation>();
@@ -240,7 +240,7 @@ function currentDockerInvocation(
     dockerInvocation.getStore();
   return captured
     ? { ...captured, args: [...captured.args, ...args] }
-    : { executable: 'docker', args, env: process.env };
+    : { executable: 'docker', args };
 }
 
 async function runDockerCli(
@@ -249,10 +249,11 @@ async function runDockerCli(
   resource?: DockerSandboxSession,
 ): Promise<SandboxProcessResult> {
   const invocation = currentDockerInvocation(args, resource);
-  return runSandboxProcess(invocation.executable, invocation.args, {
-    ...options,
-    env: invocation.env,
-  });
+  return runSandboxProcess(
+    invocation.executable,
+    invocation.args,
+    invocation.env === undefined ? options : { ...options, env: invocation.env },
+  );
 }
 
 async function currentDockerExecutable(): Promise<string> {
@@ -270,7 +271,7 @@ async function currentDockerExecutable(): Promise<string> {
   throw new Error('DockerGateway requires an executable Docker CLI');
 }
 
-/** @internal Own both provider operations and the native stdio command. */
+/** Own both provider operations and the native stdio command. */
 export async function openDockerGatewayScope(
   client: object,
   socketPath: string,
@@ -292,7 +293,7 @@ export async function openDockerGatewayScope(
   await access('/usr/bin/env', constants.X_OK);
   const executable = await currentDockerExecutable();
   const config = await mkdtemp(join(tmpdir(), 'codex-docker-gateway-'));
-  const invocation: DockerInvocation = {
+  const invocation = {
     executable,
     args: ['--config', config, '--host', 'unix://' + socket],
     env: { PATH: '/usr/bin:/bin', HOME: config, DOCKER_CONFIG: config },

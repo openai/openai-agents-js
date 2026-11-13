@@ -205,7 +205,8 @@ export async function openSession(
     setup.threadOptions;
   const workspaceInstructions = options.agentGraph?.workspace
     ? undefined
-    : options.agentGraph
+    : options.agentGraph &&
+        options.environmentOwner?.sandboxCapabilities?.hasPreparedProfiles
       ? options.environmentOwner?.profileWorkspaceInstructions
       : options.environmentOwner?.workspaceInstructions;
   let threadOptions: ThreadOptions = {

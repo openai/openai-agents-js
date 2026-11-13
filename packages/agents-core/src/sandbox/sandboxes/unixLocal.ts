@@ -13,6 +13,7 @@ import type {
   Editor,
 } from '../../editor';
 import { UserError } from '../../errors';
+import { registerExclusiveWorkspaceCreate } from './shared/exclusiveWorkspaceFiles';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -262,6 +263,9 @@ export class UnixLocalSandboxSession<
       this.removeEntryNoFollow = this.removeEmptyEntryWithoutLinks.bind(this);
       this.readFileNoFollow = this.readFileWithoutLinks.bind(this);
       this.writeFileNoFollow = this.materializeFileWithoutLinks.bind(this);
+      registerExclusiveWorkspaceCreate(this, (args) =>
+        this.materializeFileWithoutLinks(args, true),
+      );
     }
     this.state = args.state;
     // Low-level session construction is an explicit trusted host operation.
@@ -631,6 +635,7 @@ export class UnixLocalSandboxSession<
 
   private async materializeFileWithoutLinks(
     args: MaterializeEntryArgs,
+    createOnly = false,
   ): Promise<void> {
     this.assertSessionUsable();
     const entry = structuredClone(args.entry);
@@ -641,13 +646,14 @@ export class UnixLocalSandboxSession<
     )
       throw new UserError('No-follow writes require a regular file entry.');
     await withExclusiveSandboxManifestMutation(this.state, () =>
-      this.materializeEntryExclusive({ ...args, entry }, true),
+      this.materializeEntryExclusive({ ...args, entry }, true, createOnly),
     );
   }
 
   private async materializeEntryExclusive(
     args: MaterializeEntryArgs,
     noFollow = false,
+    createOnly = false,
   ): Promise<void> {
     const logicalPath = this.resolveLogicalPath(args.path);
     const manifest = new Manifest({
@@ -668,7 +674,7 @@ export class UnixLocalSandboxSession<
       )
         throw new UserError('No-follow writes require a regular file entry.');
       await this.files.run(
-        { operation: 'write', path },
+        { operation: createOnly ? 'create' : 'write', path },
         { input: args.entry.content, identity: runAs },
       );
     } else {

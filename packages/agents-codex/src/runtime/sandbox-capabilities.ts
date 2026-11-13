@@ -177,6 +177,9 @@ export class SandboxCapabilityLease {
   get capturedInstructions(): string | undefined {
     return this.instructionText;
   }
+  get hasPreparedProfiles(): boolean {
+    return this.profileLeases.size > 0;
+  }
   async forProfile(): Promise<SandboxCapabilityLease> {
     this.assertActive(this.signal);
     const profile = this.cloneLease();

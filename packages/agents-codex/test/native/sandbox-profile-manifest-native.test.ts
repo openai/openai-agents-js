@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -12,6 +12,7 @@ import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import { Agent, Environment, NativeProvider, tool } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
+import { registerExclusiveWorkspaceCreate } from '../../../agents-core/src/sandbox/sandboxes/shared/exclusiveWorkspaceFiles';
 
 let peer: Awaited<ReturnType<typeof startPublicExecutor>>;
 beforeAll(async () => {
@@ -37,14 +38,17 @@ function ownedSource(
     holdFirst?: { entered: () => void; release: Promise<void> };
     invalidRoot?: boolean;
     occupy?: boolean;
+    raceFirst?: boolean;
+    borrowed?: Awaited<ReturnType<UnixLocalSandboxClient['create']>>;
   } = {},
 ) {
   const client = new UnixLocalSandboxClient();
   let prepared = 0;
   let bound = 0;
-  let resource: SandboxSessionLike;
-  let root = '';
+  let resource: SandboxSessionLike | undefined = options.borrowed;
+  let root = (options.borrowed?.state.workspaceRootPath as string) ?? '';
   let firstEffect: string | undefined;
+  let racedContent: string | undefined;
   const writes: string[] = [];
   const probes: { lease: number; output: string }[] = [];
   const create = client.create.bind(client);
@@ -52,21 +56,40 @@ function ownedSource(
     const sandbox = await create(args);
     resource = sandbox;
     root = sandbox.state.workspaceRootPath as string;
-    const write = sandbox.writeFileNoFollow!.bind(sandbox);
-    Object.defineProperty(sandbox, 'writeFileNoFollow', {
-      value: async (args: Parameters<typeof write>[0]) => {
-        writes.push(args.path);
-        if (args.path === 'destination-a.txt' && options.holdFirst) {
-          options.holdFirst.entered();
-          await options.holdFirst.release;
-        }
-        if (args.path === 'destination-b.txt' && options.failSecond) {
-          firstEffect = await readFile(join(root, 'destination-a.txt'), 'utf8');
-          throw options.failSecond;
-        }
+    const exists = sandbox.pathExists.bind(sandbox);
+    if (options.raceFirst)
+      sandbox.pathExists = async (path, runAs) => {
+        const present = await exists(path, runAs);
+        if (path === 'destination-b.txt')
+          await writeFile(
+            join(root, 'destination-a.txt'),
+            'raced-user-content',
+          );
+        return present;
+      };
+    const write: NonNullable<
+      ReturnType<typeof registerExclusiveWorkspaceCreate>
+    > = registerExclusiveWorkspaceCreate(sandbox, async (args) => {
+      writes.push(args.path);
+      if (args.path === 'destination-a.txt' && options.holdFirst) {
+        options.holdFirst.entered();
+        await options.holdFirst.release;
+      }
+      if (args.path === 'destination-b.txt' && options.failSecond) {
+        firstEffect = await readFile(join(root, 'destination-a.txt'), 'utf8');
+        throw options.failSecond;
+      }
+      try {
         await write(args);
-      },
-    });
+      } catch (error) {
+        if (options.raceFirst)
+          racedContent = await readFile(
+            join(root, 'destination-a.txt'),
+            'utf8',
+          );
+        throw error;
+      }
+    })!;
     return sandbox;
   });
   class Destination implements SandboxCapability {
@@ -135,7 +158,8 @@ function ownedSource(
   return {
     source: sandboxEnvironment({
       client,
-      manifest: new Manifest(),
+      session: options.borrowed,
+      manifest: options.borrowed?.state.manifest ?? new Manifest(),
       capabilities: [new Destination()],
       connect: async (sandbox) =>
         Environment.lease(
@@ -153,6 +177,7 @@ function ownedSource(
     root: () => root,
     resource: () => resource!,
     firstEffect: () => firstEffect,
+    racedContent: () => racedContent,
   };
 }
 function actors(
@@ -160,14 +185,13 @@ function actors(
   extra: ReturnType<typeof tool>[] = [],
   returning = false,
 ) {
-  let root: Agent;
   const receiver = new Agent({
     name: 'receiver',
     instructions: 'RECEIVER_BASE',
     model: 'gpt-5.5',
     handoffs: returning ? [() => root] : [],
   });
-  root = new Agent({
+  const root: Agent = new Agent({
     name: 'root',
     instructions: 'ROOT_BASE',
     model: 'gpt-5.5',
@@ -328,6 +352,35 @@ it('has been rejecting destination authority changes before callback or model ef
   await expect(access(scope.root())).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it('has been rejecting changed profile manifests without discarding a borrowed resource', async () => {
+  const client = new UnixLocalSandboxClient();
+  const borrowed = await client.create(
+    new Manifest({
+      entries: {
+        'root.txt': { type: 'file', content: 'root-content' },
+      },
+    }),
+  );
+  try {
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const scope = ownedSource({ borrowed });
+    await expect(
+      actors(provider).root.session({ environment: scope.source }),
+    ).rejects.toThrow('owned disposable workspace');
+    expect(scope.writes).toEqual([]);
+    await expect(
+      readFile(join(scope.root(), 'root.txt'), 'utf8'),
+    ).resolves.toBe('root-content');
+    await expect(
+      access(join(scope.root(), 'destination-a.txt')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(server.requests).toEqual([]);
+  } finally {
+    await borrowed.close();
+  }
+});
+
 it('has been checking every destination occupancy before writing the first file', async () => {
   const server = new ModelServer([
     [call('inspect_workspace', {}, { callId: 'source-write' })],
@@ -345,6 +398,24 @@ it('has been checking every destination occupancy before writing the first file'
   expect(server.requests).toHaveLength(2);
   await expect(access(scope.root())).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(session.submit('Continue.')).rejects.toThrow();
+});
+
+it('has been rejecting a file raced after occupancy validation before target sampling', async () => {
+  const server = new ModelServer([
+    [call('transfer_to_receiver', {}, { callId: 'transfer' })],
+    [message('unexpected accepted target')],
+  ]);
+  await using provider = await providerFor(server);
+  const scope = ownedSource({ raceFirst: true });
+  await using session = await actors(provider).root.session({
+    environment: scope.source,
+  });
+  await expect((await session.submit('Transfer.')).wait()).rejects.toThrow(
+    /File exists/i,
+  );
+  expect(scope.racedContent()).toBe('raced-user-content');
+  expect(server.requests).toHaveLength(1);
+  await expect(access(scope.root())).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('has been retaining the source workspace when a later fatal sibling prevents accepted activation', async () => {

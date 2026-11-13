@@ -849,9 +849,15 @@ function createSandboxEnvironment<
               target,
             );
             if (
-              entries.some(([, entry]) => entry.type !== 'file') ||
+              entries.some(
+                ([, entry]) =>
+                  entry.type !== 'file' ||
+                  entry.permissions !== undefined ||
+                  entry.group !== undefined,
+              ) ||
               (entries.length &&
-                (!sandbox.pathExists || !sandbox.writeFileNoFollow))
+                (!sandbox.pathExists ||
+                  !runtime.hasExclusiveWorkspaceCreate(sandbox)))
             )
               throw new TypeError(
                 'Live capability manifests require additive regular files and owned no-follow writes',
@@ -882,7 +888,7 @@ function createSandboxEnvironment<
                 }
                 for (const [path, entry] of entries) {
                   assertActive();
-                  await sandbox.writeFileNoFollow!({
+                  await runtime.createWorkspaceFileNoFollow(sandbox, {
                     path,
                     entry,
                     runAs: capabilityUser,

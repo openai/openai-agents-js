@@ -199,3 +199,7 @@ export {
   applyManifestToProvidedSession,
   collectAdditiveManifestEntries,
 } from './runtime/providedSessionManifest';
+export {
+  createWorkspaceFileNoFollow,
+  hasExclusiveWorkspaceCreate,
+} from './sandboxes/shared/exclusiveWorkspaceFiles';

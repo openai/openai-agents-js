@@ -230,6 +230,10 @@ const rootState = {
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
+  agent_environment_policy_digest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   history: z.array(losslessJsonObjectSchema),
   pending_actions: z.array(losslessJsonObjectSchema).default([]),
   recovery: z

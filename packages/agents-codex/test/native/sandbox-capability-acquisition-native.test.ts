@@ -117,6 +117,34 @@ function sourceFor(
       ),
   });
 }
+it('has been retaining instruction-only capability text through an accepted graph transfer', async () => {
+  const server = new ModelServer([
+    [call('transfer_to_worker', {}, { callId: 'instruction-only-transfer' })],
+    [message('Instruction-only graph completed.')],
+  ]);
+  await using provider = await providerFor(server);
+  const target = new Agent({
+    name: 'worker',
+    instructions: 'Worker',
+    model: 'gpt-5.5',
+  });
+  const bindings: Bound[] = [];
+  await using session = await new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Root',
+    handoffs: [target],
+  }).session({ environment: sourceFor([new ProbeCapability(bindings)]) });
+  expect((await (await session.submit('Transfer.')).wait()).finalOutput).toBe(
+    'Instruction-only graph completed.',
+  );
+  for (const request of server.requests)
+    expect(JSON.stringify(request.input)).toContain(
+      'Per-acquisition capability instructions',
+    );
+  server.assertExhausted();
+});
+
 it('has been preparing and binding isolated capability clones through actual native openings', async () => {
   const bindings: Bound[] = [];
   const original = new ProbeCapability(bindings);
