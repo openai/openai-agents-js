@@ -10,6 +10,7 @@ import type { ResumedSessionWritePreparation } from './sessionPersistence';
 import { getServerConversationOwner } from './conversation';
 import {
   preflightToolInvocations,
+  interruptedAgentToolRunResults,
   resolveInterruptedTurn,
   resolveTurnAfterModelResponse,
 } from './turnResolution';
@@ -224,6 +225,9 @@ export function applyTurnResult<
   state._toolUseTracker.addToolUse(agent, toolsUsed);
   state._originalInput = turnResult.originalInput;
   state._replaceGeneratedItems(turnResult.generatedItems);
+  if (state._currentStep && state._currentStep !== turnResult.nextStep) {
+    interruptedAgentToolRunResults.delete(state._currentStep);
+  }
   if (
     resetTurnPersistence &&
     turnResult.nextStep.type === 'next_step_run_again'

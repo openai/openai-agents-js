@@ -17,6 +17,7 @@ import {
   getToolCallQualifiedName,
   getFunctionToolLookupKeyForCall,
   matchesFunctionToolName,
+  normalizeFunctionToolCallForStorage,
 } from '../toolIdentity';
 import {
   getToolSearchExecution,
@@ -35,7 +36,6 @@ import {
 import type { RunState } from '../runState';
 import type { Session } from '../memory/session';
 import { Usage } from '../usage';
-import { toSmartString } from '../utils/smartString';
 import {
   getSerializedOutputGuardrailResults,
   sanitizeBlockedOutputGuardrailResults,
@@ -110,8 +110,14 @@ export function needsNestedApprovalOwnership(
 }
 
 function currentCompletedToolRuns(state: RunState<any, any>) {
+  const missingCallIds = new Set(
+    state._lastProcessedResponse?.functionToolsNotFound?.map(
+      ({ toolCall }) => toolCall.callId,
+    ),
+  );
   const responseCalls = getResponseOutput(currentResponse(state))?.filter(
-    (item): item is FunctionCallItem => item.type === 'function_call',
+    (item): item is FunctionCallItem =>
+      item.type === 'function_call' && !missingCallIds.has(item.callId),
   );
   const processedRuns = state._lastProcessedResponse?.functions ?? [];
   if (!responseCalls?.length || processedRuns.length < responseCalls.length) {
@@ -121,7 +127,14 @@ function currentCompletedToolRuns(state: RunState<any, any>) {
     try {
       return (
         JSON.stringify(buildCanonicalFunctionCall(run.toolCall)) ===
-          JSON.stringify(buildCanonicalFunctionCall(responseCalls[index]!)) &&
+          JSON.stringify(
+            buildCanonicalFunctionCall(
+              normalizeFunctionToolCallForStorage(
+                responseCalls[index]!,
+                run.tool,
+              ),
+            ),
+          ) &&
         state._completedToolInvocationEvidence
           .get(state._currentAgent)
           ?.has(run.toolCall.callId)
@@ -154,37 +167,6 @@ function currentTerminalToolRuns(state: RunState<any, any>) {
   return completedRuns;
 }
 
-function currentDeclarativeTerminalToolOutput(
-  state: RunState<any, any>,
-): string | undefined {
-  const behavior = state._currentAgent.toolUseBehavior;
-  if (
-    behavior === 'run_llm_again' ||
-    typeof behavior === 'function' ||
-    state._currentStep?.type !== 'next_step_final_output'
-  ) {
-    return undefined;
-  }
-  const completedRuns = currentTerminalToolRuns(state);
-  const selectedRun =
-    behavior === 'stop_on_first_tool'
-      ? completedRuns[0]
-      : completedRuns.find((run) =>
-          behavior.stopAtToolNames.some((toolName: string) =>
-            matchesFunctionToolName(run.tool, toolName),
-          ),
-        );
-  const callId = selectedRun?.toolCall.callId;
-  const outputItem = callId
-    ? state._completedToolInvocationEvidence
-        .get(state._currentAgent)
-        ?.get(callId)?.items[1]
-    : undefined;
-  return outputItem instanceof RunToolCallOutputItem
-    ? toSmartString(outputItem.output)
-    : undefined;
-}
-
 export function hasPersistedToolOutput(state: RunState<any, any>): boolean {
   return state._generatedItems
     .slice(0, state._currentTurnPersistedItemCount)
@@ -197,23 +179,18 @@ export function hasPendingApprovedToolInputCompaction(
   return state._pendingSessionWrite?.phase === 'compaction_pending';
 }
 
-export function hasDeterministicTerminalToolOutputSource(
-  state: RunState<any, any>,
-): boolean {
-  return (
-    state._currentStep?.type === 'next_step_final_output' &&
-    currentDeclarativeTerminalToolOutput(state) === state._currentStep.output
-  );
-}
-
 export function hasTerminalToolOutputSource(
   state: RunState<any, any>,
+  selectedCallId?: string,
 ): boolean {
   return (
     state._finalOutputSource === 'tool_result' ||
     (state._finalOutputSource === undefined &&
       state._serializedCurrentStep === state._currentStep &&
-      currentTerminalToolRuns(state).length > 0)
+      currentTerminalToolRuns(state).some(
+        ({ toolCall }) =>
+          selectedCallId === undefined || toolCall.callId === selectedCallId,
+      ))
   );
 }
 

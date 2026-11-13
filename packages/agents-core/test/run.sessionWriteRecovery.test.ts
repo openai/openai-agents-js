@@ -1,8 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
   Agent,
+  computerTool,
   MaxTurnsExceededError,
   RunState,
   ToolGuardrailFunctionOutputFactory,
@@ -11,6 +13,7 @@ import {
   run,
   setTracingDisabled,
   tool,
+  toolNamespace,
   type AgentInputItem,
   type OpenAIResponsesCompactionArgs,
   type Session,
@@ -19,12 +22,13 @@ import {
   type ToolToFinalOutputFunction,
   type ToolUseBehavior,
 } from '../src';
+import { mcpToFunctionTool, type CallToolResultContent } from '../src/mcp';
 import { handoff, type HandoffInputData } from '../src/handoff';
 import { removeAllTools } from '../src/extensions/handoffFilters';
 import * as protocol from '../src/types/protocol';
 import { attachClientToolSearchExecutor } from '../src/tool';
 import { ScriptedModel, modelResponder } from '../src/testing';
-import { fakeModelMessage } from './stubs';
+import { FakeComputer, fakeModelMessage } from './stubs';
 
 type RunMode = 'non_streamed' | 'streamed';
 
@@ -1448,7 +1452,7 @@ describe('resumed Session write recovery', () => {
   );
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'rejects an ambiguous serialized sequential-approval terminal $mode append and recovers it live',
+    'recovers the first result from a serialized sequential-approval terminal $mode append',
     async (mode) => {
       const firstExecute = vi.fn(async () => 'first-result');
       const secondExecute = vi.fn(async () => 'second-result');
@@ -1486,21 +1490,32 @@ describe('resumed Session write recovery', () => {
         model,
         tools: [firstTool, secondTool],
         toolUseBehavior: 'stop_on_first_tool',
-        outputGuardrails: [
-          {
-            name: 'passing terminal guardrail',
-            execute: async () => ({
-              outputInfo: undefined,
-              tripwireTriggered: false,
-            }),
-          },
-        ],
+        outputGuardrails:
+          mode === 'non_streamed'
+            ? []
+            : [
+                {
+                  name: 'passing terminal guardrail',
+                  execute: async () => ({
+                    outputInfo: undefined,
+                    tripwireTriggered: false,
+                  }),
+                },
+              ],
       });
       const session = new UncertainAppendSession();
 
       const first = await runOnce(mode, agent, 'Use both tools', session);
       first.state.approve(first.interruptions[0]!);
       const partial = await runOnce(mode, agent, first.state, session);
+      if (mode === 'non_streamed') {
+        expect(await session.getItems()).toContainEqual(
+          expect.objectContaining({
+            type: 'function_call_result',
+            callId: 'first-approval-call',
+          }),
+        );
+      }
       partial.state.approve(partial.interruptions[0]!);
       session.failNextAppend('after');
 
@@ -1511,20 +1526,71 @@ describe('resumed Session write recovery', () => {
         partial.state._pendingSessionWrite?.terminalToolFinalization,
       ).toMatchObject({
         behavior: 'stop_on_first_tool',
-        selectedCallId: 'second-approval-call',
-        finalOutput: 'second-result',
+        selectedCallId: 'first-approval-call',
+        finalOutput: 'first-result',
       });
+      const assertChangedSelectionRejected = async (snapshot: string) => {
+        const altered = JSON.parse(snapshot);
+        const producer = altered.pendingSessionWrite.terminalToolFinalization;
+        const item =
+          altered.generatedItems[producer.selectedGeneratedItemIndex];
+        item.output = 'changed';
+        if (mode === 'non_streamed') item.rawItem.output.text = 'changed';
+        producer.finalOutput = 'changed';
+        altered.currentStep.output = 'changed';
+        const changed = await RunState.fromString(
+          agent,
+          JSON.stringify(altered),
+        );
+        const history = await session.getItems();
+        await expect(runOnce(mode, agent, changed, session)).rejects.toThrow(
+          /verified against the saved Session result/,
+        );
+        expect(await session.getItems()).toEqual(history);
+      };
+      let restored = await RunState.fromString<unknown, typeof agent>(
+        agent,
+        partial.state.toString(),
+      );
+      await assertChangedSelectionRejected(partial.state.toString());
+      if (mode === 'non_streamed') {
+        session.failNextCompaction();
+        await expect(runOnce(mode, agent, restored, session)).rejects.toThrow(
+          /input compaction rejected/,
+        );
+        expect(restored._pendingSessionWrite?.phase).toBe('compaction_pending');
+        await assertChangedSelectionRejected(restored.toString());
+        restored = await RunState.fromString(agent, restored.toString());
+        session.failNextCompactionAfterReplacement();
+        await expect(runOnce(mode, agent, restored, session)).rejects.toThrow(
+          /compaction acknowledgement lost/,
+        );
+        const reparsed = await RunState.fromString(agent, restored.toString());
+        await expect(runOnce(mode, agent, reparsed, session)).rejects.toThrow(
+          /verified against the saved Session result/,
+        );
+      }
+      const completed = await runOnce(mode, agent, restored, session);
 
-      await expect(
-        RunState.fromString(agent, partial.state.toString()),
-      ).rejects.toThrow(/pending Session write is invalid/);
-      const completed = await runOnce(mode, agent, partial.state, session);
-
-      expect(completed.finalOutput).toBe('second-result');
+      expect(completed.finalOutput).toBe('first-result');
       expect(firstExecute).toHaveBeenCalledTimes(1);
       expect(secondExecute).toHaveBeenCalledTimes(1);
       expect(model.calls).toHaveLength(1);
-      expect(partial.state._pendingSessionWrite).toBeUndefined();
+      if (mode === 'non_streamed') {
+        expect(await session.getItems()).toEqual([
+          {
+            type: 'compaction',
+            encrypted_content: 'replacement-acknowledgement-lost',
+          },
+        ]);
+      } else {
+        expect(
+          (await session.getItems()).flatMap((item) =>
+            item.type === 'function_call_result' ? [item.callId] : [],
+          ),
+        ).toEqual(['first-approval-call', 'second-approval-call']);
+      }
+      expect(restored._pendingSessionWrite).toBeUndefined();
     },
   );
 
@@ -1605,6 +1671,32 @@ describe('resumed Session write recovery', () => {
         RunState.fromString(agent, JSON.stringify(forged)),
       ).rejects.toThrow(/pending Session write is invalid/);
 
+      const swapped = structuredClone(forged);
+      [swapped.generatedItems[0], swapped.generatedItems[1]] = [
+        swapped.generatedItems[1],
+        swapped.generatedItems[0],
+      ];
+      for (const owner of swapped.completedToolInvocationEvidence) {
+        for (const record of Object.values(owner.invocations) as {
+          items: { generatedItemIndex?: number }[];
+        }[]) {
+          const reference = record.items[0];
+          if (
+            reference.generatedItemIndex === 0 ||
+            reference.generatedItemIndex === 1
+          )
+            reference.generatedItemIndex = 1 - reference.generatedItemIndex;
+        }
+      }
+      await expect(
+        RunState.fromString(agent, JSON.stringify(swapped)),
+      ).rejects.toThrow(/pending Session write is invalid/);
+
+      forged.lastProcessedResponse.functions.shift();
+      await expect(
+        RunState.fromString(agent, JSON.stringify(forged)),
+      ).rejects.toThrow(/pending Session write is invalid/);
+
       const duplicateOutput = JSON.parse(first.state.toString());
       const firstGeneratedItemIndex = duplicateOutput.generatedItems.findIndex(
         (item: { rawItem?: { type?: string; callId?: string } }) =>
@@ -1637,6 +1729,565 @@ describe('resumed Session write recovery', () => {
       expect(model.calls).toHaveLength(1);
     },
   );
+
+  it.each(['together', 'sequential', 'callback'] as const)(
+    'preserves function results when rejecting a computer action (%s)',
+    async (mode) => {
+      const approved = vi.fn(async () => 'B');
+      const immediate = vi.fn(async () => 'A');
+      const seen: unknown[] = [];
+      const { agent } = createApprovalRun(
+        approved,
+        mode === 'callback'
+          ? async (_ctx, results) => {
+              for (const result of results)
+                if (result.type === 'function_output') seen.push(result.output);
+              return {
+                isFinalOutput: true,
+                isInterrupted: undefined,
+                finalOutput: String(seen[0]),
+              };
+            }
+          : 'stop_on_first_tool',
+      );
+      agent.tools.push(
+        tool({
+          name: 'first',
+          description: 'Returns A.',
+          parameters: z.object({}),
+          execute: immediate,
+        }),
+        computerTool({ computer: new FakeComputer(), needsApproval: true }),
+      );
+      const model = new ScriptedModel([
+        [
+          { ...functionToolCall('first-call'), name: 'first' },
+          functionToolCall(),
+          {
+            type: 'computer_call',
+            callId: 'computer',
+            status: 'completed',
+            actions: [{ type: 'screenshot' }],
+          },
+        ],
+      ]);
+      agent.model = model;
+      const session = new UncertainAppendSession();
+      const first = await run(agent, 'run all', { session });
+      expect(first.interruptions).toHaveLength(2);
+      first.state.reject(
+        first.interruptions.find(
+          (item) => item.rawItem.type === 'computer_call',
+        )!,
+      );
+      const pending =
+        mode === 'together'
+          ? first
+          : await run(agent, first.state, { session });
+      if (mode !== 'together') expect(pending.interruptions).toHaveLength(1);
+      pending.state.approve(
+        pending.interruptions.find(
+          (item) => item.rawItem.type === 'function_call',
+        )!,
+      );
+      const result = await run(agent, pending.state, { session });
+      expect(result.finalOutput).toBe('A');
+      if (mode === 'callback') expect(seen).toEqual(['A', 'B']);
+      expect(immediate).toHaveBeenCalledTimes(1);
+      expect(approved).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
+    },
+  );
+
+  const mcpBlocks = [
+    { type: 'text', text: 'caption' },
+    { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+  ] satisfies CallToolResultContent;
+  it.each([
+    {
+      name: 'schema-backed JSON containing a serialized Buffer',
+      outputSchema: {
+        type: 'object' as const,
+        properties: {
+          payload: {
+            type: 'object',
+            properties: {
+              type: { const: 'Buffer' },
+              data: { type: 'array', items: { type: 'number' } },
+            },
+            required: ['type', 'data'],
+            additionalProperties: false,
+          },
+        },
+        required: ['payload'],
+        additionalProperties: false as const,
+      },
+      output: { payload: { type: 'Buffer', data: [104, 105] } },
+      stored: {
+        type: 'text',
+        text: '{"payload":{"type":"Buffer","data":[104,105]}}',
+      },
+      final: '{"payload":"[byte array 0x68 0x69 (2 bytes)]"}',
+    },
+    {
+      name: 'single MCP block',
+      mcpContent: [
+        { type: 'text', text: 'done' },
+      ] satisfies CallToolResultContent,
+      output: { type: 'text', text: 'done' },
+      stored: [{ type: 'input_text', text: 'done' }],
+    },
+    {
+      name: 'generic single-element list',
+      output: [{ type: 'text', text: 'done' }],
+      stored: [{ type: 'input_text', text: 'done' }],
+    },
+    {
+      name: 'structured text in a deferred append',
+      deferAppend: true,
+      output: { type: 'text', text: 'done' },
+      stored: [{ type: 'input_text', text: 'done' }],
+    },
+    {
+      name: 'inline file bytes',
+      output: {
+        type: 'file',
+        file: {
+          data: new Uint8Array([1, 2]),
+          mediaType: 'text/plain',
+          filename: 'notes.txt',
+        },
+      },
+      stored: [
+        {
+          type: 'input_file',
+          file: 'data:text/plain;base64,AQI=',
+          filename: 'notes.txt',
+        },
+      ],
+      final:
+        '{"type":"file","file":{"data":"[byte array 0x01 0x02 (2 bytes)]","mediaType":"text/plain","filename":"notes.txt"}}',
+    },
+    {
+      name: 'image without optional detail',
+      output: { type: 'image', image: 'https://example.com/image.png' },
+      stored: [{ type: 'input_image', image: 'https://example.com/image.png' }],
+      droppedField: {
+        type: 'image',
+        image: 'https://example.com/image.png',
+        detail: '',
+      },
+    },
+    {
+      name: 'file without optional filename',
+      output: { type: 'file', file: { id: 'file_123' } },
+      stored: [{ type: 'input_file', file: { id: 'file_123' } }],
+      droppedField: { type: 'file', file: { id: 'file_123', filename: '' } },
+    },
+    {
+      name: 'file URL projected by a Session without a comparison hook',
+      output: { type: 'file', file: 'https://example.com/report.pdf' },
+      stored: [
+        { type: 'input_file', file: { url: 'https://example.com/report.pdf' } },
+      ],
+      droppedField: { type: 'file', file: 'https://example.com/other.pdf' },
+    },
+    {
+      name: 'legacy file reference',
+      output: { type: 'file', fileId: 'file_123', filename: 'report.pdf' },
+      stored: [
+        {
+          type: 'input_file',
+          file: { id: 'file_123' },
+          filename: 'report.pdf',
+        },
+      ],
+    },
+    {
+      name: 'MCP image with a MIME type',
+      output: { type: 'image', mimeType: 'image/png', data: 'aGk=' },
+      stored: [{ type: 'input_image', image: 'data:image/png;base64,aGk=' }],
+      droppedField: {
+        type: 'image',
+        mimeType: 'image/jpeg',
+        mediaType: 'image/png',
+        data: 'aGk=',
+      },
+    },
+    {
+      name: 'multiple MCP content blocks',
+      output: mcpBlocks,
+      mcpContent: mcpBlocks,
+      stored: [
+        { type: 'input_text', text: 'caption' },
+        { type: 'input_image', image: 'data:image/png;base64,aGk=' },
+      ],
+    },
+  ])(
+    'recovers the saved $name after a later append loses its acknowledgement',
+    async (example) => {
+      const { output, stored } = example;
+      const execute = vi.fn(async () => output);
+      const approved = vi.fn(async () => 'approved');
+      const { agent } = createApprovalRun(approved, 'stop_on_first_tool');
+      const callTool = vi.fn(async () => example.mcpContent ?? []);
+      agent.tools.push(
+        example.mcpContent
+          ? mcpToFunctionTool(
+              {
+                name: 'first',
+                inputSchema: {
+                  type: 'object',
+                  properties: {},
+                  required: [],
+                  additionalProperties: false,
+                },
+              },
+              {
+                name: 'structured-content-server',
+                cacheToolsList: false,
+                connect: async () => {},
+                close: async () => {},
+                listTools: async () => [],
+                invalidateToolsCache: async () => {},
+                callTool,
+              },
+              false,
+            )
+          : tool({
+              name: 'first',
+              description: 'Returns content.',
+              parameters: z.object({}),
+              outputSchema: example.outputSchema,
+              execute,
+            }),
+      );
+      const model = new ScriptedModel([
+        [
+          { ...functionToolCall('first-call'), name: 'first' },
+          functionToolCall(),
+        ],
+      ]);
+      agent.model = model;
+      if (example.deferAppend)
+        agent.outputGuardrails.push({
+          name: 'defer selected output',
+          execute: async () => ({
+            tripwireTriggered: false,
+            outputInfo: undefined,
+          }),
+        });
+      class FileUrlSession extends UncertainAppendSession {
+        override addItems(items: AgentInputItem[]) {
+          const storedItems = structuredClone(items);
+          for (const item of storedItems) {
+            if (
+              item.type !== 'function_call_result' ||
+              !Array.isArray(item.output)
+            )
+              continue;
+            for (const block of item.output) {
+              if (
+                block.type === 'input_file' &&
+                typeof block.file === 'string' &&
+                block.file.startsWith('https://')
+              ) {
+                block.file = { url: block.file };
+              }
+            }
+          }
+          return super.addItems(storedItems);
+        }
+      }
+      const session = new FileUrlSession();
+      const first = await run(agent, 'run both', { session });
+      const expectedStored = expect.objectContaining({
+        type: 'function_call_result',
+        callId: 'first-call',
+        output: stored,
+      });
+      if (example.deferAppend) {
+        expect(await session.getItems()).not.toContainEqual(expectedStored);
+      } else {
+        expect(await session.getItems()).toContainEqual(expectedStored);
+      }
+      first.state.approve(first.interruptions[0]!);
+      session.failNextAppend(example.deferAppend ? 'before' : 'after');
+      await expect(run(agent, first.state, { session })).rejects.toThrow(
+        example.deferAppend ? /before commit/ : /acknowledgement lost/,
+      );
+      const snapshot = first.state.toString();
+      const history = await session.getItems();
+      for (const replacement of [
+        { type: 'text', text: 'changed' },
+        { type: 'text', text: 'done', hidden: 'unbound' },
+        ...(example.mcpContent?.length === 1 ? [[output]] : []),
+        ...(example.outputSchema ? [output] : []),
+        ...(example.droppedField ? [example.droppedField] : []),
+      ]) {
+        const changed = JSON.parse(snapshot);
+        const producer = changed.pendingSessionWrite.terminalToolFinalization;
+        const selected =
+          changed.generatedItems[producer.selectedGeneratedItemIndex];
+        selected.output = JSON.stringify(replacement);
+        producer.finalOutput = selected.output;
+        changed.currentStep.output = selected.output;
+        const restored = await RunState.fromString(
+          agent,
+          JSON.stringify(changed),
+        );
+        await expect(run(agent, restored, { session })).rejects.toThrow(
+          /verified against the saved Session result/,
+        );
+      }
+      expect(await session.getItems()).toEqual(history);
+      const restored = await RunState.fromString(agent, snapshot);
+      const result = await run(agent, restored, { session });
+      expect(result.finalOutput).toBe(
+        'final' in example ? example.final : JSON.stringify(output),
+      );
+      if (example.deferAppend) {
+        expect(
+          (await session.getItems()).filter(
+            (item) =>
+              item.type === 'function_call_result' &&
+              item.callId === 'first-call',
+          ),
+        ).toEqual([expectedStored]);
+      } else {
+        expect(await session.getItems()).toEqual(history);
+      }
+      expect(example.mcpContent ? callTool : execute).toHaveBeenCalledTimes(1);
+      expect(approved).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
+    },
+  );
+
+  it('checks the stored result when a Session rewrites a deferred append on retry', async () => {
+    const { agent, execute: approved } = createApprovalRun(
+      undefined,
+      'stop_on_first_tool',
+    );
+    const execute = vi.fn(async () => ({
+      type: 'text',
+      text: 'done',
+      providerData: { marker: 'not persisted' },
+    }));
+    agent.tools.push(
+      tool({
+        name: 'first',
+        description: 'Return structured content.',
+        parameters: z.object({}),
+        execute,
+      }),
+    );
+    agent.outputGuardrails.push({
+      name: 'defer terminal results',
+      execute: async () => ({
+        tripwireTriggered: false,
+        outputInfo: undefined,
+      }),
+    });
+    const model = new ScriptedModel([
+      [
+        { ...functionToolCall('first-call'), name: 'first' },
+        functionToolCall(),
+      ],
+    ]);
+    agent.model = model;
+    // Conversations stores input_text blocks with type and text only.
+    class ModelVisibleSession extends UncertainAppendSession {
+      override addItems(items: AgentInputItem[]) {
+        const stored = structuredClone(items);
+        for (const item of stored) {
+          if (
+            item.type === 'function_call_result' &&
+            Array.isArray(item.output)
+          ) {
+            for (const block of item.output) {
+              if (block.type === 'input_text') delete block.providerData;
+            }
+          }
+        }
+        return super.addItems(stored);
+      }
+    }
+    const session = new ModelVisibleSession();
+    const first = await run(agent, 'run both', { session });
+    first.state.approve(first.interruptions[0]!);
+    session.failNextAppend('before');
+    await expect(run(agent, first.state, { session })).rejects.toThrow(
+      /before commit/,
+    );
+    const restored = await RunState.fromString(agent, first.state.toString());
+    await expect(run(agent, restored, { session })).rejects.toThrow(
+      /verified against the saved Session result/,
+    );
+    expect(restored._pendingSessionWrite?.phase).toBe('compaction_pending');
+    const writes = session.addCalls;
+    await expect(run(agent, restored, { session })).rejects.toThrow(
+      /verified against the saved Session result/,
+    );
+    expect(session.addCalls).toBe(writes);
+    expect(await session.getItems()).toContainEqual(
+      expect.objectContaining({
+        type: 'function_call_result',
+        callId: 'first-call',
+        output: [{ type: 'input_text', text: 'done' }],
+      }),
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(approved).toHaveBeenCalledTimes(1);
+    expect(model.calls).toHaveLength(1);
+  });
+
+  it.each(['live', 'restored'] as const)(
+    'preserves the v0.21.0 terminal selection on a %s compaction retry',
+    async (retry) => {
+      // Captured after v0.21.0 committed the gated output and its Session lost the acknowledgement.
+      const { snapshot, history } = JSON.parse(
+        readFileSync(
+          new URL(
+            './fixtures/run-state/v0.21.0-split-terminal-append.json',
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      );
+      const execute = vi.fn(async () => 'unexpected replay');
+      const model = new ScriptedModel([]);
+      const agent = new Agent({
+        name: 'Released agent',
+        model,
+        toolUseBehavior: 'stop_on_first_tool',
+        tools: ['immediate', 'gated'].map((name) =>
+          tool({
+            name,
+            description: name,
+            parameters: z.object({}),
+            needsApproval: name === 'gated',
+            execute,
+          }),
+        ),
+      });
+      const session = new UncertainAppendSession();
+      await session.addItems(history);
+      const restored = await RunState.fromString(
+        agent,
+        JSON.stringify(snapshot),
+      );
+      session.failNextCompaction();
+      await expect(run(agent, restored, { session })).rejects.toThrow(
+        /input compaction rejected/,
+      );
+      expect(restored._pendingSessionWrite?.phase).toBe('compaction_pending');
+      if (retry === 'restored') {
+        const checkpoint = restored.toJSON();
+        const gated = checkpoint.lastModelResponse!.output.find(
+          (item) => item.type === 'function_call' && item.callId === 'gated',
+        );
+        if (gated?.type !== 'function_call')
+          throw new Error('Missing fixture call.');
+        gated.arguments = '{"changed":true}';
+        await expect(
+          RunState.fromString(agent, JSON.stringify(checkpoint)),
+        ).rejects.toThrow(
+          /pending Session (write|compaction terminal output) is invalid/,
+        );
+      }
+      const state =
+        retry === 'live'
+          ? restored
+          : await RunState.fromString(agent, restored.toString());
+      if (retry === 'restored') {
+        const missingResult = new UncertainAppendSession();
+        await missingResult.addItems(history.slice(0, -1));
+        await expect(
+          run(agent, state, { session: missingResult }),
+        ).rejects.toThrow(/verified against the saved Session result/);
+        expect(missingResult.compactionArgs).toHaveLength(0);
+      }
+      expect((await run(agent, state, { session })).finalOutput).toBe('gated');
+      expect(session.compactionArgs).toHaveLength(2);
+      expect(session.addCalls).toBe(1);
+      expect(await session.getItems()).toEqual(history);
+      expect(model.calls).toHaveLength(0);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves a flattened namespace call across restored append and compaction retries', async () => {
+    const execute = vi.fn(async () => 'CRM result');
+    const gated = vi.fn(async () => 'approved');
+    const { agent } = createApprovalRun(gated, 'stop_on_first_tool');
+    agent.tools.push(
+      ...toolNamespace({
+        name: 'crm',
+        description: 'CRM tools.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Looks up a record.',
+            parameters: z.object({}),
+            execute,
+          }),
+        ],
+      }),
+    );
+    const model = new ScriptedModel([
+      [
+        { ...functionToolCall('lookup'), name: 'crm.lookup' },
+        functionToolCall(),
+      ],
+    ]);
+    agent.model = model;
+    const session = new UncertainAppendSession();
+    const first = await run(agent, 'run both', { session });
+    first.state.approve(first.interruptions[0]!);
+    session.failNextAppend('after');
+    await expect(run(agent, first.state, { session })).rejects.toThrow(
+      /acknowledgement lost/,
+    );
+    const writes = session.addCalls;
+    const append = await RunState.fromString(agent, first.state.toString());
+    session.failNextCompaction();
+    await expect(run(agent, append, { session })).rejects.toThrow(
+      /input compaction rejected/,
+    );
+    const compaction = await RunState.fromString(agent, append.toString());
+    expect((await run(agent, compaction, { session })).finalOutput).toBe(
+      'CRM result',
+    );
+    expect(session.addCalls).toBe(writes);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(gated).toHaveBeenCalledTimes(1);
+    expect(model.calls).toHaveLength(1);
+  });
+
+  it('recovers a terminal append when a missing function produced an earlier error', async () => {
+    const execute = vi.fn(async () => 'approved-result');
+    const { agent } = createApprovalRun(execute, 'stop_on_first_tool');
+    const model = new ScriptedModel([
+      [{ ...functionToolCall('unknown'), name: 'missing' }, functionToolCall()],
+    ]);
+    agent.model = model;
+    const session = new UncertainAppendSession();
+    const first = await run(agent, 'run both', {
+      session,
+      toolNotFoundBehavior: 'return_error_to_model',
+    });
+    first.state.approve(first.interruptions[0]!);
+    session.failNextAppend('after');
+    await expect(run(agent, first.state, { session })).rejects.toThrow(
+      /acknowledgement lost/,
+    );
+    const restored = await RunState.fromString(agent, first.state.toString());
+    expect((await run(agent, restored, { session })).finalOutput).toBe(
+      'approved-result',
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(model.calls).toHaveLength(1);
+  });
 
   it('rejects incomplete or reordered serialized custom-callback result provenance', async () => {
     const firstTool = tool({
@@ -1714,7 +2365,7 @@ describe('resumed Session write recovery', () => {
   });
 
   it.each<RunMode>(['non_streamed', 'streamed'])(
-    'recovers a mixed-result custom callback from only the resumed $mode result range',
+    'recovers a mixed-result $mode callback with both ordered outputs',
     async (mode) => {
       const immediateExecute = vi.fn(async () => 'immediate-result');
       const approvedExecute = vi.fn(async () => 'approved-result');
@@ -1789,11 +2440,15 @@ describe('resumed Session write recovery', () => {
         first.state._pendingSessionWrite?.terminalToolFinalization;
       expect(finalization).toMatchObject({
         behavior: 'function',
-        finalOutput: 'callback:approved-result',
+        finalOutput: 'callback:immediate-result,approved-result',
       });
       await expect(
         RunState.fromString(agent, first.state.toString()),
       ).rejects.toThrow(/pending Session write is invalid/);
+      const recovered = await runOnce(mode, agent, first.state, session);
+      expect(recovered.finalOutput).toBe(
+        'callback:immediate-result,approved-result',
+      );
       expect(immediateExecute).toHaveBeenCalledTimes(1);
       expect(approvedExecute).toHaveBeenCalledTimes(1);
       expect(customBehavior).toHaveBeenCalledTimes(1);
