@@ -2,7 +2,7 @@ name: Alpha release artifacts warm runner trial
 
 on:
   push:
-    branches: ['ci/hillclimb/js-warm-fast-24']
+    branches: ['ci/hillclimb/js-warm-macos-git-trace-29']
 
 permissions:
   contents: read
@@ -168,6 +168,10 @@ jobs:
           key: node-cache-${{ runner.os }}-${{ steps.pnpm-cache.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Build the current SDK
         run: |
+          if [[ "$RUNNER_OS" == macOS && "$GITHUB_REPOSITORY" == openai/openai-agents-js && "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/ci/hillclimb/js-warm-macos-git-trace-29 ]]; then
+            export OPENAI_AGENTS_TRACE_NATIVE_GIT=1
+            export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$GITHUB_WORKSPACE/scripts/benchmarks/native-git-trace.cjs"
+          fi
           pnpm install --frozen-lockfile
           pnpm build
       - name: Qualify native browser interactions, audio, and MCP Apps
