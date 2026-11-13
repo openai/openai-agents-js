@@ -599,3 +599,6 @@ export type {
   ResponsesSocketOptions,
   ResponsesSocketFactory,
 } from './runtime/responses-websocket-model';
+
+export { HostedResponsesWebSocketModel } from './runtime/hosted-responses-websocket-model';
+export type { HostedResponsesWebSocketModelOptions } from './runtime/hosted-responses-websocket-model';

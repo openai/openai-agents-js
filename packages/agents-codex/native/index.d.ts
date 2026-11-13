@@ -308,12 +308,14 @@ export class NativeThread {
   ): Promise<string>;
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
+  _account_provider_request(ownerJson: string, operationJson: string): string | null;
   _reply_model_producer(response_json: string): void;
   _start_model_producer(
     owner_json: string,
     chat_stream?: boolean,
     upstream_request_id?: string,
     ai_sdk_stream?: boolean,
+    responses_websocket_stream?: boolean,
   ): void;
   _push_model_producer(
     owner_json: string,

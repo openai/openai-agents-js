@@ -8,6 +8,9 @@ import {
   capturePromptCacheKey,
   captureRequestOptionsSource,
   clientRequestOptions,
+  hasRawProviderEvents,
+  markRawModelPart,
+  markResponsesWebSocketStream,
   projectResponsesResponse,
   type ModelAdapterOptions,
   type ModelRequest,
@@ -29,6 +32,23 @@ export type ResponsesSocketFactory = (
   request: ModelRequest,
   options: ResponsesSocketOptions,
 ) => ResponsesSocket | Promise<ResponsesSocket>;
+type SocketEnvelope =
+  ReturnType<
+    ResponsesSocket[typeof Symbol.asyncIterator]
+  > extends AsyncIterableIterator<infer Envelope>
+    ? Envelope
+    : never;
+const socketFrameKinds = new WeakMap<object, 'raw' | 'projected'>();
+
+/** @internal Hosted transport distinguishes provider frames from local projection. */
+export function markResponsesSocketFrame(
+  envelope: SocketEnvelope,
+  kind: 'raw' | 'projected',
+): SocketEnvelope {
+  socketFrameKinds.set(envelope, kind);
+  return envelope;
+}
+
 type Connection = {
   socket: ResponsesSocket;
   iterator: ReturnType<ResponsesSocket[typeof Symbol.asyncIterator]>;
@@ -88,7 +108,11 @@ export class ResponsesWebSocketModel implements NativeModel {
     );
   }
 
-  async *stream(request: ModelRequest): AsyncIterable<JsonObject> {
+  stream(request: ModelRequest): AsyncIterable<JsonObject> {
+    return markResponsesWebSocketStream(this.#streamResponse(request));
+  }
+
+  async *#streamResponse(request: ModelRequest): AsyncIterable<JsonObject> {
     request.signal.throwIfAborted();
     if (!request.runOwner)
       throw new TypeError(
@@ -180,6 +204,10 @@ export class ResponsesWebSocketModel implements NativeModel {
           );
         if (message.type !== 'message') continue;
         const event = losslessJsonObjectSchema.parse(message.message);
+        const kind = socketFrameKinds.get(message);
+        if (kind !== 'projected' && hasRawProviderEvents(request))
+          yield markRawModelPart(copyJsonValue(event) as JsonObject);
+        if (kind === 'raw') continue;
         const response = event.response;
         if (
           response &&

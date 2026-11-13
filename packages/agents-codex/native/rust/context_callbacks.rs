@@ -1225,6 +1225,7 @@ pub(super) enum ModelDelivery {
         projection: codex_api::ApplicationModelStream,
         observe_raw_chat: bool,
         observe_raw_ai_sdk: bool,
+        observe_raw_responses_websocket: bool,
         chat_stream: bool,
         provider_metadata: Option<codex_extension_api::CapturedModelProviderOutput>,
     },
@@ -1587,9 +1588,10 @@ impl PythonTools {
         chat_stream: bool,
         upstream_request_id: Option<String>,
         ai_sdk_stream: bool,
+        responses_websocket_stream: bool,
     ) -> Result<()> {
         ensure!(
-            !(chat_stream && ai_sdk_stream),
+            u8::from(chat_stream) + u8::from(ai_sdk_stream) + u8::from(responses_websocket_stream) <= 1,
             "Ambiguous model adapter source"
         );
         let active = self
@@ -1626,10 +1628,11 @@ impl PythonTools {
                 events,
                 finish,
                 projection: codex_api::ApplicationModelStream::new(
-                    observe_raw && !chat_stream && !ai_sdk_stream,
+                    observe_raw && !chat_stream && !ai_sdk_stream && !responses_websocket_stream,
                 ),
                 observe_raw_chat: observe_raw && chat_stream,
                 observe_raw_ai_sdk: observe_raw && ai_sdk_stream,
+                observe_raw_responses_websocket: observe_raw && responses_websocket_stream,
                 chat_stream,
                 provider_metadata,
             }),
@@ -1680,6 +1683,7 @@ impl PythonTools {
                 projection,
                 observe_raw_chat,
                 observe_raw_ai_sdk,
+                observe_raw_responses_websocket,
                 provider_metadata,
                 ..
             }) = &mut pending.reply
@@ -1688,7 +1692,7 @@ impl PythonTools {
             };
             let (projected, continuing) = if raw_part {
                 ensure!(
-                    *observe_raw_chat || *observe_raw_ai_sdk,
+                    *observe_raw_chat || *observe_raw_ai_sdk || *observe_raw_responses_websocket,
                     "Raw model parts require an opted-in adapter stream"
                 );
                 ensure!(
@@ -1696,15 +1700,22 @@ impl PythonTools {
                     "Raw model part exceeds the stream frame limit"
                 );
                 let raw = serde_json::from_str(data).context("Invalid raw model part")?;
+                use codex_protocol::protocol::{
+                    ResponsesEventTransport, SdkRawProviderEvent, SdkRawProviderSource,
+                };
+                let (source, transport) = if *observe_raw_responses_websocket {
+                    (SdkRawProviderSource::Responses, ResponsesEventTransport::Websocket)
+                } else if *observe_raw_ai_sdk {
+                    (SdkRawProviderSource::AiSdk, ResponsesEventTransport::Json)
+                } else {
+                    (SdkRawProviderSource::ChatCompletions, ResponsesEventTransport::Json)
+                };
                 (
-                    vec![raw_model_provider_event(
-                        raw,
-                        if *observe_raw_ai_sdk {
-                            codex_protocol::protocol::SdkRawProviderSource::AiSdk
-                        } else {
-                            codex_protocol::protocol::SdkRawProviderSource::ChatCompletions
-                        },
-                    )],
+                    vec![codex_api::ResponseEvent::RawProvider(SdkRawProviderEvent {
+                        source,
+                        transport,
+                        payload: Value::Object(raw),
+                    })],
                     true,
                 )
             } else {

@@ -87,6 +87,34 @@ const rawChatCompletion = Symbol('original Chat Completion');
 const chatModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
 const aiSdkModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
 const rawModelParts = new WeakSet<JsonObject>();
+const responsesWebSocketStreams = new WeakSet<AsyncIterable<JsonObject>>();
+
+/** @internal Real Responses WebSocket events are separate from projected items. */
+export function hasRawProviderEvents(request: ModelRequest): boolean {
+  return (
+    (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+      rawProviderRequest
+    ] === true
+  );
+}
+
+export function markRawModelPart(event: JsonObject): JsonObject {
+  rawModelParts.add(event);
+  return event;
+}
+
+export function markResponsesWebSocketStream(
+  stream: AsyncIterable<JsonObject>,
+): AsyncIterable<JsonObject> {
+  responsesWebSocketStreams.add(stream);
+  return stream;
+}
+
+export function isResponsesWebSocketStream(
+  stream: AsyncIterable<JsonObject>,
+): boolean {
+  return responsesWebSocketStreams.has(stream);
+}
 // The adapter assembles items before Core sees them, including tool-only chunks.
 const maxChatStreamBytes = 8 * 1024 * 1024;
 
@@ -1368,6 +1396,19 @@ function hasResponsesRefusal(output: readonly JsonObject[]): boolean {
   );
 }
 
+export function projectResponsesUsage(usage: any): ModelResponse['usage'] {
+  if (!usage) return undefined;
+  const cacheWrite = usage.input_tokens_details?.cache_write_tokens;
+  return {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    total_tokens: usage.total_tokens ?? 0,
+    cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
+    cache_write_input_tokens: cacheWrite ?? 0,
+    reasoning_output_tokens: usage.output_tokens_details?.reasoning_tokens ?? 0,
+  };
+}
+
 export function projectResponsesResponse(response: any): ModelResponse {
   const output = (response.output ?? []) as JsonObject[];
   const refusal = hasResponsesRefusal(output);
@@ -1381,15 +1422,7 @@ export function projectResponsesResponse(response: any): ModelResponse {
     ...(response.id ? { responseId: response.id } : {}),
     ...(usage
       ? {
-          usage: {
-            input_tokens: usage.input_tokens ?? 0,
-            output_tokens: usage.output_tokens ?? 0,
-            total_tokens: usage.total_tokens ?? 0,
-            cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
-            cache_write_input_tokens: cacheWrite ?? 0,
-            reasoning_output_tokens:
-              usage.output_tokens_details?.reasoning_tokens ?? 0,
-          },
+          usage: projectResponsesUsage(usage),
         }
       : {}),
   };

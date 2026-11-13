@@ -52,6 +52,7 @@ import {
   releaseModelAttemptPayload,
   restoreModelUsageOffset,
 } from './model-attempts';
+import { bindProviderRequestAccounting } from './provider-request-accounting';
 import {
   mergeRequestAttempts,
   parseRequestAttempts,
@@ -91,6 +92,7 @@ import {
   isChatModelStream,
   isAiSdkModelStream,
   isRawModelPart,
+  isResponsesWebSocketStream,
   markModelRequestTransport,
   markRawProviderRequest,
   pumpModelStream,
@@ -9632,6 +9634,15 @@ export class Session<OutputT = string, Context = unknown> {
                           }),
                     }),
               };
+              if (usageOwner !== undefined)
+                bindProviderRequestAccounting(request, (operation) =>
+                  sourceNative._account_provider_request(
+                    usageOwner,
+                    operation.operation === 'terminal' && operation.usage
+                      ? `{"operation":"terminal","lineage":${JSON.stringify(operation.lineage)},"usage":${modelAttemptUsageJson(operation.usage)}}`
+                      : encode(operation),
+                  ),
+                );
               bindModelProviderMetadata(request, msg.provider_metadata);
               markModelRequestTransport(request, msg.request_transport);
               if (this.options.includeRawProviderEvents)
@@ -9707,6 +9718,7 @@ export class Session<OutputT = string, Context = unknown> {
                         isChatModelStream(stream),
                         borrowedResponsesRequestId(stream),
                         isAiSdkModelStream(stream),
+                        isResponsesWebSocketStream(stream),
                       );
                     },
                     push: (event, original) =>

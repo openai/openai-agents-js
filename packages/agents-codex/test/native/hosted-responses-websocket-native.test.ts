@@ -1,0 +1,481 @@
+import { once } from 'node:events';
+import { writeFile } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
+import OpenAI from 'openai';
+import { ResponsesWS } from 'openai/resources/responses/ws';
+import { WebSocketServer } from 'ws';
+import { expect, it } from 'vitest';
+import { z } from 'zod';
+import {
+  Agent,
+  NativeProvider,
+  HostedResponsesWebSocketModel,
+  tool,
+} from '../../src';
+
+it.each([false, true])(
+  'executes one native tool across a provider pause/inject with terminal-before-ack=%s',
+  async (terminalBeforeAck) => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const frames: Record<string, any>[] = [];
+    const beta: unknown[] = [];
+    const incoming: unknown[] = [];
+    const observed: unknown[] = [];
+    let connections = 0;
+    let closes = 0;
+    let effects = 0;
+    const call = {
+      type: 'function_call',
+      id: 'fc_hosted',
+      call_id: 'call_hosted',
+      name: 'lookup',
+      arguments: '{}',
+      agent: { agent_name: '/worker' },
+      vendor: { enabled: false },
+    };
+    const final = {
+      type: 'message',
+      id: 'msg_done',
+      role: 'assistant',
+      status: 'completed',
+      phase: 'final_answer',
+      agent: { agent_name: '/root' },
+      content: [{ type: 'output_text', text: 'done' }],
+    };
+    server.on('connection', (socket, request) => {
+      connections++;
+      beta.push(request.headers['openai-beta']);
+      socket.on('close', () => closes++);
+      const emit = (event: object) => {
+        incoming.push(event);
+        socket.send(JSON.stringify(event));
+      };
+      socket.on('message', (raw) => {
+        const frame = JSON.parse(raw.toString());
+        frames.push(frame);
+        if (frame.type === 'response.create') {
+          expect(frame).not.toHaveProperty('stream');
+          expect(frame.multi_agent).toEqual({
+            enabled: true,
+            max_concurrent_subagents: 2,
+          });
+          emit({
+            type: 'response.created',
+            response: { id: 'resp_hosted', output: [] },
+          });
+          emit({
+            type: 'response.output_item.done',
+            output_index: 0,
+            item: {
+              ...final,
+              id: 'msg_other',
+              agent: { agent_name: '/other' },
+              content: [{ type: 'output_text', text: 'private sibling' }],
+            },
+          });
+          emit({
+            type: 'response.output_item.done',
+            output_index: 1,
+            item: call,
+          });
+        } else {
+          expect(frame).toMatchObject({
+            type: 'response.inject',
+            response_id: 'resp_hosted',
+            input: [{ type: 'function_call_output', call_id: call.call_id }],
+          });
+          const done = {
+            type: 'response.completed',
+            response: {
+              id: 'resp_hosted',
+              status: 'completed',
+              output: [
+                call,
+                { type: 'agent_message', id: 'collaboration' },
+                { ...final, id: 'msg_other', agent: { agent_name: '/other' } },
+                final,
+              ],
+              usage: {
+                input_tokens: 3,
+                output_tokens: 2,
+                total_tokens: 5,
+                input_tokens_details: {
+                  cached_tokens: 2,
+                  cache_write_tokens: 1,
+                },
+                output_tokens_details: { reasoning_tokens: 1 },
+              },
+            },
+          };
+          const ack = {
+            type: 'response.inject.created',
+            response_id: 'resp_hosted',
+          };
+          for (const event of terminalBeforeAck ? [done, ack] : [ack, done])
+            emit(event);
+        }
+      });
+    });
+    const client = new OpenAI({
+      apiKey: 'synthetic-hosted',
+      baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+    });
+    const model = new HostedResponsesWebSocketModel(
+      (_request, options) =>
+        new ResponsesWS(client, { headers: options.headers as any }),
+      undefined,
+      {
+        maxConcurrentSubagents: 2,
+        requestOptions: { headers: { 'OpenAI-Beta': 'existing-beta' } },
+      },
+    );
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Read the synthetic record.',
+      parameters: z.object({}),
+      execute: () => {
+        effects++;
+        expect(closes).toBe(0);
+        expect(frames).toHaveLength(1);
+        return 'synthetic record';
+      },
+    });
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: model,
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'synthetic-provider',
+      });
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5.5',
+        instructions: 'Use lookup.',
+        tools: [lookup],
+        programmaticToolCalling: false,
+      });
+      await using session = await agent.session({
+        includeRawProviderEvents: true,
+        observationRetention: 'all',
+      });
+      const turn = await session.submit('start');
+      for await (const event of turn.events({
+        includeExecutionDetails: true,
+      })) {
+        if (event.type === 'raw_provider_event')
+          observed.push([event.source, event.transport, event.payload]);
+      }
+      const result = await turn.wait();
+      expect(result.finalOutput).toBe('done');
+      expect(observed).toEqual(
+        incoming.map((event) => ['responses', 'websocket', event]),
+      );
+      expect(result.runUsage).toEqual({
+        inputTokens: 3,
+        outputTokens: 2,
+        totalTokens: 5,
+        cachedInputTokens: 2,
+        cacheWriteInputTokens: 1,
+        reasoningOutputTokens: 1,
+        requests: 1,
+        missingUsageRequests: 0,
+      });
+      expect(effects).toBe(1);
+      expect(connections).toBe(1);
+      expect(frames.map((frame) => frame.type)).toEqual([
+        'response.create',
+        'response.inject',
+      ]);
+      expect(beta).toEqual(['existing-beta,responses_multi_agent=v1']);
+      await expect.poll(() => closes).toBe(1);
+      if (process.env.HOSTED_BETA_WIRE_RECEIPT)
+        await writeFile(
+          process.env.HOSTED_BETA_WIRE_RECEIPT +
+            '-' +
+            String(terminalBeforeAck) +
+            '.json',
+          JSON.stringify(
+            {
+              frames,
+              beta,
+              effects,
+              connections,
+              closes,
+              nativeUsage: result.runUsage,
+              providerCreates: frames.filter(
+                (frame) => frame.type === 'response.create',
+              ).length,
+            },
+            null,
+            2,
+          ) + '\n',
+        );
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+  20_000,
+);
+
+it('closes the paused provider response before joining an entered native tool on abort', async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const closed = Promise.withResolvers<void>();
+  const frames: string[] = [];
+  let effects = 0;
+  server.on('connection', (socket) => {
+    socket.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString());
+      frames.push(frame.type);
+      const call = {
+        type: 'function_call',
+        id: 'fc_abort',
+        call_id: 'call_abort',
+        name: 'lookup',
+        arguments: '{}',
+      };
+      socket.send(
+        JSON.stringify({
+          type: 'response.created',
+          response: { id: 'resp_abort', output: [] },
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: call,
+        }),
+      );
+    });
+  });
+  const client = new OpenAI({
+    apiKey: 'synthetic-hosted',
+    baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+  });
+  const model = new HostedResponsesWebSocketModel((_request, options) => {
+    const socket = new ResponsesWS(client, { headers: options.headers as any });
+    socket.socket.once('close', () => closed.resolve());
+    return socket;
+  });
+  const lookup = tool({
+    name: 'lookup',
+    description: 'Read the synthetic record.',
+    parameters: z.object({}),
+    execute: async () => {
+      effects++;
+      entered.resolve();
+      await release.promise;
+      return 'synthetic record';
+    },
+  });
+  const controller = new AbortController();
+  let pending: Promise<unknown> | undefined;
+  try {
+    await using provider = new NativeProvider({
+      modelBackend: model,
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: 'synthetic-provider',
+    });
+    pending = new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Use lookup.',
+      tools: [lookup],
+      programmaticToolCalling: false,
+    }).run('start', { signal: controller.signal });
+    void pending.catch(() => {});
+    await Promise.race([entered.promise, pending]);
+    controller.abort(new Error('synthetic abort'));
+    await closed.promise;
+    expect(frames).toEqual(['response.create']);
+    release.resolve();
+    await expect(pending).rejects.toThrow();
+    expect(frames).toEqual(['response.create']);
+    expect(effects).toBe(1);
+  } finally {
+    release.resolve();
+    await pending?.catch(() => {});
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}, 20_000);
+
+it.each([
+  [true, false],
+  [true, true],
+  [false, false],
+  [false, true],
+])(
+  'continues a physically completed hosted response with store=%s terminal-before-rejection=%s',
+  async (store, terminalFirst) => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const frames: Record<string, any>[] = [];
+    let effects = 0;
+    const call = {
+      type: 'function_call',
+      id: 'fc_fallback',
+      call_id: 'call_fallback',
+      name: 'lookup',
+      arguments: '{}',
+      agent: { agent_name: '/worker' },
+      vendor: { enabled: false },
+    };
+    const hidden = {
+      type: 'agent_message',
+      id: 'collaboration_fallback',
+      vendor: { exact: 'retained' },
+    };
+    const final = {
+      type: 'message',
+      id: 'msg_fallback',
+      role: 'assistant',
+      status: 'completed',
+      phase: 'final_answer',
+      agent: { agent_name: '/root' },
+      content: [{ type: 'output_text', text: 'done' }],
+    };
+    const completed = {
+      id: 'resp_first',
+      status: 'completed',
+      store,
+      output: [call, hidden],
+      usage: {
+        input_tokens: 3,
+        output_tokens: 2,
+        total_tokens: 5,
+        input_tokens_details: { cached_tokens: 2, cache_write_tokens: 1 },
+        output_tokens_details: { reasoning_tokens: 1 },
+      },
+    };
+    server.on('connection', (socket) =>
+      socket.on('message', (raw) => {
+        const frame = JSON.parse(raw.toString());
+        frames.push(frame);
+        if (frames.length === 1) {
+          expect(frame.type).toBe('response.create');
+          expect(frame.store).toBe(store);
+          socket.send(
+            JSON.stringify({
+              type: 'response.created',
+              response: { id: 'resp_first', output: [] },
+            }),
+          );
+          socket.send(
+            JSON.stringify({ type: 'response.output_item.done', item: call }),
+          );
+        } else if (frames.length === 2) {
+          expect(frame.type).toBe('response.inject');
+          expect(frame.input).toHaveLength(1);
+          const terminal = { type: 'response.completed', response: completed };
+          const rejection = {
+            type: 'response.inject.failed',
+            error: { code: 'response_already_completed' },
+            input: frame.input,
+          };
+          for (const event of terminalFirst
+            ? [terminal, rejection]
+            : [rejection, terminal])
+            socket.send(JSON.stringify(event));
+        } else {
+          expect(frame.type).toBe('response.create');
+          expect(frame).not.toHaveProperty('stream');
+          if (store) {
+            expect(frame.previous_response_id).toBe('resp_first');
+            expect(frame.input).toEqual(frames[1]!.input);
+          } else {
+            expect(frame).not.toHaveProperty('previous_response_id');
+            expect(frame.input).toEqual([
+              ...frames[0]!.input,
+              ...completed.output,
+              ...frames[1]!.input,
+            ]);
+          }
+          socket.send(
+            JSON.stringify({
+              type: 'response.created',
+              response: { id: 'resp_second', output: [] },
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              type: 'response.completed',
+              response: {
+                id: 'resp_second',
+                status: 'completed',
+                output: [final],
+                usage: {
+                  input_tokens: 7,
+                  output_tokens: 4,
+                  total_tokens: 11,
+                  input_tokens_details: {
+                    cached_tokens: 3,
+                    cache_write_tokens: 2,
+                  },
+                  output_tokens_details: { reasoning_tokens: 2 },
+                },
+              },
+            }),
+          );
+        }
+      }),
+    );
+    const address = server.address() as AddressInfo;
+    const client = new OpenAI({
+      apiKey: 'synthetic',
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    });
+    const model = new HostedResponsesWebSocketModel(
+      (_request, options) =>
+        new ResponsesWS(client, { headers: options.headers as any }),
+    );
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Return a synthetic result.',
+      parameters: z.object({}),
+      execute: async () => {
+        effects++;
+        return 'result';
+      },
+    });
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: model,
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'synthetic',
+      });
+      const result = await new Agent({
+        provider,
+        model: 'gpt-5.5',
+        instructions: 'Use lookup.',
+        modelSettings: { store },
+        tools: [lookup],
+        programmaticToolCalling: false,
+      }).run('start', { signal: AbortSignal.timeout(6000) });
+      expect(result.finalOutput).toBe('done');
+      expect(effects).toBe(1);
+      expect(frames.map((frame) => frame.type)).toEqual([
+        'response.create',
+        'response.inject',
+        'response.create',
+      ]);
+      expect(result.runUsage).toEqual({
+        inputTokens: 10,
+        outputTokens: 6,
+        totalTokens: 16,
+        cachedInputTokens: 5,
+        cacheWriteInputTokens: 3,
+        reasoningOutputTokens: 3,
+        requests: 2,
+        missingUsageRequests: 0,
+      });
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+);
