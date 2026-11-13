@@ -42,7 +42,10 @@ import {
 } from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
-import { hostedMcpBinding } from './hosted-mcp-binding';
+import {
+  assertHostedMcpConfigurations,
+  hostedMcpBinding,
+} from './hosted-mcp-binding';
 
 const toolContentSchema = z.unknown().transform((value, context) => {
   try {
@@ -1734,6 +1737,49 @@ export function captureTools(
     tools: Object.freeze(captured),
     specsJson: encode(specs),
   });
+}
+
+/** @internal Capture an admitted idle update while retaining omitted current bindings. */
+export function captureAdmittedToolUpdate(
+  tools: readonly SessionTool[],
+  current: ToolCatalog,
+  generation: bigint,
+  hostedTools: readonly JsonObject[],
+  callbackTools: readonly SessionTool[] | undefined,
+  customStore: boolean,
+): { replacements: ToolCatalog; candidate: ToolCatalog } {
+  const replacements = captureTools(tools);
+  assertHostedMcpConfigurations(replacements.tools, hostedTools);
+  const callbacks = new Map(
+    (callbackTools ?? []).map(
+      (tool) => [JSON.stringify(toolIdentity(tool)), tool] as const,
+    ),
+  );
+  for (const tool of replacements.tools) {
+    const expected = callbacks.get(JSON.stringify(toolIdentity(tool)));
+    if (
+      expected !== undefined &&
+      toolDeclarationIdentity(tool) !== toolDeclarationIdentity(expected)
+    )
+      throw new TypeError('A captured handoff callback cannot be replaced');
+  }
+  if (customStore && replacements.tools.some((tool) => tool.kind === 'manual'))
+    throw new TypeError(
+      'Custom canonical storage does not support manual tools',
+    );
+  const byName = new Map(
+    replacements.tools.map((tool) => [
+      JSON.stringify(toolIdentity(tool)),
+      tool,
+    ]),
+  );
+  const candidate = captureTools(
+    current.tools.map(
+      (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
+    ),
+    generation,
+  );
+  return { replacements, candidate };
 }
 
 /** @internal A deadline revokes publication, but cleanup still joins the entered callback. */

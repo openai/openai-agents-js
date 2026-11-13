@@ -1,4 +1,5 @@
 import { access } from 'node:fs/promises';
+import * as tools from '../../src/runtime/tools';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -131,6 +132,41 @@ beforeEach(() => {
 });
 
 describe('native opening options without loading native code', () => {
+  it.each(['canonical', 'instrumented'] as const)(
+    'retains catalog capture ownership with %s preparation',
+    async (preparation) => {
+      const connection = provider();
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider: connection,
+      });
+      const capture = vi.spyOn(tools, 'captureTools');
+      const prepare =
+        preparation === 'instrumented'
+          ? vi.spyOn(
+              agent as unknown as {
+                prepare: (...args: unknown[]) => Promise<unknown>;
+              },
+              'prepare',
+            )
+          : undefined;
+      try {
+        const session = await agent.session();
+        try {
+          expect(capture).toHaveBeenCalledTimes(
+            preparation === 'canonical' ? 1 : 2,
+          );
+        } finally {
+          await session.close();
+        }
+      } finally {
+        capture.mockRestore();
+        prepare?.mockRestore();
+        await connection.close();
+      }
+    },
+  );
+
   it('keeps the default provider and sibling lease usable after a Session closes', async () => {
     const agent = new Agent({ instructions: 'Answer.' });
     const initial = agent.provider;

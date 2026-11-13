@@ -51,10 +51,7 @@ import {
 } from './request-attempts';
 import type { ResponsesCompaction } from './responses-compaction';
 import { audioInputByteLimit } from './media';
-import {
-  assertHostedMcpConfigurations,
-  hostedMcpBinding,
-} from './hosted-mcp-binding';
+import { hostedMcpBinding } from './hosted-mcp-binding';
 import {
   ManagedWorkspaceCheckpoint,
   captureRetiredWorkspace,
@@ -397,6 +394,7 @@ import {
   toolOutputSchema,
   toolApplicationData,
   captureTools,
+  captureAdmittedToolUpdate,
   isDirectFunctionTool,
   isClientToolSearchTool,
   toolIdentity,
@@ -13571,49 +13569,22 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TypeError(
             'Updated MCP tools must have been declared when the Session opened',
           );
-      const replacements = captureTools(next.tools);
-      assertHostedMcpConfigurations(
-        replacements.tools,
-        this.threadOptions._hosted_tools ?? [],
-      );
       const callbackBindings = this.profileCurrent
         ? this.profileRuntimes.get(this.profileCurrent.profile_id)?.profile
             .callbackTools
         : undefined;
-      const callbacks = new Map(
-        (callbackBindings ?? []).map(
-          (tool) => [JSON.stringify(toolIdentity(tool)), tool] as const,
-        ),
-      );
-      for (const tool of replacements.tools) {
-        const expected = callbacks.get(JSON.stringify(toolIdentity(tool)));
-        if (
-          expected !== undefined &&
-          toolDeclarationIdentity(tool) !== toolDeclarationIdentity(expected)
-        )
-          throw new TypeError('A captured handoff callback cannot be replaced');
-      }
-      if (
-        this.options.customStore &&
-        replacements.tools.some((tool) => tool.kind === 'manual')
-      )
-        throw new TypeError(
-          'Custom canonical storage does not support manual tools',
-        );
-      const byName = new Map(
-        replacements.tools.map((tool) => [
-          JSON.stringify(toolIdentity(tool)),
-          tool,
-        ]),
-      );
-      let candidate = captureTools(
-        this.catalog.tools.map(
-          (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
-        ),
+      const update = captureAdmittedToolUpdate(
+        next.tools,
+        this.catalog,
         (this.options.agentGraph
           ? this.profileHighWater
           : this.catalog.generation) + 1n,
+        this.threadOptions._hosted_tools ?? [],
+        callbackBindings,
+        Boolean(this.options.customStore),
       );
+      const replacements = update.replacements;
+      let candidate = update.candidate;
       if (!this.openingMcpTools.length) {
         await this.publishCatalog(async () => candidate, replacements.tools);
         await this.realtimeOwner?._syncProfile(true);
