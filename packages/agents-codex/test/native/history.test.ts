@@ -171,7 +171,7 @@ describe('native history projection', () => {
   });
 
   it('retains assistant audio in the repaired public message schema', () => {
-    const item = {
+    const item: Parameters<typeof repairItemFromWire>[0] = {
       id: 'audio',
       turnId: 'turn',
       type: 'message',
