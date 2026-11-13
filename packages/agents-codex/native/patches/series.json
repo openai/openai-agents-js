@@ -1039,7 +1039,19 @@
     {
       "path": "sdk-provider-history-lineage.patch",
       "sha256": "61fb3fddfead8336a9cf6ac9ecaf2a3b56cdcd0b86442aca4bac9863182d508c"
+    },
+    {
+      "path": "sdk-function-tool-callers.patch",
+      "sha256": "8c785d3c8f7f4e7faad1403f90b0f5d843950838c42cf61ddc96e01579d97bc4"
+    },
+    {
+      "path": "sdk-unknown-direct-function.patch",
+      "sha256": "ca21cc5bd5167200a2d3ed05e21709663db3a387771d1063b2da0b505204b764"
+    },
+    {
+      "path": "sdk-unknown-turn-receipt.patch",
+      "sha256": "523377e7592e19dfcf39a0f5f12688194364e462222a72ebafdcd3d4e964c0c6"
     }
   ],
-  "result_tree": "3a187719f0dcb22c827798e2f22083b8d9864100"
+  "result_tree": "9ce245d52957bec2bfd0dd9192891ae5b66970e7"
 }

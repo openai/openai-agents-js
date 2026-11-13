@@ -539,6 +539,7 @@ async function closePrivateOwnedRuntime(
 interface OwnedRunOptions {
   modelOverride?: string;
   modelSettingsOverride?: import('./provider').ModelSettings;
+  toolNotFoundBehavior?: 'raise_error' | 'return_error_to_model';
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
   returnState?: boolean;
@@ -628,6 +629,7 @@ async function completeOwnedSession<Output>(
         options.errorInput ?? undefined,
         options.modelOverride,
         options.modelSettingsOverride,
+        options.toolNotFoundBehavior,
       );
     }
     return session.wait();

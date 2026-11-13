@@ -439,6 +439,7 @@ type ToolIdentity = {
 };
 
 const manualCompletionSchema = z.object({
+  raise_on_unknown_tool: z.boolean().optional(),
   status: z.literal('started'),
   turn_id: z.string(),
   canonical_call_ids: z.array(z.string()),
@@ -570,6 +571,8 @@ export interface OperationOptions<Context = unknown> {
   modelOverride?: string;
   /** Sparse forced settings for this run, its handoffs and native children. */
   modelSettingsOverride?: ModelSettings;
+  /** Unknown direct function calls default to recoverable model errors. */
+  toolNotFoundBehavior?: 'raise_error' | 'return_error_to_model';
   tracing?: TraceOptions;
   /**
    * Explicit parent for this new root; omission or null inherits the Session parent.
@@ -663,6 +666,18 @@ export function validateModelOverride(
   )
     throw new TypeError('modelOverride must be a nonempty model name');
   return value;
+}
+
+/** @internal Capture before native admission; never interpret arbitrary truthy values. */
+export function captureToolNotFoundBehavior(
+  value: OperationOptions['toolNotFoundBehavior'],
+): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'raise_error' && value !== 'return_error_to_model')
+    throw new TypeError(
+      'toolNotFoundBehavior must be raise_error or return_error_to_model',
+    );
+  return value === 'raise_error';
 }
 
 export function validateMaxModelSteps(
@@ -4835,6 +4850,7 @@ export class Session<OutputT = string, Context = unknown> {
     originalInput?: UserInput,
     modelOverride?: string,
     modelSettingsOverride?: ModelSettings,
+    toolNotFoundBehavior?: OperationOptions['toolNotFoundBehavior'],
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
@@ -4852,6 +4868,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.defaultOutput,
         budget,
       ),
+      captureToolNotFoundBehavior(toolNotFoundBehavior),
       callerSignal,
       undefined,
       undefined,
@@ -4912,6 +4929,9 @@ export class Session<OutputT = string, Context = unknown> {
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
     const selection = this.captureSelection(options, output);
+    const raiseOnUnknownTool = captureToolNotFoundBehavior(
+      options?.toolNotFoundBehavior,
+    );
     const parentTrace =
       captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const writableRoots =
@@ -4926,6 +4946,7 @@ export class Session<OutputT = string, Context = unknown> {
       ? structuredClone(input)
       : undefined;
     run.selection = selection;
+    run.raiseOnUnknownTool = raiseOnUnknownTool;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
     submissions.get(run)!.observationAfter = -1;
@@ -4989,6 +5010,9 @@ export class Session<OutputT = string, Context = unknown> {
         ? this.defaultOutput
         : prepareOutput(options.outputType);
     const selection = this.captureSelection(options, output);
+    const raiseOnUnknownTool = captureToolNotFoundBehavior(
+      options?.toolNotFoundBehavior,
+    );
     const parentTrace =
       captureTraceContext(options?.parentTrace) ?? this.options.parentTrace;
     const run = this.startTurn(
@@ -4997,6 +5021,7 @@ export class Session<OutputT = string, Context = unknown> {
       output,
       options?.outputType !== undefined,
       selection,
+      raiseOnUnknownTool,
       undefined,
       options?.tracing,
       options?.writableRoots,
@@ -5912,6 +5937,7 @@ export class Session<OutputT = string, Context = unknown> {
     output = this.defaultOutput,
     outputOverride = false,
     selection?: OperationSelection,
+    raiseOnUnknownTool?: boolean,
     callerSignal?: AbortSignal,
     tracing?: TraceOptions,
     writableRoots?: readonly string[],
@@ -5942,6 +5968,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.writableRoots = roots;
     submissions.get(run)!.callerSignal = callerSignal;
     run.selection = selection;
+    run.raiseOnUnknownTool = raiseOnUnknownTool;
     run.tracing = this.captureRootTracing(tracing);
     this.dispatchStart(
       run,
@@ -6010,6 +6037,9 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
       ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
       mode: 'start_if_idle',
+      ...(run.raiseOnUnknownTool === undefined
+        ? {}
+        : { raise_on_unknown_tool: run.raiseOnUnknownTool }),
       ...(run.writableRoots === undefined
         ? {}
         : { writable_roots: run.writableRoots }),
@@ -6144,6 +6174,7 @@ export class Session<OutputT = string, Context = unknown> {
     const run = this.allocateRun(output, outputOverride);
     run.selection = selection;
     run.captureRequestAttempts = continuedFrom?.captureRequestAttempts ?? false;
+    run.raiseOnUnknownTool = continuedFrom?.raiseOnUnknownTool;
     const dispatch = (tracingContext?: string) => {
       if (run.captureRequestAttempts) {
         this.#native._start_request_attempts();
@@ -6489,7 +6520,9 @@ export class Session<OutputT = string, Context = unknown> {
           if (this.#collectingRawUsage)
             correction.#native._attach_raw_usage(this.#native);
           const repairSelection = correction.captureSelection(
-            { modelOverride: run.selection?.modelOverride },
+            {
+              modelOverride: run.selection?.modelOverride,
+            },
             correction.defaultOutput,
             run.selection?.budget,
             run.selection?.modelSettingsOverride !== undefined,
@@ -6508,6 +6541,7 @@ export class Session<OutputT = string, Context = unknown> {
               modelSettingsOverride: repairSettingsOverride,
               retryPolicyOverride: run.selection?.retryPolicyOverride,
             },
+            run.raiseOnUnknownTool,
           );
           possiblyAdmitted = true;
           result = await repair.run.wait();
@@ -11579,6 +11613,8 @@ export class Session<OutputT = string, Context = unknown> {
               throw new NativeError(
                 'Manual continuation changed the original turn',
               );
+            if (submission.raise_on_unknown_tool === true)
+              run.raiseOnUnknownTool = true;
             // Only exact native canonical receipts cross this recovery fence.
             // Held terminal candidates retain their final publication event.
             for (const callId of submission.canonical_call_ids)
