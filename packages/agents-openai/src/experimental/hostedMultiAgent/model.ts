@@ -151,9 +151,9 @@ function mergeResponseUsages(
       (total, usage) => total + (usage?.total_tokens ?? 0),
       0,
     ),
-    inputTokensDetails: usages.map((usage) => ({
-      ...usage?.input_tokens_details,
-    })),
+    inputTokensDetails: usages.map((usage) =>
+      protocol.TokenDetails.parse(usage?.input_tokens_details ?? {}),
+    ),
     outputTokensDetails: usages.map((usage) => ({
       ...usage?.output_tokens_details,
     })),

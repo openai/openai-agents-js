@@ -120,18 +120,18 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@ai-sdk/provider": "^4.0.35",
+    "@ai-sdk/provider": "^4.0.36",
     "@blaxel/core": "0.2.82",
     "@daytonaio/sdk": "0.201.0",
     "@e2b/code-interpreter": "2.8.0",
     "@openai/agents": "workspace:>=0.0.0",
-    "@openai/codex-sdk": "^0.166.0",
+    "@openai/codex-sdk": "^0.167.2",
     "@vercel/sandbox": "1.9.3",
     "ai": "^6.0.277",
     "e2b": "2.52.0",
     "modal": "0.7.6",
     "undici-types": "8.12.3",
-    "ws": "^8.22.0",
+    "ws": "^8.22.1",
     "zod": "^4.6.7"
   },
   "files": [

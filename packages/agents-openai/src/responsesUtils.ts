@@ -1,4 +1,4 @@
-import { RequestUsage } from '@openai/agents-core';
+import { RequestUsage, protocol } from '@openai/agents-core';
 import OpenAI from 'openai';
 
 export function normalizeInstructions(
@@ -39,7 +39,9 @@ export function toRequestUsageEntry(
     inputTokens: usage?.input_tokens ?? 0,
     outputTokens: usage?.output_tokens ?? 0,
     totalTokens: usage?.total_tokens ?? 0,
-    inputTokensDetails: { ...usage?.input_tokens_details },
+    inputTokensDetails: protocol.TokenDetails.parse(
+      usage?.input_tokens_details ?? {},
+    ),
     outputTokensDetails: { ...usage?.output_tokens_details },
     endpoint,
   });
