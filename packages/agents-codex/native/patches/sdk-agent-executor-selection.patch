@@ -1,5 +1,5 @@
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
-index c7346d022ea..3740273817f 100644
+index 05687cfaf8773bb533bea5fded4904fbd8ce3f91..ee30338a70766c11a8db66ed0a686403ab6668fa 100644
 --- a/codex-rs/core/src/codex_thread.rs
 +++ b/codex-rs/core/src/codex_thread.rs
 @@ -1441,6 +1441,20 @@ impl CodexThread {
@@ -24,7 +24,7 @@ index c7346d022ea..3740273817f 100644
      pub async fn agent_profile_receipt(
          &self,
 diff --git a/codex-rs/core/src/environment_selection.rs b/codex-rs/core/src/environment_selection.rs
-index 2fa0a6429f6..999494829d7 100644
+index 2fa0a6429f6477415d6cd095fb3a14dc73577982..999494829d7cd76f72763e15c2168ffe48850964 100644
 --- a/codex-rs/core/src/environment_selection.rs
 +++ b/codex-rs/core/src/environment_selection.rs
 @@ -919,6 +919,47 @@ impl ThreadEnvironments {
@@ -108,7 +108,7 @@ index 2fa0a6429f6..999494829d7 100644
      async fn resolved_environment_selections_use_first_selection_as_primary() {
          let cwd = AbsolutePathBuf::current_dir().expect("cwd");
 diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
-index 07768eb85c2..9bbbced19b3 100644
+index b3fda9ab2d9811957e719cdbb7bd527e67fe444d..bde01fafc822ddb32f2346a4b3ff8739913841c4 100644
 --- a/codex-rs/core/src/session/agent_profile.rs
 +++ b/codex-rs/core/src/session/agent_profile.rs
 @@ -1,19 +1,20 @@
@@ -135,7 +135,7 @@ index 07768eb85c2..9bbbced19b3 100644
  };
  use serde::{Deserialize, Serialize};
  use std::sync::Arc;
-@@ -337,6 +338,23 @@ impl Session {
+@@ -594,6 +595,23 @@ impl Session {
              }
              None => {}
          }
@@ -159,7 +159,7 @@ index 07768eb85c2..9bbbced19b3 100644
          let (mut configuration, restored) = {
              let state = self.state.lock().await;
              if !Arc::ptr_eq(
-@@ -353,11 +371,15 @@ impl Session {
+@@ -610,11 +628,15 @@ impl Session {
                      "Agent activation source changed during preparation",
                  ));
              }
@@ -176,7 +176,7 @@ index 07768eb85c2..9bbbced19b3 100644
              )
              .map_err(|error| invalid(error.to_string()))?;
              if task_fence.is_some() {
-@@ -371,6 +393,9 @@ impl Session {
+@@ -628,6 +650,9 @@ impl Session {
              }
              (state.session_configuration.clone(), expected.is_none())
          };
@@ -186,8 +186,8 @@ index 07768eb85c2..9bbbced19b3 100644
          let live = self
              .live_thread()
              .ok_or_else(|| invalid("Agent profiles require retained native history"))?;
-@@ -435,6 +460,10 @@ impl Session {
-                 // Core already restored the effective settings, including explicit idle overrides.
+@@ -731,6 +756,10 @@ impl Session {
+                 });
                  let mut state = self.state.lock().await;
                  state.session_configuration.agent_profile = Some(profile);
 +                if let Some(selections) = selected_environments {
@@ -197,7 +197,7 @@ index 07768eb85c2..9bbbced19b3 100644
                  return Ok(receipt);
              }
          } else if previous
-@@ -525,7 +554,7 @@ impl Session {
+@@ -854,7 +883,7 @@ impl Session {
                  &context,
                  &destination,
                  &state.session_configuration,
@@ -206,7 +206,7 @@ index 07768eb85c2..9bbbced19b3 100644
              )
              .is_err()
          {
-@@ -538,6 +567,10 @@ impl Session {
+@@ -867,6 +896,10 @@ impl Session {
          );
          state.session_configuration.agent_profile = configuration.agent_profile;
          state.session_configuration.step_settings = configuration.step_settings;
@@ -217,7 +217,7 @@ index 07768eb85c2..9bbbced19b3 100644
          if task_fence.is_some() {
              context.next_step_settings.store(Arc::new(destination));
          }
-@@ -1014,6 +1047,84 @@ for line in sys.stdin:
+@@ -1695,6 +1728,84 @@ for line in sys.stdin:
          );
      }
  
@@ -303,7 +303,7 @@ index 07768eb85c2..9bbbced19b3 100644
      async fn agent_profile_restore_checks_model_and_exact_instruction_publication() {
          let (mut session, context) = make_session_and_context().await;
 diff --git a/codex-rs/core/src/session/mcp_runtime.rs b/codex-rs/core/src/session/mcp_runtime.rs
-index a4fedb20189..be7033004fc 100644
+index a4fedb2018970930a394b24b33acd6e111ab5d4a..be7033004fcd235ddcb0c3c347d931bdf55a9b6c 100644
 --- a/codex-rs/core/src/session/mcp_runtime.rs
 +++ b/codex-rs/core/src/session/mcp_runtime.rs
 @@ -113,15 +113,36 @@ impl Session {
@@ -345,7 +345,7 @@ index a4fedb20189..be7033004fc 100644
          let mut desired = self.latest_mcp_desired_state(auth, environments).await;
          let mut config = desired.config.as_ref().clone();
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 17a2009c2e0..faa35ac7cb8 100644
+index 17a2009c2e05fb4ddf74a0a8066195c6a716f7ca..faa35ac7cb84fd325443c2981f289ab046f6b528 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
 @@ -150,6 +150,18 @@ pub(crate) async fn build_tool_router(
@@ -368,7 +368,7 @@ index 17a2009c2e0..faa35ac7cb8 100644
          let named_ceiling = resolved_policy.allowed_tools.clone();
          if let Some(allowed) = &mut resolved_policy.allowed_tools {
 diff --git a/codex-rs/exec-server/src/environment.rs b/codex-rs/exec-server/src/environment.rs
-index 41f692fb235..ca2eb5b62b7 100644
+index 41f692fb2357b3c8ebf0405fa87f4b72be519c59..ca2eb5b62b7bea43505178b44181a6fc665af23a 100644
 --- a/codex-rs/exec-server/src/environment.rs
 +++ b/codex-rs/exec-server/src/environment.rs
 @@ -5,6 +5,7 @@ use std::collections::HashSet;
@@ -638,7 +638,7 @@ index 41f692fb235..ca2eb5b62b7 100644
      async fn replacing_environment_stops_its_startup_task() {
          let first_listener = TcpListener::bind("127.0.0.1:0")
 diff --git a/codex-rs/exec-server/src/environment/accepted.rs b/codex-rs/exec-server/src/environment/accepted.rs
-index a3772a24860..855abba800f 100644
+index a3772a24860ac4ad9378179200824a9fa7067e6b..855abba800f6f8296b41f20c8a1a5adb28e95159 100644
 --- a/codex-rs/exec-server/src/environment/accepted.rs
 +++ b/codex-rs/exec-server/src/environment/accepted.rs
 @@ -37,6 +37,7 @@ impl EnvironmentManager {
@@ -650,7 +650,7 @@ index a3772a24860..855abba800f 100644
              local_runtime_paths: None,
              http_client_factory,
 diff --git a/codex-rs/exec-server/src/lib.rs b/codex-rs/exec-server/src/lib.rs
-index c87d8ee33f4..4877812c4c0 100644
+index c87d8ee33f41cece2eb493696e7babcf470ea3cb..4877812c4c07de5024a934d045faa4934843fbb8 100644
 --- a/codex-rs/exec-server/src/lib.rs
 +++ b/codex-rs/exec-server/src/lib.rs
 @@ -126,6 +126,7 @@ pub use environment::LOCAL_ENVIRONMENT_ID;
@@ -662,7 +662,7 @@ index c87d8ee33f4..4877812c4c0 100644
  pub use environment_provider::DefaultEnvironmentProvider;
  pub use environment_provider::EnvironmentProvider;
 diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
-index c1425a4e0c0..8c64334b847 100644
+index a711f879c3983fc1cccbd1bbfe43a9621b372df6..7d393398a323257633f83bed8e5ead69d7887a80 100644
 --- a/codex-rs/ext/extension-api/src/contributors.rs
 +++ b/codex-rs/ext/extension-api/src/contributors.rs
 @@ -68,6 +68,8 @@ pub use turn_lifecycle::AgentProfile;
@@ -675,10 +675,10 @@ index c1425a4e0c0..8c64334b847 100644
  pub use turn_lifecycle::AgentProfileInstructions;
  pub use turn_lifecycle::AgentProfileModelSettings;
 diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-index e24d2b593b0..78ed490eb26 100644
+index f25ea2f753a295ef31b7b232566221893d38cd2a..3f6a8aec988d0d60256d3b276be55a931ce30329 100644
 --- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
 +++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
-@@ -232,6 +232,29 @@ impl std::fmt::Debug for AgentProfile {
+@@ -247,6 +247,29 @@ impl std::fmt::Debug for AgentProfile {
      }
  }
  
@@ -709,7 +709,7 @@ index e24d2b593b0..78ed490eb26 100644
  #[derive(Clone, Debug)]
  pub struct CapturedAgentProfile {
 diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
-index 11d2d80ee8d..d3545e49737 100644
+index 6868aaae92666b2b377dc1b4f624e50a2f7582f4..8975249ba9d5b4ddf8c256d7159a978c2c23f6eb 100644
 --- a/codex-rs/ext/extension-api/src/lib.rs
 +++ b/codex-rs/ext/extension-api/src/lib.rs
 @@ -55,6 +55,8 @@ pub use contributors::AgentProfile;

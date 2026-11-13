@@ -1,3 +1,4 @@
+import type { RunErrorHandler } from './run-error-recovery';
 import { acquireProfileEnvironments } from './profile-environments';
 import {
   captureProviderHistory,
@@ -8,7 +9,12 @@ import {
   privateOpeningContribution,
   sdkMemoryPhase,
 } from './private-opening-contribution';
-import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
+import {
+  type HandoffInput,
+  Handoff,
+  DecisionHandoff,
+  decisionHandoffTool,
+} from './handoffs';
 import {
   ResponsesCompaction,
   responsesCompaction,
@@ -51,6 +57,7 @@ import {
 } from './decisions';
 import {
   captureProfileRuntimes,
+  assertRestoredInstructionContent,
   profileRoster,
   parseProfileReceipt,
   checkPortableProfileReceipt,
@@ -72,6 +79,9 @@ import {
 } from './trace-context';
 import {
   assertOutputState,
+  assertHandoffPresentationAuthority,
+  hasSessionStateAuthority,
+  captureSessionState,
   sessionStateSchema,
   isManualSessionState,
   isOutputAwareState,
@@ -206,6 +216,9 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Transport retries reuse its result; canonical history and tool authority stay intact.
    */
   transformContext?: ContextTransform<Context>;
+  prepareHandoffInput?: (
+    input: HandoffInput<Context>,
+  ) => HandoffInput<Context> | Promise<HandoffInput<Context>>;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
   /** Strict by default; warn has been retaining the final eager direct function or handoff. */
@@ -345,7 +358,7 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
     | Exclude<SessionPersistenceOptions, { storage?: never }>
   );
 
-export interface RunOptions<Context = undefined> extends Omit<
+export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   SessionBaseOptions<Context>,
   | 'tools'
   | 'includeModelOutputItems'
@@ -389,6 +402,8 @@ export interface RunOptions<Context = undefined> extends Omit<
    * unavailable origins have been reporting null input and incomplete details.
    */
   captureErrorDetails?: boolean;
+  /** Supply validated fallback output after an eligible settled failure, without retrying. */
+  errorHandler?: RunErrorHandler<Output, Context>;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -443,6 +458,7 @@ interface CapturedOpening {
   readonly beforeCompact?: BeforeCompact<any>;
   readonly compaction?: ResponsesCompaction<any>;
   readonly transformContext?: ContextTransform<any>;
+  readonly prepareHandoffInput?: AgentOptions<any, any>['prepareHandoffInput'];
   readonly hostedPrompt?: HostedPromptSource<any>;
   readonly hostedPromptControls?: JsonObject;
 }
@@ -474,9 +490,9 @@ type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
 type SessionArguments<Context> = undefined extends Context
   ? [options?: SessionOptions<Context>]
   : [options: SessionOptions<Context> & { context: Context }];
-type RunArguments<Context> = undefined extends Context
-  ? [options?: RunOptions<Context>]
-  : [options: RunOptions<Context> & { context: Context }];
+type RunArguments<Context, Output> = undefined extends Context
+  ? [options?: RunOptions<Context, Output>]
+  : [options: RunOptions<Context, Output> & { context: Context }];
 
 /** A fixed output choice backed by an Agent's current opening configuration. */
 export interface AgentOutput<Context = undefined, Output = string> {
@@ -486,7 +502,7 @@ export interface AgentOutput<Context = undefined, Output = string> {
   ): Promise<Session<Output, Context>>;
   run(
     input: UserInput | null,
-    ...args: RunArguments<Context>
+    ...args: RunArguments<Context, Output>
   ): Promise<Completed<Output>>;
 }
 
@@ -580,6 +596,9 @@ export class Agent<Context = undefined, Output = string> {
   outputGuardrails: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
   transformContext?: ContextTransform<Context>;
+  prepareHandoffInput?: (
+    input: HandoffInput<Context>,
+  ) => HandoffInput<Context> | Promise<HandoffInput<Context>>;
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
@@ -640,6 +659,7 @@ export class Agent<Context = undefined, Output = string> {
       'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
+      'prepareHandoffInput',
     ] as const)
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
@@ -659,6 +679,7 @@ export class Agent<Context = undefined, Output = string> {
         'compaction and beforeCompact are mutually exclusive',
       );
     this.transformContext = options.transformContext;
+    this.prepareHandoffInput = options.prepareHandoffInput;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
@@ -727,10 +748,16 @@ export class Agent<Context = undefined, Output = string> {
         this.session(
           ...([optionsFor(args[0])] as SessionArguments<Context>),
         ) as unknown as Promise<Session<Next, Context>>,
-      run: async (input: UserInput | null, ...args: RunArguments<Context>) =>
+      run: async (
+        input: UserInput | null,
+        ...args: RunArguments<Context, Next>
+      ) =>
         this.run(
           input,
-          ...([optionsFor(args[0])] as RunArguments<Context>),
+          ...([optionsFor(args[0])] as unknown as RunArguments<
+            Context,
+            Output
+          >),
         ) as unknown as Promise<Completed<Next>>,
     });
   }
@@ -931,7 +958,7 @@ export class Agent<Context = undefined, Output = string> {
    */
   async run(
     input: UserInput | null,
-    ...args: RunArguments<Context>
+    ...args: RunArguments<Context, Output>
   ): Promise<Completed<Output>> {
     const options = {
       ...(args[0] ?? {}),
@@ -975,6 +1002,10 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
     const captureErrorDetails = options.captureErrorDetails === true;
+    const errorHandler = options.errorHandler;
+    if (errorHandler !== undefined && typeof errorHandler !== 'function')
+      throw new TypeError('errorHandler must be callable');
+    const observeFailure = captureErrorDetails || errorHandler !== undefined;
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
     const beforeStep = options.beforeStep;
@@ -1026,7 +1057,7 @@ export class Agent<Context = undefined, Output = string> {
         this.prepare !== Agent.#canonicalPrepare)
         ? structuredClone(input)
         : undefined;
-    const errorInput = captureErrorDetails
+    const errorInput = observeFailure
       ? inputStoragePolicy
         ? null
         : structuredClone(input)
@@ -1034,7 +1065,7 @@ export class Agent<Context = undefined, Output = string> {
     const sessionOptions: OwnedSessionOptions<Context> = {
       providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
-      ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
+      ...(observeFailure ? { includeRawProviderEvents: true } : {}),
       ...((options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
         ? { [sdkMemoryPhase]: true as const }
         : {}),
@@ -1069,7 +1100,7 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
-        returnItems: options.returnItems || captureErrorDetails,
+        returnItems: options.returnItems || observeFailure,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         toolBatchCompletion: this.toolBatchCompletion,
@@ -1090,7 +1121,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnHistory !== true &&
       options.returnRawUsage !== true &&
       options.returnItems !== true &&
-      !captureErrorDetails &&
+      !observeFailure &&
       options.prepareRequest === undefined &&
       inputStoragePolicy === undefined &&
       modelOverride === undefined &&
@@ -1124,6 +1155,8 @@ export class Agent<Context = undefined, Output = string> {
       toolNotFoundBehavior: options.toolNotFoundBehavior,
       guardrailInput,
       errorInput,
+      errorHandler,
+      captureErrorDetails,
       inputStoragePolicy,
       maxModelSteps,
       budget,
@@ -1214,6 +1247,9 @@ export class Agent<Context = undefined, Output = string> {
     let transformContext = opening
       ? opening.transformContext
       : this.transformContext;
+    const prepareHandoffInput = opening
+      ? opening.prepareHandoffInput
+      : this.prepareHandoffInput;
     const contextTransformPurpose =
       opening?.contextTransformPurpose ??
       ((options as OwnedSessionOptions<Context>)[correctionOpening]
@@ -1224,6 +1260,7 @@ export class Agent<Context = undefined, Output = string> {
       ['toolBatchCompletion', toolBatchCompletion],
       ['beforeCompact', beforeCompact],
       ['transformContext', transformContext],
+      ['prepareHandoffInput', prepareHandoffInput],
     ] as const)
       if (callback !== undefined && typeof callback !== 'function')
         throw new TypeError(`${name} must be a function`);
@@ -1403,7 +1440,12 @@ export class Agent<Context = undefined, Output = string> {
     const stateResult =
       suppliedState == null
         ? undefined
-        : sessionStateSchema.safeParse(suppliedState);
+        : sessionStateSchema.safeParse(structuredClone(suppliedState));
+    if (stateResult?.success) {
+      assertHandoffPresentationAuthority(suppliedState as SessionState);
+      if (hasSessionStateAuthority(suppliedState as SessionState))
+        captureSessionState(stateResult.data);
+    }
     const budgetState = stateResult?.success ? stateResult.data : undefined;
     const restoredRunBudget = isBudgetedManualSessionState(budgetState)
       ? RunBudgetTracker.restoreCheckpoint(
@@ -1474,6 +1516,7 @@ export class Agent<Context = undefined, Output = string> {
               beforeCompact,
               compaction,
               transformContext,
+              prepareHandoffInput,
               hostedPrompt,
             } as AgentOptions<Context, Output>),
             true,
@@ -1496,6 +1539,29 @@ export class Agent<Context = undefined, Output = string> {
       );
       declarations.tools = [...catalog.tools];
     }
+
+    // An editable receipt can hide a prior preparation and select the root.
+    // Only current declarations, not saved markers or reachability, own this gate.
+    if (
+      budgetState &&
+      profiles?.some(
+        ({ declaration, handoffs, decisionHandoffs }) =>
+          declaration.prepareHandoffInput !== undefined &&
+          (Object.keys(handoffs).length > 0 ||
+            Object.values(decisionHandoffs ?? {}).some(
+              ({ targets }) => targets.length > 0,
+            )),
+      )
+    )
+      assertHandoffPresentationAuthority(budgetState, true);
+
+    if (
+      profiles?.some((profile) => profile.nativeProviderId !== undefined) &&
+      (options.providerHistory !== undefined || provider._usesChatGPTPlan)
+    )
+      throw new TypeError(
+        'Distinct handoff providers require SDK-managed history',
+      );
 
     if (
       (options as OwnedSessionOptions<Context>)[ownedRun]?.prepareRequest !==
@@ -1537,6 +1603,12 @@ export class Agent<Context = undefined, Output = string> {
             instructions: baseInstructions,
             files: opening?.instructionFiles ?? [],
           };
+    if (budgetState && profiles && !hasSessionStateAuthority(budgetState))
+      await assertRestoredInstructionContent(
+        budgetState.history,
+        profiles,
+        instructions,
+      );
     let profileInstructions = instructions;
     const environmentOwner = await acquireEnvironment(
       environmentInput,
@@ -1785,7 +1857,13 @@ export class Agent<Context = undefined, Output = string> {
       (restoredSource
         ? graph!.profiles.get(restoredSource.profile_id)!.output
         : output);
-    if (persistent && output.repair)
+    if (
+      persistent &&
+      (output.repair ||
+        [...(graph?.profiles.values() ?? [])].some(
+          ({ output }) => output.repair,
+        ))
+    )
       throw new TypeError('Persistent storage does not support output repair');
     assertOutputState(state, activeOutput.identity);
     if (
@@ -1997,17 +2075,52 @@ export class Agent<Context = undefined, Output = string> {
       correction === undefined &&
       outputType === undefined;
     const lease = provider._acquire(correction ?? opening, privateRun);
+    const profileLeases = new Map<NativeProvider, ProviderLease>();
+    const releaseProfileLeases = async (releaseRoot: () => Promise<void>) => {
+      const results = await Promise.allSettled([
+        releaseRoot(),
+        ...Array.from(profileLeases.values(), (profile) => profile.release()),
+      ]);
+      const errors = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1)
+        throw new AggregateError(errors, 'Provider lease cleanup failed');
+    };
+    const releaseProviders = () => releaseProfileLeases(lease.release);
     const previousOpeningCleanup: (() => Promise<void>) | undefined =
       lease.retainOpeningCleanup(() =>
-        releaseEnvironmentBeforeProvider(
-          environmentOwner,
-          previousOpeningCleanup ?? lease.release,
+        releaseEnvironmentBeforeProvider(environmentOwner, () =>
+          releaseProfileLeases(previousOpeningCleanup ?? lease.release),
         ),
       );
     cleanupAcquired();
     const apiKey = lease.apiKey;
 
     try {
+      for (const profile of completedGraph?.profiles.values() ?? []) {
+        const current = profile.profile.declaration.provider;
+        if (current !== provider && !profileLeases.has(current))
+          profileLeases.set(current, current._acquire());
+      }
+      const nativeProfileProviders = new Map<
+        string,
+        { config: JsonObject; apiKey: string }
+      >();
+      for (const profile of profiles ?? []) {
+        const id = profile.nativeProviderId;
+        if (id === undefined || nativeProfileProviders.has(id)) continue;
+        const current = profileLeases.get(profile.declaration.provider)!;
+        if (!current.apiKey?.trim())
+          throw new TypeError(
+            'A distinct handoff provider requires an API key',
+          );
+        nativeProfileProviders.set(id, {
+          config: current.config['model_providers.native_agent'] as JsonObject,
+          apiKey: current.apiKey.trim(),
+        });
+      }
       if (lease.codexLogin)
         assertOutputRepairSupported(
           output,
@@ -2064,6 +2177,15 @@ export class Agent<Context = undefined, Output = string> {
         config: {
           ...config,
           ...lease.config,
+          ...Object.fromEntries(
+            [...nativeProfileProviders].map(([id, route]) => [
+              `model_providers.${id}`,
+              {
+                ...route.config,
+                supports_standalone_web_search: search?.route === 'standalone',
+              },
+            ]),
+          ),
           ...(plan
             ? {
                 'features.remote_compaction_v2': false,
@@ -2114,6 +2236,16 @@ export class Agent<Context = undefined, Output = string> {
             : {}),
         },
         threadOptions: {
+          ...(nativeProfileProviders.size
+            ? {
+                _sdk_profile_provider_keys: Object.fromEntries(
+                  [...nativeProfileProviders].map(([id, route]) => [
+                    id,
+                    route.apiKey,
+                  ]),
+                ),
+              }
+            : {}),
           ...(options.providerHistory === undefined
             ? {}
             : { _provider_history: options.providerHistory }),
@@ -2126,6 +2258,20 @@ export class Agent<Context = undefined, Output = string> {
                   root_id: completedGraph.rootId,
                   roster: [...completedGraph.roster],
                   fingerprint: completedGraph.fingerprint,
+                  input_preparations: Object.fromEntries(
+                    [...completedGraph.profiles].map(([id, runtime]) => [
+                      id,
+                      runtime.profile.declaration.prepareHandoffInput ===
+                      undefined
+                        ? []
+                        : [
+                            ...Object.keys(runtime.profile.handoffs),
+                            ...Object.keys(
+                              runtime.profile.decisionHandoffs ?? {},
+                            ),
+                          ],
+                    ]),
+                  ),
                 },
               }
             : {}),
@@ -2290,7 +2436,7 @@ export class Agent<Context = undefined, Output = string> {
         hostedPromptControls: promptControls,
         checklist: declarations.checklist,
         websocketsAllowed: lease.websocketsAllowed && !historyHttpOnly,
-        onClose: lease.release,
+        onClose: releaseProviders,
         managedWorkspace: environmentOwner.managedWorkspace,
         [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[
           managedWorkspaceRestore
@@ -2304,16 +2450,18 @@ export class Agent<Context = undefined, Output = string> {
               retainOpening,
               parentTrace,
               repairTransformContext,
+              sourceProvider,
             ) => {
               // Native fallback may read a later environment key; repair needs this snapshot.
               if (apiKey === undefined)
                 throw new NativeError(
                   'Output repair requires a captured API key',
                 );
+              const correctionProvider = sourceProvider ?? provider;
               const correction = new Agent({
                 instructions:
                   'Correct the supplied JSON to match its schema. Return only JSON.',
-                provider,
+                provider: correctionProvider,
                 model,
                 modelSettings,
                 tools: [],
@@ -2332,7 +2480,8 @@ export class Agent<Context = undefined, Output = string> {
                 includeOutputAccepted,
                 includeRawProviderEvents,
                 [correctionOpening]: {
-                  apiKey: lease.realtimeApiKey,
+                  apiKey: (profileLeases.get(correctionProvider) ?? lease)
+                    .realtimeApiKey,
                   retainOpening,
                 },
               };
@@ -2379,6 +2528,7 @@ export class Agent<Context = undefined, Output = string> {
             beforeCompact,
             compaction,
             transformContext,
+            prepareHandoffInput,
             hostedPrompt,
             hostedPromptControls: promptControls,
           });
@@ -2672,6 +2822,7 @@ export function captureAgentProfiles<Context, Output>(
     Agent<Context, Output>
   >();
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
+  const nativeProviderIds = new Map<NativeProvider, string>();
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
     const handoffBindings = new Set(
@@ -2740,6 +2891,35 @@ export function captureAgentProfiles<Context, Output>(
       source.outputType && 'mode' in source.outputType
         ? Object.freeze({ ...source.outputType })
         : source.outputType;
+    const targetProvider = !captureProvider
+      ? undefined
+      : agent === root || implicitProviders.get(source.provider)?.has(source)
+        ? rootDeclaration.provider
+        : source.provider;
+    let nativeProviderId: string | undefined;
+    if (
+      targetProvider !== undefined &&
+      targetProvider !== rootDeclaration.provider
+    ) {
+      const borrowed =
+        rootDeclaration.provider.modelBackend !== undefined &&
+        targetProvider.modelBackend !== undefined;
+      const native =
+        rootDeclaration.provider._supportsProfileRouting &&
+        targetProvider._supportsProfileRouting &&
+        rootDeclaration.provider.responseMode === targetProvider.responseMode;
+      if (realtimeGraph || (!borrowed && !native))
+        throw new TypeError(
+          'Distinct handoff providers require compatible text inference providers',
+        );
+      if (native) {
+        nativeProviderId = nativeProviderIds.get(targetProvider);
+        if (nativeProviderId === undefined) {
+          nativeProviderId = `sdk_profile_${indices.get(agent)!}`;
+          nativeProviderIds.set(targetProvider, nativeProviderId);
+        }
+      }
+    }
     const declaration = new Agent<Context, Output>({
       instructions: capturedInstructions(source),
       environment: source.environment,
@@ -2748,7 +2928,7 @@ export function captureAgentProfiles<Context, Output>(
       model: source.model,
       decisions: source.decisions,
       modelSettings: source.modelSettings,
-      provider: captureProvider ? rootDeclaration.provider : undefined,
+      provider: targetProvider,
       outputType,
       tools:
         source[implicitTools] === source.tools && source.tools.length === 0
@@ -2766,20 +2946,12 @@ export function captureAgentProfiles<Context, Output>(
       beforeCompact: source.beforeCompact,
       compaction: source.compaction,
       transformContext: source.transformContext,
+      prepareHandoffInput: source.prepareHandoffInput,
       hostedPrompt: source.hostedPrompt,
     } as AgentOptions<Context, Output>);
-    if (wireIdentity(declaration) !== output)
+    if (realtimeGraph && wireIdentity(declaration) !== output)
       throw new TypeError(
-        'Handoff profiles must share output mode, schema and wrapping',
-      );
-    if (
-      captureProvider &&
-      agent !== root &&
-      !implicitProviders.get(agent.provider)?.has(agent) &&
-      agent.provider !== rootDeclaration.provider
-    )
-      throw new TypeError(
-        'Handoff targets must inherit or share the Session provider',
+        'Realtime handoff profiles must share output mode, schema and wrapping',
       );
     if (!isDeepStrictEqual(runtimeGrants(declaration), grants))
       throw new TypeError(
@@ -2937,6 +3109,7 @@ export function captureAgentProfiles<Context, Output>(
     profiles.push(
       Object.freeze({
         id: `${idPrefix}${indices.get(agent)!}`,
+        nativeProviderId,
         agent,
         declaration,
         handoffs: Object.freeze(targets),
@@ -2966,7 +3139,7 @@ export class Runner {
   static run<Context, Output>(
     agent: Agent<Context, Output>,
     input: UserInput | null,
-    ...args: RunArguments<Context>
+    ...args: RunArguments<Context, Output>
   ) {
     return agent.run(input, ...args);
   }

@@ -210,6 +210,8 @@ pub struct ThreadOptions {
     provider_history: Option<codex_protocol::provider_history::ProviderHistorySelection>,
     #[serde(rename = "_context_callbacks")]
     context_callbacks: crate::python_tools::ContextCallbacks,
+    #[serde(rename = "_sdk_profile_provider_keys")]
+    profile_provider_keys: std::collections::BTreeMap<String, String>,
     #[serde(rename = "_agent_profiles")]
     pub(crate) agent_profiles: Option<crate::agent_profiles::OpeningProfiles>,
     #[serde(rename = "_sdk_resume_thread_id")]
@@ -471,6 +473,11 @@ impl ThreadOptions {
                 profiles,
                 profile_files.unwrap_or_default(),
             )?;
+        }
+        if !self.profile_provider_keys.is_empty() {
+            options.thread_extension_init.insert(
+                crate::agent_profiles::PendingProviderKeys(self.profile_provider_keys),
+            );
         }
         options.allow_provider_model_fallback = self.allow_provider_model_fallback;
         options.initial_history = self.initial_history.unwrap_or(InitialHistory::New);

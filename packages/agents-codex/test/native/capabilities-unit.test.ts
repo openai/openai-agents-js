@@ -323,13 +323,22 @@ describe('checkpoint advice SDK boundary', () => {
       await session.close();
     },
   );
-  it('refuses portable advice for local storage without calling native export', async () => {
+  it('probes idle local storage without exporting a manual checkpoint', async () => {
     const { native, session } = fixture({ localStorage: true });
-    for (const kind of ['idle', 'manualWait'] as const)
-      expect(await session.checkpointStatus({ kind })).toMatchObject({
-        status: 'notReady',
-      });
-    expect(native._export_checkpoint).not.toHaveBeenCalled();
+    expect(await session.checkpointStatus({ kind: 'idle' })).toEqual({
+      status: 'ready',
+      reasons: [],
+    });
+    expect(
+      await session.checkpointStatus({ kind: 'manualWait' }),
+    ).toMatchObject({
+      status: 'notReady',
+    });
+    expect(native._export_checkpoint).toHaveBeenCalledExactlyOnceWith(
+      null,
+      false,
+      true,
+    );
     await session.close();
   });
 });

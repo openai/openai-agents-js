@@ -681,6 +681,57 @@ nativeIt.each([false, undefined])(
 );
 
 nativeIt(
+  'preserves the provider cursor when a handoff changes prompted output guidance',
+  async () => {
+    const model = new ModelServer([
+      [call('transfer_to_target', {}, { callId: 'prompted-stored' })],
+      [message('{"target_value":7}')],
+    ]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    type Output = { source_value: string } | { target_value: number };
+    const target = new Agent<undefined, Output>({
+      name: 'Target',
+      instructions: 'Destination.',
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ target_value: z.number() }),
+        maxRetries: 0,
+      },
+      modelSettings: { store: true },
+    });
+    const agent = new Agent<undefined, Output>({
+      instructions: 'Source.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: true },
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ source_value: z.string() }),
+        maxRetries: 0,
+      },
+      handoffs: [target],
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'previous_response' },
+    });
+    const result = await (await session.submit('Route.')).wait();
+    expect(result.finalOutput).toEqual({ target_value: 7 });
+    expect(getProviderHistory(await session.saveState())).toEqual({
+      type: 'previous_response',
+      id: 'response-2',
+    });
+    const [first, second] = model.requests;
+    expect(second.previous_response_id).toBe('response-1');
+    expect(JSON.stringify(first.input)).toContain('source_value');
+    expect(JSON.stringify(second.input)).toContain('target_value');
+    expect(JSON.stringify(second.input)).not.toContain('source_value');
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+nativeIt(
   'retains current store permission through restored profile publication',
   async () => {
     const model = new ModelServer([[message('Before.')], [message('After.')]]);

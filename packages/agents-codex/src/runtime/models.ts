@@ -1792,6 +1792,7 @@ export class AiSdkModel implements NativeModel {
       'presence_penalty',
       'reasoning',
       'prompt_cache_key',
+      ...(this.#openaiResponses ? ['prompt_cache_retention'] : []),
     ]);
     if (
       Object.keys(body).some((key) => !admitted.has(key)) ||
@@ -1808,10 +1809,21 @@ export class AiSdkModel implements NativeModel {
         'AiSdkModel does not support configured Anthropic thinking',
       );
     if (this.#openai) {
+      if (
+        body.prompt_cache_retention != null &&
+        this.model.specificationVersion === 'v2'
+      )
+        throw new TypeError(
+          'AiSdkModel cache retention requires specificationVersion v3 or v4',
+        );
       const openaiOptions = (providerOptions.openai ?? {}) as JsonObject;
       providerOptions.openai = {
         ...openaiOptions,
         store: false,
+        ...(body.prompt_cache_retention != null &&
+        !Object.hasOwn(openaiOptions, 'promptCacheRetention')
+          ? { promptCacheRetention: body.prompt_cache_retention }
+          : {}),
         ...(body.prompt_cache_key != null &&
         !Object.hasOwn(openaiOptions, 'promptCacheKey')
           ? { promptCacheKey: body.prompt_cache_key }

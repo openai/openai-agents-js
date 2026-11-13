@@ -1576,7 +1576,16 @@ impl EngineState {
             "_agent_profiles": profiles,
             "_sdk_instruction_files": files,
         }))?;
-        let (mut startup, instructions) = self.build_startup(options).await?;
+        self.seal_transport_binding();
+        self.interception.check_code_import_admission()?;
+        let (mut startup, instructions) = options
+            .build(&self.config_json, &self.runtime_json, self.cloud_config.clone())
+            .await?;
+        if let Some(providers) = source.thread.thread_extension_data()
+            .get::<crate::agent_profiles::ProfileProviders>() {
+            startup.thread_extension_init.insert(providers.as_ref().clone());
+        }
+        let (mut startup, instructions) = self.finish_startup(startup, instructions).await?;
         if let Some(accepted) = source.instructions.accepted() {
             instructions.confirm(accepted)?;
         }
@@ -2507,6 +2516,7 @@ impl EngineState {
                 "Sign in with ChatGPT requires native model dispatch"
             );
         }
+        crate::agent_profiles::bind_profile_providers(&mut startup).await?;
         Ok((startup, instructions))
     }
 

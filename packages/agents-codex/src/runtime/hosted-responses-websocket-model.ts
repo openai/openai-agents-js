@@ -391,6 +391,16 @@ function hostedSocket(
             .map((item) => item?.id)
         : [],
     );
+    const rejectedUserIds = new Set(
+      (active.fallbackInput ?? [])
+        .filter(
+          (item) =>
+            item.type === 'message' &&
+            item.role === 'user' &&
+            typeof item.id === 'string',
+        )
+        .map((item) => item.id),
+    );
     const continuationInput = input.filter((item) => {
       if (item.type === 'function_call_output')
         return (
@@ -401,7 +411,8 @@ function hostedSocket(
         item.role === 'user' &&
         typeof item.id === 'string' &&
         !originalUserIds.has(item.id) &&
-        !active.acknowledgedUserItems.has(item.id)
+        !active.acknowledgedUserItems.has(item.id) &&
+        !rejectedUserIds.has(item.id)
       );
     });
     const ids = new Set(
@@ -527,7 +538,10 @@ function hostedSocket(
           .map((item) => item.call_id as string),
       );
       if (active.terminal) {
-        fallback(active, frame, continuationInput);
+        fallback(active, frame, [
+          ...(active.fallbackInput ?? []),
+          ...continuationInput,
+        ]);
         return;
       }
       request().signal?.throwIfAborted();
@@ -628,7 +642,11 @@ function hostedSocket(
               event.type === 'response.inject.failed' &&
               object(event.error)?.code === 'response_already_completed'
             ) {
-              active.fallbackInput = active.injectionInput;
+              active.fallbackInput = [
+                ...(active.fallbackInput ?? []),
+                ...(active.injectionInput ?? []),
+              ];
+              active.injectionInput = undefined;
               for (const id of active.injecting ?? [])
                 active.pending.delete(id);
               active.injecting = undefined;
@@ -674,7 +692,27 @@ function hostedSocket(
                 ? response.output
                 : []) {
                 const item = object(value);
-                if (!item || !isProgramItem(item)) continue;
+                if (!item) continue;
+                if (
+                  item.type === 'function_call' &&
+                  typeof item.call_id === 'string' &&
+                  !active.emitted.has(item.call_id) &&
+                  !active.pending.has(item.call_id)
+                ) {
+                  if (
+                    active.emitted.size +
+                      active.passiveCount +
+                      active.queued.length >=
+                    maxResponseItems
+                  )
+                    throw new RangeError(
+                      'Hosted response exceeds the native output-item limit',
+                    );
+                  active.pending.add(item.call_id);
+                  active.queued.push(copyJsonValue(item) as JsonObject);
+                  continue;
+                }
+                if (!isProgramItem(item)) continue;
                 const key = programItemKey(item);
                 const observed = prior.get(key) ?? 0;
                 if (observed > 0) {
@@ -697,13 +735,13 @@ function hostedSocket(
               active.terminal &&
               !retiring &&
               active.fallbackInput?.length &&
-              !active.injecting
+              !active.injecting &&
+              !active.pending.size
             ) {
               if (!active.continuation)
                 throw new TypeError(
                   'Hosted fallback requires its original continuation',
                 );
-              // Preserve the existing fallback priority over queued function callbacks.
               for (const item of active.queued) {
                 if (!isProgramItem(item)) continue;
                 recordProgramItem(active, item);

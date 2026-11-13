@@ -111,6 +111,7 @@ pub(super) enum PreparationReply {
             std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>,
         >,
     ),
+    HandoffInput(oneshot::Sender<std::result::Result<handoff_inputs::Groups, ()>>),
     ToolNotFound(oneshot::Sender<std::result::Result<Option<String>, ()>>),
     Model(ModelDelivery),
     ModelRetry(
@@ -137,6 +138,7 @@ impl PreparationReply {
         match self {
             Self::Workspace(reply) => reply.is_closed(),
             Self::ProviderResponseSpan(reply) => reply.is_closed(),
+            Self::HandoffInput(reply) => reply.is_closed(),
             Self::ToolNotFound(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),

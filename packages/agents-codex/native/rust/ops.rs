@@ -317,6 +317,8 @@ impl Default for Mode {
 
 params!(TurnParams {
     input: Value,
+    #[serde(default)]
+    profile_output_override: bool,
     observation_submission_id: Option<String>,
     client_id: Option<String>,
     #[serde(default, alias = "settings", with = "ThreadSettings")]
@@ -473,7 +475,8 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
             .map_err(pre_admission)?;
     }
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
-    let agent_environments = thread.thread_extension_data()
+    let agent_environments = thread
+        .thread_extension_data()
         .get::<crate::agent_profiles::ProfileEnvironments>();
     if agent_environments.is_some() && p.writable_roots.is_some() {
         return Err(pre_admission(anyhow::anyhow!(
@@ -787,6 +790,10 @@ async fn continue_managed<'a>(
     );
     p.start.model_settings_override = retained_settings;
     init.insert(selection);
+    init.insert(codex_extension_api::AgentProfileOutputControl {
+        thread_id: state.id.to_string(),
+        preserve_turn_output: p.profile_output_override,
+    });
     if let Some(submission) = p.observation_submission_id {
         state
             .request_metadata
@@ -822,6 +829,7 @@ pub async fn recover_prepared(
     terminal: Option<crate::python_tools::RecoveredToolCompletionSeed>,
     staged_input: codex_extension_api::StagedInputBatch,
     raise_on_unknown_tool: bool,
+    profile_output_override: bool,
     native_mcp: Option<codex_core::NativeMcpRecovery>,
 ) -> Result<Value> {
     let thread = &state.thread;
@@ -839,6 +847,10 @@ pub async fn recover_prepared(
             .seed(&mut init, submission, state.id.to_string());
     }
     init.insert(selection);
+    init.insert(codex_extension_api::AgentProfileOutputControl {
+        thread_id: state.id.to_string(),
+        preserve_turn_output: profile_output_override,
+    });
     init.insert(if raise_on_unknown_tool {
         codex_extension_api::ToolNotFoundBehavior::RaiseError
     } else {
@@ -905,9 +917,31 @@ async fn start_with_params<'a>(
     } else {
         turn_init
     };
+    let turn_init = if let Some((state, _)) = managed.as_ref() {
+        if matches!(p.mode, Mode::Steer) {
+            turn_init
+        } else {
+            let mut init = match turn_init {
+                Some(init) => init,
+                None => {
+                    let mut init = thread.config_snapshot().await.turn_extension_init;
+                    init.insert(None::<crate::python_tools::OperationSelection>);
+                    init
+                }
+            };
+            init.insert(codex_extension_api::AgentProfileOutputControl {
+                thread_id: state.id.to_string(),
+                preserve_turn_output: p.profile_output_override,
+            });
+            Some(init)
+        }
+    } else {
+        turn_init
+    };
     let mut prompt_cache_breakpoints = Vec::new();
     let input = if p.input.is_array() {
-        let captured = decode::<Vec<codex_protocol::prompt_cache::PromptCacheUserInput>>(p.input).map_err(pre_admission)?;
+        let captured = decode::<Vec<codex_protocol::prompt_cache::PromptCacheUserInput>>(p.input)
+            .map_err(pre_admission)?;
         let (content, breakpoints) = codex_protocol::prompt_cache::split_user_input(captured);
         prompt_cache_breakpoints = breakpoints;
         TurnInput::UserInput {

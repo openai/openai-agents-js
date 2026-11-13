@@ -33,6 +33,8 @@ export interface RunErrorDetails {
   readonly input: UserInput | null;
   readonly lastAgent: Agent<any, any> | null;
   readonly items: readonly ProducedItem[];
+  /** Detached canonical records when bounded capture succeeds. */
+  readonly history?: readonly Record<string, unknown>[];
   /** Detached client JSON from retained provider observations. */
   readonly rawResponses: readonly JsonObject[];
   readonly guardrailResults: readonly GuardrailRecord[];

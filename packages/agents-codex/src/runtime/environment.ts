@@ -597,25 +597,27 @@ export function dockerStdioEnvironment<Context>(
   return new Environment(captured);
 }
 
-/** @internal Construct transport settings from the current immutable declaration. */
-/** Configured projections have been retaining the exact captured launcher. */
-export function copyEnvironmentCommand(
-  source: Environment,
-  target: Environment,
-): void {
+/** Configured projections have been retaining authority before constructor validation. */
+export function projectEnvironment<Context>(
+  source: Environment<Context>,
+  options:
+    | EnvironmentOptions<Context>
+    | (LocalEnvironmentOptions<Context> & { local: true }),
+): Environment<Context> {
   const command = dockerEnvironmentAuthority.get(source);
-  if (command === undefined) return;
+  if (command === undefined) return new Environment(options);
   if (
     source.kind !== 'remote' ||
-    target.kind !== 'remote' ||
-    source.url !== target.url
+    'local' in options ||
+    source.url !== options.url
   )
     throw new TypeError(
       'Environment projection has been changing its transport authority',
     );
-  dockerEnvironmentAuthority.set(target, command);
+  return dockerStdioEnvironment(options, command);
 }
 
+/** @internal Construct transport settings from the current immutable declaration. */
 export function environmentConfig(environment: Environment): EnvironmentConfig {
   const command = dockerEnvironmentAuthority.get(environment);
   const native = environmentSchema.parse({

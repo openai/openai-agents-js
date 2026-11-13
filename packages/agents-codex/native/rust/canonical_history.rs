@@ -2,7 +2,7 @@
 use crate::engine::ThreadState;
 use anyhow::{Context, ensure};
 use codex_history::RolloutItem;
-use codex_history::sdk_originals::input_projection;
+use codex_history::sdk_originals::input_projections;
 use codex_protocol::protocol::AgentStatus;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -52,6 +52,7 @@ pub async fn snapshot(
 enum HistoryEdit {
     Replace { keep: usize, items: Vec<String> },
     Pop { allow_rebuild: bool },
+    AppendRecoveredOutput { message_id: String, text: String },
 }
 
 pub async fn replace(
@@ -69,6 +70,98 @@ pub async fn pop(
     allow_rebuild: bool,
 ) -> anyhow::Result<Value> {
     edit(state, expected, HistoryEdit::Pop { allow_rebuild }).await
+}
+
+/// Append one application-owned assistant message without changing any retained prefix.
+pub async fn append_recovered_output(
+    state: &ThreadState,
+    expected: String,
+    message_id: String,
+    text: String,
+) -> anyhow::Result<Value> {
+    ensure!(
+        !message_id.is_empty(),
+        "recovery message ID must be nonempty"
+    );
+    edit(
+        state,
+        expected,
+        HistoryEdit::AppendRecoveredOutput { message_id, text },
+    )
+    .await
+}
+
+async fn settled_children(state: &ThreadState) -> anyhow::Result<()> {
+    let children = crate::subagents::list(state).await?;
+    let mut owned = children
+        .iter()
+        .map(|child| child.id)
+        .collect::<HashSet<_>>();
+    owned.insert(state.id);
+    let loaded = state.engine.manager.list_thread_ids().await;
+    ensure!(
+        loaded.contains(&state.id) && loaded.iter().all(|id| owned.contains(id)),
+        "recovery append requires an exclusively owned root graph"
+    );
+    for child in children {
+        if !loaded.contains(&child.id) {
+            ensure!(
+                child.status == "closed",
+                "recovery append requires settled stored children"
+            );
+            continue;
+        }
+        let thread = state.engine.manager.get_thread(child.id).await?;
+        ensure!(
+            thread.active_turn_environment_selections().await.is_none()
+                && matches!(
+                    thread.agent_status().await,
+                    AgentStatus::Completed(_)
+                        | AgentStatus::Errored(_)
+                        | AgentStatus::Interrupted
+                        | AgentStatus::Shutdown
+                ),
+            "recovery append requires settled native children"
+        );
+        if let Some(tools) = thread
+            .thread_extension_data()
+            .get::<crate::python_tools::PythonTools>()
+        {
+            tools.check_idle(&thread).await?;
+        }
+        ensure!(
+            thread.list_background_terminals().await.is_empty(),
+            "recovery append requires completed child background execution"
+        );
+    }
+    Ok(())
+}
+
+async fn validate_replacement(
+    state: &ThreadState,
+    expected: &str,
+    keep: Option<usize>,
+    items: &[String],
+) -> anyhow::Result<usize> {
+    let (current_revision, total, _) = state.thread.sdk_history_snapshot(Some(0)).await?;
+    ensure!(
+        current_revision == expected,
+        "canonical history revision conflict"
+    );
+    let keep = keep.unwrap_or(total);
+    ensure!(keep <= total, "history keep exceeds snapshot length");
+    let originals = state.thread.sdk_history_projection(None).await?;
+    let retained = state.thread.sdk_history_projection(Some(keep)).await?.len();
+    let appended = input_projections(items)
+        .map_err(|_| anyhow::anyhow!("Invalid canonical history item"))?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    crate::context::check_pairs(&originals, &(0..retained).collect::<Vec<_>>())
+        .context("canonical history requires complete tool call/result pairs")?;
+    crate::context::check_pairs(&appended, &(0..appended.len()).collect::<Vec<_>>())
+        .context("canonical history requires complete tool call/result pairs")?;
+    Ok(keep)
 }
 
 async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyhow::Result<Value> {
@@ -94,21 +187,25 @@ async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyho
         .try_lock()
         .context("native mutation is in progress")?;
     idle(&state).await?;
-    ensure!(
-        state.engine.manager.list_thread_ids().await == vec![state.id],
-        "history transactions require an exclusively owned root without native children"
-    );
-    ensure!(
-        crate::subagents::list(&state).await?.is_empty(),
-        "history transactions do not rewrite child graphs"
-    );
+    if matches!(&edit, HistoryEdit::AppendRecoveredOutput { .. }) {
+        settled_children(state).await?;
+    } else {
+        ensure!(
+            state.engine.manager.list_thread_ids().await == vec![state.id],
+            "history transactions require an exclusively owned root without native children"
+        );
+        ensure!(
+            crate::subagents::list(&state).await?.is_empty(),
+            "history transactions do not rewrite child graphs"
+        );
+        ensure!(
+            state.engine.goals.is_none(),
+            "history transactions do not rewrite goal-backed sessions"
+        );
+    }
     ensure!(
         state.thread.list_background_terminals().await.is_empty(),
         "history transactions require completed background execution"
-    );
-    ensure!(
-        state.engine.goals.is_none(),
-        "history transactions do not rewrite goal-backed sessions"
     );
     let result = match edit {
         HistoryEdit::Replace { keep, items } => {
@@ -116,26 +213,22 @@ async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyho
             // Validate before durability: neither retained nor appended history may split
             // a client tool call/result pair. Provider-hosted records keep their existing
             // context-validator treatment, including server-side tool-search output.
-            let (current_revision, total, _) = state.thread.sdk_history_snapshot(Some(0)).await?;
-            ensure!(
-                current_revision == expected,
-                "canonical history revision conflict"
-            );
-            ensure!(keep <= total, "history keep exceeds snapshot length");
-            let originals = state.thread.sdk_history_projection(None).await?;
-            let retained = state.thread.sdk_history_projection(Some(keep)).await?.len();
-            let mut appended = Vec::with_capacity(items.len());
-            for item in &items {
-                if let Some(projection) = input_projection(item)
-                    .map_err(|_| anyhow::anyhow!("Invalid canonical history item"))?
-                {
-                    appended.push(projection);
-                }
-            }
-            crate::context::check_pairs(&originals, &(0..retained).collect::<Vec<_>>())
-                .context("canonical history requires complete tool call/result pairs")?;
-            crate::context::check_pairs(&appended, &(0..appended.len()).collect::<Vec<_>>())
-                .context("canonical history requires complete tool call/result pairs")?;
+            let keep = validate_replacement(state, &expected, Some(keep), &items).await?;
+            state
+                .thread
+                .sdk_replace_history(&expected, keep, items)
+                .await
+                .map(|revision| json!({"revision": revision}))
+        }
+        HistoryEdit::AppendRecoveredOutput { message_id, text } => {
+            let items = vec![
+                json!({
+                    "type": "message", "id": message_id, "role": "assistant",
+                    "content": [{ "type": "output_text", "text": text }],
+                })
+                .to_string(),
+            ];
+            let keep = validate_replacement(state, &expected, None, &items).await?;
             state
                 .thread
                 .sdk_replace_history(&expected, keep, items)
