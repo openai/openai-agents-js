@@ -285,3 +285,52 @@ it.each([true, false])(
     );
   },
 );
+
+it('replays a provider program and its result on the next native turn', async () => {
+  const program = {
+    type: 'program',
+    id: 'program_item',
+    call_id: 'program-call',
+    code: 'lookup()',
+    fingerprint: 'synthetic-fingerprint',
+  };
+  const output = {
+    type: 'program_output',
+    id: 'program_output_item',
+    call_id: 'program-call',
+    status: 'completed',
+    result: 'native program result',
+  };
+  const server = new ModelServer([
+    [program, output, message('provider completed')],
+    [message('used previous program')],
+  ]);
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Use the provider program.',
+    tools: [
+      codeInterpreter({
+        container: 'cntr_fixture',
+        allowedCallers: ['programmatic'],
+      }),
+      hostedTool({ type: 'programmatic_tool_calling' }),
+    ],
+  });
+  await using session = await agent.session();
+  expect(
+    (await (await session.submit('Run the program.')).wait()).finalOutput,
+  ).toBe('provider completed');
+  expect(
+    (await (await session.submit('What happened?')).wait()).finalOutput,
+  ).toBe('used previous program');
+  const input = server.requests[1]?.input;
+  expect(Array.isArray(input)).toBe(true);
+  expect(
+    (input as (typeof program)[]).filter(
+      (item) => item.type === 'program' || item.type === 'program_output',
+    ),
+  ).toEqual([program, output]);
+  server.assertExhausted();
+});

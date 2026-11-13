@@ -1127,7 +1127,11 @@
     {
       "path": "sdk-provider-programmatic-cache-controls.patch",
       "sha256": "c4c67e3874a8cbbad08a9a59a2cb7a84b666d9d6a38c1b18e0de3d8d69175f17"
+    },
+    {
+      "path": "sdk-hosted-program-replay.patch",
+      "sha256": "b295123c21785268fbeeef3031705ab21a6e1120475a01aed39e1b48adee34e3"
     }
   ],
-  "result_tree": "21b4af9f890edf25da7ce8afbf3b13dd7e0e453a"
+  "result_tree": "03755da909b53bc40b22f01cc1371829be725e00"
 }
