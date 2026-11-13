@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { Agent, AiSdkModel, NativeProvider, tool } from '../../src';
 
 it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
-  'fences unsupported Google signed calls before native effects: %s',
+  'preserves owned Google signatures through native tool calls: %s',
   async (signaturePart) => {
     const signed = signaturePart !== 'none';
     const requests: any[] = [];
@@ -19,7 +19,28 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
       const final = body.contents.some((message: any) =>
         message.parts.some((part: any) => part.functionResponse),
       );
-      if (signed && final) {
+      const signedParts = body.contents
+        .flatMap((message: any) => message.parts)
+        .filter(
+          (part: any) => part.thoughtSignature === 'opaque-google-signature',
+        );
+      const signedPart = signedParts[0];
+      const modelOwned = body.contents.some(
+        (message: any) =>
+          message.role === 'model' && message.parts.includes(signedPart),
+      );
+      const correctLocation =
+        modelOwned &&
+        (signaturePart === 'text'
+          ? signedPart?.text === 'Use double.' &&
+            signedPart.functionCall === undefined
+          : signedPart?.functionCall?.name === 'double' &&
+            signedPart.functionCall.args?.value === 21 &&
+            signedPart.text === undefined);
+      const validSignature = signed
+        ? signedParts.length === 1 && correctLocation
+        : signedParts.length === 0;
+      if (final && !validSignature) {
         response.writeHead(400, { 'content-type': 'application/json' });
         response.end(
           JSON.stringify({
@@ -108,25 +129,9 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
         provider,
       }).session();
       const turn = await session.submit('Double21.');
-      if (signed) {
-        const failure = await turn.wait().then(
-          () => undefined,
-          (error: Error) => error,
-        );
-        expect({
-          error: failure?.message,
-          effects,
-          requests: requests.length,
-        }).toEqual({
-          error: 'AiSdkModel does not support Google thought signatures',
-          effects: [],
-          requests: 1,
-        });
-      } else {
-        expect((await turn.wait()).finalOutput).toBe('42');
-        expect(effects).toEqual([21]);
-        expect(requests).toHaveLength(2);
-      }
+      expect((await turn.wait()).finalOutput).toBe('42');
+      expect(effects).toEqual([21]);
+      expect(requests).toHaveLength(2);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

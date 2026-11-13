@@ -162,9 +162,11 @@ export async function providerResponseSpanAdmission(
       restriction ?? null,
       policy.disabled ?? false,
       policy.includeSensitiveData ?? true,
+      generator.generateSpanId !== undefined,
     );
     const wire: WireSpanContext = JSON.parse(native.trace_span_context(handle));
     if (wire.disabled || processorSuppressed.getStore()) return null;
+    if (generator.generateSpanId === undefined) return { span_id: null };
     const borrowed = spanFromWire(native, wire, 'context', current);
     return ambient.run(borrowed, () => {
       signal.throwIfAborted();

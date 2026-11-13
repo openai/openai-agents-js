@@ -1683,6 +1683,22 @@ it.each([false, true])(
       await using source = await agent.session();
       await source.submit('begin');
       await nextApproval(source);
+      await expect
+        .poll(
+          async () => {
+            for await (const item of source.items())
+              if (
+                item.type === 'tool_search_output' &&
+                item.callId === 'search-sibling' &&
+                item.execution === 'client' &&
+                item.status === 'completed'
+              )
+                return true;
+            return false;
+          },
+          { timeout: 5_000 },
+        )
+        .toBe(true);
       state = await source.suspend();
       expect(JSON.stringify(state)).toContain('tool_search_output');
     }

@@ -1466,19 +1466,30 @@ impl PythonTools {
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
                 );
-                if !reply.provider_metadata.is_empty() {
-                    let output: Vec<ResponseItem> = serde_json::from_value(Value::Array(reply.output.clone()))
-                        .context("Invalid model provider metadata output")?;
-                    admission.provider_output_metadata()
-                        .context("Model provider metadata has no captured admission")?
-                        .capture(output, reply.provider_metadata)
-                        .map_err(anyhow::Error::msg)?;
-                }
                 let mut events = codex_extension_api::completed_model_response(
                     reply.response_id,
                     reply.output,
                     reply.usage,
                 );
+                if !reply.provider_metadata.is_empty()
+                    && events.iter().all(Result::is_ok)
+                    && matches!(
+                        events.last(),
+                        Some(Ok(codex_api::ResponseEvent::Completed { .. }))
+                    )
+                {
+                    let output = events
+                        .iter()
+                        .filter_map(|event| match event {
+                            Ok(codex_api::ResponseEvent::OutputItemDone(item)) => Some(item.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    admission.provider_output_metadata()
+                        .context("Model provider metadata has no captured admission")?
+                        .capture(output, reply.provider_metadata)
+                        .map_err(anyhow::Error::msg)?;
+                }
                 if let Some(original) = reply.original_usage {
                     if let Some(Ok(codex_api::ResponseEvent::Completed {
                         response_id,
