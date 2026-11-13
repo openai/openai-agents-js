@@ -31,6 +31,7 @@ import {
   retryAdviceToNative,
   retryContextFromNative,
   retryDecisionToNative,
+  withModelRetryAdvice,
   type RetryPolicy,
 } from './model-retry';
 import {
@@ -9327,19 +9328,7 @@ export class Session<OutputT = string, Context = unknown> {
                 : undefined;
               check();
               if (advice !== undefined)
-                context = Object.freeze({
-                  ...context,
-                  providerAdvice: Object.freeze({
-                    ...context.providerAdvice,
-                    ...advice,
-                  }),
-                  normalizedError: Object.freeze({
-                    ...context.normalizedError,
-                    ...(advice.retryAfterMs === undefined
-                      ? {}
-                      : { retryAfterMs: advice.retryAfterMs }),
-                  }),
-                });
+                context = withModelRetryAdvice(context, advice);
               const policy = failed
                 ? failed.policy
                 : this.capturedRetryPolicy(

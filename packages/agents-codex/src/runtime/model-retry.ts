@@ -22,6 +22,8 @@ export interface ModelRetryAdvice {
   readonly retryAfterMs?: number;
   readonly replaySafety?: 'safe' | 'unsafe' | 'unknown';
   readonly reason?: string;
+  /** Provider response-start evidence; omitted when unknown. */
+  readonly responseStarted?: boolean;
 }
 export interface RetryContext {
   readonly attemptId: string;
@@ -170,6 +172,24 @@ function snapshot(context: RetryContext): RetryContext {
         : Object.freeze({ ...context.providerAdvice }),
   });
 }
+/** @internal Provider observations cannot clear a native response-start fact. */
+export function withModelRetryAdvice(
+  context: RetryContext,
+  advice: ModelRetryAdvice,
+): RetryContext {
+  return snapshot({
+    ...context,
+    providerAdvice: { ...context.providerAdvice, ...advice },
+    responseStarted: context.responseStarted || advice.responseStarted === true,
+    normalizedError: {
+      ...context.normalizedError,
+      ...(advice.retryAfterMs === undefined
+        ? {}
+        : { retryAfterMs: advice.retryAfterMs }),
+    },
+  });
+}
+
 function shared(context: RetryContext): SharedContext {
   return {
     error: context.error,
@@ -261,10 +281,19 @@ export function captureModelRetryAdvice(
     retryAfterMs?: number;
     replaySafety?: 'safe' | 'unsafe' | 'unknown';
     reason?: string;
+    responseStarted?: boolean;
   } = {};
   for (const name of Object.getOwnPropertyNames(row)) {
     const part = row[name];
-    if (!['suggested', 'retryAfterMs', 'replaySafety', 'reason'].includes(name))
+    if (
+      ![
+        'suggested',
+        'retryAfterMs',
+        'replaySafety',
+        'reason',
+        'responseStarted',
+      ].includes(name)
+    )
       throw new TypeError('Unsupported model retry advice field');
     if (part === undefined) continue;
     if (name === 'suggested' && typeof part === 'boolean')
@@ -281,6 +310,8 @@ export function captureModelRetryAdvice(
       ['safe', 'unsafe', 'unknown'].includes(part as string)
     )
       result.replaySafety = part as 'safe' | 'unsafe' | 'unknown';
+    else if (name === 'responseStarted' && typeof part === 'boolean')
+      result.responseStarted = part;
     else if (name === 'reason' && typeof part === 'string')
       result.reason = part;
     else throw new TypeError('Invalid model retry advice field');
