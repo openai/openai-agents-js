@@ -1258,6 +1258,71 @@ async fn cold_recovery_does_not_let_a_sibling_receipt_clear_provider_uncertainty
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_native_patch_completion_despite_an_application_receipt() {
+    for automatic_leaf in [false, true] {
+        for completion in ["missing", "foreign", "matched"] {
+            let home = tempfile::tempdir().unwrap();
+            let (store, [root, child, leaf]) = recovery_family(home.path()).await;
+            append(
+                &store,
+                root,
+                [
+                    vec![started("root"), legacy_context(home.path(), "root")],
+                    spawn("spawn-child", child),
+                    vec![completed("root")],
+                ]
+                .concat(),
+            )
+            .await;
+            let response = |item| {
+                RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                    serde_json::from_value(item).unwrap(),
+                ))
+            };
+            let mut rows = vec![
+                started("child"),
+                sampling_context(home.path(), child, "child", Some(false)),
+            ];
+            rows.extend(spawn("spawn-leaf", leaf));
+            rows.extend([call("effect"), response(json!({"type":"apply_patch_call","call_id":"native-patch","operation":{"type":"create_file","path":"synthetic","diff":"+content\n"}}))]);
+            if completion != "missing" {
+                rows.push(response(json!({"type":"apply_patch_call_output","call_id":"native-patch","status":"completed","output":"created","internal_chat_message_metadata_passthrough":{"turn_id":if completion == "foreign" { "other" } else { "child" }}})));
+            }
+            append(&store, child, rows).await;
+            let mut leaf_rows = vec![
+                started("leaf"),
+                sampling_context(home.path(), leaf, "leaf", Some(false)),
+            ];
+            if !automatic_leaf {
+                leaf_rows.push(completed("leaf"));
+            }
+            append(&store, leaf, leaf_rows).await;
+            for id in [leaf, child, root] {
+                store.shutdown_thread(id).await.unwrap();
+            }
+            let store = Arc::new(store);
+            let result = prepare_recovery(
+                &store,
+                home.path(),
+                root,
+                vec![recovery_receipt(child, "child")],
+            )
+            .await;
+            if completion == "matched" {
+                drop(result.unwrap());
+            } else {
+                let error = result.err().unwrap();
+                assert!(
+                    error.to_string().contains("unfinished native patch"),
+                    "{completion}, automatic_leaf={automatic_leaf}: {error}"
+                );
+            }
+            store.close_database().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_recovery_checks_durable_hosted_effects_despite_an_application_receipt() {
     for kind in [
         "code_interpreter_call",

@@ -663,6 +663,49 @@ pub(crate) fn validate_sampling_effects(
     Ok(())
 }
 
+pub(crate) fn validate_native_patch_effects(
+    history: &[RolloutItem],
+    turns: &HashSet<String>,
+) -> Result<()> {
+    let mut patches = BTreeMap::new();
+    let mut current = None;
+    for row in history {
+        crate::local_storage::observe_turn(&mut current, row);
+        let RolloutItem::ResponseItem(envelope) = row else {
+            continue;
+        };
+        let Some(owner) = envelope
+            .item
+            .turn_id()
+            .or(current.as_deref())
+            .filter(|turn| turns.contains(*turn))
+        else {
+            continue;
+        };
+        match &envelope.item {
+            ResponseItem::ApplyPatchCall { call_id, .. } if !owns_application_patch(envelope) => {
+                ensure!(
+                    patches
+                        .insert((owner.to_owned(), call_id.clone()), false)
+                        .is_none(),
+                    "ambiguous native patch identity"
+                );
+            }
+            ResponseItem::ApplyPatchCallOutput { call_id, .. } => {
+                if let Some(completed) = patches.get_mut(&(owner.to_owned(), call_id.clone())) {
+                    *completed = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    ensure!(
+        patches.values().all(|completed| *completed),
+        "local history contains unfinished native patch effects"
+    );
+    Ok(())
+}
+
 fn completed_hosted_call(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::McpCall {

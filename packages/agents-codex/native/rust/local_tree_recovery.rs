@@ -424,6 +424,7 @@ pub(super) async fn plan_recovery_tree(
                 .cloned(),
             );
             local_reconciliation::validate_hosted_effects(&history, &active)?;
+            local_reconciliation::validate_native_patch_effects(&history, &active)?;
             local_reconciliation::validate_sampling_effects(
                 source.id,
                 &history,
