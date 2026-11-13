@@ -1,4 +1,8 @@
 import {
+  bindModelProviderMetadata,
+  captureModelProviderStreamFrame,
+} from './model-provider-metadata';
+import {
   providerHistorySettings,
   type ProviderHistory,
 } from './provider-history';
@@ -9396,6 +9400,7 @@ export class Session<OutputT = string, Context = unknown> {
                           }),
                     }),
               };
+              bindModelProviderMetadata(request, msg.provider_metadata);
               markModelRequestTransport(request, msg.request_transport);
               if (this.options.includeRawProviderEvents)
                 markRawProviderRequest(request);
@@ -9474,7 +9479,7 @@ export class Session<OutputT = string, Context = unknown> {
                     push: (event, original) =>
                       sourceNative._push_model_producer(
                         streamOwner,
-                        event,
+                        captureModelProviderStreamFrame(event, original),
                         isRawChatChunk(original),
                       ),
                     finish: () => {

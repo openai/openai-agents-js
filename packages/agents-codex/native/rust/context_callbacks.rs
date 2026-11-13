@@ -126,7 +126,7 @@ pub(super) enum PreparationReply {
 impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
-            Self::Model(ModelDelivery::Waiting(reply)) => reply.is_closed(),
+            Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
             Self::ModelRetry(reply) => reply.is_closed(),
             Self::PreparedRequest { reply, .. } => reply.is_closed(),
@@ -188,6 +188,23 @@ pub(crate) struct ModelRetryReply {
     data: Option<codex_protocol::model_retry::ModelRetryResolution>,
     #[serde(default)]
     failed: bool,
+}
+
+fn model_provider_metadata_item_matches(captured: &ResponseItem, wire: &Value) -> bool {
+    let Ok(wire) = serde_json::from_value::<ResponseItem>(wire.clone()) else {
+        return false;
+    };
+    if captured == &wire {
+        return true;
+    }
+    if !captured.has_same_tool_result_metadata(&wire) {
+        return false;
+    }
+    let mut projected = captured.clone();
+    // Core removes this field before sending to a non-OpenAI provider. Keep every
+    // model-visible identity and payload field in the exact occurrence check.
+    projected.clear_internal_chat_message_metadata_passthrough();
+    projected == wire
 }
 
 impl PythonTools {
@@ -1004,13 +1021,15 @@ pub(super) enum ProducedResponse {
     },
 }
 pub(super) enum ModelDelivery {
-    Waiting(oneshot::Sender<std::result::Result<ProducedResponse, ()>>),
+    Waiting(oneshot::Sender<std::result::Result<ProducedResponse, ()>>,
+        Option<codex_extension_api::CapturedModelProviderOutput>),
     Streaming {
         events: tokio::sync::mpsc::Sender<codex_api::ResponseEvent>,
         finish: oneshot::Sender<ModelStreamFinish>,
         projection: codex_api::ApplicationModelStream,
         observe_raw_chat: bool,
         chat_stream: bool,
+        provider_metadata: Option<codex_extension_api::CapturedModelProviderOutput>,
     },
 }
 struct ModelStreamCursor {
@@ -1111,6 +1130,8 @@ pub(super) struct ModelReply {
     received_cache_write_usage: Option<ReceivedCacheWriteUsage>,
     #[serde(default)]
     raw_chat_completion: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    provider_metadata: Vec<codex_extension_api::ModelOutputProviderMetadata>,
 }
 #[derive(Deserialize)]
 struct ReceivedCacheWriteUsage {
@@ -1165,6 +1186,51 @@ impl PythonTools {
         let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
             "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage,
             "run_retry_policy_override":run_retry_policy_override(admission.as_ref())});
+        let retained = admission.provider_input_metadata();
+        if !retained.is_empty() {
+            #[derive(serde::Serialize)]
+            struct InputMetadata<'a> {
+                input_index: usize,
+                item: &'a Value,
+                metadata: &'a codex_history::ModelProviderMetadata,
+            }
+            let mut provider_metadata = Vec::new();
+            let mut budget = codex_extension_api::ModelProviderMetadataBudget::default();
+            let mut by_id = std::collections::HashMap::new();
+            for envelope in retained {
+                if let Some(id) = envelope.item.id() {
+                    by_id.entry(id.as_str()).or_insert_with(Vec::new).push(envelope);
+                }
+            }
+            if let Some(input) = message["data"]["input"].as_array() {
+                let mut counts = std::collections::HashMap::new();
+                for item in input {
+                    if let Some(id) = item.get("id").and_then(Value::as_str) {
+                        *counts.entry(id).or_insert(0usize) += 1;
+                    }
+                }
+                for (input_index, item) in input.iter().enumerate() {
+                    let Some(id) = item.get("id").and_then(Value::as_str) else { continue; };
+                    let Some(matching) = by_id.get(id) else { continue; };
+                    ensure!(matching.len() == 1 && counts.get(id) == Some(&1),
+                        "Ambiguous model provider metadata occurrence");
+                    let captured = matching[0];
+                    if !model_provider_metadata_item_matches(&captured.item, item) {
+                        continue;
+                    }
+                    if let Some(metadata) = captured.metadata.as_ref()
+                        .and_then(|metadata| metadata.sdk_model_provider_metadata.as_ref())
+                    {
+                        let row = InputMetadata { input_index, item, metadata };
+                        budget.charge(&row).map_err(anyhow::Error::msg)?;
+                        provider_metadata.push(serde_json::to_value(row)?);
+                    }
+                }
+            }
+            if !provider_metadata.is_empty() {
+                message["provider_metadata"] = json!(provider_metadata);
+            }
+        }
         if let Some(transport) = admission.request_transport() {
             message["request_transport"] = json!(transport);
         }
@@ -1182,7 +1248,7 @@ impl PythonTools {
                 cancellation,
                 attempt.clone(),
                 message,
-                |reply| PreparationReply::Model(ModelDelivery::Waiting(reply)),
+                |reply| PreparationReply::Model(ModelDelivery::Waiting(reply, admission.provider_output_metadata().cloned())),
             )
             .await?;
         match reply {
@@ -1204,6 +1270,14 @@ impl PythonTools {
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
                 );
+                if !reply.provider_metadata.is_empty() {
+                    let output: Vec<ResponseItem> = serde_json::from_value(Value::Array(reply.output.clone()))
+                        .context("Invalid model provider metadata output")?;
+                    admission.provider_output_metadata()
+                        .context("Model provider metadata has no captured admission")?
+                        .capture(output, reply.provider_metadata)
+                        .map_err(anyhow::Error::msg)?;
+                }
                 let mut events = codex_extension_api::completed_model_response(
                     reply.response_id,
                     reply.output,
@@ -1324,14 +1398,18 @@ impl PythonTools {
                 pending
             ) && matches!(
                 pending.reply,
-                PreparationReply::Model(ModelDelivery::Waiting(_))
+                PreparationReply::Model(ModelDelivery::Waiting(..))
             )),
             "Expired model stream start"
         );
         let (events, receive_events) = tokio::sync::mpsc::channel(8);
         let (finish, receive_finish) = oneshot::channel();
         let pending = replies.get_mut(&id).expect("checked model request");
-        let PreparationReply::Model(ModelDelivery::Waiting(reply)) = std::mem::replace(
+        let provider_metadata = match &pending.reply {
+            PreparationReply::Model(ModelDelivery::Waiting(_, metadata)) => metadata.clone(),
+            _ => unreachable!(),
+        };
+        let PreparationReply::Model(ModelDelivery::Waiting(reply, _)) = std::mem::replace(
             &mut pending.reply,
             PreparationReply::Model(ModelDelivery::Streaming {
                 events,
@@ -1339,6 +1417,7 @@ impl PythonTools {
                 projection: codex_api::ApplicationModelStream::new(observe_raw && !chat_stream),
                 observe_raw_chat: observe_raw && chat_stream,
                 chat_stream,
+                provider_metadata,
             }),
         ) else {
             unreachable!()
@@ -1386,6 +1465,7 @@ impl PythonTools {
                 events,
                 projection,
                 observe_raw_chat,
+                provider_metadata,
                 ..
             }) = &mut pending.reply
             else {
@@ -1403,6 +1483,27 @@ impl PythonTools {
                 let raw = serde_json::from_str(data).context("Invalid raw Chat chunk")?;
                 (vec![raw_chat_provider_event(raw)], true)
             } else {
+                let cleaned;
+                let data = if data.contains("__sdk_model_provider_metadata") {
+                    ensure!(data.len() <= 16 * 1024 * 1024, "Model metadata stream frame exceeds its limit");
+                    let mut frame: Value = serde_json::from_str(data).context("Invalid model metadata stream frame")?;
+                    let annotation = frame.as_object_mut()
+                        .and_then(|frame| frame.remove("__sdk_model_provider_metadata"));
+                    if let Some(annotation) = annotation {
+                        let annotation: codex_extension_api::ModelOutputProviderMetadata = serde_json::from_value(annotation)
+                            .context("Invalid model stream provider metadata")?;
+                        ensure!(frame.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+                            && frame.get("output_index").and_then(Value::as_u64) == Some(annotation.output_index as u64),
+                            "Model stream metadata has no matching output occurrence");
+                        let item: ResponseItem = serde_json::from_value(frame.get("item").cloned()
+                            .context("Missing model metadata output item")?).context("Invalid model metadata output item")?;
+                        provider_metadata.as_ref().context("Model stream metadata has no captured admission")?
+                            .append_stream_output(annotation.output_index, item, annotation.metadata)
+                            .map_err(anyhow::Error::msg)?;
+                        cleaned = serde_json::to_string(&frame)?;
+                        cleaned.as_str()
+                    } else { data }
+                } else { data };
                 let had_usage = projection.completed_usage().is_some();
                 let (projected, continuing) = projection.push(data);
                 if !had_usage {
@@ -1521,7 +1622,7 @@ impl PythonTools {
             unreachable!()
         };
         match reply {
-            ModelDelivery::Waiting(reply) => reply
+            ModelDelivery::Waiting(reply, _) => reply
                 .send(parsed.map(|reply| {
                     ProducedResponse::Complete(reply.expect("parsed complete response"))
                 }))
@@ -1566,3 +1667,41 @@ impl PythonTools {
 #[cfg(test)]
 #[path = "model_attempt_tests.rs"]
 mod model_attempt_tests;
+
+#[cfg(test)]
+mod model_provider_metadata_occurrence_tests {
+    use super::*;
+
+    fn call() -> Value {
+        json!({"type":"function_call", "id":"fc_metadata-occurrence", "call_id":"call-original", "name":"lookup", "arguments":"{}"})
+    }
+
+    #[test]
+    fn matches_only_the_existing_internal_wire_projection() {
+        let wire = call();
+        let mut captured: ResponseItem = serde_json::from_value(wire.clone()).unwrap();
+        captured.set_turn_id_if_missing("native-private-turn");
+        assert!(model_provider_metadata_item_matches(&captured, &wire));
+        let mut changed_internal = wire.clone();
+        changed_internal["internal_chat_message_metadata_passthrough"] = json!({"turn_id":"different-turn"});
+        assert!(!model_provider_metadata_item_matches(&captured, &changed_internal));
+    }
+
+    #[test]
+    fn refuses_same_id_with_different_payload_or_call_identity() {
+        let wire = call();
+        let mut captured: ResponseItem = serde_json::from_value(wire.clone()).unwrap();
+        captured.set_turn_id_if_missing("native-private-turn");
+        for (field, changed) in [
+            ("arguments", "{\"changed\":true}"),
+            ("call_id", "call-other"),
+            ("name", "other_tool"),
+            ("namespace", "other_namespace"),
+            ("id", "fc_other-occurrence"),
+        ] {
+            let mut changed_wire = wire.clone();
+            changed_wire[field] = json!(changed);
+            assert!(!model_provider_metadata_item_matches(&captured, &changed_wire), "{field}");
+        }
+    }
+}

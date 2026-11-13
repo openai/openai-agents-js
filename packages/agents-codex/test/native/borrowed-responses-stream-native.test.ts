@@ -225,6 +225,16 @@ it('closes the borrowed response iterator when the native turn is cancelled', as
               response: { id: 'resp_pending' },
             };
             yield {
+              type: 'response.output_item.added',
+              output_index: 0,
+              item: {
+                type: 'message',
+                id: 'msg_pending',
+                role: 'assistant',
+                content: [],
+              },
+            };
+            yield {
               type: 'response.output_text.delta',
               delta: 'Partial.',
               item_id: 'msg_pending',

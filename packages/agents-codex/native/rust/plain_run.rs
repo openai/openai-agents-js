@@ -12,7 +12,7 @@ use codex_core_api::Feature;
 use codex_extension_api::{
     ExtensionData, ModelHttpStream, ModelRequestContributor, ModelRequestInput,
     ModelRequestObservation, ModelRequestObservationRoute, ModelRequestObserver,
-    ModelResponseInterceptor, ModelToolAdmission, TurnSamplingStop,
+    ModelResponseInterceptor, ModelToolAdmission, SdkSegmentedAssistantText, TurnSamplingStop,
 };
 use codex_login::auth::AgentIdentityAuthPolicy;
 use codex_model_provider::WorkspaceRoutingContext;
@@ -801,6 +801,7 @@ async fn collect(
     history: &mut Vec<ResponseItem>,
 ) -> Result<()> {
     let mut output = crate::response_integrity::SupportedOutput::default();
+    let mut final_text = SdkSegmentedAssistantText::default();
     loop {
         let event = tokio::select! {
             biased;
@@ -903,7 +904,7 @@ async fn collect(
                     .push("output_text_delta", json!({"itemId":item_id,"delta":delta}));
             }
             ResponseEvent::OutputItemDone(item) => {
-                match &item {
+                let visible = match &item {
                     ResponseItem::Message {
                         role,
                         content,
@@ -930,12 +931,17 @@ async fn collect(
                         state.final_output.get_or_insert_with(String::new);
                         let (visible, _) = strip_citations(&text);
                         if !visible.trim().is_empty() {
-                            state.final_output = Some(visible);
+                            state.final_output = Some(visible.clone());
                         }
                         state.active_item = None;
+                        Some(visible)
                     }
-                    ResponseItem::Reasoning { .. } => {}
+                    ResponseItem::Reasoning { .. } => None,
                     _ => return Err(integrity(ResponseIntegrityReason::UndecodableOutputItem)),
+                };
+                final_text.observe_item(&item, visible.is_some());
+                if let Some(text) = visible {
+                    final_text.push_text(text);
                 }
                 history.push(item);
             }
@@ -982,6 +988,10 @@ async fn collect(
         return Err(integrity(
             ResponseIntegrityReason::MissingSupportedTerminalOutput,
         ));
+    }
+    if final_text.is_segmented() {
+        state.blank_final = false;
+        state.final_output = final_text.finish(/*terminal*/ true);
     }
     Ok(())
 }

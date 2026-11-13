@@ -322,6 +322,45 @@ afterEach(async () => {
 describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
   'plain Agent.run',
   () => {
+    it('composes only segmented native Responses text before completion', async () => {
+      const segmented = [
+        message('First '),
+        {
+          type: 'reasoning',
+          id: 'reasoning-between-text',
+          summary: [{ type: 'summary_text', text: 'Check.' }],
+        },
+        message('last.'),
+      ];
+      const server = new ModelServer([
+        segmented,
+        segmented,
+        [message('First '), message('last.')],
+      ]);
+      await using provider = await providerFor(server);
+      const options = {
+        model: 'fixture-segmented',
+        instructions: 'Answer.',
+        provider,
+      };
+      const plain = await new Agent(options).run('Answer once.');
+      const checked: unknown[] = [];
+      const agent = new Agent({
+        ...options,
+        beforeComplete({ text }) {
+          checked.push(text);
+        },
+      });
+      const withCheck = await agent.run('Answer once.');
+      const unsegmented = await agent.run('Answer once.');
+
+      expect(plain.finalOutput).toBe('First last.');
+      expect(withCheck.finalOutput).toBe('First last.');
+      expect(unsegmented.finalOutput).toBe('last.');
+      expect(checked).toEqual(['First last.', 'last.']);
+      server.assertExhausted();
+    });
+
     it.each([
       ['ASCII whitespace', ' \t\r\n', '', 'final_answer'],
       [

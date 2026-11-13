@@ -1,3 +1,4 @@
+import { bindModelProviderMetadata } from '../src/runtime/model-provider-metadata';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -50,6 +51,54 @@ function request(
     signal: new AbortController().signal,
   };
 }
+
+it('groups normalized Responses summaries under their original reasoning item', async () => {
+  const adapter = new AiSdkModel({
+    specificationVersion: 'v4',
+    modelId: 'fixture-reasoning',
+    provider: 'openai.responses',
+    doGenerate() {
+      return {
+        finishReason: { unified: 'stop' },
+        content: [
+          {
+            type: 'reasoning',
+            text: 'First summary.',
+            providerMetadata: { openai: { itemId: 'rs_buffered' } },
+          },
+          {
+            type: 'reasoning',
+            text: 'Second summary.',
+            providerMetadata: {
+              openai: {
+                itemId: 'rs_buffered',
+                reasoningEncryptedContent: 'fixture-ciphertext',
+              },
+            },
+          },
+          { type: 'text', text: 'Final answer.' },
+        ],
+      };
+    },
+  });
+  const result = await adapter.complete(request());
+  expect(result.output).toEqual([
+    {
+      type: 'reasoning',
+      id: 'rs_buffered',
+      summary: [
+        { type: 'summary_text', text: 'First summary.' },
+        { type: 'summary_text', text: 'Second summary.' },
+      ],
+      encrypted_content: 'fixture-ciphertext',
+    },
+    {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Final answer.' }],
+    },
+  ]);
+});
 
 it('routes native workspace patches through a function-only AI SDK provider', async () => {
   const patch =
@@ -529,3 +578,287 @@ it.each(['AAEC', [0, 1, 2], new Uint8Array([0, 1, 2]), 'data:image/png,AAEC'])(
     ).toThrow();
   },
 );
+
+it.each(['v2', 'v3', 'v4'] as const)(
+  'projects admitted file parts to AI SDK %s',
+  async (specificationVersion) => {
+    const reachedProvider = new Error('Synthetic provider boundary');
+    let prompt: unknown;
+    const adapter = new AiSdkModel(
+      {
+        specificationVersion,
+        modelId: 'fixture-file-model',
+        provider: 'fixture.files',
+        doGenerate(options) {
+          prompt = options.prompt;
+          throw reachedProvider;
+        },
+      },
+      {},
+      {
+        resolveFileOptions(file) {
+          if (file.filename !== 'typed.json') return;
+          return {
+            mediaType: 'application/json',
+            providerOptions: { fixture: { source: 'declared' } },
+          };
+        },
+      },
+    );
+    const fileUrl = new URL('https://example.test/report.pdf?version=1');
+    const typedUrl = new URL('https://example.test/document');
+    const input: JsonObject[] = [
+      {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_file',
+            file_data: 'data:text/plain;charset=utf-8;base64,YQ==',
+            filename: 'note.txt',
+          },
+          { type: 'input_file', file_data: 'Yg==', filename: 'Raw.PDF' },
+          { type: 'input_file', file_url: fileUrl.href },
+          {
+            type: 'input_file',
+            file_url: typedUrl.href,
+            filename: 'typed.json',
+          },
+        ],
+      },
+    ];
+    await expect(
+      adapter.complete({
+        ...request(),
+        body: { model: 'fixture-file-model', input },
+      }),
+    ).rejects.toBe(reachedProvider);
+    const versioned = (data: string | URL) =>
+      specificationVersion !== 'v4'
+        ? data
+        : typeof data === 'string'
+          ? { type: 'data', data }
+          : { type: 'url', url: data };
+    expect(prompt).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'file',
+            data: versioned('YQ=='),
+            mediaType: 'text/plain',
+            filename: 'note.txt',
+          },
+          {
+            type: 'file',
+            data: versioned('Yg=='),
+            mediaType: 'application/pdf',
+            filename: 'Raw.PDF',
+          },
+          {
+            type: 'file',
+            data: versioned(fileUrl),
+            mediaType: 'application/pdf',
+          },
+          {
+            type: 'file',
+            data: versioned(typedUrl),
+            mediaType: 'application/json',
+            filename: 'typed.json',
+            providerOptions: { fixture: { source: 'declared' } },
+          },
+        ],
+      },
+    ]);
+  },
+);
+
+it.each([
+  [{ file_id: 'file_fixture' }, 'does not support provider file IDs'],
+  [
+    { file_url: 'http://example.test/report.pdf' },
+    'Unsupported media URL scheme',
+  ],
+  [{ file_data: 'YQ==' }, 'file inputs require a media type'],
+  [
+    { file_data: 'data:;base64,YQ==', filename: 'report.pdf' },
+    'file inputs require a media type',
+  ],
+] as const)(
+  'rejects unsupported AI SDK file reference %j',
+  async (file, error) => {
+    const adapter = new AiSdkModel({
+      specificationVersion: 'v3',
+      modelId: 'fixture-file-model',
+      provider: 'fixture.files',
+      doGenerate() {
+        throw new Error('Unsupported file reached the provider');
+      },
+    });
+    await expect(
+      adapter.complete({
+        ...request(),
+        body: {
+          model: 'fixture-file-model',
+          input: [
+            {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_file', ...file }],
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(error);
+  },
+);
+
+it('forwards owned text metadata into the real Google provider wire without changing caller data', async () => {
+  const requests: any[] = [];
+  const google = createGoogleGenerativeAI({
+    apiKey: 'synthetic',
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        candidates: [
+          {
+            index: 0,
+            content: { role: 'model', parts: [{ text: 'continued' }] },
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 1,
+          candidatesTokenCount: 1,
+          totalTokenCount: 2,
+        },
+      });
+    },
+  });
+  const model = google('gemini-2.5-flash');
+  const item = {
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'first answer' }],
+  };
+  const request: ModelRequest = {
+    body: {
+      model: model.modelId,
+      input: [
+        item,
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'continue' }],
+        },
+      ],
+    },
+    sessionId: 'session',
+    turnId: 'turn',
+    context: undefined,
+    signal: new AbortController().signal,
+  };
+  const metadata = {
+    google: { thoughtSignature: 'synthetic-owned-signature' },
+  };
+  bindModelProviderMetadata(request, [
+    {
+      input_index: 0,
+      item,
+      metadata: {
+        provider: model.provider,
+        model: model.modelId,
+        value: metadata,
+      },
+    },
+  ]);
+  const adapter = new AiSdkModel(model);
+  expect((await adapter.complete(request)).output).toMatchObject([
+    { type: 'message', content: [{ type: 'output_text', text: 'continued' }] },
+  ]);
+  expect(requests[0].contents).toEqual([
+    {
+      role: 'model',
+      parts: [
+        { text: 'first answer', thoughtSignature: 'synthetic-owned-signature' },
+      ],
+    },
+    { role: 'user', parts: [{ text: 'continue' }] },
+  ]);
+  expect(metadata).toEqual({
+    google: { thoughtSignature: 'synthetic-owned-signature' },
+  });
+  expect(JSON.stringify(request)).not.toContain('synthetic-owned-signature');
+});
+
+it('preserves the real OpenAI reasoning and tool wire order across private message scopes', async () => {
+  const requests: any[] = [];
+  const openai = createOpenAI({
+    apiKey: 'synthetic',
+    fetch: async (_url, init) => {
+      requests.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'resp_done',
+        model: 'gpt-5',
+        created_at: 0,
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_done',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: 'done', annotations: [] }],
+          },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    },
+  });
+  const metadata = {
+    openai: {
+      itemId: 'rs_original',
+      reasoningEncryptedContent: 'fixture-ciphertext',
+    },
+  };
+  const reasoning = ['Check the record.', 'Confirm the match.'].map((text) => ({
+    type: 'reasoning' as const,
+    text,
+    providerOptions: metadata,
+  }));
+  const tool = {
+    type: 'tool-call' as const,
+    toolCallId: 'call_lookup',
+    toolName: 'lookup',
+    input: {},
+  };
+  await openai.responses('gpt-5').doGenerate({
+    providerOptions: { openai: { store: false } },
+    prompt: [{ role: 'assistant', content: [...reasoning, tool] }],
+  });
+  await openai.responses('gpt-5').doGenerate({
+    providerOptions: { openai: { store: false } },
+    prompt: [
+      { role: 'assistant', content: reasoning, providerOptions: metadata },
+      { role: 'assistant', content: [tool] },
+    ],
+  });
+  expect(requests[1].input).toEqual(requests[0].input);
+  expect(requests[1].input).toEqual([
+    {
+      type: 'reasoning',
+      id: 'rs_original',
+      encrypted_content: 'fixture-ciphertext',
+      summary: [
+        { type: 'summary_text', text: 'Check the record.' },
+        { type: 'summary_text', text: 'Confirm the match.' },
+      ],
+    },
+    {
+      type: 'function_call',
+      call_id: 'call_lookup',
+      name: 'lookup',
+      arguments: '{}',
+    },
+  ]);
+});
