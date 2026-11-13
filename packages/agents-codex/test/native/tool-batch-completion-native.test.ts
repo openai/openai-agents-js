@@ -227,7 +227,7 @@ describe.skipIf(!native)('native direct tool batch completion', () => {
       const result = await (await session.submit('Run.')).wait();
       expect(result.finalOutput).toBe('REDUCED');
       expect(result.toolBatchCallIds).toEqual(['second-batch']);
-      expect(result.guardrailResults[0].toolBatchCallIds).toEqual([
+      expect(result.guardrailResults?.[0]?.toolBatchCallIds).toEqual([
         'second-batch',
       ]);
       expect(counts).toEqual([0, 1]);
