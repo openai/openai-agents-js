@@ -1,0 +1,191 @@
+diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
+index a2983ece..821c6291 100644
+--- a/codex-rs/codex-api/src/common.rs
++++ b/codex-rs/codex-api/src/common.rs
+@@ -357,7 +357,10 @@ where
+
+ #[derive(Debug, Serialize, Clone, PartialEq)]
+ pub struct PromptCacheOptions {
+-    pub ttl: codex_protocol::model_request_controls::PromptCacheTtl,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub ttl: Option<codex_protocol::model_request_controls::PromptCacheTtl>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub mode: Option<codex_protocol::model_request_controls::PromptCacheMode>,
+ }
+
+ #[derive(Debug, Serialize, Clone, PartialEq)]
+@@ -672,3 +675,35 @@ impl ModelInvocationDeadlineState {
+         self.notify(current);
+     }
+ }
++
++#[cfg(test)]
++mod explicit_prompt_cache_tests {
++    use super::*;
++    use codex_protocol::model_request_controls::{PromptCacheMode, PromptCacheTtl};
++
++    #[test]
++    fn request_mode_and_ttl_serialize_independently() {
++        for (ttl, mode, expected) in [
++            (
++                Some(PromptCacheTtl::Minutes30),
++                None,
++                serde_json::json!({"ttl": "30m"}),
++            ),
++            (
++                None,
++                Some(PromptCacheMode::Explicit),
++                serde_json::json!({"mode": "explicit"}),
++            ),
++            (
++                Some(PromptCacheTtl::Minutes30),
++                Some(PromptCacheMode::Explicit),
++                serde_json::json!({"ttl": "30m", "mode": "explicit"}),
++            ),
++        ] {
++            assert_eq!(
++                serde_json::to_value(PromptCacheOptions { ttl, mode }).unwrap(),
++                expected
++            );
++        }
++    }
++}
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 88686325..b9bf79d9 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1511,10 +1511,12 @@ impl ModelClient {
+                 top_logprobs: controls.top_logprobs.flatten(),
+                 metadata: controls.metadata.clone().flatten(),
+                 prompt_cache_retention: controls.prompt_cache_retention.flatten(),
+-                prompt_cache_options: controls
+-                    .prompt_cache_ttl
+-                    .flatten()
+-                    .map(|ttl| codex_api::PromptCacheOptions { ttl }),
++                prompt_cache_options: {
++                    let ttl = controls.prompt_cache_ttl.flatten();
++                    let mode = controls.prompt_cache_mode.flatten();
++                    (ttl.is_some() || mode.is_some())
++                        .then_some(codex_api::PromptCacheOptions { ttl, mode })
++                },
+             },
+             parallel_tool_calls: (!(hosted_prompt.is_some()
+                 && controls.parallel_tool_calls.is_none()))
+diff --git a/codex-rs/protocol/src/model_request_controls.rs b/codex-rs/protocol/src/model_request_controls.rs
+index f538be7e..b4525da9 100644
+--- a/codex-rs/protocol/src/model_request_controls.rs
++++ b/codex-rs/protocol/src/model_request_controls.rs
+@@ -23,6 +23,12 @@ pub enum PromptCacheTtl {
+     Hours12,
+ }
+
++#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
++#[serde(rename_all = "snake_case")]
++pub enum PromptCacheMode {
++    Explicit,
++}
++
+ /// Explicit provider-tool selection; it never grants a function identity.
+ #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+@@ -36,6 +42,7 @@ pub enum HostedToolChoice {
+     Shell {},
+     ApplyPatch {},
+     ToolSearch {},
++    ProgrammaticToolCalling {},
+     Mcp {
+         server_label: String,
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+@@ -332,6 +339,14 @@ pub struct ModelRequestControls {
+         skip_serializing_if = "Option::is_none",
+         with = "serde_with::rust::double_option"
+     )]
++    #[ts(optional = nullable, as = "Option<PromptCacheMode>")]
++    #[schemars(with = "Option<PromptCacheMode>")]
++    pub prompt_cache_mode: Option<Option<PromptCacheMode>>,
++    #[serde(
++        default,
++        skip_serializing_if = "Option::is_none",
++        with = "serde_with::rust::double_option"
++    )]
+     #[ts(optional = nullable, as = "Option<ToolName>")]
+     #[schemars(with = "Option<ToolName>")]
+     pub named_tool_choice: Option<Option<ToolName>>,
+@@ -382,6 +397,7 @@ impl ModelRequestControls {
+             && self.store.is_none()
+             && self.prompt_cache_retention.is_none()
+             && self.prompt_cache_ttl.is_none()
++            && self.prompt_cache_mode.is_none()
+             && self.named_tool_choice.is_none()
+             && self.hosted_tool_choice.is_none()
+             && self.reset_tool_choice.is_none()
+@@ -453,6 +469,9 @@ impl ModelRequestControls {
+         if patch.prompt_cache_ttl.is_some() {
+             self.prompt_cache_ttl = patch.prompt_cache_ttl;
+         }
++        if patch.prompt_cache_mode.is_some() {
++            self.prompt_cache_mode = patch.prompt_cache_mode;
++        }
+         if patch.hosted_tool_choice.is_some() {
+             self.hosted_tool_choice = patch.hosted_tool_choice.clone();
+         }
+@@ -666,6 +685,7 @@ impl ModelRequestControls {
+                 .as_ref()
+                 .is_some_and(Option::is_some)
+             || self.prompt_cache_ttl.as_ref().is_some_and(Option::is_some)
++            || self.prompt_cache_mode.as_ref().is_some_and(Option::is_some)
+             || self.named_tool_choice.as_ref().is_some_and(Option::is_some)
+             || self
+                 .hosted_tool_choice
+@@ -827,3 +847,37 @@ mod request_transport_carrier_tests {
+         assert!(invalid.validate_shape().is_err());
+     }
+ }
++
++#[cfg(test)]
++mod explicit_prompt_cache_tests {
++    use super::*;
++
++    #[test]
++    fn mode_patch_and_clear_keep_ttl_independent() {
++        let mut controls: ModelRequestControls = serde_json::from_value(serde_json::json!({
++            "prompt_cache_ttl": "30m", "prompt_cache_mode": "explicit"
++        }))
++        .unwrap();
++        assert_eq!(
++            controls.prompt_cache_mode,
++            Some(Some(PromptCacheMode::Explicit))
++        );
++        assert!(!controls.is_empty());
++        let clear: ModelRequestControls = serde_json::from_value(serde_json::json!({
++            "prompt_cache_mode": null
++        }))
++        .unwrap();
++        controls.apply_patch(&clear);
++        assert_eq!(controls.prompt_cache_mode, Some(None));
++        assert_eq!(
++            controls.prompt_cache_ttl,
++            Some(Some(PromptCacheTtl::Minutes30))
++        );
++        assert!(
++            serde_json::from_value::<ModelRequestControls>(serde_json::json!({
++                "prompt_cache_mode": "invalid"
++            }))
++            .is_err()
++        );
++    }
++}
+diff --git a/codex-rs/tools/src/tool_spec.rs b/codex-rs/tools/src/tool_spec.rs
+index 062d336f..95e9e2ff 100644
+--- a/codex-rs/tools/src/tool_spec.rs
++++ b/codex-rs/tools/src/tool_spec.rs
+@@ -157,6 +157,9 @@ impl ToolSpec {
+             | (Self::ToolSearch { .. } | Self::ProviderToolSearch(_), Choice::ToolSearch {}) => {
+                 true
+             }
++            (Self::ProviderOnly(tool), Choice::ProgrammaticToolCalling {}) => {
++                tool.tool_type() == "programmatic_tool_calling"
++            }
+             (Self::ComputerUsePreview { .. }, Choice::Computer {}) => {
+                 return Some(Choice::ComputerUsePreview {});
+             }

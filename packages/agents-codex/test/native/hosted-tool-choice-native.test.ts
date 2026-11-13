@@ -3,7 +3,9 @@ import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
+  codeInterpreter,
   fileSearch,
+  hostedTool,
   hostedMcp,
   toolRef,
   parseSessionState,
@@ -21,6 +23,30 @@ async function providerFor(server: ModelServer) {
     supportsWebsockets: false,
   });
 }
+
+it('leaves prompt-cache defaults omitted and clears mode independently of TTL', async () => {
+  const server = new ModelServer(
+    Array.from({ length: 3 }, () => [message('done')]),
+  );
+  await using provider = await providerFor(server);
+  const agent = new Agent({
+    provider,
+    model: 'fixture-cache-controls',
+    instructions: 'Use the captured cache settings.',
+  });
+  await using session = await agent.session();
+  await (await session.submit('Provider default.')).wait();
+  await session.update({
+    modelSettings: { promptCacheMode: 'explicit', promptCacheTtl: '30m' },
+  });
+  await (await session.submit('Explicit cache.')).wait();
+  await session.update({ modelSettings: { promptCacheMode: null } });
+  await (await session.submit('Retain the TTL.')).wait();
+  expect(
+    server.requests.map((request) => request.prompt_cache_options),
+  ).toEqual([undefined, { mode: 'explicit', ttl: '30m' }, { ttl: '30m' }]);
+  server.assertExhausted();
+});
 
 it('projects a captured hosted selector and clears it with the current literal setting', async () => {
   const server = new ModelServer(
@@ -212,3 +238,50 @@ it('selects a named MCP tool when its declaration omits an allowed name list', a
     ]),
   );
 });
+
+it.each([true, false])(
+  'forces a provider-owned programmatic declaration only when offered (%s)',
+  async (declared) => {
+    const server = new ModelServer([[message('provider completed')]]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Use the configured provider declaration.',
+      tools: [
+        codeInterpreter({
+          container: 'cntr_fixture',
+          allowedCallers: ['programmatic'],
+        }),
+        ...(declared
+          ? [hostedTool({ type: 'programmatic_tool_calling' })]
+          : []),
+      ],
+      modelSettings: { toolChoice: { type: 'programmatic_tool_calling' } },
+    });
+    if (!declared) {
+      await expect(agent.run('Inspect the synthetic program.')).rejects.toThrow(
+        /outside the final offered catalog/,
+      );
+      expect(server.requests).toHaveLength(0);
+      return;
+    }
+    expect(
+      (await agent.run('Inspect the synthetic program.')).finalOutput,
+    ).toBe('provider completed');
+    expect(server.requests).toHaveLength(1);
+    expect(server.requests[0]?.tool_choice).toEqual({
+      type: 'programmatic_tool_calling',
+    });
+    expect(server.requests[0]?.tools).toEqual(
+      expect.arrayContaining([
+        { type: 'programmatic_tool_calling' },
+        {
+          type: 'code_interpreter',
+          container: 'cntr_fixture',
+          allowed_callers: ['programmatic'],
+        },
+      ]),
+    );
+  },
+);

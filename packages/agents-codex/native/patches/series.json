@@ -1095,7 +1095,11 @@
     {
       "path": "sdk-portable-realtime-response-extensions.patch",
       "sha256": "fccc9dcab7f0af9ca1e37d12b27e36cdba9d58b1e7981662a56a4b050c8bffbd"
+    },
+    {
+      "path": "sdk-provider-programmatic-cache-controls.patch",
+      "sha256": "c4c67e3874a8cbbad08a9a59a2cb7a84b666d9d6a38c1b18e0de3d8d69175f17"
     }
   ],
-  "result_tree": "c32ab95caf9d7fc2c5c8209c170fba777da0ed14"
+  "result_tree": "3687ab99593ed37ea54184ede9776304d12847ad"
 }
