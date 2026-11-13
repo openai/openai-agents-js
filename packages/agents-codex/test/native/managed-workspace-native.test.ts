@@ -175,7 +175,7 @@ it('retains paired A while native continuation publishes B and then resumes orig
       environment: source(a, { readOnly: true, trustedExpected: a }),
     });
     {
-      await using restoredOverride = await mismatchedDefault.session({
+      await using _restoredOverride = await mismatchedDefault.session({
         state: importedA,
         environment: source(a, { trustedExpected: a }),
       });
