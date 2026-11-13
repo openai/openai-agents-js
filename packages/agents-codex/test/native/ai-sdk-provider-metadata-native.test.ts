@@ -1,3 +1,4 @@
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -36,7 +37,7 @@ function adapter(
       return {
         stream: new ReadableStream({
           start(controller) {
-            for (const part of response.content) {
+            for (const [index, part] of response.content.entries()) {
               if (part.type === 'tool-call') {
                 controller.enqueue({
                   type: 'tool-input-start',
@@ -51,13 +52,23 @@ function adapter(
                 const { providerMetadata: _metadata, ...call } = part;
                 controller.enqueue(call);
               } else {
-                controller.enqueue({ type: 'text-start', id: 'text' });
+                const id = `text-${index}`;
+                controller.enqueue({ type: 'text-start', id });
                 controller.enqueue({
                   type: 'text-delta',
-                  id: 'text',
-                  delta: part.text,
+                  id,
+                  delta: part.text.slice(0, 1),
                 });
-                controller.enqueue({ type: 'text-end', id: 'text' });
+                controller.enqueue({
+                  type: 'text-delta',
+                  id,
+                  delta: part.text.slice(1),
+                });
+                controller.enqueue({
+                  type: 'text-end',
+                  id,
+                  providerMetadata: part.providerMetadata,
+                });
               }
             }
             controller.enqueue({
@@ -161,6 +172,58 @@ for (const mode of ['buffered', 'streamed'] as const) {
     ).toBe(true);
     expect(effects).toBe(4);
     expect(requests).toBe(4);
+  }, 30_000);
+
+  it(`keeps adjacent ${mode} text signatures on their original parts`, async () => {
+    const prompts: any[][] = [];
+    const first = { google: { thoughtSignature: `${token}-first` } };
+    const second = { google: { thoughtSignature: `${token}-second` } };
+    const backend = adapter(mode, (prompt) => {
+      prompts.push(prompt);
+      return prompts.length === 1
+        ? {
+            content: [
+              { type: 'text', text: 'Signed A. ', providerMetadata: first },
+              { type: 'text', text: 'Unsigned. ' },
+              { type: 'text', text: 'Signed B.', providerMetadata: second },
+            ],
+            finishReason: 'stop',
+          }
+        : done();
+    });
+    await using provider = new NativeProvider({
+      modelBackend: backend,
+      apiKey: 'fixture-metadata-key',
+    });
+    await using session = await new Agent({
+      instructions: 'Answer and retain the conversation.',
+      model: 'fixture-metadata-model',
+      provider,
+    }).session({ includeRawProviderEvents: true, observationRetention: 'all' });
+    const turn = await session.submit('Start.');
+    const events = Array.fromAsync(
+      turn.events({ includeExecutionDetails: true }),
+    );
+    expect((await turn.wait()).finalOutput).toBe(
+      'Signed A. Unsigned. Signed B.',
+    );
+    expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect(prompts[1].filter((entry) => entry.role === 'assistant')).toEqual([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Signed A. ', providerOptions: first },
+          { type: 'text', text: 'Unsigned. ' },
+          { type: 'text', text: 'Signed B.', providerOptions: second },
+        ],
+      },
+    ]);
+    expect(JSON.stringify(await events)).not.toContain(token);
+    expect(JSON.stringify(await session.historySnapshot())).not.toContain(
+      token,
+    );
   }, 30_000);
 
   it(`refuses ${mode} metadata replay after a same-ID request payload edit`, async () => {
@@ -315,6 +378,86 @@ for (const mode of ['buffered', 'streamed'] as const) {
       expect(toolParts(foreignPrompt!)[0].providerOptions).toBeUndefined();
     }, 30_000);
 }
+
+it.each([false, true])(
+  'replays separate Google wire parts with trailing signature=%s',
+  async (trailingSignature) => {
+    const requests: any[] = [];
+    const expected = trailingSignature
+      ? [
+          { text: 'Signed A. ' },
+          { text: 'Unsigned. ', thoughtSignature: `${token}-first` },
+          { text: 'Signed B.', thoughtSignature: `${token}-second` },
+        ]
+      : [
+          { text: 'Signed A. ', thoughtSignature: `${token}-first` },
+          { text: 'Unsigned. ' },
+          { text: 'Signed B.', thoughtSignature: `${token}-second` },
+        ];
+    const chunks = trailingSignature
+      ? [
+          { text: 'Signed A. ' },
+          { text: 'Unsigned. ' },
+          { text: '', thoughtSignature: `${token}-first` },
+          expected[2],
+        ]
+      : expected;
+    const google = createGoogleGenerativeAI({
+      apiKey: 'synthetic-google-fixture',
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)));
+        const parts = requests.length === 1 ? chunks : [{ text: 'Continued.' }];
+        const frames = parts.map((part, index) => ({
+          candidates: [
+            {
+              index: 0,
+              content: { role: 'model', parts: [part] },
+              ...(index === parts.length - 1 ? { finishReason: 'STOP' } : {}),
+            },
+          ],
+          ...(index === parts.length - 1
+            ? {
+                usageMetadata: {
+                  promptTokenCount: 1,
+                  candidatesTokenCount: 1,
+                  totalTokenCount: 2,
+                },
+              }
+            : {}),
+        }));
+        return new Response(
+          frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(''),
+          { headers: { 'content-type': 'text/event-stream' } },
+        );
+      },
+    });
+    const model = google('gemini-2.5-flash');
+    await using provider = new NativeProvider({
+      modelBackend: new AiSdkModel(model, {}, { stream: true }),
+      apiKey: 'synthetic-native-fixture',
+    });
+    await using session = await new Agent({
+      instructions: 'Answer and retain the conversation.',
+      model: model.modelId,
+      provider,
+    }).session({ includeRawProviderEvents: true, observationRetention: 'all' });
+    const turn = await session.submit('Start.');
+    const events = Array.fromAsync(
+      turn.events({ includeExecutionDetails: true }),
+    );
+    expect((await turn.wait()).finalOutput).toBe(
+      'Signed A. Unsigned. Signed B.',
+    );
+    expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+      'Continued.',
+    );
+    expect(
+      requests[1].contents.filter((entry: any) => entry.role === 'model'),
+    ).toEqual([{ role: 'model', parts: expected }]);
+    expect(JSON.stringify(await events)).not.toContain(token);
+  },
+  30_000,
+);
 
 it('replays a streamed thought signature on the next request without public raw metadata', async () => {
   const signature = 'synthetic-private-streamed-text-signature';

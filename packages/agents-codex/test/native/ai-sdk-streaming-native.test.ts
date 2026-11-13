@@ -349,7 +349,7 @@ it.each([false, true])(
 it.each(['v2', 'v3', 'v4'] as const)(
   'replays streamed Responses reasoning under its original provider item ID for %s',
   async (specificationVersion) => {
-    const prompts: unknown[][] = [];
+    const prompts: { role: string; content: { type: string }[] }[][] = [];
     const effects: string[] = [];
     const model = new AiSdkModel(
       {

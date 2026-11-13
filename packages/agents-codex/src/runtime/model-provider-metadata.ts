@@ -26,6 +26,27 @@ const streamFrames = new WeakMap<
 >();
 const maxMetadataBytes = 8 * 1024 * 1024;
 const maxMetadataItems = 4096;
+export const modelTextPartMetadataKey = '__sdk_ai_sdk_text_parts';
+
+function stripProviderControlFields(value: JsonObject): JsonObject {
+  delete value.model;
+  delete value.responseId;
+  delete value.response_id;
+  return value;
+}
+
+/** @internal Private metadata for ordered text parts of one assistant message. */
+export function modelTextPartMetadata(
+  values: readonly unknown[],
+): JsonObject | undefined {
+  const parts = values.map((value) => {
+    const captured = mergeModelProviderMetadata(undefined, value);
+    return captured ? stripProviderControlFields(captured) : null;
+  });
+  return parts.some((part) => part !== null)
+    ? { [modelTextPartMetadataKey]: parts }
+    : undefined;
+}
 
 /** @internal Data from the currently captured adapter, outside public model output. */
 export function retainModelProviderMetadata(
@@ -143,11 +164,9 @@ export function replayModelProviderMetadata(
     !isDeepStrictEqual(entry.item, item)
   )
     return;
-  const value = copyJsonValue(entry.metadata.value) as JsonObject;
-  delete value.model;
-  delete value.responseId;
-  delete value.response_id;
-  return value;
+  return stripProviderControlFields(
+    copyJsonValue(entry.metadata.value) as JsonObject,
+  );
 }
 
 /** @internal Private sidecar, before the native raw-observation projection. */

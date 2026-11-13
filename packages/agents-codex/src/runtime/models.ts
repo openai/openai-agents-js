@@ -5,6 +5,8 @@ import {
   retainModelProviderStreamFrame,
   mergeModelProviderMetadata,
   hasModelProviderMetadata,
+  modelTextPartMetadata,
+  modelTextPartMetadataKey,
 } from './model-provider-metadata';
 import type { TokenUsage } from './run-events';
 import {
@@ -1481,6 +1483,38 @@ function aiSdkReasoningMetadata(part: any): AiSdkReasoningMetadata {
   };
 }
 
+const aiSdkStreamTextParts = Symbol('aiSdkStreamTextParts');
+
+type AiSdkTextPart = {
+  text: string;
+  providerMetadata?: JsonObject;
+};
+
+type AiSdkStreamText = {
+  type: 'text';
+  [aiSdkStreamTextParts]: AiSdkTextPart[];
+};
+
+type AiSdkStreamTextBlock = {
+  metadata?: JsonObject;
+  active?: {
+    message: AiSdkStreamText;
+    part: AiSdkTextPart;
+    index: number;
+    signedDelta: boolean;
+  };
+};
+
+const googleThoughtSignatureOptions = ['google', 'googleVertex', 'vertex'];
+
+function hasAiSdkThoughtSignature(metadata: JsonObject | undefined): boolean {
+  return googleThoughtSignatureOptions.some(
+    (provider) =>
+      typeof (metadata?.[provider] as JsonObject | undefined)
+        ?.thoughtSignature === 'string',
+  );
+}
+
 const aiSdkStreamReasoningBlocks = Symbol('aiSdkStreamReasoningBlocks');
 
 type AiSdkStreamReasoning = {
@@ -1643,15 +1677,28 @@ export class AiSdkModel implements NativeModel {
       }
       if (item.type === 'configuration_update') continue;
       if (item.type === 'message') {
-        const content = ((item.content ?? []) as JsonObject[]).map((part) => {
-          if (part.type === 'input_text' || part.type === 'output_text')
+        const parts = (item.content ?? []) as JsonObject[];
+        const scopedMetadata = providerMetadata?.[modelTextPartMetadataKey];
+        const messageMetadata =
+          scopedMetadata === undefined ? providerMetadata : undefined;
+        const content = parts.map((part, index) => {
+          if (part.type === 'input_text' || part.type === 'output_text') {
+            const metadata =
+              messageMetadata ??
+              (Array.isArray(scopedMetadata) &&
+              scopedMetadata.length === parts.length
+                ? scopedMetadata[index]
+                : undefined);
             return {
               type: 'text',
               text: part.text,
-              ...(providerMetadata
-                ? { providerOptions: providerMetadata }
+              ...(metadata &&
+              typeof metadata === 'object' &&
+              !Array.isArray(metadata)
+                ? { providerOptions: metadata }
                 : {}),
             };
+          }
           if (part.type === 'input_file')
             return aiSdkFilePart(
               part,
@@ -1713,7 +1760,7 @@ export class AiSdkModel implements NativeModel {
           prompt.push({
             role: item.role,
             content,
-            ...(providerMetadata ? { providerOptions: providerMetadata } : {}),
+            ...(messageMetadata ? { providerOptions: messageMetadata } : {}),
           });
       } else if (
         item.type === 'function_call' ||
@@ -2002,9 +2049,11 @@ export class AiSdkModel implements NativeModel {
     const calls = new Set<string>();
     const reasoningBlocks = new Map<string, AiSdkStreamReasoningBlock>();
     const reasoningItems = new Map<string, AiSdkStreamReasoning>();
-    let text:
-      { type: 'text'; text: string; providerMetadata?: JsonObject } | undefined;
-    let pendingTextMetadata: JsonObject | undefined;
+    let text: AiSdkStreamText | undefined;
+    const textBlocks = new Map<string, AiSdkStreamTextBlock>();
+    const googleTextChunks = /^(google|vertex)(?:\.|$)/.test(
+      this.model.provider,
+    );
     let responseProviderMetadata: JsonObject | undefined;
     try {
       request.signal.throwIfAborted();
@@ -2043,8 +2092,13 @@ export class AiSdkModel implements NativeModel {
               throw new TypeError(
                 'AiSdkModel received unsupported output content',
               );
+            const metadata = mergeModelProviderMetadata(
+              undefined,
+              part.providerMetadata,
+            );
+            const signedDelta = hasAiSdkThoughtSignature(metadata);
             if (!text) {
-              text = { type: 'text', text: '' };
+              text = { type: 'text', [aiSdkStreamTextParts]: [] };
               content.push(text);
               const id = 'msg_aisdk_' + randomUUID();
               messageIds.set(content.length - 1, id);
@@ -2054,16 +2108,43 @@ export class AiSdkModel implements NativeModel {
                 item: { id, type: 'message', role: 'assistant', content: [] },
               };
             }
-            text.providerMetadata = mergeModelProviderMetadata(
-              text.providerMetadata ?? pendingTextMetadata,
-              part.providerMetadata,
+            const block = textBlocks.get(part.id) ?? {};
+            textBlocks.set(part.id, block);
+            let active = block.active;
+            // Google can sign an earlier delta with a later empty chunk.
+            // Preserve each wire text part even if the AI SDK reuses its block ID.
+            if (
+              active?.message !== text ||
+              active.index !== text[aiSdkStreamTextParts].length - 1 ||
+              (part.delta !== '' &&
+                active.part.text !== '' &&
+                (googleTextChunks || signedDelta || active.signedDelta))
+            ) {
+              const parts = text[aiSdkStreamTextParts];
+              const textPart: AiSdkTextPart = {
+                text: '',
+                providerMetadata: active ? undefined : block.metadata,
+              };
+              active = {
+                message: text,
+                part: textPart,
+                index: parts.length,
+                signedDelta: false,
+              };
+              block.active = active;
+              parts.push(textPart);
+            }
+            active.part.providerMetadata = mergeModelProviderMetadata(
+              active.part.providerMetadata,
+              metadata,
             );
-            text.text += part.delta;
+            active.part.text += part.delta;
+            active.signedDelta ||= signedDelta;
             yield {
               type: 'response.output_text.delta',
               item_id: messageIds.get(content.length - 1)!,
               output_index: content.length - 1,
-              content_index: 0,
+              content_index: active.index,
               delta: part.delta,
             };
             break;
@@ -2223,18 +2304,29 @@ export class AiSdkModel implements NativeModel {
             }
             break;
           case 'stream-start':
-          case 'text-start':
-          case 'text-end':
-            pendingTextMetadata = mergeModelProviderMetadata(
-              part.type === 'text-start' ? undefined : pendingTextMetadata,
+            responseProviderMetadata = mergeModelProviderMetadata(
+              responseProviderMetadata,
               part.providerMetadata,
             );
-            if (text)
-              text.providerMetadata = mergeModelProviderMetadata(
-                text.providerMetadata,
-                pendingTextMetadata,
-              );
             break;
+          case 'text-start':
+            textBlocks.set(part.id, {
+              metadata: mergeModelProviderMetadata(
+                undefined,
+                part.providerMetadata,
+              ),
+            });
+            break;
+          case 'text-end': {
+            const active = textBlocks.get(part.id)?.active;
+            if (active)
+              active.part.providerMetadata = mergeModelProviderMetadata(
+                active.part.providerMetadata,
+                part.providerMetadata,
+              );
+            textBlocks.delete(part.id);
+            break;
+          }
           case 'tool-input-delta':
           case 'tool-input-end':
             if (part.providerMetadata != null) {
@@ -2381,6 +2473,24 @@ export class AiSdkModel implements NativeModel {
             (typeof item.id === 'string' &&
               part.providerMetadata?.openai?.itemId === item.id),
         );
+        if (
+          item.type === 'message' &&
+          Array.isArray(item.content) &&
+          item.content.length > 1
+        ) {
+          const texts = matching.filter((part: any) => part.type === 'text');
+          const value =
+            texts.length === item.content.length &&
+            item.content.every(
+              (part: any, index) =>
+                part.type === 'output_text' && part.text === texts[index].text,
+            )
+              ? modelTextPartMetadata(
+                  texts.map((part: any) => part.providerMetadata),
+                )
+              : undefined;
+          return value === undefined ? [] : [{ outputIndex, value }];
+        }
         let value: JsonObject | undefined;
         for (const part of matching)
           value = mergeModelProviderMetadata(value, part.providerMetadata);
@@ -2416,32 +2526,43 @@ export class AiSdkModel implements NativeModel {
         encrypted_content?: string;
       }
     >();
-    let pendingTextParts: string[] = [];
-    let pendingTextMetadata: JsonObject | undefined;
+    let pendingTextParts: AiSdkTextPart[] = [];
     const flushText = () => {
       if (pendingTextParts.length) {
         output.push({
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'output_text', text: pendingTextParts.join('') }],
+          content: pendingTextParts.map(({ text }) => ({
+            type: 'output_text',
+            text,
+          })),
         });
         retainMetadata(
           output.length - 1,
-          pendingTextMetadata ?? result.providerMetadata,
+          pendingTextParts.length === 1
+            ? (pendingTextParts[0].providerMetadata ?? result.providerMetadata)
+            : modelTextPartMetadata(
+                pendingTextParts.map((part) => part.providerMetadata),
+              ),
         );
         pendingTextParts = [];
-        pendingTextMetadata = undefined;
       }
     };
     for (const part of result.content ?? []) {
       if (part.type === 'text') {
-        if (typeof part.text !== 'string')
-          throw new TypeError('AiSdkModel received unsupported output content');
-        pendingTextMetadata = mergeModelProviderMetadata(
-          pendingTextMetadata,
-          part.providerMetadata,
-        );
-        pendingTextParts.push(part.text);
+        const streamed = part[aiSdkStreamTextParts] as
+          AiSdkTextPart[] | undefined;
+        if (streamed) {
+          flushText();
+          pendingTextParts = streamed;
+          flushText();
+        } else {
+          if (typeof part.text !== 'string')
+            throw new TypeError(
+              'AiSdkModel received unsupported output content',
+            );
+          pendingTextParts.push(part);
+        }
         continue;
       }
       if (part.type === 'reasoning' && this.#openaiResponses) {
