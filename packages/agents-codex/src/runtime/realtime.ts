@@ -1766,7 +1766,7 @@ class NativeRealtimeOwner {
               )
             )
               throw new TypeError(
-                'Realtime image provider data cannot override image fields',
+                'Invalid Realtime image provider extensions: reserved image field',
               );
             remaining -= jsonAllocationBytes(
               providerData,
