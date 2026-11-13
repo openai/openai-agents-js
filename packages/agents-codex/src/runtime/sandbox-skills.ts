@@ -19,7 +19,11 @@ import {
   type SkillIndexEntry,
   type SkillsArgs,
 } from '@openai/agents-core/sandbox/internal';
-import type { Entry, SandboxSessionLike } from '@openai/agents-core/sandbox';
+import type {
+  Entry,
+  MaterializeEntryArgs,
+  SandboxSessionLike,
+} from '@openai/agents-core/sandbox';
 import type { Environment } from './environment';
 import {
   tool,
@@ -226,6 +230,26 @@ function grantStamp(manifest: Manifest): string {
   ]);
 }
 
+/** @internal Owned resume staging, under the current manifest authority. */
+export async function stageOwnedSandboxEntry(
+  sandbox: SandboxSessionLike,
+  manifest: Manifest,
+  args: MaterializeEntryArgs,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!sandbox.materializeEntry)
+    throw new Error('Owned resume entries require sandbox materializeEntry()');
+  const expectedGrants = grantStamp(manifest);
+  const check = () => {
+    signal.throwIfAborted();
+    if (grantStamp(sandbox.state.manifest) !== expectedGrants)
+      throw new Error('Sandbox grants changed during owned resume staging');
+  };
+  check();
+  await sandbox.materializeEntry(args);
+  check();
+}
+
 function remotePath(path: string): URL {
   return path.startsWith('file:')
     ? new URL(path)
@@ -365,13 +389,18 @@ export class SandboxSkillBinding<Context = any> {
               );
             }
           : undefined;
-      await sandbox.materializeEntry({
-        path,
-        entry,
-        [beforeGitRepoCopy]: prepare
-          ? { prepare, limits: treeLimits }
-          : undefined,
-      });
+      await stageOwnedSandboxEntry(
+        sandbox,
+        trustedManifest,
+        {
+          path,
+          entry,
+          [beforeGitRepoCopy]: prepare
+            ? { prepare, limits: treeLimits }
+            : undefined,
+        },
+        signal,
+      );
       if (prepare && !prepared)
         throw new Error(
           'Restored eager Git Skills require source preparation support',

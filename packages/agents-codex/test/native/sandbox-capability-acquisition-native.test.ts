@@ -1,5 +1,8 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   Manifest,
   sandboxEnvironment,
@@ -203,3 +206,141 @@ it('has been retaining the resource until every entered instruction hook settles
   expect(cleanup).toHaveBeenCalledTimes(1);
   expect(server.requests).toEqual([]);
 });
+
+it.each(['success', 'unsafe-entry-change', 'staging-failure'] as const)(
+  'has been materializing resumed capability additions before bind while preserving saved edits: %s',
+  async (kind) => {
+    class ResumeCapability extends ProbeCapability {
+      clone() {
+        return new ResumeCapability(this.bindings);
+      }
+      bind(sandbox: SandboxSessionLike, user?: string) {
+        expect(
+          readFileSync(
+            join(sandbox.state.workspaceRootPath as string, 'capability.txt'),
+            'utf8',
+          ),
+        ).toBe('prepared capability');
+        return super.bind(sandbox, user);
+      }
+    }
+    const archiveBase = await mkdtemp(
+      join(tmpdir(), 'native-capability-resume-'),
+    );
+    const client = new UnixLocalSandboxClient();
+    const manifest = new Manifest({
+      entries: {
+        'notes.txt': { type: 'file', content: 'initial template' },
+        ...(kind === 'unsafe-entry-change'
+          ? {
+              'capability.txt': {
+                type: 'file' as const,
+                content: 'saved original',
+              },
+            }
+          : {}),
+      },
+    });
+    const seed = await client.create({
+      manifest,
+      snapshot: { type: 'local', baseDir: archiveBase },
+    });
+    try {
+      await writeFile(
+        join(seed.state.workspaceRootPath, 'notes.txt'),
+        'saved user edit',
+      );
+      const saved = await client.serializeSessionState(seed.state);
+      const snapshot = saved.snapshot as { type: 'local'; path: string };
+      await seed.close();
+      const resumed = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: saved.workspaceRootPath as string,
+          workspaceRootOwned: true,
+          localSnapshotPath: snapshot.path,
+        },
+      });
+      const state = await resumed.deserializeSessionState(saved);
+      const resumeCall = vi.spyOn(resumed, 'resume');
+      const acquired = new Set<SandboxSessionLike>();
+      const closed = new Set<SandboxSessionLike>();
+      if (kind === 'staging-failure') {
+        const actualResume =
+          UnixLocalSandboxClient.prototype.resume.bind(resumed);
+        resumeCall.mockImplementation(async (...args) => {
+          const sandbox = await actualResume(...args);
+          vi.spyOn(sandbox, 'materializeEntry').mockRejectedValueOnce(
+            new Error('staging failure'),
+          );
+          acquired.add(sandbox);
+          const actualClose = sandbox.close.bind(sandbox);
+          vi.spyOn(sandbox, 'close').mockImplementation(async () => {
+            await actualClose();
+            closed.add(sandbox);
+          });
+          return sandbox;
+        });
+      }
+
+      const bindings: Bound[] = [];
+      const server = new ModelServer(
+        kind === 'success' ? [[message('resumed capability')]] : [],
+      );
+      await using provider = await providerFor(server);
+      const source = sandboxEnvironment({
+        client: resumed,
+        manifest,
+        capabilities: [new ResumeCapability(bindings)],
+        authorizedResumeState: { backendId: resumed.backendId, state },
+        connect: async (sandbox) =>
+          Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: sandbox.state.workspaceRootPath as string,
+              tools: [],
+            }),
+            () => {},
+          ),
+      });
+      const opening = new Agent({
+        instructions: 'Continue the workspace',
+        provider,
+      }).session({ environment: source });
+      if (kind !== 'success') {
+        await expect(opening).rejects.toThrow(
+          kind === 'unsafe-entry-change'
+            ? 'cannot change manifest entries'
+            : 'staging failure',
+        );
+        expect(bindings).toEqual([]);
+        expect(server.requests).toEqual([]);
+        if (kind === 'unsafe-entry-change')
+          expect(resumeCall).not.toHaveBeenCalled();
+        else {
+          expect(acquired.size).toBeGreaterThan(0);
+          expect(closed).toEqual(acquired);
+        }
+        return;
+      }
+      await using session = await opening;
+      expect((await (await session.submit('go')).wait()).finalOutput).toBe(
+        'resumed capability',
+      );
+      expect(bindings).toHaveLength(1);
+      expect(
+        await readFile(
+          join(
+            bindings[0].sandbox.state.workspaceRootPath as string,
+            'notes.txt',
+          ),
+          'utf8',
+        ),
+      ).toBe('saved user edit');
+      server.assertExhausted();
+    } finally {
+      await seed.close();
+      await rm(archiveBase, { recursive: true, force: true });
+    }
+  },
+);

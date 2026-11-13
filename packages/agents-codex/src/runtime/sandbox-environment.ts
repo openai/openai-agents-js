@@ -6,6 +6,7 @@ import { SandboxProviderBinding } from './sandbox-context';
 import {
   SandboxSkillBinding,
   SandboxSkillLease,
+  stageOwnedSandboxEntry,
   type Skills,
 } from './sandbox-skills';
 import type { FunctionTool } from './tools';
@@ -483,6 +484,11 @@ function createSandboxEnvironment<
       signal,
     );
     const manifest = capabilityLease?.manifest ?? capabilityManifest;
+    const capabilityResumeEntries =
+      originalResumeState && capabilityLease
+        ? runtime.collectAdditiveManifestEntries(capabilityManifest, manifest)
+        : [];
+
     const managed: ManagedWorkspaceBinding | undefined = managedAuthorization
       ? { ...managedAuthorization, captureRequested: false }
       : undefined;
@@ -736,17 +742,28 @@ function createSandboxEnvironment<
       };
       // Resume inspection protects the old state. The owned provider mutation
       // takes its own exclusive lock, so staging must follow that inspection.
-      if (originalResumeState && eagerSkillEntries.length > 0) {
+      if (
+        originalResumeState &&
+        (eagerSkillEntries.length > 0 || capabilityResumeEntries.length > 0)
+      ) {
         const sandbox = await withExclusiveSandboxStateInspection(
           originalResumeState,
           acquireResource,
         );
-        await skillBinding!.stageOwnedResume(
-          sandbox,
-          manifest,
-          eagerSkillEntries,
-          signal,
-        );
+        if (eagerSkillEntries.length > 0)
+          await skillBinding!.stageOwnedResume(
+            sandbox,
+            manifest,
+            eagerSkillEntries,
+            signal,
+          );
+        for (const [path, entry] of capabilityResumeEntries)
+          await stageOwnedSandboxEntry(
+            sandbox,
+            manifest,
+            { path, entry },
+            signal,
+          );
         return await connectAndPublish(sandbox);
       }
       if (borrowed) {

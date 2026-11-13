@@ -194,4 +194,7 @@ export {
   exceptionMessage as sandboxMemoryExceptionMessage,
 } from './memory/rollouts';
 
-export { applyManifestToProvidedSession } from './runtime/providedSessionManifest';
+export {
+  applyManifestToProvidedSession,
+  collectAdditiveManifestEntries,
+} from './runtime/providedSessionManifest';

@@ -304,6 +304,17 @@ function manifestEntryWithoutDirChildren(entry: Entry): Entry {
   return rest as Entry;
 }
 
+/** Internal additive staging plan, without touching a provider or live state. */
+export function collectAdditiveManifestEntries(
+  current: Manifest,
+  target: Manifest,
+): [string, Entry][] {
+  validateProvidedSessionManifestUpdate(current, target);
+  return Object.entries(
+    buildProvidedSessionManifestDelta(current, target).entries,
+  );
+}
+
 function buildProvidedSessionManifestDelta(
   current: Manifest,
   target: Manifest,
