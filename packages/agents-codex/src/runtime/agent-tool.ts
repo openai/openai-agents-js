@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Agent, Session } from './public-agent';
 import type { Environment } from './environment';
 import type { Completed } from './session';
+import type { SessionState } from './state';
 import { encode, jsonValue } from './binding';
 import {
   invokeConfiguredAgentTool,
@@ -20,10 +21,12 @@ export interface AgentAsToolOptions<Output = string> {
 }
 
 export interface ConfiguredAgentTool {
+  readonly resultSchema: { readonly type: 'string' };
   open(
     context: unknown,
     environment: Environment | null,
     signal: AbortSignal,
+    state?: SessionState,
   ): Promise<Session<unknown>>;
   extract(result: Completed<unknown>): Promise<string>;
 }
@@ -50,10 +53,16 @@ export function createAgentTool<Context, Output>(
     execute: ({ input }, context) => invokeConfiguredAgentTool(context, input),
   });
   declarations.set(declaration, {
-    open: (context, environment, signal) =>
+    resultSchema: Object.freeze({ type: 'string' }),
+    open: (context, environment, signal, state) =>
       agent.session(
         ...([
-          { context, signal, ...(environment ? { environment } : {}) },
+          {
+            context,
+            signal,
+            ...(environment ? { environment } : {}),
+            ...(state ? { state } : {}),
+          },
         ] as Parameters<typeof agent.session>),
       ),
     async extract(result) {

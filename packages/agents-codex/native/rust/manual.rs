@@ -11,6 +11,8 @@ use tokio_util::sync::CancellationToken;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ManualSlot {
+    #[serde(default)]
+    configured: bool,
     name: String,
     namespace: Option<String>,
 }
@@ -35,6 +37,8 @@ struct ManualCall {
     approval_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     effective_arguments: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuation: Option<Value>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -404,6 +408,7 @@ impl Drop for ManualWait {
 #[derive(Default)]
 pub(crate) struct ManualLedger {
     slots: HashSet<ToolName>,
+    configured_slots: HashSet<ToolName>,
     // Actual successful sends, including outputs not yet flushed behind a
     // pending earlier call.
     receipts: HashMap<PendingKey, Receipt>,
@@ -418,6 +423,14 @@ pub(crate) struct ManualLedger {
     attempt: Option<String>,
     observed_calls: HashSet<String>,
     completed_calls: HashSet<String>,
+}
+
+impl ManualLedger {
+    pub(super) fn restored_contains_key(&self, key: &PendingKey) -> bool {
+        self.restored
+            .as_ref()
+            .is_some_and(|(_, keys)| keys.contains_key(key))
+    }
 }
 
 #[derive(Clone)]
@@ -622,6 +635,7 @@ fn history(value: &Value) -> Result<History> {
                         patch: false,
                         approval_required: false,
                         effective_arguments: None,
+                        continuation: None,
                     });
                 }
                 item @ ResponseItem::ApplyPatchCall { .. } => {
@@ -651,6 +665,7 @@ fn history(value: &Value) -> Result<History> {
                         patch: true,
                         approval_required: false,
                         effective_arguments: None,
+                        continuation: None,
                     });
                 }
                 item @ ResponseItem::ShellCall { .. } => {
@@ -683,6 +698,7 @@ fn history(value: &Value) -> Result<History> {
                         patch: false,
                         approval_required: false,
                         effective_arguments: None,
+                        continuation: None,
                     });
                 }
                 ResponseItem::CustomToolCall {
@@ -713,6 +729,7 @@ fn history(value: &Value) -> Result<History> {
                         patch: false,
                         approval_required: false,
                         effective_arguments: None,
+                        continuation: None,
                     });
                 }
                 item @ (ResponseItem::FunctionCallOutput { .. }
@@ -935,6 +952,69 @@ fn restored_profile_plan(
 }
 
 impl PythonTools {
+    pub(crate) fn set_configured_continuation(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+        receipt: &Value,
+        state: Option<Value>,
+    ) -> Result<bool> {
+        ensure!(
+            key.reply.thread == owner,
+            "Configured continuation belongs to another thread"
+        );
+        let generation = self
+            .resolve_generation(key.reply.generation)
+            .context("Configured generation expired")?;
+        let name = generation
+            .entries
+            .get(key.reply.slot)
+            .context("Configured slot expired")?
+            .name
+            .clone()
+            .with_default_namespace();
+        let manual = self.manual.lock().expect("manual tools poisoned");
+        ensure!(
+            manual.configured_slots.contains(&name),
+            "Current configured declaration is absent"
+        );
+        let mut pending = self.pending.lock().expect("JavaScript replies poisoned");
+        let call = pending
+            .get_mut(key)
+            .context("Configured callback expired")?;
+        ensure!(
+            !call.retired
+                && !call.sender.is_closed()
+                && call.callback.as_ref().is_some_and(|callback| {
+                    &callback.receipt == receipt
+                        && callback.entered.load(Ordering::Acquire)
+                        && callback.admits_reply()
+                }),
+            "Configured callback is not the live entered owner"
+        );
+        if let Some(state) = state {
+            ensure!(
+                call.configured.as_ref().is_none_or(|value| !value.parked),
+                "Configured callback already parked"
+            );
+            ensure!(
+                state["kind"] == "configured-child-v1" && state["state"].is_object(),
+                "Invalid configured continuation data"
+            );
+            call.configured = Some(ConfiguredContinuation {
+                state,
+                parked: true,
+            });
+        } else {
+            ensure!(
+                call.configured_parked(),
+                "Configured callback is not parked"
+            );
+            call.configured = None;
+        }
+        Ok(true)
+    }
+
     pub(crate) fn check_context_manual_idle(&self) -> Result<()> {
         let manual = self
             .manual
@@ -950,18 +1030,19 @@ impl PythonTools {
     }
 
     pub(crate) fn check_context_manual_bindings(&self, source: &Self) -> Result<()> {
-        let slots = source
-            .manual
-            .try_lock()
-            .map_err(|_| anyhow::anyhow!("source manual tool mutation is in progress"))?
-            .slots
-            .clone();
+        let (slots, configured_slots) = {
+            let manual = source
+                .manual
+                .try_lock()
+                .map_err(|_| anyhow::anyhow!("source manual tool mutation is in progress"))?;
+            (manual.slots.clone(), manual.configured_slots.clone())
+        };
         let manual = self
             .manual
             .try_lock()
             .map_err(|_| anyhow::anyhow!("candidate manual tool mutation is in progress"))?;
         ensure!(
-            manual.slots == slots,
+            manual.slots == slots && manual.configured_slots == configured_slots,
             "compaction candidate must retain current manual tool bindings"
         );
         Ok(())
@@ -970,6 +1051,7 @@ impl PythonTools {
     pub(crate) fn configure_manual(&self, slots: Vec<ManualSlot>) -> Result<()> {
         let generation = self.snapshot();
         let mut names = HashSet::new();
+        let mut configured_names = HashSet::new();
         for slot in slots {
             let name = ToolName::new(slot.namespace, slot.name).with_default_namespace();
             ensure!(
@@ -979,8 +1061,25 @@ impl PythonTools {
                     .any(|entry| entry.name.clone().with_default_namespace() == name),
                 "manual tool absent from current native catalog: {name}"
             );
-            ensure!(names.insert(name), "duplicate manual slot");
+            if slot.configured {
+                ensure!(
+                    generation.entries.iter().any(|entry| entry
+                        .name
+                        .clone()
+                        .with_default_namespace()
+                        == name
+                        && matches!(entry.spec, ToolSpec::Function(_) | ToolSpec::Namespace(_))),
+                    "Configured continuation requires a current function declaration"
+                );
+                ensure!(configured_names.insert(name), "duplicate configured slot");
+            } else {
+                ensure!(names.insert(name), "duplicate manual slot");
+            }
         }
+        ensure!(
+            names.is_disjoint(&configured_names),
+            "duplicate manual/configured slot"
+        );
         ensure!(
             self.pending
                 .lock()
@@ -995,6 +1094,7 @@ impl PythonTools {
         );
         *manual = ManualLedger {
             slots: names,
+            configured_slots: configured_names,
             ..Default::default()
         };
         Ok(())
@@ -1078,7 +1178,10 @@ impl PythonTools {
         ensure!(
             key.reply.thread == owner
                 && self.resolve_generation(key.reply.generation).is_some()
-                && key.reply.manual_grant.is_some()
+                && (key.reply.manual_grant.is_some()
+                    || pending
+                        .get(key)
+                        .is_some_and(|call| call.configured_parked()))
                 && pending
                     .get(key)
                     .is_some_and(|call| !call.sender.is_closed()),
@@ -1225,6 +1328,7 @@ impl PythonTools {
             }
         }
         if manual.slots.is_empty()
+            && manual.configured_slots.is_empty()
             && !self
                 .resolve_generation(key.reply.generation)
                 .is_some_and(|generation| {
@@ -1407,6 +1511,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    configured: None,
                     executor_tools: None,
                     client_search: None,
                     original_payload: self.resolve_generation(key.reply.generation).and_then(
@@ -1491,10 +1596,11 @@ impl PythonTools {
             "manual patch kind differs from its current declaration"
         );
         ensure!(
-            generation.manual_slots.as_ref().map_or_else(
-                || manual.slots.contains(&name),
-                |slots| slots.contains(&slot)
-            ),
+            manual.configured_slots.contains(&name)
+                || generation.manual_slots.as_ref().map_or_else(
+                    || manual.slots.contains(&name),
+                    |slots| slots.contains(&slot)
+                ),
             "pending call is not a captured manual tool: {name}"
         );
         Ok(slot)
@@ -1527,8 +1633,22 @@ impl PythonTools {
             if unique.len() != current.len() {
                 return Ok(None);
             }
-            self.validate_frame(&manual, frame, &history)?;
-            return Ok(Some(frame.clone()));
+            let mut captured = frame.clone();
+            let pending = self.pending.lock().expect("JavaScript replies poisoned");
+            for call in &mut captured.pending_manual {
+                if let Some(value) = keys
+                    .keys()
+                    .find(|key| key.call == call.call_id)
+                    .and_then(|key| pending.get(key))
+                    .and_then(|call| call.configured.as_ref())
+                {
+                    ensure!(value.parked, "Configured continuation is not sealed");
+                    call.continuation = Some(value.state.clone());
+                }
+            }
+            drop(pending);
+            self.validate_frame(&manual, &captured, &history)?;
+            return Ok(Some(captured));
         }
         let pending = self.pending.lock().expect("JavaScript replies poisoned");
         let native_turn = manual.native_turn.upgrade();
@@ -1537,12 +1657,22 @@ impl PythonTools {
             unique.is_subset(&current),
             "manual request is no longer current"
         );
+        ensure!(
+            history.sources.is_empty()
+                || !unique.iter().any(|key| pending
+                    .get(key)
+                    .is_some_and(|call| call.configured_parked())),
+            "Configured checkpoints with managed profiles are not supported"
+        );
         for key in &unique {
             ensure!(
                 key.reply.thread == owner
                     && key.reply.generation == generation.id
                     && key.turn == history.turn
-                    && key.reply.manual_grant.is_some()
+                    && (key.reply.manual_grant.is_some()
+                        || pending
+                            .get(key)
+                            .is_some_and(|call| call.configured_parked()))
                     && pending
                         .get(key)
                         .is_some_and(|call| !call.sender.is_closed()),
@@ -1638,6 +1768,9 @@ impl PythonTools {
                     "manual request slot mismatch"
                 );
                 let mut captured = call.clone();
+                if let Some(value) = pending.get(key).and_then(|call| call.configured.as_ref()) {
+                    captured.continuation = Some(value.state.clone());
+                }
                 if let Some(request) = pending
                     .get(key)
                     .and_then(|call| call.manual_request.as_ref())
@@ -1793,6 +1926,23 @@ impl PythonTools {
                 && expected.len() == frame.pending_manual.len(),
             "manual checkpoint has invalid pending/result partition"
         );
+        for pending in &frame.pending_manual {
+            let name = ToolName::new(pending.namespace.clone(), pending.name.clone())
+                .with_default_namespace();
+            if let Some(value) = &pending.continuation {
+                ensure!(
+                    manual.configured_slots.contains(&name)
+                        && value["kind"] == "configured-child-v1"
+                        && value["state"].is_object(),
+                    "Current configured declaration does not admit continuation"
+                );
+            } else {
+                ensure!(
+                    !manual.configured_slots.contains(&name),
+                    "Configured call requires its saved child continuation"
+                );
+            }
+        }
         for (expected, pending) in expected.iter().zip(&frame.pending_manual) {
             ensure!(
                 expected.call_id == pending.call_id
@@ -1914,6 +2064,7 @@ impl PythonTools {
         state: &crate::engine::ThreadState,
         mut frame: Continuation,
         raw: &Value,
+        operation_tools: Option<&[ToolName]>,
     ) -> Result<Value> {
         frame.staged_items()?;
         let history = history(raw)?;
@@ -2012,6 +2163,21 @@ impl PythonTools {
         }
         let mut keys = HashMap::new();
         let mut events = Vec::new();
+        // The imported operation can narrow the fresh opening policy only.
+        // Portable configured captures exclude callbacks that select per step.
+        let executor_tools = configured_executor_names(
+            self.policy
+                .allowed_tools
+                .iter()
+                .flatten()
+                .filter(|tool| {
+                    operation_tools.is_none_or(|selected| {
+                        selected.iter().any(|name| {
+                            name.name == tool.name && name.is_default_namespace()
+                        })
+                    })
+                }),
+        );
         for call in &frame.pending_manual {
             let key = PendingKey {
                 reply: ReplyKey {
@@ -2035,6 +2201,52 @@ impl PythonTools {
             if let Some(captured) = &captured {
                 request["msg"]["profile_id"] = json!(captured.receipt.profile_id);
                 request["msg"]["profile_epoch"] = json!(captured.receipt.epoch);
+            }
+            if let Some(value) = &call.continuation {
+                ensure!(
+                    plan.is_none(),
+                    "Configured continuation with managed profiles is not supported"
+                );
+                let invocation = self
+                    .family
+                    .next_step
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                        value.checked_add(1)
+                    })
+                    .map_err(|_| anyhow::anyhow!("Callback nonce exhausted"))?;
+                let callback = CallbackRelease::new(
+                    json!({"kind":"tool","request":key,"invocation":invocation.to_string()}),
+                );
+                request["msg"]["_sdk_callback"] = callback.receipt.clone();
+                request["msg"]["_sdk_configured_continuation"] = value.clone();
+                let (sender, receiver) = oneshot::channel();
+                self.pending
+                    .lock()
+                    .expect("JavaScript replies poisoned")
+                    .insert(
+                        key.clone(),
+                        PendingCall {
+                            configured: Some(ConfiguredContinuation {
+                                state: value.clone(),
+                                parked: false,
+                            }),
+                            executor_tools: Some(executor_tools.clone()),
+                            client_search: None,
+                            original_payload: original_tool_payload(
+                                &generation.entries[key.reply.slot].spec,
+                                &request["msg"]["arguments"],
+                            ),
+                            media: None,
+                            deadline: None,
+                            invocation,
+                            retired: false,
+                            callback: Some(callback),
+                            _tracing: None,
+                            sender,
+                            manual_request: None,
+                            _approval_receiver: Some(receiver),
+                        },
+                    );
             }
             events.push(request.clone());
             keys.insert(key, request);
@@ -2423,6 +2635,7 @@ mod canonical_result_tests {
             patch: false,
             approval_required: false,
             effective_arguments: None,
+            continuation: None,
         }
     }
 

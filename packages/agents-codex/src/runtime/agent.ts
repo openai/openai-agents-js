@@ -1,3 +1,4 @@
+import { configuredAgentTool } from './agent-tool';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import { managedWorkspaceRestore } from './managed-workspace';
 import {
@@ -263,13 +264,20 @@ export async function openSession(
       );
     const pending = saved.manual_continuation.pending_manual;
     const schemas = pending.map((call) => {
-      const tool = manualTools.find(
+      const tool = catalog.tools.find(
         (tool) =>
+          (tool.kind === 'manual' || configuredAgentTool(tool) !== undefined) &&
           tool.name === call.name &&
           (call.namespace === undefined || call.namespace === 'functions'),
       );
       return tool
-        ? { name: tool.name, schema: manualResultSchema(tool) }
+        ? {
+            name: tool.name,
+            schema:
+              tool.kind === 'manual'
+                ? manualResultSchema(tool)
+                : configuredAgentTool(tool)!.resultSchema,
+          }
         : undefined;
     });
     const expected = pending.map((call) =>

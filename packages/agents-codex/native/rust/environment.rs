@@ -2368,11 +2368,18 @@ pub(crate) async fn configured_child_policy(
     owner: &codex_core_api::CodexThread,
     thread: &codex_core_api::CodexThread,
     turn: &str,
+    restored: bool,
 ) -> Result<Value> {
-    let selections = thread
-        .current_turn_environment_selections(turn)
-        .await
-        .context("Configured child parent turn is no longer active")?;
+    let selections = if restored {
+        // The current opening was already validated before creating this
+        // restored grant. The parent will not have a live Core turn yet.
+        thread.environment_selections().await
+    } else {
+        thread
+            .current_turn_environment_selections(turn)
+            .await
+            .context("Configured child parent turn is no longer active")?
+    };
     let [selection] = selections.as_slice() else {
         anyhow::bail!("Configured child requires one accepted executor Environment");
     };

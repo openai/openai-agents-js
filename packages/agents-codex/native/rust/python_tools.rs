@@ -271,7 +271,28 @@ impl ClientToolSearchWork {
     }
 }
 
+struct ConfiguredContinuation {
+    state: Value,
+    parked: bool,
+}
+
+fn configured_executor_names<'a>(tools: impl IntoIterator<Item = &'a ToolName>) -> Vec<String> {
+    let mut names = tools
+        .into_iter()
+        .filter(|tool| tool.is_default_namespace())
+        .filter_map(|tool| match tool.name.as_str() {
+            "exec_command" | "shell_command" => Some("exec_command".to_string()),
+            "write_stdin" | "apply_patch" | "project_glob" | "project_grep" => Some(tool.name.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 struct PendingCall {
+    configured: Option<ConfiguredContinuation>,
     executor_tools: Option<Vec<String>>,
     client_search: Option<Arc<ClientToolSearchWork>>,
     // Captured by native enqueue, never reconstructed from a host reply.
@@ -285,6 +306,17 @@ struct PendingCall {
     sender: oneshot::Sender<ToolReply>,
     manual_request: Option<Value>,
     _approval_receiver: Option<oneshot::Receiver<ToolReply>>,
+}
+
+impl PendingCall {
+    fn configured_parked(&self) -> bool {
+        self.configured.as_ref().is_some_and(|value| value.parked)
+            && !self.retired
+            && !self.sender.is_closed()
+            && self.callback.as_ref().is_some_and(|callback| {
+                callback.entered.load(Ordering::Acquire) && callback.admits_reply()
+            })
+    }
 }
 
 pub(crate) struct ChildStepSelection;
@@ -1967,7 +1999,7 @@ impl PythonTools {
     }
 
     pub async fn check_idle(&self, thread: &CodexThread) -> Result<()> {
-        self.check_native_idle(thread).await?;
+        self.check_native_idle(thread, false).await?;
         ensure!(
             !self.has_restored_manual(),
             "Manual continuation still owns the native batch"
@@ -1976,7 +2008,7 @@ impl PythonTools {
     }
 
     pub(crate) async fn check_restored_manual_idle(&self, thread: &CodexThread) -> Result<()> {
-        self.check_native_idle(thread).await?;
+        self.check_native_idle(thread, true).await?;
         ensure!(
             self.has_restored_manual(),
             "No restored manual continuation owns the snapshot"
@@ -1984,7 +2016,7 @@ impl PythonTools {
         Ok(())
     }
 
-    async fn check_native_idle(&self, thread: &CodexThread) -> Result<()> {
+    async fn check_native_idle(&self, thread: &CodexThread, restored_manual: bool) -> Result<()> {
         ensure!(
             thread.active_turn_environment_selections().await.is_none()
                 && !matches!(
@@ -1993,11 +2025,14 @@ impl PythonTools {
                 ),
             "replaceable tools require an idle, open native thread"
         );
+        let manual = self.manual.lock().expect("manual tools poisoned");
+        let pending = self.pending.lock().expect("JavaScript replies poisoned");
         ensure!(
-            self.pending
-                .lock()
-                .expect("JavaScript replies poisoned")
-                .is_empty(),
+            pending.is_empty()
+                || (restored_manual
+                    && pending.iter().all(|(key, call)| {
+                        manual.restored_contains_key(key) && call.configured_parked()
+                    })),
             "JavaScript tool replies are pending"
         );
         Ok(())
@@ -2334,6 +2369,12 @@ impl PythonTools {
             return Ok(None);
         }
         let mut pending = self.pending.lock().expect("JavaScript replies poisoned");
+        ensure!(
+            !pending
+                .get(key)
+                .is_some_and(|call| call.configured_parked()),
+            "parked configured call cannot publish a result"
+        );
         Ok(match pending.get_mut(key) {
             Some(call) if call.callback.is_some() && !call.sender.is_closed() => {
                 Some(std::mem::replace(&mut call.sender, closed_tool_sender()))
@@ -2469,6 +2510,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    configured: None,
                     executor_tools,
                     client_search,
                     original_payload: match &entry.spec {
@@ -4254,31 +4296,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     self.executor_tools
                         .as_ref()
                         .and_then(|selection| selection.names())
-                        .map(|names| {
-                            let mut names = names
-                                .iter()
-                                .filter_map(|name| {
-                                    if name
-                                        .namespace
-                                        .as_deref()
-                                        .is_some_and(|namespace| namespace != "functions")
-                                    {
-                                        return None;
-                                    }
-                                    match name.name.as_str() {
-                                        "exec_command" | "shell_command" => {
-                                            Some("exec_command".to_string())
-                                        }
-                                        "write_stdin" | "apply_patch" | "project_glob"
-                                        | "project_grep" => Some(name.name.clone()),
-                                        _ => None,
-                                    }
-                                })
-                                .collect::<Vec<_>>();
-                            names.sort_unstable();
-                            names.dedup();
-                            names
-                        }),
+                        .map(configured_executor_names),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {

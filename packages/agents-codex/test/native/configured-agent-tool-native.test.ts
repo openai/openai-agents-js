@@ -11,7 +11,9 @@ import {
   NativeProvider,
   isFunctionApprovalRequest,
   tool,
+  toolRef,
   type Session,
+  type Completed,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
@@ -65,6 +67,10 @@ async function approval(session: Session) {
 async function fixture(
   siblingApproval = false,
   observeChild?: (session: Session) => void,
+  observeResult?: (result: Completed) => void,
+  afterApproval: ConstructorParameters<typeof ModelServer>[0] = [
+    [message('child complete')],
+  ],
 ) {
   const rootModel = new ModelServer([
     [
@@ -79,7 +85,7 @@ async function fixture(
   ]);
   const childModel = new ModelServer([
     [call('child_effect', {}, { callId: 'child-approval-call' })],
-    [message('child complete')],
+    ...afterApproval,
   ]);
   const rootProvider = await provider(rootModel);
   const childProvider = await provider(childModel);
@@ -143,6 +149,14 @@ async function fixture(
       child.asTool({
         toolName: 'nested_child',
         toolDescription: 'Run the configured child.',
+        ...(observeResult
+          ? {
+              customOutputExtractor(result) {
+                observeResult(result);
+                return result.finalOutput;
+              },
+            }
+          : {}),
       }),
       tool({
         name: 'accepted_sibling',
@@ -222,9 +236,6 @@ nativeIt.each([true, false])(
           item.callId === 'held-sibling-call',
       ),
     ).toBe(false);
-    await expect(session.suspend()).rejects.toThrow(
-      'suspend requires a pending manual-tool boundary',
-    );
     const reply = approve
       ? request.approve()
       : request.reject('application denied child effect');
@@ -329,6 +340,100 @@ nativeIt(
       throw new Error('Expected the child approval');
     expect(() => request.approve()).toThrow();
     expect(f.effects).toEqual(['accepted-sibling']);
+  },
+  30000,
+);
+
+nativeIt.each(['selected', 'excluded', 'narrowed'] as const)(
+  'restores configured child executor effects within the current parent ceiling (%s)',
+  async (mode) => {
+    const executor = await startPublicExecutor();
+    try {
+      const selected = mode === 'selected';
+      await using f = await fixture(false, undefined, undefined, [
+        (request) => {
+          expect(JSON.stringify(request.tools).includes('"exec_command"')).toBe(
+            selected,
+          );
+          return selected
+            ? [
+                call(
+                  'exec_command',
+                  {
+                    cmd: 'printf configured-child-executor-effect',
+                    yield_time_ms: 1000,
+                    max_output_tokens: 100,
+                  },
+                  { callId: 'restored-child-exec', namespace: 'functions' },
+                ),
+              ]
+            : [message('child complete')];
+        },
+        ...(selected ? [[message('child complete')]] : []),
+      ]);
+      const opening = {
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        writePolicy: 'legacy' as const,
+      };
+      const environment = new Environment({
+        ...opening,
+        tools: ['exec_command'],
+      });
+      let saved: Awaited<ReturnType<Session['suspend']>>;
+      {
+        await using source = await f.parent.session({ environment });
+        const turn = await source.submit(
+          'Capture the child with its issuing executor selection.',
+          mode === 'excluded'
+            ? { tools: [toolRef('nested_child'), toolRef('accepted_sibling')] }
+            : {},
+        );
+        const pending = await turn.wait({ until: 'interaction' });
+        if (!('requests' in pending))
+          throw new Error('Expected child approval');
+        await f.sibling.promise;
+        expect(
+          JSON.stringify(f.childModel.requests[0].tools).includes(
+            '"exec_command"',
+          ),
+        ).toBe(mode !== 'excluded');
+        saved = await source.suspend();
+      }
+      {
+        await using restored = await f.parent.session({
+          environment:
+            mode === 'narrowed'
+              ? new Environment({ ...opening, tools: [] })
+              : environment,
+          state: JSON.parse(JSON.stringify(saved)),
+        });
+        const restoredTurn = restored.restoredTurn;
+        if (!restoredTurn) throw new Error('Expected restored parent turn');
+        const pending = await restoredTurn.wait({ until: 'interaction' });
+        if (!('requests' in pending))
+          throw new Error('Expected restored child approval');
+        const request = pending.requests.find(isFunctionApprovalRequest);
+        if (!request) throw new Error('Expected restored child approval');
+        await restored.respond(request.approve());
+        expect((await restoredTurn.wait()).finalOutput).toBe('parent complete');
+        expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+      }
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toHaveLength(selected ? 1 : 0);
+      if (selected)
+        expect(JSON.stringify(f.childModel.requests.at(-1)?.input)).toContain(
+          'configured-child-executor-effect',
+        );
+      f.rootModel.assertExhausted();
+      f.childModel.assertExhausted();
+    } finally {
+      await executor.close();
+    }
   },
   30000,
 );
@@ -749,4 +854,369 @@ nativeIt(
     }
   },
   20000,
+);
+
+nativeIt.each([false, true])(
+  'restores the portable configured parent without repeating its settled sibling, legacy=%s',
+  async (legacyUsage) => {
+    let childCompleted: Completed | undefined;
+    let priorParent: readonly import('../../src/runtime/guardrails').GuardrailRecord[] =
+      [];
+    await using f = await fixture(false, undefined, (result) => {
+      childCompleted = result;
+    });
+    const source = await f.parent.session();
+    let saved: Awaited<ReturnType<Session['suspend']>>;
+    try {
+      const turn = await source.submit('begin portable parent');
+      const pending = await turn.wait({ until: 'interaction' });
+      if (!('requests' in pending)) throw new Error('Expected child approval');
+      await f.sibling.promise;
+      expect(f.effects).toEqual(['accepted-sibling']);
+      priorParent = turn.guardrailResults;
+      saved = await source.suspend();
+    } finally {
+      await source.close();
+    }
+    const frame = z
+      .object({
+        manual_continuation: z.object({
+          pending_manual: z.array(
+            z.object({
+              name: z.string(),
+              continuation: z
+                .object({
+                  state: z.object({
+                    manual_context: z.object({
+                      guardrail_results: z.array(
+                        z.object({
+                          name: z.string(),
+                          session_id: z.string(),
+                          turn_id: z.string(),
+                        }),
+                      ),
+                    }),
+                  }),
+                })
+                .optional(),
+            }),
+          ),
+        }),
+      })
+      .parse(saved);
+    const childInput = frame.manual_continuation.pending_manual
+      .find((call) => call.name === 'nested_child')
+      ?.continuation?.state.manual_context.guardrail_results.find(
+        (record) => record.name === 'child-input-owner',
+      );
+    expect(childInput).toBeDefined();
+    await expect(
+      new Agent({ ...f.parent, tools: [] }).session({ state: saved }),
+    ).rejects.toThrow();
+    expect(f.effects).toEqual(['accepted-sibling']);
+    const portable = JSON.parse(JSON.stringify(saved));
+    if (legacyUsage) {
+      const continuation = portable.manual_continuation.pending_manual.find(
+        (entry: any) => entry.continuation,
+      ).continuation;
+      const childUsage =
+        continuation.state.manual_context.model_usage_offset ??
+        continuation.state.manual_context.usage;
+      delete continuation.usage_in_parent;
+      for (const name of ['usage', 'model_usage_offset']) {
+        const usage = portable.manual_context[name];
+        if (usage)
+          for (const key of Object.keys(usage))
+            usage[key] = Number(
+              BigInt(usage[key] ?? 0) - BigInt(childUsage[key] ?? 0),
+            );
+      }
+    }
+    await using restored = await f.parent.session({ state: portable });
+    if (!restored.restoredTurn)
+      throw new Error('Expected restored parent turn');
+    expect(restored.restoredTurn.runUsage).toMatchObject({
+      requests: 2,
+      missingUsageRequests: 2,
+      totalTokens: 0,
+    });
+    const pending = await restored.restoredTurn.wait({ until: 'interaction' });
+    if (!('requests' in pending))
+      throw new Error('Expected restored child approval');
+    const request = pending.requests.find(isFunctionApprovalRequest);
+    if (!request) throw new Error('Expected restored function approval');
+    expect(request.callId).toBe('child-approval-call');
+    expect(f.effects).toEqual(['accepted-sibling']);
+    const reply = request.approve();
+    await restored.respond(reply);
+    await expect(restored.respond(reply)).rejects.toThrow();
+    const completed = await restored.restoredTurn.wait();
+    expect(completed.runUsage).toMatchObject({
+      requests: 4,
+      missingUsageRequests: 4,
+      totalTokens: 0,
+    });
+    expect(restored.restoredTurn.runUsage).toEqual(completed.runUsage);
+    expect(completed.finalOutput).toBe('parent complete');
+    expect(completed.guardrailResults?.map((record) => record.name)).toEqual([
+      'parent-input-owner',
+      'parent-output-owner',
+    ]);
+    expect(
+      childCompleted?.guardrailResults?.map((record) => record.name),
+    ).toEqual(['child-input-owner', 'child-output-owner']);
+    expect(completed.guardrailResults?.[0]).toMatchObject({
+      sessionId: priorParent[0].sessionId,
+      turnId: priorParent[0].turnId,
+    });
+    expect(childCompleted?.guardrailResults?.[0]).toMatchObject({
+      sessionId: childInput!.session_id,
+      turnId: childInput!.turn_id,
+    });
+    expect(
+      completed.guardrailResults?.every((record) => record.agent === f.parent),
+    ).toBe(true);
+    expect(
+      childCompleted?.guardrailResults?.every(
+        (record) => record.agent === f.child,
+      ),
+    ).toBe(true);
+    expect(f.guards.map((record) => record.name).sort()).toEqual([
+      'child-input-owner',
+      'child-output-owner',
+      'parent-input-owner',
+      'parent-output-owner',
+    ]);
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    expect(f.rootModel.requests).toHaveLength(2);
+    expect(f.childModel.requests).toHaveLength(2);
+  },
+  20_000,
+);
+
+nativeIt(
+  'rolls back a pre-seal parent refusal without repeating accepted siblings',
+  async () => {
+    await using f = await fixture();
+    await using source = await f.parent.session();
+    const turn = await source.submit('begin configured rollback');
+    const original = await turn.wait({ until: 'interaction' });
+    if (!('requests' in original))
+      throw new Error('Expected original child approval');
+    await f.sibling.promise;
+    const stale = original.requests.find(isFunctionApprovalRequest);
+    if (!stale) throw new Error('Expected original child approval');
+    const staleReply = stale.approve();
+    const capture = source as unknown as {
+      captureConfiguredParent(beforeSeal: () => void): Promise<unknown>;
+    };
+    await expect(
+      capture.captureConfiguredParent(() => {
+        throw new Error('injected parent refusal');
+      }),
+    ).rejects.toThrow('injected parent refusal');
+    expect(turn.runUsage).toMatchObject({
+      requests: 2,
+      missingUsageRequests: 2,
+      totalTokens: 0,
+    });
+    const pending = await turn.wait({ until: 'interaction' });
+    if (!('requests' in pending))
+      throw new Error('Expected recovered child approval');
+    const request = pending.requests.find(isFunctionApprovalRequest);
+    if (!request) throw new Error('Expected current and stale child approvals');
+    expect(request.callId).toBe(stale.callId);
+    await expect(source.respond(staleReply)).rejects.toThrow();
+    expect(f.effects).toEqual(['accepted-sibling']);
+    const reply = request.approve();
+    await source.respond(reply);
+    await expect(source.respond(reply)).rejects.toThrow();
+    const completed = await turn.wait();
+    expect(completed.finalOutput).toBe('parent complete');
+    expect(completed.runUsage).toMatchObject({
+      requests: 4,
+      missingUsageRequests: 4,
+      totalTokens: 0,
+    });
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    expect(f.rootModel.requests).toHaveLength(2);
+    expect(f.childModel.requests).toHaveLength(2);
+  },
+  20_000,
+);
+
+nativeIt(
+  'settles a fresh restored configured batch through its current callback',
+  async () => {
+    await using f = await fixture(true);
+    let batches = 0;
+    const agent = new Agent({
+      ...f.parent,
+      toolBatchCompletion(context) {
+        batches += 1;
+        expect(context.results).toHaveLength(2);
+      },
+    });
+    const source = await agent.session();
+    const turn = await source.submit('begin fresh restored batch');
+    await vi.waitFor(async () => {
+      const boundary = await turn.wait({ until: 'interaction' });
+      if (!('requests' in boundary))
+        throw new Error('Expected both current approvals');
+      expect(
+        boundary.requests
+          .filter(isFunctionApprovalRequest)
+          .map((request) => request.callId)
+          .sort(),
+      ).toEqual(['child-approval-call', 'held-sibling-call']);
+    });
+    const state = await source.suspend();
+    await source.close();
+    expect(batches).toBe(0);
+    expect(f.effects).toEqual([]);
+    await using restored = await agent.session({ state });
+    if (!restored.restoredTurn) throw new Error('Expected restored batch');
+    let current: Awaited<ReturnType<typeof approval>>[] = [];
+    await vi.waitFor(async () => {
+      const boundary = await restored.restoredTurn!.wait({
+        until: 'interaction',
+      });
+      if (!('requests' in boundary))
+        throw new Error('Expected current approvals');
+      current = boundary.requests.filter(isFunctionApprovalRequest);
+      expect(current.map((request) => request.callId).sort()).toEqual([
+        'child-approval-call',
+        'held-sibling-call',
+      ]);
+    });
+    for (const callId of ['held-sibling-call', 'child-approval-call']) {
+      const request = current.find((request) => request.callId === callId)!;
+      await restored.respond(request.approve());
+    }
+    expect((await restored.restoredTurn.wait()).finalOutput).toBe(
+      'parent complete',
+    );
+    expect(batches).toBe(1);
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    f.rootModel.assertExhausted();
+    f.childModel.assertExhausted();
+  },
+  20_000,
+);
+
+nativeIt(
+  'keeps admitted configured child usage after denial',
+  async () => {
+    await using f = await fixture();
+    await using source = await f.parent.session();
+    const turn = await source.submit('deny configured leaf');
+    const pending = await turn.wait({ until: 'interaction' });
+    if (!('requests' in pending)) throw new Error('Expected child approval');
+    await f.sibling.promise;
+    const request = pending.requests.find(isFunctionApprovalRequest);
+    if (!request) throw new Error('Expected function approval');
+    await source.respond(request.reject());
+    const completed = await turn.wait();
+    expect(completed.finalOutput).toBe('parent complete');
+    expect(completed.runUsage).toMatchObject({
+      requests: 4,
+      missingUsageRequests: 4,
+      totalTokens: 0,
+    });
+    expect(f.effects).toEqual(['accepted-sibling']);
+    expect(f.rootModel.requests).toHaveLength(2);
+    expect(f.childModel.requests).toHaveLength(2);
+  },
+  20_000,
+);
+
+nativeIt(
+  'reseals the current restored child approval without replaying its first effect',
+  async () => {
+    await using f = await fixture(false, undefined, undefined, [
+      [call('child_effect', {}, { callId: 'child-second-approval' })],
+      [message('child complete')],
+    ]);
+    let saved: Awaited<ReturnType<Session['suspend']>>;
+    {
+      await using source = await f.parent.session();
+      const turn = await source.submit('begin twice-restored configured child');
+      await turn.wait({ until: 'interaction' });
+      await f.sibling.promise;
+      saved = await source.suspend();
+    }
+    {
+      await using restored = await f.parent.session({ state: saved });
+      const first = await approval(restored);
+      expect(first.callId).toBe('child-approval-call');
+      await restored.respond(first.approve());
+      const second = await approval(restored);
+      expect(second.callId).toBe('child-second-approval');
+      saved = await restored.suspend();
+    }
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    {
+      await using restored = await f.parent.session({
+        state: JSON.parse(JSON.stringify(saved)),
+      });
+      const current = await approval(restored);
+      expect(current.callId).toBe('child-second-approval');
+      await restored.respond(current.approve());
+      if (!restored.restoredTurn) throw new Error('Expected restored parent');
+      expect((await restored.restoredTurn.wait()).finalOutput).toBe(
+        'parent complete',
+      );
+    }
+    expect(f.effects).toEqual([
+      'accepted-sibling',
+      'child-effect',
+      'child-effect',
+    ]);
+    f.rootModel.assertExhausted();
+    f.childModel.assertExhausted();
+  },
+  30000,
+);
+
+nativeIt(
+  'refuses a configured continuation excluded by the saved operation selection',
+  async () => {
+    await using f = await fixture();
+    let saved: Awaited<ReturnType<Session['suspend']>>;
+    {
+      await using source = await f.parent.session();
+      const turn = await source.submit('begin excluded configured slot', {
+        tools: [toolRef('nested_child'), toolRef('accepted_sibling')],
+      });
+      await turn.wait({ until: 'interaction' });
+      await f.sibling.promise;
+      saved = await source.suspend();
+    }
+    const portable = JSON.parse(JSON.stringify(saved));
+    expect(portable.format_version).toBeGreaterThanOrEqual(8);
+    expect(portable.format_version).toBeLessThanOrEqual(20);
+    expect(portable.operation_tools).toEqual([
+      { name: 'nested_child', namespace: 'functions' },
+      { name: 'accepted_sibling', namespace: 'functions' },
+    ]);
+    portable.operation_tools = [
+      { name: 'accepted_sibling', namespace: 'functions' },
+    ];
+    let opened: Session | undefined;
+    try {
+      await expect(
+        (async () => {
+          opened = await f.parent.session({ state: portable });
+        })(),
+      ).rejects.toThrow(
+        /Checkpoint selection does not admit its pending manual tools/,
+      );
+    } finally {
+      await opened?.close();
+    }
+    expect(f.effects).toEqual(['accepted-sibling']);
+    expect(f.childModel.requests).toHaveLength(1);
+    expect(f.rootModel.requests).toHaveLength(1);
+  },
+  30000,
 );

@@ -34,6 +34,7 @@ export interface NativeCallbackDelivery {
   buffered: boolean;
   retired: boolean;
   released: boolean;
+  completion?: Promise<void>;
 }
 
 /** Private receipt identity and lifetime for one Session's callback deliveries. */
