@@ -1067,7 +1067,11 @@
     {
       "path": "sdk-original-history-pop.patch",
       "sha256": "2690c02531c737dd80c360138ccac0eb1664597bacc6283006b797634e6f6d6a"
+    },
+    {
+      "path": "sdk-cold-recovery-sampling-fence.patch",
+      "sha256": "1162ef20546f973d00989ceecad8cd4f0ce8c4bba08e30b15ce3368d1def90de"
     }
   ],
-  "result_tree": "eb306862021659da92a6d9857842040625cb5a79"
+  "result_tree": "4da3c038852ede5ea950f18b78a58caf4d78687e"
 }

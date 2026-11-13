@@ -614,11 +614,89 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
     index_calls(history, false)
 }
 
+pub(crate) fn reconciled_turns(
+    history: &[RolloutItem],
+    protected: &HashSet<String>,
+) -> Result<HashSet<String>> {
+    Ok(calls(history)?
+        .into_iter()
+        .filter_map(|((turn, call_id), call)| {
+            (protected.contains(&call_id)
+                && call.output.is_some_and(|output| tag(output).is_some()))
+            .then_some(turn)
+            .flatten()
+        })
+        .collect())
+}
+
+pub(crate) fn validate_automatic_sampling(
+    thread: ThreadId,
+    history: &[RolloutItem],
+    turns: &HashSet<String>,
+) -> Result<()> {
+    let thread = thread.to_string();
+    for turn in turns {
+        let receipts: Vec<_> = history
+            .iter()
+            .filter_map(|row| match row {
+                RolloutItem::TurnContext(context) if context.turn_id.as_ref() == Some(turn) => {
+                    context.sdk_receipt.as_ref()
+                }
+                _ => None,
+            })
+            .collect();
+        ensure!(
+            !receipts.is_empty()
+                && receipts.iter().all(|receipt| receipt
+                    .get("version")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(1)
+                    && receipt.get("thread_id").and_then(serde_json::Value::as_str)
+                        == Some(thread.as_str())
+                    && receipt
+                        .get("provider_effects_possible")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(false)),
+            "local history cannot exclude provider effects in an interrupted sampling request"
+        );
+    }
+    Ok(())
+}
+
 fn completed_hosted_call(item: &ResponseItem) -> bool {
-    matches!(item, ResponseItem::McpCall { provider_fields, .. }
-        if provider_fields.get("status").and_then(serde_json::Value::as_str) == Some("completed")
-            && provider_fields.get("output").and_then(serde_json::Value::as_str).is_some()
-            && provider_fields.get("error").is_none_or(serde_json::Value::is_null))
+    match item {
+        ResponseItem::McpCall {
+            provider_fields, ..
+        } => {
+            provider_fields
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                == Some("completed")
+                && provider_fields
+                    .get("output")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                && provider_fields
+                    .get("error")
+                    .is_none_or(serde_json::Value::is_null)
+        }
+        ResponseItem::CodeInterpreterCall {
+            status,
+            provider_fields,
+            ..
+        }
+        | ResponseItem::ImageGenerationCall {
+            status,
+            provider_fields,
+            ..
+        } => {
+            status == "completed"
+                && provider_fields
+                    .get("error")
+                    .is_none_or(serde_json::Value::is_null)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn validate_hosted_effects(
@@ -630,32 +708,55 @@ pub(crate) fn validate_hosted_effects(
     let mut active = None;
     for row in history {
         crate::local_storage::observe_turn(&mut active, row);
-        if let RolloutItem::ResponseItem(envelope) = row
-            && let ResponseItem::McpCall { id, .. } = &envelope.item
-        {
+        if let RolloutItem::ResponseItem(envelope) = row {
             let owner = envelope
                 .item
                 .turn_id()
                 .map(str::to_owned)
                 .or_else(|| active.clone());
             if owner.as_ref().is_some_and(|turn| turns.contains(turn)) {
+                let (kind, id) = match &envelope.item {
+                    ResponseItem::McpCall { id, .. } => ("mcp", id),
+                    ResponseItem::CodeInterpreterCall { id, .. } => ("code", id),
+                    ResponseItem::ImageGenerationCall { id, .. } => ("image", id),
+                    ResponseItem::ShellCall { .. } => {
+                        ensure!(
+                            is_application_shell_call(envelope),
+                            "local history contains unsupported hosted Shell effects"
+                        );
+                        continue;
+                    }
+                    ResponseItem::ShellCallOutput { .. } => {
+                        ensure!(
+                            output_identity(&envelope.item).is_some_and(|(call_id, _)| application
+                                .get(&(owner.clone(), call_id.to_owned()))
+                                .is_some_and(|call| matches!(
+                                    call.invocation,
+                                    ResponseItem::ShellCall { .. }
+                                ))),
+                            "local history contains unsupported hosted Shell effects"
+                        );
+                        continue;
+                    }
+                    _ => continue,
+                };
                 let id = id
                     .as_ref()
                     .filter(|id| !id.as_str().is_empty())
-                    .context("hosted MCP call has no retained identity")?;
-                hosted.insert((owner, id.as_str()), &envelope.item);
+                    .context("hosted call has no retained identity")?;
+                hosted.insert((owner, kind, id.as_str()), &envelope.item);
             }
         }
     }
     ensure!(
         hosted.values().all(|item| completed_hosted_call(item)),
-        "local history contains unfinished hosted MCP effects; automatic interruption is unsupported"
+        "local history contains unfinished hosted effects; automatic interruption is unsupported"
     );
     ensure!(application.iter().all(|(key, call)| {
         let ResponseItem::McpApprovalRequest { id: Some(id), server_label, name, arguments, provider_fields, .. } = call.invocation else { return true; };
         !key.0.as_ref().is_some_and(|turn| turns.contains(turn))
             || matches!(call.output, Some(ResponseItem::McpApprovalResponse { approve: false, .. }))
-            || hosted.iter().any(|((owner, _), item)| {
+            || hosted.iter().any(|((owner, _, _), item)| {
                 owner == &key.0 && matches!(item, ResponseItem::McpCall { server_label: actual_server, name: actual_name, arguments: actual_arguments, provider_fields: actual_fields, .. }
                     if server_label == actual_server && name == actual_name && arguments == actual_arguments
                         && actual_fields.get("approval_request_id").and_then(serde_json::Value::as_str) == Some(id.as_str())
@@ -1300,6 +1401,48 @@ mod tests {
             assert!(validate_native_effects(&invalid, &turns).is_err());
         }
         assert!(validate_native_effects(&history[..3], &turns).is_err());
+    }
+
+    #[test]
+    fn cold_interruption_checks_retained_hosted_types_and_application_shell_ownership() {
+        let turns = HashSet::from(["turn".to_owned()]);
+        let row = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        for kind in ["code_interpreter_call", "image_generation_call"] {
+            for status in ["in_progress", "completed"] {
+                let item = json!({"type":kind,"id":"hosted","status":status,"outputs":null,"result":null,"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}});
+                assert_eq!(
+                    validate_hosted_effects(&[row(item.clone())], &turns).is_ok(),
+                    status == "completed"
+                );
+                for replacement in [json!(null), json!("")] {
+                    let mut invalid = item.clone();
+                    invalid["id"] = replacement;
+                    assert!(validate_hosted_effects(&[row(invalid)], &turns).is_err());
+                }
+            }
+        }
+        let mut shell = ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"shell_call","id":"shell","call_id":"shell-call","status":"completed","environment":{"type":"local"},"action":{"commands":["synthetic"]},"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}})).unwrap());
+        let output = row(
+            json!({"type":"shell_call_output","id":"output","call_id":"shell-call","status":"completed","output":[],"internal_chat_message_metadata_passthrough":{"turn_id":"turn"}}),
+        );
+        assert!(
+            validate_hosted_effects(
+                &[RolloutItem::ResponseItem(shell.clone()), output.clone()],
+                &turns
+            )
+            .is_err()
+        );
+        shell.metadata = Some(codex_history::CodexHarnessMetadata {
+            sdk_application_tool: Some("shell".into()),
+            ..Default::default()
+        });
+        validate_hosted_effects(&[RolloutItem::ResponseItem(shell), output.clone()], &turns)
+            .unwrap();
+        assert!(validate_hosted_effects(&[output], &turns).is_err());
     }
 
     #[test]

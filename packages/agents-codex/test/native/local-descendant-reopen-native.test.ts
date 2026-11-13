@@ -853,6 +853,20 @@ for (const depth of [1, 2]) {
                 row.type === 'event_msg' && row.payload.type === 'task_started',
             )?.payload.turn_id;
             expect(leafTurn).toBeTypeOf('string');
+            const samplingReceipts = originalLeaf
+              .filter(
+                (row) =>
+                  row.type === 'turn_context' &&
+                  row.payload.turn_id === leafTurn &&
+                  row.payload.sdk_receipt,
+              )
+              .map((row) => row.payload.sdk_receipt);
+            expect(samplingReceipts.length).toBeGreaterThan(0);
+            for (const receipt of samplingReceipts)
+              expect(receipt).toMatchObject({
+                thread_id: leaf,
+                provider_effects_possible: false,
+              });
             for (const inspectOnly of [true, true, false]) {
               const destination = start({
                 ...common,

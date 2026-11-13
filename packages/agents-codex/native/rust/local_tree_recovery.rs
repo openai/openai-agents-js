@@ -208,7 +208,7 @@ pub(super) async fn plan_recovery_tree(
     let mut missing = Vec::new();
     let mut descendant_histories = Vec::new();
     let mut affected_turns = Vec::with_capacity(sources.len());
-    let mut automatic_turns = Vec::with_capacity(sources.len());
+    let mut receipt_lineage = Vec::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         let receipts = by_source.remove(&source.id).unwrap_or_default();
         let model;
@@ -249,15 +249,21 @@ pub(super) async fn plan_recovery_tree(
                 }
             };
         let mut turns = turns;
-        let mut automatic = HashSet::new();
+        let mut receipt_turns = turns.clone();
+        receipt_turns.extend(
+            local_reconciliation::reconciled_turns(source.own(), &plan.protected_ids)?
+                .into_iter()
+                .filter(|turn| own_turns[index].get(turn) == Some(&true)),
+        );
         if index != 0 && own_turns[index].values().any(|active| *active) {
-            automatic.extend(own_turns[index].iter().filter_map(|(turn, active)| {
-                (*active && !turns.contains(turn)).then_some(turn.clone())
-            }));
-            turns.extend(automatic.iter().cloned());
+            turns.extend(
+                own_turns[index]
+                    .iter()
+                    .filter_map(|(turn, active)| (*active).then_some(turn.clone())),
+            );
         }
         affected_turns.push(turns);
-        automatic_turns.push(automatic);
+        receipt_lineage.push(receipt_turns);
         if index == 0 {
             root = plan;
             root_receipts = receipts;
@@ -345,6 +351,18 @@ pub(super) async fn plan_recovery_tree(
                 parent_source.own(),
                 &followup_turns,
             )?;
+            if !receipt_lineage[index].is_empty()
+                && own_turns[index]
+                    .iter()
+                    .all(|(turn, active)| !*active || receipt_lineage[index].contains(turn))
+            {
+                receipt_lineage[parent].extend(local_reconciliation::completed_child_turns(
+                    parent_source.id,
+                    source.id,
+                    parent_source.own(),
+                    &HashSet::new(),
+                )?);
+            }
             // An earlier attempt can replace an abort-only ancestor and fail
             // before syncing its directory. Confirm it before the leaf write.
             writes[parent].acknowledged |= parent_source.own().iter().any(|row| {
@@ -352,9 +370,6 @@ pub(super) async fn plan_recovery_tree(
                     if event.reason == TurnAbortReason::Interrupted
                         && event.turn_id.as_ref().is_some_and(|turn| spawn_turns.contains(turn)))
             });
-            if !automatic_turns[index].is_empty() {
-                automatic_turns[parent].extend(spawn_turns.iter().cloned());
-            }
             affected_turns[parent].extend(spawn_turns);
         }
     }
@@ -375,6 +390,21 @@ pub(super) async fn plan_recovery_tree(
                     && event.started_at.is_none() && event.completed_at.is_none() && event.duration_ms.is_none()));
     }
     if recovering_descendants {
+        let automatic_turns: Vec<HashSet<_>> = own_turns
+            .iter()
+            .enumerate()
+            .map(|(index, turns)| {
+                turns
+                    .iter()
+                    .filter_map(|(turn, active)| {
+                        (*active
+                            && affected_turns[index].contains(turn)
+                            && !receipt_lineage[index].contains(turn))
+                        .then_some(turn.clone())
+                    })
+                    .collect()
+            })
+            .collect();
         let automatic = automatic_turns.iter().any(|turns| !turns.is_empty());
         for (index, source) in sources.iter().enumerate() {
             let active: HashSet<_> = own_turns[index]
@@ -394,6 +424,11 @@ pub(super) async fn plan_recovery_tree(
                 .cloned(),
             );
             local_reconciliation::validate_hosted_effects(&history, &active)?;
+            local_reconciliation::validate_automatic_sampling(
+                source.id,
+                &history,
+                &automatic_turns[index],
+            )?;
             if automatic {
                 let automatic_active = active
                     .intersection(&automatic_turns[index])
