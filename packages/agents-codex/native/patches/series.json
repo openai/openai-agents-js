@@ -146,7 +146,7 @@
     },
     {
       "path": "0037-own-managed-darwin-command-cohort.patch",
-      "sha256": "2df2d03f5f8c88124e6b54a9c85f02f1b9aff8b56e768f289eaa75c0971ccb43"
+      "sha256": "0dad48d7d0cfe34602601ca4d3da6a70334ba1cdc20d0c275bd21e38f9bb8057"
     },
     {
       "path": "0038-stop-sampling-before-sdk-close.patch",
@@ -1065,5 +1065,5 @@
       "sha256": "4f8d04fdc36efd7217e3aca643eb4ab90c930cacb3060bd469518f4af9bc6abd"
     }
   ],
-  "result_tree": "b78ffddfdcf28b791ea62ddbb8cbe19781a1c69f"
+  "result_tree": "de87d9e7e248658cf7b89c9d458513e0de2887b1"
 }
