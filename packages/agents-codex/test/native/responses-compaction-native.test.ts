@@ -1,4 +1,5 @@
-import type OpenAI from 'openai';
+import OpenAI from 'openai';
+import * as openAIEntrypoint from '../../node/openai-entrypoint.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
@@ -13,6 +14,7 @@ import { ModelServer, message, call } from './fixtures/model-server';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(async () => {
+  vi.restoreAllMocks();
   await ModelServer.closeAll();
 });
 const text = (value: unknown) => JSON.stringify(value);
@@ -47,6 +49,36 @@ async function providerFor(server: ModelServer) {
     supportsWebsockets: false,
   });
 }
+
+nativeIt(
+  'keeps omitted ResponsesCompaction independent of borrowed compact and alternate client loading',
+  async () => {
+    const load = vi
+      .spyOn(openAIEntrypoint, 'loadOpenAIEntrypoint')
+      .mockRejectedValue(new Error('Unexpected alternate client loading'));
+    const compact = vi
+      .spyOn(OpenAI.Responses.prototype, 'compact')
+      .mockRejectedValue(new Error('Unexpected borrowed compact call'));
+    const server = new ModelServer([[message('remembered')]]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Answer briefly.',
+      beforeCompact: () => 'APPLICATION_SUMMARY_WITHOUT_RESPONSES_COMPACTION',
+    }).session();
+    await (await session.submit('Remember the source.')).wait();
+    await session.compact();
+    expect(text(await session.saveState())).toContain(
+      'APPLICATION_SUMMARY_WITHOUT_RESPONSES_COMPACTION',
+    );
+    expect(server.requests).toHaveLength(1);
+    expect(compact).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+    server.assertExhausted();
+  },
+  20_000,
+);
 
 nativeIt.each([false, true])(
   'keeps the entire returned window and current instructions through cold restore (profiles=%s)',
@@ -295,19 +327,33 @@ nativeIt(
 nativeIt(
   'joins cancelled compact callbacks and rejects late window publication',
   async () => {
-    let enter!: () => void, release!: () => void;
+    let enter!: () => void, release!: () => void, abort!: () => void;
     const entered = new Promise<void>((resolve) => (enter = resolve));
     const gate = new Promise<void>((resolve) => (release = resolve));
+    const aborted = new Promise<void>((resolve) => (abort = resolve));
     let exited = false,
       canceled = false;
-    const compact = async () => {
+    const compact = async (
+      _body: unknown,
+      options?: { signal?: AbortSignal | null },
+    ) => {
+      const signal = options?.signal;
+      signal?.addEventListener('abort', abort, { once: true });
       enter();
-      await gate;
-      exited = true;
-      return window();
+      try {
+        await gate;
+        return window();
+      } finally {
+        signal?.removeEventListener('abort', abort);
+        exited = true;
+      }
     };
-    const server = new ModelServer([[message('completed before compaction')]]);
+    const server = new ModelServer([
+      [message('completed before compaction')],
+      [message('successor answer')],
+    ]);
     await using provider = await providerFor(server);
+    let policies = 0;
     await using session = await new Agent({
       provider,
       model: 'gpt-5.5',
@@ -315,7 +361,7 @@ nativeIt(
       compaction: responsesCompaction({
         client: clientFor(compact),
         model: 'compact',
-        shouldCompact: () => true,
+        shouldCompact: () => ++policies === 1,
       }),
     }).session();
     const turn = await session.submit('cancel target');
@@ -325,6 +371,7 @@ nativeIt(
       const cancelling = turn.cancel().then(() => {
         canceled = true;
       });
+      await aborted;
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(canceled).toBe(false);
       expect(exited).toBe(false);
@@ -335,6 +382,14 @@ nativeIt(
       expect(text(await session.saveState())).not.toContain(
         'OPAQUE_COMPLETE_WINDOW',
       );
+      expect(
+        (await (await session.submit('successor')).wait()).finalOutput,
+      ).toBe('successor answer');
+      expect(text(server.requests[1])).not.toContain('OPAQUE_COMPLETE_WINDOW');
+      expect(text(await session.saveState())).not.toContain(
+        'OPAQUE_COMPLETE_WINDOW',
+      );
+      server.assertExhausted();
     } finally {
       release();
     }

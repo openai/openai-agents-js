@@ -50,6 +50,10 @@ import {
   type RequestAttempts,
 } from './request-attempts';
 import type { ResponsesCompaction } from './responses-compaction';
+import {
+  createCompactionContext,
+  captureCompactionSummary,
+} from './compaction-callbacks';
 import { audioInputByteLimit } from './media';
 import { hostedMcpBinding } from './hosted-mcp-binding';
 import {
@@ -71,6 +75,7 @@ import {
   type InputGuardrail,
   type OutputGuardrail,
 } from './guardrails';
+import { settleOutputGuardrails } from './output-guardrails';
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
@@ -9069,48 +9074,18 @@ export class Session<OutputT = string, Context = unknown> {
     if (!guards.length) return;
     const scope = this.decisionScope(message, request.signal);
     try {
-      const settled = await Promise.allSettled(
-        guards.map(async (guard) => {
-          check();
-          const result = captureGuardrailResult(
-            await guard.callback(
-              Object.freeze({
-                ...request,
-                finalOutput: structuredClone(request.finalOutput),
-                decide: scope.decide,
-              }),
-              agent,
-            ),
-          );
-          check();
-          return Object.freeze({
-            kind: 'output' as const,
-            name: guard.name,
-            result,
+      await settleOutputGuardrails({
+        guards,
+        agent,
+        request,
+        guardrailResults: owner.guardrailResults,
+        invoke: (guard, finalOutput) =>
+          guard.callback(
+            Object.freeze({ ...request, finalOutput, decide: scope.decide }),
             agent,
-            sessionId: request.sessionId,
-            turnId: request.turnId,
-            ...(request.subagentId ? { subagentId: request.subagentId } : {}),
-            ...(request.toolCall ? { toolCall: request.toolCall } : {}),
-            ...(request.toolBatchCallIds
-              ? { toolBatchCallIds: request.toolBatchCallIds }
-              : {}),
-          });
-        }),
-      );
-      const records = settled.flatMap((entry) =>
-        entry.status === 'fulfilled' ? [entry.value] : [],
-      );
-      owner.guardrailResults.push(...records);
-      const failed = settled.find((entry) => entry.status === 'rejected');
-      if (failed?.status === 'rejected') throw failed.reason;
-      check();
-      const tripped = records.find((record) => record.result.tripwireTriggered);
-      if (tripped)
-        throw new GuardrailTripwire(
-          tripped,
-          Object.freeze([...owner.guardrailResults]),
-        );
+          ),
+        check,
+      });
     } finally {
       await scope.close();
     }
@@ -9523,124 +9498,42 @@ export class Session<OutputT = string, Context = unknown> {
                 return;
               }
             } else if (compact) {
-              const items = z.array(losslessJsonObjectSchema).parse(msg.items);
-              const context = Object.freeze({
-                ...base,
-                items: Object.freeze(items),
-                requestId: z.string().parse(msg.request_id),
-                automatic: z.boolean().parse(msg.automatic),
-              });
+              const context = createCompactionContext(base, msg);
               if (compaction !== undefined) {
                 const budget =
                   owner instanceof NativeTurn
                     ? owner.selection?.budget
                     : undefined;
                 try {
-                  let providerResponse:
-                    { response_id: string; model?: string } | undefined;
-                  if (
-                    transformContext === undefined &&
-                    msg.provider_response != null &&
-                    compaction.mode !== 'input'
-                  ) {
-                    const loading = compaction.loadClientEntrypoint();
-                    if (loading !== undefined) {
-                      await loading;
-                      check();
-                    }
-                    if (
-                      compaction.matchesProvider(
-                        this.#modelApiKey,
-                        this.threadOptions.config,
-                      )
-                    )
-                      providerResponse = z
-                        .object({
-                          response_id: z.string().trim().min(1),
-                          model: z.string().trim().min(1).optional(),
-                        })
-                        .strict()
-                        .parse(msg.provider_response);
-                  }
-                  const prepared = compaction.prepareContext(
+                  const result = await compaction.evaluateCapturedRequest(
                     context,
-                    z
-                      .array(z.number().int().nonnegative())
-                      .parse(msg.candidate_indexes),
-                    providerResponse,
-                    z.boolean().parse(msg.model_omitted),
-                  );
-                  if (compactPolicy) {
-                    const admitted =
-                      compaction.shouldCompact === undefined
-                        ? prepared.candidates.length >= 10
-                        : await compaction.shouldCompact(prepared);
-                    if (typeof admitted !== 'boolean')
-                      throw new TypeError(
-                        'shouldCompact must return a boolean',
-                      );
-                    check();
-                    reply({ admitted });
-                  } else {
-                    let canonicalItems: typeof prepared.items | undefined;
-                    let requestContext = prepared;
-                    if (prepared.mode === 'input' && transformContext) {
-                      canonicalItems = JSON.parse(
-                        JSON.stringify(
-                          prepared.items.filter(
-                            (item) =>
-                              item.type === 'message' &&
-                              (item.role === 'developer' ||
-                                item.role === 'system'),
-                          ),
+                    {
+                      policy: compactPolicy,
+                      providerResponse: msg.provider_response,
+                      candidateIndexes: msg.candidate_indexes,
+                      modelOmitted: msg.model_omitted,
+                    },
+                    {
+                      assertCurrent: check,
+                      matchesCurrentProvider: () =>
+                        compaction.matchesProvider(
+                          this.#modelApiKey,
+                          this.threadOptions.config,
                         ),
-                      ) as typeof prepared.items;
-                      const replacement = await transformContext(
-                        Object.freeze({
-                          ...base,
-                          model: prepared.model,
-                          items: prepared.items,
-                          requestId: prepared.requestId,
-                          purpose: 'compaction' as const,
-                        }),
-                      );
-                      check();
-                      if (replacement !== undefined)
-                        requestContext = Object.freeze({
-                          ...prepared,
-                          items: Object.freeze(
-                            z
-                              .array(losslessJsonObjectSchema)
-                              .parse(replacement),
-                          ),
-                        });
-                    }
-                    if (
-                      prepared.mode === 'previous_response_id' &&
-                      !compaction.matchesProvider(
-                        this.#modelApiKey,
-                        this.threadOptions.config,
-                      )
-                    )
-                      throw new TypeError(
-                        'Compaction client provider scope changed before dispatch',
-                      );
-                    const window = await compaction.requestWindow(
-                      requestContext,
-                      providerResponse,
-                      (usage) => {
+                      transformContext,
+                      observeUsage: (usage) => {
                         const report = captureUsageReport(usage);
                         this.addOwnerUsage(owner, report);
                         budget?.observe(
                           usage === null ? undefined : report.raw,
                         );
                       },
-                      canonicalItems,
-                      () => this.markBorrowedRequestAttempts(owner),
-                    );
-                    check();
-                    reply({ window });
-                  }
+                      markDispatch: () =>
+                        this.markBorrowedRequestAttempts(owner),
+                    },
+                  );
+                  check();
+                  reply(result);
                 } catch (error) {
                   check();
                   if (!compactPolicy && msg.optional !== true) throw error;
@@ -9650,14 +9543,9 @@ export class Session<OutputT = string, Context = unknown> {
               } else if (compactPolicy) {
                 reply({});
               } else {
-                const settled = await beforeCompact?.(context);
-                if (
-                  settled !== undefined &&
-                  (typeof settled !== 'string' || !settled.trim())
-                )
-                  throw new TypeError(
-                    'beforeCompact must return a nonempty summary or undefined',
-                  );
+                const settled = captureCompactionSummary(
+                  await beforeCompact?.(context),
+                );
                 check();
                 reply(settled === undefined ? {} : { summary: settled });
               }
