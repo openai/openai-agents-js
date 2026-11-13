@@ -1,17 +1,30 @@
+import { z } from 'zod';
+import { losslessJsonObjectSchema } from './binding';
 import type { RecordedRequestUsage } from './history';
 import type { CapturedModelAttempt } from './model-attempts';
 import {
+  addRunUsage,
+  nonnegativeTokenCountWireSchema,
   parseTokenCount,
   runUsageSnapshot,
   type RunUsage,
   type TokenCount,
 } from './run-events';
 
-/** Passive projection of settled SDK attempts; external client retries stay opaque. */
+const providerRequests = z.array(
+  z.object({
+    request_id: z.string().min(1),
+    request_ordinal: nonnegativeTokenCountWireSchema,
+    token_usage: losslessJsonObjectSchema.nullable(),
+  }),
+);
+
+/** Project observed native requests; retries hidden inside external clients stay opaque. */
 export class RecordedRequestUsageProjection {
   readonly entries: RecordedRequestUsage[] = [];
   private complete = true;
   private readonly owners = new Map<string, RunUsage>();
+  private readonly physical = new Map<string, Map<string, number>>();
   private readonly ids = new Map<string, Set<string>>();
   private readonly settled = new Map<
     string,
@@ -38,7 +51,13 @@ export class RecordedRequestUsageProjection {
     if (!value || typeof value !== 'object' || !('phase' in value)) return;
     if (captured.wire.provider_managed === true) {
       if (typeof threadId === 'string') this.active.delete(threadId);
-      this.complete = false;
+      if (value.phase === 'finished')
+        this.observeProviderRequests(
+          'provider_requests' in value ? value.provider_requests : undefined,
+          captured,
+          threadId,
+          turnId,
+        );
       return;
     }
     const id = 'attempt_id' in value ? value.attempt_id : undefined;
@@ -155,6 +174,90 @@ export class RecordedRequestUsageProjection {
     });
   }
 
+  private observeProviderRequests(
+    value: unknown,
+    captured: CapturedModelAttempt,
+    threadId: unknown,
+    turnId: unknown,
+  ): void {
+    const owner = captured.ownerAttemptId;
+    const parsed = providerRequests.safeParse(value);
+    if (
+      !parsed.success ||
+      owner === null ||
+      typeof threadId !== 'string' ||
+      !threadId ||
+      typeof turnId !== 'string' ||
+      !turnId
+    ) {
+      this.complete = false;
+      return;
+    }
+    const requests = this.physical.get(owner) ?? new Map();
+    this.physical.set(owner, requests);
+    for (const request of parsed.data) {
+      const id = request.request_id;
+      const index = requests.get(id);
+      const ordinal = BigInt(request.request_ordinal);
+      const measured = request.token_usage;
+      const usage = runUsageSnapshot(
+        measured === null ? null : addRunUsage(null, measured),
+      );
+      const entry: RecordedRequestUsage = {
+        scope: 'provider_request',
+        threadId,
+        turnId,
+        ownerAttemptId: owner,
+        attemptId: id,
+        requestOrdinal: parseTokenCount(ordinal),
+        tokenUsageKnown: measured !== null,
+        inputTokens: usage.inputTokens,
+        inputTokensDetails: {
+          cachedTokens: usage.cachedInputTokens,
+          ...(measured !== null && 'cache_write_input_tokens' in measured
+            ? { cacheWriteTokens: usage.cacheWriteInputTokens }
+            : {}),
+        },
+        outputTokens: usage.outputTokens,
+        outputTokensDetails: { reasoningTokens: usage.reasoningOutputTokens },
+        totalTokens: usage.totalTokens,
+      };
+      if (index === undefined) {
+        if (ordinal !== BigInt(requests.size) + 1n) {
+          this.complete = false;
+          continue;
+        }
+        requests.set(id, this.entries.length);
+        this.entries.push(entry);
+        continue;
+      }
+      const prior = this.entries[index];
+      if (
+        prior.threadId !== threadId ||
+        prior.turnId !== turnId ||
+        BigInt(prior.requestOrdinal) !== ordinal
+      ) {
+        this.complete = false;
+      } else if (!prior.tokenUsageKnown && entry.tokenUsageKnown) {
+        this.entries[index] = entry;
+      } else if (
+        prior.tokenUsageKnown &&
+        entry.tokenUsageKnown &&
+        (prior.inputTokens !== entry.inputTokens ||
+          prior.inputTokensDetails.cachedTokens !==
+            entry.inputTokensDetails.cachedTokens ||
+          prior.inputTokensDetails.cacheWriteTokens !==
+            entry.inputTokensDetails.cacheWriteTokens ||
+          prior.outputTokens !== entry.outputTokens ||
+          prior.outputTokensDetails.reasoningTokens !==
+            entry.outputTokensDetails.reasoningTokens ||
+          prior.totalTokens !== entry.totalTokens)
+      ) {
+        this.complete = false;
+      }
+    }
+  }
+
   isComplete(
     owners: Iterable<CapturedModelAttempt>,
     legacyRequests: number | bigint,
@@ -162,7 +265,48 @@ export class RecordedRequestUsageProjection {
     if (!this.complete || BigInt(legacyRequests) !== 0n) return false;
     let requests = 0n;
     for (const captured of owners) {
-      if (captured.wire.provider_managed === true) return false;
+      if (captured.wire.provider_managed === true) {
+        const managed =
+          captured.ownerAttemptId === null
+            ? undefined
+            : this.physical.get(captured.ownerAttemptId);
+        const usage = captured.usage;
+        if (!managed || BigInt(managed.size) !== BigInt(usage.requests))
+          return false;
+        const measured = {
+          inputTokens: 0n,
+          cachedInputTokens: 0n,
+          cacheWriteInputTokens: 0n,
+          outputTokens: 0n,
+          reasoningOutputTokens: 0n,
+          totalTokens: 0n,
+          missingUsageRequests: 0n,
+        };
+        for (const index of managed.values()) {
+          const entry = this.entries[index];
+          measured.inputTokens += BigInt(entry.inputTokens);
+          measured.cachedInputTokens += BigInt(
+            entry.inputTokensDetails.cachedTokens,
+          );
+          measured.cacheWriteInputTokens += BigInt(
+            entry.inputTokensDetails.cacheWriteTokens ?? 0,
+          );
+          measured.outputTokens += BigInt(entry.outputTokens);
+          measured.reasoningOutputTokens += BigInt(
+            entry.outputTokensDetails.reasoningTokens,
+          );
+          measured.totalTokens += BigInt(entry.totalTokens);
+          measured.missingUsageRequests += entry.tokenUsageKnown ? 0n : 1n;
+        }
+        if (
+          (Object.keys(measured) as Array<keyof typeof measured>).some(
+            (key) => measured[key] !== BigInt(usage[key]),
+          )
+        )
+          return false;
+        requests += BigInt(usage.requests);
+        continue;
+      }
       const settled =
         captured.ownerAttemptId === null
           ? undefined

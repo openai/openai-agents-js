@@ -78,9 +78,9 @@ export interface RecordedTokenUsageWire {
   totalTokens: TokenCountWire;
 }
 
-/** One settled SDK model attempt; opaque client retries are not separate entries. */
+/** One SDK-managed model attempt or native hosted transport request. */
 export interface RecordedRequestUsage extends RecordedTokenUsage {
-  scope: 'sdk_model_attempt';
+  scope: 'sdk_model_attempt' | 'provider_request';
   threadId: string;
   turnId: string;
   ownerAttemptId: string;
@@ -231,7 +231,7 @@ const recordedUsageWireSchema = z.strictObject({
   totalTokens: nonnegativeTokenCountWireSchema,
 });
 const recordedRequestUsageWireSchema = recordedUsageWireSchema.extend({
-  scope: z.literal('sdk_model_attempt'),
+  scope: z.enum(['sdk_model_attempt', 'provider_request']),
   threadId: z.string().min(1),
   turnId: z.string().min(1),
   ownerAttemptId: z.string().min(1),
