@@ -2073,7 +2073,11 @@ impl TurnLifecycleContributor for Contributor {
                 .thread
                 .upgrade()
                 .ok_or("Native Agent thread is closed")?;
-            let workspace = if source.declaration.workspace_preparation {
+            let destination = profiles
+                .profiles
+                .get(&target_id)
+                .ok_or("Accepted handoff target is outside the graph")?;
+            let workspace = if destination.declaration.workspace_preparation {
                 let captured = thread
                     .captured_agent_profile()
                     .await

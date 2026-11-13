@@ -4,7 +4,7 @@ import {
   type EnvironmentAcquisition,
 } from './environment-source';
 
-/** Captured declarations have been opening their own resources before native admission. */
+/** @internal Open captured resources before native admission. */
 export async function acquireProfileEnvironments(
   profiles: readonly CapturedAgentProfile<any, any>[],
   root: EnvironmentAcquisition,
@@ -16,6 +16,10 @@ export async function acquireProfileEnvironments(
     if (index !== 0 && source !== undefined) {
       owner = await acquireEnvironment(source, root.signal);
       await root.adoptProfile(owner);
+      if (owner.hasSandboxMemory)
+        throw new TypeError(
+          'Sandbox memory requires the root Environment acquisition',
+        );
     }
     root.signal.throwIfAborted();
     owners.set(profile.id, owner);

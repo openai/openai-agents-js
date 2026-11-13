@@ -452,3 +452,69 @@ it('has been retaining the source workspace when a later fatal sibling prevents 
   ).rejects.toMatchObject({ code: 'ENOENT' });
   expect(server.requests).toHaveLength(1);
 });
+
+it.each(['handoff', 'idle'] as const)(
+  'prepares the destination workspace when transferring between different owners (%s)',
+  async (mode) => {
+    const server = new ModelServer(
+      mode === 'handoff'
+        ? [
+            [call('transfer_to_external', {}, { callId: 'to-external' })],
+            [call('transfer_to_receiver', {}, { callId: 'to-receiver' })],
+            [call('inspect_workspace', {}, { callId: 'receiver-read' })],
+            [message('receiver complete')],
+          ]
+        : [[message('external complete')], [message('receiver complete')]],
+    );
+    await using provider = await providerFor(server);
+    const scope = ownedSource();
+    const receiver = new Agent({
+      name: 'receiver',
+      instructions: 'RECEIVER_BASE',
+      model: 'gpt-5.5',
+    });
+    const external = new Agent({
+      name: 'external',
+      instructions: 'EXTERNAL_BASE',
+      model: 'gpt-5.5',
+      environment: new Environment({
+        url: peer.url,
+        headers: peer.headers,
+        cwd: peer.cwd,
+        tools: [],
+      }),
+      handoffs: [receiver],
+    });
+    const root = new Agent({
+      name: 'root',
+      instructions: 'ROOT_BASE',
+      model: 'gpt-5.5',
+      provider,
+      handoffs: [external, receiver],
+    });
+    await using session = await root.session({ environment: scope.source });
+    if (mode === 'idle') {
+      await session.update({ agent: external });
+      expect(
+        (await (await session.submit('External.')).wait()).finalOutput,
+      ).toBe('external complete');
+      expect(scope.writes).toEqual([]);
+      await session.update({ agent: receiver });
+    }
+    expect((await (await session.submit('Transfer.')).wait()).finalOutput).toBe(
+      'receiver complete',
+    );
+    const externalRequest = server.requests[mode === 'handoff' ? 1 : 0];
+    const receiverRequest = server.requests[mode === 'handoff' ? 2 : 1];
+    expect(JSON.stringify(externalRequest.input)).toContain('EXTERNAL_BASE');
+    expect(JSON.stringify(externalRequest.input)).not.toContain(
+      'destination-a.txt',
+    );
+    expect(JSON.stringify(receiverRequest.input)).toContain('RECEIVER_BASE');
+    expect(JSON.stringify(receiverRequest.input)).toContain(
+      'destination-a.txt',
+    );
+    expect(scope.writes).toEqual(['destination-a.txt', 'destination-b.txt']);
+    server.assertExhausted();
+  },
+);

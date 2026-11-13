@@ -41,6 +41,7 @@ export interface AgentProfileRuntime {
 }
 export interface CapturedAgentGraph {
   readonly rootId: string;
+  /** @internal Captured resources are confined to their owning runtime. */
   readonly environments?: ReadonlyMap<
     string,
     import('./environment-source').EnvironmentAcquisition

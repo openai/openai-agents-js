@@ -14345,7 +14345,12 @@ export class Session<OutputT = string, Context = unknown> {
         );
       return this.mutate(async () => {
         await this.refreshProfileBindings();
-        const workspace = this.options.agentGraph!.workspace;
+        const graph = this.options.agentGraph!;
+        const workspace = graph.roster.some(
+          (row) => row.id === target && row.workspace_preparation === true,
+        )
+          ? graph.workspace
+          : undefined;
         const expected = this.profileCurrent!;
         const check = () => {
           if (
