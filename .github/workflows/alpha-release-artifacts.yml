@@ -2,7 +2,10 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness, 'ci/native-bundle/**']
+    branches:
+      - feat/codex-harness
+      - 'ci/native-bundle/**'
+      - ci/hillclimb/js-current-seed-41
     paths-ignore:
       - '**/*.md'
       - '**/*.mdx'
@@ -47,7 +50,21 @@ jobs:
         id: select
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/select-native-bundles.mjs
+        run: |
+          if [ "$GITHUB_REPOSITORY" = openai/openai-agents-js ] && [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/ci/hillclimb/js-current-seed-41 ]; then
+            node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import { nativeInputs } from './scripts/native-bundle-inputs.mjs';
+          import { nativePlatforms } from './scripts/verified-native-bundle.mjs';
+          appendFileSync(process.env.GITHUB_OUTPUT, 'inputs_hash=' + nativeInputs() + '\n');
+          for (const [key, platform] of Object.entries(nativePlatforms)) {
+            appendFileSync(process.env.GITHUB_OUTPUT, key + '_hit=false\n');
+            console.log(platform + ': Forced current-source native build for cold benchmark.');
+          }
+          NODE
+          else
+            node scripts/select-native-bundles.mjs
+          fi
       - name: Publish native bundle (linux-x64)
         id: upload_linux
         if: steps.select.outputs.linux_hit == 'true'
@@ -200,7 +217,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
-          cache: pnpm
+          cache: ${{ matrix.platform != 'darwin-arm64' && 'pnpm' || '' }}
       - name: Build the current SDK
         id: build_sdk
         run: |
