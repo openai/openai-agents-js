@@ -25,6 +25,7 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
     ];
     const totals = [undefined, 0, 15, 22, 22];
     const snapshots: (number | undefined)[] = [];
+    const accounting: [number, number][] = [];
     const steps: RealtimeStep[] = [
       {
         expect: 'session.update',
@@ -41,6 +42,7 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
         type: 'response.done',
         response: {
           id: `r${index}`,
+          status: index === 3 ? 'cancelled' : 'completed',
           ...(usage === undefined
             ? {}
             : { usage: { ...usage, vendor_counter: index } }),
@@ -83,6 +85,22 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
             expect(event.usage).toEqual(values[index]);
             expect(event.cumulativeUsage).toEqual(session.realtimeUsage);
             snapshots.push(event.cumulativeUsage?.total_tokens);
+            expect(voice.usageAccounting).toEqual({
+              finishedResponses: index + 1,
+              usageReports: values
+                .slice(0, index + 1)
+                .filter((value) => value !== undefined).length,
+            });
+            if (!event.usageAccounting)
+              throw new Error('Missing response accounting');
+            expect(event.usageAccounting).toEqual(voice.usageAccounting);
+            expect(session.realtimeUsageAccounting).toEqual(
+              voice.usageAccounting,
+            );
+            accounting.push([
+              event.usageAccounting.finishedResponses,
+              event.usageAccounting.usageReports,
+            ]);
             break;
           }
         }
@@ -94,7 +112,87 @@ it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
     }
     expect(session.realtimeUsage).toBeUndefined();
     expect(voice.usage?.total_tokens).toBe(22);
+    expect(session.realtimeUsageAccounting).toBeUndefined();
+    expect(voice.usageAccounting).toEqual({
+      finishedResponses: 5,
+      usageReports: 3,
+    });
+    expect(accounting).toEqual([
+      [1, 0],
+      [2, 1],
+      [3, 2],
+      [4, 3],
+      [5, 3],
+    ]);
     expect(snapshots).toEqual(totals);
     adapter.assertComplete();
+  },
+);
+
+it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
+  'keeps observer accounting snapshots detached from other observers',
+  async () => {
+    const adapter = new ScriptedRealtimeAdapter([
+      {
+        expect: 'session.update',
+        emit: (frame) => [
+          {
+            type: 'session.updated',
+            session: { ...(frame.session as object), id: 'fixture' },
+          },
+        ],
+      },
+      { expect: 'conversation.item.create' },
+      {
+        expect: 'response.create',
+        emit: [
+          { type: 'response.created', response: { id: 'r1' } },
+          {
+            type: 'response.done',
+            response: {
+              id: 'r1',
+              status: 'completed',
+              usage: { total_tokens: 1 },
+            },
+          },
+        ],
+      },
+    ]);
+    await using provider = new NativeProvider({
+      baseUrl: 'http://127.0.0.1:1/v1',
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    await using session = await new Agent({
+      instructions: 'Speak.',
+      provider,
+    }).session();
+    const voice = await session.realtime({ model: 'fixture', adapter });
+    const observed: number[] = [];
+    voice.on('response', (event) => {
+      if (event.status === 'done') {
+        expect(event.runContext?.realtimeUsageAccounting).toBeDefined();
+        Reflect.set(
+          event.runContext!.realtimeUsageAccounting!,
+          'finishedResponses',
+          999,
+        );
+      }
+    });
+    voice.on('response', (event) => {
+      if (event.status === 'done')
+        observed.push(
+          event.runContext!.realtimeUsageAccounting!.finishedResponses,
+        );
+    });
+    try {
+      await voice.sendText('hello');
+      for await (const event of voice.events())
+        if (event.type === 'response' && event.status === 'done') break;
+      expect(voice.usageAccounting.finishedResponses).toBe(1);
+      expect(observed).toEqual([1]);
+    } finally {
+      await voice.close();
+    }
   },
 );

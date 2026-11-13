@@ -1,0 +1,254 @@
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/readiness.rs
+@@ -517,6 +517,10 @@
+         &self,
+         options: &super::settings::RealtimeResponseOptions,
+     ) -> Result<(), ApiError> {
++        if options.provider_data.is_some() {
++            super::settings::response_create_json(options)
++                .map_err(|error| invalid(&error.to_string()))?;
++        }
+         if options.tools.is_none() && options.tool_choice.is_none() {
+             return Ok(());
+         }
+diff --git a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
+--- a/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
++++ b/codex-rs/codex-api/src/endpoint/realtime_websocket/settings.rs
+@@ -17,7 +17,28 @@
+ }
+
+ pub(super) fn response_create_json(options: &RealtimeResponseOptions) -> serde_json::Result<Value> {
+-    let mut response = Map::new();
++    let mut response = provider_extensions(
++        options.provider_data.as_ref(),
++        &[
++            "type",
++            "id",
++            "event_id",
++            "conversation",
++            "input",
++            "instructions",
++            "output_modalities",
++            "output_modality",
++            "max_output_tokens",
++            "metadata",
++            "parallel_tool_calls",
++            "reasoning",
++            "prompt",
++            "audio",
++            "audio_output",
++            "tools",
++            "tool_choice",
++        ],
++    )?;
+     put(&mut response, "conversation", &options.conversation)?;
+     put(&mut response, "input", &options.input)?;
+     if let Some(tools) = &options.tools {
+@@ -72,6 +93,20 @@
+         event["response"] = Value::Object(response);
+     }
+     Ok(event)
++}
++
++fn provider_extensions(
++    data: Option<&std::collections::BTreeMap<String, Value>>,
++    managed: &[&str],
++) -> serde_json::Result<Map<String, Value>> {
++    let Some(data) = data else {
++        return Ok(Map::new());
++    };
++    codex_protocol::realtime_settings::validate_provider_extensions(data, managed)?;
++    Ok(data
++        .iter()
++        .map(|(name, value)| (name.clone(), value.clone()))
++        .collect())
+ }
+
+ fn format_value(format: RealtimeAudioFormat) -> Value {
+@@ -141,6 +176,35 @@
+     session: &mut Map<String, Value>,
+ ) -> serde_json::Result<()> {
+     validate(settings)?;
++    session.extend(provider_extensions(
++        settings.provider_data.as_ref(),
++        &[
++            "type",
++            "id",
++            "event_id",
++            "model",
++            "instructions",
++            "output_modalities",
++            "output_modality",
++            "audio",
++            "tools",
++            "function_tools",
++            "hosted_mcp_tools",
++            "tool_choice",
++            "prompt",
++            "tracing",
++            "max_output_tokens",
++            "parallel_tool_calls",
++            "reasoning",
++            "input_format",
++            "output_format",
++            "output_voice",
++            "output_speed",
++            "turn_detection",
++            "noise_reduction",
++            "transcription",
++        ],
++    )?);
+     put(session, "tool_choice", &settings.tool_choice)?;
+     put(session, "prompt", &settings.prompt)?;
+     put(session, "tracing", &settings.tracing)?;
+diff --git a/codex-rs/core/src/realtime_conversation/provider_history.rs b/codex-rs/core/src/realtime_conversation/provider_history.rs
+--- a/codex-rs/core/src/realtime_conversation/provider_history.rs
++++ b/codex-rs/core/src/realtime_conversation/provider_history.rs
+@@ -8,6 +8,7 @@
+ use serde_json::Value;
+ use sha2::Digest;
+ use sha2::Sha256;
++use std::collections::BTreeMap;
+ use std::collections::VecDeque;
+ const LIMIT: usize = 4096;
+ const ID_BYTES: usize = 512;
+@@ -322,17 +323,35 @@
+                 "input_audio" => &["type", "audio", "transcript"],
+                 _ => &["type", "text"],
+             };
+-            Value::Object(
+-                names
+-                    .iter()
+-                    .filter_map(|name| {
+-                        part.get(*name)
+-                            .map(|value| ((*name).to_owned(), value.clone()))
+-                    })
+-                    .collect(),
+-            )
++            let mut wire = serde_json::Map::new();
++            if part["type"] == "input_image"
++                && let Some(data) = part.get("provider_data")
++            {
++                let extensions: BTreeMap<String, Value> = serde_json::from_value(data.clone())
++                    .map_err(|_| invalid("Invalid Realtime image provider extensions"))?;
++                codex_protocol::realtime_settings::validate_provider_extensions(
++                    &extensions,
++                    &[
++                        "type",
++                        "id",
++                        "event_id",
++                        "image_url",
++                        "image",
++                        "file_id",
++                        "detail",
++                        "status",
++                    ],
++                )
++                .map_err(|_| invalid("Invalid Realtime image provider extensions"))?;
++                wire.extend(extensions);
++            }
++            wire.extend(names.iter().filter_map(|name| {
++                part.get(*name)
++                    .map(|value| ((*name).to_owned(), value.clone()))
++            }));
++            Ok(Value::Object(wire))
+         })
+-        .collect::<Vec<_>>();
++        .collect::<CodexResult<Vec<_>>>()?;
+     Ok(
+         serde_json::json!({"id": item["id"], "type": "message", "role": item["role"], "content": parts}),
+     )
+diff --git a/codex-rs/core/src/realtime_conversation/raw_event.rs b/codex-rs/core/src/realtime_conversation/raw_event.rs
+--- a/codex-rs/core/src/realtime_conversation/raw_event.rs
++++ b/codex-rs/core/src/realtime_conversation/raw_event.rs
+@@ -74,6 +74,7 @@
+ #[derive(Default, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ struct Response {
++    provider_data: Option<BTreeMap<String, Value>>,
+     conversation: Option<RealtimeResponseConversation>,
+     input: Option<Vec<Value>>,
+     instructions: Option<String>,
+@@ -160,6 +161,7 @@
+         }
+     }
+     Ok(RealtimeResponseOptions {
++        provider_data: response.provider_data,
+         conversation: response.conversation,
+         input: response.input,
+         instructions: response.instructions,
+diff --git a/codex-rs/core/src/realtime_conversation/raw_settings.rs b/codex-rs/core/src/realtime_conversation/raw_settings.rs
+--- a/codex-rs/core/src/realtime_conversation/raw_settings.rs
++++ b/codex-rs/core/src/realtime_conversation/raw_settings.rs
+@@ -180,6 +180,7 @@
+             "max_output_tokens",
+             "parallel_tool_calls",
+             "reasoning",
++            "provider_data",
+         ],
+     )?;
+     if fields
+@@ -198,6 +199,7 @@
+         "max_output_tokens",
+         "parallel_tool_calls",
+         "reasoning",
++        "provider_data",
+     ] {
+         if let Some(value) = fields.get(name) {
+             nested(name, value)?;
+diff --git a/codex-rs/protocol/src/realtime_settings.rs b/codex-rs/protocol/src/realtime_settings.rs
+--- a/codex-rs/protocol/src/realtime_settings.rs
++++ b/codex-rs/protocol/src/realtime_settings.rs
+@@ -6,6 +6,31 @@
+ use serde_json::Value;
+
+ use crate::protocol::RealtimeOutputModality;
++
++/// Validate explicit provider extensions before they enter a managed wire object.
++pub fn validate_provider_extensions(
++    data: &BTreeMap<String, Value>,
++    managed: &[&str],
++) -> serde_json::Result<()> {
++    if data.len() > 64
++        || data.keys().any(|name| {
++            name.is_empty()
++                || name.len() > 128
++                || name.starts_with("_sdk_")
++                || matches!(
++                    name.as_str(),
++                    "provider_data" | "providerData" | "__proto__" | "constructor" | "prototype"
++                )
++                || managed.contains(&name.as_str())
++        })
++        || serde_json::to_vec(data)?.len() > 64 * 1024
++    {
++        return Err(serde::ser::Error::custom(
++            "Invalid Realtime provider extensions",
++        ));
++    }
++    Ok(())
++}
+
+ // serde's ordinary nested Option decoding collapses a present null into None.
+ fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+@@ -175,6 +200,9 @@
+ /// Optional initial overrides and sparse updates. Nullable fields distinguish omission from disabling.
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ pub struct RealtimeV2SessionSettings {
++    /// Additional top-level provider fields. The wire owner rejects managed names.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub provider_data: Option<BTreeMap<String, Value>>,
+     #[serde(
+         default,
+         skip_serializing_if = "Option::is_none",
+@@ -257,6 +285,9 @@
+ #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+ #[serde(default, deny_unknown_fields)]
+ pub struct RealtimeResponseOptions {
++    /// Additional top-level provider fields for this response only.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub provider_data: Option<BTreeMap<String, Value>>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub instructions: Option<String>,
+     #[serde(skip_serializing_if = "Option::is_none")]

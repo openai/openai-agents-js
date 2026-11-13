@@ -127,6 +127,7 @@ class HistoryPeer {
     );
   }
 }
+
 async function providerFor(model: ModelServer) {
   const config = await model.config();
   return new NativeProvider({
@@ -4352,6 +4353,106 @@ nativeIt(
           arguments: item.arguments,
           output: `found:${JSON.parse(item.arguments).key}`,
         });
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'forwards bounded provider extensions through native session, image and response ownership',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    const vendor = {
+      fixture_vendor: { enabled: false, threshold: 0 },
+      fixture_null: null,
+    };
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Preserve approved provider settings.',
+      }).session();
+      const sip = await session.buildRealtimeSipConfig({
+        model: 'fixture-realtime',
+        settings: { providerData: vendor },
+      });
+      expect(sip).toMatchObject(vendor);
+      await using voice = await session.realtime({
+        model: 'fixture-realtime',
+        settings: { providerData: vendor },
+      });
+      expect((await peer.frame('session.update')).session).toMatchObject(
+        vendor,
+      );
+      let after = peer.frames.length;
+      await voice.update({ providerData: { fixture_vendor: null } });
+      expect(
+        (await peer.frame('session.update', after)).session.fixture_vendor,
+      ).toBeNull();
+      after = peer.frames.length;
+      const sent = voice.sendMessage(
+        {
+          type: 'message',
+          role: 'user',
+          content: [
+            { type: 'input_image', image: PNG_IMAGE, providerData: vendor },
+          ],
+        },
+        { triggerResponse: false },
+      );
+      const item = (await peer.frame('conversation.item.create', after)).item;
+      expect(item.content).toEqual([
+        { type: 'input_image', image_url: PNG_IMAGE, ...vendor },
+      ]);
+      peer.send({
+        type: 'conversation.item.added',
+        previous_item_id: null,
+        item,
+      });
+      peer.send({
+        type: 'conversation.item.done',
+        item: { ...item, status: 'completed' },
+      });
+      await sent;
+      expect(
+        peer.frames
+          .slice(after)
+          .some((frame) => frame.type === 'response.create'),
+      ).toBe(false);
+      after = peer.frames.length;
+      await expect(
+        voice.requestResponse({ providerData: { tools: [] } }),
+      ).rejects.toThrow(/provider extensions/);
+      await expect(
+        voice.update({ providerData: { audio: {} } }),
+      ).rejects.toThrow(/provider extensions/);
+      await expect(
+        voice.sendMessage({
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_image',
+              image: PNG_IMAGE,
+              providerData: { image_url: 'other' },
+            },
+          ],
+        }),
+      ).rejects.toThrow(/image provider extensions/);
+      expect(peer.frames.slice(after)).toEqual([]);
+      await voice.requestResponse({
+        outputModality: 'text',
+        providerData: vendor,
+      });
+      expect((await peer.frame('response.create', after)).response).toEqual({
+        output_modalities: ['text'],
+        metadata: { codex_response_id: expect.any(String) },
+        ...vendor,
+      });
     } finally {
       await peer.close();
       await ModelServer.closeAll();

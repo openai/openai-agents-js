@@ -8,6 +8,7 @@ import {
   addRealtimeUsage,
   reportedRealtimeUsage,
   type NativeRealtimeUsage,
+  type NativeRealtimeUsageAccounting,
 } from './realtime-usage';
 import {
   captureRealtimeGuardrails,
@@ -44,7 +45,7 @@ export type {
   NativeRealtimePlaybackPosition,
 } from './realtime-playback';
 
-/** User-only text and inline image references; provider fields and file IDs are unsupported. */
+/** User-only text and inline image references; file IDs are unsupported. */
 export type NativeRealtimeUserInput =
   | string
   | {
@@ -56,6 +57,8 @@ export type NativeRealtimeUserInput =
             readonly type: 'input_image';
             readonly image: string;
             readonly detail?: 'auto' | 'low' | 'high';
+            /** Extra provider image fields; image identity and payload stay reserved. */
+            readonly providerData?: RealtimeProviderObject;
           }
       )[];
     };
@@ -148,6 +151,8 @@ export type NativeRealtimeResponseOptions = {
   readonly instructions?: string;
   readonly outputModality?: 'audio' | 'text';
   readonly maxOutputTokens?: number | 'inf';
+  /** Extra provider wire fields for this response only. */
+  readonly providerData?: RealtimeProviderObject;
 };
 
 /** @internal Both connection admission and SIP acceptance use Core's config builder. */
@@ -300,6 +305,7 @@ export type NativeRealtimeEvent =
       usage?: NativeRealtimeUsage;
       /** Connection total at this event, including this accepted response. */
       cumulativeUsage?: NativeRealtimeUsage;
+      readonly usageAccounting?: NativeRealtimeUsageAccounting;
       readonly runContext?: NativeRealtimePolicyContext;
     }
   | {
@@ -812,7 +818,13 @@ class NativeRealtimeOwner {
     const result = await this.#context(() =>
       this.session._runVoiceCallback(() => {
         const result = predicate(
-          Object.freeze({ agent, context, realtimeUsage: this.usage, signal }),
+          Object.freeze({
+            agent,
+            context,
+            realtimeUsage: this.usage,
+            realtimeUsageAccounting: this.usageAccounting,
+            signal,
+          }),
           Object.freeze({ type, name }),
         );
         asynchronous = typeof result !== 'boolean';
@@ -859,6 +871,7 @@ class NativeRealtimeOwner {
                 agent,
                 context,
                 realtimeUsage: this.usage,
+                realtimeUsageAccounting: this.usageAccounting,
                 signal,
               }),
             }),
@@ -878,6 +891,16 @@ class NativeRealtimeOwner {
     return this.startupFailed;
   }
   private usageTotals?: ReturnType<typeof reportedRealtimeUsage>;
+  private finishedResponses = 0;
+  private usageReports = 0;
+
+  /** Accepted completed response and usage report counts for this connection. */
+  get usageAccounting(): NativeRealtimeUsageAccounting {
+    return {
+      finishedResponses: this.finishedResponses,
+      usageReports: this.usageReports,
+    };
+  }
   /** Sum of observed speech-model counts; excludes backend thread usage.
    * May be partial when responses omit usage or close precedes a terminal event.
    */
@@ -921,6 +944,7 @@ class NativeRealtimeOwner {
       agent: source.agent,
       context: source.context,
       realtimeUsage: this.usage,
+      realtimeUsageAccounting: this.usageAccounting,
     });
   }
   private detachEvent(event: NativeRealtimeEvent): NativeRealtimeEvent {
@@ -944,6 +968,10 @@ class NativeRealtimeOwner {
                   runContext.realtimeUsage === undefined
                     ? undefined
                     : structuredClone(runContext.realtimeUsage),
+                realtimeUsageAccounting:
+                  runContext.realtimeUsageAccounting === undefined
+                    ? undefined
+                    : { ...runContext.realtimeUsageAccounting },
               }),
             }
           : {}),
@@ -1131,6 +1159,7 @@ class NativeRealtimeOwner {
             () => this.checkLive(),
             this.usage,
             raw,
+            this.usageAccounting,
           ),
         );
         this.preparation = policyPreparation;
@@ -1393,6 +1422,7 @@ class NativeRealtimeOwner {
         () => this.checkLive(),
         this.usage,
         raw,
+        this.usageAccounting,
       ),
     );
     const config =
@@ -1658,6 +1688,7 @@ class NativeRealtimeOwner {
       throw new TypeError('Realtime triggerResponse must be a boolean');
     let content: JsonObject[];
     let bytes = 0;
+    let hasProviderData = false;
     if (typeof message === 'string') {
       if (!message.length)
         throw new TypeError('Realtime user text must be nonempty');
@@ -1704,10 +1735,11 @@ class NativeRealtimeOwner {
           return { type, text };
         }
         if (type === 'input_image') {
-          const { image, detail } = part;
+          const { image, detail, providerData } = part;
           if (
             Object.keys(part).some(
-              (key) => !['type', 'image', 'detail'].includes(key),
+              (key) =>
+                !['type', 'image', 'detail', 'providerData'].includes(key),
             ) ||
             typeof image !== 'string' ||
             !image.length ||
@@ -1717,10 +1749,22 @@ class NativeRealtimeOwner {
               'Realtime input requires an inline image and supported detail',
             );
           remaining -= userInputBytes(image, remaining);
+          let extension: JsonObject | undefined;
+          if (providerData !== undefined) {
+            remaining -= jsonAllocationBytes(
+              providerData,
+              remaining,
+              'Realtime image provider data exceeds the input budget',
+              true,
+            );
+            extension = copyJsonValue(providerData) as JsonObject;
+            hasProviderData = true;
+          }
           return {
             type,
             image_url: image,
             ...(detail === undefined ? {} : { detail }),
+            ...(extension === undefined ? {} : { provider_data: extension }),
           };
         }
         throw new TypeError(
@@ -1730,6 +1774,16 @@ class NativeRealtimeOwner {
       bytes = USER_INPUT_BYTES_LIMIT - remaining;
     }
     await this.enqueueInput(async () => {
+      if (hasProviderData) {
+        await this.call('send_event', {
+          event: {
+            type: 'conversation.item.create',
+            item: { type: 'message', role: 'user', content },
+          },
+        });
+        if (triggerResponse ?? true) await this.call('response', {});
+        return;
+      }
       await this.call('input', {
         content,
         trigger_response: triggerResponse ?? true,
@@ -1764,14 +1818,25 @@ class NativeRealtimeOwner {
         Array.isArray(response) ||
         Object.keys(response).some(
           (key) =>
-            !['instructions', 'outputModality', 'maxOutputTokens'].includes(
-              key,
-            ),
+            ![
+              'instructions',
+              'outputModality',
+              'maxOutputTokens',
+              'providerData',
+            ].includes(key),
         )
       )
         throw new TypeError('Unsupported Realtime response options');
-      const { instructions, outputModality, maxOutputTokens } = response;
+      const { instructions, outputModality, maxOutputTokens, providerData } =
+        response;
       if (instructions !== undefined) bytes = userInputBytes(instructions);
+      if (providerData !== undefined)
+        bytes += jsonAllocationBytes(
+          providerData,
+          INPUT_QUEUE_BYTES_LIMIT - this.inputBytes - bytes,
+          'Realtime response provider data exceeds the input budget',
+          true,
+        );
       captured = {
         ...(instructions === undefined ? {} : { instructions }),
         ...(outputModality === undefined
@@ -1780,6 +1845,9 @@ class NativeRealtimeOwner {
         ...(maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: maxOutputTokens }),
+        ...(providerData === undefined
+          ? {}
+          : { provider_data: copyJsonValue(providerData) }),
       };
     }
     await this.enqueueInput(async () => {
@@ -2624,7 +2692,6 @@ class NativeRealtimeOwner {
       if (responseId && name !== 'ResponseCreated')
         this.playback.complete(responseId);
       if (!outOfBand) {
-        if (name === 'ResponseDone') this.startFunctionBatch(value);
         if (name === 'ResponseCreated') this.responseId = responseId;
         else if (!responseId || responseId === this.responseId)
           this.responseId = undefined;
@@ -2638,11 +2705,14 @@ class NativeRealtimeOwner {
         const reported = reportedRealtimeUsage(value.usage);
         this.usageTotals = addRealtimeUsage(this.usageTotals ?? {}, reported);
         reportedUsage = structuredClone(reported) as NativeRealtimeUsage;
+        this.usageReports++;
       }
+      if (name === 'ResponseDone') this.finishedResponses++;
       this.emit({
         type: 'response',
         usage: reportedUsage,
         cumulativeUsage: this.usage,
+        usageAccounting: this.usageAccounting,
         status:
           name === 'ResponseCreated'
             ? 'created'
@@ -2653,6 +2723,7 @@ class NativeRealtimeOwner {
         runContext: this.eventContext(value.profile_receipt),
         ...(outOfBand ? { outOfBand: true } : {}),
       });
+      if (name === 'ResponseDone' && !outOfBand) this.startFunctionBatch(value);
     } else if (
       [
         'InputTranscriptDelta',
@@ -3418,6 +3489,7 @@ export type NativeRealtimeSession = Pick<
   | 'providerHistory'
   | 'on'
   | 'usage'
+  | 'usageAccounting'
   | 'callId'
   | 'answerSdp'
   | 'reportPlayback'
