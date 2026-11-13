@@ -56,6 +56,7 @@ import {
 } from './decisions';
 import {
   captureProfileRuntimes,
+  assertRestoredInstructionContent,
   profileRoster,
   parseProfileReceipt,
   checkPortableProfileReceipt,
@@ -1534,6 +1535,12 @@ export class Agent<Context = undefined, Output = string> {
             instructions: baseInstructions,
             files: opening?.instructionFiles ?? [],
           };
+    if (budgetState && profiles && !hasSessionStateAuthority(budgetState))
+      await assertRestoredInstructionContent(
+        budgetState.history,
+        profiles,
+        instructions,
+      );
     const environmentOwner = await acquireEnvironment(
       environmentInput,
       options.signal,

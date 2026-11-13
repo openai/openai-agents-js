@@ -12,7 +12,7 @@ import { HttpMCP, StdioMCP, mcpConfig, mcpPolicies, type McpTool } from './mcp';
 import { splitToolDeclarations } from './tool-declarations';
 import { prepareOutput, type PreparedOutput } from './output';
 import type { Environment } from './environment';
-import type { JsonObject } from './binding';
+import { binding, encode, type JsonObject } from './binding';
 import { modelOverrides } from './provider';
 
 /** Immutable declarations and original identities for one native roster. */
@@ -151,6 +151,45 @@ export function encodeProfileReceipt(receipt: AgentProfileReceipt): string {
     profile_id: receipt.profile_id,
     epoch: JSON.rawJSON(profileInteger(receipt.epoch)),
   });
+}
+
+/** Require current declared content or independent authority before hiding saved instructions. */
+export async function assertRestoredInstructionContent<Context, Output>(
+  history: readonly JsonObject[],
+  profiles: readonly CapturedAgentProfile<Context, Output>[],
+  rootInstructions: string,
+): Promise<void> {
+  const expected = new Map(
+    profiles.map((profile, index) => [
+      profile.id,
+      index === 0 ? rootInstructions : (profile.declaration.instructions ?? ''),
+    ]),
+  );
+  const native = await binding();
+  for (const row of history) {
+    if (row.type !== 'response_item') continue;
+    const receipt = (row.metadata as JsonObject | undefined)
+      ?.sdk_agent_profile as JsonObject | undefined;
+    if (receipt == null) continue;
+    const declared =
+      typeof receipt.profile_id === 'string'
+        ? expected.get(receipt.profile_id)
+        : undefined;
+    // Reuse the native receipt decoder, including its tag and revision checks.
+    const saved = native._read_session_instructions(encode([row]));
+    const revision = (row.payload as JsonObject | undefined)?.id;
+    // Native SDK revisions use an opaque UUID. Other text in this model-visible
+    // header requires the same explicit authority as changed instructions.
+    const canonicalRevision =
+      typeof revision === 'string' &&
+      /^msg_sdk_application_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
+        revision,
+      );
+    if (declared === undefined || saved !== declared || !canonicalRevision)
+      throw new TypeError(
+        'Restoring changed Agent instructions requires authenticated SessionState',
+      );
+  }
 }
 
 /** Capture callbacks and schemas before opening resources; Core owns activation. */

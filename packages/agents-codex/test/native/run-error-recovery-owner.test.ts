@@ -4,11 +4,13 @@ import {
   Agent,
   GuardrailTripwire,
   Handoff,
+  InteractionRequired,
   NativeError,
   NativeProvider,
   OutputValidationError,
   RecoverRun,
   RunDiagnosticError,
+  manualTool,
   tool,
   type RunFailure,
   type Session,
@@ -480,6 +482,66 @@ it('uses the destination guardrail and model for recovery after a handoff', asyn
     'destination',
   ]);
   expect(sourceGuard).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(2);
+  server.assertExhausted();
+});
+
+it('validates synthesized output after restoring a manual checkpoint', async () => {
+  const server = new ModelServer([
+    [call('lookup', {}, { callId: 'recovered-manual' })],
+    [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'refusal', refusal: 'declined restored request' }],
+      },
+    ],
+  ]);
+  await using provider = await providerFor(server);
+  const guard = vi.fn(() => ({ tripwireTriggered: false, outputInfo: null }));
+  const agent = new Agent({
+    instructions: 'Ask lookup, then answer.',
+    provider,
+    outputGuardrails: [{ name: 'restored', callback: guard }],
+    tools: [
+      manualTool({
+        name: 'lookup',
+        description: 'Ask lookup.',
+        parameters: z.object({}),
+        result: z.string(),
+      }),
+    ],
+  });
+  const interrupted = await agent
+    .run('Original question', {
+      captureErrorDetails: true,
+    })
+    .catch((error: unknown) => error);
+  const interaction =
+    interrupted instanceof RunDiagnosticError ? interrupted.cause : interrupted;
+  if (!(interaction instanceof InteractionRequired)) throw interaction;
+  const state = (interaction as InteractionRequired).state!;
+  expect(state).toBeDefined();
+  const result = await agent.run(null, {
+    state,
+    returnHistory: true,
+    onInteraction: (event) => {
+      if (event.type !== 'action_requested')
+        throw new Error('Expected manual request');
+      return event.reply('accepted manual answer');
+    },
+    errorHandler: ({ kind, details }) => {
+      expect(kind).toBe('model_refusal');
+      expect(details.input).toBe('Original question');
+      return new RecoverRun('restored fallback');
+    },
+  });
+  expect(result.finalOutput).toBe('restored fallback');
+  expect(guard).toHaveBeenCalledOnce();
+  expect(result.guardrailResults?.map(({ name }) => name)).toEqual([
+    'restored',
+  ]);
+  expect(JSON.stringify(result.history)).toContain('restored fallback');
   expect(server.requests).toHaveLength(2);
   server.assertExhausted();
 });
