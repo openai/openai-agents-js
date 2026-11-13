@@ -842,32 +842,98 @@ async fn cold_recovery_links_followups_to_the_retained_child_root_turn() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_recovery_preserves_exact_command_receipts_with_automatic_children() {
-    let home = tempfile::tempdir().unwrap();
-    let (store, [root, child]) = recovery_family(home.path()).await;
-    append(&store, root, [vec![started("root"), legacy_context(home.path(), "root"), RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","name":"exec_command","call_id":"effect","arguments":"{}"})).unwrap()))], spawn("spawn-child", child)].concat()).await;
-    append(&store, child, vec![started("child")]).await;
-    for id in [child, root] {
-        store.shutdown_thread(id).await.unwrap();
+    for child_has_receipt in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        append(&store, root, [vec![started("root"), legacy_context(home.path(), "root"), RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","name":"exec_command","call_id":"effect","arguments":"{}"})).unwrap()))], spawn("spawn-child", child)].concat()).await;
+        let mut child_rows = vec![started("child")];
+        if child_has_receipt {
+            child_rows.extend([legacy_context(home.path(), "child"), call("effect")]);
+        }
+        append(&store, child, child_rows).await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let mut receipts = vec![recovery_receipt(root, "root")];
+        if child_has_receipt {
+            receipts.push(recovery_receipt(child, "child"));
+        }
+        let admitted = prepare_recovery(&store, home.path(), root, receipts)
+            .await
+            .unwrap();
+        assert!(admitted.protected_call_ids().contains("effect"));
+        let prepared = admitted.prepared_params().unwrap().clone();
+        store.resume_thread(prepared).await.unwrap();
+        drop(admitted);
+        store.shutdown_thread(root).await.unwrap();
+        let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+            .await
+            .unwrap();
+        drop(admitted);
+        store.close_database().await.unwrap();
     }
-    let store = Arc::new(store);
-    let admitted = prepare_recovery(
-        &store,
-        home.path(),
-        root,
-        vec![recovery_receipt(root, "root")],
-    )
-    .await
-    .unwrap();
-    assert!(admitted.protected_call_ids().contains("effect"));
-    let prepared = admitted.prepared_params().unwrap().clone();
-    store.resume_thread(prepared).await.unwrap();
-    drop(admitted);
-    store.shutdown_thread(root).await.unwrap();
-    let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
-        .await
-        .unwrap();
-    drop(admitted);
-    store.close_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_prior_commands_when_every_active_turn_has_a_receipt() {
+    for terminal_command in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        let response = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let mut root_rows = vec![
+            started("older"),
+            response(
+                json!({"type":"function_call","name":"exec_command","call_id":"stale","arguments":"{}"}),
+            ),
+            response(
+                json!({"type":"function_call_output","call_id":"stale","output":"Process running with session ID 42"}),
+            ),
+            completed("older"),
+        ];
+        if terminal_command {
+            root_rows.push(RolloutItem::EventMsg(serde_json::from_value(json!({"type":"item_completed","thread_id":root,"turn_id":"older","item":{"type":"CommandExecution","id":"stale","command":["synthetic"],"cwd":"file:///synthetic","parsed_cmd":[],"source":"unified_exec_startup","status":"completed"}})).unwrap()));
+        }
+        root_rows.extend([started("root"), legacy_context(home.path(), "root")]);
+        root_rows.extend(spawn("spawn-child", child));
+        root_rows.push(completed("root"));
+        append(&store, root, root_rows).await;
+        append(
+            &store,
+            child,
+            vec![
+                started("child"),
+                legacy_context(home.path(), "child"),
+                call("effect"),
+            ],
+        )
+        .await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(
+            &store,
+            home.path(),
+            root,
+            vec![recovery_receipt(child, "child")],
+        )
+        .await;
+        if terminal_command {
+            drop(result.unwrap());
+        } else {
+            let error = result.err().unwrap();
+            assert!(
+                error.to_string().contains("unfinished native execution"),
+                "{error}"
+            );
+        }
+        store.close_database().await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

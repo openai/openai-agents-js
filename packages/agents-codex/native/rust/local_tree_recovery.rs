@@ -400,6 +400,8 @@ pub(super) async fn plan_recovery_tree(
                     .cloned()
                     .collect();
                 local_reconciliation::validate_native_effects(&history, &automatic_active)?;
+            } else {
+                local_reconciliation::validate_command_lifetimes(&history)?;
             }
         }
     }

@@ -666,11 +666,8 @@ pub(crate) fn validate_hosted_effects(
 }
 
 // A completed model turn does not prove its native commands have exited. Cold
-// interruption checks owned command lifetimes, including earlier turns.
-pub(crate) fn validate_native_effects(
-    history: &[RolloutItem],
-    turns: &HashSet<String>,
-) -> Result<()> {
+// recovery checks owned command lifetimes, including earlier turns.
+pub(crate) fn validate_command_lifetimes(history: &[RolloutItem]) -> Result<()> {
     let application = calls(history)?;
     let terminal_commands: HashSet<_> = history
         .iter()
@@ -696,7 +693,6 @@ pub(crate) fn validate_native_effects(
                     name, namespace, ..
                 } if ToolName::new(namespace.clone(), name).is_default_namespace() => {
                     match name.as_str() {
-                        "write_stdin" => !key.0.as_ref().is_some_and(|turn| turns.contains(turn)),
                         "exec_command" | "shell" | "shell_command" => {
                             call.output.is_some_and(|output| tag(output).is_some())
                                 || key.0.as_ref().is_some_and(|turn| {
@@ -708,6 +704,50 @@ pub(crate) fn validate_native_effects(
                 }
                 _ => true,
             }
+        }),
+        "local history contains unfinished native execution; automatic interruption is unsupported"
+    );
+    Ok(())
+}
+
+pub(crate) fn validate_native_effects(
+    history: &[RolloutItem],
+    turns: &HashSet<String>,
+) -> Result<()> {
+    validate_command_lifetimes(history)?;
+    let application = calls(history)?;
+    let completed_processes: HashSet<_> = history.iter().filter_map(|row| {
+        let RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) = row else { return None; };
+        let TurnItem::CommandExecution(item) = &event.item else { return None; };
+        if matches!(item.status, codex_protocol::items::CommandExecutionStatus::InProgress)
+            || !matches!(item.source, codex_protocol::protocol::ExecCommandSource::UnifiedExecStartup)
+            || !application.get(&(Some(event.turn_id.clone()), item.id.clone())).is_some_and(|call|
+                matches!(call.invocation, ResponseItem::FunctionCall { name, namespace, .. }
+                    if name == "exec_command" && ToolName::new(namespace.clone(), name).is_default_namespace())) {
+            return None;
+        }
+        item.process_id.clone()
+    }).collect();
+    ensure!(
+        application.iter().all(|(key, call)| {
+            let ResponseItem::FunctionCall {
+                name,
+                namespace,
+                arguments,
+                ..
+            } = call.invocation
+            else {
+                return true;
+            };
+            name != "write_stdin"
+                || !ToolName::new(namespace.clone(), name).is_default_namespace()
+                || !key.0.as_ref().is_some_and(|turn| turns.contains(turn))
+                || (call.output.is_some()
+                    && serde_json::from_str::<serde_json::Value>(arguments)
+                        .ok()
+                        .and_then(|args| args.get("session_id").and_then(serde_json::Value::as_i64))
+                        .and_then(|id| i32::try_from(id).ok())
+                        .is_some_and(|id| completed_processes.contains(&id.to_string())))
         }),
         "local history contains unfinished native execution; automatic interruption is unsupported"
     );
@@ -1182,12 +1222,84 @@ mod tests {
                 let output = row(
                     json!({"type": "function_call_output", "call_id": call, "output": "confirmed absent", "internal_chat_message_metadata_passthrough": {"turn_id": turn, "content_item_kinds": [NOT_APPLIED]}}),
                 );
+                let history = [invocation.clone(), output];
+                assert_eq!(validate_command_lifetimes(&history).is_ok(), accepted);
+                assert_eq!(validate_native_effects(&history, &turns).is_ok(), accepted);
                 assert_eq!(
-                    validate_native_effects(&[invocation.clone(), output], &turns).is_ok(),
+                    validate_native_effects(&history, &HashSet::from(["later".to_owned()])).is_ok(),
                     accepted
                 );
             }
         }
+    }
+
+    #[test]
+    fn cold_interruption_accepts_only_polls_with_owned_terminal_process_evidence() {
+        let response = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let command = |namespace| {
+            response(
+                json!({"type":"function_call","namespace":namespace,"name":"exec_command","call_id":"command","arguments":"{}","internal_chat_message_metadata_passthrough":{"turn_id":"older"}}),
+            )
+        };
+        let terminal = |call, source, process, status| {
+            RolloutItem::EventMsg(serde_json::from_value(json!({"type":"item_completed","thread_id":ThreadId::new(),"turn_id":"older","item":{"type":"CommandExecution","id":call,"process_id":process,"command":["synthetic"],"cwd":"file:///synthetic","parsed_cmd":[],"source":source,"status":status}})).unwrap())
+        };
+        let poll = |arguments| {
+            response(
+                json!({"type":"function_call","name":"write_stdin","call_id":"poll","arguments":arguments,"internal_chat_message_metadata_passthrough":{"turn_id":"current"}}),
+            )
+        };
+        let history = vec![
+            command(None::<&str>),
+            terminal("command", "unified_exec_startup", Some("42"), "completed"),
+            poll("{\"session_id\":42}"),
+            response(
+                json!({"type":"function_call_output","call_id":"poll","output":"exited","internal_chat_message_metadata_passthrough":{"turn_id":"current"}}),
+            ),
+        ];
+        let turns = HashSet::from(["current".to_owned()]);
+        validate_native_effects(&history, &turns).unwrap();
+        for (index, replacement) in [
+            (0, command(Some("crm"))),
+            (
+                1,
+                terminal("other", "unified_exec_startup", Some("42"), "completed"),
+            ),
+            (
+                1,
+                terminal(
+                    "command",
+                    "unified_exec_interaction",
+                    Some("42"),
+                    "completed",
+                ),
+            ),
+            (
+                1,
+                terminal("command", "unified_exec_startup", Some("43"), "completed"),
+            ),
+            (
+                1,
+                terminal("command", "unified_exec_startup", None, "completed"),
+            ),
+            (
+                1,
+                terminal("command", "unified_exec_startup", Some("42"), "in_progress"),
+            ),
+            (2, poll("{\"session_id\":\"42\"}")),
+            (2, poll("{\"session_id\":42.5}")),
+            (2, poll("{\"session_id\":2147483648}")),
+            (2, poll("{}")),
+        ] {
+            let mut invalid = history.clone();
+            invalid[index] = replacement;
+            assert!(validate_native_effects(&invalid, &turns).is_err());
+        }
+        assert!(validate_native_effects(&history[..3], &turns).is_err());
     }
 
     #[test]
