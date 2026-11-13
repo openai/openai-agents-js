@@ -70,6 +70,24 @@ describe.concurrent(
   'test stdout/stderr guard',
   { timeout: SUBPROCESS_TEST_TIMEOUT_MS },
   () => {
+    it('allows silent subprocesses and zero-byte stream writes', async () => {
+      const result = await runFixture({
+        'silent.test.ts': `
+        import { execFileSync } from 'node:child_process';
+        import { expect, test } from 'vitest';
+        test('silent output preserves callbacks', () => {
+          execFileSync(process.execPath, ['-e', '']);
+          let callbacks = 0;
+          expect(process.stdout.write('', () => callbacks++)).toBe(true);
+          expect(process.stderr.write(Buffer.alloc(0), () => callbacks++)).toBe(true);
+          expect(process.stderr.write(new Uint8Array(0), () => callbacks++)).toBe(true);
+          expect(callbacks).toBe(3);
+        });
+      `,
+      });
+      expect(result.exitCode).toBe(0);
+    });
+
     it('fails on output from file-scoped fixture cleanup', async () => {
       const result = await runFixture({
         'fixture-cleanup.test.ts': `
