@@ -28,7 +28,15 @@ nativeIt(
       provider,
     }).session();
     const opening = await session.historySnapshot();
-    expect(opening.items).toEqual([]);
+    for (const item of opening.items) {
+      expect(item).toMatchObject({
+        type: 'message',
+        role: 'developer',
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ['collaboration_mode.instructions'],
+        },
+      });
+    }
     await session.transactHistory({
       expectedRevision: opening.revision,
       keep: 0,
@@ -168,7 +176,16 @@ nativeIt(
           resume: siblingId!,
         });
         const siblingItems = (await sibling.historySnapshot()).items;
-        expect(siblingItems).toEqual(before!.items);
+        expect(siblingItems.slice(0, before!.total)).toEqual(before!.items);
+        for (const item of siblingItems.slice(before!.total)) {
+          expect(item).toMatchObject({
+            type: 'message',
+            role: 'developer',
+            internal_chat_message_metadata_passthrough: {
+              content_item_kinds: ['collaboration_mode.instructions'],
+            },
+          });
+        }
       }
       expect(server.requests).toHaveLength(2);
     } finally {

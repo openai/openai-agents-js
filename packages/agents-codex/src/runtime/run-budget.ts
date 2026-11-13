@@ -4,6 +4,16 @@ import type { JsonObject } from './binding';
 import { NativeError } from './native-error';
 import { addRunUsage, parseTokenCount, type TokenUsage } from './run-events';
 
+const requestLimitFailures = new WeakMap<NativeError, RunBudgetTracker>();
+
+/** @internal Public error codes alone cannot authorize one-shot recovery. */
+export function isRequestLimitFailure(
+  error: NativeError,
+  budget: RunBudgetTracker | undefined,
+): boolean {
+  return budget !== undefined && requestLimitFailures.get(error) === budget;
+}
+
 /**
  * Limits for direct native Agent runs and Session submissions. A new root
  * starts fresh. Live manual replies, retained steering, and SDK output
@@ -233,8 +243,9 @@ export class RunBudgetTracker {
   }
 
   check(assertActive: () => void): void {
+    if (this.maxRequests !== undefined && this.requests >= this.maxRequests)
+      this.exceeded(true);
     if (
-      (this.maxRequests !== undefined && this.requests >= this.maxRequests) ||
       (this.maxTokens !== undefined && this.tokens >= this.maxTokens) ||
       (this.maxEstimatedCostMicros !== undefined &&
         this.cost >= this.maxEstimatedCostMicros)
@@ -267,11 +278,13 @@ export class RunBudgetTracker {
       );
   }
 
-  private exceeded(): never {
-    throw new NativeError('Root run budget reached', {
+  private exceeded(requestLimit = false): never {
+    const error = new NativeError('Root run budget reached', {
       code: 'run_budget_exceeded',
       retryable: false,
     });
+    if (requestLimit) requestLimitFailures.set(error, this);
+    throw error;
   }
 
   charge(): void {

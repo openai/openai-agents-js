@@ -1,3 +1,4 @@
+import type { RunErrorHandler } from './run-error-recovery';
 import {
   captureProviderHistory,
   type ProviderHistory,
@@ -342,7 +343,7 @@ export type SessionOptions<Context = undefined> = SessionBaseOptions<Context> &
     | Exclude<SessionPersistenceOptions, { storage?: never }>
   );
 
-export interface RunOptions<Context = undefined> extends Omit<
+export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   SessionBaseOptions<Context>,
   | 'tools'
   | 'includeModelOutputItems'
@@ -386,6 +387,8 @@ export interface RunOptions<Context = undefined> extends Omit<
    * unavailable origins have been reporting null input and incomplete details.
    */
   captureErrorDetails?: boolean;
+  /** Supply validated fallback output after an eligible settled failure, without retrying. */
+  errorHandler?: RunErrorHandler<Output, Context>;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -472,9 +475,9 @@ type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
 type SessionArguments<Context> = undefined extends Context
   ? [options?: SessionOptions<Context>]
   : [options: SessionOptions<Context> & { context: Context }];
-type RunArguments<Context> = undefined extends Context
-  ? [options?: RunOptions<Context>]
-  : [options: RunOptions<Context> & { context: Context }];
+type RunArguments<Context, Output> = undefined extends Context
+  ? [options?: RunOptions<Context, Output>]
+  : [options: RunOptions<Context, Output> & { context: Context }];
 
 /** A fixed output choice backed by an Agent's current opening configuration. */
 export interface AgentOutput<Context = undefined, Output = string> {
@@ -484,7 +487,7 @@ export interface AgentOutput<Context = undefined, Output = string> {
   ): Promise<Session<Output, Context>>;
   run(
     input: UserInput | null,
-    ...args: RunArguments<Context>
+    ...args: RunArguments<Context, Output>
   ): Promise<Completed<Output>>;
 }
 
@@ -718,10 +721,16 @@ export class Agent<Context = undefined, Output = string> {
         this.session(
           ...([optionsFor(args[0])] as SessionArguments<Context>),
         ) as unknown as Promise<Session<Next, Context>>,
-      run: async (input: UserInput | null, ...args: RunArguments<Context>) =>
+      run: async (
+        input: UserInput | null,
+        ...args: RunArguments<Context, Next>
+      ) =>
         this.run(
           input,
-          ...([optionsFor(args[0])] as RunArguments<Context>),
+          ...([optionsFor(args[0])] as unknown as RunArguments<
+            Context,
+            Output
+          >),
         ) as unknown as Promise<Completed<Next>>,
     });
   }
@@ -922,7 +931,7 @@ export class Agent<Context = undefined, Output = string> {
    */
   async run(
     input: UserInput | null,
-    ...args: RunArguments<Context>
+    ...args: RunArguments<Context, Output>
   ): Promise<Completed<Output>> {
     const options = {
       ...(args[0] ?? {}),
@@ -966,6 +975,10 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(`Agent.run does not support session-only ${key}`);
     // Validate input before acquiring a provider or touching the filesystem.
     const captureErrorDetails = options.captureErrorDetails === true;
+    const errorHandler = options.errorHandler;
+    if (errorHandler !== undefined && typeof errorHandler !== 'function')
+      throw new TypeError('errorHandler must be callable');
+    const observeFailure = captureErrorDetails || errorHandler !== undefined;
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
     const beforeStep = options.beforeStep;
@@ -1017,7 +1030,7 @@ export class Agent<Context = undefined, Output = string> {
         this.prepare !== Agent.#canonicalPrepare)
         ? structuredClone(input)
         : undefined;
-    const errorInput = captureErrorDetails
+    const errorInput = observeFailure
       ? inputStoragePolicy
         ? null
         : structuredClone(input)
@@ -1025,7 +1038,7 @@ export class Agent<Context = undefined, Output = string> {
     const sessionOptions: OwnedSessionOptions<Context> = {
       providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
-      ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
+      ...(observeFailure ? { includeRawProviderEvents: true } : {}),
       ...((options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
         ? { [sdkMemoryPhase]: true as const }
         : {}),
@@ -1060,7 +1073,7 @@ export class Agent<Context = undefined, Output = string> {
         outputSelection
       ],
       [ownedRun]: {
-        returnItems: options.returnItems || captureErrorDetails,
+        returnItems: options.returnItems || observeFailure,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         toolBatchCompletion: this.toolBatchCompletion,
@@ -1081,7 +1094,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnHistory !== true &&
       options.returnRawUsage !== true &&
       options.returnItems !== true &&
-      !captureErrorDetails &&
+      !observeFailure &&
       options.prepareRequest === undefined &&
       inputStoragePolicy === undefined &&
       modelOverride === undefined &&
@@ -1115,6 +1128,8 @@ export class Agent<Context = undefined, Output = string> {
       toolNotFoundBehavior: options.toolNotFoundBehavior,
       guardrailInput,
       errorInput,
+      errorHandler,
+      captureErrorDetails,
       inputStoragePolicy,
       maxModelSteps,
       budget,
@@ -2599,7 +2614,7 @@ export class Runner {
   static run<Context, Output>(
     agent: Agent<Context, Output>,
     input: UserInput | null,
-    ...args: RunArguments<Context>
+    ...args: RunArguments<Context, Output>
   ) {
     return agent.run(input, ...args);
   }

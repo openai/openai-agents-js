@@ -1,3 +1,9 @@
+import { abortable } from '../voice/abortable';
+import {
+  RecoverRun,
+  type RunErrorHandler,
+  type RunFailure,
+} from './run-error-recovery';
 import type { HandoffInput } from './handoffs';
 import {
   bindModelProviderMetadata,
@@ -188,7 +194,11 @@ import {
 } from './selection-state';
 import { guardrailCheckpointSchema, readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
-import { RunBudgetTracker, type RunBudget } from './run-budget';
+import {
+  RunBudgetTracker,
+  isRequestLimitFailure,
+  type RunBudget,
+} from './run-budget';
 import {
   NativeError,
   enrichNativeError,
@@ -993,6 +1003,16 @@ export let issueTurn: <T, NativeId extends string | null = string>(
  * An issued turn. For roots, turnId identifies the initial native step.
  * Controls and results follow its owned continuations.
  */
+const recoveredOneShotResults = new WeakMap<Turn<any, any>, Completed<any>>();
+const recoverableOutputFailures = new WeakMap<
+  OutputValidationError,
+  NativeTurn
+>();
+const settledRunFailures = new WeakMap<
+  NativeError | OutputValidationError,
+  NativeTurn
+>();
+
 export class Turn<OutputT = string, NativeId extends string | null = string> {
   readonly childId: string | null;
   readonly instanceId: string | null;
@@ -1158,6 +1178,15 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     // The completion owner checks the callback guard on every call, even after
     // memoization. Track its public settlement only once, before publishing it.
     const promise = this.completion();
+    const recovered = recoveredOneShotResults.get(this);
+    if (recovered) {
+      // The owner can create its original rejected promise on this first wait.
+      // Application recovery replaces presentation while still observing that failure.
+      void promise.catch(() => {});
+      if (options?.signal?.aborted)
+        return Promise.reject(options.signal.reason);
+      return Promise.resolve(recovered);
+    }
     let state = this.waitState.current;
     if (!state) {
       const current: TurnCompletion<OutputT> = {
@@ -3114,6 +3143,20 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly questionMcp = new WeakMap<NativeEvent, CapturedStepMcp>();
   private starting?: SessionStartup;
   private defaultOutput: PreparedOutput;
+  private issuedRunGeneration = 0;
+  private configurationGeneration = 0;
+  private readonly recoveryOwners = new WeakMap<
+    RunErrorDetails,
+    {
+      root: NativeTurn;
+      issued: number;
+      configuration: number;
+      output: PreparedOutput;
+      profile: string | undefined;
+      revision: string;
+      total: number;
+    }
+  >();
   private openingCatalog: ToolCatalog;
   private readonly capabilityView: Capabilities;
   private sealedStateJson?: string;
@@ -6399,6 +6442,7 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
+    this.issuedRunGeneration++;
     const run: NativeTurn = new NativeTurn(
       () => this.assertCanWait(run),
       (completion) => afterSubmissionRetirement(run, completion),
@@ -6905,7 +6949,9 @@ export class Session<OutputT = string, Context = unknown> {
       }
     }
     if (!check(true)) return { type: 'stopped' };
-    throw new OutputValidationError(text, issues);
+    const error = new OutputValidationError(text, issues);
+    recoverableOutputFailures.set(error, run);
+    throw error;
   }
 
   private retainRequestAttempts(run: NativeTurn): void {
@@ -7064,7 +7110,11 @@ export class Session<OutputT = string, Context = unknown> {
         // for the typed fallback if native refuses that continuation.
         if (retained && cause instanceof OutputValidationError)
           predecessorValidationError = cause;
-        else error = cause;
+        else {
+          error = cause;
+          if (cause instanceof OutputValidationError)
+            recoverableOutputFailures.set(cause, run);
+        }
       }
     }
     if (error === undefined && retained) {
@@ -7175,6 +7225,11 @@ export class Session<OutputT = string, Context = unknown> {
         ? terminalModel.error
         : (error ?? predecessorValidationError);
       if (originalModelFailure || settlementError !== undefined) {
+        if (
+          settlementError instanceof NativeError ||
+          settlementError instanceof OutputValidationError
+        )
+          settledRunFailures.set(settlementError, run);
         run.accepted.reject(settlementError);
         run.completion.reject(settlementError);
       } else if (run.id !== null) {
@@ -14016,6 +14071,7 @@ export class Session<OutputT = string, Context = unknown> {
   async update(options: SessionUpdate<Context> = {}): Promise<void> {
     this.checkCallbackOperation('update');
     this.idle('update');
+    this.configurationGeneration++;
     if (options.agent !== undefined) {
       if (
         options.model !== undefined ||
@@ -15408,6 +15464,13 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<RunErrorDetails | undefined> {
     if (!this.lastRun) return;
     const run = this.rootRun(this.lastRun);
+    const recoveryOwner = {
+      root: run,
+      issued: this.issuedRunGeneration,
+      configuration: this.configurationGeneration,
+      output: this.defaultOutput,
+      profile: JSON.stringify(this.profileCurrent),
+    };
     const turn = this.issuedTurn(run);
     const guardrailResults = turn.guardrailResults;
     if (!turn.turnId && guardrailResults.length === 0) return;
@@ -15461,10 +15524,21 @@ export class Session<OutputT = string, Context = unknown> {
     } catch {
       incomplete = true;
     }
+    let history: RunErrorDetails['history'] = [];
+    let canonical: CanonicalHistorySnapshot | undefined;
+    if (settled) {
+      try {
+        canonical = await this._historyForReplay();
+        history = Object.freeze(canonical.items);
+      } catch {
+        incomplete = true;
+      }
+    }
     const details: RunErrorDetails = {
       input: originalInput === null ? null : structuredClone(originalInput),
       lastAgent,
       items,
+      history,
       rawResponses: Object.freeze(rawResponses),
       guardrailResults,
       incomplete,
@@ -15473,10 +15547,172 @@ export class Session<OutputT = string, Context = unknown> {
       input: { enumerable: false },
       lastAgent: { enumerable: false },
       items: { enumerable: false },
+      history: { enumerable: false },
       rawResponses: { enumerable: false },
       guardrailResults: { enumerable: false },
     });
+    if (canonical)
+      this.recoveryOwners.set(details, {
+        ...recoveryOwner,
+        revision: canonical.revision,
+        total: canonical.total,
+      });
     return Object.freeze(details);
+  }
+
+  /** @internal Recover application output without changing native settlement. */
+  async _recoverOneShot(
+    error: unknown,
+    details: RunErrorDetails,
+    handler: RunErrorHandler<OutputT, Context>,
+    signal?: AbortSignal,
+  ): Promise<Completed<OutputT> | undefined> {
+    const owner = this.recoveryOwners.get(details);
+    if (!owner || !this.lastRun || !details.lastAgent) return;
+    const root = owner.root;
+    const steps = [...this.rootSteps(root)];
+    const last = steps.at(-1)!;
+    const kind: RunFailure['kind'] | undefined =
+      error instanceof NativeError
+        ? isRequestLimitFailure(error, root.selection?.budget)
+          ? 'max_requests'
+          : error.responseIntegrityReason === 'provider_refusal'
+            ? 'model_refusal'
+            : undefined
+        : error instanceof OutputValidationError &&
+            steps.some((step) => recoverableOutputFailures.get(error) === step)
+          ? 'invalid_output'
+          : undefined;
+    if (
+      !kind ||
+      !(
+        error instanceof NativeError || error instanceof OutputValidationError
+      ) ||
+      !steps.some((step) => settledRunFailures.get(error) === step) ||
+      !root.id ||
+      this.rootObservationScope(root).phase() !== 'ended' ||
+      (this.options.outputGuardrails?.length ?? 0) > 0 ||
+      details.lastAgent.outputGuardrails.length > 0 ||
+      signal?.aborted
+    )
+      return;
+    try {
+      this.idle('recover a one-shot run');
+    } catch {
+      return;
+    }
+    const check = () => {
+      signal?.throwIfAborted();
+      this.idle('recover a one-shot run');
+      if (
+        !this.lastRun ||
+        this.rootRun(this.lastRun) !== root ||
+        this.issuedRunGeneration !== owner.issued ||
+        this.configurationGeneration !== owner.configuration ||
+        this.defaultOutput !== owner.output ||
+        JSON.stringify(this.profileCurrent) !== owner.profile
+      )
+        throw new NativeError('The recovery run is no longer current');
+    };
+    const checkHistory = async () => {
+      check();
+      const current = await this.historySnapshot({ limit: 0 });
+      check();
+      if (current.revision !== owner.revision)
+        throw new NativeError('Canonical history changed during run recovery');
+    };
+    await checkHistory();
+    const failure: RunFailure<Context> = {
+      kind,
+      error: error as NativeError | OutputValidationError,
+      details: details as RunFailure<Context>['details'],
+      context: this.options.context as Context | undefined,
+    };
+    Object.defineProperties(failure, {
+      error: { enumerable: false },
+      details: { enumerable: false },
+      context: { enumerable: false },
+    });
+    const scope: ToolInvocation = {
+      session: this,
+      run: root,
+      active: true,
+      parent: toolInvocation.getStore(),
+    };
+    let recovery;
+    try {
+      const pending = Promise.resolve(
+        toolInvocation.run(scope, () => handler(Object.freeze(failure))),
+      );
+      recovery = signal ? await abortable(pending, signal) : await pending;
+    } finally {
+      scope.active = false;
+    }
+    check();
+    if (recovery == null) return;
+    if (!(recovery instanceof RecoverRun))
+      throw new TypeError('errorHandler must return RecoverRun or no recovery');
+    await this.refreshProfileBindings();
+    check();
+    const parsed = parseApplicationToolCompletion(
+      owner.output,
+      recovery.output,
+    );
+    await checkHistory();
+    const turn = this.issuedTurn(root) as Turn<OutputT>;
+    let items = details.items;
+    if (recovery.includeInHistory) {
+      const text = this.defaultOutput.wrapped
+        ? JSON.stringify({ response: parsed.json })
+        : this.defaultOutput.schema || this.defaultOutput.prompt
+          ? JSON.stringify(parsed.json)
+          : (parsed.json as string);
+      const item = {
+        type: 'message',
+        id: randomUUID(),
+        role: 'assistant',
+        content: [{ type: 'output_text', text }],
+      };
+      await this.transactHistory({
+        expectedRevision: owner.revision,
+        keep: owner.total,
+        items: [item],
+      });
+      // transactHistory acknowledges these exact original JSON records.
+      const projected = projectHistory(
+        [
+          { type: 'turn_context', payload: { turn_id: root.id } },
+          { type: 'response_item', payload: item },
+        ],
+        this.id,
+      ).items;
+      items = Object.freeze([
+        ...items,
+        ...projected.map((item) =>
+          Object.freeze({
+            item,
+            agent: details.lastAgent!,
+          }),
+        ),
+      ]);
+    }
+    check();
+    const completed: Completed<OutputT> = Object.freeze({
+      turn,
+      finalOutput: parsed.value as OutputT,
+      threadUsage: tokenUsageInfo(last.usage),
+      runUsage: this.runUsage(root),
+      repairAttempts: Object.freeze(
+        this.repairTurns
+          .filter((entry) => entry.parentTurnId === root.id)
+          .map((entry) => recordedTurnFromWire(structuredClone(entry))),
+      ),
+      guardrailResults: details.guardrailResults,
+      applicationToolOutputs: this.applicationOutputSnapshot(root),
+      items,
+    });
+    recoveredOneShotResults.set(turn, completed);
+    return completed;
   }
 
   /** @internal Read the exact owned turn before closing its Session. */

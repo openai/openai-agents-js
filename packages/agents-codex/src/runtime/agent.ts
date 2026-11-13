@@ -1,3 +1,4 @@
+import type { RunErrorHandler } from './run-error-recovery';
 import { configuredAgentTool } from './agent-tool';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import { managedWorkspaceRestore } from './managed-workspace';
@@ -565,6 +566,8 @@ interface OwnedRunOptions {
   toolNotFoundBehavior?: 'raise_error' | 'return_error_to_model';
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
+  errorHandler?: RunErrorHandler<any, any>;
+  captureErrorDetails?: boolean;
   inputStoragePolicy?: CapturedInputStoragePolicy;
   returnState?: boolean;
   returnHistory?: boolean;
@@ -663,13 +666,26 @@ async function completeOwnedSession<Output>(
   const result = await pending.catch(async (error) => {
     let primary = originalFailure(error);
     if (options.errorInput !== undefined && !options.signal?.aborted) {
+      let details;
       try {
-        const details = await session._captureRunErrorDetails(
-          options.errorInput,
-        );
-        if (details) primary = new RunDiagnosticError(details, primary);
+        details = await session._captureRunErrorDetails(options.errorInput);
       } catch {
         // Preserve the original failure when evidence capture throws.
+      }
+      try {
+        if (details && options.errorHandler) {
+          const recovered = await session._recoverOneShot(
+            primary,
+            details,
+            options.errorHandler,
+            options.signal,
+          );
+          if (recovered) return recovered;
+        }
+        if (details && options.captureErrorDetails)
+          primary = new RunDiagnosticError(details, primary);
+      } catch (recoveryError) {
+        primary = recoveryError;
       }
     }
     try {
@@ -703,7 +719,11 @@ async function completeOwnedSession<Output>(
               ? { rawUsage: session._takeRawUsage(result.turn.turnId) }
               : {}),
             ...(options.returnItems
-              ? { items: session._takeProducedItems(result.turn.turnId) }
+              ? {
+                  items:
+                    result.items ??
+                    session._takeProducedItems(result.turn.turnId),
+                }
               : {}),
           })
         : result;

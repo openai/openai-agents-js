@@ -1,3 +1,8 @@
+export {
+  RecoverRun,
+  type RunFailure,
+  type RunErrorHandler,
+} from './runtime/run-error-recovery';
 export type { ProviderHistory } from './runtime/provider-history';
 export type { AcceptedTextChunk, AcceptText } from './runtime/accepted-text';
 export { retryPolicies } from './runtime/model-retry';

@@ -1179,7 +1179,11 @@
     {
       "path": "sdk-fresh-handoff-presentation-anchor.patch",
       "sha256": "239e4aff067b129f06d632d2a21105ada7425cd1a584ee87756cbf09bcea7b8f"
+    },
+    {
+      "path": "sdk-auditable-collaboration-history.patch",
+      "sha256": "2c798b0e66ffce1ec2b1c7278220673db2edb79901851860c90f1d7d680534f1"
     }
   ],
-  "result_tree": "30fc9175c046acaf4f7a07397f446543a8c90999"
+  "result_tree": "d8450ff006b15080d8e0ff04d4c9dd0e9b35c441"
 }
