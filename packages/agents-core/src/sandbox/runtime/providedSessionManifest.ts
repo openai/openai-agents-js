@@ -308,10 +308,15 @@ function manifestEntryWithoutDirChildren(entry: Entry): Entry {
 export function collectAdditiveManifestEntries(
   current: Manifest,
   target: Manifest,
+  recorded?: Manifest,
 ): [string, Entry][] {
   validateProvidedSessionManifestUpdate(current, target);
+  const delta = buildProvidedSessionManifestDelta(current, target);
+  if (!recorded) return Object.entries(delta.entries);
+  // Saved declarations supply identity only; current trusted grants own writes.
+  validateProvidedEntryUpdates(recorded, delta);
   return Object.entries(
-    buildProvidedSessionManifestDelta(current, target).entries,
+    buildProvidedSessionManifestDelta(recorded, delta).entries,
   );
 }
 

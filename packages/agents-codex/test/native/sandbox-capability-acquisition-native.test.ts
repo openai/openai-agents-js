@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
-import { readFile, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -338,6 +338,130 @@ it.each(['success', 'unsafe-entry-change', 'staging-failure'] as const)(
         ),
       ).toBe('saved user edit');
       server.assertExhausted();
+    } finally {
+      await seed.close();
+      await rm(archiveBase, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each(['previous-capability', 'undeclared-collision'] as const)(
+  'has been preserving edited restored capability files and rejecting occupied new paths: %s',
+  async (kind) => {
+    class EditedCapability extends ProbeCapability {
+      clone() {
+        return new EditedCapability(this.bindings);
+      }
+      bind(sandbox: SandboxSessionLike, user?: string) {
+        expect(
+          readFileSync(
+            join(sandbox.state.workspaceRootPath as string, 'capability.txt'),
+            'utf8',
+          ),
+        ).toBe('saved capability edit');
+        return super.bind(sandbox, user);
+      }
+    }
+    const archiveBase = await mkdtemp(
+      join(tmpdir(), 'native-capability-edited-resume-'),
+    );
+    const client = new UnixLocalSandboxClient();
+    const applicationManifest = new Manifest();
+    const seedManifest =
+      kind === 'previous-capability'
+        ? new ProbeCapability([]).prepareManifest(applicationManifest)
+        : applicationManifest;
+    const seed = await client.create({
+      manifest: seedManifest,
+      snapshot: { type: 'local', baseDir: archiveBase },
+    });
+    try {
+      await writeFile(
+        join(seed.state.workspaceRootPath, 'capability.txt'),
+        'saved capability edit',
+      );
+      const saved = await client.serializeSessionState(seed.state);
+      const snapshot = saved.snapshot as { type: 'local'; path: string };
+      await seed.close();
+      const resumed = new UnixLocalSandboxClient({
+        resumeAuthority: {
+          workspaceRootPath: saved.workspaceRootPath as string,
+          workspaceRootOwned: true,
+          localSnapshotPath: snapshot.path,
+        },
+      });
+      const state = await resumed.deserializeSessionState(saved);
+      const actualResume = resumed.resume.bind(resumed);
+      let materializations = 0;
+      let restoredIdentity:
+        { ino: number; mtimeMs: number; mode: number } | undefined;
+      vi.spyOn(resumed, 'resume').mockImplementation(async (...args) => {
+        const sandbox = await actualResume(...args);
+        if (restoredIdentity === undefined)
+          restoredIdentity = await stat(
+            join(sandbox.state.workspaceRootPath, 'capability.txt'),
+          );
+        const materialize = sandbox.materializeEntry.bind(sandbox);
+        vi.spyOn(sandbox, 'materializeEntry').mockImplementation(
+          async (args) => {
+            materializations++;
+            await materialize(args);
+          },
+        );
+        return sandbox;
+      });
+      const bindings: Bound[] = [];
+      const server = new ModelServer(
+        kind === 'previous-capability' ? [[message('preserved edit')]] : [],
+      );
+      await using provider = await providerFor(server);
+      const source = sandboxEnvironment({
+        client: resumed,
+        manifest: applicationManifest,
+        capabilities: [new EditedCapability(bindings)],
+        authorizedResumeState: { backendId: resumed.backendId, state },
+        connect: async (sandbox) =>
+          Environment.lease(
+            new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: sandbox.state.workspaceRootPath as string,
+              tools: [],
+            }),
+            () => {},
+          ),
+      });
+      const opening = new Agent({
+        instructions: 'Continue the workspace',
+        provider,
+      }).session({ environment: source });
+      if (kind === 'undeclared-collision') {
+        await expect(opening).rejects.toThrow('already occupies');
+        expect(bindings).toEqual([]);
+        expect(server.requests).toEqual([]);
+      } else {
+        await using session = await opening;
+        expect((await (await session.submit('go')).wait()).finalOutput).toBe(
+          'preserved edit',
+        );
+        const after = await stat(
+          join(
+            bindings[0].sandbox.state.workspaceRootPath as string,
+            'capability.txt',
+          ),
+        );
+        expect({
+          ino: after.ino,
+          mtimeMs: after.mtimeMs,
+          mode: after.mode,
+        }).toEqual({
+          ino: restoredIdentity!.ino,
+          mtimeMs: restoredIdentity!.mtimeMs,
+          mode: restoredIdentity!.mode,
+        });
+        server.assertExhausted();
+      }
+      expect(materializations).toBe(0);
     } finally {
       await seed.close();
       await rm(archiveBase, { recursive: true, force: true });

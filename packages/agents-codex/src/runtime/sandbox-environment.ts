@@ -450,6 +450,10 @@ function createSandboxEnvironment<
       manifest,
     );
   }
+  const recordedResumeManifest =
+    originalResumeState && capabilityConfiguration
+      ? cloneManifest(originalResumeState.manifest)
+      : undefined;
   const resumeState = resume
     ? rebindPersistedPathGrants(
         rebindPersistedMountCredentials(
@@ -486,7 +490,11 @@ function createSandboxEnvironment<
     const manifest = capabilityLease?.manifest ?? capabilityManifest;
     const capabilityResumeEntries =
       originalResumeState && capabilityLease
-        ? runtime.collectAdditiveManifestEntries(capabilityManifest, manifest)
+        ? runtime.collectAdditiveManifestEntries(
+            capabilityManifest,
+            manifest,
+            recordedResumeManifest,
+          )
         : [];
 
     const managed: ManagedWorkspaceBinding | undefined = managedAuthorization
@@ -750,6 +758,18 @@ function createSandboxEnvironment<
           originalResumeState,
           acquireResource,
         );
+        if (capabilityResumeEntries.length && !sandbox.pathExists)
+          throw new Error(
+            'Capability resume additions require safe path inspection',
+          );
+        for (const [path] of capabilityResumeEntries) {
+          signal.throwIfAborted();
+          if (await sandbox.pathExists!(path))
+            throw new Error(
+              `A restored path already occupies capability addition: ${path}`,
+            );
+          signal.throwIfAborted();
+        }
         if (eagerSkillEntries.length > 0)
           await skillBinding!.stageOwnedResume(
             sandbox,
