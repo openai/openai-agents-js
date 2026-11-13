@@ -307,7 +307,10 @@ export function captureModelResponse(
     throw new TypeError(
       'Original Responses usage requires its unchanged provider response ID',
     );
-  const providerMetadata = captureModelProviderMetadata(response);
+  // Core rejects the entire refusal before any output can own a continuation.
+  const providerMetadata = hasResponsesRefusal(response.output)
+    ? undefined
+    : captureModelProviderMetadata(response);
   return copyJsonValue({
     ...(providerMetadata === undefined
       ? {}
@@ -1658,6 +1661,25 @@ type AiSdkStreamTextBlock = {
 
 const googleThoughtSignatureOptions = ['google', 'googleVertex', 'vertex'];
 
+function redactAiSdkThoughtSignatures(event: JsonObject): void {
+  const metadata = event.providerMetadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+    return;
+  for (const provider of googleThoughtSignatureOptions) {
+    const value = metadata?.[provider];
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.hasOwn(value, 'thoughtSignature')
+    ) {
+      delete value.thoughtSignature;
+      if (Object.keys(value).length === 0) delete metadata[provider];
+    }
+  }
+  if (Object.keys(metadata).length === 0) delete event.providerMetadata;
+}
+
 function hasAiSdkThoughtSignature(metadata: JsonObject | undefined): boolean {
   return googleThoughtSignatureOptions.some(
     (provider) =>
@@ -2232,6 +2254,7 @@ export class AiSdkModel implements NativeModel {
           ]
         ) {
           const original = JSON.parse(encoded) as JsonObject;
+          redactAiSdkThoughtSignatures(original);
           rawModelParts.add(original);
           yield original;
         }

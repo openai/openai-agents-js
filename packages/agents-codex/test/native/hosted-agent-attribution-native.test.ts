@@ -30,7 +30,6 @@ it('keeps hosted attribution on the exact selected handoff callback across reuse
     content: [{ type: 'output_text', text: 'done' }],
   };
   server.on('connection', (socket) => {
-    const run = runs++;
     let injections = 0;
     const handoff = {
       type: 'function_call',
@@ -41,79 +40,61 @@ it('keeps hosted attribution on the exact selected handoff callback across reuse
       agent: { agent_name: '/remote-owner' },
       phase: 'analysis',
     };
-    const lookup = {
-      type: 'function_call',
-      id: 'fc_reused',
-      call_id: 'call_reused',
-      name: 'lookup',
-      arguments: '{}',
-      ...(run < 2
-        ? {
-            agent: { agent_name: run === 0 ? '/worker-one' : '/worker-two' },
-            phase: run === 0 ? 'analysis' : 'commentary',
-          }
-        : {}),
-    };
     socket.on('message', (raw) => {
       const frame = JSON.parse(raw.toString());
       frames.push(frame);
+      const transferred = frame.input.some(
+        (item: Record<string, unknown>) =>
+          item.type === 'function_call_output' &&
+          item.call_id === 'call_handoff',
+      );
+      if (frame.type === 'response.create' && !transferred) runs++;
+      const lookup = {
+        type: 'function_call',
+        id: 'fc_reused',
+        call_id: 'call_reused',
+        name: 'lookup',
+        arguments: '{}',
+        ...(runs <= 2
+          ? {
+              agent: { agent_name: runs === 1 ? '/worker-one' : '/worker-two' },
+              phase: runs === 1 ? 'analysis' : 'commentary',
+            }
+          : {}),
+      };
+      const emit = (value: unknown) => socket.send(JSON.stringify(value));
       if (frame.type === 'response.create') {
-        socket.send(
-          JSON.stringify({
-            type: 'response.created',
-            response: { id: 'resp_reused', output: [] },
-          }),
-        );
-        socket.send(
-          JSON.stringify({
-            type: 'response.output_item.done',
-            output_index: 0,
-            item: handoff,
-          }),
-        );
+        emit({
+          type: 'response.created',
+          response: { id: 'resp_reused', output: [] },
+        });
+        emit({
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: transferred ? lookup : handoff,
+        });
       } else {
         expect(frame.type).toBe('response.inject');
-        injections++;
-        socket.send(
-          JSON.stringify({
-            type: 'response.inject.created',
-            response_id: 'resp_reused',
-          }),
-        );
-        if (injections === 1)
-          socket.send(
-            JSON.stringify({
-              type: 'response.output_item.done',
-              output_index: 1,
-              item: lookup,
-            }),
-          );
-        else {
-          expect(injections).toBe(2);
-          socket.send(
-            JSON.stringify({
-              type: 'response.completed',
-              response: {
-                id: 'resp_reused',
-                status: 'completed',
-                output: [
-                  handoff,
-                  lookup,
-                  {
-                    ...rootMessage,
-                    id: 'msg_private',
-                    agent: { agent_name: '/other' },
-                    content: [
-                      { type: 'output_text', text: 'not final user text' },
-                    ],
-                  },
-                  rootMessage,
-                ],
-                usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+        expect(++injections).toBe(1);
+        emit({ type: 'response.inject.created', response_id: 'resp_reused' });
+        emit({
+          type: 'response.completed',
+          response: {
+            id: 'resp_reused',
+            status: 'completed',
+            output: [
+              lookup,
+              {
+                ...rootMessage,
+                id: 'msg_private',
+                agent: { agent_name: '/other' },
+                content: [{ type: 'output_text', text: 'not final user text' }],
               },
-            }),
-          );
-        }
+              rootMessage,
+            ],
+            usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
+          },
+        });
       }
     });
   });
@@ -181,7 +162,7 @@ it('keeps hosted attribution on the exact selected handoff callback across reuse
     expect(frames.map((frame) => frame.type)).toEqual(
       Array.from({ length: 3 }, () => [
         'response.create',
-        'response.inject',
+        'response.create',
         'response.inject',
       ]).flat(),
     );

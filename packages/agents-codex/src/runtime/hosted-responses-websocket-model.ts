@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   copyJsonValue,
   losslessJsonObjectSchema,
@@ -17,7 +18,10 @@ import { markResponsesWebSocketStream, projectResponsesUsage } from './models';
 import type { ModelRetryAdviceRequest } from './model-retry';
 import {
   ResponsesWebSocketModel,
+  bindResponsesSocketReplacementCheck,
   markResponsesSocketFrame,
+  responsesSocketFrameKind,
+  responsesSocketScope,
   type ResponsesSocket,
   type ResponsesSocketFactory,
 } from './responses-websocket-model';
@@ -41,12 +45,25 @@ type ActiveResponse = {
   responseId?: string;
   pending: Set<string>;
   emitted: Set<string>;
+  passive: Set<string>;
   queued: JsonObject[];
   injecting?: Set<string>;
   terminal?: JsonObject;
   bytes: number;
 };
-type Run = { active?: ActiveResponse; request?: ModelRequest };
+type SocketEnvelope =
+  ReturnType<
+    ResponsesSocket[typeof Symbol.asyncIterator]
+  > extends AsyncIterableIterator<infer Envelope>
+    ? Envelope
+    : never;
+type Run = {
+  active?: ActiveResponse;
+  request?: ModelRequest;
+  replacementFailure?: Error;
+  socketScope?: string;
+  recovered?: { frames: SocketEnvelope[]; bytes: number };
+};
 const collaboration = new Set([
   'agent_message',
   'multi_agent_call',
@@ -87,6 +104,10 @@ export class HostedResponsesWebSocketModel implements NativeModel {
           run = {};
           this.#runs.set(request.runOwner, run);
         }
+        if (run.replacementFailure) throw run.replacementFailure;
+        const scope = responsesSocketScope(transport);
+        if (run.socketScope !== undefined && run.socketScope !== scope)
+          throw new TypeError('Hosted run cannot change transport scope');
         const headers = { ...transport.headers };
         const betas: string[] = [];
         for (const key of Object.keys(headers))
@@ -103,6 +124,7 @@ export class HostedResponsesWebSocketModel implements NativeModel {
           ...new Set([...betas, 'responses_multi_agent=v1']),
         ].join(',');
         const socket = await connect(request, { ...transport, headers });
+        run.socketScope = scope;
         return hostedSocket(socket, run, config);
       },
       model,
@@ -146,8 +168,11 @@ export class HostedResponsesWebSocketModel implements NativeModel {
     return this.#transport.getRetryAdvice(request);
   }
   async cleanupOnRunEnd(owner: ModelRunOwner): Promise<void> {
-    await this.#transport.cleanupOnRunEnd(owner);
-    this.#runs.delete(owner);
+    try {
+      await this.#transport.cleanupOnRunEnd(owner);
+    } finally {
+      this.#runs.delete(owner);
+    }
   }
 }
 function object(value: JsonValue | undefined): JsonObject | undefined {
@@ -163,6 +188,37 @@ function stable(item: JsonObject): boolean {
         item.phase === 'final_answer'))
   );
 }
+function isProgramItem(item: JsonObject): boolean {
+  return item.type === 'program' || item.type === 'program_output';
+}
+function programItemKey(item: JsonObject): string {
+  return JSON.stringify([
+    item.type,
+    typeof item.call_id === 'string' ? item.call_id : null,
+  ]);
+}
+function responseConfiguration(frame: JsonObject): object {
+  const {
+    input,
+    previous_response_id: _previousResponse,
+    stream: _httpStream,
+    betas: _headerBetas,
+    // Native client metadata describes the current request, not the Agent.
+    client_metadata: _clientMetadata,
+    ...configuration
+  } = frame;
+  // Core puts the active declaration instructions in developer input.
+  const developer = Array.isArray(input)
+    ? input.flatMap((value) => {
+        const item = object(value);
+        return item?.type === 'message' && item.role === 'developer'
+          ? [item.content]
+          : [];
+      })
+    : [];
+  return { ...configuration, developer };
+}
+
 function hostedSocket(
   socket: ResponsesSocket,
   run: Run,
@@ -174,6 +230,21 @@ function hostedSocket(
       throw new TypeError('Hosted transport requires an active native request');
     return run.request;
   };
+  let producer: AsyncIterableIterator<SocketEnvelope> | undefined;
+  let ownedActive: ActiveResponse | undefined;
+  let paused = false;
+  let retiring = false;
+  const recover = (envelope: SocketEnvelope) => {
+    if (envelope.type !== 'message') return;
+    const queue = (run.recovered ??= { frames: [], bytes: 0 });
+    queue.bytes += Buffer.byteLength(JSON.stringify(envelope.message));
+    if (
+      queue.bytes > maxResponseBytes * 2 ||
+      queue.frames.length >= maxResponseItems * 2
+    )
+      throw new RangeError('Hosted recovery exceeds the native retained limit');
+    queue.frames.push(envelope);
+  };
   const create = (frame: JsonObject, emitted = new Set<string>()) => {
     request().signal?.throwIfAborted();
     const bytes = Buffer.byteLength(JSON.stringify(frame));
@@ -184,16 +255,18 @@ function hostedSocket(
     const lineage = accountProviderRequest(request(), { operation: 'create' });
     if (!lineage)
       throw new TypeError('Hosted create requires a native request lineage');
-    run.active = {
+    run.active = ownedActive = {
       create: frame,
       lineage,
       pending: new Set(),
       acknowledgedOutputs: new Map(),
       acknowledgedUserItems: new Map(),
       emitted,
+      passive: new Set(),
       queued: [],
       bytes,
     };
+    paused = false;
     accountProviderRequest(request(), { operation: 'dispatch', lineage });
     socket.send({
       ...frame,
@@ -267,11 +340,142 @@ function hostedSocket(
     }
     create(next, active.emitted);
   };
-  return {
+  const checkedContinuation = (
+    active: ActiveResponse,
+    frame: JsonObject,
+  ): JsonObject[] => {
+    const input = Array.isArray(frame.input)
+      ? frame.input
+          .map(object)
+          .filter((item): item is JsonObject => Boolean(item))
+      : [];
+    const originalUserIds = new Set(
+      Array.isArray(active.create.input)
+        ? active.create.input
+            .map(object)
+            .filter((item) => item?.role === 'user')
+            .map((item) => item?.id)
+        : [],
+    );
+    const continuationInput = input.filter((item) => {
+      if (item.type === 'function_call_output')
+        return (
+          typeof item.call_id === 'string' && active.pending.has(item.call_id)
+        );
+      return (
+        item.type === 'message' &&
+        item.role === 'user' &&
+        typeof item.id === 'string' &&
+        !originalUserIds.has(item.id) &&
+        !active.acknowledgedUserItems.has(item.id)
+      );
+    });
+    const ids = new Set(
+      continuationInput
+        .filter((item) => item.type === 'function_call_output')
+        .map((item) => item.call_id as string),
+    );
+    if (
+      !active.responseId ||
+      !ids.size ||
+      [...active.pending].some((id) => !ids.has(id))
+    )
+      throw new TypeError(
+        'Hosted response requires the matching local function outputs',
+      );
+    return continuationInput;
+  };
+  const transport: ResponsesSocket = {
     get socket() {
       return socket.socket;
     },
-    close: () => socket.close(),
+    close: async () => {
+      const active = ownedActive;
+      const physicallyRetiring =
+        socket.socket.readyState === 2 || socket.socket.readyState === 3;
+      const previousActive = run.active;
+      const retaining = active !== undefined && previousActive === active;
+      const reconcile =
+        paused &&
+        run.request &&
+        !run.request.signal.aborted &&
+        active &&
+        !active.terminalReported;
+      const closed =
+        socket.socket.readyState === 3
+          ? undefined
+          : new Promise<void>((resolve) =>
+              socket.socket.once('close', () => resolve()),
+            );
+      socket.close();
+      await closed;
+      if (!reconcile || !producer || !active || run.request?.signal.aborted)
+        return;
+      run.active = active;
+      retiring = true;
+      const admitted = new Set(active.passive);
+      const admittedCalls = new Set(active.emitted);
+      const deadline = AbortSignal.any([
+        request().signal,
+        AbortSignal.timeout(1000),
+      ]);
+      let stop: () => void = () => {};
+      const stopped = new Promise<never>((_, reject) => {
+        stop = () => reject(new Error('Hosted closed response did not settle'));
+        if (deadline.aborted) stop();
+        else deadline.addEventListener('abort', stop, { once: true });
+      });
+      try {
+        for (;;) {
+          const next = await Promise.race([producer.next(), stopped]);
+          if (next.done) break;
+          const envelope = next.value;
+          if (envelope.type !== 'message') continue;
+          const kind = responsesSocketFrameKind(envelope);
+          if (kind === 'raw') recover(envelope);
+          else if (kind === 'projected') {
+            const event = losslessJsonObjectSchema.parse(envelope.message);
+            const item = object(event.item);
+            if (
+              item?.type === 'function_call' &&
+              !admittedCalls.has(item.call_id as string)
+            )
+              throw new TypeError(
+                'Closed hosted response contains an unadmitted function call',
+              );
+            if (
+              item?.type === 'program_output' &&
+              admitted.has(JSON.stringify(['program', item.call_id])) &&
+              !admitted.has(programItemKey(item))
+            ) {
+              recover(envelope);
+              admitted.add(programItemKey(item));
+            }
+            if (terminal.has(String(event.type)) && active.terminalReported)
+              break;
+          }
+        }
+      } catch (error) {
+        run.replacementFailure ??=
+          error instanceof Error
+            ? error
+            : new Error('Hosted response reconciliation failed', {
+                cause: error,
+              });
+      } finally {
+        deadline.removeEventListener('abort', stop);
+        retiring = false;
+        run.active = retaining ? active : previousActive;
+      }
+      if (
+        (retaining || physicallyRetiring) &&
+        !active.terminalReported &&
+        !run.replacementFailure
+      )
+        run.replacementFailure = new TypeError(
+          'Closed hosted response has no genuine terminal',
+        );
+    },
     send(value) {
       const {
         stream: _httpStream,
@@ -283,45 +487,12 @@ function hostedSocket(
         create(frame);
         return;
       }
-      const input = Array.isArray(frame.input)
-        ? frame.input
-            .map(object)
-            .filter((item): item is JsonObject => Boolean(item))
-        : [];
-      const originalUserIds = new Set(
-        Array.isArray(active.create.input)
-          ? active.create.input
-              .map(object)
-              .filter((item) => item?.role === 'user')
-              .map((item) => item?.id)
-          : [],
-      );
-      const continuationInput = input.filter((item) => {
-        if (item.type === 'function_call_output')
-          return (
-            typeof item.call_id === 'string' && active.pending.has(item.call_id)
-          );
-        return (
-          item.type === 'message' &&
-          item.role === 'user' &&
-          typeof item.id === 'string' &&
-          !originalUserIds.has(item.id) &&
-          !active.acknowledgedUserItems.has(item.id)
-        );
-      });
+      const continuationInput = checkedContinuation(active, frame);
       const ids = new Set(
         continuationInput
           .filter((item) => item.type === 'function_call_output')
           .map((item) => item.call_id as string),
       );
-      if (
-        !active.responseId ||
-        !ids.size ||
-        [...active.pending].some((id) => !ids.has(id))
-      )
-        throw new TypeError(
-          'Hosted response requires the matching local function outputs',
-        );
       if (active.terminal) {
         fallback(active, frame, continuationInput);
         return;
@@ -332,6 +503,7 @@ function hostedSocket(
         throw new RangeError(
           'Hosted response exceeds the native retained-byte limit',
         );
+      paused = false;
       active.continuation = frame;
       active.injectionInput = continuationInput;
       active.injecting = ids;
@@ -345,205 +517,306 @@ function hostedSocket(
         input: continuationInput,
       } as unknown as Parameters<ResponsesSocket['send']>[0]);
     },
-    async *[Symbol.asyncIterator]() {
-      try {
-        for (;;) {
-          const next = await iterator.next();
-          if (next.done) return;
-          const envelope = next.value;
-          if (envelope.type !== 'message') {
-            yield envelope;
-            continue;
-          }
-          const event = losslessJsonObjectSchema.parse(envelope.message);
-          const active = run.active;
-          if (!active) throw new Error('Hosted response has no active owner');
-          active.bytes += Buffer.byteLength(JSON.stringify(event));
-          if (active.bytes > maxResponseBytes)
-            throw new RangeError(
-              'Hosted response exceeds the native retained-byte limit',
-            );
-          yield markResponsesSocketFrame(envelope, 'raw');
-          const response = object(event.response);
-          if (event.type === 'response.created') {
-            if (!response || typeof response.id !== 'string' || !response.id)
-              throw new TypeError('Hosted response requires a response ID');
-            active.template = copyJsonValue(response) as JsonObject;
-            active.responseId = response.id;
-            yield markResponsesSocketFrame({ ...envelope }, 'projected');
-          } else if (event.type === 'response.output_item.done') {
-            const item = object(event.item);
-            if (
-              item?.type === 'function_call' &&
-              typeof item.call_id === 'string' &&
-              !active.emitted.has(item.call_id) &&
-              !active.pending.has(item.call_id)
-            ) {
+    [Symbol.asyncIterator]() {
+      return (producer ??= (async function* () {
+        try {
+          const recovered = run.recovered;
+          run.recovered = undefined;
+          if (recovered) yield* recovered.frames;
+          for (;;) {
+            const next = await iterator.next();
+            if (next.done) return;
+            const envelope = next.value;
+            if (envelope.type !== 'message') {
+              yield envelope;
+              continue;
+            }
+            const event = losslessJsonObjectSchema.parse(envelope.message);
+            const active = run.active;
+            if (!active) throw new Error('Hosted response has no active owner');
+            active.bytes += Buffer.byteLength(JSON.stringify(event));
+            if (active.bytes > maxResponseBytes)
+              throw new RangeError(
+                'Hosted response exceeds the native retained-byte limit',
+              );
+            yield markResponsesSocketFrame(envelope, 'raw');
+            const response = object(event.response);
+            if (event.type === 'response.created') {
+              if (!response || typeof response.id !== 'string' || !response.id)
+                throw new TypeError('Hosted response requires a response ID');
+              active.template = copyJsonValue(response) as JsonObject;
+              active.responseId = response.id;
+              yield markResponsesSocketFrame({ ...envelope }, 'projected');
+            } else if (event.type === 'response.output_item.done') {
+              const item = object(event.item);
               if (
-                active.emitted.size + active.queued.length >=
-                maxResponseItems
+                item &&
+                (isProgramItem(item) ||
+                  (item.type === 'function_call' &&
+                    typeof item.call_id === 'string' &&
+                    !active.emitted.has(item.call_id) &&
+                    !active.pending.has(item.call_id)))
+              ) {
+                if (
+                  active.emitted.size +
+                    active.passive.size +
+                    active.queued.length >=
+                  maxResponseItems
+                )
+                  throw new RangeError(
+                    'Hosted response exceeds the native output-item limit',
+                  );
+                if (item.type === 'function_call')
+                  active.pending.add(item.call_id as string);
+                active.queued.push(copyJsonValue(item) as JsonObject);
+              }
+            } else if (event.type === 'response.inject.created') {
+              if (active.injecting) {
+                let afterCallId: string | undefined;
+                for (const item of active.injectionInput ?? []) {
+                  if (
+                    item.type === 'function_call_output' &&
+                    typeof item.call_id === 'string'
+                  ) {
+                    afterCallId = item.call_id;
+                    active.acknowledgedOutputs.set(afterCallId, item);
+                  } else if (typeof item.id === 'string') {
+                    active.acknowledgedUserItems.set(item.id, {
+                      afterCallId,
+                      item,
+                    });
+                  }
+                }
+                for (const id of active.injecting) active.pending.delete(id);
+                active.injectionInput = undefined;
+                active.injecting = undefined;
+              }
+            } else if (
+              event.type === 'response.inject.failed' &&
+              object(event.error)?.code === 'response_already_completed'
+            ) {
+              active.fallbackInput = active.injectionInput;
+              for (const id of active.injecting ?? [])
+                active.pending.delete(id);
+              active.injecting = undefined;
+            } else if (
+              event.type === 'response.inject.failed' ||
+              event.type === 'response.error' ||
+              event.type === 'error'
+            ) {
+              throw new Error(
+                'Hosted response rejected the provider operation',
+                {
+                  cause: event.error,
+                },
+              );
+            } else if (terminal.has(String(event.type))) {
+              if (active.terminalReported)
+                throw new TypeError(
+                  'Hosted response received more than one terminal',
+                );
+              if (
+                Array.isArray(response?.output) &&
+                response.output.length > maxResponseItems
               )
                 throw new RangeError(
                   'Hosted response exceeds the native output-item limit',
                 );
-              active.pending.add(item.call_id);
-              active.queued.push(copyJsonValue(item) as JsonObject);
-            }
-          } else if (event.type === 'response.inject.created') {
-            if (active.injecting) {
-              let afterCallId: string | undefined;
-              for (const item of active.injectionInput ?? []) {
+              const measured = projectResponsesUsage(response?.usage);
+              accountProviderRequest(request(), {
+                operation: 'terminal',
+                lineage: active.lineage,
+                ...(measured ? { usage: addRunUsage(null, measured) } : {}),
+              });
+              active.terminalReported = true;
+              active.terminal = copyJsonValue(event) as JsonObject;
+              // Terminal snapshots can settle a Program before a failed injection falls back.
+              const queuedPrograms = new Set(
+                active.queued.filter(isProgramItem).map(programItemKey),
+              );
+              for (const value of Array.isArray(response?.output)
+                ? response.output
+                : []) {
+                const item = object(value);
                 if (
-                  item.type === 'function_call_output' &&
-                  typeof item.call_id === 'string'
+                  item &&
+                  isProgramItem(item) &&
+                  !active.passive.has(programItemKey(item)) &&
+                  !queuedPrograms.has(programItemKey(item))
                 ) {
-                  afterCallId = item.call_id;
-                  active.acknowledgedOutputs.set(afterCallId, item);
-                } else if (typeof item.id === 'string') {
-                  active.acknowledgedUserItems.set(item.id, {
-                    afterCallId,
-                    item,
-                  });
+                  if (
+                    active.emitted.size +
+                      active.passive.size +
+                      active.queued.length >=
+                    maxResponseItems
+                  )
+                    throw new RangeError(
+                      'Hosted response exceeds the native output-item limit',
+                    );
+                  active.queued.push(copyJsonValue(item) as JsonObject);
+                  queuedPrograms.add(programItemKey(item));
                 }
               }
-              for (const id of active.injecting) active.pending.delete(id);
-              active.injectionInput = undefined;
-              active.injecting = undefined;
             }
-          } else if (
-            event.type === 'response.inject.failed' &&
-            object(event.error)?.code === 'response_already_completed'
-          ) {
-            active.fallbackInput = active.injectionInput;
-            for (const id of active.injecting ?? []) active.pending.delete(id);
-            active.injecting = undefined;
-          } else if (
-            event.type === 'response.inject.failed' ||
-            event.type === 'response.error' ||
-            event.type === 'error'
-          ) {
-            throw new Error('Hosted response rejected the provider operation', {
-              cause: event.error,
-            });
-          } else if (terminal.has(String(event.type))) {
-            if (active.terminalReported)
-              throw new TypeError(
-                'Hosted response received more than one terminal',
-              );
             if (
-              Array.isArray(response?.output) &&
-              response.output.length > maxResponseItems
-            )
-              throw new RangeError(
-                'Hosted response exceeds the native output-item limit',
+              active.terminal &&
+              !retiring &&
+              active.fallbackInput?.length &&
+              !active.injecting
+            ) {
+              if (!active.continuation)
+                throw new TypeError(
+                  'Hosted fallback requires its original continuation',
+                );
+              // Preserve the existing fallback priority over queued function callbacks.
+              for (const item of active.queued) {
+                if (!isProgramItem(item)) continue;
+                active.passive.add(programItemKey(item));
+                yield markResponsesSocketFrame(
+                  {
+                    type: 'message',
+                    message: { type: 'response.output_item.done', item },
+                  } as unknown as typeof envelope,
+                  'projected',
+                );
+              }
+              fallback(active, active.continuation, active.fallbackInput);
+              continue;
+            }
+            if (active.queued.length && !active.injecting) {
+              if (!active.template || !active.responseId)
+                throw new TypeError(
+                  'Hosted function call preceded response creation',
+                );
+              const items = active.queued.splice(0);
+              const calls = items.filter(
+                (item) => item.type === 'function_call',
               );
-            const measured = projectResponsesUsage(response?.usage);
-            accountProviderRequest(request(), {
-              operation: 'terminal',
-              lineage: active.lineage,
-              ...(measured ? { usage: addRunUsage(null, measured) } : {}),
-            });
-            active.terminalReported = true;
-            active.terminal = copyJsonValue(event) as JsonObject;
-          }
-          if (
-            active.terminal &&
-            active.fallbackInput?.length &&
-            !active.injecting
-          ) {
-            if (!active.continuation)
-              throw new TypeError(
-                'Hosted fallback requires its original continuation',
+              for (const item of items) {
+                if (isProgramItem(item))
+                  active.passive.add(programItemKey(item));
+                else active.emitted.add(item.call_id as string);
+              }
+              for (const [output_index, item] of items.entries())
+                yield markResponsesSocketFrame(
+                  {
+                    type: 'message',
+                    message: {
+                      type: 'response.output_item.done',
+                      output_index,
+                      item,
+                    },
+                  } as unknown as typeof envelope,
+                  'projected',
+                );
+              if (calls.length) {
+                paused = true;
+                yield markResponsesSocketFrame(
+                  {
+                    type: 'message',
+                    message: {
+                      type: 'response.completed',
+                      response: {
+                        ...active.template,
+                        id: active.responseId,
+                        status: 'completed',
+                        output: items,
+                        usage: null,
+                      },
+                    },
+                  } as unknown as typeof envelope,
+                  'projected',
+                );
+                continue;
+              }
+            }
+            if (active.terminal && !active.injecting) {
+              const saved = active.terminal;
+              const completed = object(saved.response);
+              if (!completed)
+                throw new TypeError('Hosted terminal requires a response');
+              const output = Array.isArray(completed.output)
+                ? completed.output
+                    .map(object)
+                    .filter((item): item is JsonObject => Boolean(item))
+                : [];
+              const supported = output.filter(
+                (item) =>
+                  stable(item) &&
+                  !(
+                    isProgramItem(item) &&
+                    active.passive.has(programItemKey(item))
+                  ) &&
+                  !(
+                    item.type === 'function_call' &&
+                    typeof item.call_id === 'string' &&
+                    active.emitted.has(item.call_id)
+                  ),
               );
-            fallback(active, active.continuation, active.fallbackInput);
-            continue;
-          }
-          if (active.queued.length && !active.injecting) {
-            if (!active.template || !active.responseId)
-              throw new TypeError(
-                'Hosted function call preceded response creation',
-              );
-            const calls = active.queued.splice(0);
-            for (const item of calls)
-              active.emitted.add(item.call_id as string);
-            for (const [output_index, item] of calls.entries())
+              paused = false;
+              run.active = undefined;
+              for (const [output_index, item] of supported.entries())
+                yield markResponsesSocketFrame(
+                  {
+                    type: 'message',
+                    message: {
+                      type: 'response.output_item.done',
+                      output_index,
+                      item,
+                    },
+                  } as unknown as typeof envelope,
+                  'projected',
+                );
               yield markResponsesSocketFrame(
                 {
                   type: 'message',
                   message: {
-                    type: 'response.output_item.done',
-                    output_index,
-                    item,
+                    ...saved,
+                    response: {
+                      ...completed,
+                      output: supported,
+                    },
                   },
                 } as unknown as typeof envelope,
                 'projected',
               );
-            yield markResponsesSocketFrame(
-              {
-                type: 'message',
-                message: {
-                  type: 'response.completed',
-                  response: {
-                    ...active.template,
-                    id: active.responseId,
-                    status: 'completed',
-                    output: calls,
-                    usage: null,
-                  },
-                },
-              } as unknown as typeof envelope,
-              'projected',
-            );
-          } else if (active.terminal && !active.injecting) {
-            const saved = active.terminal;
-            const completed = object(saved.response);
-            if (!completed)
-              throw new TypeError('Hosted terminal requires a response');
-            const output = Array.isArray(completed.output)
-              ? completed.output
-                  .map(object)
-                  .filter((item): item is JsonObject => Boolean(item))
-              : [];
-            const supported = output.filter(
-              (item) =>
-                stable(item) &&
-                !(
-                  item.type === 'function_call' &&
-                  typeof item.call_id === 'string' &&
-                  active.emitted.has(item.call_id)
-                ),
-            );
-            run.active = undefined;
-            for (const [output_index, item] of supported.entries())
-              yield markResponsesSocketFrame(
-                {
-                  type: 'message',
-                  message: {
-                    type: 'response.output_item.done',
-                    output_index,
-                    item,
-                  },
-                } as unknown as typeof envelope,
-                'projected',
-              );
-            yield markResponsesSocketFrame(
-              {
-                type: 'message',
-                message: {
-                  ...saved,
-                  response: {
-                    ...completed,
-                    output: supported,
-                  },
-                },
-              } as unknown as typeof envelope,
-              'projected',
-            );
+            }
           }
+        } finally {
+          await iterator.return?.();
         }
-      } finally {
-        await iterator.return?.();
-      }
+      })());
     },
   };
+  return bindResponsesSocketReplacementCheck(
+    transport,
+    (frame, scopeChanged) => {
+      const active = run.active;
+      if (active && scopeChanged) {
+        run.replacementFailure = new TypeError(
+          'Active hosted response cannot change transport scope',
+        );
+        return true;
+      }
+      if (
+        !active ||
+        active.terminal ||
+        isDeepStrictEqual(
+          responseConfiguration(active.create),
+          responseConfiguration(frame),
+        )
+      )
+        return false;
+      checkedContinuation(active, frame);
+      if (frame.previous_response_id === active.responseId) {
+        if (typeof active.create.previous_response_id === 'string')
+          frame.previous_response_id = active.create.previous_response_id;
+        else delete frame.previous_response_id;
+      }
+      // A paused response accepts input injection only. Replay the new native
+      // request on its own socket, without treating the old pause as a terminal.
+      run.active = undefined;
+      return true;
+    },
+  );
 }

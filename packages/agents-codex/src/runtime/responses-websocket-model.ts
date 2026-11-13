@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { ResponsesWS } from 'openai/resources/responses/ws';
 import {
   copyJsonValue,
@@ -40,6 +41,38 @@ type SocketEnvelope =
     ? Envelope
     : never;
 const socketFrameKinds = new WeakMap<object, 'raw' | 'projected'>();
+const socketReplacementChecks = new WeakMap<
+  ResponsesSocket,
+  (frame: JsonObject, scopeChanged: boolean) => boolean
+>();
+
+/** @internal Scope one hosted run to the same selected headers and query. */
+export function responsesSocketScope(options: ResponsesSocketOptions): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        headers: options.headers,
+        query: options.query,
+      }),
+    )
+    .digest('hex');
+}
+
+/** @internal A hosted response can require a fresh socket for a new profile. */
+export function bindResponsesSocketReplacementCheck(
+  socket: ResponsesSocket,
+  check: (frame: JsonObject, scopeChanged: boolean) => boolean,
+): ResponsesSocket {
+  socketReplacementChecks.set(socket, check);
+  return socket;
+}
+
+/** @internal Reuse the existing wire marker when retiring a hosted iterator. */
+export function responsesSocketFrameKind(
+  envelope: SocketEnvelope,
+): 'raw' | 'projected' | undefined {
+  return socketFrameKinds.get(envelope);
+}
 
 /** @internal Hosted transport distinguishes provider frames from local projection. */
 export function markResponsesSocketFrame(
@@ -132,14 +165,25 @@ export class ResponsesWebSocketModel implements NativeModel {
     try {
       const body = copyJsonValue(request.body) as JsonObject;
       const options = await clientRequestOptions(this.#requestOptions, request);
-      const key = JSON.stringify({
-        headers: options.headers,
-        query: options.query,
-      });
+      const key = responsesSocketScope(options);
+      const { stream: _httpStream, ...frameBody } = body;
+      const frame = {
+        ...frameBody,
+        model: this.model ?? body.model,
+        ...(this.#promptCacheKey === undefined
+          ? {}
+          : { prompt_cache_key: this.#promptCacheKey }),
+        type: 'response.create',
+      };
       const readyState = owner.connection?.socket.socket.readyState;
       if (
         owner.connection &&
-        (owner.connection.key !== key || (readyState !== 0 && readyState !== 1))
+        (socketReplacementChecks.get(owner.connection.socket)?.(
+          frame,
+          owner.connection.key !== key,
+        ) ||
+          owner.connection.key !== key ||
+          (readyState !== 0 && readyState !== 1))
       ) {
         await closeConnection(owner.connection);
         owner.connection = undefined;
@@ -175,15 +219,7 @@ export class ResponsesWebSocketModel implements NativeModel {
       request.signal.throwIfAborted();
       if (owner.retired) throw new TypeError('Responses socket owner retired');
       sent = true;
-      const { stream: _httpStream, ...frameBody } = body;
-      connection.socket.send({
-        ...frameBody,
-        model: this.model ?? body.model,
-        ...(this.#promptCacheKey === undefined
-          ? {}
-          : { prompt_cache_key: this.#promptCacheKey }),
-        type: 'response.create',
-      } as Parameters<ResponsesSocket['send']>[0]);
+      connection.socket.send(frame as Parameters<ResponsesSocket['send']>[0]);
       const deadline =
         options.timeout === undefined
           ? undefined
@@ -281,9 +317,12 @@ export class ResponsesWebSocketModel implements NativeModel {
     owner.retired = true;
     return (owner.cleanup ??= (async () => {
       await owner.opening?.catch(() => {});
-      if (owner.connection)
-        await this.#closeAfterRequest(owner.connection, false);
-      owner.connection = undefined;
+      try {
+        if (owner.connection)
+          await this.#closeAfterRequest(owner.connection, false);
+      } finally {
+        owner.connection = undefined;
+      }
     })());
   }
 }
