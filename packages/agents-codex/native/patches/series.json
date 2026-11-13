@@ -1095,7 +1095,11 @@
     {
       "path": "sdk-portable-realtime-response-extensions.patch",
       "sha256": "fccc9dcab7f0af9ca1e37d12b27e36cdba9d58b1e7981662a56a4b050c8bffbd"
+    },
+    {
+      "path": "sdk-websocket-dispatch-order.patch",
+      "sha256": "f4a1f14bc5bdb7199aefb987b3b3dc7bd90d9ea8a5bd3bc884b8fd4b5dbb1e99"
     }
   ],
-  "result_tree": "c32ab95caf9d7fc2c5c8209c170fba777da0ed14"
+  "result_tree": "54e31978e0bd307919c58308eb708b5a708829df"
 }

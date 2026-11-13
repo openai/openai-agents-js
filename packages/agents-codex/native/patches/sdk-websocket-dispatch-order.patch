@@ -1,0 +1,66 @@
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -2893,25 +2893,36 @@
+             )?;
+             let mut websocket_metadata = responses_metadata.clone();
+             let mut interceptor_metadata = None;
+-            let interceptors = crate::model_request::prepare_with_attempts(
+-                &self.client.request_contributors,
+-                &self.client.state.thread_id.to_string(),
+-                &model_info.slug,
+-                request.model.is_none(),
+-                if warmup {
+-                    codex_extension_api::ModelRequestKind::Warmup
+-                } else {
+-                    codex_extension_api::ModelRequestKind::Generation
+-                },
+-                &mut interceptor_metadata,
+-                prompt.tool_admission.clone(),
+-                responses_metadata.sdk_request_attempts.clone().map(|route| {
+-                    Arc::new(route) as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
+-                }),
+-            );
++            let request_contributors = self.client.request_contributors.clone();
++            let thread_id = self.client.state.thread_id.to_string();
++            let prepare_interceptors = |model_omitted, metadata: &mut Option<HashMap<String, String>>| {
++                crate::model_request::prepare_with_attempts(
++                    &request_contributors,
++                    &thread_id,
++                    &model_info.slug,
++                    model_omitted,
++                    if warmup {
++                        codex_extension_api::ModelRequestKind::Warmup
++                    } else {
++                        codex_extension_api::ModelRequestKind::Generation
++                    },
++                    metadata,
++                    prompt.tool_admission.clone(),
++                    responses_metadata.sdk_request_attempts.clone().map(|route| {
++                        Arc::new(route) as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
++                    }),
++                )
++            };
++            // Cursor admission must precede connection negotiation. Other owners
++            // acquire their interceptor only after the physical connection exists.
++            let history_interceptors = self.client.provider_history.as_ref().map(|_| {
++                prepare_interceptors(request.model.is_none(), &mut interceptor_metadata)
++            });
+             let mut logical_history_input = None;
+             let require_existing = if let Some(cursor) = &self.client.provider_history {
+-                if interceptors.iter().any(|interceptor| interceptor.produces_response()) {
++                if history_interceptors.as_ref().is_some_and(|interceptors| {
++                    interceptors.iter().any(|interceptor| interceptor.produces_response())
++                }) {
+                     return Err(CodexErr::InvalidRequest("Provider history requires a supported owning Responses transport".into()));
+                 }
+                 let url = client_setup.api_provider.websocket_url_for_path("/responses")
+@@ -3107,6 +3118,9 @@
+                 client_setup.auth.as_ref(),
+                 &responses_headers,
+             );
++            let interceptors = history_interceptors.unwrap_or_else(|| {
++                prepare_interceptors(ws_payload.model.is_none(), &mut ws_payload.client_metadata)
++            });
+             let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
+             stamp_ws_stream_request_start_ms(&mut ws_request);
+             let ResponsesWsRequest::ResponseCreate(payload) = &ws_request;
