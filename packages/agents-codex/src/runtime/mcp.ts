@@ -3,6 +3,7 @@ import { projectMcpToolNames } from './mcp-names';
 /** @internal */
 export { projectMcpToolNames } from './mcp-names';
 import {
+  encode,
   jsonObject,
   losslessJsonObjectSchema,
   type JsonObject,
@@ -226,6 +227,29 @@ export interface MCPResultContext<Context = unknown> {
   readonly serverName: string;
   readonly toolName: string;
 }
+
+/** One detached server-authored tool definition, before native name projection. */
+export interface MCPToolDefinition {
+  name: string;
+  inputSchema: JsonObject;
+  title?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+/** Admitted discovery owner, without a synthetic tool call ID. */
+export interface MCPDiscoveryContext<Context = unknown> {
+  readonly agent: import('./public-agent').Agent<Context, any> | undefined;
+  readonly serverName: string;
+  readonly runContext: {
+    readonly context: Context;
+    readonly submission: ToolCallContext<Context>['submission'];
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly stepIndex: number;
+    readonly signal: AbortSignal;
+  };
+}
 /** Captured MCP inputs and naming for application-only result extraction. */
 export interface MCPApplicationDataContext<
   Context = unknown,
@@ -240,6 +264,17 @@ export interface MCPOptions<Context = unknown> {
   name: string;
   /** Selected raw tool names. Use [] for a resource-only server. */
   tools: readonly string[];
+  /**
+   * Per-discovery narrowing with the current admitted text context.
+   * Realtime and SIP omit tools from filtered MCP declarations. Use a separate
+   * declaration with an approval callback for Realtime MCP authorization.
+   */
+  toolFilter?: (
+    context: MCPDiscoveryContext<Context>,
+    tool: MCPToolDefinition,
+  ) => boolean | Promise<boolean>;
+  /** Raw native list caching; omission preserving native defaults. */
+  cacheToolsList?: boolean;
   /** Follow native rules (default), or preapprove selected tools. Application approval still applies. */
   approvalMode?: 'native' | 'preapproved';
   /** Inspect or replace arguments before native dispatch; has a 30-second deadline. */
@@ -273,6 +308,8 @@ abstract class MCP<Context> {
   readonly deferLoading: boolean;
   readonly name: string;
   readonly tools: readonly string[];
+  readonly toolFilter?: MCPOptions<Context>['toolFilter'];
+  readonly cacheToolsList?: boolean;
   readonly approvalMode: 'native' | 'preapproved';
   readonly startupTimeout: number;
   readonly executionTimeout: number;
@@ -284,6 +321,24 @@ abstract class MCP<Context> {
   readonly requestMetadata?: MCPOptions<Context>['requestMetadata'];
 
   constructor(options: MCPOptions<Context>) {
+    if (
+      options.toolFilter !== undefined &&
+      typeof options.toolFilter !== 'function'
+    )
+      throw new TypeError('MCP toolFilter must be callable');
+    if (
+      options.cacheToolsList !== undefined &&
+      typeof options.cacheToolsList !== 'boolean'
+    )
+      throw new TypeError('MCP cacheToolsList must be a boolean');
+    if (
+      options.name === 'codex_apps' &&
+      (options.toolFilter !== undefined || options.cacheToolsList !== undefined)
+    )
+      throw new TypeError('MCP discovery controls require an ordinary server');
+    this.toolFilter = options.toolFilter;
+    Object.defineProperty(this, 'toolFilter', { enumerable: false });
+    this.cacheToolsList = options.cacheToolsList;
     if (
       options.deferLoading !== undefined &&
       typeof options.deferLoading !== 'boolean'
@@ -548,7 +603,7 @@ export class HttpMCP<Context = unknown> extends MCP<Context> {
 
 export type HostedVerificationMCPOptions<Context = unknown> = Omit<
   HttpMCPOptions<Context>,
-  'name' | 'requestMetadata'
+  'name' | 'requestMetadata' | 'toolFilter' | 'cacheToolsList'
 >;
 
 /**
@@ -565,7 +620,7 @@ export class HostedVerificationMCP<Context = unknown> extends HttpMCP<Context> {
 
 export type ChatGPTAppsMCPOptions<Context = unknown> = Omit<
   MCPOptions<Context>,
-  'name' | 'requestMetadata'
+  'name' | 'requestMetadata' | 'toolFilter' | 'cacheToolsList'
 >;
 
 /**
@@ -610,6 +665,9 @@ function mcpServerConfig(
     startup_readiness: 'connection',
     startup_timeout_sec: server.startupTimeout,
     tool_timeout_sec: server.executionTimeout,
+    ...(server.cacheToolsList === undefined
+      ? {}
+      : { sdk_cache_tools_list: server.cacheToolsList }),
     ...(server.approvalMode === 'preapproved'
       ? {
           tools: Object.fromEntries(
@@ -663,6 +721,8 @@ export function selectHttpLeaves(
     activation: server.activation,
     deferLoading: server.deferLoading,
     tools,
+    toolFilter: server.toolFilter,
+    cacheToolsList: server.cacheToolsList,
     approvalMode: server.approvalMode,
     startupTimeout: server.startupTimeout,
     executionTimeout: server.executionTimeout,
@@ -677,12 +737,52 @@ export function selectHttpLeaves(
   return selected;
 }
 
+/** @internal Derive the operation-active roster from captured descriptors. */
+export function operationMcpRoster(
+  bindings: readonly McpTool[],
+  defaults: readonly McpTool[],
+  active: readonly McpTool[],
+  names?: readonly { namespace: string; name: string }[],
+): McpTool[] {
+  const selectedNames =
+    names === undefined
+      ? undefined
+      : new Set(names.map((name) => encode([name.namespace, name.name])));
+  return bindings.flatMap((server) => {
+    if (!(server instanceof HttpMCP) || server.activation !== 'operation')
+      return defaults.filter(
+        (selected) =>
+          selected.name === server.name &&
+          (selected.tools.length > 0 ||
+            active.some((active) => active.name === selected.name)),
+      );
+    if (!server.tools.length)
+      return active.filter(
+        (active) =>
+          active.name === server.name &&
+          defaults.some((selected) => selected.name === server.name),
+      );
+    const projected = selectedNames === undefined ? [] : mcpToolNames([server]);
+    const tools =
+      selectedNames === undefined
+        ? (defaults.find((selected) => selected.name === server.name)?.tools ??
+          [])
+        : server.tools.filter((_raw, index) => {
+            const name = projected[index];
+            return selectedNames.has(encode([name.namespace, name.name]));
+          });
+    return tools.length ? [selectHttpLeaves(server, tools)] : [];
+  });
+}
+
 /** @internal Activate one ordinary resource connection without granting tools. */
 export function resourceMcpBinding(server: McpTool): McpTool {
   if (server instanceof HttpMCP) return selectHttpLeaves(server, []);
   return new StdioMCP({
     name: server.name,
     tools: [],
+    toolFilter: server.toolFilter,
+    cacheToolsList: server.cacheToolsList,
     command: server.command,
     args: server.args,
     envVars: server.envVars,
@@ -781,6 +881,15 @@ export function mcpPolicies(
 ): string {
   return JSON.stringify({
     generation: JSON.rawJSON(generation.toString()),
+    ...(servers.some((server) => server.toolFilter)
+      ? {
+          discovery_servers: Object.fromEntries(
+            servers
+              .filter((server) => server.toolFilter)
+              .map((server) => [server.name, [...server.tools]]),
+          ),
+        }
+      : {}),
     pre_policy: Object.fromEntries(
       servers
         .filter((server) => server.before || server.approval)
@@ -918,7 +1027,16 @@ export async function transformMcpResult<Context>(
     incarnation?: string | null;
     turn_id?: string;
   },
+  onCallbackFailure?: (cause: unknown) => void,
 ): Promise<JsonObject> {
+  const invoke = async <T>(callback: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await callback();
+    } catch (cause) {
+      onCallbackFailure?.(cause);
+      throw cause;
+    }
+  };
   if (
     String(notice.generation) !== generation.toString() ||
     notice.source !== 'config'
@@ -945,18 +1063,17 @@ export async function transformMcpResult<Context>(
       cell_id: notice.cell_id ?? null,
       runtime_tool_call_id: notice.runtime_tool_call_id ?? null,
     });
-    const value = await server.requestMetadata(
-      Object.freeze({
-        context,
-        submission,
-        call,
-        serverName: server.name,
-        toolName: notice.tool_name,
-        arguments: Object.freeze(
-          losslessJsonObjectSchema.parse(notice.arguments),
-        ),
-      }),
-    );
+    const metadataContext = Object.freeze({
+      context,
+      submission,
+      call,
+      serverName: server.name,
+      toolName: notice.tool_name,
+      arguments: Object.freeze(
+        losslessJsonObjectSchema.parse(notice.arguments),
+      ),
+    });
+    const value = await invoke(() => server.requestMetadata!(metadataContext));
     return value == null ? {} : losslessJsonObjectSchema.parse(value);
   }
   if (!server || (!server.transformResult && !server.extractApplicationData))
@@ -971,22 +1088,23 @@ export async function transformMcpResult<Context>(
   const original = losslessJsonObjectSchema.parse(notice.result);
   const result = server.transformResult
     ? losslessJsonObjectSchema.parse(
-        await server.transformResult(resultContext, original),
+        await invoke(() => server.transformResult!(resultContext, original)),
       )
     : original;
   let data: JsonObject | null | undefined;
   if (server.extractApplicationData) {
     if (notice.arguments === undefined || notice.callable_name === undefined)
       throw new Error('Native MCP extraction has no captured input or name');
-    data = await server.extractApplicationData(
-      Object.freeze({
-        ...resultContext,
-        arguments: Object.freeze(
-          losslessJsonObjectSchema.parse(notice.arguments),
-        ),
-        toolDisplayName: notice.callable_name,
-      }),
-      losslessJsonObjectSchema.parse(result),
+    const extractionContext = Object.freeze({
+      ...resultContext,
+      arguments: Object.freeze(
+        losslessJsonObjectSchema.parse(notice.arguments),
+      ),
+      toolDisplayName: notice.callable_name,
+    });
+    const extractionResult = losslessJsonObjectSchema.parse(result);
+    data = await invoke(() =>
+      server.extractApplicationData!(extractionContext, extractionResult),
     );
   }
   return withToolApplicationData(result, data);

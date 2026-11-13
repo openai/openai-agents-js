@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
+import { encode } from './binding';
 import { Agent, type AgentOutput } from './public-agent';
 import { NativeError } from './native-error';
 import type { CanonicalHistorySnapshot } from './history';
@@ -31,6 +32,44 @@ const consolidatedMemory = z.object({
   memory: text.min(1),
 });
 const MAX_INPUT_BYTES = 1_000_000;
+const MEMORY_MEDIA_PARTS = new Set([
+  'input_audio',
+  'input_file',
+  'input_image',
+]);
+const MEMORY_TOOL_RECORDS = new Set([
+  'apply_patch_call',
+  'apply_patch_call_output',
+  'code_interpreter_call',
+  'computer_call',
+  'computer_call_output',
+  'custom_tool_call',
+  'file_search_call',
+  'local_shell_call',
+  'local_shell_call_output',
+  'mcp_approval_request',
+  'mcp_approval_response',
+  'mcp_call',
+  'mcp_list_tools',
+  'shell_call',
+  'shell_call_output',
+  'tool_search_call',
+  'tool_search_output',
+  'web_search_call',
+]);
+
+/** @internal Terminal data from the current Session's settled source turn. */
+export interface SandboxMemoryTerminal {
+  terminal_state:
+    | 'completed'
+    | 'cancelled'
+    | 'failed'
+    | 'guardrail_tripped'
+    | 'max_turns_exceeded';
+  exception_type: string | null;
+  exception_message: string | null;
+  has_final_output: boolean;
+}
 
 interface MemoryInvocation {
   resource?: SandboxSessionLike;
@@ -237,6 +276,7 @@ export class SandboxMemoryOwner {
   async flush(
     thread: string,
     snapshot: CanonicalHistorySnapshot,
+    terminal: SandboxMemoryTerminal,
   ): Promise<void> {
     this.checkOperation('flush');
     this.active();
@@ -249,7 +289,7 @@ export class SandboxMemoryOwner {
           active: true,
         };
         try {
-          await this.flushCurrent(thread, snapshot, invocation);
+          await this.flushCurrent(thread, snapshot, terminal, invocation);
         } finally {
           invocation.active = false;
           invocation.resource = undefined;
@@ -261,6 +301,7 @@ export class SandboxMemoryOwner {
   private async flushCurrent(
     thread: string,
     snapshot: CanonicalHistorySnapshot,
+    terminal: SandboxMemoryTerminal,
     invocation: MemoryInvocation,
   ): Promise<void> {
     this.active();
@@ -269,6 +310,7 @@ export class SandboxMemoryOwner {
     const transcript = memoryTranscript(
       thread,
       snapshot,
+      terminal,
       this.resourceSessionId,
     );
     this.thread = thread;
@@ -301,7 +343,7 @@ export class SandboxMemoryOwner {
           rolloutId: thread,
           rolloutPath,
           rolloutSummaryFile,
-          terminalState: 'completed',
+          terminalState: terminal.terminal_state,
           rawMemory: artifacts.raw_memory,
         }),
       );
@@ -311,7 +353,7 @@ export class SandboxMemoryOwner {
           updatedAt,
           rolloutPath,
           sessionId: this.resourceSessionId ?? '',
-          terminalState: 'completed',
+          terminalState: terminal.terminal_state,
           rolloutSummary: artifacts.rollout_summary,
         }),
       );
@@ -351,35 +393,85 @@ export class SandboxMemoryOwner {
 }
 
 function boundedJson(value: unknown): string {
-  const encoded = JSON.stringify(value);
-  if (Buffer.byteLength(encoded) > MAX_INPUT_BYTES)
-    throw new RangeError('Native sandbox memory input exceeds 1000000 bytes');
-  return encoded;
+  try {
+    return encode(value, MAX_INPUT_BYTES);
+  } catch (cause) {
+    if (cause instanceof RangeError)
+      throw new RangeError(
+        'Native sandbox memory input exceeds 1000000 bytes',
+        {
+          cause,
+        },
+      );
+    throw cause;
+  }
 }
 
 function memoryTranscript(
   thread: string,
   snapshot: CanonicalHistorySnapshot,
+  terminal: SandboxMemoryTerminal,
   resourceSessionId?: string,
 ) {
   if (snapshot.total > 256)
     throw new RangeError(
       'Native sandbox memory supports at most 256 original records',
     );
-  const items: Array<{
-    role: string;
-    content: Array<{ type: string; text: string }>;
-  }> = [];
+  const items: Array<Record<string, unknown>> = [];
   for (const item of snapshot.items) {
-    if (item.type === 'reasoning') continue;
-    if (item.type !== 'message')
-      throw new TypeError(
-        'Native sandbox memory currently requires text message history',
-      );
+    if (item.role === 'developer' || item.role === 'system') continue;
+    if (item.type === 'function_call') {
+      if (
+        typeof item.name !== 'string' ||
+        typeof item.call_id !== 'string' ||
+        typeof item.arguments !== 'string'
+      )
+        throw new TypeError('Invalid native memory function call');
+      items.push({
+        type: item.type,
+        name: item.name,
+        call_id: item.call_id,
+        arguments: item.arguments,
+        ...(typeof item.namespace === 'string'
+          ? { namespace: item.namespace }
+          : {}),
+      });
+      continue;
+    }
+    if (
+      item.type === 'function_call_output' ||
+      item.type === 'custom_tool_call_output'
+    ) {
+      if (
+        (item.call_id != null && typeof item.call_id !== 'string') ||
+        (typeof item.output !== 'string' && !Array.isArray(item.output))
+      )
+        throw new TypeError('Invalid native memory function output');
+      items.push({
+        type: item.type,
+        ...(typeof item.call_id === 'string' ? { call_id: item.call_id } : {}),
+        ...(typeof item.name === 'string' ? { name: item.name } : {}),
+        output:
+          typeof item.output === 'string'
+            ? item.output
+            : item.output
+                .map(memoryContentPart)
+                .filter((part) => part !== null),
+      });
+      continue;
+    }
+    if (item.type !== 'message') {
+      if (typeof item.type === 'string' && MEMORY_TOOL_RECORDS.has(item.type)) {
+        const record = { ...item };
+        delete record.internal_chat_message_metadata_passthrough;
+        items.push(record);
+      }
+      continue;
+    }
     if (item.role !== 'user' && item.role !== 'assistant') continue;
     if (!Array.isArray(item.content))
       throw new TypeError('Invalid native memory message content');
-    const content: Array<{ type: string; text: string }> = [];
+    const content: Array<Record<string, unknown>> = [];
     const metadata = item.internal_chat_message_metadata_passthrough;
     const origins =
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
@@ -394,16 +486,8 @@ function memoryTranscript(
           !origins[index].startsWith('user.'))
       )
         continue;
-      if (
-        !part ||
-        typeof part !== 'object' ||
-        (part.type !== 'input_text' && part.type !== 'output_text') ||
-        typeof part.text !== 'string'
-      )
-        throw new TypeError(
-          'Native sandbox memory currently requires text message history',
-        );
-      content.push({ type: part.type, text: part.text });
+      const projected = memoryContentPart(part);
+      if (projected !== null) content.push(projected);
     }
     if (content.length) items.push({ role: item.role, content });
   }
@@ -415,11 +499,32 @@ function memoryTranscript(
       : { sandbox_session_id: resourceSessionId }),
     updated_at: new Date().toISOString(),
     terminal_metadata: {
-      terminal_state: 'completed',
+      terminal_state: terminal.terminal_state,
+      exception_type: terminal.exception_type,
+      exception_message: terminal.exception_message,
+      has_final_output: terminal.has_final_output,
       native_history_revision: snapshot.revision,
     },
     items,
   };
   boundedJson(payload);
   return payload;
+}
+
+function memoryContentPart(part: unknown): Record<string, unknown> | null {
+  if (
+    !part ||
+    typeof part !== 'object' ||
+    Array.isArray(part) ||
+    !('type' in part) ||
+    typeof part.type !== 'string'
+  )
+    throw new TypeError('Invalid native memory content');
+  if (part.type === 'input_text' || part.type === 'output_text') {
+    if (!('text' in part) || typeof part.text !== 'string')
+      throw new TypeError('Invalid native memory text');
+    return { type: part.type, text: part.text };
+  }
+  // Core has already decoded these canonical media parts.
+  return MEMORY_MEDIA_PARTS.has(part.type) ? { ...part } : null;
 }

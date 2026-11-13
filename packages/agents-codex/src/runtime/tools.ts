@@ -1,3 +1,5 @@
+import type { StandardSchemaWithJSON } from '@openai/agents-core';
+import type { SandboxSkillLease } from './sandbox-skills';
 import { isZodObject } from '@openai/agents-core/utils';
 import {
   getSchemaAndParserFromInputType,
@@ -17,6 +19,7 @@ import {
   markBackgroundToolResponse,
   type BackgroundResult,
 } from './background-result';
+import { handoffResultTarget, withHandoffResultTarget } from './handoff-result';
 import {
   decode,
   encode,
@@ -32,7 +35,11 @@ import type { WebSearch } from './web-search';
 import type { HostedTool, ClientToolSearchExecutor } from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
-import { assembleManualTool, type ManualTool } from './manual';
+import {
+  assembleManualTool,
+  copyApprovalInput,
+  type ManualTool,
+} from './manual';
 import type { NativeGoals } from './goals';
 import type { ToolCallInfo } from './call-metadata';
 import { hostedMcpBinding } from './hosted-mcp-binding';
@@ -125,7 +132,11 @@ function captureToolResponse(value: ToolResponse | ToolOutput): ToolResponse {
     value instanceof ToolOutput
       ? value.applicationData
       : toolApplicationData(value);
-  return withToolApplicationData(response, data);
+  const captured = withToolApplicationData(response, data);
+  const target = handoffResultTarget(value);
+  return target === undefined
+    ? captured
+    : withHandoffResultTarget(captured, target);
 }
 
 /** An elapsed native function callback deadline; effects are not rolled back. */
@@ -178,6 +189,8 @@ export type ToolTimeoutErrorFunction<Context = unknown> = (
 ) => string | Promise<string>;
 
 export interface ToolCallContext<Context = unknown> {
+  /** Exact JSON text of an admitted direct function call, before input policy. */
+  readonly rawArguments?: string;
   /** Provider conversation snapshot captured when this Realtime call was issued. */
   readonly history?: readonly Readonly<Record<string, unknown>>[];
   /** Detached speech usage at callback creation; excludes backend thread usage. */
@@ -209,6 +222,8 @@ const toolSessionOwners = new WeakMap<
   {
     owner: object;
     clientToolSearch?: ClientToolSearchInvocation;
+    skillLease?: SandboxSkillLease;
+    configuredAgent?: (input: string) => Promise<string>;
   }
 >();
 
@@ -217,8 +232,26 @@ export function registerToolSessionOwner(
   context: ToolCallContext,
   owner: object,
   clientToolSearch?: ClientToolSearchInvocation,
+  skillLease?: SandboxSkillLease,
+  configuredAgent?: (input: string) => Promise<string>,
 ): void {
-  toolSessionOwners.set(context, { owner, clientToolSearch });
+  toolSessionOwners.set(context, {
+    owner,
+    clientToolSearch,
+    skillLease,
+    configuredAgent,
+  });
+}
+
+/** @internal Only the original admitted declaration has been installing this owner. */
+export function invokeConfiguredAgentTool(
+  context: ToolCallContext,
+  input: string,
+): Promise<string> {
+  const invoke = toolSessionOwners.get(context)?.configuredAgent;
+  if (!invoke)
+    throw new TypeError('Configured child has no admitted parent tool owner');
+  return invoke(input);
 }
 
 // Private extension hook; retained in declarations for the sibling package.
@@ -226,6 +259,15 @@ export function _nativeToolSessionOwner(context: ToolCallContext): object {
   const owner = toolSessionOwners.get(context);
   if (!owner) throw new TypeError('Tool context has no native Session owner');
   return owner.owner;
+}
+
+/** @internal Current resource authority on an SDK-issued callback context. */
+export function _nativeSandboxSkillLease(
+  context: ToolCallContext,
+): SandboxSkillLease | undefined {
+  const owner = toolSessionOwners.get(context);
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
+  return owner.skillLease;
 }
 
 function inheritToolSessionOwner<T extends ToolCallContext>(
@@ -239,6 +281,7 @@ function inheritToolSessionOwner<T extends ToolCallContext>(
 
 export interface ToolContext<
   Context = unknown,
+  Arguments = Record<string, unknown>,
 > extends ToolCallContext<Context> {
   readonly decide: BoundDecide;
   /** Explicitly report trusted measured usage while this native invocation is admitted. */
@@ -246,7 +289,7 @@ export interface ToolContext<
   /** Detached snapshot of the model's arguments. */
   readonly originalArguments: Readonly<JsonObject>;
   /** Shallow read-only view of the validated callback arguments. */
-  readonly effectiveArguments: Readonly<Record<string, unknown>>;
+  readonly effectiveArguments: Readonly<Arguments>;
 }
 
 /** A name resolves only to a binding admitted when the Session opened. */
@@ -494,6 +537,106 @@ export function createApplyPatchTool<T extends z.ZodType, Context>(
   return tool(captured);
 }
 
+async function recoverRunToolError<Context>(
+  phase: ToolErrorContext['phase'],
+  error: unknown,
+  context: ToolCallContext<Context>,
+  admit: () => void,
+  name: string,
+  errorFunction: ToolErrorFunction<Context> | null | undefined,
+): Promise<string> {
+  const formatter = context[toolErrorFormatterBinding];
+  if (errorFunction === null || !formatter || !context.call) throw error;
+  const defaultMessage =
+    phase === 'arguments'
+      ? `Invalid arguments for function '${name}'.`
+      : `Function '${name}' failed.`;
+  admit();
+  let formatted: unknown;
+  try {
+    formatted = await formatter(
+      Object.freeze({
+        context: context.context,
+        call: context.call,
+        signal: context.signal,
+        phase,
+        defaultMessage,
+        error,
+      }),
+    );
+  } catch (failure) {
+    // Cancellation cleanup keeps its original exception and existing owner.
+    try {
+      admit();
+    } catch {
+      throw failure;
+    }
+    return defaultMessage;
+  }
+  admit();
+  return typeof formatted === 'string' ? formatted : defaultMessage;
+}
+
+async function recoverFunctionBodyError<Context>(
+  error: unknown,
+  context: ToolContext<Context>,
+  admit: () => void,
+  name: string,
+  errorFunction: ToolErrorFunction<Context> | null | undefined,
+): Promise<string> {
+  try {
+    admit();
+  } catch {
+    throw error;
+  }
+  const text = errorFunction
+    ? await errorFunction(context, error)
+    : await recoverRunToolError(
+        'execution',
+        error,
+        context,
+        admit,
+        name,
+        errorFunction,
+      );
+  admit();
+  if (typeof text !== 'string')
+    throw new TypeError('errorFunction must return a string');
+  return text;
+}
+
+function captureFunctionContext<Context, Arguments>(
+  context: ToolCallContext<Context>,
+  originalArguments: Readonly<JsonObject>,
+  effectiveArguments: Readonly<Arguments>,
+): ToolContext<Context, Arguments> {
+  const callContext: ToolContext<Context, Arguments> = {
+    ...context,
+    reportUsage: (usage, options) => {
+      const reporter = (
+        context as ToolCallContext<Context> & {
+          [usageReportBinding]?: UsageReporter;
+        }
+      )[usageReportBinding];
+      if (!reporter)
+        throw new Error(
+          'Usage reporting requires an admitted native ToolContext',
+        );
+      context.signal.throwIfAborted();
+      reporter(usage, options);
+    },
+    decide:
+      context.decide ??
+      ((() =>
+        Promise.reject(
+          new Error('Decision helper requires an admitted callback'),
+        )) as BoundDecide),
+    originalArguments,
+    effectiveArguments,
+  };
+  return inheritToolSessionOwner(callContext, context);
+}
+
 /** @internal Bind one borrowed MCP tool to the existing managed callback owner. */
 export function createNamespacedFunctionTool<Context>(options: {
   namespace: Readonly<{ name: string; description?: string }>;
@@ -504,6 +647,7 @@ export function createNamespacedFunctionTool<Context>(options: {
     args: JsonObject,
     context: ToolCallContext<Context>,
     admit: () => void,
+    recover: (error: unknown) => Promise<ToolOutput>,
   ) => Promise<ToolOutput>;
 }): FunctionTool<Context> {
   const { namespace, name, description, parameters, execute } = options;
@@ -513,6 +657,7 @@ export function createNamespacedFunctionTool<Context>(options: {
     parameters,
     namespace: namespace.name,
     namespaceDescription: namespace.description,
+    errorFunction: undefined as ToolErrorFunction<Context> | null | undefined,
     async [prepareInvocation](
       args: JsonValue,
       context: ToolCallContext<Context>,
@@ -520,13 +665,39 @@ export function createNamespacedFunctionTool<Context>(options: {
       admit: () => void,
     ) {
       admit();
+      if (
+        this.errorFunction != null &&
+        typeof this.errorFunction !== 'function'
+      )
+        throw new TypeError('errorFunction must be a function');
       const parsed = losslessJsonObjectSchema.parse(args);
+      const original = Object.freeze(structuredClone(parsed));
+      const effective = Object.freeze(structuredClone(parsed));
       const result = await invokeWithTimeout(
-        (signal) =>
-          execute(parsed, { ...context, signal }, () => {
-            signal.throwIfAborted();
-            admit();
-          }),
+        (signal) => {
+          const callbackContext = inheritToolSessionOwner(
+            withDecisionSignal(context, signal),
+            context,
+          );
+          return execute(
+            parsed,
+            callbackContext,
+            () => {
+              signal.throwIfAborted();
+              admit();
+            },
+            async (error) => {
+              const text = await recoverFunctionBodyError(
+                error,
+                captureFunctionContext(callbackContext, original, effective),
+                admit,
+                name,
+                this.errorFunction,
+              );
+              return new ToolOutput([{ type: 'inputText', text }], false);
+            },
+          );
+        },
         context.signal,
         undefined,
         name,
@@ -559,8 +730,23 @@ export type Tool<Context = any> =
   | NativeGoals
   | Checklist;
 
+type ToolParameters = z.ZodType | StandardSchemaWithJSON;
+type ToolParameterInput<T extends ToolParameters> = T extends z.ZodType
+  ? z.input<T>
+  : T extends StandardSchemaWithJSON<infer Input, unknown>
+    ? Input
+    : never;
+type ToolParameterOutput<T extends ToolParameters> = T extends z.ZodType
+  ? z.output<T>
+  : T extends StandardSchemaWithJSON<unknown, infer Output>
+    ? Output
+    : never;
+type ToolContextArguments<T extends ToolParameters> = T extends z.ZodType
+  ? Record<string, unknown>
+  : ToolParameterOutput<T>;
+
 export function tool<
-  T extends z.ZodType,
+  T extends ToolParameters,
   Context = unknown,
   Result extends z.ZodType = z.ZodType<
     JsonValue | ToolOutput,
@@ -599,7 +785,10 @@ export function tool<
     originalArguments: JsonValue,
   ) => string | Promise<string>;
   needsApproval?:
-    boolean | ((context: ToolContext<Context>) => boolean | Promise<boolean>);
+    | boolean
+    | ((
+        context: ToolContext<Context, ToolContextArguments<T>>,
+      ) => boolean | Promise<boolean>);
   /** Run the input policy before approval and again before callback execution. */
   runBeforeApproval?: boolean;
   /**
@@ -614,27 +803,34 @@ export function tool<
   namespace?: string;
   namespaceDescription?: string;
   description?: string;
+  /**
+   * Standard Schema requires strict mode and synchronous validation.
+   * Input policy and approval require detachable values such as plain objects,
+   * arrays, and dates. Execution-only tools may also receive opaque values.
+   */
   parameters: T;
   /** Validate the callback result before converting it to model-visible content. */
   result?: Result;
   /** Allow, deny, or replace validated arguments before the callback runs. */
   before?: (
-    context: ToolContext<Context>,
-  ) => ToolDecision<z.input<T>> | Promise<ToolDecision<z.input<T>>>;
+    context: ToolContext<Context, ToolContextArguments<T>>,
+  ) =>
+    | ToolDecision<ToolParameterInput<T>>
+    | Promise<ToolDecision<ToolParameterInput<T>>>;
   /**
    * Transform validated content. Returning the same output preserves background
    * intent; a replacement is foreground unless wrapped in backgroundResult().
    */
   after?: (
     output: ToolOutput,
-    context: ToolContext<Context>,
+    context: ToolContext<Context, ToolContextArguments<T>>,
   ) =>
     | ToolOutput
     | BackgroundResult<ToolOutput>
     | Promise<ToolOutput | BackgroundResult<ToolOutput>>;
   execute: (
-    args: z.output<T>,
-    context: ToolContext<Context>,
+    args: ToolParameterOutput<T>,
+    context: ToolContext<Context, ToolContextArguments<T>>,
   ) =>
     | z.input<Result>
     | BackgroundResult<z.input<Result>>
@@ -713,56 +909,52 @@ export function tool<
   if (outputSchema !== undefined && outputSchema.type !== 'object')
     throw new TypeError('outputSchema must define a JSON object');
   let inputSchema: unknown;
-  if (strict) {
-    if (!isZodObject(parameters))
-      throw new TypeError('Strict tool parameters must be a Zod object');
-    inputSchema = getSchemaAndParserFromInputType(parameters, name, {
-      strict,
-    }).schema;
+  let parseInput: (value: unknown) => ToolParameterOutput<T>;
+  const standardSchema =
+    !isZodObject(parameters) && !(parameters instanceof z.ZodType);
+  const requireDetachedArguments =
+    before !== undefined || Boolean(options.needsApproval);
+  if (!standardSchema) {
+    const zodParameters = parameters as z.ZodType;
+    if (strict) {
+      if (!isZodObject(parameters))
+        throw new TypeError('Strict tool parameters must be a Zod object');
+      inputSchema = getSchemaAndParserFromInputType(parameters, name, {
+        strict,
+      }).schema;
+    } else {
+      inputSchema = z.toJSONSchema(zodParameters, { io: 'input' });
+    }
+    parseInput = (value) =>
+      zodParameters.parse(
+        strict ? stripStrictNullsForZodSchema(zodParameters, value) : value,
+      ) as ToolParameterOutput<T>;
   } else {
-    inputSchema = z.toJSONSchema(parameters, { io: 'input' });
+    const prepared = getSchemaAndParserFromInputType(parameters, name, {
+      strict,
+    });
+    inputSchema = prepared.schema;
+    // The shared Standard Schema parser rejects asynchronous validation.
+    parseInput = (value) =>
+      copyApprovalInput(
+        prepared.parser(JSON.stringify(value)),
+        requireDetachedArguments,
+      ) as ToolParameterOutput<T>;
   }
-  const parseInput = (value: unknown): z.output<T> =>
-    parameters.parse(
-      strict ? stripStrictNullsForZodSchema(parameters, value) : value,
-    );
-  const recoverRunError = async (
+  const snapshotEffectiveArguments = (parsed: ToolParameterOutput<T>) => {
+    const snapshot = standardSchema
+      ? copyApprovalInput(parsed, requireDetachedArguments)
+      : { ...(parsed as Record<string, unknown>) };
+    return (
+      snapshot === parsed ? snapshot : Object.freeze(snapshot)
+    ) as Readonly<ToolContextArguments<T>>;
+  };
+  const recoverRunError = (
     phase: ToolErrorContext['phase'],
     error: unknown,
     context: ToolCallContext<Context>,
     admit: () => void,
-  ): Promise<string> => {
-    const formatter = context[toolErrorFormatterBinding];
-    if (errorFunction === null || !formatter || !context.call) throw error;
-    const defaultMessage =
-      phase === 'arguments'
-        ? `Invalid arguments for function '${name}'.`
-        : `Function '${name}' failed.`;
-    admit();
-    let formatted: unknown;
-    try {
-      formatted = await formatter(
-        Object.freeze({
-          context: context.context,
-          call: context.call,
-          signal: context.signal,
-          phase,
-          defaultMessage,
-          error,
-        }),
-      );
-    } catch (failure) {
-      // Cancellation cleanup keeps its original exception and existing owner.
-      try {
-        admit();
-      } catch {
-        throw failure;
-      }
-      return defaultMessage;
-    }
-    admit();
-    return typeof formatted === 'string' ? formatted : defaultMessage;
-  };
+  ) => recoverRunToolError(phase, error, context, admit, name, errorFunction);
   const recoverOriginalInput = async (
     error: z.ZodError | SyntaxError,
     original: JsonValue,
@@ -785,13 +977,19 @@ export function tool<
   const needsApproval = options.needsApproval;
   const runBeforeApproval = options.runBeforeApproval ?? false;
   const shell = (
-    options as typeof options & { [shellDeclaration]?: JsonObject }
+    options as typeof options & {
+      [shellDeclaration]?: {
+        readonly spec: JsonObject;
+        readonly portableResult: z.ZodType;
+      };
+    }
   )[shellDeclaration];
+  const portableResult = shell?.portableResult ?? result;
   const native = (
     options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
   )[nativeCallbackDeclaration];
   const declaration: FunctionTool<Context> = Object.freeze({
-    ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
+    ...(shell === undefined ? {} : { [shellDeclaration]: shell.spec }),
     ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
     finishTurn: options.finishTurn ?? false,
     [inputRecovery]: inputErrorFunction !== undefined,
@@ -838,8 +1036,8 @@ export function tool<
       const originalArguments = Object.freeze(
         structuredClone(args) as JsonObject,
       );
-      let parsed: z.output<T>;
-      if (approved) parsed = approved.value as z.output<T>;
+      let parsed: ToolParameterOutput<T>;
+      if (approved) parsed = approved.value as ToolParameterOutput<T>;
       else if (effectiveArgs !== undefined) parsed = parseInput(effectiveArgs);
       else {
         try {
@@ -858,32 +1056,11 @@ export function tool<
           };
         }
       }
-      let callContext: ToolContext<Context> = {
-        ...context,
-        reportUsage: (usage, options) => {
-          const reporter = (
-            context as ToolCallContext<Context> & {
-              [usageReportBinding]?: UsageReporter;
-            }
-          )[usageReportBinding];
-          if (!reporter)
-            throw new Error(
-              'Usage reporting requires an admitted native ToolContext',
-            );
-          context.signal.throwIfAborted();
-          reporter(usage, options);
-        },
-        decide:
-          context.decide ??
-          ((() =>
-            Promise.reject(
-              new Error('Decision helper requires an admitted callback'),
-            )) as BoundDecide),
+      let callContext = captureFunctionContext(
+        context,
         originalArguments,
-        effectiveArguments: Object.freeze({
-          ...(parsed as Record<string, unknown>),
-        }),
-      };
+        snapshotEffectiveArguments(parsed),
+      );
       admit();
       if (before) {
         const decision = await before(callContext);
@@ -906,10 +1083,9 @@ export function tool<
           parsed = parseInput(decision.arguments);
           callContext = {
             ...callContext,
-            effectiveArguments: Object.freeze({
-              ...(parsed as Record<string, unknown>),
-            }),
+            effectiveArguments: snapshotEffectiveArguments(parsed),
           };
+          inheritToolSessionOwner(callContext, context);
         } else if (decision?.action !== 'allow') {
           throw new TypeError(
             'Tool before must allow, deny, or replace arguments',
@@ -931,9 +1107,7 @@ export function tool<
         parsed = approved.value as typeof parsed;
         callContext = {
           ...callContext,
-          effectiveArguments: Object.freeze({
-            ...(parsed as Record<string, unknown>),
-          }),
+          effectiveArguments: snapshotEffectiveArguments(parsed),
         };
       }
       if (before && beforeExecute) {
@@ -981,22 +1155,13 @@ export function tool<
         );
       } catch (error) {
         if (error instanceof FunctionBodyError) {
-          try {
-            admit();
-          } catch {
-            throw error.original;
-          }
-          const text = errorFunction
-            ? await errorFunction(callContext, error.original)
-            : await recoverRunError(
-                'execution',
-                error.original,
-                callContext,
-                admit,
-              );
-          admit();
-          if (typeof text !== 'string')
-            throw new TypeError('errorFunction must return a string');
+          const text = await recoverFunctionBodyError(
+            error.original,
+            callContext,
+            admit,
+            name,
+            errorFunction,
+          );
           return {
             success: false,
             contentItems: [{ type: 'inputText' as const, text }],
@@ -1095,13 +1260,16 @@ export function tool<
         }
       : {}),
     function: declaration,
-    resultSchema: result
+    resultSchema: portableResult
       ? decode(
           jsonValue,
           // Managed results retain their callback validator; this portable
           // metadata need not represent non-JSON instance validators.
           JSON.stringify(
-            z.toJSONSchema(result, { io: 'input', unrepresentable: 'any' }),
+            z.toJSONSchema(portableResult, {
+              io: 'input',
+              unrepresentable: 'any',
+            }),
           ),
         )
       : {},
@@ -1112,7 +1280,7 @@ export function tool<
         structuredClone(effectiveArgs === undefined ? args : effectiveArgs),
       );
       let effective = effectiveArgs;
-      let callContext: ToolContext<Context> = {
+      let callContext: ToolContext<Context, ToolContextArguments<T>> = {
         ...context,
         reportUsage: (usage, options) => {
           const reporter = (
@@ -1134,10 +1302,9 @@ export function tool<
               new Error('Decision helper requires an admitted callback'),
             )) as BoundDecide),
         originalArguments: Object.freeze(structuredClone(args) as JsonObject),
-        effectiveArguments: Object.freeze({
-          ...(parsed as Record<string, unknown>),
-        }),
+        effectiveArguments: snapshotEffectiveArguments(parsed),
       };
+      inheritToolSessionOwner(callContext, context);
       admit();
       if (
         runBeforeApproval &&
@@ -1160,10 +1327,9 @@ export function tool<
           parsed = parseInput(structuredClone(effective));
           callContext = {
             ...callContext,
-            effectiveArguments: Object.freeze({
-              ...(parsed as Record<string, unknown>),
-            }),
+            effectiveArguments: snapshotEffectiveArguments(parsed),
           };
+          inheritToolSessionOwner(callContext, context);
         } else if (decision.action !== 'allow')
           throw new TypeError(
             'Tool before must allow, deny, or replace arguments',
@@ -1225,10 +1391,12 @@ export function createShellTool<
 >(
   declaration: JsonObject,
   options: Parameters<typeof tool<T, Context, Result>>[0],
+  portableResult: z.ZodType,
 ): FunctionTool<Context> {
   const captured = {
     ...options,
-    [shellDeclaration]: structuredClone(declaration),
+    // Keep SDK-only result metadata out of the stored approval contract.
+    [shellDeclaration]: { spec: structuredClone(declaration), portableResult },
   };
   return tool(captured);
 }

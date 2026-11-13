@@ -26,10 +26,14 @@ export class NativeTurn {
   requestAttemptsStarted = false;
   borrowedRequestAttempts = false;
   requestAttempts?: RequestAttempts;
+  submissionRequestAttempts?: RequestAttempts;
+  requestAttemptParent?: NativeTurn;
   clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[] = [];
   guardrailInput?: UserInput;
+  stagedCheckpoint?: import('./state').ManualSessionState;
   inputGuardrailsStarted = false;
+  inputGuardrailsPassed?: boolean;
   inputGuardrailsTask?: Promise<void>;
   parentTrace?: TraceContext;
   readonly accepted = Promise.withResolvers<AcceptedSubmission>();
@@ -47,6 +51,7 @@ export class NativeTurn {
   // Keep workflow ownership when a retained successor takes completion tracing.
   issuedTracing?: TraceCapture;
   selection?: OperationSelection;
+  raiseOnUnknownTool?: boolean;
   writableRoots?: readonly string[];
   preparation?: AbortController;
   id: string | null = null;
@@ -72,6 +77,7 @@ export class NativeTurn {
     usageParent?: NativeTurn,
   ) {
     if (usageParent) attachModelUsageSource(usageParent, this);
+    this.requestAttemptParent = usageParent;
     this.accepted.promise.catch(() => {});
     this.completion.promise.catch(() => {});
   }

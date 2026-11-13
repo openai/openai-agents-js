@@ -1768,6 +1768,44 @@ it.each(['rejected success', 'aborted failure'] as const)(
   },
 );
 
+it.each([true, false])(
+  'retains known-zero idle enqueue failures only when opted in: %s',
+  async (includeRequestAttempts) => {
+    const failure = new Error('Tracing admission failed');
+    let nativeCalls = 0;
+    const session = await rootFixture(
+      async () => {
+        nativeCalls++;
+        throw new Error('Unexpected native submission');
+      },
+      { includeRequestAttempts },
+    );
+    try {
+      harness.native.start_trace_span.mockImplementationOnce(() => {
+        throw failure;
+      });
+      const turn = await session.enqueue('invalid', {
+        tracing: { name: 'invalid' },
+      });
+      await expect(turn.wait()).rejects.toBe(failure);
+      expect(nativeCalls).toBe(0);
+      expect(turn.turnId).toBeNull();
+      expect(turn.requestAttempts).toBeUndefined();
+      expect(turn.submissionRequestAttempts).toEqual(
+        includeRequestAttempts
+          ? {
+              availability: 'complete',
+              counts: [],
+              borrowedRequestsUnavailable: false,
+            }
+          : undefined,
+      );
+    } finally {
+      await session.close();
+    }
+  },
+);
+
 it.each(['tracing admission', 'native submission'] as const)(
   'keeps only known pre-submit failures idle: %s',
   async (phase) => {

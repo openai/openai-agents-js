@@ -134,11 +134,30 @@ export async function openSession(
     throw new TypeError(
       'Checkpoint and Environment must agree on read-only execution',
     );
+  const authenticatedHistory = options[managedWorkspaceRestore] === true;
   if (isOutputAwareState(saved) && saved.remembered_approvals?.length) {
     const verified = await verifyRememberedApprovals?.(structuredClone(saved));
     options.environmentOwner?.signal.throwIfAborted();
     if (verified !== true) {
       delete saved.remembered_approvals;
+    }
+  }
+  if (saved && !authenticatedHistory) {
+    // Imported history has been remaining usable without granting memory admission.
+    for (const thread of [saved, ...saved.descendants]) {
+      for (const item of thread.history) {
+        const payload = item.payload;
+        if (
+          item.type !== 'turn_context' ||
+          !payload ||
+          typeof payload !== 'object' ||
+          Array.isArray(payload)
+        )
+          continue;
+        const receipt = payload.sdk_receipt;
+        if (receipt && typeof receipt === 'object' && !Array.isArray(receipt))
+          delete receipt.sandbox_memory_input_admitted;
+      }
     }
   }
   const native = await binding();
@@ -232,7 +251,7 @@ export async function openSession(
   const manualTools = catalog.tools.filter((tool) => tool.kind === 'manual');
   if (isManualSessionState(saved)) {
     if (
-      saved.format_version === 3 &&
+      !isOutputAwareState(saved) &&
       (options.restoredOutput?.output ?? options.output)?.schema != null
     )
       throw new TypeError(
@@ -269,8 +288,12 @@ export async function openSession(
     const current = decode(z.array(jsonObject), catalog.specsJson);
     for (const call of pending) {
       const select = (specs: typeof prior) =>
-        specs.find(
-          (spec) => spec.type === 'function' && spec.name === call.name,
+        specs.find((spec) =>
+          call.shell
+            ? call.name === 'shell' && spec.type === 'shell'
+            : call.patch
+              ? call.name === 'apply_patch' && spec.type === 'applyPatch'
+              : spec.type === 'function' && spec.name === call.name,
         );
       const oldSpec = select(prior);
       const currentSpec = select(current);
@@ -516,6 +539,7 @@ async function closePrivateOwnedRuntime(
 interface OwnedRunOptions {
   modelOverride?: string;
   modelSettingsOverride?: import('./provider').ModelSettings;
+  toolNotFoundBehavior?: 'raise_error' | 'return_error_to_model';
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
   returnState?: boolean;
@@ -605,6 +629,7 @@ async function completeOwnedSession<Output>(
         options.errorInput ?? undefined,
         options.modelOverride,
         options.modelSettingsOverride,
+        options.toolNotFoundBehavior,
       );
     }
     return session.wait();

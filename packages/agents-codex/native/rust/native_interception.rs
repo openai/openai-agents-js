@@ -3424,6 +3424,23 @@ impl ModelRequestContributor for Boundary {
         })
     }
 
+    fn provider_history_route(
+        &self,
+        url: &str,
+        headers: &http::HeaderMap,
+    ) -> Option<futures_util::future::BoxFuture<'static, Result<codex_extension_api::ModelProviderHistoryRoute, String>>> {
+        let engine = self.engine.get()?.upgrade()?;
+        let base = engine.sentinel.read().expect("sentinel poisoned").as_ref()?.0.clone();
+        if !url.starts_with(&format!("{}/p-", base.trim_end_matches('/'))) {
+            return None;
+        }
+        let url = url.to_owned();
+        let headers = headers.clone();
+        Some(Box::pin(async move {
+            crate::provider_history_owner::resolve(engine, url, headers).await
+        }))
+    }
+
     fn preserves_provider_request_window(&self, url: &str) -> bool {
         // This exact native route validates the provider/grant/one-use ticket,
         // restores tool schemas, and sends input/model/store through Reqwest.
@@ -3458,7 +3475,7 @@ impl ModelRequestContributor for Boundary {
         }
         let expected_url = url.to_owned();
         let engine = Arc::downgrade(&engine);
-        Some(Arc::new(move |request| {
+        Some(Arc::new(move |request, request_transport| {
             let engine = engine.clone();
             let expected_url = expected_url.clone();
             Box::pin(async move {
@@ -3472,7 +3489,13 @@ impl ModelRequestContributor for Boundary {
                             body: Some(String::new()),
                             retry_after: None,
                         })?;
-                crate::direct_sentinel_stream(&engine, &expected_url, request).await
+                crate::direct_sentinel_stream(
+                    &engine,
+                    &expected_url,
+                    request,
+                    request_transport.as_ref(),
+                )
+                .await
             })
         }))
     }
@@ -3679,7 +3702,7 @@ impl Drop for SentinelRequest {
 }
 
 impl SentinelRequest {
-    fn take_failure(&self) -> Option<ModelResponseError> {
+    fn take_failure(&self, decoded_integrity: bool) -> Option<ModelResponseError> {
         {
             let state = self
                 .control
@@ -3702,7 +3725,7 @@ impl SentinelRequest {
                 .lock()
                 .expect("sentinel failure poisoned")
                 .take()
-                .map(|error| {
+                .and_then(|error| {
                     if self.ticket.admitted.load(Ordering::Acquire)
                         && !state.revoked
                         && !self.control.stopped.is_cancelled()
@@ -3716,9 +3739,19 @@ impl SentinelRequest {
                                     && turn.as_ref().is_some_and(|now| Arc::ptr_eq(now, owner))
                             }))
                     {
-                        error.into_response_error()
+                        match error {
+                            // An admitted, decoded protocol error stays terminal even
+                            // if the local WebSocket receiver closes before its poll.
+                            SentinelFailure::WebSocket { oversized: false }
+                                if decoded_integrity
+                                    && self.ticket.kind == ModelRequestKind::Generation =>
+                            {
+                                None
+                            }
+                            error => Some(error.into_response_error()),
+                        }
                     } else {
-                        rejected()
+                        Some(rejected())
                     }
                 })
         }
@@ -3742,7 +3775,7 @@ impl ModelResponseInterceptor for SentinelRequest {
     }
 
     fn intercept(self: Box<Self>, upstream: ModelResponseStream) -> ModelResponseStream {
-        if let Some(error) = self.take_failure() {
+        if let Some(error) = self.take_failure(false) {
             drop(upstream);
             return Box::pin(futures_util::stream::once(async move {
                 let _guard = self;
@@ -3770,7 +3803,11 @@ impl ModelResponseInterceptor for SentinelRequest {
                 // A WebSocket opens its response stream before it receives
                 // the provider's terminal. The issued ticket may fail while
                 // this poll is pending; apply that decision before Core retries.
-                let next = match guard.take_failure() {
+                let decoded_integrity = matches!(
+                    &next,
+                    Some(Err(ModelResponseError::ResponseIntegrity { .. }))
+                );
+                let next = match guard.take_failure(decoded_integrity) {
                     Some(error) => Err(error),
                     None => next?,
                 };
@@ -5998,6 +6035,9 @@ enum Projected {
     Json(Value),
 }
 impl<'call> ToolExecutor<ToolCall<'call>> for Executor {
+    fn is_native_environment_tool(&self) -> bool {
+        self.inner.is_native_environment_tool()
+    }
     fn tool_name(&self) -> ToolName {
         self.inner.tool_name()
     }
@@ -8129,6 +8169,65 @@ mod tests {
         assert_eq!(current.request.as_ref().unwrap().nonce, *generation_nonce);
         drop(current);
         drop(generation);
+    }
+
+    #[tokio::test]
+    async fn admitted_websocket_failure_keeps_already_decoded_integrity() {
+        use codex_protocol::error::ResponseIntegrityReason;
+
+        for (kind, decoded, retains_integrity) in [
+            (ModelRequestKind::Generation, false, false),
+            (ModelRequestKind::Generation, true, true),
+            (ModelRequestKind::Warmup, true, false),
+        ] {
+            let control = Arc::new(Control::new("root".into(), true));
+            let owner = (kind == ModelRequestKind::Generation)
+                .then(|| direct_request(control.clone(), "turn").owner);
+            *control.direct_turn.lock().unwrap() = owner.clone();
+            let ticket = Arc::new(SentinelTicket {
+                attempts: None,
+                nonce: "ticket".into(),
+                kind,
+                model: "model".into(),
+                model_omitted: false,
+                admitted: AtomicBool::new(true),
+                owner,
+                failure: Mutex::new(None),
+                command_admission: None,
+            });
+            control.sentinel_request.lock().unwrap().request = Some(ticket.clone());
+            let request = Box::new(SentinelRequest {
+                control,
+                ticket: ticket.clone(),
+                tool_admission: None,
+            });
+            let upstream = Box::pin(stream::once(async move {
+                *ticket.failure.lock().unwrap() =
+                    Some(SentinelFailure::WebSocket { oversized: false });
+                if decoded {
+                    Err(ModelResponseError::ResponseIntegrity {
+                        reason: ResponseIntegrityReason::UndecodableOutputItem,
+                    })
+                } else {
+                    Err(ModelResponseError::Stream("disconnected".into()))
+                }
+            }));
+            let error = request.intercept(upstream).next().await;
+            if retains_integrity {
+                assert!(matches!(
+                    error,
+                    Some(Err(ModelResponseError::ResponseIntegrity {
+                        reason: ResponseIntegrityReason::UndecodableOutputItem,
+                    }))
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    Some(Err(ModelResponseError::InvalidRequest { message }))
+                        if message.contains("it will not be replayed")
+                ));
+            }
+        }
     }
 
     #[tokio::test]

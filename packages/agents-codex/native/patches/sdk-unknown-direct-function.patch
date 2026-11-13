@@ -1,0 +1,62 @@
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index b5ba9a69..886b2ff8 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -692,7 +692,21 @@ impl ToolRegistry {
+                     &tool_result_tags,
+                     /*extra_trace_fields*/ &[],
+                 );
+-                let err = FunctionCallError::RespondToModel(message);
++                let strict_unknown_function = matches!(&invocation.payload, ToolPayload::Function { .. })
++                    && matches!(
++                        &invocation.source,
++                        crate::tools::context::ToolCallSource::Direct
++                            | crate::tools::context::ToolCallSource::DirectPlaintextMessage
++                    )
++                    && invocation.turn.extension_data
++                        .get::<codex_extension_api::ToolNotFoundBehavior>()
++                        .as_deref()
++                        == Some(&codex_extension_api::ToolNotFoundBehavior::RaiseError);
++                let err = if strict_unknown_function {
++                    FunctionCallError::Fatal(message)
++                } else {
++                    FunctionCallError::RespondToModel(message)
++                };
+                 dispatch_trace.record_failed(&err);
+                 return Err(err);
+             }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index ee2a969d..77b06fab 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -4,6 +4,7 @@ mod provider_image_reference_policy;
+ mod registry;
+ mod session_isolation;
+ mod state;
++mod tool_not_found;
+ mod tool_policy;
+ mod turn_admission;
+ mod user_instructions;
+@@ -12,6 +13,7 @@ pub use provider_image_reference_policy::ProviderImageReferencePolicy;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+ pub use tool_policy::FinalStepBuiltinTools;
++pub use tool_not_found::ToolNotFoundBehavior;
+ pub use tool_policy::ToolPolicy;
+ 
+ pub use capabilities::ConversationHistorySnapshot;
+diff --git a/codex-rs/ext/extension-api/src/tool_not_found.rs b/codex-rs/ext/extension-api/src/tool_not_found.rs
+new file mode 100644
+index 00000000..ccfa57ce
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/tool_not_found.rs
+@@ -0,0 +1,9 @@
++/// Unknown direct function-call handling for one admitted operation.
++/// Supply through that operation's turn ExtensionDataInit. Absence preserves
++/// model-visible recovery; this policy does not change known-tool admission.
++#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
++pub enum ToolNotFoundBehavior {
++    #[default]
++    ReturnErrorToModel,
++    RaiseError,
++}

@@ -43,6 +43,7 @@ mod plain_websocket;
 mod plan_usage;
 mod project_search;
 mod provider_error;
+mod provider_history_owner;
 mod provider_transports;
 mod python_tools;
 mod realtime_adapter;
@@ -567,6 +568,7 @@ impl Engine {
                 Arc::downgrade(&inner),
                 provider_id,
                 None,
+                None,
             )
             .await
         })
@@ -615,6 +617,7 @@ impl Engine {
                 &headers,
                 body.into(),
                 &ticket,
+                None,
                 None,
             )
             .await?;
@@ -2075,6 +2078,11 @@ impl NativeThread {
             let mut state = checkpoint::export(&inner, request.as_ref())
                 .await
                 .map_err(native_error)?;
+            if request.is_none()
+                && let Some(retry) = python_tools::PythonTools::staged_retry(&inner, &state)
+            {
+                state["_staged_manual_retry"] = retry;
+            }
             if let Some(guard) = inner
                 .thread
                 .thread_extension_data()
@@ -3730,6 +3738,55 @@ impl NativeThread {
         }
     }
 
+    #[napi(js_name = "_configured_child_policy")]
+    pub async fn _configured_child_policy(&self, request_json: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _admission = inner.engine.operation(false).map_err(native_error)?;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(input_error)?;
+        let root = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("managed tools unavailable"))?;
+        let owner = root
+            .owner(&inner.id.to_string(), &key)
+            .ok_or_else(|| native_error("Configured child callback owner has retired"))?;
+        owner
+            .check_pending(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        let thread = if key.reply.thread == inner.id.to_string() {
+            Arc::clone(&inner.thread)
+        } else {
+            let id =
+                codex_protocol::ThreadId::from_string(&key.reply.thread).map_err(input_error)?;
+            inner
+                .engine
+                .manager
+                .get_thread(id)
+                .await
+                .map_err(native_error)?
+        };
+        if !thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .is_some_and(|current| Arc::ptr_eq(&current, &owner))
+        {
+            return Err(native_error("Configured child callback owner has changed"));
+        }
+        let executor_tools = owner
+            .configured_child_executor_tools(&key)
+            .map_err(native_error)?;
+        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
+            .await
+            .map_err(native_error)?;
+        owner
+            .check_pending(&key.reply.thread, &key)
+            .map_err(native_error)?;
+        policy["tools"] = serde_json::json!(executor_tools);
+        serde_json::to_string(&policy).map_err(native_error)
+    }
+
     #[napi(js_name = "_cancel_child_callback")]
     pub async fn _cancel_child_callback(&self, request_json: String) -> napi::Result<bool> {
         let _admission_state = self.current()?;
@@ -3813,6 +3870,7 @@ impl NativeThread {
                 request,
                 response,
                 start_response,
+                handoff_target_profile_id,
             } = response;
             {
                 let Some(tools) = tools.owner(&inner.id.to_string(), &request) else {
@@ -3848,6 +3906,7 @@ impl NativeThread {
                 // could wake Core before that fatal failure is recorded.
                 let receipt = if inner.engine.local_checklist_store.is_some()
                     || inner.engine.custom_store.is_some()
+                    || request.reply.manual_grant.is_some()
                 {
                     let Some(receipt) = tools
                         .response_receipt(&request, response.clone())
@@ -3882,7 +3941,10 @@ impl NativeThread {
                     let id = codex_protocol::ThreadId::from_string(&request.reply.thread)
                         .map_err(native_error)?;
                     store
-                        .receipt(id, receipt.expect("selected durable callback receipt"))
+                        .receipt(
+                            id,
+                            receipt.clone().expect("selected durable callback receipt"),
+                        )
                         .await
                         .map_err(native_error)?;
                 }
@@ -3891,10 +3953,11 @@ impl NativeThread {
                         response: response.clone(),
                         start_response,
                         acceptance,
+                        handoff_target_profile_id,
                     })
                     .is_ok();
                 if sent {
-                    tools.record_manual_receipt(&request, response);
+                    tools.record_manual_receipt(&request, response, receipt);
                 }
                 Ok(sent)
             }
@@ -4515,6 +4578,7 @@ impl NativeThread {
             let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
+            let staged_input = frame.staged_items().map_err(native_error)?;
             if let Some(selection) = &selection {
                 if selection.model_override != frame.model_override
                     || selection.model_settings_override != frame.model_settings_override
@@ -4524,6 +4588,16 @@ impl NativeThread {
                     ));
                 }
             }
+            let saved_history: Vec<codex_history::RolloutItem> =
+                serde_json::from_value(saved["history"].clone()).map_err(native_error)?;
+            let raise_on_unknown_tool = matches!(
+                codex_extension_api::ToolNotFoundBehavior::from_turn_history(
+                    &saved_history,
+                    &frame.turn_id
+                )
+                .map_err(native_error)?,
+                Some(codex_extension_api::ToolNotFoundBehavior::RaiseError)
+            );
             if !items.is_empty() {
                 // Update Core's live model context as well as its rollout. A raw
                 // writer append alone would let prompt normalization invent "aborted".
@@ -4545,6 +4619,16 @@ impl NativeThread {
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
+            let staged_input =
+                codex_extension_api::StagedInputBatch::new(frame.turn_id.clone(), staged_input);
+            if staged_input.is_pending() {
+                python_tools::PythonTools::retain_staged_retry(
+                    &inner,
+                    &frame,
+                    staged_input.clone(),
+                )
+                .map_err(native_error)?;
+            }
             let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
@@ -4557,12 +4641,17 @@ impl NativeThread {
                 trace,
                 observation_submission_id,
                 terminal,
+                staged_input,
+                raise_on_unknown_tool,
             )
             .await
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
                 tools.retire_manual();
                 result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
+                if raise_on_unknown_tool {
+                    result["raise_on_unknown_tool"] = serde_json::json!(true);
+                }
             }
             serde_json::to_string(&result).map_err(native_error)
         })
@@ -4649,6 +4738,23 @@ impl NativeThread {
         )
         .await
         .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_record_memory_input_admission")]
+    pub async fn record_memory_input_admission(&self, turn_id: String) -> napi::Result<()> {
+        let inner = self.current()?;
+        canonical_history::record_memory_input_admission(&inner, &turn_id)
+            .await
+            .map_err(native_error)
+    }
+
+    #[napi(js_name = "_memory_history")]
+    pub async fn memory_history(&self, turn_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::memory_snapshot(&inner, &turn_id)
+            .await
+            .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
@@ -5376,6 +5482,7 @@ async fn direct_sentinel_stream(
     inner: &engine::EngineState,
     expected_url: &str,
     request: codex_client::Request,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> Result<codex_client::StreamResponse, TransportError> {
     use base64::Engine as _;
     use futures_util::StreamExt as _;
@@ -5522,6 +5629,7 @@ async fn direct_sentinel_stream(
         body.into(),
         &ticket,
         request.response_body_limit_bytes,
+        request_transport,
     )
     .await
     .map_err(|_| invalid())?;
@@ -5629,6 +5737,7 @@ async fn sentinel_stream_dispatch(
     body: bytes::Bytes,
     ticket: &serde_json::Value,
     response_body_limit_bytes: Option<usize>,
+    request_transport: Option<&codex_protocol::model_request_transport::RequestTransportOverrides>,
 ) -> napi::Result<(http::StatusCode, http::HeaderMap, NativeModelBody)> {
     let _permit = inner.operation(false).map_err(native_error)?;
     let route = inner.sentinel_route(provider_id, headers)?;
@@ -5639,6 +5748,9 @@ async fn sentinel_stream_dispatch(
         .build_request("POST".parse().map_err(native_error)?, "responses")
         .with_raw_body(body.clone());
     request.headers = model_websocket::sentinel_headers(headers, &provider)?;
+    codex_api::prepare_request_transport(&request.url, request_transport)
+        .map_err(native_error)?
+        .apply(&mut request);
     if let Some(authorization) = &inner.plan_authorization {
         let body: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|_| input_error("Invalid Sign in with ChatGPT request body"))?;

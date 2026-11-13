@@ -1,3 +1,5 @@
+export type { ProviderHistory } from './runtime/provider-history';
+export type { AcceptedTextChunk, AcceptText } from './runtime/accepted-text';
 export { retryPolicies } from './runtime/model-retry';
 export type {
   RetryContext,
@@ -17,6 +19,7 @@ export type {
   RequestAttempts,
 } from './runtime/request-attempts';
 export { Agent, Runner } from './runtime/public-agent';
+export type { AgentAsToolOptions } from './runtime/agent-tool';
 export type {
   AgentOptions,
   AgentOutput,
@@ -51,6 +54,7 @@ export type {
 export type {
   NativeProviderOptions,
   ModelSettings,
+  HostedToolChoice,
   ProviderCompactionPolicy,
 } from './runtime/provider';
 export type { SignInWithChatGPT } from './runtime/sign-in-with-chatgpt';
@@ -155,6 +159,8 @@ export type {
   MCPStopDecision,
   MCPResultContext,
   MCPApplicationDataContext,
+  MCPDiscoveryContext,
+  MCPToolDefinition,
   StdioMCPOptions,
   HttpMCPOptions,
   HostedVerificationMCPOptions,
@@ -204,7 +210,14 @@ export type {
   ChecklistState,
   SessionState,
 } from './runtime/state';
-export { parseSessionState, readSessionInstructions } from './runtime/state';
+export {
+  parseSessionState,
+  readSessionInstructions,
+  getProviderHistory,
+  pendingInput,
+  withPendingInput,
+  withoutPendingInput,
+} from './runtime/state';
 export type {
   TokenUsage,
   TokenUsageInfo,
@@ -343,6 +356,7 @@ export {
   fileSearch,
   codeInterpreter,
   hostedShell,
+  hostedTool,
   imageGeneration,
   toolSearch,
 } from './runtime/hosted-tools';
@@ -354,6 +368,7 @@ export type {
   HostedShell,
   HostedShellEnvironment,
   HostedShellOptions,
+  ProviderHostedTool,
   ImageGeneration,
   ImageGenerationOptions,
   ToolSearch,
@@ -382,7 +397,10 @@ export {
   sandboxEnvironment,
   renderStorageLayout,
 } from './runtime/sandbox-environment';
-export type { SandboxEnvironmentOptions } from './runtime/sandbox-environment';
+export type {
+  SandboxEnvironmentSource,
+  SandboxEnvironmentOptions,
+} from './runtime/sandbox-environment';
 
 export type {
   InitialMessage,
@@ -528,7 +546,7 @@ export type {
 
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
 
-export { Handoff } from './runtime/handoffs';
+export { Handoff, DecisionHandoff } from './runtime/handoffs';
 export {
   ResponsesCompaction,
   responsesCompaction,
@@ -549,4 +567,14 @@ export type {
   ApplyPatchResult,
 } from './runtime/apply-patch';
 
+export { skills } from './runtime/sandbox-skills';
+export type {
+  Skills,
+  SkillsArgs,
+  SkillDescriptor,
+  SkillIndexEntry,
+  LocalDirLazySkillSource,
+} from './runtime/sandbox-skills';
 export type { SandboxMemoryOptions } from './runtime/sandbox-memory';
+
+export type { PendingInput, PendingInputItem } from './runtime/state';

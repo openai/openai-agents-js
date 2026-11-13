@@ -1,4 +1,8 @@
-import type { SandboxMemoryOwner } from './sandbox-memory';
+import type { SandboxSkillLease } from './sandbox-skills';
+import type {
+  SandboxMemoryOwner,
+  SandboxMemoryTerminal,
+} from './sandbox-memory';
 import type { CanonicalHistorySnapshot } from './history';
 import type { ManagedWorkspaceBinding } from './managed-workspace';
 import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
@@ -34,6 +38,7 @@ interface LeaseState {
   readonly workspaceInstructions?: string;
   readonly sandboxMemory?: SandboxMemoryOwner;
   readonly observeSandboxOperation?: SandboxOperationObserver;
+  readonly skillLease?: SandboxSkillLease;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -52,6 +57,7 @@ export function createEnvironmentLease<Context>(
   managedWorkspace?: ManagedWorkspaceBinding,
   workspaceInstructions?: string,
   observeSandboxOperation?: SandboxOperationObserver,
+  skillLease?: SandboxSkillLease,
   sandboxMemory?: SandboxMemoryOwner,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
@@ -65,6 +71,7 @@ export function createEnvironmentLease<Context>(
     workspaceInstructions,
     sandboxMemory,
     observeSandboxOperation,
+    skillLease,
   };
   const close = () => {
     if (state.claimed)
@@ -127,6 +134,11 @@ export class EnvironmentAcquisition {
     return this.state?.observeSandboxOperation;
   }
 
+  /** @internal Current resource authority, carried by this exact acquisition. */
+  get skillLease(): SandboxSkillLease | undefined {
+    return this.state?.skillLease;
+  }
+
   /** @internal Fresh declaration presence; never restored from checkpoint data. */
   get hasSandboxMemory(): boolean {
     return this.state?.sandboxMemory !== undefined;
@@ -136,11 +148,12 @@ export class EnvironmentAcquisition {
   flushMemory(
     thread: string,
     snapshot: CanonicalHistorySnapshot,
+    terminal: SandboxMemoryTerminal,
   ): Promise<void> {
     const owner = this.state?.sandboxMemory;
     if (!owner || !this.state)
       throw new TypeError('This Environment has no native sandbox memory');
-    return this.state.scope(() => owner.flush(thread, snapshot));
+    return this.state.scope(() => owner.flush(thread, snapshot, terminal));
   }
 
   /** @internal Guard active phase callbacks across Sessions sharing this resource. */

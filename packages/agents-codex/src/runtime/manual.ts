@@ -18,30 +18,48 @@ import {
 
 // Parsed function inputs can contain opaque application values. Keep their
 // semantics while detaching ordinary containers and dates from approval views.
-function copyApprovalInput(
+/** @internal */
+export function copyApprovalInput(
   value: unknown,
+  requireDetached = false,
   copies = new Map<object, unknown>(),
 ): unknown {
+  if (requireDetached && typeof value === 'function')
+    throw new TypeError('Standard Schema tool output cannot be detached');
   if (value === null || typeof value !== 'object') return value;
   if (copies.has(value)) return copies.get(value);
-  if (value instanceof Date)
-    return new Date(Date.prototype.getTime.call(value));
-  const prototype = Object.getPrototypeOf(value);
   if (
-    !Array.isArray(value) &&
-    prototype !== Object.prototype &&
-    prototype !== null
-  )
+    value instanceof Date &&
+    (!requireDetached ||
+      (Object.getPrototypeOf(value) === Date.prototype &&
+        Reflect.ownKeys(value).length === 0))
+  ) {
+    const date = new Date(Date.prototype.getTime.call(value));
+    copies.set(value, date);
+    return date;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  const array = Array.isArray(value);
+  if (
+    array
+      ? requireDetached && prototype !== Array.prototype
+      : prototype !== Object.prototype && prototype !== null
+  ) {
+    if (requireDetached)
+      throw new TypeError('Standard Schema tool output cannot be detached');
     return value;
-  const result = Array.isArray(value)
-    ? new Array(value.length)
-    : Object.create(prototype);
+  }
+  const result = array ? new Array(value.length) : Object.create(prototype);
   copies.set(value, result);
   for (const key of Reflect.ownKeys(value)) {
-    if (Array.isArray(value) && key === 'length') continue;
+    if (array && key === 'length') continue;
     const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
     Object.defineProperty(result, key, {
-      value: copyApprovalInput(Reflect.get(value, key), copies),
+      value: copyApprovalInput(
+        Reflect.get(value, key),
+        requireDetached,
+        copies,
+      ),
       enumerable: descriptor.enumerable,
       writable: true,
       configurable: true,
@@ -129,6 +147,7 @@ export interface ManualTool<
 }
 
 interface RequestAuthority {
+  replyIdentity: object;
   definition: Definition;
   current(): boolean;
   approvalInput?: unknown;
@@ -352,6 +371,7 @@ export function createManualRequest<Input, Result>(
   const replyIdentity = {};
   const definition = tool[manualDefinition];
   const authority: RequestAuthority = {
+    replyIdentity,
     definition,
     current: () => active && isCurrent(),
   };
@@ -527,4 +547,21 @@ export function createManualRequest<Input, Result>(
 /** @internal Only candidates issued by this runtime carry reply authority. */
 export function isManualReply(value: unknown): value is ManualToolReply {
   return isObject(value) && replies.has(value) && !replies.get(value)!.consumed;
+}
+
+/** @internal Relays have been matching the original live grant without consuming it. */
+export function manualReplyMatchesRequest(
+  reply: unknown,
+  request: unknown,
+): boolean {
+  if (!isObject(reply) || !isObject(request)) return false;
+  const found = replies.get(reply);
+  const authority = requests.get(request);
+  return (
+    found !== undefined &&
+    !found.consumed &&
+    authority !== undefined &&
+    authority.current() &&
+    found.identity === authority.replyIdentity
+  );
 }

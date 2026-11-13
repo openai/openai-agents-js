@@ -1008,6 +1008,7 @@ pub(super) enum ModelDelivery {
         finish: oneshot::Sender<ModelStreamFinish>,
         projection: codex_api::ApplicationModelStream,
         observe_raw_chat: bool,
+        chat_stream: bool,
     },
 }
 struct ModelStreamCursor {
@@ -1097,8 +1098,15 @@ pub(super) struct ModelReply {
     #[serde(default)]
     original_usage: Option<OriginalResponsesUsage>,
     #[serde(default)]
+    received_cache_write_usage: Option<ReceivedCacheWriteUsage>,
+    #[serde(default)]
     raw_chat_completion: Option<serde_json::Map<String, Value>>,
 }
+#[derive(Deserialize)]
+struct ReceivedCacheWriteUsage {
+    count: Option<i64>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OriginalResponsesUsage {
@@ -1147,6 +1155,9 @@ impl PythonTools {
         let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
             "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage,
             "run_retry_policy_override":run_retry_policy_override(admission.as_ref())});
+        if let Some(transport) = admission.request_transport() {
+            message["request_transport"] = json!(transport);
+        }
         if let Some(attempt) = &attempt {
             message["attempt_id"] = json!(attempt.id());
             message["attempt"] = json!(attempt.attempt());
@@ -1243,7 +1254,16 @@ impl PythonTools {
                                 status:
                                     codex_protocol::protocol::ResponseObservationStatus::Completed,
                                 incomplete_reason: None,
-                                usage: None,
+                                usage: reply.received_cache_write_usage.map(|received| {
+                                    codex_protocol::protocol::ReceivedResponseUsage {
+                                        input_tokens: None,
+                                        cached_input_tokens: None,
+                                        cache_write_input_tokens: received.count,
+                                        output_tokens: None,
+                                        reasoning_output_tokens: None,
+                                        total_tokens: None,
+                                    }
+                                }),
                             },
                         )),
                     );
@@ -1302,6 +1322,7 @@ impl PythonTools {
                 finish,
                 projection: codex_api::ApplicationModelStream::new(observe_raw && !chat_stream),
                 observe_raw_chat: observe_raw && chat_stream,
+                chat_stream,
             }),
         ) else {
             unreachable!()
@@ -1489,7 +1510,10 @@ impl PythonTools {
                 }))
                 .map_err(|_| anyhow::anyhow!("Expired model producer reply")),
             ModelDelivery::Streaming {
-                finish, projection, ..
+                finish,
+                projection,
+                chat_stream,
+                ..
             } => {
                 let usage = projection.completed_usage().cloned();
                 let mut result = projection.finish(
@@ -1497,6 +1521,16 @@ impl PythonTools {
                         .is_err()
                         .then_some("Native model stream producer failed"),
                 );
+                if chat_stream
+                    && let Ok(events) = &mut result
+                    && let Some(codex_api::ResponseEvent::Completed {
+                        usage_metadata: Some(usage_metadata),
+                        ..
+                    }) = events.last_mut()
+                {
+                    // Chat synthesizes this completion for Core's normalized counters.
+                    usage_metadata.metadata = None;
+                }
                 if let (Some(attempt), Some(usage)) = (&attempt, usage) {
                     if let Err(error) = attempt.report_usage(usage) {
                         if result.is_ok() {

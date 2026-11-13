@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use anyhow::{Context, Result, ensure};
 use codex_core_api::{CodexThread, Config, Feature, StartThreadOptions, ThreadManager};
 use codex_extension_api::{
-    ContextContributor, ExtensionData, ExtensionFuture, ThreadIdleInput,
+    ContextContributor, ExtensionData, ExtensionFuture, FinalStepBuiltinTools, ThreadIdleInput,
     ThreadLifecycleContributor, ThreadStartInput, ThreadStopInput, ToolCallOutcome,
     ToolContributor, ToolFinishInput, ToolLifecycleContributor, ToolLifecycleFuture, ToolPolicy,
     ToolStartInput, TurnAbortInput, TurnLifecycleContributor, TurnStartInput, TurnStopInput,
@@ -277,6 +277,7 @@ impl ClientToolSearchWork {
 }
 
 struct PendingCall {
+    executor_tools: Option<Vec<String>>,
     client_search: Option<Arc<ClientToolSearchWork>>,
     // Captured by native enqueue, never reconstructed from a host reply.
     original_payload: Option<ToolPayload>,
@@ -375,6 +376,8 @@ pub(crate) struct Reply {
     pub(crate) response: DynamicToolResponse,
     #[serde(default = "request_response_by_default")]
     pub(crate) start_response: bool,
+    #[serde(default)]
+    pub(crate) handoff_target_profile_id: Option<String>,
 }
 
 fn request_response_by_default() -> bool {
@@ -386,6 +389,7 @@ pub(crate) struct ToolReply {
     pub(crate) response: DynamicToolResponse,
     pub(crate) start_response: bool,
     pub(crate) acceptance: Option<oneshot::Sender<()>>,
+    pub(crate) handoff_target_profile_id: Option<String>,
 }
 impl From<DynamicToolResponse> for ToolReply {
     fn from(response: DynamicToolResponse) -> Self {
@@ -393,6 +397,7 @@ impl From<DynamicToolResponse> for ToolReply {
             response,
             start_response: true,
             acceptance: None,
+            handoff_target_profile_id: None,
         }
     }
 }
@@ -1372,6 +1377,9 @@ impl PythonTools {
                             codex_tools::HostedToolSpec::ToolSearch(_) => {
                                 ToolName::plain("tool_search")
                             }
+                            codex_tools::HostedToolSpec::ProviderOnly { definition } => {
+                                ToolName::plain(definition.tool_type())
+                            }
                         }
                         .with_default_namespace()
                     })
@@ -2169,6 +2177,16 @@ impl PythonTools {
         Ok(())
     }
 
+    pub(crate) fn configured_child_executor_tools(&self, key: &PendingKey) -> Result<Vec<String>> {
+        self.check_pending(&key.reply.thread, key)?;
+        self.pending
+            .lock()
+            .expect("JavaScript replies poisoned")
+            .get(key)
+            .and_then(|call| call.executor_tools.clone())
+            .context("Configured child executor selection is unavailable")
+    }
+
     // Private callback delivery/admission may deny ended work. Strict checkpoint checks above remain unchanged.
     pub(crate) fn admit_callback(&self, owner: &str, key: &PendingKey) -> Result<bool> {
         ensure!(
@@ -2337,8 +2355,8 @@ impl PythonTools {
         admission: Option<Arc<crate::turn_settlement::Turn>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
-            thread, generation, slot, turn, call, arguments, None, source, model, media, admission,
-            None, None, None, None,
+            thread, generation, slot, turn, call, arguments, None, None, source, model, media,
+            admission, None, None, None, None, None,
         )
     }
 
@@ -2351,6 +2369,7 @@ impl PythonTools {
         call: &str,
         arguments: Value,
         argument_error: Option<String>,
+        raw_function_arguments: Option<&str>,
         source: &ToolCallSource,
         model: &str,
         media: Option<NativeMediaContext>,
@@ -2359,6 +2378,7 @@ impl PythonTools {
         manual: Option<bool>,
         realtime_tool_call: Option<Value>,
         client_search: Option<Arc<ClientToolSearchWork>>,
+        executor_tools: Option<Vec<String>>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -2419,6 +2439,9 @@ impl PythonTools {
         if let Some(error) = argument_error {
             request["msg"]["_sdk_argument_error"] = json!(error);
         }
+        if let Some(arguments) = raw_function_arguments {
+            request["msg"]["_sdk_raw_function_arguments"] = json!(arguments);
+        }
         if let Some(callback) = &callback {
             request["msg"]["_sdk_callback"] = callback.receipt.clone();
         }
@@ -2443,6 +2466,7 @@ impl PythonTools {
             pending.insert(
                 key.clone(),
                 PendingCall {
+                    executor_tools,
                     client_search,
                     original_payload: match &entry.spec {
                         ToolSpec::Mcp(_) => Some(ToolPayload::HostedMcpApproval {
@@ -2989,9 +3013,10 @@ impl PythonTools {
         &self,
         turn: &str,
         operation: Option<&OperationSelection>,
+        mcp_discovery: bool,
     ) -> Option<ActiveSelection> {
         if self.instance.is_some() {
-            return self.child_before_step.then(|| ActiveSelection {
+            return (self.child_before_step || mcp_discovery).then(|| ActiveSelection {
                 model_override: None,
                 model_settings_override: None,
                 turn: turn.to_owned(),
@@ -3115,12 +3140,24 @@ impl PythonContributor {
         profile: Option<codex_extension_api::AgentProfileReceipt>,
         manual: Option<Arc<CapturedManualTools>>,
         wrap_profile_handoffs: bool,
+        executor_tools: Option<Arc<FinalStepBuiltinTools>>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         slots
             .iter()
             .copied()
             .map(|slot| {
+                let decision_selection = wrap_profile_handoffs
+                    .then(|| {
+                        crate::agent_profiles::decision_handoff_selection(
+                            thread,
+                            profile.as_ref(),
+                            slot,
+                        )
+                    })
+                    .flatten();
                 let callback = Arc::new(PythonExecutor {
+                    executor_tools: executor_tools.clone(),
+                    decision_selection: decision_selection.clone(),
                     admission: thread
                         .get::<ModelPresentation>()
                         .and_then(|state| state.admission.clone()),
@@ -3136,7 +3173,12 @@ impl PythonContributor {
                 })
                     as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>;
                 if wrap_profile_handoffs {
-                    crate::agent_profiles::wrap_handoff_callback(thread, profile.as_ref(), callback)
+                    crate::agent_profiles::wrap_handoff_callback(
+                        thread,
+                        profile.as_ref(),
+                        callback,
+                        decision_selection,
+                    )
                 } else {
                     callback
                 }
@@ -3253,6 +3295,11 @@ impl ToolContributor for PythonContributor {
             );
         }
         if let Some(binding) = input.mcp {
+            let discovery = input.retained_execution_data.and_then(|data| {
+                data.get::<crate::native_interception::ProfileMcpSource>()
+                    .and_then(|source| source.result_selection.clone())
+                    .or_else(|| data.get::<crate::mcp_result_control::Selection>())
+            });
             for info in binding.tools() {
                 let native_name = info.canonical_tool_name();
                 let admitted = voice
@@ -3264,7 +3311,12 @@ impl ToolContributor for PythonContributor {
                         }),
                         None => tools.policy.allows(&native_name),
                     };
-                if !admitted {
+                // Realtime declaration capture has no text step to evaluate a discovery callback.
+                if !admitted
+                    || discovery.as_ref().is_some_and(|selection| {
+                        selection.filters_server_discovery(&info.server_name)
+                    })
+                {
                     continue;
                 }
                 let server = binding
@@ -3494,6 +3546,7 @@ impl ToolContributor for PythonContributor {
             None,
             None,
             true,
+            None,
         )
     }
 
@@ -3604,6 +3657,7 @@ impl ToolContributor for PythonContributor {
             profile.clone(),
             manual,
             true,
+            Some(step.get_or_init(FinalStepBuiltinTools::default)),
         );
         for generation in admitted_client_generations(thread, &snapshot.generation, &profile) {
             let slots: Vec<_> = (0..generation.entries.len()).collect();
@@ -3617,6 +3671,7 @@ impl ToolContributor for PythonContributor {
                 profile.clone(),
                 None,
                 false,
+                Some(step.get_or_init(FinalStepBuiltinTools::default)),
             ));
         }
         executors
@@ -3809,8 +3864,17 @@ impl ToolContributor for PythonContributor {
                 tools: tools.clone(),
                 id,
             };
-            let mcp_names = step
-                .get::<Arc<codex_mcp::McpBinding>>()
+            let mcp_binding = step.get::<Arc<codex_mcp::McpBinding>>();
+            let discovery_selection = if mcp_binding
+                .as_ref()
+                .is_some_and(|binding| !binding.tools().is_empty())
+            {
+                crate::mcp_result_control::discovery_selection(thread, step)
+                    .map_err(|error| error.to_string())?
+            } else {
+                None
+            };
+            let mcp_names = mcp_binding
                 .map(|binding| {
                     binding
                         .tools()
@@ -3818,10 +3882,19 @@ impl ToolContributor for PythonContributor {
                         .filter_map(|tool| {
                             let name = tool.canonical_tool_name();
                             allowed.contains(&name).then(|| {
-                                json!({
+                                let mut projected = json!({
                                     "server": tool.server_name, "tool": tool.tool.name,
                                     "namespace": name.namespace, "name": name.name,
-                                })
+                                });
+                                if discovery_selection.as_ref().is_some_and(|selection| {
+                                    selection.filters_discovery(
+                                        &tool.server_name,
+                                        tool.tool.name.as_ref(),
+                                    )
+                                }) {
+                                    projected["definition"] = json!(&tool.tool);
+                                }
+                                projected
                             })
                         })
                         .collect::<Vec<_>>()
@@ -3844,6 +3917,17 @@ impl ToolContributor for PythonContributor {
             }
             if let Some(callback) = &callback {
                 request["msg"]["_sdk_callback"] = callback.receipt.clone();
+            }
+            if step
+                .get::<codex_extension_api::StagedInputPreparation>()
+                .is_some_and(|preparation| preparation.is_for(turn.level_id()))
+            {
+                request["msg"]["staged_input_preparation"] = json!(true);
+            }
+            if let Some(staged) = turn.get::<codex_extension_api::SelectedStagedInput>() {
+                if let Some(records) = staged.0.items_for(turn.level_id()) {
+                    request["msg"]["staged_input"] = json!(records);
+                }
             }
             if let Some(initial) = turn.get::<codex_extension_api::InitialTurnInput>() {
                 if let Some(records) = &initial.0 {
@@ -3941,6 +4025,8 @@ impl ToolContributor for PythonContributor {
 }
 
 struct PythonExecutor {
+    executor_tools: Option<Arc<FinalStepBuiltinTools>>,
+    decision_selection: Option<Arc<crate::agent_profiles::DecisionHandoffSelection>>,
     admission: Option<Arc<crate::turn_settlement::Turn>>,
     manual: Option<Arc<CapturedManualTools>>,
     profile: Option<codex_extension_api::AgentProfileReceipt>,
@@ -4119,6 +4205,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     .await
                     .map_err(|e| FunctionCallError::Fatal(e.to_string()))?;
             }
+            let raw_function_arguments = match (&call.source, &call.payload) {
+                (ToolCallSource::Direct, ToolPayload::Function { arguments })
+                    if client_search.is_none() =>
+                {
+                    Some(arguments.as_str())
+                }
+                _ => None,
+            };
             let (key, receiver) = self
                 .tools
                 .enqueue_profile(
@@ -4129,6 +4223,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     &call.call_id,
                     arguments,
                     argument_error,
+                    raw_function_arguments,
                     &call.source,
                     &call.model,
                     Some(NativeMediaContext {
@@ -4144,6 +4239,34 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .map(|manual| manual.slots.contains(&self.slot)),
                     call.conversation_history.realtime_tool_call().cloned(),
                     client_search.clone(),
+                    self.executor_tools
+                        .as_ref()
+                        .and_then(|selection| selection.names())
+                        .map(|names| {
+                            let mut names = names
+                                .iter()
+                                .filter_map(|name| {
+                                    if name
+                                        .namespace
+                                        .as_deref()
+                                        .is_some_and(|namespace| namespace != "functions")
+                                    {
+                                        return None;
+                                    }
+                                    match name.name.as_str() {
+                                        "exec_command" | "shell_command" => {
+                                            Some("exec_command".to_string())
+                                        }
+                                        "write_stdin" | "apply_patch" | "project_glob"
+                                        | "project_grep" => Some(name.name.clone()),
+                                        _ => None,
+                                    }
+                                })
+                                .collect::<Vec<_>>();
+                            names.sort_unstable();
+                            names.dedup();
+                            names
+                        }),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
@@ -4187,6 +4310,25 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     ));
                 }
             };
+            if let Some(selection) = &self.decision_selection {
+                if !self.tools.admits_generation(&self.generation) {
+                    return Err(FunctionCallError::RespondToModel(
+                        "Expired Decision handoff source catalog".into(),
+                    ));
+                }
+                selection
+                    .record(
+                        &call.turn_id,
+                        &call.call_id,
+                        response.handoff_target_profile_id,
+                        response.response.success,
+                    )
+                    .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
+            } else if response.handoff_target_profile_id.is_some() {
+                return Err(FunctionCallError::RespondToModel(
+                    "Only Decision handoffs may select a target".into(),
+                ));
+            }
             if response.response.success
                 && call.source == ToolCallSource::Direct
                 && self.tools.admits_generation(&self.generation)
@@ -4248,12 +4390,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                 }) as Box<dyn ToolOutput>);
             }
             if let ToolPayload::Shell { arguments } = &call.payload {
-                return Ok(
-                    Box::new(codex_tools::ApplicationShellOutput::from_dynamic_response(
+                return Ok(Box::new(RealtimeToolOutput {
+                    output: codex_tools::ApplicationShellOutput::from_dynamic_response(
                         arguments,
                         response.response,
-                    )?) as Box<dyn ToolOutput>,
-                );
+                    )?,
+                    start_response: response.start_response,
+                    acceptance: response.acceptance,
+                }) as Box<dyn ToolOutput>);
             }
             if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
                 return Ok(Box::new(RealtimeToolOutput {
@@ -4385,7 +4529,12 @@ impl TurnLifecycleContributor for PythonContributor {
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
                 // The original turn keeps provenance without keeping the thread owner alive.
                 input.turn_store.insert(Arc::downgrade(&tools));
-                if tools.instance.is_some() && tools.child_before_step {
+                let child_mcp_discovery = tools.instance.is_some()
+                    && input
+                        .thread_store
+                        .get::<crate::mcp_result_control::McpResultControl>()
+                        .is_some_and(|control| control.has_discovery_filter());
+                if tools.instance.is_some() && (tools.child_before_step || child_mcp_discovery) {
                     input
                         .turn_store
                         .get_or_init(codex_extension_api::InitialTurnInput::default);
@@ -4419,8 +4568,11 @@ impl TurnLifecycleContributor for PythonContributor {
                     use_deferred_specs,
                 });
                 let operation = input.turn_store.get::<Option<OperationSelection>>();
-                let selection = tools
-                    .turn_selection(input.turn_id, operation.as_deref().and_then(Option::as_ref));
+                let selection = tools.turn_selection(
+                    input.turn_id,
+                    operation.as_deref().and_then(Option::as_ref),
+                    child_mcp_discovery,
+                );
                 *tools
                     .selection
                     .lock()
@@ -4710,12 +4862,14 @@ mod pending_tests {
                 "captured-manual",
                 json!({}),
                 None,
+                None,
                 &ToolCallSource::Direct,
                 "fixture-model",
                 None,
                 None,
                 None,
                 Some(manual.slots.contains(&0)),
+                None,
                 None,
                 None,
             )
@@ -5423,7 +5577,7 @@ mod pending_tests {
             operation_declaration_source: None,
         };
         *child.selection.lock().unwrap() =
-            child.turn_selection("child-turn", Some(&root_operation));
+            child.turn_selection("child-turn", Some(&root_operation), false);
         (root, thread, child)
     }
 
@@ -5446,7 +5600,7 @@ mod pending_tests {
         assert_eq!(executors[0].tool_name(), ToolName::plain("decision"));
         let disabled =
             PythonTools::descendant(&tools(), "disabled".into(), Arc::default(), None).unwrap();
-        assert!(disabled.turn_selection("turn", None).is_none());
+        assert!(disabled.turn_selection("turn", None, false).is_none());
         assert!(root.selection.lock().unwrap().is_none());
     }
 

@@ -172,6 +172,8 @@ export class NativeThread {
     limit?: number | null,
     forReplay?: boolean,
   ): Promise<string>;
+  _record_memory_input_admission(turn_id: string): Promise<void>;
+  _memory_history(turn_id: string): Promise<string>;
   _stored_history(query_json: string): Promise<string>;
   _set_stored_name(name_json: string): Promise<string>;
   _stored_history_close_action(action_json: string): _StoredHistoryClose;
@@ -336,6 +338,7 @@ export class NativeThread {
     default_slots_json?: string,
     allocate_generation?: boolean,
   ): Promise<string>;
+  _configured_child_policy(request_json: string): Promise<string>;
   _cancel_child_callback(request_json: string): Promise<boolean>;
   _respond_python_tool(
     response_json: string,

@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { inspect } from 'node:util';
 import { WebSocketServer } from 'ws';
 import {
   afterAll,
@@ -26,6 +27,7 @@ import {
   manualTool,
   type Observation,
   type MCPCallContext,
+  type MCPDiscoveryContext,
   type MCPResultContext,
   type Session,
 } from '../../src';
@@ -43,8 +45,17 @@ import {
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
+const callbackTraceEvents: unknown[] = [];
 beforeAll(async () => {
-  await telemetry.configure({ traceProcessors: [{ onEvent() {} }] });
+  await telemetry.configure({
+    traceProcessors: [
+      {
+        onEvent(event) {
+          callbackTraceEvents.push(event);
+        },
+      },
+    ],
+  });
 });
 
 afterAll(async () => {
@@ -91,6 +102,7 @@ async function peer(
   const effects: JsonObject[] = [];
   const failures: unknown[] = [];
   let initializations = 0;
+  let listings = 0;
   const server = createServer(async (request, response) => {
     try {
       if (request.method !== 'POST') {
@@ -113,10 +125,12 @@ async function peer(
           serverInfo: { name: 'policy-peer', version: '1' },
         };
       }
-      if (rpc.method === 'tools/list')
+      if (rpc.method === 'tools/list') {
+        listings++;
         result = {
           tools: [raw, ...extraNames].map((name) => ({ ...recordTool, name })),
         };
+      }
       if (rpc.method === 'tools/call') {
         const params = rpc.params as JsonObject;
         effects.push(
@@ -164,10 +178,90 @@ async function peer(
     get initializations() {
       return initializations;
     },
+    get listings() {
+      return listings;
+    },
     url: `http://127.0.0.1:${address.port}/mcp`,
     raw,
   };
 }
+
+it.each([true, false])(
+  'filters native MCP discovery for each turn with list caching set to %s',
+  async (cacheToolsList) => {
+    const extraNames = ['detail'];
+    const endpoint = await peer(
+      'lookup',
+      undefined,
+      undefined,
+      undefined,
+      extraNames,
+    );
+    const model = new ModelServer([[message('first')], [message('second')]]);
+    const config = await model.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic',
+      supportsWebsockets: false,
+    });
+    const context = { selected: 'lookup' };
+    const seen = new Map<string, Set<string>>();
+    const descriptor = new HttpMCP<typeof context>({
+      name: 'fixture',
+      url: endpoint.url,
+      tools: ['lookup', 'detail'],
+      cacheToolsList,
+      toolFilter({ agent, runContext, serverName }, definition) {
+        expect(agent?.name).toBe('catalog owner');
+        expect(serverName).toBe('fixture');
+        expect(runContext.context).toBe(context);
+        expect(runContext.signal.aborted).toBe(false);
+        const names = seen.get(runContext.turnId) ?? new Set<string>();
+        names.add(definition.name);
+        seen.set(runContext.turnId, names);
+        definition.inputSchema.properties = {};
+        return definition.name === context.selected;
+      },
+    });
+    const agent = new Agent({
+      name: 'catalog owner',
+      instructions: 'Use only the selected record tool.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [descriptor],
+    });
+    await using session = await agent.session({ context });
+    const first = await session.submit('First tool catalog');
+    await first.wait();
+    const listed = endpoint.listings;
+    const firstTools = JSON.stringify(model.requests[0]!.tools ?? []);
+    expect(firstTools).toContain('"name":"lookup"');
+    expect(firstTools).toContain('"key":{"type":"string"}');
+    expect(firstTools).not.toContain('"name":"detail"');
+
+    context.selected = 'detail';
+    extraNames.length = 0;
+    const second = await session.submit('Second tool catalog');
+    await second.wait();
+    const secondTools = JSON.stringify(model.requests[1]!.tools ?? []);
+    expect(secondTools).not.toContain('"name":"lookup"');
+    if (cacheToolsList) {
+      expect(endpoint.listings).toBe(listed);
+      expect(secondTools).toContain('"name":"detail"');
+    } else {
+      expect(endpoint.listings).toBeGreaterThan(listed);
+      expect(secondTools).not.toContain('"name":"detail"');
+    }
+    expect([...seen.values()].map((names) => [...names].sort())).toEqual([
+      ['detail', 'lookup'],
+      cacheToolsList ? ['detail', 'lookup'] : ['lookup'],
+    ]);
+    expect(endpoint.effects).toEqual([]);
+  },
+  30_000,
+);
+
 async function open(
   descriptor: HttpMCP | StdioMCP,
   responses: ConstructorParameters<typeof ModelServer>[0],
@@ -219,6 +313,88 @@ async function open(
   cleanup.push(() => session.close());
   return { model, session, provider };
 }
+it('filters native MCP discovery from a captured Agent profile', async () => {
+  const endpoint = await peer();
+  const filter = vi.fn((_context: MCPDiscoveryContext) => false);
+  const { session, model } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: endpoint.url,
+      tools: ['lookup'],
+      toolFilter: filter,
+    }),
+    [[message('filtered')]],
+    false,
+    false,
+    undefined,
+    true,
+  );
+  const turn = await session.submit('Check the available tools.');
+  expect((await turn.wait()).finalOutput).toBe('filtered');
+  expect(filter.mock.calls.map(([context]) => context.runContext)).toEqual([
+    expect.objectContaining({ threadId: session.id, turnId: turn.turnId }),
+  ]);
+  expect(JSON.stringify(model.requests[0]!.tools ?? [])).not.toContain(
+    '"name":"lookup"',
+  );
+  expect(endpoint.effects).toEqual([]);
+  model.assertExhausted();
+}, 20_000);
+
+it.each([false, true])(
+  'projects native Realtime MCP catalogs with a discovery filter configured: %s',
+  async (filtered) => {
+    const endpoint = await peer();
+    const { session, model } = await open(
+      new HttpMCP({
+        name: 'fixture',
+        url: endpoint.url,
+        tools: ['lookup'],
+        approvalMode: 'preapproved',
+        ...(filtered ? { toolFilter: () => false } : {}),
+      }),
+      [],
+    );
+    const configuration = await session.buildRealtimeSipConfig();
+    const lookup = [expect.objectContaining({ name: 'mcp__fixture__lookup' })];
+    const expected = filtered
+      ? expect.not.arrayContaining(lookup)
+      : expect.arrayContaining(lookup);
+    const websocket = new WebSocketServer({ noServer: true });
+    let advertised: unknown;
+    model.onUpgrade((request, socket, head) => {
+      websocket.handleUpgrade(request, socket, head, (connection) => {
+        connection.on('message', (raw) => {
+          const frame = JSON.parse(raw.toString());
+          if (frame.type !== 'session.update') return;
+          advertised = frame.session.tools;
+          connection.send(
+            JSON.stringify({
+              type: 'session.updated',
+              session: { ...frame.session, id: 'mcp-catalog-fixture' },
+            }),
+          );
+        });
+      });
+    });
+    try {
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      try {
+        expect(configuration.tools ?? []).toEqual(expected);
+        expect(advertised ?? []).toEqual(expected);
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      for (const connection of websocket.clients) connection.terminate();
+      websocket.close();
+    }
+    expect(endpoint.effects).toEqual([]);
+    model.assertExhausted();
+  },
+  20_000,
+);
+
 const lookup = () => ({
   ...call(
     'lookup',
@@ -226,6 +402,25 @@ const lookup = () => ({
     { namespace: 'mcp__fixture', callId: 'provider-call' },
   ),
   id: 'provider-item',
+});
+
+it('keeps a filtered native MCP tool out of peer dispatch', async () => {
+  const endpoint = await peer();
+  const { model, session } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: endpoint.url,
+      tools: ['lookup'],
+      approvalMode: 'preapproved',
+      toolFilter: () => false,
+    }),
+    [[lookup()], [message('done')]],
+  );
+  await (await session.submit('Use only the offered tools.')).wait();
+  expect(endpoint.effects).toEqual([]);
+  expect(JSON.stringify(model.requests[0]!.tools ?? [])).not.toContain(
+    '"name":"lookup"',
+  );
 });
 
 const firstEffect = 'record-before-close';
@@ -1365,6 +1560,8 @@ it('gives a new native child the accepted MCP roster and callback generation', a
   const replacementPeer = await peer();
   const original = vi.fn(() => true);
   const replacement = vi.fn((_ctx: MCPCallContext) => true);
+  const originalDiscovery = vi.fn(() => true);
+  const replacementDiscovery = vi.fn((_ctx: MCPDiscoveryContext) => true);
   let rootId: string | undefined;
   const counts = new Map<string, number>();
   const respond = (request: JsonObject) => {
@@ -1400,6 +1597,7 @@ it('gives a new native child the accepted MCP roster and callback generation', a
       tools: ['lookup'],
       approvalMode: 'preapproved',
       approval: original,
+      toolFilter: originalDiscovery,
     }),
     Array.from({ length: 4 }, () => respond),
     true,
@@ -1412,6 +1610,7 @@ it('gives a new native child the accepted MCP roster and callback generation', a
         tools: ['lookup'],
         approvalMode: 'preapproved',
         approval: replacement,
+        toolFilter: replacementDiscovery,
       }),
     ],
   });
@@ -1436,6 +1635,17 @@ it('gives a new native child the accepted MCP roster and callback generation', a
   });
   expect((await child!.turn!.wait()).finalOutput).toBe('child done');
   expect(original).not.toHaveBeenCalled();
+  expect(originalDiscovery).not.toHaveBeenCalled();
+  expect(
+    replacementDiscovery.mock.calls.map(([context]) => context.runContext),
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        threadId: child!.id,
+        turnId: child!.turn!.turnId,
+      }),
+    ]),
+  );
   expect(originalPeer.effects).toEqual([]);
   expect(replacementPeer.effects).toMatchObject([
     { name: 'lookup', arguments: { key: 'child' } },
@@ -2037,6 +2247,72 @@ for (const phase of ['before', 'approval'] as const) {
   );
 }
 
+it('releases private MCP diagnostics from settled child turns', async () => {
+  const remote = await peer();
+  const privateFailure = new Error('synthetic private child MCP diagnostic');
+  let rootId: string | undefined;
+  let rootRequests = 0;
+  const respond = (request: JsonObject) => {
+    const metadata = request.client_metadata as Record<string, string>;
+    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    rootId ??= id;
+    if (id !== rootId) {
+      return [
+        call(
+          'lookup',
+          { key: 'child' },
+          { namespace: 'mcp__fixture', callId: 'child-selected-diagnostic' },
+        ),
+      ];
+    }
+    return rootRequests++ === 0
+      ? [
+          call(
+            'spawn_agent',
+            { task_name: 'child', message: 'Read lookup.' },
+            { namespace: 'collaboration', callId: 'spawn-child-diagnostic' },
+          ),
+        ]
+      : [message('parent done')];
+  };
+  const release = Promise.withResolvers<void>();
+  const result = vi.fn(async () => {
+    await release.promise;
+    throw privateFailure;
+  });
+  const { session, model } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      tools: ['lookup'],
+      approvalMode: 'preapproved',
+      transformResult: result,
+    }),
+    Array.from({ length: 3 }, () => respond),
+    true,
+  );
+
+  try {
+    expect(
+      (await (await session.submit('Start a child.')).wait()).finalOutput,
+    ).toBe('parent done');
+    await vi.waitFor(() => expect(result).toHaveBeenCalledTimes(1));
+    const children = await Array.fromAsync(session.subagents());
+    expect(children).toHaveLength(1);
+    const turn = children[0].turn;
+    expect(turn).toBeDefined();
+    release.resolve();
+
+    const failure: unknown = await turn!.wait().catch((error) => error);
+    expect(failure).toBeInstanceOf(NativeError);
+    expect(String(failure)).toContain('Native MCP result policy failed');
+    expect((failure as NativeError).getMcpCallbackError()).toBeUndefined();
+    model.assertExhausted();
+  } finally {
+    release.resolve();
+  }
+}, 20_000);
+
 it('stops only the owning child while its sibling and parent finish', async () => {
   const remote = await peer();
   let rootId: string | undefined;
@@ -2547,5 +2823,115 @@ it.each([true, false])(
     );
     expect(remote.effects.map((effect) => effect.name)).toEqual(['a.b']);
     expect(model.requests).toHaveLength(3);
+  },
+);
+
+for (const asynchronous of [false, true]) {
+  it.each(['transform', 'extract', 'metadata'] as const)(
+    `retains the selected %s callback failure for explicit diagnostics (async=${asynchronous})`,
+    async (phase) => {
+      const privateResult = 'SYNTHETIC_PRIVATE_MCP_RESULT';
+      const selected = new Error('SYNTHETIC_SELECTED_CALLBACK_FAILURE');
+      await telemetry.forceFlush();
+      callbackTraceEvents.length = 0;
+      const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map(
+        (method) => vi.spyOn(console, method).mockImplementation(() => {}),
+      );
+      onTestFinished(() => logs.forEach((log) => log.mockRestore()));
+      const fail = (): never => {
+        throw selected;
+      };
+      const callback = asynchronous ? async () => fail() : fail;
+      const remote = await peer('lookup', undefined, {
+        content: [{ type: 'text', text: privateResult }],
+        isError: true,
+      });
+      const descriptor = new HttpMCP({
+        name: 'fixture',
+        url: remote.url,
+        approvalMode: 'preapproved',
+        tools: ['lookup'],
+        ...(phase === 'transform' ? { transformResult: callback } : {}),
+        ...(phase === 'extract' ? { extractApplicationData: callback } : {}),
+        ...(phase === 'metadata' ? { requestMetadata: callback } : {}),
+      });
+      const { session, model } = await open(
+        descriptor,
+        [
+          [
+            call(
+              'lookup',
+              { key: 'read' },
+              { namespace: 'mcp__fixture', callId: 'cause-call' },
+            ),
+          ],
+        ],
+        false,
+        false,
+        { name: 'Selected MCP callback', includeSensitiveData: true },
+      );
+      const turn = await session.submit('Read one record.');
+      const failure = await turn.wait().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(NativeError);
+      expect((failure as NativeError).message).toBe(
+        'Native MCP result policy failed',
+      );
+      expect(Object.hasOwn(failure as NativeError, 'cause')).toBe(false);
+      expect((failure as NativeError).getMcpCallbackError()?.error).toBe(
+        selected,
+      );
+      await expect(turn.wait()).rejects.toBe(failure);
+      expect(remote.effects).toHaveLength(phase === 'metadata' ? 0 : 1);
+      expect(model.requests).toHaveLength(1);
+      const items = [];
+      for await (const item of session.items()) items.push(item);
+      const channels = [
+        JSON.stringify(model.requests),
+        JSON.stringify(items),
+        JSON.stringify(await session.saveState()),
+        inspect(failure, { getters: true }),
+        JSON.stringify(failure),
+      ];
+      await session.close();
+      await telemetry.forceFlush();
+      channels.push(
+        JSON.stringify(callbackTraceEvents),
+        JSON.stringify(logs.map((log) => log.mock.calls)),
+      );
+      for (const channel of channels) {
+        expect(channel).not.toContain(privateResult);
+        expect(channel).not.toContain(selected.message);
+      }
+    },
+  );
+}
+
+it.each(['transform', 'extract', 'metadata'] as const)(
+  'keeps malformed %s callback results separate from selected exceptions',
+  async (phase) => {
+    const remote = await peer();
+    const invalid = () => ({ unsupported: undefined }) as unknown as JsonObject;
+    const descriptor = new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      approvalMode: 'preapproved',
+      tools: ['lookup'],
+      ...(phase === 'transform' ? { transformResult: invalid } : {}),
+      ...(phase === 'extract' ? { extractApplicationData: invalid } : {}),
+      ...(phase === 'metadata' ? { requestMetadata: invalid } : {}),
+    });
+    const { session, model } = await open(descriptor, [[lookup()]]);
+    const failure = await (
+      await session.submit('Read.')
+    )
+      .wait()
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(NativeError);
+    expect((failure as NativeError).message).toBe(
+      'Native MCP result policy failed',
+    );
+    expect(Object.hasOwn(failure as NativeError, 'cause')).toBe(false);
+    expect((failure as NativeError).getMcpCallbackError()).toBeUndefined();
+    expect(model.requests).toHaveLength(1);
   },
 );

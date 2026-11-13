@@ -28,6 +28,73 @@ export type ProviderCompactionPolicy = z.input<
   typeof providerCompactionPolicySchema
 >;
 
+export type HostedToolChoice =
+  | {
+      readonly type:
+        | 'web_search'
+        | 'file_search'
+        | 'code_interpreter'
+        | 'image_generation'
+        | 'computer'
+        | 'computer_use_preview'
+        | 'shell'
+        | 'apply_patch'
+        | 'tool_search';
+    }
+  | {
+      readonly type: 'mcp';
+      readonly serverLabel: string;
+      readonly name?: string;
+    };
+
+function captureHostedToolChoice(value: unknown): HostedToolChoice {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('Hosted tool choice must be a typed selector');
+  const choice = value as Record<string, unknown>;
+  const types = [
+    'web_search',
+    'file_search',
+    'code_interpreter',
+    'image_generation',
+    'computer',
+    'computer_use_preview',
+    'shell',
+    'apply_patch',
+    'tool_search',
+    'mcp',
+  ];
+  if (
+    !Object.prototype.hasOwnProperty.call(choice, 'type') ||
+    !types.includes(choice.type as string) ||
+    Object.getOwnPropertyNames(choice).some(
+      (key) =>
+        !(
+          choice.type === 'mcp' ? ['type', 'serverLabel', 'name'] : ['type']
+        ).includes(key),
+    )
+  )
+    throw new TypeError(
+      'Hosted tool choice must identify a supported provider tool',
+    );
+  if (choice.type === 'mcp') {
+    if (
+      typeof choice.serverLabel !== 'string' ||
+      !choice.serverLabel.trim() ||
+      (choice.name !== undefined &&
+        (typeof choice.name !== 'string' || !choice.name.trim()))
+    )
+      throw new TypeError(
+        'Hosted MCP choice requires a captured server and tool identity',
+      );
+    return Object.freeze({
+      type: 'mcp',
+      serverLabel: choice.serverLabel,
+      ...(choice.name === undefined ? {} : { name: choice.name }),
+    });
+  }
+  return Object.freeze({ type: choice.type }) as HostedToolChoice;
+}
+
 export interface ModelSettings {
   /** Per logical attempt, excluding retry backoff; null restores the default. */
   attemptTimeoutMs?: number | null;
@@ -42,9 +109,9 @@ export interface ModelSettings {
   reasoningSummary?: string;
   /** null clears an existing service tier override. */
   serviceTier?: string | null;
-  /** Outer choice, or a captured eager ToolRef. A named target only narrows
+  /** Outer mode, captured eager ToolRef, or explicit hosted selector. A named target only narrows
    * the current admitted catalog; null clears it to auto. */
-  toolChoice?: 'auto' | 'none' | 'required' | ToolRef | null;
+  toolChoice?: 'auto' | 'none' | 'required' | ToolRef | HostedToolChoice | null;
   /** Nonnegative safe integer for ordinary sampling; null clears the SDK override. */
   /** Full input-capability declaration for the selected model; null restores its catalogue. */
   inputModalities?: readonly ('text' | 'image' | 'audio')[] | null;
@@ -67,6 +134,10 @@ export interface ModelSettings {
   /** Standard Responses compaction threshold. Explicit contextManagement takes precedence. */
   providerCompaction?: ProviderCompactionPolicy | null;
   extraBody?: JsonObject | null;
+  /** Request headers; a null value omits a provider default. Native auth stays provider-owned. */
+  extraHeaders?: Readonly<Record<string, string | null>> | null;
+  /** Request-local JSON query values; null clears the query override. */
+  extraQuery?: Readonly<JsonObject> | null;
   /**
    * Ordinary text sampling only: opt-in release of required/named forcing after an
    * accepted tool batch on this profile.
@@ -74,6 +145,82 @@ export interface ModelSettings {
    * declared first choice. No change to toolChoice: 'none'.
    */
   resetToolChoice?: boolean | null;
+}
+
+const protectedTransportHeaders = new Set([
+  'authorization',
+  'proxy-authorization',
+  'cookie',
+  'host',
+  'connection',
+  'upgrade',
+  'content-length',
+  'transfer-encoding',
+  'te',
+  'trailer',
+  'keep-alive',
+  'proxy-connection',
+  'content-type',
+  'accept',
+  'accept-encoding',
+  'user-agent',
+  'openai-beta',
+  'originator',
+  'session_id',
+  'x-client-request-id',
+  'x-request-id',
+  'chatgpt-account-id',
+  'openai-organization',
+  'openai-project',
+  'x-responsesapi-include-timing-metrics',
+  'x-sdk-sentinel-grant',
+]);
+
+/** @internal Shared with provider-level header capture. */
+export function invalidTransportHeaderName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+    protectedTransportHeaders.has(lower) ||
+    ['sec-websocket-', 'x-codex-', 'x-openai-'].some((prefix) =>
+      lower.startsWith(prefix),
+    )
+  );
+}
+
+function captureRequestHeaders(
+  value: unknown,
+): Readonly<Record<string, string | null>> {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+  )
+    throw new TypeError('extraHeaders must be a header map or null');
+  const captured: Record<string, string | null> = {};
+  const seen = new Set<string>();
+  for (const [name, header] of Object.entries(value)) {
+    const lower = name.toLowerCase();
+    if (
+      invalidTransportHeaderName(name) ||
+      lower === 'api-key' ||
+      seen.has(lower)
+    )
+      throw new TypeError(
+        'Request header name is invalid, duplicated, or owned by native transport/auth',
+      );
+    if (
+      header !== null &&
+      (typeof header !== 'string' || /[^\x20-\x7e]/.test(header))
+    )
+      throw new TypeError(
+        'Request header values must contain printable ASCII or null',
+      );
+    seen.add(lower);
+    Object.defineProperty(captured, lower, { value: header, enumerable: true });
+  }
+  return Object.freeze(captured);
 }
 
 /** @internal Capture nested settings before opening can await. */
@@ -107,6 +254,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'contextManagement',
     'providerCompaction',
     'extraBody',
+    'extraHeaders',
+    'extraQuery',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!allowed.has(key))
@@ -230,6 +379,18 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
             'extraBody cannot replace native request fields; use the corresponding model setting',
           );
         value = copyJsonValue(value);
+      } else if (key === 'extraHeaders') {
+        value = captureRequestHeaders(value);
+      } else if (key === 'extraQuery') {
+        if (
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
+          Object.keys(value).some((name) => !name)
+        )
+          throw new TypeError(
+            'extraQuery must be a JSON object with nonempty keys',
+          );
+        value = copyJsonValue(value);
       } else if (key === 'metadata') {
         if (typeof value !== 'object' || Array.isArray(value))
           throw new TypeError('metadata must be a string map');
@@ -238,7 +399,9 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
           throw new TypeError('metadata must be a string map');
         value = Object.freeze(Object.fromEntries(pairs));
       } else if (key === 'toolChoice') {
-        if (typeof value === 'object' && value !== null) {
+        if (typeof value === 'object' && value !== null && 'type' in value) {
+          value = captureHostedToolChoice(value);
+        } else if (typeof value === 'object' && value !== null) {
           const target = value as Partial<ToolRef>;
           if (
             Object.getOwnPropertyNames(target).some(
@@ -287,6 +450,8 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'contextManagement',
         'providerCompaction',
         'extraBody',
+        'extraHeaders',
+        'extraQuery',
       ].includes(key)
     ) {
       throw new TypeError(`Invalid null model setting: ${key}`);
@@ -294,6 +459,20 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     result[key] = value;
   }
   return result as ModelSettings;
+}
+
+/** @internal The same detached transport settings are used during startup and sampling. */
+export function requestTransportWire(
+  settings?: ModelSettings,
+): JsonObject | undefined {
+  const transport: JsonObject = {};
+  if (settings?.extraHeaders !== undefined)
+    transport.headers = copyJsonValue(settings.extraHeaders);
+  if (settings?.extraQuery !== undefined) {
+    transport.query = copyJsonValue(settings.extraQuery);
+    transport.query_nulls_as_empty = true;
+  }
+  return Object.keys(transport).length ? transport : undefined;
 }
 
 /** @internal Shared projection for Session updates and captured Agent profiles. */
@@ -347,6 +526,8 @@ export function modelOverrides(
     const value = selected[key as keyof typeof names];
     if (value !== undefined) controls[wire] = copyJsonValue(value);
   }
+  const transport = requestTransportWire(selected);
+  if (transport !== undefined) controls.request_transport = transport;
   if (selected.providerCompaction !== undefined) {
     const policy = selected.providerCompaction;
     controls.provider_compaction =
@@ -360,7 +541,18 @@ export function modelOverrides(
   }
   if (selected.toolChoice !== undefined) {
     const choice = selected.toolChoice;
-    if (typeof choice === 'object' && choice !== null) {
+    if (typeof choice === 'object' && choice !== null && 'type' in choice) {
+      overrides.tool_choice = 'required';
+      controls.named_tool_choice = null;
+      controls.hosted_tool_choice =
+        choice.type === 'mcp'
+          ? {
+              type: choice.type,
+              server_label: choice.serverLabel,
+              ...(choice.name === undefined ? {} : { name: choice.name }),
+            }
+          : { type: choice.type };
+    } else if (typeof choice === 'object' && choice !== null) {
       overrides.tool_choice = 'required';
       controls.named_tool_choice = {
         name: choice.name,

@@ -378,7 +378,11 @@ class PosixSourceDirectory implements NativeSourceDirectory {
     });
   }
 
-  async readFile(name: string): Promise<Uint8Array> {
+  async readFile(
+    name: string,
+    maxBytes?: number,
+    prefix?: boolean,
+  ): Promise<Uint8Array> {
     validateName(name);
     const fd = await this.run(() =>
       invoke(
@@ -406,15 +410,21 @@ class PosixSourceDirectory implements NativeSourceDirectory {
         // still be read to EOF without inventing a size or changing authority.
       }
       if (size !== undefined) await invoke(seek, [fd, 0, 0], 'lseek rewind');
-      contents = await readLocalSourceBuffer(size, async (buffer) => {
-        for (;;) {
-          try {
-            return await invoke(read, [fd, buffer, buffer.length], 'read');
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== 'EINTR') throw error;
+      contents = await readLocalSourceBuffer(
+        size,
+        async (buffer) => {
+          for (;;) {
+            try {
+              return await invoke(read, [fd, buffer, buffer.length], 'read');
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'EINTR')
+                throw error;
+            }
           }
-        }
-      });
+        },
+        maxBytes,
+        prefix,
+      );
     } catch (error) {
       await invoke(close, [fd], 'close').catch(() => {});
       throw error;
@@ -424,7 +434,7 @@ class PosixSourceDirectory implements NativeSourceDirectory {
     return contents;
   }
 
-  entries(): Promise<NativeSourceEntry[]> {
+  entries(maxEntries?: number): Promise<NativeSourceEntry[]> {
     return this.run(async () => {
       // The literal '.' reopens the held directory, never an untrusted path.
       // A fresh read handle also gives each enumeration its own stream offset.
@@ -470,6 +480,8 @@ class PosixSourceDirectory implements NativeSourceDirectory {
                   ? 10
                   : 0;
         }
+        if (maxEntries !== undefined && result.length >= maxEntries)
+          throw new RangeError('Local source member limit exceeded');
         result.push({
           name,
           type:

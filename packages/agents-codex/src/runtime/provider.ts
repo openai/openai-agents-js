@@ -1,3 +1,15 @@
+import { invalidTransportHeaderName } from './model-settings';
+/** @internal */
+export {
+  captureModelSettings,
+  modelOverrides,
+  requestTransportWire,
+} from './model-settings';
+export type {
+  HostedToolChoice,
+  ModelSettings,
+  ProviderCompactionPolicy,
+} from './model-settings';
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -22,10 +34,6 @@ import {
   type SignInWithChatGPT,
 } from './sign-in-with-chatgpt';
 
-/** @internal */
-export { captureModelSettings, modelOverrides } from './model-settings';
-export type { ModelSettings, ProviderCompactionPolicy } from './model-settings';
-
 export interface NativeProviderOptions {
   modelBackend?: NativeModel | ModelProvider;
   /** Share native clients and eligible plain-run Engines until runtime.close(). */
@@ -34,6 +42,8 @@ export interface NativeProviderOptions {
   streamIdleTimeoutMs?: number;
   websocketConnectTimeoutMs?: number;
   baseUrl?: string;
+  /** Base URL for Responses WebSockets when that transport is allowed. */
+  websocketBaseUrl?: string;
   apiKey?: string;
   /** Use the file-backed ChatGPT login saved by the Codex CLI for Responses. */
   codexLogin?: {
@@ -133,6 +143,7 @@ export class NativeProvider {
         options.chatGPT !== undefined ||
         options.modelBackend !== undefined ||
         options.baseUrl !== undefined ||
+        options.websocketBaseUrl !== undefined ||
         options.queryParams !== undefined ||
         options.headers !== undefined ||
         options.envHeaders !== undefined ||
@@ -180,6 +191,27 @@ export class NativeProvider {
         (typeof options[key] !== 'string' || !options[key])
       )
         throw new TypeError(`${key} must be a non-empty string`);
+    }
+    if (options.websocketBaseUrl !== undefined) {
+      const error =
+        'websocketBaseUrl must be an absolute HTTP(S) or WS(S) URL without userinfo or fragment';
+      const endpoint = options.websocketBaseUrl;
+      if (typeof endpoint !== 'string') throw new TypeError(error);
+      let base: URL;
+      try {
+        base = new URL(endpoint);
+      } catch {
+        throw new TypeError(error);
+      }
+      const authority = /^(?:https?|wss?):\/\/([^/?#]+)/i.exec(endpoint)?.[1];
+      if (
+        !authority ||
+        authority.includes('@') ||
+        !base.hostname ||
+        /\s/.test(endpoint) ||
+        base.href.includes('#')
+      )
+        throw new TypeError(error);
     }
     if (
       options.supportsWebsockets !== undefined &&
@@ -505,6 +537,7 @@ export class NativeProvider {
           ...this.#routing,
           ...Object.fromEntries(
             Object.entries({
+              websocket_base_url: options.websocketBaseUrl,
               request_max_retries: getPlanCredential
                 ? 0
                 : options.requestMaxRetries,
@@ -652,6 +685,7 @@ function captureCodexLogin(options: NativeProviderOptions) {
     options.apiKey !== undefined ||
     options.modelBackend !== undefined ||
     options.baseUrl !== undefined ||
+    options.websocketBaseUrl !== undefined ||
     options.supportsWebsockets === true ||
     options.responseMode === 'buffered' ||
     options.headers !== undefined ||
@@ -716,46 +750,12 @@ function captureProviderRouting(options: NativeProviderOptions) {
       copied[name] = Object.freeze(Object.fromEntries(Object.entries(value)));
     }
   }
-  const protectedNames = new Set([
-    'authorization',
-    'proxy-authorization',
-    'cookie',
-    'host',
-    'connection',
-    'upgrade',
-    'content-length',
-    'transfer-encoding',
-    'te',
-    'trailer',
-    'keep-alive',
-    'proxy-connection',
-    'content-type',
-    'accept',
-    'accept-encoding',
-    'user-agent',
-    'openai-beta',
-    'originator',
-    'session_id',
-    'x-client-request-id',
-    'x-request-id',
-    'chatgpt-account-id',
-    'openai-organization',
-    'openai-project',
-    'x-responsesapi-include-timing-metrics',
-    'x-sdk-sentinel-grant',
-  ]);
   const headers: Record<string, string> = {};
   const seen = new Set<string>();
   for (const name of ['headers', 'envHeaders'] as const) {
     for (const [key, original] of Object.entries(copied[name] ?? {})) {
       const lower = key.toLowerCase();
-      if (
-        !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(key) ||
-        protectedNames.has(lower) ||
-        ['sec-websocket-', 'x-codex-', 'x-openai-'].some((prefix) =>
-          lower.startsWith(prefix),
-        )
-      )
+      if (invalidTransportHeaderName(key))
         throw new TypeError(
           'Provider header name is invalid or belongs to native transport/auth',
         );

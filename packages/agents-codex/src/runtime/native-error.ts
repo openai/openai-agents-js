@@ -101,6 +101,7 @@ type Metadata = {
   readonly category: string | null;
   readonly retryable: boolean | null;
   readonly retryAfterMs: number | null;
+  readonly mcpCallbackError?: Readonly<{ error: unknown }>;
 };
 
 // One snapshot permits terminal enrichment without replacing the original Error.
@@ -168,6 +169,24 @@ export class NativeError extends Error {
   get retryAfterMs(): number | null {
     return metadata.get(this)!.retryAfterMs;
   }
+
+  /** Read the original application error from a root turn's MCP callback.
+   * This value may contain private application data.
+   */
+  getMcpCallbackError(): Readonly<{ error: unknown }> | undefined {
+    return metadata.get(this)!.mcpCallbackError;
+  }
+}
+
+/** @internal Keep callback diagnostics outside the standard error chain. */
+export function retainMcpCallbackError(
+  failure: NativeError,
+  error: unknown,
+): void {
+  metadata.set(failure, {
+    ...metadata.get(failure)!,
+    mcpCallbackError: Object.freeze({ error }),
+  });
 }
 
 /** Mark only an SDK-validated native not_submitted receipt, preserving identity. */
@@ -290,8 +309,7 @@ export function enrichNativeError(error: NativeError, value: unknown): void {
   }
   const retryAfterMs = localDeadline ? undefined : provider?.retry_after_ms;
   metadata.set(error, {
-    effects: metadata.get(error)!.effects,
-    responseIntegrityReason: metadata.get(error)!.responseIntegrityReason,
+    ...metadata.get(error)!,
     statusCode:
       typeof status === 'number' &&
       Number.isInteger(status) &&

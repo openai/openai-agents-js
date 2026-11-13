@@ -987,7 +987,71 @@
     {
       "path": "sdk-provider-compaction-threshold.patch",
       "sha256": "bf3cc2302fb84ae70b68546b5bd0994f3a9d0c0023a59fa25688501d2e062157"
+    },
+    {
+      "path": "sdk-generic-provider-hosted-tools.patch",
+      "sha256": "86489613d82d450619641aa6e11a682d5e29fc87ca064b0fc48419f3df7d47c6"
+    },
+    {
+      "path": "sdk-tracing-annotation-shapes.patch",
+      "sha256": "a8ca9902c1041e980d996af7235c31ff00aba450a3b606053add632982c6d0ee"
+    },
+    {
+      "path": "sdk-independent-websocket-base.patch",
+      "sha256": "bcb4ba165d5d56bfbd29f31405514224c96282ccf67a34d48f04af99d8809601"
+    },
+    {
+      "path": "sdk-explicit-hosted-tool-choice.patch",
+      "sha256": "de6a3b0c7813382749a194a3bff82c20cf0f1aaf596b33c4d5ea67dc7f91cb7b"
+    },
+    {
+      "path": "sdk-mcp-discovery-cache.patch",
+      "sha256": "1b966cec16e6fc105e52c5675e648d71d906c87bd4dd111ca12583ef75aefcdc"
+    },
+    {
+      "path": "sdk-websocket-route-auth-scope.patch",
+      "sha256": "7110c4c522ea0afccc9bf42085582fdda64f7bae2c54364ae39de60d2decfa0b"
+    },
+    {
+      "path": "sdk-decision-handoff-admission.patch",
+      "sha256": "c16299166bda18fd3d9cdcc0af0d0d9d5d9911246e8fe20b29d13cee12908450"
+    },
+    {
+      "path": "sdk-websocket-overload-classification.patch",
+      "sha256": "948693109cb29cd7a29c3b7e5cecd6329ae9e05e891ef3cf1ba56595250ee725"
+    },
+    {
+      "path": "sdk-request-transport-overrides.patch",
+      "sha256": "728cd6534831a53513b90167b2e01a8be8a6ebd0e1034b6e61c5c37c8c61ef3e"
+    },
+    {
+      "path": "sdk-agent-profile-request-transport.patch",
+      "sha256": "77c570ed69481b556ace4340382601513ac13aa377accc10da563d23bb895333"
+    },
+    {
+      "path": "sdk-final-configured-child-tool-selection.patch",
+      "sha256": "61b69736dfbba375ba595e35ee4eeaa43edf606691ef47654dfe20d34d3f4ebb"
+    },
+    {
+      "path": "sdk-staged-manual-continuation-input.patch",
+      "sha256": "3953f6f1c1ad5a037affcd835740731d10153b0fc2bbd2e51b7f35552d098c0a"
+    },
+    {
+      "path": "sdk-provider-history-lineage.patch",
+      "sha256": "61fb3fddfead8336a9cf6ac9ecaf2a3b56cdcd0b86442aca4bac9863182d508c"
+    },
+    {
+      "path": "sdk-function-tool-callers.patch",
+      "sha256": "8c785d3c8f7f4e7faad1403f90b0f5d843950838c42cf61ddc96e01579d97bc4"
+    },
+    {
+      "path": "sdk-unknown-direct-function.patch",
+      "sha256": "ca21cc5bd5167200a2d3ed05e21709663db3a387771d1063b2da0b505204b764"
+    },
+    {
+      "path": "sdk-unknown-turn-receipt.patch",
+      "sha256": "523377e7592e19dfcf39a0f5f12688194364e462222a72ebafdcd3d4e964c0c6"
     }
   ],
-  "result_tree": "9887d36e422c2c3781eef3b9dd6c5d7f9a134a91"
+  "result_tree": "9ce245d52957bec2bfd0dd9192891ae5b66970e7"
 }

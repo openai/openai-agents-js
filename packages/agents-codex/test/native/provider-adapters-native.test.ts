@@ -66,13 +66,22 @@ const controlCases = [
     cacheKey: undefined,
     penalties: false,
   })),
-  ...(['responses', 'ai-sdk-responses'] as const).map((adapter) => ({
-    adapter,
-    outcome: 'cache-write' as const,
-    cacheMode: 'ordinary',
-    cacheKey: undefined,
-    penalties: false,
-  })),
+  ...(['responses', 'ai-sdk-responses'] as const).flatMap((adapter) =>
+    (
+      [
+        'cache-write',
+        'cache-write-zero',
+        'cache-write-known-first',
+        'cache-write-unknown-first',
+      ] as const
+    ).map((outcome) => ({
+      adapter,
+      outcome,
+      cacheMode: 'ordinary',
+      cacheKey: undefined,
+      penalties: false,
+    })),
+  ),
   {
     adapter: 'ai-sdk-responses' as const,
     outcome: 'summary-auto' as const,
@@ -96,7 +105,7 @@ it.each([
     const success =
       outcome === 'complete' ||
       reasoning ||
-      outcome === 'cache-write' ||
+      outcome.startsWith('cache-write') ||
       outcome === 'summary-auto';
     const reasoningSummary =
       outcome === 'reasoning-empty'
@@ -147,6 +156,20 @@ it.each([
       if (final)
         expect(JSON.stringify(body.input ?? body.messages)).toContain('42');
       let result: any;
+      const cacheWrite =
+        outcome === 'cache-write'
+          ? 2
+          : outcome === 'cache-write-zero'
+            ? 0
+            : outcome === 'cache-write-known-first'
+              ? final
+                ? undefined
+                : 2
+              : outcome === 'cache-write-unknown-first'
+                ? final
+                  ? 2
+                  : undefined
+                : undefined;
       if (adapter !== 'ai-sdk-chat' && adapter !== 'chat')
         result = {
           id: `resp_${seen.length}`,
@@ -185,9 +208,14 @@ it.each([
             total_tokens: 5,
             input_tokens_details: {
               cached_tokens: 1,
-              ...(outcome === 'cache-write' ? { cache_write_tokens: 2 } : {}),
+              ...(cacheWrite === undefined
+                ? {}
+                : { cache_write_tokens: cacheWrite }),
             },
             output_tokens_details: { reasoning_tokens: 1 },
+            ...(outcome.startsWith('cache-write')
+              ? { provider_extension: 'synthetic-cache-availability-raw' }
+              : {}),
           },
         };
       else
@@ -377,13 +405,46 @@ it.each([
         expect(result.finalOutput).toBe('42');
         expect(result.threadUsage?.totalTokenUsage.inputTokens).toBe(6);
         expect(result.threadUsage?.totalTokenUsage.outputTokens).toBe(4);
-        if (outcome === 'cache-write') {
+        if (outcome.startsWith('cache-write')) {
+          const mixed =
+            outcome === 'cache-write-known-first' ||
+            outcome === 'cache-write-unknown-first';
+          const normalizedCount = mixed
+            ? 2
+            : outcome === 'cache-write-zero'
+              ? 0
+              : 4;
           expect(
             result.threadUsage?.totalTokenUsage.cacheWriteInputTokens,
-          ).toBe(4);
+          ).toBe(normalizedCount);
+          expect(result.runUsage.requests).toBe(2);
+          expect(result).not.toHaveProperty('rawUsage');
           const turns = [];
           for await (const recorded of session.turns()) turns.push(recorded);
-          expect(turns[0].usage?.inputTokensDetails.cacheWriteTokens).toBe(4);
+          expect(turns).toHaveLength(1);
+          expect(turns[0].usage?.inputTokensDetails.cacheWriteTokens).toBe(
+            mixed ? undefined : normalizedCount,
+          );
+          expect(turns[0].responses).toHaveLength(2);
+          for (const response of turns[0].responses ?? [])
+            expect(response.responseId).toBeNull();
+          if (mixed) {
+            const counts = turns[0].responses?.map(
+              (response) =>
+                response.usage?.inputTokensDetails?.cacheWriteTokens,
+            );
+            expect(counts).toEqual(
+              outcome === 'cache-write-known-first'
+                ? [2, undefined]
+                : [undefined, 2],
+            );
+          }
+          expect(JSON.stringify(turns)).not.toContain(
+            'synthetic-cache-availability-raw',
+          );
+          expect(JSON.stringify(turns)).not.toContain(
+            'received_cache_write_usage',
+          );
         }
         if (reasoning || outcome === 'summary-auto')
           for (const body of seen) expect(body.reasoning?.summary).toBe('auto');
