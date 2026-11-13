@@ -405,6 +405,7 @@ export {
 export type {
   SandboxEnvironmentSource,
   SandboxEnvironmentOptions,
+  DockerGatewayOptions,
 } from './runtime/sandbox-environment';
 
 export type {

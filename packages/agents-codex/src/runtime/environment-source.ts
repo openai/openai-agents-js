@@ -38,6 +38,7 @@ interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
+  readonly profileWorkspaceInstructions?: string;
   readonly sandboxMemory?: SandboxMemoryOwner;
   readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly skillLease?: SandboxSkillLease;
@@ -65,6 +66,7 @@ export function createEnvironmentLease<Context>(
   sandboxMemory?: SandboxMemoryOwner,
   sandboxProvider?: SandboxProviderBinding,
   sandboxCapabilities?: SandboxCapabilityLease,
+  profileWorkspaceInstructions?: string,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -75,6 +77,7 @@ export function createEnvironmentLease<Context>(
     signal: sourceSignal,
     managedWorkspace,
     workspaceInstructions,
+    profileWorkspaceInstructions,
     sandboxMemory,
     observeSandboxOperation,
     skillLease,
@@ -135,6 +138,14 @@ export class EnvironmentAcquisition {
   /** @internal Immutable current resource text from this exact acquisition. */
   get workspaceInstructions(): string | undefined {
     return this.state?.workspaceInstructions;
+  }
+
+  /** @internal Captured Agent profiles have been retaining their own capability text. */
+  get profileWorkspaceInstructions(): string | undefined {
+    return (
+      this.state?.profileWorkspaceInstructions ??
+      this.state?.workspaceInstructions
+    );
   }
 
   /** @internal The exact provider lease supplies the sink namespace. */

@@ -75,6 +75,29 @@ function fixture() {
 }
 
 describe('native sandbox environment', () => {
+  it('rejects a custom provider before creation when selecting Docker stdio', async () => {
+    const { client, events } = fixture();
+    const source = sandboxEnvironment({
+      client,
+      manifest: new Manifest(),
+      dockerGateway: {},
+    });
+    await expect(acquireEnvironment(source)).rejects.toThrow(
+      'requires a current DockerSandboxClient',
+    );
+    expect(events).toEqual([]);
+  });
+
+  it('requires current Docker authority instead of a caller-supplied URL', () => {
+    expect(
+      () =>
+        new Environment({
+          url: 'docker://authority/resource',
+          cwd: '/workspace',
+        }),
+    ).toThrow('Executor URL must use wss://');
+  });
+
   it.each(['create', 'resume'] as const)(
     'delivers owned %s lifecycle events to removable, independent sinks',
     async (mode) => {

@@ -694,6 +694,17 @@ it.each(['graph', 'manual-restore'] as const)(
       name: 'worker',
       instructions: 'Target',
       provider,
+      tools:
+        kind === 'graph'
+          ? [
+              manualTool({
+                name: 'review',
+                description: 'Manual target decision',
+                parameters: z.object({}),
+                result: z.string(),
+              }),
+            ]
+          : [],
     });
     const agent = new Agent({
       instructions: 'Root',

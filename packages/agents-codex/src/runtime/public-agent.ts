@@ -140,6 +140,10 @@ import {
   type ProviderLease,
 } from './provider';
 import { captureOpeningModelSettings } from './opening-model-settings';
+import {
+  appendSandboxInstructions,
+  type SandboxCapabilityLease,
+} from './sandbox-capabilities';
 import type { SessionState } from './state';
 import { nativeGoalToolNames } from './goals';
 import { localStoragePath, type LocalStorage } from './local-storage';
@@ -1440,7 +1444,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Sign in with ChatGPT supports a single Agent with direct local function tools and settled state',
       );
-    const profiles = opening
+    let profiles = opening
       ? opening.profiles
       : this.handoffs.length || this.realtime !== undefined
         ? captureAgentProfiles(
@@ -1473,14 +1477,16 @@ export class Agent<Context = undefined, Output = string> {
           )
         : undefined;
     if (profiles) {
-      const owners = new Set(
-        splitToolDeclarations(profiles[0].declaration.tools).tools.map(
-          toolDeclarationIdentity,
-        ),
-      );
+      const selectedTools = splitToolDeclarations(
+        profiles[0].declaration.tools,
+      ).tools;
+      const owners = new Set(selectedTools.map(toolDeclarationIdentity));
+      const clientSearch = selectedTools.some(isClientToolSearchTool);
       catalog = captureTools(
-        catalog.tools.filter((tool) =>
-          owners.has(toolDeclarationIdentity(tool)),
+        catalog.tools.filter(
+          (tool) =>
+            owners.has(toolDeclarationIdentity(tool)) ||
+            (clientSearch && isClientToolSearchTool(tool)),
         ),
       );
       declarations.tools = [...catalog.tools];
@@ -1526,6 +1532,7 @@ export class Agent<Context = undefined, Output = string> {
             instructions: baseInstructions,
             files: opening?.instructionFiles ?? [],
           };
+    let profileInstructions = instructions;
     const environmentOwner = await acquireEnvironment(
       environmentInput,
       options.signal,
@@ -1539,7 +1546,11 @@ export class Agent<Context = undefined, Output = string> {
         isManualSessionState(stateResult?.data) ||
         options.resume !== undefined ||
         persistent ||
-        profiles ||
+        (profiles &&
+          (suppliedState != null ||
+            profiles.some(
+              (profile) => !supportsCapabilityProfile(profile.declaration),
+            ))) ||
         hostedPrompt !== undefined ||
         output.repair ||
         (options as OwnedSessionOptions<Context>)[correctionOpening] ||
@@ -1576,13 +1587,27 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(
           'Private opening contributions require a fresh root with eager direct function tools',
         );
-      catalog = captureTools(
-        resolveToolNameCollisions(
-          [...catalog.tools, ...contributed.tools],
-          [],
-          this.toolNameCollisionPolicy,
-        ).tools,
-      );
+      if (profiles) {
+        profiles = await prepareCapabilityProfiles(
+          profiles,
+          capabilityLease,
+          contributed,
+          instructions,
+        );
+        catalog = captureTools(
+          profiles[0].declaration.tools as readonly SessionTool[],
+        );
+        profileInstructions =
+          profiles[0].declaration.instructions ?? instructions;
+      } else {
+        catalog = captureTools(
+          resolveToolNameCollisions(
+            [...catalog.tools, ...contributed.tools],
+            [],
+            this.toolNameCollisionPolicy,
+          ).tools,
+        );
+      }
       declarations.tools = [...catalog.tools];
       settings = contributed.settings;
       transformContext = contributed.transformContext;
@@ -1658,16 +1683,35 @@ export class Agent<Context = undefined, Output = string> {
       })
     )
       throw new TypeError('programmaticToolCalling reserves exec and wait');
-    const graph = profiles
+    let graph = profiles
       ? captureProfileRuntimes(
           profiles,
           catalog,
-          instructions,
+          profileInstructions,
           outputGuardrails.length > 0,
           inputGuardrails.length + agentInputGuardrails.length > 0,
           settings,
         )
       : undefined;
+    if (graph && capabilityLease?.hasManifestChanges)
+      graph = Object.freeze({
+        ...graph,
+        workspace: capabilityLease,
+        roster: Object.freeze(
+          graph.roster.map((row) =>
+            Object.freeze({
+              ...row,
+              workspace_preparation: true,
+              ...(row.id === graph!.rootId
+                ? {
+                    workspace_instructions:
+                      environmentOwner.profileWorkspaceInstructions ?? '',
+                  }
+                : {}),
+            }),
+          ),
+        ),
+      });
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
       graph && state
@@ -2425,6 +2469,115 @@ function assertUniqueToolIdentities(
 }
 
 /** @internal Resolve a graph synchronously, before any provider/native acquisition. */
+function supportsCapabilityProfile(declaration: Agent<any, any>): boolean {
+  const tools = splitToolDeclarations(declaration.tools);
+  return (
+    declaration.realtime === undefined &&
+    declaration.hostedPrompt === undefined &&
+    !tools.mcp.length &&
+    !tools.nativeAgents &&
+    !tools.hostedTools.length &&
+    !tools.webSearch &&
+    !tools.nativeGoals &&
+    !tools.checklist &&
+    tools.tools.every(isSandboxCapabilityTool)
+  );
+}
+
+async function prepareCapabilityProfiles(
+  profiles: readonly CapturedAgentProfile<any, any>[],
+  owner: SandboxCapabilityLease,
+  root: Awaited<ReturnType<SandboxCapabilityLease['contributions']>>,
+  instructions: string,
+): Promise<readonly CapturedAgentProfile<any, any>[]> {
+  const prepared: CapturedAgentProfile<any, any>[] = [];
+  for (const [index, profile] of profiles.entries()) {
+    const lease = index === 0 ? owner : await owner.forProfile();
+    const contribution =
+      index === 0
+        ? root
+        : await lease.contributions(
+            profile.declaration.modelSettings,
+            profile.declaration.transformContext,
+          );
+    if (!contribution.tools.every(isSandboxCapabilityTool))
+      throw new TypeError(
+        'Sandbox capability tools require eager direct function tools or owned Shell/ApplyPatch callbacks',
+      );
+    const callbacks = profile.callbackTools ?? [];
+    const callbackOwners = new Set(callbacks.map(toolDeclarationIdentity));
+    const original = profile.declaration.tools.filter(
+      (tool) =>
+        !callbackOwners.has(toolDeclarationIdentity(tool as SessionTool)),
+    );
+    const handoffNames = [
+      ...Object.keys(profile.handoffs),
+      ...Object.keys(profile.decisionHandoffs ?? {}),
+    ];
+    const selected = resolveToolNameCollisions(
+      [...original, ...contribution.tools],
+      handoffNames,
+      profile.declaration.toolNameCollisionPolicy,
+    );
+    const tools = [...selected.tools, ...callbacks];
+    const slot = (previous: number) => {
+      const identity = toolDeclarationIdentity(
+        profile.declaration.tools[previous] as SessionTool,
+      );
+      const next = tools.findIndex(
+        (tool) => toolDeclarationIdentity(tool as SessionTool) === identity,
+      );
+      if (next < 0)
+        throw new TypeError(
+          'Capability composition lost an admitted handoff callback',
+        );
+      return next;
+    };
+    owner.captureProfile(
+      profile.id,
+      lease,
+      index === 0 ? instructions : (profile.declaration.instructions ?? ''),
+    );
+    const declaration = new Agent({
+      ...profile.declaration,
+      instructions: appendSandboxInstructions(
+        index === 0 ? instructions : (profile.declaration.instructions ?? ''),
+        lease.capturedInstructions,
+      ),
+      tools,
+      modelSettings: contribution.settings,
+      transformContext: contribution.transformContext,
+    } as AgentOptions<any, any>);
+    Object.freeze(declaration.tools);
+    Object.freeze(declaration.modelSettings);
+    Object.freeze(declaration);
+    prepared.push(
+      Object.freeze({
+        ...profile,
+        declaration,
+        handoffCallbacks: Object.freeze(
+          Object.fromEntries(
+            Object.entries(profile.handoffCallbacks ?? {}).map(
+              ([name, previous]) => [name, slot(previous)],
+            ),
+          ),
+        ),
+        decisionHandoffs: Object.freeze(
+          Object.fromEntries(
+            Object.entries(profile.decisionHandoffs ?? {}).map(
+              ([name, value]) => [
+                name,
+                Object.freeze({ ...value, slot: slot(value.slot) }),
+              ],
+            ),
+          ),
+        ),
+      }),
+    );
+  }
+  return Object.freeze(prepared);
+}
+
 export function captureAgentProfiles<Context, Output>(
   root: Agent<Context, Output>,
   rootDeclaration: Agent<Context, Output> = root,

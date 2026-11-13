@@ -297,6 +297,13 @@ export interface MCPOptions<Context = unknown> {
     context: MCPResultContext<Context>,
     result: JsonObject,
   ) => JsonObject | Promise<JsonObject>;
+  /** Format a direct MCP transport failure. Use null to fail the turn with a private cause. */
+  failureErrorFunction?:
+    | ((
+        context: MCPResultContext<Context>,
+        error: Error,
+      ) => string | Promise<string>)
+    | null;
   /** Attach application-only JSON after the optional transform; never provider data. */
   extractApplicationData?: (
     context: MCPApplicationDataContext<Context>,
@@ -326,6 +333,7 @@ abstract class MCP<Context> {
   readonly before?: MCPOptions<Context>['before'];
   readonly approval?: MCPOptions<Context>['approval'];
   readonly transformResult?: MCPOptions<Context>['transformResult'];
+  readonly failureErrorFunction?: MCPOptions<Context>['failureErrorFunction'];
   readonly extractApplicationData?: MCPOptions<Context>['extractApplicationData'];
   readonly transformResultTimeout?: number;
   readonly requestMetadata?: MCPOptions<Context>['requestMetadata'];
@@ -413,17 +421,32 @@ abstract class MCP<Context> {
     )
       throw new TypeError('MCP transformResult must be callable');
     if (
+      options.failureErrorFunction !== undefined &&
+      options.failureErrorFunction !== null &&
+      typeof options.failureErrorFunction !== 'function'
+    )
+      throw new TypeError('MCP failureErrorFunction must be callable or null');
+    if (
+      options.failureErrorFunction !== undefined &&
+      options.name === 'codex_apps'
+    )
+      throw new TypeError(
+        'MCP failureErrorFunction requires an ordinary server',
+      );
+    if (
       options.extractApplicationData !== undefined &&
       typeof options.extractApplicationData !== 'function'
     )
       throw new TypeError('MCP extractApplicationData must be callable');
     if (
       options.transformResultTimeout !== undefined &&
-      ((!options.transformResult && !options.extractApplicationData) ||
+      ((!options.transformResult &&
+        !options.extractApplicationData &&
+        options.failureErrorFunction === undefined) ||
         positive(options.transformResultTimeout) > 3600)
     )
       throw new TypeError(
-        'MCP transformResultTimeout requires a transform or extractor and at most 3600 seconds',
+        'MCP transformResultTimeout requires a result policy and at most 3600 seconds',
       );
     this.before = options.before;
     this.approval = options.approval;
@@ -449,6 +472,8 @@ abstract class MCP<Context> {
     });
     this.transformResult = options.transformResult;
     Object.defineProperty(this, 'transformResult', { enumerable: false });
+    this.failureErrorFunction = options.failureErrorFunction;
+    Object.defineProperty(this, 'failureErrorFunction', { enumerable: false });
     this.transformResultTimeout = options.transformResultTimeout;
     mcpNameSources.set(this, this.tools);
     mcpToolNames([this]);
@@ -787,6 +812,7 @@ export function selectHttpLeaves(
     before: server.before,
     approval: server.approval,
     transformResult: server.transformResult,
+    failureErrorFunction: server.failureErrorFunction,
     extractApplicationData: server.extractApplicationData,
     requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
@@ -857,6 +883,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
     before: server.before,
     approval: server.approval,
     transformResult: server.transformResult,
+    failureErrorFunction: server.failureErrorFunction,
     extractApplicationData: server.extractApplicationData,
     requestMetadata: server.requestMetadata,
     transformResultTimeout: server.transformResultTimeout,
@@ -965,7 +992,10 @@ export function mcpPolicies(
     servers: Object.fromEntries(
       servers
         .filter(
-          (server) => server.transformResult || server.extractApplicationData,
+          (server) =>
+            server.transformResult ||
+            server.extractApplicationData ||
+            server.failureErrorFunction !== undefined,
         )
         .map((server) => [
           server.name,
@@ -1090,6 +1120,7 @@ export async function transformMcpResult<Context>(
     turn_id?: string;
   },
   onCallbackFailure?: (cause: unknown) => void,
+  takeTransportError?: () => string | null,
 ): Promise<JsonObject> {
   const invoke = async <T>(callback: () => T | Promise<T>): Promise<T> => {
     try {
@@ -1138,8 +1169,13 @@ export async function transformMcpResult<Context>(
     const value = await invoke(() => server.requestMetadata!(metadataContext));
     return value == null ? {} : losslessJsonObjectSchema.parse(value);
   }
-  if (!server || (!server.transformResult && !server.extractApplicationData))
-    throw new Error('Native MCP result has no selected transform or extractor');
+  if (
+    !server ||
+    (!server.transformResult &&
+      !server.extractApplicationData &&
+      server.failureErrorFunction === undefined)
+  )
+    throw new Error('Native MCP result has no selected policy');
   const resultContext = Object.freeze({
     context,
     submission,
@@ -1147,7 +1183,22 @@ export async function transformMcpResult<Context>(
     serverName: notice.server_name,
     toolName: notice.tool_name,
   });
-  const original = losslessJsonObjectSchema.parse(notice.result);
+  let original = losslessJsonObjectSchema.parse(notice.result);
+  if (server.failureErrorFunction !== undefined) {
+    const diagnostic = takeTransportError?.();
+    if (diagnostic != null) {
+      const error = new Error(diagnostic);
+      const format = server.failureErrorFunction;
+      if (format === null) {
+        onCallbackFailure?.(error);
+        throw error;
+      }
+      const text = await invoke(() => format(resultContext, error));
+      if (typeof text !== 'string')
+        throw new TypeError('MCP failureErrorFunction must return text');
+      original = { content: [{ type: 'text', text }], isError: true };
+    }
+  }
   const result = server.transformResult
     ? losslessJsonObjectSchema.parse(
         await invoke(() => server.transformResult!(resultContext, original)),

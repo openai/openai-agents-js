@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { copyJsonValue, type JsonObject } from './binding';
 import type { FunctionTool } from './tools';
 import type { ContextTransform } from './model-callbacks';
@@ -28,6 +29,23 @@ export interface SandboxCapability {
   instructions(
     manifest: Manifest,
   ): string | null | undefined | Promise<string | null | undefined>;
+}
+
+export class SandboxWorkspaceCleanupError extends AggregateError {}
+
+export interface SandboxWorkspacePreparation {
+  readonly instructions: string;
+  readonly workspace_instructions: string;
+}
+interface OwnedProfileWorkspace {
+  validate(manifest: Manifest): void;
+  prepare(
+    manifest: Manifest,
+    signal: AbortSignal,
+    check: () => void,
+  ): Promise<void>;
+  render(): string;
+  discard(): Promise<void>;
 }
 
 type ManifestCopy = (manifest: Manifest) => Manifest;
@@ -85,55 +103,69 @@ export function captureSandboxCapabilities(
     return result;
   };
   const templates = input.map(clone);
-  return {
-    open(manifest, copy, check, signal) {
+  const open = (
+    manifest: Manifest,
+    copy: ManifestCopy,
+    check: ManifestCopy,
+    signal: AbortSignal,
+  ): SandboxCapabilityLease => {
+    signal.throwIfAborted();
+    const capabilities = templates.map(clone);
+    const types = new Set(capabilities.map((value) => value.type));
+    for (const capability of capabilities) {
+      const required = [...(capability.requiredCapabilityTypes?.() ?? [])];
+      if (required.some((type) => typeof type !== 'string' || !type.trim()))
+        throw new TypeError('Capability requirements must be nonempty strings');
+      const missing = required.filter((type) => !types.has(type));
+      if (missing.length)
+        throw new TypeError(
+          `${capability.type} requires missing capabilities: ${missing.sort().join(', ')}`,
+        );
+    }
+    let prepared = copy(manifest);
+    for (const capability of capabilities) {
+      prepared = check(capability.prepareManifest(prepared));
       signal.throwIfAborted();
-      const capabilities = templates.map(clone);
-      const types = new Set(capabilities.map((value) => value.type));
-      for (const capability of capabilities) {
-        const required = [...(capability.requiredCapabilityTypes?.() ?? [])];
-        if (required.some((type) => typeof type !== 'string' || !type.trim()))
-          throw new TypeError(
-            'Capability requirements must be nonempty strings',
-          );
-        const missing = required.filter((type) => !types.has(type));
-        if (missing.length)
-          throw new TypeError(
-            `${capability.type} requires missing capabilities: ${missing.sort().join(', ')}`,
-          );
-      }
-      let prepared = copy(manifest);
-      for (const capability of capabilities) {
-        prepared = check(capability.prepareManifest(prepared));
-        signal.throwIfAborted();
-      }
-      return new SandboxCapabilityLease(
-        capabilities,
-        copy(prepared),
-        user,
-        copy,
-        signal,
-      );
-    },
+    }
+    return new SandboxCapabilityLease(
+      capabilities,
+      copy(prepared),
+      user,
+      copy,
+      signal,
+      () => open(copy(manifest), copy, check, signal),
+    );
   };
+  return { open };
 }
 
 export class SandboxCapabilityLease {
   private bound = false;
   private retired = false;
   private contributed = false;
+  private resource?: SandboxSessionLike;
+  private readonly profiles = new Set<SandboxCapabilityLease>();
+  private instructionText?: string;
+  private workspace?: OwnedProfileWorkspace;
+  private changedManifest = false;
+  private readonly profileLeases = new Map<
+    string,
+    { lease: SandboxCapabilityLease; instructions: string }
+  >();
   constructor(
     private readonly capabilities: SandboxCapability[],
     readonly manifest: Manifest,
     private readonly user: string | undefined,
     private readonly copy: ManifestCopy,
     private readonly signal: AbortSignal,
+    private readonly cloneLease: () => SandboxCapabilityLease,
   ) {}
   async bind(session: SandboxSessionLike): Promise<void> {
     if (this.bound || this.retired)
       throw new Error('Capability binding requires its fresh resource');
     this.signal.throwIfAborted();
     this.bound = true;
+    this.resource = session;
     for (const capability of this.capabilities) {
       const result = await capability.bind(session, this.user);
       if (result !== undefined && result !== capability)
@@ -141,6 +173,89 @@ export class SandboxCapabilityLease {
       if (this.user !== undefined) await capability.bindRunAs?.(this.user);
       this.signal.throwIfAborted();
     }
+  }
+  get capturedInstructions(): string | undefined {
+    return this.instructionText;
+  }
+  async forProfile(): Promise<SandboxCapabilityLease> {
+    this.assertActive(this.signal);
+    const profile = this.cloneLease();
+    this.profiles.add(profile);
+    const changed = !isDeepStrictEqual(profile.manifest, this.manifest);
+    if (changed) {
+      if (!this.workspace)
+        throw new TypeError(
+          'Captured capability profiles require an owned disposable workspace',
+        );
+      this.workspace.validate(profile.manifest);
+      this.changedManifest = true;
+    }
+    await profile.bind(this.resource!);
+    this.assertActive(this.signal);
+    if (!changed) await profile.instructions(this.resource!.state.manifest);
+    this.assertActive(this.signal);
+    return profile;
+  }
+  ownProfileWorkspace(workspace: OwnedProfileWorkspace): void {
+    if (this.workspace || !this.bound || this.retired)
+      throw new Error(
+        'Workspace ownership requires its current bound resource',
+      );
+    this.workspace = workspace;
+  }
+  captureProfile(
+    id: string,
+    lease: SandboxCapabilityLease,
+    instructions: string,
+  ): void {
+    if (this.profileLeases.has(id))
+      throw new Error('Capability profile has already been captured');
+    this.profileLeases.set(id, { lease, instructions });
+  }
+  get hasManifestChanges(): boolean {
+    return this.changedManifest;
+  }
+  async prepareWorkspace(
+    id: string,
+    signal: AbortSignal,
+    check: () => void,
+  ): Promise<SandboxWorkspacePreparation> {
+    const workspace = this.workspace;
+    const profile = this.profileLeases.get(id);
+    if (!workspace || !profile)
+      throw new Error('Workspace target is outside its captured owner');
+    const assertActive = () => {
+      this.assertActive(signal);
+      check();
+    };
+    try {
+      assertActive();
+      await workspace.prepare(profile.lease.manifest, signal, assertActive);
+      assertActive();
+      const capability = await profile.lease.instructions(
+        this.resource!.state.manifest,
+      );
+      assertActive();
+      return {
+        instructions:
+          appendSandboxInstructions(profile.instructions, capability) ?? '',
+        workspace_instructions: workspace.render(),
+      };
+    } catch (error) {
+      return this.failWorkspace(error);
+    }
+  }
+  async failWorkspace(error: unknown): Promise<never> {
+    try {
+      await this.workspace?.discard();
+    } catch (cleanup) {
+      throw new SandboxWorkspaceCleanupError(
+        [error, cleanup],
+        'Workspace preparation and owned cleanup failed',
+        { cause: error },
+      );
+    }
+    throw error;
   }
   get hasContributions(): boolean {
     return this.capabilities.some(
@@ -247,17 +362,19 @@ export class SandboxCapabilityLease {
     );
     if (fragments.some((value) => value != null && typeof value !== 'string'))
       throw new TypeError('Capability instructions must be text');
-    return (
+    this.instructionText =
       fragments
         .filter(
           (value): value is string =>
             typeof value === 'string' && value.length > 0,
         )
-        .join('\n\n') || undefined
-    );
+        .join('\n\n') || undefined;
+    return this.instructionText;
   }
   retire(): void {
     this.retired = true;
+    for (const profile of this.profiles) profile.retire();
+    this.profiles.clear();
   }
 }
 
@@ -272,4 +389,22 @@ function captureItems(value: unknown): JsonObject[] {
   )
     throw new TypeError('Capability context must contain JSON objects');
   return result as JsonObject[];
+}
+
+export function appendSandboxInstructions(
+  workspace: string,
+  index?: string | null,
+): string {
+  if (!index) return workspace;
+  const combined = workspace + '\n\n' + index;
+  if (Buffer.byteLength(combined, 'utf8') <= 40_000) return combined;
+  const notice =
+    '\nSome skill index details have been omitted to fit the instruction limit.';
+  const available =
+    40_000 - Buffer.byteLength(workspace + '\n\n' + notice, 'utf8');
+  if (available <= 0) return workspace;
+  const bytes = Buffer.from(index, 'utf8');
+  let end = available;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return workspace + '\n\n' + bytes.subarray(0, end).toString('utf8') + notice;
 }

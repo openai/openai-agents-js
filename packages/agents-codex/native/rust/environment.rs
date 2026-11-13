@@ -20,6 +20,7 @@ use codex_exec_server::{
     Environment, EnvironmentInfo, ExecOutputStream, ExecParams, ExecProcessEvent, ExecServerError,
     ExecServerRuntimeOptions, FileSystemSandboxContext, GetMetadataOptions, LOCAL_ENVIRONMENT_ID,
     LocalWriteRoots, ProcessId, REMOTE_ENVIRONMENT_ID, RemoteEnvironmentOptions,
+    StdioExecServerCommand,
 };
 use codex_history::RolloutItem;
 use codex_protocol::capabilities::{CapabilityRootLocation, SelectedCapabilityRoot};
@@ -135,6 +136,8 @@ enum LocalWritePolicy {
 pub struct EnvironmentOptions {
     url: Option<String>,
     #[serde(default)]
+    stdio_command: Option<StdioCommandOptions>,
+    #[serde(default)]
     local: bool,
     cwd: PathUri,
     #[serde(default)]
@@ -153,6 +156,16 @@ pub struct EnvironmentOptions {
     mounts: Option<Vec<LocalStorageMount>>,
     #[serde(default, deserialize_with = "deserialize_network")]
     network: Option<EnvironmentNetworkPolicy>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StdioCommandOptions {
+    program: String,
+    args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    cwd: Option<PathBuf>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -678,7 +691,10 @@ impl EnvironmentOptions {
         self.check_config(config)?;
         if self.local {
             ensure!(
-                self.url.is_none() && self.headers.is_empty() && self.connect_timeout.is_none(),
+                self.url.is_none()
+                    && self.stdio_command.is_none()
+                    && self.headers.is_empty()
+                    && self.connect_timeout.is_none(),
                 "a local executor does not accept connection settings"
             );
             check_local_helpers(config)?;
@@ -746,26 +762,49 @@ impl EnvironmentOptions {
             !self.local,
             "a deferred executor requires a remote connection"
         );
-        manager
-            .upsert_environment_with_options(
+        let timeout = self
+            .connect_timeout
+            .map(Duration::try_from_secs_f64)
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("invalid remote executor connect timeout"))?;
+        let registration = if let Some(command) = &self.stdio_command {
+            ensure!(
+                self.headers.is_empty(),
+                "stdio executor cannot send HTTP headers"
+            );
+            ensure!(
+                self.url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("docker://")),
+                "stdio executor requires a current SDK Docker source"
+            );
+            manager.upsert_stdio_environment(
+                REMOTE_ENVIRONMENT_ID.to_owned(),
+                StdioExecServerCommand {
+                    program: command.program.clone(),
+                    args: command.args.clone(),
+                    env: command.env.clone(),
+                    cwd: command.cwd.clone(),
+                },
+                timeout,
+            )
+        } else {
+            manager.upsert_environment_with_options(
                 REMOTE_ENVIRONMENT_ID.to_owned(),
                 RemoteEnvironmentOptions {
                     exec_server_url: self.url.clone().context("remote executor requires a URL")?,
                     http_headers: self.headers.clone(),
-                    connect_timeout: self
-                        .connect_timeout
-                        .map(Duration::try_from_secs_f64)
-                        .transpose()
-                        .map_err(|_| anyhow::anyhow!("invalid remote executor connect timeout"))?,
+                    connect_timeout: timeout,
                 },
                 Default::default(),
             )
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "invalid remote executor connection settings: {}",
-                    startup_cause(&error)
-                )
-            })?;
+        };
+        registration.map_err(|error| {
+            anyhow::anyhow!(
+                "invalid remote executor connection settings: {}",
+                startup_cause(&error)
+            )
+        })?;
         Ok(manager
             .get_environment(REMOTE_ENVIRONMENT_ID)
             .context("remote environment was not registered")?)
@@ -2773,6 +2812,27 @@ mod tests {
     use codex_core_api::AbsolutePathBuf;
     use codex_exec_server::{ByteChunk, ProcessOutputChunk};
     use serde_json::json;
+
+    #[test]
+    fn stdio_registration_rejects_http_headers_before_spawning() {
+        let options = serde_json::from_value::<EnvironmentOptions>(json!({
+            "url": "docker://selected/container",
+            "cwd": "file:///workspace",
+            "headers": {"Authorization": "synthetic-must-not-forward"},
+            "stdio_command": {
+                "program": "must-not-spawn", "args": [], "env": {}, "cwd": null
+            }
+        }))
+        .expect("decode host options");
+        let manager = EnvironmentManager::without_environments(
+            codex_http_client::HttpClientFactory::new(
+                codex_http_client::OutboundProxyPolicy::ReqwestDefault,
+            ),
+        );
+        let error = options.register(&manager).err().expect("reject HTTP headers");
+        assert_eq!(error.to_string(), "stdio executor cannot send HTTP headers");
+        assert!(manager.get_environment(REMOTE_ENVIRONMENT_ID).is_none());
+    }
 
     #[test]
     fn configured_child_trusted_policy_omits_only_runtime_temp_grants() {

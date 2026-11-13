@@ -41,6 +41,7 @@ export interface AgentProfileRuntime {
 }
 export interface CapturedAgentGraph {
   readonly rootId: string;
+  readonly workspace?: import('./sandbox-capabilities').SandboxCapabilityLease;
   /** Pure native preflight of this exact supplied history, before resource acquisition. */
   readonly restoredSource?: AgentProfileReceipt;
   /** Owning-turn declaration supplying an explicit suspended operation ceiling. */

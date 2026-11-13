@@ -264,7 +264,10 @@ export function captureModelResponse(
     throw new TypeError(
       'Original Responses usage requires its unchanged provider response ID',
     );
-  const providerMetadata = captureModelProviderMetadata(response);
+  // Core rejects the entire refusal before any output can own a continuation.
+  const providerMetadata = hasResponsesRefusal(response.output)
+    ? undefined
+    : captureModelProviderMetadata(response);
   return copyJsonValue({
     ...(providerMetadata === undefined
       ? {}

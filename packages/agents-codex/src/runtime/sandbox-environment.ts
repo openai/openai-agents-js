@@ -1,5 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
 import {
   captureSandboxCapabilities,
+  appendSandboxInstructions as appendSkillInstructions,
   type SandboxCapability,
 } from './sandbox-capabilities';
 import { SandboxProviderBinding } from './sandbox-context';
@@ -34,7 +36,11 @@ import type {
 } from '@openai/agents-core/sandbox';
 import * as sandboxRuntime from '@openai/agents-core/sandbox/internal';
 import type { Manifest } from '@openai/agents-core/sandbox/internal';
-import type { Environment } from './environment';
+import {
+  Environment,
+  dockerStdioEnvironment,
+  type ExecutorToolName,
+} from './environment';
 import {
   acquireEnvironment,
   createEnvironmentLease,
@@ -60,8 +66,7 @@ function exposeSkillTools<Context>(
   return source as SandboxEnvironmentSource<Context>;
 }
 
-export interface SandboxEnvironmentOptions<
-  Context = any,
+interface SandboxEnvironmentConfiguration<
   Options extends SandboxClientOptions = SandboxClientOptions,
   State extends SandboxSessionState = SandboxSessionState,
 > {
@@ -104,12 +109,31 @@ export interface SandboxEnvironmentOptions<
   authorizedResumeCheckpoint?: ManagedWorkspaceCheckpoint;
   /** Explicit native generation; invoke Session.flushMemory after a successful text turn. */
   memory?: SandboxMemoryOptions;
-  /** Connect an authenticated native executor to this exact sandbox. */
-  connect(
-    sandbox: SandboxSessionLike<State>,
-    options: { readonly signal: AbortSignal },
-  ): Promise<EnvironmentLease<Context>>;
 }
+
+type ConnectSandbox<Context, State extends SandboxSessionState> = (
+  sandbox: SandboxSessionLike<State>,
+  options: { readonly signal: AbortSignal },
+) => Promise<EnvironmentLease<Context>>;
+
+export interface DockerGatewayOptions {
+  /** Current trusted Unix socket, defaulting to /var/run/docker.sock. */
+  socketPath?: string;
+  /** Absolute path to a compatible exec-server in the selected image. */
+  execServerPath?: string;
+  capabilityDirectories?: readonly string[];
+  tools?: readonly ExecutorToolName[];
+}
+
+export type SandboxEnvironmentOptions<
+  Context = any,
+  Options extends SandboxClientOptions = SandboxClientOptions,
+  State extends SandboxSessionState = SandboxSessionState,
+> = SandboxEnvironmentConfiguration<Options, State> &
+  (
+    | { connect: ConnectSandbox<Context, State>; dockerGateway?: never }
+    | { connect?: never; dockerGateway: DockerGatewayOptions }
+  );
 
 /**
  * Use existing sandbox materialization with native execution. Each opening owns
@@ -264,6 +288,44 @@ function createSandboxEnvironment<
     validateMountEnvironmentCredentialBoundaries,
   } = runtime;
   const { client, connect } = options;
+  const docker =
+    options.dockerGateway === undefined
+      ? undefined
+      : {
+          socketPath:
+            options.dockerGateway.socketPath ?? '/var/run/docker.sock',
+          execServerPath:
+            options.dockerGateway.execServerPath ??
+            '/usr/local/bin/exec-server',
+          capabilityDirectories:
+            options.dockerGateway.capabilityDirectories?.slice(),
+          tools: [...(options.dockerGateway.tools ?? [])],
+        };
+  if (docker) {
+    if (
+      connect !== undefined ||
+      options.session ||
+      options.authorizedResumeState ||
+      options.managedWorkspace ||
+      options.snapshot ||
+      'snapshot' in (options.options ?? {})
+    )
+      throw new TypeError(
+        'Docker gateway requires a fresh owned resource and no connect callback',
+      );
+    if (
+      !docker.execServerPath.startsWith('/') ||
+      docker.execServerPath.split('/').includes('..') ||
+      /[\r\n\0]/.test(docker.execServerPath)
+    )
+      throw new TypeError(
+        'Docker execServerPath must be an absolute container path',
+      );
+  } else if (typeof connect !== 'function') {
+    throw new TypeError(
+      'sandboxEnvironment requires a connect callback or Docker gateway',
+    );
+  }
   const createMemory =
     options.memory === undefined
       ? undefined
@@ -326,7 +388,8 @@ function createSandboxEnvironment<
       ...options,
       authorizedResumeCheckpoint: undefined,
       manifest: cloneManifest(requireManifest(options.manifest, Manifest)),
-      connect,
+      dockerGateway: undefined,
+      connect: connect!,
     });
     const binding: ManagedWorkspaceAuthorization | undefined =
       inheritedManaged ??
@@ -407,9 +470,10 @@ function createSandboxEnvironment<
   const deleteResource = client.delete?.bind(client);
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
+  const capabilityUser = options.capabilityUser;
   const capabilityConfiguration = captureSandboxCapabilities(
     options.capabilities,
-    options.capabilityUser,
+    capabilityUser,
   );
   if (capabilityConfiguration && managedAuthorization)
     throw new TypeError(
@@ -481,6 +545,10 @@ function createSandboxEnvironment<
   let resumeConsumed = false;
   const capabilityManifest = manifest;
   const source: EnvironmentSource<Context> = async ({ signal }) => {
+    let dockerScope:
+      Awaited<ReturnType<typeof runtime.openDockerGatewayScope>> | undefined;
+    const run = <T>(operation: () => T): T =>
+      dockerScope ? dockerScope.run(operation) : operation();
     const capabilityLease = capabilityConfiguration?.open(
       capabilityManifest,
       cloneManifest,
@@ -526,7 +594,7 @@ function createSandboxEnvironment<
         sandboxProvider?.retire();
         capabilityLease?.retire();
         skillLease?.retire();
-        if (!gateway && !sandbox) return;
+        if (!gateway && !sandbox && !dockerScope) return;
         return observe('sandbox.cleanup', async () => {
           const errors: unknown[] = [];
           for (const release of [
@@ -558,9 +626,10 @@ function createSandboxEnvironment<
                 },
               ),
             () => sandbox && deleteResource?.(sandbox.state),
+            () => dockerScope?.dispose(),
           ]) {
             try {
-              await release();
+              await run(release);
             } catch (error) {
               errors.push(error);
             }
@@ -574,6 +643,12 @@ function createSandboxEnvironment<
         });
       }));
     try {
+      if (docker)
+        dockerScope = await runtime.openDockerGatewayScope(
+          client,
+          docker.socketPath,
+          signal,
+        );
       let borrowedEnvironment: Promise<Record<string, string>> | undefined;
       const acquireResource = async () => {
         signal.throwIfAborted();
@@ -702,13 +777,29 @@ function createSandboxEnvironment<
       const connectAndPublish = async (sandbox: SandboxSessionLike<State>) => {
         const created = sandbox;
         await capabilityLease?.bind(sandbox);
-        gateway = await acquireEnvironment(
-          ({ signal }) => connect(created, { signal }),
-          signal,
-        );
+        gateway = await acquireEnvironment(async ({ signal }) => {
+          if (!dockerScope || !docker) return connect!(created, { signal });
+          const { command, ...environment } = await dockerScope.connection(
+            created,
+            docker.execServerPath,
+            signal,
+          );
+          return Environment.lease(
+            dockerStdioEnvironment<Context>(
+              {
+                ...environment,
+                tools: docker.tools,
+                capabilityDirectories: docker.capabilityDirectories,
+              },
+              command,
+            ),
+            () => {},
+          );
+        }, signal);
         sandboxProvider = new SandboxProviderBinding(
           sandbox,
           gateway.environment!,
+          run,
         );
         skillLease = skillBinding
           ? new SandboxSkillLease(
@@ -718,12 +809,112 @@ function createSandboxEnvironment<
               manifest,
               runtime.skillWorkspaceRoot(sandbox),
               borrowed ? undefined : !resumeState,
+              run,
             )
           : undefined;
         const skillInstructions = await skillLease?.activate();
         const capabilityInstructions = await capabilityLease?.instructions(
           sandbox.state.manifest,
         );
+        if (
+          capabilityLease &&
+          !borrowed &&
+          !resumeState &&
+          !managed &&
+          (sandbox.delete || deleteResource)
+        ) {
+          const state = sandbox.state;
+          const root = runtime.skillWorkspaceRoot(sandbox);
+          const authority = ({ entries: _entries, ...rest }: Manifest) => rest;
+          const expected = authority(cloneManifest(state.manifest));
+          const checkOwner = () => {
+            if (
+              sandbox.state !== state ||
+              state.workspaceReady === false ||
+              runtime.skillWorkspaceRoot(sandbox) !== root ||
+              !isDeepStrictEqual(authority(state.manifest), expected)
+            )
+              throw new Error(
+                'Sandbox workspace authority changed during capability preparation',
+              );
+          };
+          const validate = (target: Manifest) => {
+            checkOwner();
+            if (!isDeepStrictEqual(authority(target), expected))
+              throw new TypeError(
+                'Live capability manifests require unchanged workspace authority',
+              );
+            const entries = runtime.collectAdditiveManifestEntries(
+              state.manifest,
+              target,
+            );
+            if (
+              entries.some(([, entry]) => entry.type !== 'file') ||
+              (entries.length &&
+                (!sandbox.pathExists || !sandbox.writeFileNoFollow))
+            )
+              throw new TypeError(
+                'Live capability manifests require additive regular files and owned no-follow writes',
+              );
+          };
+          capabilityLease.ownProfileWorkspace({
+            validate,
+            prepare: (target, invocationSignal, check) =>
+              run(async () => {
+                const assertActive = () => {
+                  invocationSignal.throwIfAborted();
+                  check();
+                  checkOwner();
+                };
+                assertActive();
+                validate(target);
+                const entries = runtime
+                  .collectAdditiveManifestEntries(state.manifest, target)
+                  .sort(([a], [b]) => a.localeCompare(b));
+                const previousManifest = cloneManifest(state.manifest);
+                // All destination paths have been passing occupancy checks before the first write.
+                for (const [path] of entries) {
+                  if (await sandbox.pathExists!(path, capabilityUser))
+                    throw new TypeError(
+                      'Live capability entry already exists outside its recorded manifest',
+                    );
+                  assertActive();
+                }
+                for (const [path, entry] of entries) {
+                  assertActive();
+                  await sandbox.writeFileNoFollow!({
+                    path,
+                    entry,
+                    runAs: capabilityUser,
+                  });
+                  assertActive();
+                }
+                assertActive();
+                state.manifest = runtime.mergeManifestDelta(
+                  previousManifest,
+                  target,
+                );
+                assertActive();
+              }),
+            render: () => {
+              checkOwner();
+              return (
+                appendSkillInstructions(
+                  renderWorkspaceInstructions(
+                    state.manifest,
+                    gateway!.environment! as Environment<Context>,
+                    runtime,
+                  ),
+                  skillInstructions,
+                ) ?? ''
+              );
+            },
+            discard: async () => {
+              state.workspaceReady = false;
+              await dispose();
+            },
+          });
+        }
         gateway.opened();
         signal.throwIfAborted();
         return createEnvironmentLease(
@@ -747,6 +938,14 @@ function createSandboxEnvironment<
           createMemory?.(created),
           sandboxProvider,
           capabilityLease,
+          appendSkillInstructions(
+            renderWorkspaceInstructions(
+              sandbox.state.manifest,
+              gateway.environment! as Environment<Context>,
+              runtime,
+            ),
+            skillInstructions,
+          ),
         );
       };
       // Resume inspection protects the old state. The owned provider mutation
@@ -812,7 +1011,7 @@ function createSandboxEnvironment<
       const inspectedState = originalResumeState;
       return inspectedState
         ? await withExclusiveSandboxStateInspection(inspectedState, open)
-        : await open();
+        : await run(open);
     } catch (error) {
       try {
         await dispose();
@@ -1049,20 +1248,3 @@ function captureResumeState<State extends SandboxSessionState>(
 }
 
 // Preserve complete workspace safety guidance before filling the remaining native byte budget.
-function appendSkillInstructions(
-  workspace: string,
-  index?: string | null,
-): string {
-  if (!index) return workspace;
-  const combined = workspace + '\n\n' + index;
-  if (Buffer.byteLength(combined, 'utf8') <= 40_000) return combined;
-  const notice =
-    '\nSome skill index details have been omitted to fit the instruction limit.';
-  const available =
-    40_000 - Buffer.byteLength(workspace + '\n\n' + notice, 'utf8');
-  if (available <= 0) return workspace;
-  const bytes = Buffer.from(index, 'utf8');
-  let end = available;
-  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
-  return workspace + '\n\n' + bytes.subarray(0, end).toString('utf8') + notice;
-}

@@ -57,6 +57,7 @@ export type {
   MountCredentialFileReference,
 } from './mountSecurity';
 export { dispatchSandboxEvent } from './events';
+export { openDockerGatewayScope } from './sandboxes/docker';
 export { stableJsonStringify } from './shared/stableJson';
 export {
   BOUNDED_FILE_READ_STATUS_BYTES,

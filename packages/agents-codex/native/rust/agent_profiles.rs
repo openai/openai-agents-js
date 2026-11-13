@@ -40,6 +40,10 @@ pub(crate) struct ProfileSpec {
     id: String,
     model: AgentProfileModelSettings,
     instructions: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    workspace_preparation: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_instructions: Option<String>,
     tools: ToolDeclarations,
     #[serde(default)]
     manual_slots: Vec<usize>,
@@ -196,6 +200,15 @@ pub(crate) struct McpToolDeclaration {
     #[serde(default)]
     pub(crate) approval: bool,
 }
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkspacePreparation {
+    instructions: String,
+    workspace_instructions: String,
+}
+#[derive(Clone)]
+struct WorkspaceAppendix(String);
 
 struct OpeningFiles(Vec<InstructionFile>);
 
@@ -1037,6 +1050,14 @@ pub(crate) async fn realtime_source(
 
 impl AgentProfiles {
     fn candidate(&self, thread: &CodexThread, id: &str) -> Result<Arc<AgentProfile>> {
+        self.workspace_candidate(thread, id, None)
+    }
+    fn workspace_candidate(
+        &self,
+        thread: &CodexThread,
+        id: &str,
+        workspace: Option<WorkspacePreparation>,
+    ) -> Result<Arc<AgentProfile>> {
         let prepared = self
             .profiles
             .get(id)
@@ -1046,16 +1067,36 @@ impl AgentProfiles {
         } else {
             Vec::new()
         };
-        let (mut envelope, accepted) = crate::application_instructions::prepare(
-            thread,
-            &prepared.declaration.instructions,
-            files,
-        )?;
+        let (instructions, appendix) = match workspace {
+            Some(workspace) => {
+                ensure!(
+                    prepared.declaration.workspace_preparation,
+                    "Workspace preparation is outside its captured declaration"
+                );
+                (
+                    workspace.instructions,
+                    Some(workspace.workspace_instructions),
+                )
+            }
+            None => (
+                prepared.declaration.instructions.clone(),
+                prepared.declaration.workspace_instructions.clone(),
+            ),
+        };
+        let text = match &appendix {
+            Some(appendix) => format!("{instructions}\n\n{appendix}"),
+            None => instructions,
+        };
+        let (mut envelope, accepted) =
+            crate::application_instructions::prepare(thread, &text, files)?;
         envelope
             .metadata
             .get_or_insert_with(Default::default)
             .sdk_agent_graph = Some(self.opening.fingerprint.clone());
         let mut data = ExtensionDataInit::new();
+        if let Some(appendix) = appendix {
+            data.insert(WorkspaceAppendix(appendix));
+        }
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });
@@ -1430,8 +1471,19 @@ async fn update_active_inner(
         .data
         .get::<Accepted>()
         .context("Managed Agent update has no captured instructions")?;
+    let changed_instructions = instructions.is_some();
     let (text, files) = instructions.unwrap_or((&accepted.text, accepted.files.clone()));
-    let (mut envelope, accepted) = crate::application_instructions::prepare(thread, text, files)?;
+    let workspace_text = captured
+        .profile
+        .data
+        .get::<WorkspaceAppendix>()
+        .filter(|_| changed_instructions)
+        .map(|appendix| format!("{text}\n\n{}", appendix.0));
+    let (mut envelope, accepted) = crate::application_instructions::prepare(
+        thread,
+        workspace_text.as_deref().unwrap_or(text),
+        files,
+    )?;
     envelope
         .metadata
         .get_or_insert_with(Default::default)
@@ -1621,10 +1673,42 @@ pub(crate) fn restore_handoff(
     Ok(())
 }
 
+pub(crate) async fn check_workspace_activation(
+    state: &crate::engine::ThreadState,
+    target: &str,
+    expected: &AgentProfileReceipt,
+) -> Result<()> {
+    let profiles = state
+        .thread
+        .thread_extension_data()
+        .get::<Arc<AgentProfiles>>()
+        .context("Captured Agent graph is not configured")?;
+    profiles.tools.check_idle(&state.thread).await?;
+    profiles.tools.check_family_idle()?;
+    let captured = state
+        .thread
+        .captured_agent_profile()
+        .await?
+        .context("Captured Agent source is absent")?;
+    ensure!(
+        &captured.receipt == expected,
+        "Captured Agent workspace source is stale"
+    );
+    ensure!(
+        profiles
+            .profiles
+            .get(target)
+            .is_some_and(|target| target.declaration.workspace_preparation),
+        "Workspace target is outside its captured preparation owner"
+    );
+    Ok(())
+}
+
 pub(crate) async fn activate(
     state: &crate::engine::ThreadState,
     target: &str,
     expected: AgentProfileReceipt,
+    workspace: Option<WorkspacePreparation>,
 ) -> Result<AgentProfileReceipt> {
     let profiles = state
         .thread
@@ -1632,7 +1716,25 @@ pub(crate) async fn activate(
         .get::<Arc<AgentProfiles>>()
         .context("Captured Agent graph is not configured")?;
     profiles.tools.check_idle(&state.thread).await?;
-    let candidate = profiles.candidate(&state.thread, target)?;
+    let current = state
+        .thread
+        .captured_agent_profile()
+        .await?
+        .context("Captured Agent source is absent")?;
+    ensure!(
+        current.receipt == expected,
+        "Captured Agent activation source is stale"
+    );
+    let declaration = &profiles
+        .profiles
+        .get(target)
+        .context("Target is outside the captured graph")?
+        .declaration;
+    ensure!(
+        !declaration.workspace_preparation || workspace.is_some(),
+        "Agent activation requires its owned workspace preparation"
+    );
+    let candidate = profiles.workspace_candidate(&state.thread, target, workspace)?;
     Ok(state
         .thread
         .activate_agent_profile(Some(expected), candidate)
@@ -1700,8 +1802,31 @@ impl TurnLifecycleContributor for Contributor {
                 .thread
                 .upgrade()
                 .ok_or("Native Agent thread is closed")?;
+            let workspace = if source.declaration.workspace_preparation {
+                let captured = thread
+                    .captured_agent_profile()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or("Workspace activation has no captured source")?;
+                if captured.receipt != expected {
+                    return Err("Workspace activation source is stale".into());
+                }
+                let result = profiles
+                    .tools
+                    .prepare_agent_workspace(
+                        input.thread_store.level_id(),
+                        input.turn_id,
+                        &captured,
+                        &target_id,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Some(result)
+            } else {
+                None
+            };
             let target = profiles
-                .candidate(&thread, &target_id)
+                .workspace_candidate(&thread, &target_id, workspace)
                 .map_err(|error| error.to_string())?;
             Ok(Some(AgentProfileActivation { expected, target }))
         })

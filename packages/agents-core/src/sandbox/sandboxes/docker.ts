@@ -29,7 +29,18 @@ import {
   SandboxUnsupportedFeatureError,
   SandboxWorkspaceReadNotFoundError,
 } from '../errors';
-import { chmod, mkdir, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { Readable } from 'node:stream';
@@ -37,6 +48,7 @@ import { pipeline } from 'node:stream/promises';
 import {
   basename,
   dirname,
+  delimiter,
   isAbsolute,
   join,
   posix,
@@ -167,6 +179,7 @@ import {
 import { resolveFallbackShellCommand } from './shared/shellCommand';
 import { shellQuote } from '../shared/shell';
 import { normalizePosixPath } from '../shared/posixPath';
+import { isRecord } from '../shared/typeGuards';
 import {
   probeSandboxDirectoryExists,
   probeSandboxPathExists,
@@ -209,6 +222,216 @@ const RESERVED_DOCKER_LABELS = new Set([
   DOCKER_SESSION_IDENTITY_LABEL,
   DOCKER_MOUNT_AUTHORITY_FINGERPRINT_LABEL,
 ]);
+
+type DockerInvocation = {
+  executable: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+};
+const dockerInvocation = new AsyncLocalStorage<DockerInvocation>();
+const dockerGatewayResources = new WeakMap<object, DockerInvocation>();
+
+function currentDockerInvocation(
+  args: string[],
+  resource?: DockerSandboxSession,
+): DockerInvocation {
+  const captured =
+    (resource && dockerGatewayResources.get(resource)) ??
+    dockerInvocation.getStore();
+  return captured
+    ? { ...captured, args: [...captured.args, ...args] }
+    : { executable: 'docker', args, env: process.env };
+}
+
+async function runDockerCli(
+  args: string[],
+  options: Parameters<typeof runSandboxProcess>[2],
+  resource?: DockerSandboxSession,
+): Promise<SandboxProcessResult> {
+  const invocation = currentDockerInvocation(args, resource);
+  return runSandboxProcess(invocation.executable, invocation.args, {
+    ...options,
+    env: invocation.env,
+  });
+}
+
+async function currentDockerExecutable(): Promise<string> {
+  for (const dir of (process.env.PATH ?? '/usr/bin:/bin').split(delimiter)) {
+    if (!isAbsolute(dir)) continue;
+    try {
+      const executable = await realpath(join(dir, 'docker'));
+      if (!(await stat(executable)).isFile()) continue;
+      await access(executable, constants.X_OK);
+      return executable;
+    } catch {
+      // Continue resolving the current executable search path.
+    }
+  }
+  throw new Error('DockerGateway requires an executable Docker CLI');
+}
+
+/** @internal Own both provider operations and the native stdio command. */
+export async function openDockerGatewayScope(
+  client: object,
+  socketPath: string,
+  signal: AbortSignal,
+) {
+  if (Object.getPrototypeOf(client) !== DockerSandboxClient.prototype)
+    throw new TypeError('DockerGateway requires a current DockerSandboxClient');
+  if (
+    !isAbsolute(socketPath) ||
+    /[?#\r\n\0]/.test(socketPath) ||
+    process.platform === 'win32'
+  )
+    throw new TypeError('DockerGateway requires an absolute Unix socket');
+  signal.throwIfAborted();
+  const socket = await realpath(socketPath);
+  const socketIdentity = await stat(socket, { bigint: true });
+  if (/[?#\r\n\0]/.test(socket) || !socketIdentity.isSocket())
+    throw new TypeError('DockerGateway requires a current Unix socket');
+  await access('/usr/bin/env', constants.X_OK);
+  const executable = await currentDockerExecutable();
+  const config = await mkdtemp(join(tmpdir(), 'codex-docker-gateway-'));
+  const invocation: DockerInvocation = {
+    executable,
+    args: ['--config', config, '--host', 'unix://' + socket],
+    env: { PATH: '/usr/bin:/bin', HOME: config, DOCKER_CONFIG: config },
+  };
+  const run = <T>(operation: () => T): T =>
+    dockerInvocation.run(invocation, operation);
+  const dispose = () => rm(config, { recursive: true, force: true });
+  try {
+    await writeFile(join(config, 'config.json'), '{}', { mode: 0o600 });
+    const info = async () => {
+      const currentSocket = await stat(socket, { bigint: true });
+      if (
+        currentSocket.dev !== socketIdentity.dev ||
+        currentSocket.ino !== socketIdentity.ino
+      )
+        throw new Error('DockerGateway socket identity changed');
+      const result = await run(() =>
+        runDockerCli(['info', '--format', '{{json .}}'], {
+          timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
+        }),
+      );
+      signal.throwIfAborted();
+      if (result.status !== 0)
+        throw new Error('DockerGateway could not inspect its daemon');
+      const data: unknown = JSON.parse(result.stdout);
+      if (
+        !isRecord(data) ||
+        data.OSType !== 'linux' ||
+        typeof data.ID !== 'string' ||
+        !data.ID ||
+        !isRecord(data.Plugins) ||
+        !Object.hasOwn(data.Plugins, 'Authorization') ||
+        (data.Plugins.Authorization !== null &&
+          !(
+            Array.isArray(data.Plugins.Authorization) &&
+            data.Plugins.Authorization.length === 0
+          ))
+      )
+        throw new Error(
+          'DockerGateway requires a Linux daemon without custom authorization',
+        );
+      return data.ID;
+    };
+    const identity = await info();
+    return {
+      run,
+      dispose,
+      async connection(
+        resource: SandboxSessionLike,
+        execServerPath: string,
+        connectionSignal: AbortSignal,
+      ) {
+        connectionSignal.throwIfAborted();
+        if (
+          !(resource instanceof DockerSandboxSession) ||
+          dockerGatewayResources.get(resource) !== invocation ||
+          (await info()) !== identity
+        )
+          throw new Error('DockerGateway resource authority changed');
+        const { containerId, sessionIdentity, manifest } = resource.state;
+        if (
+          !/^[a-f0-9]{64}$/.test(containerId) ||
+          !sessionIdentity ||
+          resource.state.snapshotSpec
+        )
+          throw new Error(
+            'DockerGateway requires a full current container identity',
+          );
+        const result = await run(() =>
+          runDockerCli(
+            [
+              'inspect',
+              '--type',
+              'container',
+              '--format',
+              '{{json .}}',
+              containerId,
+            ],
+            {
+              timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
+            },
+          ),
+        );
+        signal.throwIfAborted();
+        connectionSignal.throwIfAborted();
+        if (result.status !== 0)
+          throw new Error('DockerGateway could not inspect its resource');
+        const inspected: unknown = JSON.parse(result.stdout);
+        if (
+          !isRecord(inspected) ||
+          inspected.Id !== containerId ||
+          !isRecord(inspected.State) ||
+          inspected.State.Running !== true ||
+          !isRecord(inspected.Config) ||
+          !isRecord(inspected.Config.Labels) ||
+          !dockerContainerIdentityMatches(
+            sessionIdentity,
+            inspected.Config.Labels,
+          )
+        )
+          throw new Error('DockerGateway resource authority changed');
+        const daemon = createHash('sha256')
+          .update(socket + '\0' + identity)
+          .digest('hex');
+        return {
+          url: 'docker://' + daemon + '/' + containerId,
+          cwd: manifest.root,
+          writableRoots: [
+            manifest.root,
+            ...manifest.extraPathGrants
+              .filter((grant) => !grant.readOnly)
+              .map((grant) => grant.path),
+          ],
+          command: {
+            program: '/usr/bin/env',
+            args: [
+              '-i',
+              ...Object.entries(invocation.env).map(
+                ([name, value]) => name + '=' + value,
+              ),
+              executable,
+              ...invocation.args,
+              'exec',
+              '--interactive',
+              '--workdir=' + manifest.root,
+              containerId,
+              execServerPath,
+              'stdio',
+            ],
+            env: {},
+          },
+        };
+      },
+    };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}
 
 type DockerNetworkMode = 'none';
 
@@ -385,6 +608,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
   }
 
   override async materializeEntry(args: MaterializeEntryArgs): Promise<void> {
+    return this.withGateway(() => this.materializeDockerEntry(args));
+  }
+
+  private async materializeDockerEntry(
+    args: MaterializeEntryArgs,
+  ): Promise<void> {
     const entry = structuredClone(args.entry);
     if (!isMount(entry)) {
       await withExclusiveSandboxManifestMutation(this.state, async () => {
@@ -777,9 +1006,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     runAs?: string,
   ): Promise<void> {
     const manifestSnapshot = cloneManifest(manifest);
-    await withExclusiveSandboxManifestMutation(this.state, async () => {
-      await this.applyDockerManifestExclusive(manifestSnapshot, runAs);
-    });
+    await this.withGateway(() =>
+      withExclusiveSandboxManifestMutation(this.state, async () => {
+        await this.applyDockerManifestExclusive(manifestSnapshot, runAs);
+      }),
+    );
   }
 
   private async applyDockerManifestExclusive(
@@ -925,12 +1156,12 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       return recorded;
     }
 
-    const result = await runSandboxProcess(
-      'docker',
+    const result = await runDockerCli(
       ['port', this.state.containerId, `${containerPort}/tcp`],
       {
         timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
       },
+      this,
     );
     if (result.status !== 0) {
       throw new UserError(
@@ -989,11 +1220,15 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     }
     dockerArgs.push(this.state.containerId, shellPath, flag, command);
 
+    const invocation = currentDockerInvocation(dockerArgs, this);
     if (args.tty) {
-      return spawnInPseudoTerminal('docker', dockerArgs);
+      return spawnInPseudoTerminal(invocation.executable, invocation.args, {
+        env: invocation.env,
+      });
     }
 
-    return spawn('docker', dockerArgs, {
+    return spawn(invocation.executable, invocation.args, {
+      env: invocation.env,
       stdio: 'pipe',
     });
   }
@@ -1375,12 +1610,18 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       dockerArgs,
       options.input,
       options.maxOutputBytes,
+      this,
     );
   }
 
   override async close(): Promise<void> {
     this.closeStarted = true;
-    await this.closeContainerResources();
+    await this.withGateway(() => this.closeContainerResources());
+  }
+
+  private withGateway<T>(operation: () => T): T {
+    const scope = dockerGatewayResources.get(this);
+    return scope ? dockerInvocation.run(scope, operation) : operation();
   }
 
   private async closeContainerResources(): Promise<void> {
@@ -1599,6 +1840,10 @@ export class DockerSandboxClient implements SandboxClient<
         ? { archiveLimits: createArgs.archiveLimits }
         : {}),
     };
+    if (dockerInvocation.getStore() && resolvedOptions.snapshot)
+      throw new TypeError(
+        'DockerGateway requires fresh creation without a snapshot',
+      );
     const { configuredExposedPorts, networkMode } =
       resolveDockerNetworkConfiguration(this.options, createArgs.options);
     const labels = resolveDockerLabels(this.options, createArgs.options);
@@ -1676,6 +1921,8 @@ export class DockerSandboxClient implements SandboxClient<
       await applyDockerInContainerMounts(session, manifest);
       captureLiveMountCredentialAuthority(manifest, environment);
       setRemoteSnapshotPolicyAuthority(session.state, resolvedOptions.snapshot);
+      const invocation = dockerInvocation.getStore();
+      if (invocation) dockerGatewayResources.set(session, invocation);
       return session;
     } catch (error) {
       try {
@@ -2522,8 +2769,7 @@ async function dockerNetworkConfigurationMatches(
   if (state.networkMode === undefined) {
     return true;
   }
-  const inspectionResult = await runSandboxProcess(
-    'docker',
+  const inspectionResult = await runDockerCli(
     [
       'inspect',
       '--type',
@@ -2637,8 +2883,7 @@ type DockerMountAuthority = {
 async function inspectDockerContainerLabels(
   containerId: string,
 ): Promise<Record<string, unknown> | undefined> {
-  const result = await runSandboxProcess(
-    'docker',
+  const result = await runDockerCli(
     [
       'inspect',
       '--type',
@@ -2670,8 +2915,7 @@ async function inspectDockerContainerLabels(
 async function inspectDockerBindMounts(
   containerId: string,
 ): Promise<DockerBindMount[] | undefined> {
-  const result = await runSandboxProcess(
-    'docker',
+  const result = await runDockerCli(
     [
       'inspect',
       '--type',
@@ -3097,8 +3341,7 @@ async function provisionDockerAccounts(
   manifest: Manifest,
 ): Promise<void> {
   for (const command of dockerAccountProvisionCommands(manifest)) {
-    const result = await runSandboxProcess(
-      'docker',
+    const result = await runDockerCli(
       ['exec', '-u', 'root', containerId, '/bin/sh', '-c', command],
       {
         timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
@@ -3196,7 +3439,7 @@ function mergeDockerIdentityMetadata(
 }
 
 async function ensureDockerAvailable(): Promise<void> {
-  const result = await runSandboxProcess('docker', ['version'], {
+  const result = await runDockerCli(['version'], {
     timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
   });
 
@@ -3208,8 +3451,7 @@ async function ensureDockerAvailable(): Promise<void> {
 }
 
 async function inspectContainerRunning(containerId: string): Promise<boolean> {
-  const result = await runSandboxProcess(
-    'docker',
+  const result = await runDockerCli(
     [
       'inspect',
       '--type',
@@ -3293,8 +3535,11 @@ async function runDockerProcess(
   args: string[],
   input?: string | Uint8Array | Readable,
   maxOutputBytes?: number,
+  resource?: DockerSandboxSession,
 ): Promise<SandboxProcessResult> {
-  const child = spawn('docker', args, {
+  const invocation = currentDockerInvocation(args, resource);
+  const child = spawn(invocation.executable, invocation.args, {
+    env: invocation.env,
     stdio: 'pipe',
   });
   const stdoutChunks: Buffer[] = [];
@@ -3381,7 +3626,7 @@ async function removeDockerContainer(
   containerId: string,
   options: { ignoreMissing?: boolean } = {},
 ): Promise<void> {
-  const result = await runSandboxProcess('docker', ['rm', '-f', containerId], {
+  const result = await runDockerCli(['rm', '-f', containerId], {
     timeoutMs: DOCKER_CONTAINER_REMOVE_TIMEOUT_MS,
   });
   if (result.status !== 0) {
@@ -3447,8 +3692,7 @@ async function startDockerContainer(args: {
     manifestBindMounts,
   );
   const privilegeArgs = dockerInContainerMountPrivilegeArgs(args.manifest);
-  const result = await runSandboxProcess(
-    'docker',
+  const result = await runDockerCli(
     [
       'run',
       '-d',
@@ -3940,7 +4184,12 @@ async function resolveTrustedDockerPath(
   );
   let result: SandboxProcessResult;
   try {
-    result = await runDockerProcess(dockerArgs, undefined, maxOutputBytes);
+    result = await runDockerProcess(
+      dockerArgs,
+      undefined,
+      maxOutputBytes,
+      session,
+    );
   } catch {
     throw new UserError(`DockerSandboxClient failed to ${action}.`);
   }
@@ -5707,7 +5956,7 @@ function dockerVolumeName(containerName: string, mountPath: string): string {
 async function removeDockerVolumes(volumeNames: string[]): Promise<void> {
   await Promise.all(
     volumeNames.map(async (volumeName) => {
-      await runSandboxProcess('docker', ['volume', 'rm', '-f', volumeName], {
+      await runDockerCli(['volume', 'rm', '-f', volumeName], {
         timeoutMs: DOCKER_FAST_COMMAND_TIMEOUT_MS,
       }).catch(() => undefined);
     }),

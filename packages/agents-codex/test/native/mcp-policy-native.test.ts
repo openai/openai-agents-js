@@ -609,6 +609,105 @@ it('REQ133 reconnects native streamable HTTP after an SSE response closes before
   ]);
 }, 30_000);
 
+it.each(['default', 'format', 'raise'] as const)(
+  'keeps the direct HTTP MCP transport failure under the selected %s policy',
+  async (policy) => {
+    const remote = await peer(
+      'lookup',
+      undefined,
+      reconnectResult,
+      firstEffect,
+    );
+    const diagnostics: Error[] = [];
+    const { session, model } = await open(
+      new HttpMCP({
+        ...reconnectOptions,
+        url: remote.url,
+        activation: 'session',
+        ...(policy === 'format'
+          ? {
+              failureErrorFunction(context, error) {
+                expect(context.toolName).toBe('lookup');
+                diagnostics.push(error);
+                return 'The record reply was unavailable.';
+              },
+            }
+          : policy === 'raise'
+            ? { failureErrorFunction: null }
+            : {}),
+      }),
+      [
+        [
+          call(
+            'lookup',
+            { key: firstEffect },
+            {
+              callId: firstEffect,
+              namespace: 'mcp__fixture',
+            },
+          ),
+        ],
+        ...(policy === 'raise' ? [] : [[message('done')]]),
+      ],
+    );
+    const turn = await session.submit('Record this once.');
+    if (policy === 'raise') {
+      const failure = await turn.wait().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(NativeError);
+      const nativeFailure = failure as NativeError;
+      expect(nativeFailure.message).toBe('Native MCP result policy failed');
+      expect(Object.hasOwn(nativeFailure, 'cause')).toBe(false);
+      const diagnostic = nativeFailure.getMcpCallbackError()?.error;
+      expect(diagnostic).toBeInstanceOf(Error);
+      expect((diagnostic as Error).message).toMatch(
+        /transport|response|closed/i,
+      );
+      expect(JSON.stringify(nativeFailure)).not.toContain(
+        (diagnostic as Error).message,
+      );
+      expect(model.requests).toHaveLength(1);
+    } else {
+      expect((await turn.wait()).finalOutput).toBe('done');
+      expectToolOutput(
+        model.requests[1]!,
+        firstEffect,
+        policy === 'format'
+          ? 'The record reply was unavailable.'
+          : 'MCP tool invocation failed',
+      );
+    }
+    expect(diagnostics).toHaveLength(policy === 'format' ? 1 : 0);
+    if (diagnostics.length) {
+      expect(diagnostics[0]!.message).toMatch(/transport|response|closed/i);
+      expect(JSON.stringify(model.requests)).not.toContain(
+        diagnostics[0]!.message,
+      );
+    }
+    expect(remote.effects).toHaveLength(1);
+  },
+  30_000,
+);
+
+it('does not send ordinary MCP isError results to the transport failure policy', async () => {
+  const remote = await peer('lookup', undefined, {
+    content: [{ type: 'text', text: 'The peer rejected this record.' }],
+    isError: true,
+  });
+  const failureErrorFunction = vi.fn(() => 'Unexpected transport diagnostic');
+  const { session, model } = await open(
+    new HttpMCP({ ...reconnectOptions, url: remote.url, failureErrorFunction }),
+    [[lookup()], [message('done')]],
+  );
+  expect((await (await session.submit('Record it.')).wait()).finalOutput).toBe(
+    'done',
+  );
+  expect(failureErrorFunction).not.toHaveBeenCalled();
+  expect(JSON.stringify(model.requests[1])).toContain(
+    'The peer rejected this record.',
+  );
+  expect(remote.effects).toHaveLength(1);
+});
+
 it('joins registered MCP and interception readers across replacement and manual suspension', async () => {
   const addon = await binding();
   const prototype = addon.NativeThread.prototype;

@@ -23,6 +23,7 @@ export class SandboxProviderBinding {
   constructor(
     readonly sandbox: SandboxSessionLike,
     readonly environment: Environment,
+    readonly run: <T>(operation: () => T) => T = (operation) => operation(),
   ) {}
   retire(): void {
     this.active = false;
@@ -76,7 +77,7 @@ function sandboxAccess(
   const invoke = async <T>(body: () => T | Promise<T>): Promise<T> => {
     check();
     try {
-      const result = await body();
+      const result = await binding.run(body);
       check();
       return result;
     } catch (error) {
@@ -114,7 +115,7 @@ function sandboxAccess(
       check();
       if (!sandbox.createEditor)
         throw new TypeError('Sandbox provider does not support editors');
-      const editor = sandbox.createEditor(runAs);
+      const editor = binding.run(() => sandbox.createEditor!(runAs));
       return Object.freeze({
         createFile: (operation: ApplyPatchOperation) =>
           invoke(() => {

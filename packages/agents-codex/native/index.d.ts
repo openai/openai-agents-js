@@ -149,9 +149,14 @@ export class NativeThread {
     targetJson: string,
   ): Promise<string>;
   _restore_realtime_agent_graph(generation: string): Promise<string>;
+  _check_agent_workspace_activation(
+    target: string,
+    expectedJson: string,
+  ): Promise<void>;
   _activate_agent_profile(
     target: string,
     expectedJson: string,
+    workspaceJson?: string,
   ): Promise<string>;
   _native_question_pending(question_id: string): Promise<boolean>;
   /** Whether this captured URL still has its original unanswered consent RPC. */
@@ -205,6 +210,11 @@ export class NativeThread {
   _revoke_native_mcp_results(): void;
   _take_native_mcp_result_failure(turn_id: string, aborted?: boolean): boolean;
   _next_native_mcp_result(): Promise<string>;
+  _take_native_mcp_transport_error(
+    nonce: string,
+    turnId: string,
+    callId: string,
+  ): string | null;
   _check_native_mcp_result(
     nonce: NativeId,
     turn_id: string,
@@ -307,6 +317,7 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_agent_workspace(responseJson: string): void;
   _reply_tool_not_found(responseJson: string): void;
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;

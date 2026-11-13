@@ -203,6 +203,11 @@ export async function openSession(
   const parentTrace = captureTraceContext(options.parentTrace);
   const { _sdk_reconciled_calls, ...capturedThreadOptions } =
     setup.threadOptions;
+  const workspaceInstructions = options.agentGraph?.workspace
+    ? undefined
+    : options.agentGraph
+      ? options.environmentOwner?.profileWorkspaceInstructions
+      : options.environmentOwner?.workspaceInstructions;
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,
@@ -214,11 +219,10 @@ export async function openSession(
           ],
         }
       : {}),
-    ...(options.environmentOwner?.workspaceInstructions === undefined
+    ...(workspaceInstructions === undefined
       ? {}
       : {
-          user_instructions_appendix:
-            options.environmentOwner.workspaceInstructions,
+          user_instructions_appendix: workspaceInstructions,
         }),
     ...(options.localStorage
       ? {}

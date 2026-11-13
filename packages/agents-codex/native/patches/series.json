@@ -1159,7 +1159,15 @@
     {
       "path": "sdk-portable-mcp-peer-elicitation.patch",
       "sha256": "e1d6a2f21652d7f4fcd906394f1e06b9e90253fb8fc01b308974e4e5d5e1d440"
+    },
+    {
+      "path": "sdk-native-docker-stdio.patch",
+      "sha256": "d868ad817e556a671dc3751c0efa0c955801ba7e7d04e1beb512451a33b72106"
+    },
+    {
+      "path": "sdk-native-mcp-transport-cause.patch",
+      "sha256": "485fe4e94e626f4e6f12a0c9c110ed365ec227227f5ba666cb99ddc932c430f3"
     }
   ],
-  "result_tree": "36031703813463a7b1c14263b96f467e2e2793da"
+  "result_tree": "15ff19e846c2e763b80a71cfa78d37a88ae49a37"
 }

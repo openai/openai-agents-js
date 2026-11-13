@@ -1944,6 +1944,23 @@ impl NativeThread {
         Ok(vec![true, receiver.await.is_ok()])
     }
 
+    #[napi(js_name = "_take_native_mcp_transport_error")]
+    pub fn _take_native_mcp_transport_error(
+        &self,
+        nonce: String,
+        turn_id: String,
+        call_id: String,
+    ) -> napi::Result<Option<String>> {
+        let state = self.current()?;
+        let _operation = state.engine.operation(false).map_err(native_error)?;
+        let nonce = crate::native_id(&nonce)?;
+        Ok(self
+            .mcp_result_control()?
+            .and_then(|control| control.owner(nonce))
+            .and_then(|owner| owner.take_transport_error(nonce, &turn_id, &call_id))
+            .map(|error| mcp_result_control::transport_error_message(error.as_ref())))
+    }
+
     #[napi(js_name = "_check_native_mcp_result")]
     pub fn _check_native_mcp_result(
         &self,
@@ -2916,18 +2933,39 @@ impl NativeThread {
         serde_json::to_string(&result).map_err(native_error)
     }
 
+    #[napi(js_name = "_check_agent_workspace_activation")]
+    pub async fn check_agent_workspace_activation(
+        &self,
+        target: String,
+        expected_json: String,
+    ) -> napi::Result<()> {
+        let expected = serde_json::from_str(&expected_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(input_error)?;
+        agent_profiles::check_workspace_activation(&inner, &target, &expected)
+            .await
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_activate_agent_profile")]
     pub async fn _activate_agent_profile(
         &self,
         target: String,
         expected_json: String,
+        workspace_json: Option<String>,
     ) -> napi::Result<String> {
         let expected = serde_json::from_str(&expected_json).map_err(input_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let _mutation = inner.mutations.lock().await;
         graph_stop::check_mutation(&inner).map_err(input_error)?;
-        let receipt = agent_profiles::activate(&inner, &target, expected)
+        let workspace = workspace_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(input_error)?;
+        let receipt = agent_profiles::activate(&inner, &target, expected, workspace)
             .await
             .map_err(native_error)?;
         serde_json::to_string(&receipt).map_err(native_error)
@@ -3286,6 +3324,27 @@ impl NativeThread {
                 usage,
             )
             .map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_agent_workspace")]
+    pub fn reply_agent_workspace(&self, response_json: String) -> napi::Result<()> {
+        let response: python_tools::context_callbacks::WorkspaceReply =
+            serde_json::from_str(&response_json)
+                .map_err(|_| input_error("Invalid workspace preparation reply"))?;
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Workspace preparation requires a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired workspace preparation owner"))?;
+        owner.reply_agent_workspace(response).map_err(input_error)
     }
 
     #[napi(js_name = "_reply_tool_not_found")]

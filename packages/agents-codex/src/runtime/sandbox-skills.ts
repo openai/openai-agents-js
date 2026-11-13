@@ -530,6 +530,8 @@ export class SandboxSkillLease {
     trustedManifest: Manifest,
     readonly workspaceRoot: string,
     created?: boolean,
+    private readonly run: <T>(operation: () => T) => T = (operation) =>
+      operation(),
   ) {
     this.#sandbox = sandbox;
     this.#budget = sandboxSkillBudget(sandbox, created);
@@ -637,7 +639,7 @@ export class SandboxSkillLease {
     const match = matches[0];
     // Admission stays with this lease; each queued caller retains its own signal.
     const pending = this.#budget.tail.then(() =>
-      this.loadDestination(match, signal),
+      this.run(() => this.loadDestination(match, signal)),
     );
     this.#budget.tail = pending.then(
       () => {},
