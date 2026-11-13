@@ -478,9 +478,11 @@ it.each([
       apiKey: 'synthetic-callers',
       supportsWebsockets: false,
     });
+    const callers: CodeInterpreterOptions['allowedCallers'] =
+      options.allowedCallers;
     const programmaticOnly =
-      options.allowedCallers?.includes('programmatic') &&
-      !options.allowedCallers.includes('direct');
+      callers?.some((caller) => caller === 'programmatic') &&
+      !callers.some((caller) => caller === 'direct');
     await using session = await new Agent({
       provider,
       model: 'gpt-5.5',
