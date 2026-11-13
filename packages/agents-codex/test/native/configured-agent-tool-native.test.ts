@@ -72,23 +72,31 @@ async function fixture(
     [message('child complete')],
   ],
   parentFollowUp: ConstructorParameters<typeof ModelServer>[0] = [],
+  scripts: {
+    root?: ConstructorParameters<typeof ModelServer>[0];
+    child?: ConstructorParameters<typeof ModelServer>[0];
+  } = {},
 ) {
-  const rootModel = new ModelServer([
-    [
-      call(
-        'nested_child',
-        { input: 'request child approval' },
-        { callId: 'nested-parent-call' },
-      ),
-      call('accepted_sibling', {}, { callId: 'held-sibling-call' }),
+  const rootModel = new ModelServer(
+    scripts.root ?? [
+      [
+        call(
+          'nested_child',
+          { input: 'request child approval' },
+          { callId: 'nested-parent-call' },
+        ),
+        call('accepted_sibling', {}, { callId: 'held-sibling-call' }),
+      ],
+      [message('parent complete')],
+      ...parentFollowUp,
     ],
-    [message('parent complete')],
-    ...parentFollowUp,
-  ]);
-  const childModel = new ModelServer([
-    [call('child_effect', {}, { callId: 'child-approval-call' })],
-    ...afterApproval,
-  ]);
+  );
+  const childModel = new ModelServer(
+    scripts.child ?? [
+      [call('child_effect', {}, { callId: 'child-approval-call' })],
+      ...afterApproval,
+    ],
+  );
   const rootProvider = await provider(rootModel);
   const childProvider = await provider(childModel);
   const effects: string[] = [];
@@ -410,6 +418,12 @@ nativeIt.each(['selected', 'excluded', 'narrowed'] as const)(
               ? new Environment({ ...opening, tools: [] })
               : environment,
           state: JSON.parse(JSON.stringify(saved)),
+          ...(selected
+            ? {
+                verifyConfiguredChildExecutorTools: (checkpoint) =>
+                  JSON.stringify(checkpoint) === JSON.stringify(saved),
+              }
+            : {}),
         });
         const restoredTurn = restored.restoredTurn;
         if (!restoredTurn) throw new Error('Expected restored parent turn');
@@ -1245,6 +1259,397 @@ nativeIt(
     expect(f.effects).toEqual(['accepted-sibling']);
     expect(f.childModel.requests).toHaveLength(1);
     expect(f.rootModel.requests).toHaveLength(1);
+  },
+  30000,
+);
+
+nativeIt.each(['inject', 'omit', 'reject'] as const)(
+  'requires current checkpoint authentication before restored executor admission (%s)',
+  async (change) => {
+    const executor = await startPublicExecutor();
+    try {
+      await using f = await fixture();
+      const environment = new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command'],
+        writePolicy: 'legacy',
+      });
+      let saved: Awaited<ReturnType<Session['suspend']>>;
+      {
+        await using source = await f.parent.session({ environment });
+        const turn = await source.submit(
+          'capture excluded executor authority',
+          {
+            tools: [toolRef('nested_child'), toolRef('accepted_sibling')],
+          },
+        );
+        const pending = await turn.wait({ until: 'interaction' });
+        if (!('requests' in pending))
+          throw new Error('Expected child approval');
+        await f.sibling.promise;
+        expect(JSON.stringify(f.childModel.requests[0].tools)).not.toContain(
+          '"exec_command"',
+        );
+        saved = await source.suspend();
+      }
+      const portable = JSON.parse(JSON.stringify(saved));
+      expect(portable.operation_tools).toEqual([
+        { name: 'nested_child', namespace: 'functions' },
+        { name: 'accepted_sibling', namespace: 'functions' },
+      ]);
+      if (change === 'omit') {
+        if (portable.format_version === 9) portable.format_version = 5;
+        else if (portable.format_version === 11) portable.format_version = 7;
+        else throw new Error('Expected a selected portable checkpoint format');
+        delete portable.operation_tools;
+        delete portable.default_tools;
+        delete portable.default_resource_servers;
+      } else {
+        portable.operation_tools.push({
+          name: 'exec_command',
+          namespace: 'functions',
+        });
+      }
+      let opened: Session | undefined;
+      try {
+        await expect(
+          (async () => {
+            opened = await f.parent.session({
+              environment,
+              state: portable,
+              ...(change === 'reject'
+                ? {
+                    verifyConfiguredChildExecutorTools: (checkpoint) =>
+                      JSON.stringify(checkpoint) === JSON.stringify(saved),
+                  }
+                : {}),
+            });
+          })(),
+        ).rejects.toThrow(/verifyConfiguredChildExecutorTools/);
+      } finally {
+        await opened?.close();
+      }
+      expect(f.effects).toEqual(['accepted-sibling']);
+      expect(f.childModel.requests).toHaveLength(1);
+      expect(f.rootModel.requests).toHaveLength(1);
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await executor.close();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['untouched', 'inject'] as const)(
+  'checks executor authority for a later configured callback in the restored operation (%s)',
+  async (change) => {
+    const executor = await startPublicExecutor();
+    try {
+      await using f = await fixture(true, undefined, undefined, undefined, [], {
+        root: [
+          [call('accepted_sibling', {}, { callId: 'first-parent-approval' })],
+          [
+            call(
+              'nested_child',
+              { input: 'later child' },
+              { callId: 'later-child' },
+            ),
+          ],
+          [message('parent complete')],
+          [
+            call(
+              'nested_child',
+              { input: 'fresh child' },
+              { callId: 'fresh-child' },
+            ),
+          ],
+          [message('parent complete')],
+        ],
+        child: [
+          [call('child_effect', {}, { callId: 'later-child-approval' })],
+          [message('child complete')],
+          [call('child_effect', {}, { callId: 'fresh-child-approval' })],
+          [message('child complete')],
+        ],
+      });
+      const environment = new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command'],
+        writePolicy: 'legacy',
+      });
+      let saved: Awaited<ReturnType<Session['suspend']>>;
+      {
+        await using source = await f.parent.session({ environment });
+        const turn = await source.submit('pause before the configured child', {
+          tools: [toolRef('nested_child'), toolRef('accepted_sibling')],
+        });
+        const pending = await turn.wait({ until: 'interaction' });
+        if (!('requests' in pending))
+          throw new Error('Expected parent approval');
+        expect(
+          pending.requests
+            .filter(isFunctionApprovalRequest)
+            .map((request) => request.callId),
+        ).toEqual(['first-parent-approval']);
+        saved = await source.suspend();
+      }
+      const portable = JSON.parse(JSON.stringify(saved));
+      if (change === 'inject')
+        portable.operation_tools.push({
+          name: 'exec_command',
+          namespace: 'functions',
+        });
+      let restored: Session | undefined;
+      try {
+        if (change === 'inject') {
+          restored = await f.parent.session({ environment, state: portable });
+          const completion = restored.restoredTurn?.wait();
+          if (!completion) throw new Error('Expected restored operation');
+          void completion.catch(() => {});
+          await restored.respond((await approval(restored)).approve());
+          await expect(completion).rejects.toThrow(
+            /verifyConfiguredChildExecutorTools/,
+          );
+          expect(f.effects).toEqual(['accepted-sibling']);
+          expect(f.rootModel.requests).toHaveLength(2);
+          expect(f.childModel.requests).toHaveLength(0);
+        } else {
+          restored = await f.parent.session({ environment, state: portable });
+          await restored.respond((await approval(restored)).approve());
+          const child = await approval(restored);
+          expect(child.callId).toBe('later-child-approval');
+          expect(JSON.stringify(f.childModel.requests[0].tools)).not.toContain(
+            '"exec_command"',
+          );
+          await restored.respond(child.approve());
+          if (!restored.restoredTurn)
+            throw new Error('Expected restored operation');
+          expect((await restored.restoredTurn.wait()).finalOutput).toBe(
+            'parent complete',
+          );
+          const fresh = await restored.submit(
+            'begin an explicitly new operation',
+          );
+          const pending = await fresh.wait({ until: 'interaction' });
+          if (!('requests' in pending))
+            throw new Error('Expected fresh child approval');
+          expect(JSON.stringify(f.childModel.requests[2].tools)).toContain(
+            '"exec_command"',
+          );
+          await restored.respond((await approval(restored)).approve());
+          expect((await fresh.wait()).finalOutput).toBe('parent complete');
+          expect(f.effects).toEqual([
+            'accepted-sibling',
+            'child-effect',
+            'child-effect',
+          ]);
+          f.rootModel.assertExhausted();
+          f.childModel.assertExhausted();
+        }
+      } finally {
+        await restored?.close();
+      }
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await executor.close();
+    }
+  },
+  30000,
+);
+
+nativeIt(
+  'carries exact authenticated checkpoint authority through nested configured restores',
+  async () => {
+    const executor = await startPublicExecutor();
+    try {
+      await using f = await fixture(
+        false,
+        undefined,
+        undefined,
+        undefined,
+        [],
+        {
+          child: [
+            [
+              call(
+                'grandchild',
+                { input: 'nested restore' },
+                { callId: 'grandchild-call' },
+              ),
+            ],
+            [message('child complete')],
+          ],
+        },
+      );
+      const leafModel = new ModelServer([
+        [call('leaf_effect', {}, { callId: 'leaf-approval' })],
+        [
+          call(
+            'exec_command',
+            {
+              cmd: 'printf nested-restored-executor',
+              yield_time_ms: 1000,
+              max_output_tokens: 100,
+            },
+            { callId: 'nested-exec', namespace: 'functions' },
+          ),
+        ],
+        [message('leaf complete')],
+      ]);
+      await using leafProvider = await provider(leafModel);
+      const leaf = new Agent({
+        model,
+        instructions: 'Request the leaf effect.',
+        provider: leafProvider,
+        tools: [
+          tool({
+            name: 'leaf_effect',
+            parameters: z.object({}),
+            needsApproval: true,
+            execute() {
+              f.effects.push('leaf-effect');
+              return 'leaf effect output';
+            },
+          }),
+        ],
+      });
+      const child = new Agent({
+        ...f.child,
+        tools: [leaf.asTool({ toolName: 'grandchild' })],
+      });
+      const sibling = f.parent.tools.find(
+        (tool) => tool.name === 'accepted_sibling',
+      );
+      if (!sibling) throw new Error('Expected current sibling declaration');
+      const parent = new Agent({
+        ...f.parent,
+        tools: [child.asTool({ toolName: 'nested_child' }), sibling],
+      });
+      const environment = new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command'],
+        writePolicy: 'legacy',
+      });
+      let saved: Awaited<ReturnType<Session['suspend']>>;
+      {
+        await using source = await parent.session({ environment });
+        const turn = await source.submit(
+          'capture the nested configured approval',
+        );
+        const pending = await turn.wait({ until: 'interaction' });
+        if (!('requests' in pending)) throw new Error('Expected leaf approval');
+        await f.sibling.promise;
+        saved = await source.suspend();
+      }
+      {
+        await using restored = await parent.session({
+          environment,
+          state: JSON.parse(JSON.stringify(saved)),
+          verifyConfiguredChildExecutorTools: (checkpoint) =>
+            JSON.stringify(checkpoint) === JSON.stringify(saved),
+        });
+        const current = await approval(restored);
+        expect(current.callId).toBe('leaf-approval');
+        await restored.respond(current.approve());
+        if (!restored.restoredTurn) throw new Error('Expected restored parent');
+        expect((await restored.restoredTurn.wait()).finalOutput).toBe(
+          'parent complete',
+        );
+      }
+      expect(f.effects).toEqual(['accepted-sibling', 'leaf-effect']);
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toHaveLength(1);
+      expect(JSON.stringify(leafModel.requests.at(-1)?.input)).toContain(
+        'nested-restored-executor',
+      );
+      f.rootModel.assertExhausted();
+      f.childModel.assertExhausted();
+      leafModel.assertExhausted();
+    } finally {
+      await executor.close();
+    }
+  },
+  30000,
+);
+
+nativeIt.each(['denied', 'verifier-throws'] as const)(
+  'releases an unsuccessful authenticated executor restore (%s)',
+  async (failure) => {
+    const executor = await startPublicExecutor();
+    try {
+      await using f = await fixture();
+      const environment = new Environment({
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+        tools: ['exec_command'],
+        writePolicy: 'legacy',
+      });
+      let saved: Awaited<ReturnType<Session['suspend']>>;
+      {
+        await using source = await f.parent.session({ environment });
+        const turn = await source.submit('capture a denied opening', {
+          tools: [toolRef('nested_child'), toolRef('accepted_sibling')],
+        });
+        await turn.wait({ until: 'interaction' });
+        await f.sibling.promise;
+        saved = await source.suspend();
+      }
+      const portable = JSON.parse(JSON.stringify(saved));
+      portable.operation_tools.push({
+        name: 'exec_command',
+        namespace: 'functions',
+      });
+      const marker = new Error(
+        'checkpoint verifier refused before native opening',
+      );
+      const opening = f.parent.session({
+        environment,
+        state: portable,
+        ...(failure === 'verifier-throws'
+          ? {
+              verifyConfiguredChildExecutorTools() {
+                throw marker;
+              },
+            }
+          : {}),
+      });
+      if (failure === 'verifier-throws')
+        await expect(opening).rejects.toBe(marker);
+      else
+        await expect(opening).rejects.toThrow(
+          /verifyConfiguredChildExecutorTools/,
+        );
+      await expect(f.rootProvider.close()).resolves.toBeUndefined();
+      await expect(f.childProvider.close()).resolves.toBeUndefined();
+      expect(f.effects).toEqual(['accepted-sibling']);
+      expect(f.rootModel.requests).toHaveLength(1);
+      expect(f.childModel.requests).toHaveLength(1);
+      expect(
+        executor.requests.filter(
+          (request) => request.method === 'process/start',
+        ),
+      ).toHaveLength(0);
+    } finally {
+      await executor.close();
+    }
   },
   30000,
 );

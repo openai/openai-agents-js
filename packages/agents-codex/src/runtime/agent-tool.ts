@@ -27,6 +27,7 @@ export interface ConfiguredAgentTool {
     environment: Environment | null,
     signal: AbortSignal,
     state?: SessionState,
+    verifiedExecutorCheckpoint?: boolean,
   ): Promise<Session<unknown>>;
   extract(result: Completed<unknown>): Promise<string>;
 }
@@ -54,17 +55,27 @@ export function createAgentTool<Context, Output>(
   });
   declarations.set(declaration, {
     resultSchema: Object.freeze({ type: 'string' }),
-    open: (context, environment, signal, state) =>
-      agent.session(
+    open: (context, environment, signal, state, verifiedExecutorCheckpoint) => {
+      const verifiedState =
+        state && verifiedExecutorCheckpoint ? encode(state) : undefined;
+      return agent.session(
         ...([
           {
             context,
             signal,
             ...(environment ? { environment } : {}),
             ...(state ? { state } : {}),
+            ...(verifiedState === undefined
+              ? {}
+              : {
+                  verifyConfiguredChildExecutorTools: (
+                    checkpoint: SessionState,
+                  ) => encode(checkpoint) === verifiedState,
+                }),
           },
         ] as Parameters<typeof agent.session>),
-      ),
+      );
+    },
     async extract(result) {
       if (extract) return extract(result as Completed<Output>);
       return typeof result.finalOutput === 'string'

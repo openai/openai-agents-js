@@ -88,8 +88,12 @@ export async function openSession(
       (profile) => profile.catalog.tools,
     ),
   ]);
-  const { initialMessages, verifyRememberedApprovals, ...liveOptions } =
-    options;
+  const {
+    initialMessages,
+    verifyRememberedApprovals,
+    verifyConfiguredChildExecutorTools,
+    ...liveOptions
+  } = options;
   const audioBudget = { remaining: MAX_AUDIO_INPUT_BYTES };
   const capturedInitialMessages = captureInitialMessages(
     initialMessages,
@@ -105,7 +109,9 @@ export async function openSession(
   const initialConfig: NativeConfig = { ...config, mcp_servers: {} };
   const environment = options.environment;
   const saved =
-    options.state == null ? null : sessionStateSchema.parse(options.state);
+    options.state == null
+      ? null
+      : sessionStateSchema.parse(structuredClone(options.state));
   if (oneShot) {
     if (isManualSessionState(saved)) {
       if (oneShot.input != null)
@@ -139,6 +145,11 @@ export async function openSession(
     throw new TypeError(
       'Checkpoint and Environment must agree on read-only execution',
     );
+  const verifiedConfiguredExecutors =
+    isManualSessionState(saved) &&
+    (await verifyConfiguredChildExecutorTools?.(structuredClone(saved))) ===
+      true;
+  options.environmentOwner?.signal.throwIfAborted();
   const authenticatedHistory = options[managedWorkspaceRestore] === true;
   if (isOutputAwareState(saved) && saved.remembered_approvals?.length) {
     const verified = await verifyRememberedApprovals?.(structuredClone(saved));
@@ -533,7 +544,10 @@ export async function openSession(
   if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
   if (isManualSessionState(saved))
-    await session._restoreManualContinuation(saved);
+    await session._restoreManualContinuation(
+      saved,
+      verifiedConfiguredExecutors,
+    );
   return session;
 }
 

@@ -518,6 +518,9 @@ export interface SessionOptions {
   verifyRememberedApprovals?: (
     state: SessionState,
   ) => boolean | Promise<boolean>;
+  verifyConfiguredChildExecutorTools?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
   /** @internal Captured opening scope; never stored in SessionState. */
   tracingCapture?: TraceCapture;
   parentTrace?: TraceContext;
@@ -3096,6 +3099,8 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private nativeManualCheckpoint = false;
   private readonly rememberedApprovals = new Map<string, RememberedApproval>();
+  private verifiedConfiguredExecutorCheckpoint = false;
+  private restoredExecutorTurn?: NativeTurn;
   private readonly restoredApprovalSlots = new Map<
     string,
     RememberedApproval
@@ -12451,7 +12456,10 @@ export class Session<OutputT = string, Context = unknown> {
       });
     });
   }
-  async _restoreManualContinuation(state: ManualSessionState): Promise<void> {
+  async _restoreManualContinuation(
+    state: ManualSessionState,
+    verifiedExecutorCheckpoint = false,
+  ): Promise<void> {
     this.idle('restore manual continuation');
     const guardrailRecords = this.restoreGuardrailRecords(state);
     const operation = readCheckpointSelections(state).operation_tools;
@@ -12476,6 +12484,7 @@ export class Session<OutputT = string, Context = unknown> {
       tracing?.finish(error ?? null);
       throw error;
     }
+    this.verifiedConfiguredExecutorCheckpoint = verifiedExecutorCheckpoint;
     const restoredOutput = this.options.restoredOutput ?? {
       output: this.defaultOutput,
       outputOverride: false,
@@ -12484,6 +12493,7 @@ export class Session<OutputT = string, Context = unknown> {
       restoredOutput.output,
       restoredOutput.outputOverride,
     );
+    this.restoredExecutorTurn = run;
     if (
       (state.manual_continuation.pending_input?.length ?? 0) > 0 ||
       state.manual_continuation.staged_retry
@@ -12561,6 +12571,14 @@ export class Session<OutputT = string, Context = unknown> {
     const events = requests.map((request) =>
       parseEvent(JSON.stringify(request)),
     );
+    if (this.environment && !verifiedExecutorCheckpoint) {
+      for (const event of events) {
+        if (event.msg._sdk_configured_continuation === undefined) continue;
+        const policy = await this.configuredChildPolicy(event.msg);
+        this.options.environmentOwner?.signal.throwIfAborted();
+        this.configuredExecutorTools(policy.tools);
+      }
+    }
     for (const event of events) {
       if (event.msg._sdk_configured_continuation !== undefined) {
         this.callbackDeliveries.capture(
@@ -12717,6 +12735,47 @@ export class Session<OutputT = string, Context = unknown> {
     return requests;
   }
 
+  private async configuredChildPolicy(request: unknown) {
+    return z
+      .object({
+        cwd: z.string(),
+        writableRoots: z.array(z.string()),
+        tools: z.array(z.string()),
+      })
+      .parse(
+        JSON.parse(
+          await this.#native._configured_child_policy(encodeReceipt(request)),
+        ),
+      );
+  }
+
+  private configuredExecutorTools(
+    policy: readonly string[],
+    owner?: NativeTurn | ChildCallbackOwner,
+  ) {
+    const tools =
+      this.environment?.tools.filter((tool) => policy.includes(tool)) ?? [];
+    const restored = this.restoredExecutorTurn;
+    const restoredOwner =
+      owner === undefined ||
+      (restored !== undefined &&
+        (owner === restored ||
+          (!(owner instanceof NativeTurn) &&
+            (owner.rootTurnId === restored.id ||
+              (owner.rootTurnId === undefined &&
+                this.lifecycle.kind === 'turn' &&
+                this.lifecycle.run === restored)))));
+    if (
+      restoredOwner &&
+      !this.verifiedConfiguredExecutorCheckpoint &&
+      tools.length
+    )
+      throw new NativeError(
+        'Restored configured executors require verifyConfiguredChildExecutorTools',
+      );
+    return tools;
+  }
+
   private async invokeConfiguredChild(
     owner: NativeTurn | ChildCallbackOwner,
     context: ToolCallContext,
@@ -12731,17 +12790,7 @@ export class Session<OutputT = string, Context = unknown> {
       throw new NativeError('Configured child parent is no longer active');
     let environment = this.environment;
     if (environment) {
-      const policy = z
-        .object({
-          cwd: z.string(),
-          writableRoots: z.array(z.string()),
-          tools: z.array(z.string()),
-        })
-        .parse(
-          JSON.parse(
-            await this.#native._configured_child_policy(encodeReceipt(request)),
-          ),
-        );
+      const policy = await this.configuredChildPolicy(request);
       context.signal.throwIfAborted();
       if (!this.current(owner))
         throw new NativeError('Configured child parent is no longer active');
@@ -12758,9 +12807,7 @@ export class Session<OutputT = string, Context = unknown> {
         transformResult,
         ...settings
       } = environment;
-      const tools = environment.tools.filter((tool) =>
-        policy.tools.includes(tool),
-      );
+      const tools = this.configuredExecutorTools(policy.tools, owner);
       const commands = tools.includes('exec_command');
       environment = new Environment({
         ...settings,
@@ -12808,6 +12855,7 @@ export class Session<OutputT = string, Context = unknown> {
       environment,
       context.signal,
       restoredChild,
+      this.verifiedConfiguredExecutorCheckpoint,
     );
     const child: ConfiguredChild = {
       session,
@@ -12902,6 +12950,7 @@ export class Session<OutputT = string, Context = unknown> {
             environment,
             context.signal,
             child.checkpoint,
+            true,
           );
           if (!(session instanceof Session))
             throw new NativeError(
