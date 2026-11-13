@@ -50,7 +50,7 @@ export function getHostedAgentMetadata(
   const item = object(outer.call) ?? object(outer.toolCall) ?? outer;
   const known = admitted.get(item);
   if (known) return known;
-  const provider = object(item.providerData);
+  const provider = object(item.provider_data) ?? object(item.providerData);
   const source = provider && object(provider.agent) ? provider : item;
   return capture(object(source.agent)?.agent_name, source.phase);
 }

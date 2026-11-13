@@ -1,5 +1,11 @@
 import { afterEach, expect, it } from 'vitest';
-import { Agent, NativeProvider, hostedTool, codeInterpreter } from '../../src';
+import {
+  Agent,
+  NativeProvider,
+  hostedTool,
+  codeInterpreter,
+  getHostedAgentMetadata,
+} from '../../src';
 import { ModelServer, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -9,6 +15,8 @@ const program = {
   call_id: 'program-call',
   code: 'lookup()',
   fingerprint: 'synthetic-fingerprint',
+  agent: { agent_name: '/root/reviewer' },
+  phase: 'commentary',
   vendor: { enabled: false, number: 0 },
 };
 const output = {
@@ -92,6 +100,15 @@ it.each(['history', 'produced', 'observations'] as const)(
     if (!('code' in call) || !('result' in result))
       throw new Error('Missing detailed provider program data');
     expect(call.code).toBe(program.code);
+    expect(getHostedAgentMetadata(call)).toEqual({
+      agentName: '/root/reviewer',
+      phase: 'commentary',
+    });
+    expect(getHostedAgentMetadata(program)).toEqual({
+      agentName: '/root/reviewer',
+      phase: 'commentary',
+    });
+    expect(getHostedAgentMetadata(result)).toBeUndefined();
     expect(result.result).toBe(output.result);
     server.assertExhausted();
   },
