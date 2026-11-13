@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: Cover forged sandbox memory admission on restored descendants.
+fix: Forged memory admission checks have been selecting each saved child's own sampling receipt.
