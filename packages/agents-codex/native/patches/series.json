@@ -146,7 +146,7 @@
     },
     {
       "path": "0037-own-managed-darwin-command-cohort.patch",
-      "sha256": "2df2d03f5f8c88124e6b54a9c85f02f1b9aff8b56e768f289eaa75c0971ccb43"
+      "sha256": "0dad48d7d0cfe34602601ca4d3da6a70334ba1cdc20d0c275bd21e38f9bb8057"
     },
     {
       "path": "0038-stop-sampling-before-sdk-close.patch",
@@ -1095,7 +1095,11 @@
     {
       "path": "sdk-portable-realtime-response-extensions.patch",
       "sha256": "fccc9dcab7f0af9ca1e37d12b27e36cdba9d58b1e7981662a56a4b050c8bffbd"
+    },
+    {
+      "path": "sdk-confirm-darwin-service-removal.patch",
+      "sha256": "a5018f66dbd0542427779ed8e9dffddc0818530cfe3975cbfad1bae92e8fa64e"
     }
   ],
-  "result_tree": "c32ab95caf9d7fc2c5c8209c170fba777da0ed14"
+  "result_tree": "b798e1c77392af8a8a2f38cbac611274175689b1"
 }

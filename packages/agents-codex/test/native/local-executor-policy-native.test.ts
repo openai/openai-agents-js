@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
+  chmod,
   copyFile,
   link,
   mkdir,
@@ -16,8 +17,8 @@ import {
 } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createServer as createUnixServer } from 'node:net';
-import { homedir, tmpdir } from 'node:os';
-import { basename, delimiter, join } from 'node:path';
+import { homedir, tmpdir, userInfo } from 'node:os';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -476,13 +477,133 @@ it.skipIf(process.platform !== 'darwin')(
   150_000,
 );
 
-it
-  .skipIf(!supported)
-  .for(
-    isLinux
-      ? (['strict', 'trusted_workspace_write'] as const)
-      : (['strict'] as const),
-  )(
+it.skipIf(process.platform !== 'darwin')(
+  'allows trusted local workspace commands to use macOS identity, toolchains and TLS within write grants',
+  async () => {
+    const temporary = await mkdtemp(join(tmpdir(), 'agents-trusted-darwin-'));
+    try {
+      const base = await realpath(temporary);
+      const cwd = join(base, 'workspace');
+      const extra = join(base, 'granted');
+      const outside = join(base, 'outside');
+      await Promise.all([
+        mkdir(cwd),
+        mkdir(extra),
+        writeFile(outside, 'outside'),
+      ]);
+      vi.stubEnv(
+        'PATH',
+        [dirname(process.execPath), process.env.PATH].join(delimiter),
+      );
+      const host = userInfo();
+      expect(
+        execFileSync('/usr/bin/id', ['-un'], {
+          encoding: 'utf8',
+          timeout: 5_000,
+        }).trim(),
+      ).toBe(host.username);
+      const sshArgs = ['-G', '-T', '-F', '/dev/null', 'sdk-fixture.invalid'];
+      const sshUser = `user ${host.username}`;
+      const hostSsh = execFileSync('/usr/bin/ssh', sshArgs, {
+        encoding: 'utf8',
+        timeout: 5_000,
+      });
+      expect(hostSsh.split('\n')).toContain(sshUser);
+      const tlsArgs = [
+        '-u',
+        'CURL_CA_BUNDLE',
+        '-u',
+        'SSL_CERT_FILE',
+        '-u',
+        'SSL_CERT_DIR',
+        '-u',
+        'CURL_SSL_BACKEND',
+        '/usr/bin/curl',
+        '--disable',
+        '--fail',
+        '--silent',
+        '--show-error',
+        '--max-time',
+        '20',
+        '--proto',
+        '=https',
+        '--write-out',
+        '%{ssl_verify_result}',
+        'https://github.com/robots.txt',
+      ];
+      const hostBody = join(base, 'host-robots.txt');
+      const hostTls = await promisify(execFile)(
+        '/usr/bin/env',
+        [...tlsArgs, '-o', hostBody],
+        { timeout: 22_000 },
+      );
+      expect(hostTls.stdout).toBe('0');
+      expect((await readFile(hostBody)).length).toBeGreaterThan(0);
+      const curl = ['/usr/bin/env', ...tlsArgs].map(shellQuote).join(' ');
+      const command = [
+        'set -eu',
+        `test "$(/usr/bin/id -u)" = ${host.uid} || exit 11`,
+        `test "$(/usr/bin/id -un)" = ${shellQuote(host.username)} || exit 12`,
+        `/usr/bin/ssh ${sshArgs.map(shellQuote).join(' ')} > "$TMPDIR/ssh-config"`,
+        '/usr/bin/grep -qx "hostname sdk-fixture.invalid" "$TMPDIR/ssh-config"',
+        `/usr/bin/grep -Fqx ${shellQuote(sshUser)} "$TMPDIR/ssh-config"`,
+        `test "$(node --version)" = ${shellQuote(process.version)} || exit 13`,
+        `verify=$(${curl} -o "$TMPDIR/robots.txt")`,
+        'test "$verify" = 0 || exit 14',
+        'test -s "$TMPDIR/robots.txt"',
+        `test "$(cat ${shellQuote(outside)})" = outside`,
+        `if (printf denied > ${shellQuote(outside)}) 2>/dev/null; then exit 15; fi`,
+        'printf workspace > result',
+        `printf grant > ${shellQuote(join(extra, 'result'))}`,
+      ].join('; ');
+      const server = new ModelServer([
+        [
+          call(
+            'exec_command',
+            { cmd: command, yield_time_ms: 25_000 },
+            { callId: 'trusted-macos' },
+          ),
+        ],
+        [message('done')],
+      ]);
+      await using provider = await providerFor(server);
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5',
+        instructions: 'Work.',
+      });
+      await using session = await agent.session({
+        environment: Environment.local({
+          cwd,
+          writableRoots: [extra],
+          writePolicy: 'trusted_workspace_write',
+          tools: ['exec_command'],
+          network: { allowedDomains: ['github.com'] },
+        }),
+      });
+      expect(
+        (await (await session.submit('Run the fixture.')).wait()).finalOutput,
+      ).toBe('done');
+      expect(await Array.fromAsync(session.items())).toContainEqual(
+        expect.objectContaining({
+          type: 'command_execution',
+          callId: 'trusted-macos',
+          exitCode: 0,
+          status: 'completed',
+        }),
+      );
+      expect(await readFile(join(cwd, 'result'), 'utf8')).toBe('workspace');
+      expect(await readFile(join(extra, 'result'), 'utf8')).toBe('grant');
+      expect(await readFile(outside, 'utf8')).toBe('outside');
+      server.assertExhausted();
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  },
+  75_000,
+);
+
+it.skipIf(!supported).for(['strict', 'trusted_workspace_write'] as const)(
   'records the selected local proxy in child and grandchild receipts with %s',
   { timeout: 75_000 },
   async (writePolicy, context) => {
@@ -2296,13 +2417,7 @@ it.skipIf(!supported)(
   30_000,
 );
 
-it
-  .skipIf(!supported)
-  .for(
-    isLinux
-      ? (['portable', 'local', 'trusted portable'] as const)
-      : (['portable', 'local'] as const),
-  )(
+it.skipIf(!supported).for(['portable', 'local', 'trusted portable'] as const)(
   'applies a per-turn write policy and requires the current policy on %s restore',
   { timeout: 45_000 },
   async (kind, context) => {
@@ -2801,8 +2916,9 @@ it
   'blocks delegation from a local command to launchd with %s',
   { timeout: 45_000 },
   async (writePolicy) => {
+    const launchctlPath = '/bin/launchctl';
     const launchctl = (...args: string[]) => {
-      const result = spawnSync('/bin/launchctl', args, {
+      const result = spawnSync(launchctlPath, args, {
         encoding: 'utf8',
         timeout: 5_000,
       });
@@ -2814,6 +2930,14 @@ it
     const domain = launchctl('print', gui).status === 0 ? gui : `user/${uid}`;
     const label = `org.openai.agents.sdk-test.${randomUUID()}`;
     const service = `${domain}/${label}`;
+    const submitLabel = `org.openai.agents.sdk-submit-test.${randomUUID()}`;
+    const submitService = `${domain}/${submitLabel}`;
+    const bootout = (target: string) => {
+      const stopped = launchctl('bootout', target);
+      if (stopped.status !== 0) {
+        expect(launchctl('print', target).status, stopped.stderr).not.toBe(0);
+      }
+    };
     const runCount = () => {
       const result = launchctl('print', service);
       expect(result.status, result.stderr).toBe(0);
@@ -2824,12 +2948,19 @@ it
     const quote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
     const directory = await mkdtemp(join(tmpdir(), 'agents-launchd-'));
+    let stage = 'fixture setup';
     try {
       const root = await realpath(directory);
       const cwd = join(root, 'workspace');
       const marker = join(root, 'launchd-marker');
+      const submitMarker = join(root, 'launchd-submit-marker');
       const plist = join(cwd, `${label}.plist`);
+      const copiedLaunchctl = join(cwd, 'launchctl-copy');
+      const linkedLaunchctl = join(cwd, 'launchctl-link');
       await mkdir(cwd);
+      await copyFile(launchctlPath, copiedLaunchctl);
+      await chmod(copiedLaunchctl, 0o755);
+      await symlink(launchctlPath, linkedLaunchctl);
       const xmlMarker = marker
         .replaceAll('&', '&amp;')
         .replaceAll('<', '&lt;')
@@ -2854,21 +2985,33 @@ it
 `,
       );
 
+      const submitArgs = [
+        '-l',
+        submitLabel,
+        '--',
+        '/usr/bin/touch',
+        submitMarker,
+      ];
       const attempts = [
-        ['bootstrap', [domain, plist]],
-        ['kickstart', [service]],
+        ['bootstrap', [launchctlPath, 'bootstrap', domain, plist]],
+        ['kickstart', [launchctlPath, 'kickstart', service]],
+        ['kickstart-copy', [copiedLaunchctl, 'kickstart', service]],
+        ['kickstart-link', [linkedLaunchctl, 'kickstart', service]],
+        ['submit', [launchctlPath, 'submit', ...submitArgs]],
       ] as const;
       const server = new ModelServer(
         attempts.flatMap(([operation, args]) => {
-          const command = ['/bin/launchctl', operation, ...args]
-            .map(quote)
-            .join(' ');
+          const command = args.map(quote).join(' ');
+          const checkWrite =
+            operation === 'bootstrap'
+              ? `if /usr/bin/touch ${quote(marker)} 2>/dev/null; then exit 20; fi; `
+              : '';
           return [
             [
               call(
                 'exec_command',
                 {
-                  cmd: `rc=0; ${command} || rc=$?; printf '${operation} exit %s\\n' "$rc"`,
+                  cmd: `${checkWrite}rc=0; ${command} || rc=$?; printf '${operation} exit %s\\n' "$rc"`,
                   yield_time_ms: 10_000,
                 },
                 { callId: operation },
@@ -2884,6 +3027,7 @@ it
       expect(launchctl('print', service).status).not.toBe(0);
       expect(existsSync(marker)).toBe(false);
       {
+        stage = 'session startup';
         await using session = await agent.session({
           environment: Environment.local({
             cwd,
@@ -2891,12 +3035,24 @@ it
             writePolicy,
           }),
         });
-        const tryDelegation = async (operation: 'bootstrap' | 'kickstart') => {
+        const tryDelegation = async (
+          operation: (typeof attempts)[number][0],
+        ) => {
+          stage = operation;
           const turn = await session.submit(`Try launchctl ${operation}.`);
           expect((await turn.wait()).finalOutput).toBe('checked');
-          const command = (await Array.fromAsync(session.items()))
+          const items = await Array.fromAsync(session.items());
+          const command = items
             .filter((item) => item.type === 'command_execution')
             .find((item) => item.callId === operation);
+          const response = items.find(
+            (item) =>
+              item.type === 'function_call_output' && item.callId === operation,
+          );
+          // The shell can print a denial before its supervisor finishes cleanup.
+          expect
+            .soft(command, JSON.stringify({ operation, command, response }))
+            .toMatchObject({ status: 'completed', exitCode: 0 });
           expect(command?.output).toMatch(
             new RegExp(`^${operation} exit [1-9]\\d*$`, 'm'),
           );
@@ -2905,29 +3061,64 @@ it
         expect(launchctl('print', service).status).not.toBe(0);
         expect(existsSync(marker)).toBe(false);
 
+        stage = 'host bootstrap';
         const bootstrapped = launchctl('bootstrap', domain, plist);
         expect(bootstrapped.status, bootstrapped.stderr).toBe(0);
         expect(runCount()).toBe(0);
 
-        await tryDelegation('kickstart');
-        expect(runCount()).toBe(0);
-        expect(existsSync(marker)).toBe(false);
+        for (const operation of [
+          'kickstart',
+          'kickstart-copy',
+          'kickstart-link',
+        ] as const) {
+          await tryDelegation(operation);
+          expect(runCount()).toBe(0);
+          expect(existsSync(marker)).toBe(false);
+        }
+
+        await tryDelegation('submit');
+        expect(launchctl('list', submitLabel).status).not.toBe(0);
+        expect(launchctl('print', submitService).status).not.toBe(0);
+        expect(existsSync(submitMarker)).toBe(false);
+        stage = 'session shutdown after all delegation checks';
       }
 
+      stage = 'host kickstart';
       const kicked = launchctl('kickstart', service);
       expect(kicked.status, kicked.stderr).toBe(0);
       await vi.waitFor(() => expect(existsSync(marker)).toBe(true), {
         timeout: 5_000,
       });
       expect(runCount()).toBe(1);
+      stage = 'host submit';
+      const submitted = launchctl('submit', ...submitArgs);
+      expect(submitted.status, submitted.stderr).toBe(0);
+      await vi.waitFor(() => expect(existsSync(submitMarker)).toBe(true), {
+        timeout: 5_000,
+      });
       server.assertExhausted();
+    } catch (cause) {
+      throw new Error(`Launchd ${writePolicy} failed during ${stage}`, {
+        cause,
+      });
     } finally {
       try {
-        const stopped = launchctl('bootout', service);
-        if (stopped.status !== 0) {
-          expect(launchctl('print', service).status, stopped.stderr).not.toBe(
-            0,
-          );
+        try {
+          const removed = launchctl('remove', submitLabel);
+          if (removed.status !== 0) {
+            expect(
+              launchctl('list', submitLabel).status,
+              removed.stderr,
+            ).not.toBe(0);
+          }
+        } finally {
+          // Legacy submit uses the caller's bootstrap context. The managed
+          // worker and test host can be in different launchd domains.
+          try {
+            bootout(submitService);
+          } finally {
+            bootout(service);
+          }
         }
       } finally {
         await rm(directory, { recursive: true, force: true });
@@ -2944,11 +3135,7 @@ it
         process.env.OPENAI_AGENTS_TEST_IN_CODEX_SANDBOX === '1' &&
         process.env.OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX !== '1'),
   )
-  .for(
-    isLinux
-      ? (['portable', 'local', 'trusted local'] as const)
-      : (['portable', 'local'] as const),
-  )(
+  .for(['portable', 'local', 'trusted local'] as const)(
   'applies a per-turn write policy to linked Git worktrees and fixed network on %s restore',
   { timeout: 120_000 },
   async (route) => {
