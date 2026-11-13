@@ -457,6 +457,18 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
     !tool[shellDeclaration]
   );
 }
+/** @internal Capability declarations have been retaining ordinary workspace callback admission. */
+export function isSandboxCapabilityTool(tool: SessionTool): boolean {
+  if (isDirectFunctionTool(tool)) return true;
+  return (
+    tool.kind !== 'manual' &&
+    !tool.deferLoading &&
+    tool.allowedCallers?.includes('direct') !== false &&
+    (tool[shellDeclaration] !== undefined ||
+      tool[nativeCallbackDeclaration]?.type === 'applyPatch')
+  );
+}
+
 /** @internal Current eager direct callbacks only; native and manual identities stay strict. */
 export function isBareFunctionCollisionCandidate(tool: SessionTool): boolean {
   const source = managedApproval(tool)?.function ?? tool;

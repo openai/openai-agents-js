@@ -18,12 +18,18 @@ import {
   NativeProvider,
   tool,
   manualTool,
+  shellTool,
+  applyPatchTool,
+  type ApplyPatchEditor,
+  type ToolContext,
+  type ShellCall,
   type ModelSettings,
   type ModelRequestContext,
   type SandboxAccess,
 } from '../../src';
 import { ModelServer, message, call } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
+import * as privateOpening from '../../src/runtime/private-opening-contribution';
 
 let peer: Awaited<ReturnType<typeof startPublicExecutor>>;
 beforeAll(async () => {
@@ -995,3 +1001,191 @@ it.each(['retained-resource', 'changed-policy'] as const)(
     }
   },
 );
+
+function ownedWorkspaceCallbacks(effects: string[]) {
+  const editor: ApplyPatchEditor = {
+    createFile: async (operation, context) => {
+      effects.push('patch');
+      return context.sandbox!.createEditor().createFile(operation, context);
+    },
+    updateFile: async (operation, context) => {
+      effects.push('patch');
+      return context.sandbox!.createEditor().updateFile(operation, context);
+    },
+    deleteFile: (operation, context) =>
+      context.sandbox!.createEditor().deleteFile(operation, context),
+  };
+  return {
+    patch: applyPatchTool({ editor }),
+    shell: shellTool({
+      execute: async (call: ShellCall, context: ToolContext) => {
+        effects.push('shell');
+        const output = [];
+        for (const cmd of call.action.commands) {
+          const result = await context.sandbox!.exec({ cmd, login: false });
+          output.push({
+            stdout: result.stdout,
+            stderr: result.stderr,
+            outcome:
+              result.exitCode == null
+                ? { type: 'timeout' as const }
+                : { type: 'exit' as const, exit_code: result.exitCode },
+          });
+        }
+        return { output };
+      },
+    }),
+  };
+}
+
+it.each(['both', 'patch', 'shell'] as const)(
+  'has been admitting owned capability workspace callbacks with existing declarations: %s',
+  async (contribution) => {
+    const effects: string[] = [];
+    const bindings: Bound[] = [];
+    const callbacks = ownedWorkspaceCallbacks(effects);
+    class Workspace extends ProbeCapability {
+      clone() {
+        return new Workspace(bindings);
+      }
+      tools() {
+        return contribution === 'both'
+          ? [callbacks.patch, callbacks.shell]
+          : [callbacks[contribution]];
+      }
+    }
+    const patchFirst = contribution !== 'shell';
+    const patch: JsonObject = {
+      type: 'apply_patch_call',
+      call_id: 'owned-patch',
+      operation: patchFirst
+        ? { type: 'create_file', path: 'result.txt', diff: '+owned-patch\n' }
+        : {
+            type: 'update_file',
+            path: 'result.txt',
+            diff: '@@\n-shell-owned\n+patched-after-shell\n',
+          },
+    };
+    const shell: JsonObject = {
+      type: 'shell_call',
+      call_id: 'owned-shell',
+      action: {
+        commands: [
+          patchFirst ? 'cat result.txt' : 'printf shell-owned > result.txt',
+        ],
+      },
+    };
+    const server = new ModelServer([
+      [...(patchFirst ? [patch, shell] : [shell, patch])],
+      [message('owned callbacks done')],
+    ]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      instructions: 'Use the bound workspace callbacks.',
+      provider,
+      tools:
+        contribution === 'both'
+          ? []
+          : [callbacks[contribution === 'patch' ? 'shell' : 'patch']],
+    }).session({ environment: sourceFor([new Workspace(bindings)]) });
+    expect(
+      (await (await session.submit('Apply both operations.')).wait())
+        .finalOutput,
+    ).toBe('owned callbacks done');
+    expect(effects).toEqual(
+      patchFirst ? ['patch', 'shell'] : ['shell', 'patch'],
+    );
+    expect(
+      await readFile(
+        join(
+          bindings[0].sandbox.state.workspaceRootPath as string,
+          'result.txt',
+        ),
+        'utf8',
+      ),
+    ).toBe(patchFirst ? 'owned-patch' : 'patched-after-shell');
+    expect(JSON.stringify(server.requests[1].input)).toContain('owned-patch');
+    server.assertExhausted();
+  },
+);
+
+it('has been holding a contributed Shell behind a later fatal automatic sibling', async () => {
+  const effects: string[] = [];
+  const bindings: Bound[] = [];
+  const callbacks = ownedWorkspaceCallbacks(effects);
+  class Workspace extends ProbeCapability {
+    clone() {
+      return new Workspace(bindings);
+    }
+    tools() {
+      return [callbacks.shell];
+    }
+  }
+  const server = new ModelServer([
+    [
+      {
+        type: 'shell_call',
+        call_id: 'must-not-mutate',
+        action: { commands: ['printf forbidden > forbidden.txt'] },
+      },
+      call('fatal', {}, { callId: 'fatal-later' }),
+    ],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Use the current callbacks.',
+    provider,
+    tools: [
+      tool({
+        name: 'fatal',
+        parameters: z.object({}),
+        errorFunction: null,
+        execute: () => {
+          effects.push('fatal');
+          throw new Error('fatal automatic callback');
+        },
+      }),
+    ],
+  }).session({ environment: sourceFor([new Workspace(bindings)]) });
+  await expect(
+    (await session.submit('Run the batch.')).wait(),
+  ).rejects.toThrow();
+  expect(effects).toEqual(['fatal']);
+  await expect(
+    stat(
+      join(
+        bindings[0].sandbox.state.workspaceRootPath as string,
+        'forbidden.txt',
+      ),
+    ),
+  ).rejects.toMatchObject({ code: 'ENOENT' });
+  server.assertExhausted();
+});
+
+it('has been preserving private opening direct-function admission after capability binding', async () => {
+  const effects: string[] = [];
+  const bindings: Bound[] = [];
+  const callbacks = ownedWorkspaceCallbacks(effects);
+  class Workspace extends ProbeCapability {
+    clone() {
+      return new Workspace(bindings);
+    }
+    tools() {
+      return [callbacks.shell];
+    }
+  }
+  vi.spyOn(privateOpening, 'privateOpeningContribution').mockReturnValue({
+    beforeComplete: () => undefined,
+  });
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  await expect(
+    new Agent({ instructions: 'Use the current callbacks.', provider }).session(
+      { environment: sourceFor([new Workspace(bindings)]) },
+    ),
+  ).rejects.toThrow(
+    'Private opening contributions require a fresh root with eager direct function tools',
+  );
+  expect(effects).toEqual([]);
+  expect(server.requests).toEqual([]);
+});

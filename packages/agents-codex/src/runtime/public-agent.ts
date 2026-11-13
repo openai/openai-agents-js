@@ -153,6 +153,7 @@ import {
   captureTools,
   toolDeclarationIdentity,
   isDirectFunctionTool,
+  isSandboxCapabilityTool,
   isBareFunctionCollisionCandidate,
   toolIdentity,
   isClientToolSearchTool,
@@ -1550,11 +1551,11 @@ export class Agent<Context = undefined, Output = string> {
         declarations.nativeGoals ||
         declarations.checklist ||
         declarations.tools.some(
-          (tool) => !isDirectFunctionTool(tool) || tool.deferLoading,
+          (tool) => !isSandboxCapabilityTool(tool) || tool.deferLoading,
         )
       )
         throw new TypeError(
-          'Sandbox capability contributions require a fresh root or idle restore with eager direct function tools',
+          'Sandbox capability contributions require a fresh root or idle restore with eager direct function tools or owned Shell/ApplyPatch callbacks',
         );
       const contributed = await capabilityLease.contributions(
         settings,
@@ -1562,11 +1563,18 @@ export class Agent<Context = undefined, Output = string> {
       );
       if (
         contributed.tools.some(
-          (tool) => !isDirectFunctionTool(tool) || tool.deferLoading,
+          (tool) => !isSandboxCapabilityTool(tool) || tool.deferLoading,
         )
       )
         throw new TypeError(
-          'Sandbox capability tools require eager direct function tools',
+          'Sandbox capability tools require eager direct function tools or owned Shell/ApplyPatch callbacks',
+        );
+      if (
+        hasPrivateContribution &&
+        contributed.tools.some((tool) => !isDirectFunctionTool(tool))
+      )
+        throw new TypeError(
+          'Private opening contributions require a fresh root with eager direct function tools',
         );
       catalog = captureTools(
         resolveToolNameCollisions(
