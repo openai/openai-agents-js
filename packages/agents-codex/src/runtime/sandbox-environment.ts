@@ -701,7 +701,7 @@ function createSandboxEnvironment<
       };
       const connectAndPublish = async (sandbox: SandboxSessionLike<State>) => {
         const created = sandbox;
-        capabilityLease?.bind(sandbox);
+        await capabilityLease?.bind(sandbox);
         gateway = await acquireEnvironment(
           ({ signal }) => connect(created, { signal }),
           signal,
@@ -746,6 +746,7 @@ function createSandboxEnvironment<
           skillLease,
           createMemory?.(created),
           sandboxProvider,
+          capabilityLease,
         );
       };
       // Resume inspection protects the old state. The owned provider mutation

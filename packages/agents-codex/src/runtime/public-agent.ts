@@ -1201,7 +1201,7 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'compaction and beforeCompact are mutually exclusive',
       );
-    const transformContext = opening
+    let transformContext = opening
       ? opening.transformContext
       : this.transformContext;
     const contextTransformPurpose =
@@ -1289,7 +1289,7 @@ export class Agent<Context = undefined, Output = string> {
       options.providerHistory !== undefined &&
       provider.supportsWebsockets === undefined;
     const model = opening ? opening.model : (openingModel ?? this.model);
-    const settings = opening
+    let settings = opening
       ? opening.settings
       : captureOpeningModelSettings(this.modelSettings, openingSettings);
     const hostedPrompt = opening
@@ -1530,6 +1530,54 @@ export class Agent<Context = undefined, Output = string> {
       options.signal,
     );
     acquiredEnvironment(environmentOwner);
+    const capabilityLease = environmentOwner.sandboxCapabilities;
+    if (capabilityLease?.hasContributions) {
+      if (
+        opening ||
+        suppliedState != null ||
+        options.resume !== undefined ||
+        persistent ||
+        profiles ||
+        hostedPrompt !== undefined ||
+        output.repair ||
+        (options as OwnedSessionOptions<Context>)[correctionOpening] ||
+        (options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true ||
+        declarations.mcp.length ||
+        declarations.nativeAgents ||
+        declarations.hostedTools.length ||
+        declarations.webSearch ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        declarations.tools.some(
+          (tool) => !isDirectFunctionTool(tool) || tool.deferLoading,
+        )
+      )
+        throw new TypeError(
+          'Sandbox capability contributions require a fresh root with eager direct function tools',
+        );
+      const contributed = await capabilityLease.contributions(
+        settings,
+        transformContext,
+      );
+      if (
+        contributed.tools.some(
+          (tool) => !isDirectFunctionTool(tool) || tool.deferLoading,
+        )
+      )
+        throw new TypeError(
+          'Sandbox capability tools require eager direct function tools',
+        );
+      catalog = captureTools(
+        resolveToolNameCollisions(
+          [...catalog.tools, ...contributed.tools],
+          [],
+          this.toolNameCollisionPolicy,
+        ).tools,
+      );
+      declarations.tools = [...catalog.tools];
+      settings = contributed.settings;
+      transformContext = contributed.transformContext;
+    }
     const environment = environmentOwner.environment;
     if (projectGuidance && !(environment instanceof Environment))
       throw new TypeError('Project guidance requires an explicit Environment');

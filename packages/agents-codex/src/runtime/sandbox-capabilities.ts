@@ -1,3 +1,8 @@
+import { copyJsonValue, type JsonObject } from './binding';
+import type { FunctionTool } from './tools';
+import type { ContextTransform } from './model-callbacks';
+import { captureOpeningModelSettings } from './opening-model-settings';
+import { captureModelSettings, type ModelSettings } from './model-settings';
 import type { Manifest } from '@openai/agents-core/sandbox/internal';
 import type { SandboxSessionLike } from '@openai/agents-core/sandbox';
 
@@ -9,6 +14,15 @@ export interface SandboxCapability {
   prepareManifest(manifest: Manifest): Manifest;
   bind(session: SandboxSessionLike, user?: string): unknown;
   bindRunAs?(user?: string): unknown;
+  /** Fresh root function declarations, captured after binding. */
+  tools?():
+    readonly FunctionTool<any>[] | Promise<readonly FunctionTool<any>[]>;
+  /** Typed overrides over detached current settings, in declaration order. */
+  samplingSettings?(
+    settings: ModelSettings,
+  ): ModelSettings | Promise<ModelSettings>;
+  /** Request-only projection before the Agent transform. */
+  transformContext?: ContextTransform<any>;
   instructions(
     manifest: Manifest,
   ): string | null | undefined | Promise<string | null | undefined>;
@@ -56,6 +70,15 @@ export function captureSandboxCapabilities(
       typeof result.instructions !== 'function'
     )
       throw new TypeError('Invalid SandboxCapability lifecycle');
+    for (const key of [
+      'requiredCapabilityTypes',
+      'bindRunAs',
+      'tools',
+      'samplingSettings',
+      'transformContext',
+    ] as const)
+      if (result[key] !== undefined && typeof result[key] !== 'function')
+        throw new TypeError(`Capability ${key} must be a function`);
     seen.add(result);
     return result;
   };
@@ -96,6 +119,7 @@ export function captureSandboxCapabilities(
 export class SandboxCapabilityLease {
   private bound = false;
   private retired = false;
+  private contributed = false;
   constructor(
     private readonly capabilities: SandboxCapability[],
     readonly manifest: Manifest,
@@ -103,18 +127,98 @@ export class SandboxCapabilityLease {
     private readonly copy: ManifestCopy,
     private readonly signal: AbortSignal,
   ) {}
-  bind(session: SandboxSessionLike): void {
+  async bind(session: SandboxSessionLike): Promise<void> {
     if (this.bound || this.retired)
       throw new Error('Capability binding requires its fresh resource');
     this.signal.throwIfAborted();
     this.bound = true;
     for (const capability of this.capabilities) {
-      const result = capability.bind(session, this.user);
+      const result = await capability.bind(session, this.user);
       if (result !== undefined && result !== capability)
         throw new TypeError('Capability bind() must retain its clone');
-      if (this.user !== undefined) capability.bindRunAs?.(this.user);
+      if (this.user !== undefined) await capability.bindRunAs?.(this.user);
       this.signal.throwIfAborted();
     }
+  }
+  get hasContributions(): boolean {
+    return this.capabilities.some(
+      (value) =>
+        value.tools !== undefined ||
+        value.samplingSettings !== undefined ||
+        value.transformContext !== undefined,
+    );
+  }
+  async contributions(
+    settings: ModelSettings | undefined,
+    transform: ContextTransform<any> | undefined,
+  ): Promise<{
+    tools: FunctionTool<any>[];
+    settings: ModelSettings | undefined;
+    transformContext: ContextTransform<any> | undefined;
+  }> {
+    this.assertActive(this.signal);
+    if (this.contributed)
+      throw new Error('Capability contributions belong to one opening');
+    this.contributed = true;
+    const tools: FunctionTool<any>[] = [];
+    for (const capability of this.capabilities) {
+      const result = await capability.tools?.();
+      this.assertActive(this.signal);
+      if (result !== undefined) {
+        if (!Array.isArray(result))
+          throw new TypeError('Capability tools must be an array');
+        tools.push(...result);
+      }
+    }
+    for (const capability of this.capabilities) {
+      if (capability.samplingSettings !== undefined) {
+        const overrides = await capability.samplingSettings(
+          captureModelSettings(settings),
+        );
+        this.assertActive(this.signal);
+        if (overrides === undefined)
+          throw new TypeError(
+            'Capability samplingSettings must return ModelSettings',
+          );
+        settings = captureOpeningModelSettings(settings, overrides);
+      }
+    }
+    const contextTransforms = this.capabilities.flatMap((capability) => {
+      const callback = capability.transformContext;
+      return callback === undefined ? [] : [callback.bind(capability)];
+    });
+    const transformContext: ContextTransform<any> | undefined =
+      contextTransforms.length
+        ? async (context) => {
+            this.assertActive(context.signal);
+            let items = captureItems(context.items);
+            for (const callback of contextTransforms) {
+              const changed = await callback({
+                ...context,
+                items: captureItems(items),
+              });
+              this.assertActive(context.signal);
+              if (changed !== undefined) items = captureItems(changed);
+            }
+            if (transform !== undefined) {
+              const result = await transform({
+                ...context,
+                items: captureItems(items),
+              });
+              this.assertActive(context.signal);
+              if (result !== undefined) items = captureItems(result);
+            }
+            return items;
+          }
+        : transform;
+    return { tools, settings, transformContext };
+  }
+  private assertActive(signal: AbortSignal): void {
+    if (!this.bound || this.retired)
+      throw new Error(
+        'Capability contributions require their current resource',
+      );
+    signal.throwIfAborted();
   }
   async instructions(manifest: Manifest): Promise<string | undefined> {
     if (!this.bound || this.retired)
@@ -153,4 +257,17 @@ export class SandboxCapabilityLease {
   retire(): void {
     this.retired = true;
   }
+}
+
+function captureItems(value: unknown): JsonObject[] {
+  const result = copyJsonValue(value);
+  if (
+    !Array.isArray(result) ||
+    result.some(
+      (item) =>
+        item === null || typeof item !== 'object' || Array.isArray(item),
+    )
+  )
+    throw new TypeError('Capability context must contain JSON objects');
+  return result as JsonObject[];
 }

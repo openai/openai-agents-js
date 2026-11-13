@@ -1,3 +1,5 @@
+import type { JsonObject } from '../../src/runtime/binding';
+import { z } from 'zod';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -10,8 +12,15 @@ import {
   type SandboxSessionLike,
 } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
-import { Agent, Environment, NativeProvider } from '../../src';
-import { ModelServer, message } from './fixtures/model-server';
+import {
+  Agent,
+  Environment,
+  NativeProvider,
+  tool,
+  type ModelSettings,
+  type ModelRequestContext,
+} from '../../src';
+import { ModelServer, message, call } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 let peer: Awaited<ReturnType<typeof startPublicExecutor>>;
@@ -468,3 +477,369 @@ it.each(['previous-capability', 'undeclared-collision'] as const)(
     }
   },
 );
+
+it('has been admitting bound capability tools and applying settings and context in declared root order', async () => {
+  const bindings: Bound[] = [];
+  const effects: string[] = [];
+  const openingOrder: string[] = [];
+  const application = { account: 'same-owner' };
+  const input = (text: string): JsonObject => ({
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text }],
+  });
+  class Contribution extends ProbeCapability {
+    constructor(readonly label: string) {
+      super(bindings);
+    }
+    clone() {
+      return new Contribution(this.label);
+    }
+    tools() {
+      openingOrder.push('tools:' + this.label);
+      expect(this.bound).toBeDefined();
+      return [
+        tool({
+          name: 'bound_' + this.label,
+          description: 'Bound provider probe',
+          parameters: z.object({}),
+          execute: async (_args, context) => {
+            expect(context.context).toBe(application);
+            const result = await context.sandbox!.exec({
+              cmd: 'cat capability.txt',
+            });
+            effects.push('tool:' + this.label);
+            return result.stdout;
+          },
+        }),
+      ];
+    }
+    samplingSettings(settings: ModelSettings): ModelSettings {
+      openingOrder.push('settings:' + this.label);
+      if (this.label === 'beta')
+        expect(settings.metadata?.alpha).toBe('sampled');
+      return { metadata: { ...settings.metadata, [this.label]: 'sampled' } };
+    }
+    transformContext(context: ModelRequestContext) {
+      effects.push('context:' + this.label);
+      if (this.label === 'beta')
+        expect(JSON.stringify(context.items)).toContain('CAP_ALPHA');
+      return [...context.items, input('CAP_' + this.label.toUpperCase())];
+    }
+  }
+  const source = sourceFor([
+    new Contribution('alpha'),
+    new Contribution('beta'),
+  ]);
+  const server = new ModelServer([
+    [call('bound_alpha', {}, { callId: 'bound-call' })],
+    [message('bound result')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent<typeof application>({
+    instructions: 'Use bound_alpha',
+    model: 'fixture-capability-contributions',
+    provider,
+    modelSettings: { metadata: { agent: 'preserved' } },
+    transformContext: (context) => {
+      effects.push('context:agent');
+      return [...context.items, input('AGENT_LAST')];
+    },
+  }).session({ environment: source, context: application });
+  expect(openingOrder).toEqual([
+    'tools:alpha',
+    'tools:beta',
+    'settings:alpha',
+    'settings:beta',
+  ]);
+  (bindings[0].capability as Contribution).transformContext = () => {
+    throw new Error(
+      'Late method replacement must not change captured callbacks',
+    );
+  };
+  expect((await (await session.submit('go')).wait()).finalOutput).toBe(
+    'bound result',
+  );
+  expect(effects).toEqual([
+    'context:alpha',
+    'context:beta',
+    'context:agent',
+    'tool:alpha',
+    'context:alpha',
+    'context:beta',
+    'context:agent',
+  ]);
+  for (const request of server.requests) {
+    expect(request.metadata).toMatchObject({
+      agent: 'preserved',
+      alpha: 'sampled',
+      beta: 'sampled',
+    });
+    expect(JSON.stringify(request.input)).toContain('AGENT_LAST');
+  }
+  expect(JSON.stringify(server.requests[1].input)).toContain(
+    'prepared capability',
+  );
+  server.assertExhausted();
+});
+
+it.each(['duplicate', 'deferred'] as const)(
+  'has been rejecting unsupported capability admission before tool dispatch: %s',
+  async (kind) => {
+    const execute = vi.fn(() => 'unexpected');
+    const cleanup = vi.fn();
+    class InvalidContribution extends ProbeCapability {
+      clone() {
+        return new InvalidContribution(this.bindings);
+      }
+      tools() {
+        return [
+          tool({
+            name: 'lookup',
+            description: 'Capability declaration',
+            deferLoading: kind === 'deferred',
+            parameters: z.object({}),
+            execute,
+          }),
+        ];
+      }
+    }
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const agent = new Agent({
+      instructions: 'Root',
+      provider,
+      tools:
+        kind === 'duplicate'
+          ? [
+              tool({
+                name: 'lookup',
+                description: 'Root declaration',
+                parameters: z.object({}),
+                execute,
+              }),
+            ]
+          : [],
+    });
+    await expect(
+      agent.session({
+        environment: sourceFor([new InvalidContribution([])], { cleanup }),
+      }),
+    ).rejects.toThrow(
+      kind === 'duplicate'
+        ? 'Duplicate tool functions.lookup'
+        : 'eager direct function tools',
+    );
+    expect(execute).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(server.requests).toEqual([]);
+  },
+);
+
+it.each(['graph', 'restore'] as const)(
+  'has been rejecting capability callback replay outside a fresh root: %s',
+  async (kind) => {
+    let state;
+    if (kind === 'restore') {
+      const seedModel = new ModelServer([[message('saved root')]]);
+      await using seedProvider = await providerFor(seedModel);
+      await using seed = await new Agent({
+        instructions: 'Save an idle root',
+        provider: seedProvider,
+      }).session();
+      await (await seed.submit('save')).wait();
+      state = await seed.saveState();
+    }
+    const factories = vi.fn(() => [
+      tool({
+        name: 'bound',
+        description: 'Fresh bound function',
+        parameters: z.object({}),
+        execute: () => 'unused',
+      }),
+    ]);
+    const cleanup = vi.fn();
+    class RootOnly extends ProbeCapability {
+      clone() {
+        return new RootOnly(this.bindings);
+      }
+      tools() {
+        return factories();
+      }
+    }
+    const server = new ModelServer([]);
+    await using provider = await providerFor(server);
+    const target = new Agent({
+      name: 'worker',
+      instructions: 'Target',
+      provider,
+    });
+    const agent = new Agent({
+      instructions: 'Root',
+      provider,
+      handoffs: kind === 'graph' ? [target] : [],
+    });
+    await expect(
+      agent.session({
+        environment: sourceFor([new RootOnly([])], { cleanup }),
+        state,
+      }),
+    ).rejects.toThrow('fresh root');
+    expect(factories).not.toHaveBeenCalled();
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(server.requests).toEqual([]);
+  },
+);
+
+it('has been rejecting lossy capability projections before later callbacks or provider dispatch', async () => {
+  class Lossy extends ProbeCapability {
+    clone() {
+      return new Lossy(this.bindings);
+    }
+    transformContext() {
+      return [
+        { type: 'message', role: 'user', content: Number.POSITIVE_INFINITY },
+      ];
+    }
+  }
+  const original = vi.fn();
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Root',
+    provider,
+    transformContext: original,
+  }).session({ environment: sourceFor([new Lossy([])]) });
+  await expect((await session.submit('go')).wait()).rejects.toThrow(
+    'finite JSON value',
+  );
+  expect(original).not.toHaveBeenCalled();
+  expect(server.requests).toEqual([]);
+});
+
+it('has been joining a cancelled capability context hook and observing its late rejection', async () => {
+  const entered = Promise.withResolvers<AbortSignal>();
+  const release = Promise.withResolvers<void>();
+  const lateFailure = new Error('late capability rejection');
+  const cleanup = vi.fn();
+  const containsFailure = (error: unknown): boolean =>
+    error === lateFailure ||
+    (error instanceof AggregateError && error.errors.some(containsFailure)) ||
+    (error instanceof Error &&
+      error.cause !== undefined &&
+      containsFailure(error.cause));
+  let finished = false;
+  let cancelled = false;
+  class Held extends ProbeCapability {
+    clone() {
+      return new Held(this.bindings);
+    }
+    async transformContext(context: ModelRequestContext) {
+      entered.resolve(context.signal);
+      await release.promise;
+      finished = true;
+      throw lateFailure;
+    }
+  }
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  const session = await new Agent({ instructions: 'Root', provider }).session({
+    environment: sourceFor([new Held([])], { cleanup }),
+  });
+  const turn = await session.submit('cancel');
+  const result = turn.wait().catch((error) => error);
+  let cancellation: Promise<unknown> | undefined;
+  try {
+    const signal = await entered.promise;
+    cancellation = turn.cancel().then(
+      () => {
+        cancelled = true;
+      },
+      (error) => {
+        cancelled = true;
+        return error;
+      },
+    );
+    await vi.waitFor(() => expect(signal.aborted).toBe(true));
+    expect(cancelled).toBe(false);
+    expect(finished).toBe(false);
+    expect(cleanup).not.toHaveBeenCalled();
+    release.resolve();
+    expect(containsFailure(await cancellation)).toBe(true);
+    expect(finished).toBe(true);
+    expect(await result).toBeInstanceOf(Error);
+    expect(server.requests).toEqual([]);
+  } finally {
+    release.resolve();
+    await cancellation;
+    await result;
+    const closed = await session.close().catch((error) => error);
+    expect(containsFailure(closed)).toBe(true);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  }
+});
+
+it('has been joining a cancelled capability tool factory before retiring its resource', async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const execute = vi.fn(() => 'late tool');
+  const cleanup = vi.fn();
+  const bindings: Bound[] = [];
+  const controller = new AbortController();
+  const reason = new Error('opening cancellation');
+  let settled = false;
+  class Factory extends ProbeCapability {
+    clone() {
+      return new Factory(this.bindings);
+    }
+    async tools() {
+      entered.resolve();
+      await release.promise;
+      return [
+        tool({
+          name: 'late',
+          description: 'Cancelled factory result',
+          parameters: z.object({}),
+          execute,
+        }),
+      ];
+    }
+  }
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  const opening = new Agent({ instructions: 'Root', provider }).session({
+    environment: sourceFor([new Factory(bindings)], { cleanup }),
+    signal: controller.signal,
+  });
+  const observed = opening.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (error) => {
+      settled = true;
+      return error;
+    },
+  );
+  try {
+    await entered.promise;
+    controller.abort(reason);
+    expect(settled).toBe(false);
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(
+      await readFile(
+        join(
+          bindings[0].sandbox.state.workspaceRootPath as string,
+          'capability.txt',
+        ),
+        'utf8',
+      ),
+    ).toBe('prepared capability');
+  } finally {
+    release.resolve();
+  }
+  expect(await observed).toBe(reason);
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(execute).not.toHaveBeenCalled();
+  expect(server.requests).toEqual([]);
+});
