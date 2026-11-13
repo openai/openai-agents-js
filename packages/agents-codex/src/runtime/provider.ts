@@ -291,6 +291,15 @@ export class NativeProvider {
     return this.#options.modelBackend;
   }
   /** @internal */
+  get _supportsProfileRouting(): boolean {
+    return (
+      this.#options.modelBackend === undefined &&
+      this.#options.codexLogin === undefined &&
+      this.#getPlanCredential === undefined &&
+      this.#options.chatGPT === undefined
+    );
+  }
+
   get _usesChatGPTPlan(): boolean {
     return this.#getPlanCredential !== undefined;
   }

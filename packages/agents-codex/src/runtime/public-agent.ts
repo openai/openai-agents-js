@@ -1496,6 +1496,14 @@ export class Agent<Context = undefined, Output = string> {
         : undefined;
 
     if (
+      profiles?.some((profile) => profile.nativeProviderId !== undefined) &&
+      (options.providerHistory !== undefined || provider._usesChatGPTPlan)
+    )
+      throw new TypeError(
+        'Distinct handoff providers require SDK-managed history',
+      );
+
+    if (
       (options as OwnedSessionOptions<Context>)[ownedRun]?.prepareRequest !==
       undefined
     ) {
@@ -1902,6 +1910,23 @@ export class Agent<Context = undefined, Output = string> {
         if (current !== provider && !profileLeases.has(current))
           profileLeases.set(current, current._acquire());
       }
+      const nativeProfileProviders = new Map<
+        string,
+        { config: JsonObject; apiKey: string }
+      >();
+      for (const profile of profiles ?? []) {
+        const id = profile.nativeProviderId;
+        if (id === undefined || nativeProfileProviders.has(id)) continue;
+        const current = profileLeases.get(profile.declaration.provider)!;
+        if (!current.apiKey?.trim())
+          throw new TypeError(
+            'A distinct handoff provider requires an API key',
+          );
+        nativeProfileProviders.set(id, {
+          config: current.config['model_providers.native_agent'] as JsonObject,
+          apiKey: current.apiKey.trim(),
+        });
+      }
       if (lease.codexLogin)
         assertOutputRepairSupported(
           output,
@@ -1958,6 +1983,15 @@ export class Agent<Context = undefined, Output = string> {
         config: {
           ...config,
           ...lease.config,
+          ...Object.fromEntries(
+            [...nativeProfileProviders].map(([id, route]) => [
+              `model_providers.${id}`,
+              {
+                ...route.config,
+                supports_standalone_web_search: search?.route === 'standalone',
+              },
+            ]),
+          ),
           ...(plan
             ? {
                 'features.remote_compaction_v2': false,
@@ -2006,6 +2040,16 @@ export class Agent<Context = undefined, Output = string> {
           ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
         },
         threadOptions: {
+          ...(nativeProfileProviders.size
+            ? {
+                _sdk_profile_provider_keys: Object.fromEntries(
+                  [...nativeProfileProviders].map(([id, route]) => [
+                    id,
+                    route.apiKey,
+                  ]),
+                ),
+              }
+            : {}),
           ...(options.providerHistory === undefined
             ? {}
             : { _provider_history: options.providerHistory }),
@@ -2406,6 +2450,7 @@ export function captureAgentProfiles<Context, Output>(
     Agent<Context, Output>
   >();
   const profiles: CapturedAgentProfile<Context, Output>[] = [];
+  const nativeProviderIds = new Map<NativeProvider, string>();
   for (const agent of agents) {
     const source = agent === root ? rootDeclaration : agent;
     const handoffBindings = new Set(
@@ -2436,16 +2481,30 @@ export function captureAgentProfiles<Context, Output>(
       : agent === root || implicitProviders.get(source.provider)?.has(source)
         ? rootDeclaration.provider
         : source.provider;
+    let nativeProviderId: string | undefined;
     if (
       targetProvider !== undefined &&
-      targetProvider !== rootDeclaration.provider &&
-      (realtimeGraph ||
-        rootDeclaration.provider.modelBackend === undefined ||
-        targetProvider.modelBackend === undefined)
-    )
-      throw new TypeError(
-        'Handoff targets must inherit or share the Session provider, or use captured text model backends on both Agents',
-      );
+      targetProvider !== rootDeclaration.provider
+    ) {
+      const borrowed =
+        rootDeclaration.provider.modelBackend !== undefined &&
+        targetProvider.modelBackend !== undefined;
+      const native =
+        rootDeclaration.provider._supportsProfileRouting &&
+        targetProvider._supportsProfileRouting &&
+        rootDeclaration.provider.responseMode === targetProvider.responseMode;
+      if (realtimeGraph || (!borrowed && !native))
+        throw new TypeError(
+          'Distinct handoff providers require compatible text inference providers',
+        );
+      if (native) {
+        nativeProviderId = nativeProviderIds.get(targetProvider);
+        if (nativeProviderId === undefined) {
+          nativeProviderId = `sdk_profile_${indices.get(agent)!}`;
+          nativeProviderIds.set(targetProvider, nativeProviderId);
+        }
+      }
+    }
     const declaration = new Agent<Context, Output>({
       instructions: capturedInstructions(source),
       realtime: source.realtime,
@@ -2633,6 +2692,7 @@ export function captureAgentProfiles<Context, Output>(
     profiles.push(
       Object.freeze({
         id: `${idPrefix}${indices.get(agent)!}`,
+        nativeProviderId,
         agent,
         declaration,
         handoffs: Object.freeze(targets),

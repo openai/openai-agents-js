@@ -30,6 +30,7 @@ export interface CapturedAgentProfile<Context, Output> {
   >;
   readonly callbackTools?: readonly import('./tools').FunctionTool<Context>[];
   readonly hostedPromptControls?: JsonObject;
+  readonly nativeProviderId?: string;
 }
 
 export interface AgentProfileRuntime {
@@ -216,9 +217,15 @@ export function captureProfileRuntimes(
     outputs.some(
       (output) => !isDeepStrictEqual(output.schema, outputs[0].schema),
     );
+  const usesDistinctProfileOutputGuidance = outputs.some(
+    (output) => output.prompt !== outputs[0].prompt,
+  );
   const usesProfileOutputGuidance =
     outputs.some((output) => output.prompt !== undefined) &&
-    outputs.some((output) => output.prompt !== outputs[0].prompt);
+    (usesDistinctProfileOutputGuidance ||
+      profiles.some(
+        ({ declaration }) => declaration.prepareHandoffInput !== undefined,
+      ));
   const roster: JsonObject[] = [];
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
@@ -267,6 +274,9 @@ export function captureProfileRuntimes(
     );
     roster.push({
       id: profile.id,
+      ...(profile.nativeProviderId === undefined
+        ? {}
+        : { native_provider_id: profile.nativeProviderId }),
       model: {
         model: model.model ?? '',
         reasoning_effort: model.effort ?? null,
@@ -328,7 +338,9 @@ export function captureProfileRuntimes(
           : { wire_output_schema: output.schema }
         : {}),
       ...(usesProfileOutputGuidance && output.prompt !== undefined
-        ? { wire_output_guidance: output.prompt }
+        ? usesDistinctProfileOutputGuidance
+          ? { wire_output_guidance: output.prompt }
+          : { runtime_output_guidance: output.prompt }
         : {}),
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
       mcp_result_tools: policies.servers,

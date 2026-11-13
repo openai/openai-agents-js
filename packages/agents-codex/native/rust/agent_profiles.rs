@@ -42,6 +42,8 @@ pub(crate) struct OpeningProfiles {
 pub(crate) struct ProfileSpec {
     id: String,
     model: AgentProfileModelSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_provider_id: Option<String>,
     instructions: String,
     tools: ToolDeclarations,
     #[serde(default)]
@@ -77,6 +79,9 @@ pub(crate) struct ProfileSpec {
     wire_output_plain: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wire_output_guidance: Option<String>,
+    // Fresh SDK output guidance is not checkpoint data or declaration identity.
+    #[serde(default, skip_serializing)]
+    runtime_output_guidance: Option<String>,
     #[serde(default)]
     mcp_servers: BTreeMap<String, Value>,
     #[serde(default)]
@@ -207,6 +212,72 @@ pub(crate) struct McpToolDeclaration {
 }
 
 struct OpeningFiles(Vec<InstructionFile>);
+
+pub(crate) struct PendingProviderKeys(pub(crate) BTreeMap<String, String>);
+
+#[derive(Clone)]
+pub(crate) struct ProfileProviders(
+    pub(crate) BTreeMap<String, codex_core::SdkAgentProfileProvider>,
+);
+
+pub(crate) async fn bind_profile_providers(
+    startup: &mut StartThreadOptions,
+) -> Result<()> {
+    let opening = startup.thread_extension_init.get::<OpeningProfiles>();
+    let declared: HashSet<&str> = opening.iter().flat_map(|opening| {
+        opening.roster.iter().filter_map(|profile| profile.native_provider_id.as_deref())
+    }).collect();
+    if let Some(bound) = startup.thread_extension_init.get::<ProfileProviders>() {
+        ensure!(
+            bound.0.len() == declared.len()
+                && bound.0.keys().all(|id| declared.contains(id.as_str())),
+            "Handoff provider authority differs from the current graph"
+        );
+        return Ok(());
+    }
+    let keys = startup.thread_extension_init.remove::<PendingProviderKeys>();
+    let count = keys.as_ref().map_or(0, |keys| keys.0.len());
+    ensure!(count == declared.len(), "Missing current handoff provider authority");
+    let Some(keys) = keys else { return Ok(()); };
+    ensure!(
+        startup.config.sdk_provider_history.is_none(),
+        "Distinct handoff providers require SDK-managed history"
+    );
+    let mut providers = BTreeMap::new();
+    for (id, key) in &keys.0 {
+        ensure!(declared.contains(id.as_str()), "Unexpected handoff provider authority");
+        let info = startup.config.model_providers.get(id)
+            .context("Missing current handoff provider configuration")?.clone();
+        ensure!(
+            info.requires_openai_auth && info.auth.is_none() && info.env_key.is_none()
+                && info.experimental_bearer_token.is_none() && info.gateway_oauth.is_none()
+                && !info.is_amazon_bedrock(),
+            "Distinct handoff providers require captured API-key Responses authority"
+        );
+        let auth_manager = crate::auth::manager(&startup.config, Some(key.clone())).await?;
+        providers.insert(id.clone(), codex_core::SdkAgentProfileProvider {
+            id: Arc::from(id.as_str()),
+            info,
+            auth_manager,
+        });
+    }
+    startup.thread_extension_init.insert(ProfileProviders(providers));
+    Ok(())
+}
+
+fn insert_profile_provider(
+    thread: &CodexThread,
+    descriptor: &ProfileSpec,
+    data: &mut ExtensionDataInit,
+) -> Result<()> {
+    if let Some(id) = &descriptor.native_provider_id {
+        let providers = thread.thread_extension_data().get::<ProfileProviders>()
+            .context("Missing current handoff provider authority")?;
+        let provider = providers.0.get(id).context("Unknown current handoff provider")?;
+        data.insert(provider.clone());
+    }
+    Ok(())
+}
 
 impl OpeningProfiles {
     /// Names admitted by the fresh graph installed before native startup.
@@ -362,6 +433,15 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
             "Incomplete captured Agent declaration"
         );
         ensure!(
+            profile.native_provider_id.as_deref().is_none_or(|id| {
+                profile.id != root_id
+                    && id.strip_prefix("sdk_profile_").is_some_and(|number| {
+                        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            }),
+            "Invalid captured handoff provider identity"
+        );
+        ensure!(
             profile
                 .wire_output_schema
                 .as_ref()
@@ -375,8 +455,9 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
         ensure!(
             profile
                 .wire_output_guidance
-                .as_ref()
-                .is_none_or(|guidance| !guidance.is_empty() && profile.wire_output_schema.is_none()),
+                .iter()
+                .chain(profile.runtime_output_guidance.iter())
+                .all(|guidance| !guidance.is_empty() && profile.wire_output_schema.is_none()),
             "Captured Agent prompted output requires text wire output and guidance"
         );
         let mut all_declarations = profile.tools.to_vec();
@@ -1120,7 +1201,12 @@ impl AgentProfiles {
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });
-        if let Some(guidance) = &prepared.declaration.wire_output_guidance {
+        if let Some(guidance) = prepared
+            .declaration
+            .runtime_output_guidance
+            .as_ref()
+            .or(prepared.declaration.wire_output_guidance.as_ref())
+        {
             data.insert(codex_extension_api::AgentProfileOutputGuidance(
                 guidance.clone(),
             ));
@@ -1133,6 +1219,7 @@ impl AgentProfiles {
             ));
         }
         data.insert(accepted);
+        insert_profile_provider(thread, &prepared.declaration, &mut data)?;
         data.insert(prepared.catalog.clone());
         data.insert(prepared.plugins.clone());
         data.insert(prepared.declaration.decision_tools());
@@ -1319,7 +1406,12 @@ pub(crate) async fn configure(
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });
-        if let Some(guidance) = &prepared.declaration.wire_output_guidance {
+        if let Some(guidance) = prepared
+            .declaration
+            .runtime_output_guidance
+            .as_ref()
+            .or(prepared.declaration.wire_output_guidance.as_ref())
+        {
             data.insert(codex_extension_api::AgentProfileOutputGuidance(
                 guidance.clone(),
             ));
@@ -1332,6 +1424,7 @@ pub(crate) async fn configure(
             ));
         }
         data.insert(accepted);
+        insert_profile_provider(thread, &prepared.declaration, &mut data)?;
         data.insert(catalog);
         data.insert(prepared.declaration.decision_tools());
         data.insert(codex_extension_api::AgentProfileHandoffTools {
