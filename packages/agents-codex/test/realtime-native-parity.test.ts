@@ -389,9 +389,10 @@ nativeIt.each([false, true])(
           expect(policyContexts[0].realtimeUsage).toEqual(
             session.realtimeUsage,
           );
-          expect(policyContexts[0].realtimeUsageAccounting).toEqual(
-            session.realtimeUsageAccounting,
-          );
+          expect(policyContexts[0].realtimeUsageAccounting).toEqual({
+            finishedResponses: 2,
+            usageReports: 2,
+          });
         }
         const snapshot = contexts[0].realtimeUsage!;
         expect(snapshot.total_tokens).toBe(15);
@@ -406,6 +407,12 @@ nativeIt.each([false, true])(
           7,
         );
         expect(application.usage).toBe(marker);
+        await vi.waitFor(() =>
+          expect(session.realtimeUsageAccounting).toEqual({
+            finishedResponses: 3,
+            usageReports: 2,
+          }),
+        );
       } finally {
         await voice.close();
       }

@@ -473,16 +473,18 @@ for (const restore of [false, true]) {
     try {
       const original = await source.submit('read A');
       let action: ActionRequested | undefined;
+      const priorIds = new Set<string>();
+      // The manual request and the persisted provider response can arrive in either order.
       for await (const event of source.events()) {
-        if (event.type === 'action_requested') {
-          action = event;
-          break;
-        }
+        if (event.type === 'action_requested') action = event;
+        if (
+          event.type === 'model_response_linked' &&
+          event.submissionId === original.submissionId
+        )
+          priorIds.add(event.responseObservationId);
+        if (action && priorIds.size > 0) break;
       }
       if (!action) throw new Error('No manual request');
-      const priorIds = new Set<string | null>();
-      for await (const row of source.turns())
-        for (const response of row.responses ?? []) priorIds.add(response.id);
       expect(priorIds.size).toBeGreaterThan(0);
       if (restore) {
         const saved = await source.suspend();

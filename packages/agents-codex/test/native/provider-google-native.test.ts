@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { Agent, AiSdkModel, NativeProvider, tool } from '../../src';
 
 it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
-  'fences unsupported Google signed calls before native effects: %s',
+  'replays Google signatures with native effects: %s',
   async (signaturePart) => {
     const signed = signaturePart !== 'none';
     const requests: any[] = [];
@@ -19,18 +19,6 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
       const final = body.contents.some((message: any) =>
         message.parts.some((part: any) => part.functionResponse),
       );
-      if (signed && final) {
-        response.writeHead(400, { 'content-type': 'application/json' });
-        response.end(
-          JSON.stringify({
-            error: {
-              message: 'Missing thought signature',
-              status: 'INVALID_ARGUMENT',
-            },
-          }),
-        );
-        return;
-      }
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(
         JSON.stringify({
@@ -108,24 +96,20 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
         provider,
       }).session();
       const turn = await session.submit('Double21.');
+      expect((await turn.wait()).finalOutput).toBe('42');
+      expect(effects).toEqual([21]);
+      expect(requests).toHaveLength(2);
+      const replayed = requests[1].contents
+        .filter((message: any) => message.role === 'model')
+        .flatMap((message: any) => message.parts);
+      const signedParts = replayed.filter(
+        (part: any) => part.thoughtSignature === 'opaque-google-signature',
+      );
+      expect(signedParts).toHaveLength(signed ? 1 : 0);
       if (signed) {
-        const failure = await turn.wait().then(
-          () => undefined,
-          (error: Error) => error,
-        );
-        expect({
-          error: failure?.message,
-          effects,
-          requests: requests.length,
-        }).toEqual({
-          error: 'AiSdkModel does not support Google thought signatures',
-          effects: [],
-          requests: 1,
-        });
-      } else {
-        expect((await turn.wait()).finalOutput).toBe('42');
-        expect(effects).toEqual([21]);
-        expect(requests).toHaveLength(2);
+        if (signaturePart === 'text')
+          expect(signedParts[0].text).toBe('Use double.');
+        else expect(signedParts[0].functionCall?.name).toBe('double');
       }
     } finally {
       server.closeAllConnections();
