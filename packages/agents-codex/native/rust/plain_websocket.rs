@@ -66,6 +66,29 @@ impl ModelResponseInterceptor for Dispatch {
     }
 }
 
+// Resolve the physical token when Core wraps the connected stream, then keep
+// only that token while polling. Contributor preparation can precede connect.
+struct DispatchBinding(Arc<Mutex<State>>);
+
+impl ModelResponseInterceptor for DispatchBinding {
+    fn preserves_provider_message_window(&self) -> bool {
+        true
+    }
+
+    fn intercept(self: Box<Self>, stream: ModelResponseStream) -> ModelResponseStream {
+        let dispatch = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .dispatch
+            .clone();
+        match dispatch {
+            Some(dispatch) => Box::new(dispatch).intercept(stream),
+            None => stream,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct State {
     tasks: TaskTracker,
@@ -103,13 +126,7 @@ impl PlainWebSocket {
     }
 
     pub(crate) fn interceptor(&self) -> Option<Box<dyn ModelResponseInterceptor>> {
-        let dispatch = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .dispatch
-            .clone()?;
-        Some(Box::new(dispatch))
+        Some(Box::new(DispatchBinding(Arc::clone(&self.state))))
     }
 
     pub(crate) fn clear_dispatch(&self) {
@@ -357,4 +374,70 @@ fn unavailable() -> ApiError {
 
 fn operation_failed() -> WsError {
     WsError::Io(std::io::Error::other("Native WebSocket operation failed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::stream;
+
+    #[tokio::test]
+    async fn dispatch_binding_keeps_the_token_selected_before_polling() {
+        for initial in [
+            None,
+            Some(DispatchState::NotStarted),
+            Some(DispatchState::Started),
+            Some(DispatchState::Oversized),
+        ] {
+            let owner = PlainWebSocket::new(false);
+            let interceptor = owner.interceptor().expect("pending dispatch interceptor");
+            assert!(!interceptor.produces_response());
+            let started = matches!(
+                initial,
+                Some(DispatchState::Started | DispatchState::Oversized)
+            );
+            let oversized = matches!(initial, Some(DispatchState::Oversized));
+            owner.state.lock().unwrap().dispatch = initial.map(|state| {
+                let dispatch = Dispatch::default();
+                dispatch.mark(state);
+                dispatch
+            });
+            let mut stream = interceptor.intercept(Box::pin(stream::iter([Err(
+                ApiError::Stream("disconnect".into()),
+            )])));
+            // A later connection must not change this already-wrapped stream.
+            let replacement = Dispatch::default();
+            if !started {
+                replacement.mark(DispatchState::Started);
+            }
+            owner.state.lock().unwrap().dispatch = Some(replacement);
+            let error = stream.next().await.unwrap().unwrap_err();
+            if started {
+                let ApiError::InvalidRequest { message } = error else {
+                    panic!("sent dispatch must fence replay");
+                };
+                assert_eq!(message.contains("64 MiB"), oversized);
+            } else {
+                assert!(matches!(error, ApiError::Stream(_)));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_binding_preserves_typed_provider_rejections() {
+        let owner = PlainWebSocket::new(false);
+        let interceptor = owner.interceptor().expect("pending dispatch interceptor");
+        let dispatch = Dispatch::default();
+        dispatch.mark(DispatchState::Started);
+        owner.state.lock().unwrap().dispatch = Some(dispatch);
+        let mut stream =
+            interceptor.intercept(Box::pin(stream::iter([Err(ApiError::InvalidRequest {
+                message: "typed provider rejection".into(),
+            })])));
+        owner.clear_dispatch();
+        assert!(matches!(
+            stream.next().await.unwrap().unwrap_err(),
+            ApiError::InvalidRequest { message } if message == "typed provider rejection"
+        ));
+    }
 }

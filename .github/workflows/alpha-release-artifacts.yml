@@ -2,10 +2,8 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness, 'ci/native-bundle/**']
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.mdx'
+    branches:
+      ['ci/hillclimb/js-current-seed-34', 'ci/hillclimb/js-current-warm-34']
   pull_request:
     branches: [feat/codex-harness]
   workflow_call:
@@ -48,6 +46,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/select-native-bundles.mjs
+      - name: Require four cold native builds
+        if: github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && github.ref == 'refs/heads/ci/hillclimb/js-current-seed-34'
+        env:
+          EXPECTED_NATIVE_SELECTION: ${{ steps.select.outputs.linux_hit == 'false' && steps.select.outputs.linux-arm64_hit == 'false' && steps.select.outputs.macos_hit == 'false' && steps.select.outputs.windows_hit == 'false' }}
+        run: test "$EXPECTED_NATIVE_SELECTION" = true
+      - name: Require all four retained native transfers
+        if: github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && github.ref == 'refs/heads/ci/hillclimb/js-current-warm-34'
+        env:
+          EXPECTED_NATIVE_SELECTION: ${{ steps.select.outputs.linux_hit == 'true' && steps.select.outputs.linux-arm64_hit == 'true' && steps.select.outputs.macos_hit == 'true' && steps.select.outputs.windows_hit == 'true' }}
+        run: test "$EXPECTED_NATIVE_SELECTION" = true
       - name: Publish native bundle (linux-x64)
         id: upload_linux
         if: steps.select.outputs.linux_hit == 'true'
@@ -141,7 +149,7 @@ jobs:
             artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
-            cargo_jobs: 4
+            cargo_jobs: ${{ github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || github.ref == 'refs/heads/ci/hillclimb/js-current-seed-34' || github.ref == 'refs/heads/ci/hillclimb/js-current-warm-34') && 16 || 4 }}
             artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
           - platform: darwin-arm64
             runner: macos-15
@@ -151,7 +159,7 @@ jobs:
             runner: windows-2025
             cargo_jobs: 16
             artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || github.ref == 'refs/heads/ci/hillclimb/js-current-seed-34' || github.ref == 'refs/heads/ci/hillclimb/js-current-warm-34') && matrix.platform == 'linux-arm64' && '{"group":"codex-runners","labels":"codex-linux-arm64"}' || toJSON(matrix.runner)) }}
     timeout-minutes: 180
     defaults:
       run:
@@ -262,7 +270,7 @@ jobs:
             packages/agents-codex/test/native/storage-mounts.test.ts \
             packages/agents-codex/test/native/storage-mounts-native.test.ts \
             --reporter=verbose
-          pnpm test:native --mode full --maxWorkers=4 --reporter=verbose
+          pnpm test:native --mode full --maxWorkers=${{ matrix.platform == 'linux-arm64' && (github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || github.ref == 'refs/heads/ci/hillclimb/js-current-seed-34' || github.ref == 'refs/heads/ci/hillclimb/js-current-warm-34')) && 8 || 4 }} --reporter=verbose
       - name: Qualify local executor grants on macOS
         if: ${{ !cancelled() && runner.os == 'macOS' && steps.build_sdk.outcome == 'success' }}
         env:
