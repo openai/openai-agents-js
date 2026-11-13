@@ -54,6 +54,7 @@ mod storage;
 mod stored_history;
 mod subagents;
 mod telemetry;
+mod tool_callers;
 mod turn_settlement;
 mod usage;
 mod verification;
@@ -178,7 +179,7 @@ pub fn _validate_application_instructions(
 /// Pure declaration preflight before Agent.session acquires runtime resources.
 #[napi(js_name = "_validate_python_tool_declarations")]
 pub fn _validate_python_tool_declarations(specs_json: String) -> napi::Result<()> {
-    let specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec> =
+    let specs: tool_callers::ToolDeclarations =
         serde_json::from_str(&specs_json).map_err(input_error)?;
     python_tools::validate_declarations(&specs).map_err(input_error)
 }
@@ -5395,7 +5396,7 @@ fn checkpoint_initial_models(
     fresh_manual: bool,
     plan_provider: Option<&str>,
 ) -> napi::Result<checkpoint::InitialModels> {
-    let specs: Option<Vec<codex_protocol::dynamic_tools::DynamicToolSpec>> = initial_specs_json
+    let specs: Option<tool_callers::ToolDeclarations> = initial_specs_json
         .map(serde_json::from_str)
         .transpose()
         .map_err(input_error)?;

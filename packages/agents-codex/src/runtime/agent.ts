@@ -22,16 +22,19 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   binding,
-  decode,
   encode,
   encodeReceipt,
   losslessJsonObjectSchema as jsonObject,
-  losslessJsonValueSchema as jsonValue,
   type JsonValue,
 } from './binding';
 import type { NativeConfig } from './config';
 import type { RuntimeOptions, ThreadOptions } from './options';
-import { captureTools, type SessionTool, type ToolCatalog } from './tools';
+import {
+  captureTools,
+  type SessionTool,
+  type ToolCatalog,
+  protocolToolSpecs,
+} from './tools';
 import { manualResultSchema, supportsManualCheckpoint } from './manual';
 import {
   Session,
@@ -285,7 +288,7 @@ export async function openSession(
         'Manual checkpoint requires matching current instructions and manual result declarations',
       );
     const prior = z.array(jsonObject).parse(saved.managed_tool_specs);
-    const current = decode(z.array(jsonObject), catalog.specsJson);
+    const current = protocolToolSpecs(catalog);
     for (const call of pending) {
       const select = (specs: typeof prior) =>
         specs.find((spec) =>
@@ -304,10 +307,7 @@ export async function openSession(
     }
   } else if (
     saved &&
-    !isDeepStrictEqual(
-      saved.managed_tool_specs,
-      decode(jsonValue, catalog.specsJson),
-    )
+    !isDeepStrictEqual(saved.managed_tool_specs, protocolToolSpecs(catalog))
   ) {
     throw new TypeError(
       'Checkpoint requires currently supplied matching managed tools',

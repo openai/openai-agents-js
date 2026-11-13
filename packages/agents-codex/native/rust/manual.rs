@@ -279,6 +279,8 @@ pub(crate) struct Continuation {
     tool_outcomes: Option<ToolOutcomes>,
     #[serde(skip)]
     fresh: Option<FreshTerminalReceipts>,
+    #[serde(skip)]
+    batch_completion: bool,
 }
 
 impl Continuation {
@@ -339,7 +341,12 @@ impl Continuation {
             }
         }
         Ok(match self.tool_outcomes.clone() {
-            Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
+            Some(outcomes)
+                if self.batch_completion
+                    || self.fresh.is_some()
+                    || !held.is_empty()
+                    || reset_tool_choice =>
+            {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),
                     outcomes,
@@ -1575,6 +1582,7 @@ impl PythonTools {
             accepted_replies: history.outputs.clone(),
             pending_manual: Vec::new(),
             generation: Some(generation.clone()),
+            batch_completion: false,
             tool_outcomes: ToolOutcomes::capture(
                 &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
                 &validated[0].reply.thread,
@@ -1950,6 +1958,12 @@ impl PythonTools {
         } else {
             self.snapshot()
         };
+        frame.batch_completion = captured
+            .as_ref()
+            .and_then(|source| source.profile.data.get::<ProfileCatalog>())
+            .map_or(self.context_callbacks.tool_batch_completion, |catalog| {
+                catalog.tool_batch_completion
+            });
         if !frame.pending_input.is_empty() {
             let terminal = history.calls.iter().any(|call| {
                 let name = ToolName::new(call.namespace.clone(), call.name.clone())
@@ -1963,10 +1977,11 @@ impl PythonTools {
                 })
             });
             ensure!(
-                !terminal,
+                !terminal && !frame.batch_completion,
                 "Staged input requires a model continuation after the manual replies"
             );
         }
+
         frame.generation = Some(generation.clone());
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         ensure!(

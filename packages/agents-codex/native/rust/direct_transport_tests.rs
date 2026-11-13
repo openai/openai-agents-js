@@ -119,7 +119,7 @@ impl Fixture {
         self.engine
             .interception
             .http_stream(&request.url)
-            .expect("private route claimed")(request)
+            .expect("private route claimed")(request, None)
     }
 
     async fn assert_no_upstream(&self) {
@@ -467,7 +467,7 @@ async fn direct_http_retired_weak_owner_fails_closed_without_upstream() {
         weak.upgrade().is_none(),
         "callback retained the engine strongly"
     );
-    let error = callback(request)
+    let error = callback(request, None)
         .await
         .err()
         .expect("retired owner rejected");

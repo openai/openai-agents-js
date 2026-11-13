@@ -230,6 +230,7 @@ export async function tryOpenPlainRun(
     !lease.apiKey ||
     options.modelBackend ||
     options.beforeComplete ||
+    options.toolBatchCompletion ||
     options.inputGuardrails?.length ||
     options.outputGuardrails?.length ||
     options.agentInputGuardrails?.length ||
