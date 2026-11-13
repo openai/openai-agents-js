@@ -35,6 +35,8 @@ it.each([
   [true, true],
   [false, 'unsettled'],
   [true, 'unsettled'],
+  [false, 'terminal-before-ack'],
+  [true, 'terminal-before-ack'],
 ] as const)(
   'applies the destination profile to a fresh hosted response (store=%s closed-old-terminal=%s)',
   async (store, closedOld) => {
@@ -43,6 +45,14 @@ it.each([
     const frames: Array<{ connection: number; frame: Record<string, any> }> =
       [];
     const effects: string[] = [];
+    const race = closedOld === 'terminal-before-ack';
+    const primeCall = {
+      type: 'function_call',
+      id: 'fc_prime',
+      call_id: 'call_prime',
+      name: 'prime',
+      arguments: '{}',
+    };
     let connections = 0;
     let old: WebSocket | undefined;
     const entered = Promise.withResolvers<void>();
@@ -75,8 +85,27 @@ it.each([
           emit({
             type: 'response.output_item.done',
             output_index: 0,
+            item: race ? primeCall : call,
+          });
+          return;
+        }
+        if (race && frames.length === 2) {
+          emit({
+            type: 'response.output_item.done',
+            output_index: 1,
             item: call,
           });
+          emit({
+            type: 'response.completed',
+            response: {
+              id: 'resp_source',
+              status: 'completed',
+              store,
+              output: [primeCall, call],
+              usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+            },
+          });
+          emit({ type: 'response.inject.created', response_id: 'resp_source' });
           return;
         }
         // Finish the old request on the broken path so its recorded wire
@@ -128,11 +157,19 @@ it.each([
         parameters: z.object({}),
         execute: async () => {
           effects.push('route');
-          if (closedOld) {
+          if (closedOld && !race) {
             entered.resolve();
             await release.promise;
           }
           return 'accepted transfer';
+        },
+      });
+      const prime = tool({
+        name: 'prime',
+        parameters: z.object({}),
+        execute: () => {
+          effects.push('prime');
+          return 'primed';
         },
       });
       const target = new Agent({
@@ -141,6 +178,7 @@ it.each([
       });
       await using session = await new Agent({
         instructions: 'SOURCE_ONLY instructions',
+        ...(race ? { tools: [prime] } : {}),
         provider,
         model: 'gpt-5.5',
         modelSettings: { store },
@@ -148,7 +186,7 @@ it.each([
         handoffs: [new Handoff(target, route)],
       }).session();
       const turn = await session.submit('Route this');
-      if (closedOld) {
+      if (closedOld && !race) {
         await entered.promise;
         const closed = once(old!, 'close');
         if (closedOld !== 'unsettled')
@@ -185,11 +223,17 @@ it.each([
           totalTokens: 5,
         });
       expect(await session.getActiveAgent()).toBe(target);
-      expect(effects).toEqual(['route']);
-      expect(frames).toHaveLength(2);
+      expect(effects).toEqual(race ? ['prime', 'route'] : ['route']);
+      expect(frames).toHaveLength(race ? 3 : 2);
       expect(instructions(frames[0]!.frame)).toContain('SOURCE_ONLY');
-      expect(frames[1]?.connection).toBe(2);
-      const destination = frames[1]!.frame;
+      const destinationFrame = frames[race ? 2 : 1]!;
+      expect(destinationFrame.connection).toBe(2);
+      if (race)
+        expect(frames.slice(0, 2).map(({ frame }) => frame.type)).toEqual([
+          'response.create',
+          'response.inject',
+        ]);
+      const destination = destinationFrame.frame;
       expect(destination.type).toBe('response.create');
       expect(instructions(destination)).toContain('DESTINATION_ONLY');
       expect(

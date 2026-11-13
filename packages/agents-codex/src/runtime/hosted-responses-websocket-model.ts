@@ -834,7 +834,6 @@ function hostedSocket(
       }
       if (
         !active ||
-        active.terminal ||
         isDeepStrictEqual(
           responseConfiguration(active.create),
           responseConfiguration(frame),
