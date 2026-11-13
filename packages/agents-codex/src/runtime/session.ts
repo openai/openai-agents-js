@@ -11140,6 +11140,10 @@ export class Session<OutputT = string, Context = unknown> {
         const grant = createManualRequest(
           tool,
           {
+            owner: {
+              session: this,
+              owns: (): boolean => this.manualCalls.get(key)?.grant === grant,
+            },
             sessionId: this.id,
             submissionId:
               run instanceof NativeTurn
@@ -11832,13 +11836,6 @@ export class Session<OutputT = string, Context = unknown> {
         }
         throw error;
       });
-  }
-
-  /** @internal Resolve only an original current grant's captured declaration. */
-  _manualTool(request: ManualToolRequest): ManualTool | undefined {
-    return [...this.manualCalls.values()].find(
-      (call) => call.grant.request() === request && this.current(call.run),
-    )?.tool;
   }
 
   private async refreshManualProfile(run: NativeTurn): Promise<void> {
