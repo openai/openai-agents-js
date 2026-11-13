@@ -193,3 +193,5 @@ export {
   exceptionName as sandboxMemoryExceptionName,
   exceptionMessage as sandboxMemoryExceptionMessage,
 } from './memory/rollouts';
+
+export { applyManifestToProvidedSession } from './runtime/providedSessionManifest';

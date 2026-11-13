@@ -537,12 +537,14 @@ function createSandboxEnvironment<
         });
       }));
     try {
+      let borrowedEnvironment: Promise<Record<string, string>> | undefined;
       const acquireResource = async () => {
         signal.throwIfAborted();
         if (borrowed) {
-          const trustedEnvironment = client.resolveTrustedEnvironment
-            ? await client.resolveTrustedEnvironment(manifest, providerOptions)
-            : await materializeEnvironment(manifest);
+          const trustedEnvironment = await (borrowedEnvironment ??=
+            client.resolveTrustedEnvironment
+              ? client.resolveTrustedEnvironment(manifest, providerOptions)
+              : materializeEnvironment(manifest));
           signal.throwIfAborted();
           assertSandboxSessionStateUsable(borrowed.state);
           captureLiveMountCredentialAuthorityIfAbsent(
@@ -718,8 +720,21 @@ function createSandboxEnvironment<
         );
         return await connectAndPublish(sandbox);
       }
+      if (borrowed) {
+        await withExclusiveSandboxStateInspection(
+          borrowed.state,
+          acquireResource,
+        );
+        // Provider mutation has been taking its own lock after authority inspection.
+        await runtime.applyManifestToProvidedSession(borrowed, manifest);
+        signal.throwIfAborted();
+        return await withExclusiveSandboxStateInspection(
+          borrowed.state,
+          async () => connectAndPublish(await acquireResource()),
+        );
+      }
       const open = async () => connectAndPublish(await acquireResource());
-      const inspectedState = borrowed?.state ?? originalResumeState;
+      const inspectedState = originalResumeState;
       return inspectedState
         ? await withExclusiveSandboxStateInspection(inspectedState, open)
         : await open();
