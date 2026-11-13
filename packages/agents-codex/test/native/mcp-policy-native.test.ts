@@ -2247,6 +2247,72 @@ for (const phase of ['before', 'approval'] as const) {
   );
 }
 
+it('releases private MCP diagnostics from settled child turns', async () => {
+  const remote = await peer();
+  const privateFailure = new Error('synthetic private child MCP diagnostic');
+  let rootId: string | undefined;
+  let rootRequests = 0;
+  const respond = (request: JsonObject) => {
+    const metadata = request.client_metadata as Record<string, string>;
+    const id = String(JSON.parse(metadata['x-codex-turn-metadata']).thread_id);
+    rootId ??= id;
+    if (id !== rootId) {
+      return [
+        call(
+          'lookup',
+          { key: 'child' },
+          { namespace: 'mcp__fixture', callId: 'child-selected-diagnostic' },
+        ),
+      ];
+    }
+    return rootRequests++ === 0
+      ? [
+          call(
+            'spawn_agent',
+            { task_name: 'child', message: 'Read lookup.' },
+            { namespace: 'collaboration', callId: 'spawn-child-diagnostic' },
+          ),
+        ]
+      : [message('parent done')];
+  };
+  const release = Promise.withResolvers<void>();
+  const result = vi.fn(async () => {
+    await release.promise;
+    throw privateFailure;
+  });
+  const { session, model } = await open(
+    new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      tools: ['lookup'],
+      approvalMode: 'preapproved',
+      transformResult: result,
+    }),
+    Array.from({ length: 3 }, () => respond),
+    true,
+  );
+
+  try {
+    expect(
+      (await (await session.submit('Start a child.')).wait()).finalOutput,
+    ).toBe('parent done');
+    await vi.waitFor(() => expect(result).toHaveBeenCalledTimes(1));
+    const children = await Array.fromAsync(session.subagents());
+    expect(children).toHaveLength(1);
+    const turn = children[0].turn;
+    expect(turn).toBeDefined();
+    release.resolve();
+
+    const failure: unknown = await turn!.wait().catch((error) => error);
+    expect(failure).toBeInstanceOf(NativeError);
+    expect(String(failure)).toContain('Native MCP result policy failed');
+    expect((failure as NativeError).getMcpCallbackError()).toBeUndefined();
+    model.assertExhausted();
+  } finally {
+    release.resolve();
+  }
+}, 20_000);
+
 it('stops only the owning child while its sibling and parent finish', async () => {
   const remote = await peer();
   let rootId: string | undefined;

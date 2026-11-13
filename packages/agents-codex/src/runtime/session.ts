@@ -16697,7 +16697,9 @@ export class Session<OutputT = string, Context = unknown> {
           )
             return;
           const failure = new NativeError('Native MCP result policy failed');
-          if (callbackFailure) {
+          // Root turns expose diagnostics to the caller. Child owners retain a
+          // settlement receipt for the lifetime of the session.
+          if (callbackFailure && owner instanceof NativeTurn) {
             retainMcpCallbackError(failure, callbackFailure.cause);
           }
           // Retain the owning SDK failure before releasing a sender can wake native stop.
