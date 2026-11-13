@@ -182,6 +182,10 @@ pub(super) async fn plan_recovery_tree(
     root_model: &[RolloutItem],
     receipts: Vec<Receipt>,
 ) -> anyhow::Result<TreeRecoveryPlan> {
+    let own_turns: Vec<_> = sources
+        .iter()
+        .map(|source| recorded_turns(source.own()))
+        .collect();
     let supplied = !receipts.is_empty();
     let mut by_source = HashMap::<_, Vec<_>>::new();
     for receipt in receipts {
@@ -204,6 +208,7 @@ pub(super) async fn plan_recovery_tree(
     let mut missing = Vec::new();
     let mut descendant_histories = Vec::new();
     let mut affected_turns = Vec::with_capacity(sources.len());
+    let mut automatic_turns = Vec::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         let receipts = by_source.remove(&source.id).unwrap_or_default();
         let model;
@@ -243,7 +248,16 @@ pub(super) async fn plan_recovery_tree(
                     (local_reconciliation::Plan::default(), turns)
                 }
             };
+        let mut turns = turns;
+        let mut automatic = HashSet::new();
+        if index != 0 && own_turns[index].values().any(|active| *active) {
+            automatic.extend(own_turns[index].iter().filter_map(|(turn, active)| {
+                (*active && !turns.contains(turn)).then_some(turn.clone())
+            }));
+            turns.extend(automatic.iter().cloned());
+        }
         affected_turns.push(turns);
+        automatic_turns.push(automatic);
         if index == 0 {
             root = plan;
             root_receipts = receipts;
@@ -261,7 +275,7 @@ pub(super) async fn plan_recovery_tree(
         .map(|turns| !turns.is_empty())
         .collect();
     for (index, source) in sources.iter().enumerate().rev() {
-        let own = recorded_turns(source.own());
+        let own = &own_turns[index];
         // A root-only receipt can leave an older start without an abort.
         // Only the latest root start can represent unrelated current work.
         let current_root_turn = if index == 0 && recovering_descendants {
@@ -279,12 +293,12 @@ pub(super) async fn plan_recovery_tree(
             );
         }
         for (turn, active) in own {
-            if !active {
+            if !*active {
                 continue;
             }
-            if affected_turns[index].contains(&turn) {
+            if affected_turns[index].contains(turn) {
                 if index != 0 || recovering_descendants {
-                    writes[index].rows.push(interruption(turn));
+                    writes[index].rows.push(interruption(turn.clone()));
                 }
             } else if source.edge == Some(ThreadSpawnEdgeStatus::Open)
                 || current_root_turn == Some(turn.as_str())
@@ -309,6 +323,9 @@ pub(super) async fn plan_recovery_tree(
                     if event.reason == TurnAbortReason::Interrupted
                         && event.turn_id.as_ref().is_some_and(|turn| spawn_turns.contains(turn)))
             });
+            if !automatic_turns[index].is_empty() {
+                automatic_turns[parent].extend(spawn_turns.iter().cloned());
+            }
             affected_turns[parent].extend(spawn_turns);
         }
     }
@@ -321,7 +338,25 @@ pub(super) async fn plan_recovery_tree(
         .into());
     }
 
+    for (source, write) in sources.iter().zip(&mut writes) {
+        write.acknowledged |= source.own().iter().any(|row| matches!(row,
+            RolloutItem::EventMsg(EventMsg::TurnAborted(event))
+                if event.reason == TurnAbortReason::Interrupted && event.turn_id.is_some()
+                    && event.model_attempt.is_none() && event.error.is_none()
+                    && event.started_at.is_none() && event.completed_at.is_none() && event.duration_ms.is_none()));
+    }
     if recovering_descendants {
+        for (index, source) in sources.iter().enumerate() {
+            let active: HashSet<_> = own_turns[index]
+                .iter()
+                .filter_map(|(turn, active)| {
+                    (*active && automatic_turns[index].contains(turn)).then_some(turn.clone())
+                })
+                .collect();
+            if !active.is_empty() {
+                local_reconciliation::validate_native_effects(source.own(), &active)?;
+            }
+        }
         let aborts = std::mem::take(&mut writes[0].rows);
         writes[0].rows = std::mem::take(&mut root.append);
         writes[0].rows.extend(aborts);

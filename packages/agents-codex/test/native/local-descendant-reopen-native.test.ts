@@ -845,6 +845,67 @@ for (const depth of [1, 2]) {
             ).toEqual([]);
             return;
           }
+          if (mode === 'active') {
+            const leaf = [...depths].find(([, level]) => level === depth)![0];
+            const originalLeaf = await readRollout(common.profile, leaf);
+            const leafTurn = originalLeaf.findLast(
+              (row) =>
+                row.type === 'event_msg' && row.payload.type === 'task_started',
+            )?.payload.turn_id;
+            expect(leafTurn).toBeTypeOf('string');
+            for (const inspectOnly of [true, true, false]) {
+              const destination = start({
+                ...common,
+                mode: 'destination',
+                resume: opened.id,
+                noChildren,
+                inspectOnly,
+              });
+              expect(
+                await destination.exited,
+                `${JSON.stringify(destination.rows)}\n${destination.stderr()}`,
+              ).toBe(0);
+              expect(
+                destination.rows.find((row) => row.type === 'opened')?.id,
+              ).toBe(opened.id);
+              const children = destination.rows.find(
+                (row) => row.type === 'history',
+              )?.children as Array<{ id: string }>;
+              expect(children.map(({ id }) => id).sort()).toEqual(
+                [...depths.keys()].filter((id) => id !== opened.id).sort(),
+              );
+              const recovered = await readRollout(common.profile, leaf);
+              expect(recovered.slice(0, originalLeaf.length)).toEqual(
+                originalLeaf,
+              );
+              expect(
+                recovered.filter(
+                  (row) =>
+                    row.type === 'event_msg' &&
+                    row.payload.type === 'turn_aborted' &&
+                    row.payload.turn_id === leafTurn &&
+                    row.payload.reason === 'interrupted',
+                ),
+              ).toHaveLength(1);
+              expect(server.requests).toHaveLength(
+                before + (inspectOnly ? 0 : 2),
+              );
+              if (inspectOnly)
+                await expect(
+                  readFile(common.effects, 'utf8'),
+                ).rejects.toMatchObject({ code: 'ENOENT' });
+              else {
+                expect(
+                  destination.rows.find((row) => row.type === 'root-result')
+                    ?.output,
+                ).toBe('destination finished');
+                expect(await readFile(common.effects, 'utf8')).toBe(
+                  'destination:fresh\n',
+                );
+              }
+            }
+            return;
+          }
           for (
             let attempt = 0;
             attempt < (mode === 'settled' ? 1 : 2);
@@ -920,11 +981,7 @@ for (const depth of [1, 2]) {
               ).toBe(false);
               expect(
                 destination.rows.find((row) => row.type === 'failure')?.message,
-              ).toMatch(
-                mode === 'unknown'
-                  ? /unknown tool (effects|outcome)/
-                  : /active descendant/,
-              );
+              ).toMatch(/unknown tool (effects|outcome)/);
               expect(server.requests).toHaveLength(before);
               if (mode === 'unknown') {
                 const hold = destination.rows.find(
@@ -965,10 +1022,7 @@ for (const depth of [1, 2]) {
                   subagentId: leaf,
                 });
                 expect(await readFile(common.effects, 'utf8')).toBe(effects);
-              } else
-                await expect(
-                  readFile(common.effects, 'utf8'),
-                ).rejects.toMatchObject({ code: 'ENOENT' });
+              }
             }
           }
           if (mode === 'unknown') {

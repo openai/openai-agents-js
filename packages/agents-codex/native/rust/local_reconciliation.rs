@@ -611,6 +611,66 @@ pub(crate) fn is_application_shell_call(row: &ResponseItemEnvelope) -> bool {
 }
 
 fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
+    index_calls(history, false)
+}
+
+// Native effects cannot be reconciled by application receipts. Cold interruption
+// requires their retained outputs before discarding a dead descendant runtime.
+pub(crate) fn validate_native_effects(
+    history: &[RolloutItem],
+    turns: &HashSet<String>,
+) -> Result<()> {
+    let application = calls(history)?;
+    let terminal_commands: HashSet<_> = history
+        .iter()
+        .filter_map(|row| match row {
+            RolloutItem::EventMsg(EventMsg::ItemCompleted(event)) => match &event.item {
+                TurnItem::CommandExecution(item)
+                    if !matches!(
+                        item.status,
+                        codex_protocol::items::CommandExecutionStatus::InProgress
+                    ) =>
+                {
+                    Some((event.turn_id.clone(), item.id.clone()))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    ensure!(
+        application.iter().all(|(key, call)| {
+            !key.0.as_ref().is_some_and(|turn| turns.contains(turn))
+                || match call.invocation {
+                    ResponseItem::FunctionCall { name, .. } if name == "write_stdin" => false,
+                    ResponseItem::FunctionCall { name, .. }
+                        if matches!(name.as_str(), "exec_command" | "shell" | "shell_command") =>
+                    {
+                        key.0.as_ref().is_some_and(|turn| {
+                            terminal_commands.contains(&(turn.clone(), key.1.clone()))
+                        })
+                    }
+                    _ => true,
+                }
+        }),
+        "local history contains unfinished native execution; automatic interruption is unsupported"
+    );
+    ensure!(
+        index_calls(history, true)?.iter().all(|(key, call)| {
+            application.contains_key(key)
+                || key.0.as_ref().is_some_and(|turn| !turns.contains(turn))
+                || (call.output.is_some()
+                    && !matches!(
+                        call.invocation,
+                        ResponseItem::ShellCall { .. } | ResponseItem::LocalShellCall { .. }
+                    ))
+        }),
+        "local history contains unknown native tool effects; automatic interruption is unsupported"
+    );
+    Ok(())
+}
+
+fn index_calls(history: &[RolloutItem], include_native: bool) -> Result<Calls<'_>> {
     let mut calls = Calls::new();
     let mut turn = None;
     for row in history {
@@ -626,15 +686,23 @@ fn calls(history: &[RolloutItem]) -> Result<Calls<'_>> {
             | ResponseItem::ComputerCall { call_id, .. } => Some(call_id.as_str()),
             ResponseItem::McpApprovalRequest { id, .. } => id.as_ref().map(|id| id.as_str()),
             ResponseItem::ApplyPatchCall { call_id, .. }
-                if owns_application_patch(envelope) =>
+                if include_native || owns_application_patch(envelope) =>
             {
                 Some(call_id.as_str())
             }
             ResponseItem::ShellCall {
                 provider_fields, ..
-            } if is_application_shell_call(envelope) => provider_fields
-                .get("call_id")
-                .and_then(serde_json::Value::as_str),
+            } if include_native || is_application_shell_call(envelope) => Some(
+                provider_fields
+                    .get("call_id")
+                    .and_then(serde_json::Value::as_str)
+                    .context("native Shell call has no retained call identity")?,
+            ),
+            ResponseItem::LocalShellCall { call_id, .. } if include_native => Some(
+                call_id
+                    .as_deref()
+                    .context("native local Shell call has no retained call identity")?,
+            ),
             _ => None,
         };
         if let Some(call_id) = invocation_id {
@@ -925,6 +993,86 @@ pub(crate) fn plan(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cold_interruption_requires_retained_native_effect_results() {
+        let row = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let cases = [
+            (
+                json!({"type": "apply_patch_call", "call_id": "native", "operation": {"type": "delete_file", "path": "synthetic"}}),
+                json!({"type": "apply_patch_call_output", "call_id": "native", "status": "completed", "output": "done"}),
+            ),
+            (
+                json!({"type": "shell_call", "call_id": "native", "action": {"commands": ["synthetic"]}}),
+                json!({"type": "shell_call_output", "call_id": "native", "output": []}),
+            ),
+            (
+                json!({"type": "local_shell_call", "call_id": "native", "status": "completed", "action": {"type": "exec", "command": ["synthetic"]}}),
+                json!({"type": "function_call_output", "call_id": "native", "output": "done"}),
+            ),
+        ];
+        for (invocation, output) in cases {
+            let patch = invocation["type"] == "apply_patch_call";
+            let mut history = vec![row(invocation)];
+            assert!(
+                validate_native_effects(&history, &HashSet::new())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown native tool effects")
+            );
+            history.push(row(output));
+            assert_eq!(
+                validate_native_effects(&history, &HashSet::new()).is_ok(),
+                patch
+            );
+        }
+        // Application receipts remain the responsibility of the existing planner.
+        validate_native_effects(&[invocation("application")], &HashSet::new()).unwrap();
+        assert!(
+            validate_native_effects(
+                &[row(
+                    json!({"type": "shell_call", "action": {"commands": ["synthetic"]}})
+                )],
+                &HashSet::new()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn cold_interruption_requires_terminal_execution_evidence() {
+        let row = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let mut history = vec![
+            row(
+                json!({"type": "function_call", "name": "exec_command", "call_id": "command", "arguments": "{}", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}}),
+            ),
+            row(
+                json!({"type": "function_call_output", "call_id": "command", "output": "Process running with session ID 42", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}}),
+            ),
+        ];
+        let turns = HashSet::from(["turn".to_owned()]);
+        assert!(validate_native_effects(&history, &turns).is_err());
+        let completion = |status| {
+            RolloutItem::EventMsg(serde_json::from_value(json!({"type": "item_completed", "thread_id": ThreadId::new(), "turn_id": "turn", "item": {"type": "CommandExecution", "id": "command", "command": ["synthetic"], "cwd": "file:///synthetic", "parsed_cmd": [], "source": "unified_exec_startup", "status": status}})).unwrap())
+        };
+        history.push(completion("in_progress"));
+        assert!(validate_native_effects(&history, &turns).is_err());
+        history.push(completion("completed"));
+        validate_native_effects(&history, &turns).unwrap();
+        history.push(row(json!({"type": "function_call", "name": "write_stdin", "call_id": "stdin", "arguments": "{}", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}})));
+        history.push(row(json!({"type": "function_call_output", "call_id": "stdin", "output": "Process exited with code 0", "internal_chat_message_metadata_passthrough": {"turn_id": "turn"}})));
+        assert!(validate_native_effects(&history, &turns).is_err());
+        // A settled older command does not block an unrelated newly interrupted turn.
+        validate_native_effects(&history, &HashSet::from(["another".to_owned()])).unwrap();
+    }
 
     fn invocation(call_id: &str) -> RolloutItem {
         let item = serde_json::from_value(json!({

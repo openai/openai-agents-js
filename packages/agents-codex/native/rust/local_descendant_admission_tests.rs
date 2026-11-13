@@ -191,15 +191,9 @@ async fn open_edges_accept_settled_own_turns_but_not_only_inherited_turns() {
         .get_mut(&ids[2])
         .unwrap()
         .push(started("unfinished-without-tool"));
-    for _ in 0..2 {
-        assert!(
-            validate_local_tree(&store, ids, &edges, &histories)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("active descendant")
-        );
-    }
+    validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap();
     for id in ids {
         store.shutdown_thread(id).await.unwrap();
     }
@@ -264,7 +258,11 @@ async fn stored_unknown_grandchild_below_closed_ancestor_fails_complete_tree_adm
     append(
         &store,
         ids[1],
-        vec![started("child-own"), completed("child-own")],
+        vec![
+            started("child-own"),
+            completed("child-own"),
+            started("safe-current-child"),
+        ],
     )
     .await;
     append(
@@ -680,6 +678,80 @@ async fn bytes(paths: &[PathBuf]) -> Vec<Vec<u8>> {
         result.push(tokio::fs::read(path).await.unwrap());
     }
     result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_safe_descendant_interruption_survives_partial_publication_and_reopen() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let [root, child, leaf] = ids;
+    let paths = rollout_paths(&store, &ids).await;
+    append(
+        &store,
+        root,
+        [
+            vec![started("root"), legacy_context(home.path(), "root")],
+            spawn("spawn-child", child),
+        ]
+        .concat(),
+    )
+    .await;
+    append(
+        &store,
+        child,
+        [vec![started("child")], spawn("spawn-leaf", leaf)].concat(),
+    )
+    .await;
+    append(&store, leaf, vec![started("leaf")]).await;
+    for id in ids.into_iter().rev() {
+        store.shutdown_thread(id).await.unwrap();
+    }
+    let store = Arc::new(store);
+    let original = bytes(&paths).await;
+    for _ in 0..2 {
+        *store.fail_recovery_write.lock().unwrap() =
+            Some((child, RecoveryWritePoint::BeforeDirectorySync));
+        let error = prepare_recovery(&store, home.path(), root, Vec::new())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("injected failure"), "{error}");
+        assert_eq!(bytes(&paths).await[2], original[2]);
+    }
+    // Retry must sync an already visible leaf abort after directory sync fails.
+    for _ in 0..2 {
+        *store.fail_recovery_write.lock().unwrap() =
+            Some((leaf, RecoveryWritePoint::BeforeDirectorySync));
+        let error = prepare_recovery(&store, home.path(), root, Vec::new())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("injected failure"), "{error}");
+    }
+    let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+        .await
+        .unwrap();
+    let prepared = admitted.prepared_params().unwrap().clone();
+    store.resume_thread(prepared).await.unwrap();
+    drop(admitted);
+    store.shutdown_thread(root).await.unwrap();
+    let recovered = bytes(&paths).await;
+    for (index, bytes) in recovered.iter().enumerate() {
+        assert!(bytes.starts_with(&original[index]));
+        assert_eq!(
+            String::from_utf8_lossy(bytes)
+                .matches("\"turn_aborted\"")
+                .count(),
+            1
+        );
+        assert!(String::from_utf8_lossy(bytes).contains("interrupted"));
+    }
+    let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+        .await
+        .unwrap();
+    drop(admitted);
+    assert_eq!(bytes(&paths).await, recovered);
+    store.close_database().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
