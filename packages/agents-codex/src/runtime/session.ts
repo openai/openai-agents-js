@@ -1,3 +1,4 @@
+import { bindSandboxContext } from './sandbox-context';
 import {
   bindModelProviderMetadata,
   captureModelProviderStreamFrame,
@@ -13184,6 +13185,9 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
+      const sandboxProvider = this.options.environmentOwner?.sandboxProvider;
+      if (sandboxProvider?.environment === this.environment)
+        bindSandboxContext(context, sandboxProvider, check);
       const skillLease = this.options.environmentOwner?.skillLease;
       registerToolSessionOwner(
         context,

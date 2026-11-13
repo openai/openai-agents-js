@@ -1,3 +1,4 @@
+import { SandboxProviderBinding } from './sandbox-context';
 import {
   SandboxSkillBinding,
   SandboxSkillLease,
@@ -481,10 +482,12 @@ function createSandboxEnvironment<
       });
     let gateway: EnvironmentAcquisition | undefined;
     let skillLease: SandboxSkillLease | undefined;
+    let sandboxProvider: SandboxProviderBinding | undefined;
     let disposal: Promise<void> | undefined;
     const dispose = (guard?: DisposeGuard) =>
       (disposal ??= Promise.resolve().then(() => {
         const sandbox = ownedSandbox;
+        sandboxProvider?.retire();
         skillLease?.retire();
         if (!gateway && !sandbox) return;
         return observe('sandbox.cleanup', async () => {
@@ -663,6 +666,10 @@ function createSandboxEnvironment<
           ({ signal }) => connect(created, { signal }),
           signal,
         );
+        sandboxProvider = new SandboxProviderBinding(
+          sandbox,
+          gateway.environment!,
+        );
         skillLease = skillBinding
           ? new SandboxSkillLease(
               skillBinding,
@@ -693,6 +700,7 @@ function createSandboxEnvironment<
             observeNativeSandboxOperation(runtime, client.backendId, message),
           skillLease,
           createMemory?.(created),
+          sandboxProvider,
         );
       };
       // Resume inspection protects the old state. The owned provider mutation

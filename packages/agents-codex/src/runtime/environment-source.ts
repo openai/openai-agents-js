@@ -1,3 +1,4 @@
+import type { SandboxProviderBinding } from './sandbox-context';
 import type { SandboxSkillLease } from './sandbox-skills';
 import type {
   SandboxMemoryOwner,
@@ -39,6 +40,7 @@ interface LeaseState {
   readonly sandboxMemory?: SandboxMemoryOwner;
   readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly skillLease?: SandboxSkillLease;
+  readonly sandboxProvider?: SandboxProviderBinding;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -59,6 +61,7 @@ export function createEnvironmentLease<Context>(
   observeSandboxOperation?: SandboxOperationObserver,
   skillLease?: SandboxSkillLease,
   sandboxMemory?: SandboxMemoryOwner,
+  sandboxProvider?: SandboxProviderBinding,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -72,6 +75,7 @@ export function createEnvironmentLease<Context>(
     sandboxMemory,
     observeSandboxOperation,
     skillLease,
+    sandboxProvider,
   };
   const close = () => {
     if (state.claimed)
@@ -137,6 +141,11 @@ export class EnvironmentAcquisition {
   /** @internal Current resource authority, carried by this exact acquisition. */
   get skillLease(): SandboxSkillLease | undefined {
     return this.state?.skillLease;
+  }
+
+  /** @internal Exact acquired provider for admitted application callbacks. */
+  get sandboxProvider(): SandboxProviderBinding | undefined {
+    return this.state?.sandboxProvider;
   }
 
   /** @internal Fresh declaration presence; never restored from checkpoint data. */

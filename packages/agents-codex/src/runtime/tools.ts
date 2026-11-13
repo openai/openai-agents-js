@@ -1,3 +1,4 @@
+import { inheritSandboxContext, type SandboxAccess } from './sandbox-context';
 import type { StandardSchemaWithJSON } from '@openai/agents-core';
 import type { SandboxSkillLease } from './sandbox-skills';
 import { isZodObject } from '@openai/agents-core/utils';
@@ -290,6 +291,8 @@ export interface ToolInvocationContext<
 export interface ToolCallContext<
   Context = unknown,
 > extends ToolInvocationInputContext<Context> {
+  /** Current provider resource; available only inside its admitted native callback. */
+  readonly sandbox?: SandboxAccess;
   /** Exact JSON text of an admitted direct function call, before input policy. */
   readonly rawArguments?: string;
   /** Provider conversation snapshot captured when this Realtime call was issued. */
@@ -376,6 +379,7 @@ function inheritToolSessionOwner<T extends object>(
 ): T {
   const owner = toolSessionOwners.get(source);
   if (owner) toolSessionOwners.set(context, owner);
+  inheritSandboxContext(context, source);
   return context;
 }
 
