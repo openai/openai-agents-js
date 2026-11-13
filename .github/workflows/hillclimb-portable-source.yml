@@ -1,0 +1,51 @@
+name: macOS portable source diagnostic
+
+on:
+  push:
+    branches: ['ci/hillclimb/js-current-portable-source-36']
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    name: Trace the macOS SDK build
+    if: github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && github.ref == 'refs/heads/ci/hillclimb/js-current-portable-source-36'
+    runs-on: macos-15
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      ALPHA_VERSION: 0.22.0-alpha.2
+      EXPECTED_PLATFORM: darwin-arm64
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      CARGO_BUILD_JOBS: 5
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check runner platform
+        run: node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Build the current SDK
+        timeout-minutes: 6
+        env:
+          OPENAI_AGENTS_TRACE_NATIVE_GIT: '1'
+        run: |
+          export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=$GITHUB_WORKSPACE/scripts/benchmarks/native-git-trace.cjs"
+          pnpm install --frozen-lockfile
+          pnpm build
