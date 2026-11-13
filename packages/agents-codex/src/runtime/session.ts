@@ -683,7 +683,9 @@ export interface SubmitOptions<
   ifBusy?: 'reject';
   /** Replace this root's user input before Core records or samples it. Return null
    * to sample existing history without adding user input. Queued roots receive
-   * the canonical history at admission, after their predecessors settle. */
+   * the canonical history at admission, after their predecessors settle.
+   * The turn fails before the callback if that history exceeds 4096 records
+   * or 8 MiB. */
   inputStoragePolicy?: (
     input: UserInput,
     history: CanonicalHistorySnapshot,
@@ -6160,8 +6162,19 @@ export class Session<OutputT = string, Context = unknown> {
               check();
               const history = await this.#readCanonicalHistory(
                 undefined,
-                false,
-              );
+                true,
+              ).catch((error: unknown) => {
+                if (
+                  error instanceof Error &&
+                  error.message ===
+                    'Run completed, but its one-shot conversation history exceeds the result size limit'
+                )
+                  throw new NativeError(
+                    'Input storage policy history exceeds 4096 records or 8 MiB',
+                    { cause: error },
+                  );
+                throw error;
+              });
               const { project, input } = inputStoragePolicy;
               await this.invokeCallback(
                 run,
