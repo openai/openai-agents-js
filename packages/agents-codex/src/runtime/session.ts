@@ -284,6 +284,7 @@ import {
   hasMcpPrePolicy,
   applyMcpPrePolicy,
   mcpToolNames,
+  mcpToolApprovalMode,
   mcpRefIdentity,
   checkMcpPublication,
   transformMcpResult,
@@ -14072,7 +14073,7 @@ export class Session<OutputT = string, Context = unknown> {
         !this.defaultMcpTools.includes(selected) ||
         !this.mcpTools.includes(selected) ||
         isHostedRegistration(selected) ||
-        selected.approvalMode !== 'preapproved' ||
+        mcpToolApprovalMode(selected, call.name) !== 'preapproved' ||
         selected.before ||
         selected.approval ||
         selected.transformResult ||

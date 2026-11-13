@@ -699,6 +699,13 @@ export function isHostedRegistration(
   );
 }
 
+/** @internal Resolve a selected raw tool's policy from its declaration. */
+export function mcpToolApprovalMode(server: McpTool, raw: string) {
+  return Object.hasOwn(server.toolApprovalOverrides, raw)
+    ? server.toolApprovalOverrides[raw]!
+    : server.approvalMode;
+}
+
 /** @internal Native settings are assembled only by the Session owner. */
 function mcpServerConfig(
   server: McpTool,
@@ -716,9 +723,7 @@ function mcpServerConfig(
   };
   const toolSettings = new Map<string, JsonObject>();
   for (const raw of server.tools) {
-    const mode = Object.hasOwn(server.toolApprovalOverrides, raw)
-      ? server.toolApprovalOverrides[raw]!
-      : server.approvalMode;
+    const mode = mcpToolApprovalMode(server, raw);
     if (mode !== 'native')
       toolSettings.set(raw, {
         approval_mode: mode === 'preapproved' ? 'approve' : mode,
