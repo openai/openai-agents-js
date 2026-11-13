@@ -1,0 +1,101 @@
+name: Windows native overlap diagnostic
+
+on:
+  push:
+    branches: ['ci/hillclimb/js-current-windows-overlap-35']
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-native-overlap-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Windows native overlap diagnostic
+    if: github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && github.ref == 'refs/heads/ci/hillclimb/js-current-windows-overlap-35'
+    runs-on: { group: codex-runners, labels: codex-windows-x64 }
+    timeout-minutes: 180
+    outputs:
+      artifact: ${{ toJSON(steps.upload.outputs) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      EXPECTED_PLATFORM: win32-x64
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      CARGO_BUILD_JOBS: '16'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Check runner platform
+        run: node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+      - name: Record Windows runner capacity
+        shell: pwsh
+        run: |
+          "Available logical processors: $([Environment]::ProcessorCount)"
+          "Physical memory GiB: $([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2))"
+          Get-CimInstance Win32_Processor | ForEach-Object { "CPU model: $($_.Name)" }
+      - name: Install Rust
+        run: |
+          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install Windows build tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install protoc --yes --no-progress
+
+      - name: Record diagnostic native inputs
+        id: inputs
+        run: |
+          node --input-type=module -e 'import { nativeInputs } from "./scripts/native-bundle-inputs.mjs"; import { appendFileSync } from "node:fs"; appendFileSync(process.env.GITHUB_OUTPUT, "hash=" + nativeInputs() + "\n");'
+      - name: Build the native runtime
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node packages/agents-codex/scripts/native.mjs package --parallel-windows
+      - name: Test Windows project-search filename handling
+        if: runner.os == 'Windows'
+        working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/agents-project-search-target
+        run: |
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture
+      - name: Build the executor test fixture
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/agents-target/windows-helpers
+        working-directory: packages/agents-codex/native
+        run: |
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          export RUSTY_V8_ARCHIVE="$PWD/.cache/v8/rusty_v8_ptrcomp_sandbox_release_${native_host}.lib.gz"
+          export RUSTY_V8_SRC_BINDING_PATH="$PWD/.cache/v8/src_binding_ptrcomp_sandbox_release_${native_host}.rs"
+          cargo build --locked --release --example exec-server-fixture --config "$PWD/.upstream/reviewed-codex/codex-rs/.cargo/config.toml" --target "$native_host"
+          mkdir -p test-bin
+          install -m 0755 "$CARGO_TARGET_DIR/$native_host/release/examples/exec-server-fixture.exe" test-bin/exec-server-fixture.exe
+      - name: Archive the native bundle
+        working-directory: packages/agents-codex
+        env:
+          INPUTS: ${{ steps.inputs.outputs.hash }}
+        run: |
+          products=(native/codex.node native/build-receipt.json bin native/test-bin/exec-server-fixture.exe)
+          tar -czf - "${products[@]}" > "$RUNNER_TEMP/windows-overlap-$INPUTS-$EXPECTED_PLATFORM.tar.gz"
+      - name: Publish native bundle
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          path: ${{ runner.temp }}/windows-overlap-${{ steps.inputs.outputs.hash }}-win32-x64.tar.gz
+          archive: false
+          if-no-files-found: error
+          # Diagnostic only: this workflow and artifact name cannot qualify as a native donor.
+          retention-days: 2
