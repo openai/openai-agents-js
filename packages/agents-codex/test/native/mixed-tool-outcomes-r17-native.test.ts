@@ -532,6 +532,7 @@ it.each(['success', 'fatal'] as const)(
     const original = new Error('fatal namespaced callback');
     const decision = manualTool({
       name: 'decision',
+      description: 'Supply a decision.',
       parameters: z.object({}),
       result: z.string(),
     });
