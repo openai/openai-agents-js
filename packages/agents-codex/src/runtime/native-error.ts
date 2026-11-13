@@ -170,7 +170,9 @@ export class NativeError extends Error {
     return metadata.get(this)!.retryAfterMs;
   }
 
-  /** Read the original MCP callback error, which may contain private application data. */
+  /** Read the original application error from a root turn's MCP callback.
+   * This value may contain private application data.
+   */
   getMcpCallbackError(): Readonly<{ error: unknown }> | undefined {
     return metadata.get(this)!.mcpCallbackError;
   }
