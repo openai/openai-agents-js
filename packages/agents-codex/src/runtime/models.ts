@@ -2527,8 +2527,18 @@ export class AiSdkModel implements NativeModel {
       }
     >();
     let pendingTextParts: AiSdkTextPart[] = [];
-    const flushText = () => {
+    const flushText = (streamed = false) => {
       if (pendingTextParts.length) {
+        // Keep ordinary buffered text coalesced. Preserve explicit part
+        // metadata and the content indexes already emitted by streaming.
+        if (
+          !streamed &&
+          pendingTextParts.every((part) => part.providerMetadata == null)
+        ) {
+          pendingTextParts = [
+            { text: pendingTextParts.map((part) => part.text).join('') },
+          ];
+        }
         output.push({
           type: 'message',
           role: 'assistant',
@@ -2555,7 +2565,7 @@ export class AiSdkModel implements NativeModel {
         if (streamed) {
           flushText();
           pendingTextParts = streamed;
-          flushText();
+          flushText(true);
         } else {
           if (typeof part.text !== 'string')
             throw new TypeError(
