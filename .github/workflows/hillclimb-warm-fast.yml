@@ -156,10 +156,16 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
         with:
           run_install: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      - name: Locate the pnpm cache for read-only reuse
+        id: pnpm-cache
+        run: |
+          echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+          echo "arch=$(node -p process.arch)" >> "$GITHUB_OUTPUT"
+      - name: Restore pnpm dependencies without publishing a cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
-          node-version: '24'
-          cache: pnpm
+          path: ${{ steps.pnpm-cache.outputs.path }}
+          key: node-cache-${{ runner.os }}-${{ steps.pnpm-cache.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Build the current SDK
         run: |
           pnpm install --frozen-lockfile
