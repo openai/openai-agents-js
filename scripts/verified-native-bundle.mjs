@@ -34,22 +34,39 @@ export function isProducer(run, workflowId) {
 }
 
 export function isNativePublication(asset, run, jobs, platform) {
-  const latest = (name) =>
-    jobs
-      .filter((job) => job.name === name)
-      .sort((a, b) => b.run_attempt - a.run_attempt)[0];
+  const qualificationNames = (value) => [
+    'Package and test (' + value + ')',
+    'Qualify alpha (' + value + ') / Package and test (' + value + ')',
+  ];
+  const allowedQualifications = new Set(
+    Object.values(nativePlatforms).flatMap(qualificationNames),
+  );
+  const sdkJobs = jobs.filter(
+    (job) =>
+      job.name.startsWith('Package and test (') ||
+      job.name.includes(' / Package and test ('),
+  );
+  // Reusable callers have explicit names. Reject other wrappers, not just suffixes.
+  if (sdkJobs.some((job) => !allowedQualifications.has(job.name))) return false;
+  const latest = (...names) => {
+    const matches = jobs
+      .filter((job) => names.includes(job.name))
+      .sort((a, b) => b.run_attempt - a.run_attempt);
+    if (!matches.length) return undefined;
+    const attempt = matches[0].run_attempt;
+    const current = matches.filter((job) => job.run_attempt === attempt);
+    const active = current.filter((job) => job.conclusion !== 'skipped');
+    // Inactive call sites may emit a skipped receipt in the same attempt.
+    return active.length === 1 ? active[0] : undefined;
+  };
   if (
     jobs.some((job) => job.run_attempt > run.run_attempt) ||
-    latest('Package and test (' + platform + ')')?.conclusion !== 'success'
+    latest(...qualificationNames(platform))?.conclusion !== 'success'
   )
     return false;
   // Include prior attempts: SDK code must never precede a trusted publication.
-  const starts = jobs
-    .filter(
-      (job) =>
-        job.name.startsWith('Package and test (') &&
-        job.conclusion !== 'skipped',
-    )
+  const starts = sdkJobs
+    .filter((job) => job.conclusion !== 'skipped')
     .map((job) => Date.parse(job.started_at));
   if (!starts.length || starts.some((time) => !Number.isFinite(time)))
     return false;
