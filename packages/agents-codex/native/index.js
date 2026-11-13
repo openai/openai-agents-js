@@ -5,6 +5,7 @@ const { join } = require('node:path');
 let binding;
 try {
   binding = require('./codex.node');
+  binding.initialize_sdk_client(require('../package.json').version);
 } catch (error) {
   const code = error?.code;
   if (code !== 'MODULE_NOT_FOUND' && code !== 'ERR_DLOPEN_FAILED') {
