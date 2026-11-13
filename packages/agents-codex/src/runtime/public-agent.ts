@@ -1808,7 +1808,7 @@ export class Agent<Context = undefined, Output = string> {
           ),
         ),
       });
-    if (graph && profileEnvironments)
+    if (graph && profileEnvironments && hasExecutorEnvironment)
       graph = Object.freeze({
         ...graph,
         environments: profileEnvironments,
@@ -1816,13 +1816,16 @@ export class Agent<Context = undefined, Output = string> {
           graph.roster.map((row) => {
             if (row.workspace_preparation === true) return row;
             const owner = profileEnvironments.get(row.id as string)!;
-            return Object.freeze({
-              ...row,
-              workspace_instructions:
-                (owner.sandboxCapabilities?.hasPreparedProfiles
-                  ? owner.profileWorkspaceInstructions
-                  : owner.workspaceInstructions) ?? '',
-            });
+            const workspaceInstructions = owner.sandboxCapabilities
+              ?.hasPreparedProfiles
+              ? owner.profileWorkspaceInstructions
+              : owner.workspaceInstructions;
+            return workspaceInstructions
+              ? Object.freeze({
+                  ...row,
+                  workspace_instructions: workspaceInstructions,
+                })
+              : row;
           }),
         ),
       });

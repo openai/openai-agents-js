@@ -1480,6 +1480,14 @@ impl AgentProfiles {
         metadata.sdk_agent_graph = Some(self.opening.fingerprint.clone());
         metadata.sdk_agent_environment_policy = self.environment_policy_digest.clone();
         let mut data = ExtensionDataInit::new();
+        data.insert(codex_extension_api::AgentProfileOutputStrict(
+            prepared
+                .declaration
+                .model
+                .request_controls
+                .output_schema_strict
+                .unwrap_or(true),
+        ));
         if let Some(appendix) = appendix {
             data.insert(WorkspaceAppendix(appendix));
         }
@@ -1706,6 +1714,14 @@ pub(crate) async fn configure(
         )?;
         let generation = catalog.generation.id;
         let mut data = ExtensionDataInit::new();
+        data.insert(codex_extension_api::AgentProfileOutputStrict(
+            prepared
+                .declaration
+                .model
+                .request_controls
+                .output_schema_strict
+                .unwrap_or(true),
+        ));
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });

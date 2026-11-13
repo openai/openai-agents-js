@@ -1,0 +1,59 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 8cc37b8c060fa962645ce2b3390cb2a3c91884d7..d397fb886415ff1d429816a58202da68de13f228 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2378,18 +2378,11 @@ async fn run_sampling_request(
+             }
+-            // The SDK profile owns both its schema and strictness. Source-turn
+-            // defaults must not override the newly selected destination contract.
+-            if let Some(profile) = step_context.settings.agent_profile.as_ref()
+-                && output_control.as_deref().is_some_and(|control| {
+-                    control.thread_id == sess.thread_id.to_string()
+-                        && !control.preserve_turn_output
+-                })
+-            {
+-                let strict = profile
+-                    .profile
+-                    .model
+-                    .request_controls
+-                    .output_schema_strict
+-                    .unwrap_or(true);
+-                prompt.output_schema_strict = strict;
+-                prompt.request_controls.output_schema_strict = Some(strict);
++            // Bind schema and strictness to the same admitted output owner.
++            // The private value does not change the persisted model identity.
++            if output_control.as_deref().is_some_and(|control| {
++                control.thread_id == sess.thread_id.to_string() && !control.preserve_turn_output
++            }) && let Some(strict) = step_context.settings.agent_profile.as_ref().and_then(
++                |profile| profile.profile.data.get::<codex_extension_api::AgentProfileOutputStrict>(),
++            ) {
++                prompt.output_schema_strict = strict.0;
++                prompt.request_controls.output_schema_strict = Some(strict.0);
+             }
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index 7d393398a323257633f83bed8e5ead69d7887a80..2a9e533dabf8e83f8f8b912a18822f3295bcfca7 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -78,2 +78,3 @@ pub use turn_lifecycle::AgentProfileOutputGuidance;
+ pub use turn_lifecycle::AgentProfileOutputSchema;
++pub use turn_lifecycle::AgentProfileOutputStrict;
+ pub use turn_lifecycle::AgentProfileReceipt;
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 3f6a8aec988d0d60256d3b276be55a931ce30329..04b8afc79926df96b2375993001415f41e5add43 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -220,2 +220,6 @@ pub struct AgentProfileOutputSchema(pub Option<serde_json::Value>);
+
++/// In-process wire strictness from the exact admitted SDK declaration.
++#[derive(Clone, Debug)]
++pub struct AgentProfileOutputStrict(pub bool);
++
+ /// Per-sampling output instructions owned by the active SDK profile.
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 8975249ba9d5b4ddf8c256d7159a978c2c23f6eb..1408b0691fbcbf2d9587f0c5c073c2a663b53ba8 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -65,2 +65,3 @@ pub use contributors::AgentProfileOutputGuidance;
+ pub use contributors::AgentProfileOutputSchema;
++pub use contributors::AgentProfileOutputStrict;
+ pub use contributors::AgentProfileReceipt;

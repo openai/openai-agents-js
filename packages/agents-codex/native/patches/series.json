@@ -1343,7 +1343,11 @@
     {
       "path": "sdk-destination-output-strictness.patch",
       "sha256": "92a7c2e0ed5e7dd2ae78424698cd6e99e45fdcbe690ee79cda0f99d9210c5ec7"
+    },
+    {
+      "path": "sdk-bind-declaration-output-strictness.patch",
+      "sha256": "88425d1fe0e451e9ba1134382c9aacbfaca34a75bf8917fc2d81ec3b439eaaf7"
     }
   ],
-  "result_tree": "6bf0382016a32a94efa106cbb0d6b44e3f56522c"
+  "result_tree": "25425d07fd9396b412dadf4265e35bdb6cccc56b"
 }
