@@ -78,6 +78,8 @@ import {
 import {
   assertOutputState,
   assertHandoffPresentationAuthority,
+  hasSessionStateAuthority,
+  captureSessionState,
   sessionStateSchema,
   isManualSessionState,
   isOutputAwareState,
@@ -1409,8 +1411,11 @@ export class Agent<Context = undefined, Output = string> {
       suppliedState == null
         ? undefined
         : sessionStateSchema.safeParse(structuredClone(suppliedState));
-    if (stateResult?.success)
+    if (stateResult?.success) {
       assertHandoffPresentationAuthority(suppliedState as SessionState);
+      if (hasSessionStateAuthority(suppliedState as SessionState))
+        captureSessionState(stateResult.data);
+    }
     const budgetState = stateResult?.success ? stateResult.data : undefined;
     const restoredRunBudget = isBudgetedManualSessionState(budgetState)
       ? RunBudgetTracker.restoreCheckpoint(

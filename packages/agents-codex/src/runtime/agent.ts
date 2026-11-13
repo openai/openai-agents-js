@@ -14,7 +14,11 @@ import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
 import { hostedMcpConfigurations } from './hosted-mcp-binding';
-import { assertCheckpointNetworkPolicy } from './state';
+import {
+  captureSessionState,
+  hasSessionStateAuthority,
+  assertCheckpointNetworkPolicy,
+} from './state';
 import {
   assertCheckpointSelections,
   checkpointResourceServers,
@@ -521,6 +525,8 @@ export async function openSession(
             );
     }
   }
+  if (saved && options.state && hasSessionStateAuthority(options.state))
+    captureSessionState(saved);
   const session = new Session(
     engine,
     thread,

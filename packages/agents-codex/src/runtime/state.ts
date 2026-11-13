@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import {
   captureProviderHistory,
@@ -1137,24 +1138,70 @@ export function captureSessionState<T extends SessionState>(state: T): T {
   return state;
 }
 
-function hasStateAuthority(state: SessionState): boolean {
+export function hasSessionStateAuthority(state: SessionState): boolean {
   const digest = capturedStateDigests.get(state);
   return digest !== undefined && digest === stateDigest(state);
 }
 
+function containsHandoffPresentation(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as {
+    history?: {
+      type?: unknown;
+      metadata?: { sdk_agent_profile?: { presentation?: unknown } };
+    }[];
+    descendants?: unknown[];
+    manual_continuation?: {
+      pending_manual?: { continuation?: { state?: unknown } }[];
+    };
+  };
+  return (
+    (Array.isArray(state.history) &&
+      state.history.some(
+        (row) =>
+          row?.type === 'response_item' &&
+          row.metadata?.sdk_agent_profile?.presentation != null,
+      )) ||
+    (Array.isArray(state.descendants) &&
+      state.descendants.some(containsHandoffPresentation)) ||
+    (Array.isArray(state.manual_continuation?.pending_manual) &&
+      state.manual_continuation.pending_manual.some((entry) =>
+        containsHandoffPresentation(entry?.continuation?.state),
+      ))
+  );
+}
+
+/** @internal Extract only the exact continuation covered by its authenticated parent. */
+export function configuredChildSessionState(
+  parent: SessionState | null,
+  turnId: unknown,
+  callId: unknown,
+  value: unknown,
+): SessionState {
+  const continuation = losslessJsonObjectSchema.parse(value);
+  const child = parseSessionState(encode(continuation.state));
+  if (parent && hasSessionStateAuthority(parent)) {
+    const matches =
+      isManualSessionState(parent) &&
+      parent.manual_continuation.turn_id === turnId &&
+      parent.manual_continuation.pending_manual.some(
+        (entry) =>
+          entry.call_id === callId &&
+          isDeepStrictEqual(entry.continuation, continuation),
+      );
+    if (!matches)
+      throw new TypeError(
+        'Configured child checkpoint does not match its authenticated parent',
+      );
+    captureSessionState(child);
+  }
+  return child;
+}
+
 /** @internal Hidden handoff context requires independent checkpoint authority. */
 export function assertHandoffPresentationAuthority(state: SessionState): void {
-  const hasPresentation = [state, ...(state.descendants ?? [])].some((thread) =>
-    thread.history.some((row) => {
-      if (row.type !== 'response_item') return false;
-      const profile = (
-        row.metadata as
-          { sdk_agent_profile?: { presentation?: unknown } } | undefined
-      )?.sdk_agent_profile;
-      return profile?.presentation != null;
-    }),
-  );
-  if (hasPresentation && !hasStateAuthority(state))
+  const hasPresentation = containsHandoffPresentation(state);
+  if (hasPresentation && !hasSessionStateAuthority(state))
     throw new TypeError(
       'Restoring handoff presentation requires authenticated SessionState; use parseSessionState with an independently trusted expectedSha256',
     );
@@ -1165,7 +1212,7 @@ function retainStateAuthority<T extends SessionState>(
   target: T,
 ): T {
   if (capturedStateDigests.has(source)) {
-    if (!hasStateAuthority(source))
+    if (!hasSessionStateAuthority(source))
       throw new TypeError('SessionState changed after being authenticated');
     captureSessionState(target);
   }

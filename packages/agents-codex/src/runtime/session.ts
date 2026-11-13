@@ -409,6 +409,7 @@ import {
   parseNativeCheckpoint,
   fromNativeCheckpoint,
   captureSessionState,
+  configuredChildSessionState,
   withOutputState,
   type NativeCheckpoint,
   isManualSessionState,
@@ -12532,9 +12533,11 @@ export class Session<OutputT = string, Context = unknown> {
         this.retainRequestAttempts(run);
         this.finish(
           run,
-          new InteractionRequired(parseSessionState(this.sealedStateJson)),
+          new InteractionRequired(
+            captureSessionState(parseSessionState(this.sealedStateJson)),
+          ),
         );
-        return parseSessionState(this.sealedStateJson);
+        return captureSessionState(parseSessionState(this.sealedStateJson));
       } catch (error) {
         this.manualSuspending = false;
         if (sealed && this.owns(run)) this.retire(error);
@@ -13018,8 +13021,11 @@ export class Session<OutputT = string, Context = unknown> {
     const restoredChild =
       configuredData === undefined
         ? undefined
-        : parseSessionState(
-            encode(losslessJsonObjectSchema.parse(configuredData).state),
+        : configuredChildSessionState(
+            this.restored,
+            request.turnId,
+            request.callId,
+            configuredData,
           );
     let session = await declaration.open(
       context.context,
@@ -16886,15 +16892,14 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
-    if (this.configuredChildren.size)
-      return this.captureConfiguredParent().then(captureSessionState);
+    if (this.configuredChildren.size) return this.captureConfiguredParent();
     if (
       this.graphStops.size ||
       this.lifecycle.kind !== 'turn' ||
       !this.manualCalls.size
     )
       throw new NativeError('suspend requires a pending manual-tool boundary');
-    return this.sealManualTurn(this.lifecycle.run).then(captureSessionState);
+    return this.sealManualTurn(this.lifecycle.run);
   }
 
   /** @internal Capture the original opening authority before a deferred seal. */
