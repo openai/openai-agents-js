@@ -122,18 +122,24 @@ try {
       );
     }
     const launcher = args.indexOf('/usr/bin/env');
-    return native.spawn(
-      launcher >= 0 ? '/usr/bin/env' : '/bin/sh',
-      // Keep container commands away from the host's login profile.
+    // Keep container commands away from the host's login profile.
+    const hostArgs =
       launcher >= 0
         ? [...args.slice(launcher + 1, -1), script]
-        : ['-c', script],
-      {
-        ...options,
-        cwd: '/',
-        env: environment,
-      },
-    );
+        : ['-c', script];
+    if (
+      process.platform === 'darwin' &&
+      hostArgs.at(-4) === 'chmod' &&
+      hostArgs.at(-2) === '--'
+    ) {
+      // BSD chmod accepts the option terminator before the mode, not after it.
+      hostArgs.splice(-3, 2, '--', hostArgs.at(-3)!);
+    }
+    return native.spawn(launcher >= 0 ? '/usr/bin/env' : '/bin/sh', hostArgs, {
+      ...options,
+      cwd: '/',
+      env: environment,
+    });
   }) as typeof childProcess.spawn);
   const session = new DockerSandboxSession({
     state: {
