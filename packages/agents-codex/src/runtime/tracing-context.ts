@@ -136,6 +136,48 @@ export function setTracingIdGenerator(
   });
 }
 
+/** @internal Plain runs have no host admission pump; use the Session path. */
+export function hasCustomTracingIds(): boolean {
+  return (
+    tracingIdGenerator.generateTraceId !== undefined ||
+    tracingIdGenerator.generateSpanId !== undefined
+  );
+}
+
+/** @internal Allocate only a child ID, without creating an extra callback span. */
+export async function providerResponseSpanAdmission(
+  context: string,
+  signal: AbortSignal,
+): Promise<{ span_id: string | null } | null> {
+  const generator = tracingIdGenerator;
+  const policy = admissionPolicy();
+  const native = await binding();
+  signal.throwIfAborted();
+  const current = ambient.getStore();
+  const restriction = current?.retain();
+  let handle: string | undefined;
+  try {
+    handle = native.borrow_trace_context(
+      context,
+      restriction ?? null,
+      policy.disabled ?? false,
+      policy.includeSensitiveData ?? true,
+    );
+    const wire: WireSpanContext = JSON.parse(native.trace_span_context(handle));
+    if (wire.disabled || processorSuppressed.getStore()) return null;
+    const borrowed = spanFromWire(native, wire, 'context', current);
+    return ambient.run(borrowed, () => {
+      signal.throwIfAborted();
+      const ids = generatedScopeIds(generator, {}, true, false);
+      signal.throwIfAborted();
+      return { span_id: ids.span_id ?? null };
+    });
+  } finally {
+    if (handle) native.release_trace_context(handle);
+    if (restriction) current!.releaseContext(restriction);
+  }
+}
+
 function generatedId(callback: () => string, digits: number): string {
   const value = callback();
   if (typeof value !== 'string')

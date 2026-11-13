@@ -1730,3 +1730,153 @@ for (const kind of ['header', 'query', 'cold'] as const) {
     30_000,
   );
 }
+
+nativeIt.each(['previous_response', 'conversation'] as const)(
+  'rebinds stored %s on a fresh physical WebSocket',
+  async (type) => {
+    const sockets = new WebSocketServer({ noServer: true });
+    const reads: Array<[string, string | undefined]> = [];
+    const frames: Array<[number, Record<string, unknown>]> = [];
+    let connections = 0;
+    let posts = 0;
+    const server = createServer((request, response) => {
+      if (request.method !== 'GET') {
+        posts++;
+        response.writeHead(400).end();
+        return;
+      }
+      const path = request.url ?? '';
+      reads.push([path, request.headers.authorization]);
+      if (request.headers.authorization !== 'Bearer current-owner') {
+        response.writeHead(403).end();
+        return;
+      }
+      const id = path.split('/').at(-1);
+      const result = path.includes('/conversations/')
+        ? { id, object: 'conversation' }
+        : { id, status: 'completed' };
+      response
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(JSON.stringify(result));
+    });
+    fronts.push(server);
+    server.on('upgrade', (request, socket, head) => {
+      const number = ++connections;
+      sockets.handleUpgrade(request, socket, head, (connection) => {
+        connection.on('message', (raw) => {
+          const payload = JSON.parse(raw.toString()) as Record<string, unknown>;
+          frames.push([number, payload]);
+          const id = `resp_ws_${frames.length}`;
+          const item = message(`answer ${frames.length}`);
+          const send = (event: object) =>
+            connection.send(JSON.stringify(event));
+          send({ type: 'response.created', response: { id } });
+          send({ type: 'response.output_item.done', output_index: 0, item });
+          send({ type: 'response.completed', response: { id } });
+        });
+      });
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
+    const address = server.address();
+    if (typeof address !== 'object' || address === null)
+      throw new Error('Synthetic provider did not open a port');
+    const options = {
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      supportsWebsockets: true,
+    };
+    const sourceSelection =
+      type === 'conversation' ? { type, id: 'conv_exact' } : { type };
+    const restoredSelection =
+      type === 'conversation'
+        ? { type, id: 'conv_exact' }
+        : { type, id: 'resp_ws_1' };
+    try {
+      const state = await (async () => {
+        await using provider = new NativeProvider({
+          ...options,
+          apiKey: 'current-owner',
+        });
+        const source = new Agent({
+          instructions: 'Keep only unsent input.',
+          model: 'gpt-5.5',
+          modelSettings: { store: true },
+          provider,
+        });
+        await using session = await source.session({
+          providerHistory: sourceSelection,
+        });
+        await (await session.submit('before')).wait();
+        return await session.saveState();
+      })();
+      await using wrong = new NativeProvider({
+        ...options,
+        apiKey: 'wrong-owner',
+      });
+      const denied = new Agent({
+        instructions: 'Keep only unsent input.',
+        model: 'gpt-5.5',
+        modelSettings: { store: true },
+        provider: wrong,
+      });
+      await (async () => {
+        await using session = await denied.session({
+          state,
+          providerHistory: restoredSelection,
+        });
+        await expect((await session.submit('denied')).wait()).rejects.toThrow(
+          /Provider history anchor validation failed.*403/,
+        );
+      })();
+      expect(frames).toHaveLength(1);
+      await using provider = new NativeProvider({
+        ...options,
+        apiKey: 'current-owner',
+      });
+      const restored = new Agent({
+        instructions: 'Keep only unsent input.',
+        model: 'gpt-5.5',
+        modelSettings: { store: true },
+        provider,
+      });
+      await using session = await restored.session({
+        state,
+        providerHistory: restoredSelection,
+      });
+      await (await session.submit('after')).wait();
+      expect(frames).toHaveLength(2);
+      const [[firstSocket, first], [secondSocket, second]] = frames as [
+        [number, Record<string, unknown>],
+        [number, Record<string, unknown>],
+      ];
+      expect(firstSocket).not.toBe(secondSocket);
+      expect(first.store).toBe(true);
+      expect(second.store).toBe(true);
+      expect(second.input).toEqual([expect.objectContaining({ role: 'user' })]);
+      expect(JSON.stringify(second.input)).toContain('after');
+      expect(JSON.stringify(second.input)).not.toContain('before');
+      expect(posts).toBe(0);
+      if (type === 'previous_response') {
+        expect(first.previous_response_id).toBeUndefined();
+        expect(second.previous_response_id).toBe('resp_ws_1');
+        expect(reads).toEqual([
+          ['/v1/responses/resp_ws_1', 'Bearer wrong-owner'],
+          ['/v1/responses/resp_ws_1', 'Bearer current-owner'],
+        ]);
+      } else {
+        expect(first.conversation).toBe('conv_exact');
+        expect(second.conversation).toBe('conv_exact');
+        expect(reads).toEqual([
+          ['/v1/conversations/conv_exact', 'Bearer current-owner'],
+          ['/v1/conversations/conv_exact', 'Bearer wrong-owner'],
+          ['/v1/conversations/conv_exact', 'Bearer current-owner'],
+        ]);
+      }
+    } finally {
+      for (const socket of sockets.clients) socket.terminate();
+      sockets.close();
+    }
+  },
+  15_000,
+);

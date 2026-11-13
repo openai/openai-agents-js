@@ -1,0 +1,557 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index a0b383717284cbba0c92e57eab767a1fd3ad162a..b58c430ed7de689cafcf2421b9f1ceccaf2a3959 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -656,12 +656,8 @@ pub(crate) async fn run_turn(
+             .map_err(CodexErr::Fatal)?;
+             // Step selection has joined the SDK input guardrails. The manual replies
+             // are already in history, so the batch follows them in the next request.
+-            sess.record_conversation_items(
+-                &turn_context,
+-                &step_context.settings.model_info,
+-                items,
+-            )
+-            .await;
++            sess.record_conversation_items(&turn_context, &step_context.settings.model_info, items)
++                .await;
+             sess.ensure_rollout_durable().await?;
+             staged.acknowledge();
+         }
+@@ -2176,7 +2172,11 @@ async fn run_sampling_request(
+     let mut request_attempt = 1_u64;
+     let mut policy_attempt = 1_u64;
+     let mut locked_retries = 0_u32;
++    let mut provider_response_span = None;
+     let invocation = async {
++        provider_response_span =
++            admit_sdk_provider_response_span(&sess, &step_context, cancellation_token.clone())
++                .await?;
+         loop {
+             // Running code-mode cells can request review while this response is in flight.
+             // Keep the latest received ID until response.created replaces it.
+@@ -2295,15 +2295,26 @@ async fn run_sampling_request(
+                 step_context.clone(),
+                 {
+                     let history = sess.clone_history().await;
+-                    if history.model_items().iter().any(|envelope| envelope.metadata.as_ref()
+-                        .is_some_and(|metadata| metadata.sdk_model_provider_metadata.is_some()))
+-                    {
+-                        history.for_prompt_annotated(&step_context.settings.model_info.input_modalities)
++                    if history.model_items().iter().any(|envelope| {
++                        envelope
++                            .metadata
++                            .as_ref()
++                            .is_some_and(|metadata| metadata.sdk_model_provider_metadata.is_some())
++                    }) {
++                        history
++                            .for_prompt_annotated(
++                                &step_context.settings.model_info.input_modalities,
++                            )
+                             .into_iter()
+-                            .filter(|envelope| envelope.metadata.as_ref()
+-                                .is_some_and(|metadata| metadata.sdk_model_provider_metadata.is_some()))
++                            .filter(|envelope| {
++                                envelope.metadata.as_ref().is_some_and(|metadata| {
++                                    metadata.sdk_model_provider_metadata.is_some()
++                                })
++                            })
+                             .collect()
+-                    } else { Vec::new() }
++                    } else {
++                        Vec::new()
++                    }
+                 },
+             );
+             prompt.tool_admission = Some(admission.clone());
+@@ -2367,7 +2378,7 @@ async fn run_sampling_request(
+                 if let Some(owner) = &invocation_deadline {
+                     owner.start();
+                 }
+-                try_run_sampling_request(
++                let receiving = try_run_sampling_request(
+                     tool_runtime.clone(),
+                     Arc::clone(&sess),
+                     Arc::clone(&step_context),
+@@ -2380,8 +2391,9 @@ async fn run_sampling_request(
+                     attempt.cancellation(),
+                     Some(attempt_deadline.clone()),
+                     invocation_deadline.as_deref(),
+-                )
+-                .await
++                    provider_response_span.as_ref(),
++                );
++                receiving.await
+             };
+             let mut outcome = attempt_deadline.run(Box::pin(invocation_attempt)).await;
+             attempt_deadline.accept_outcome();
+@@ -2708,7 +2720,7 @@ async fn run_sampling_request(
+         Some(owner) => owner.run(Box::pin(invocation)).await,
+         None => invocation.await,
+     };
+-    if invocation_deadline
++    let outcome = if invocation_deadline
+         .as_ref()
+         .is_some_and(|owner| owner.expired())
+         && !outcome.as_ref().err().is_some_and(|error| {
+@@ -2716,19 +2728,97 @@ async fn run_sampling_request(
+                 error.details(),
+                 CodexErrorDetails::ModelInvocationDeadlineExceeded(_)
+             )
+-        })
+-    {
++        }) {
+         let cleanup = outcome
+             .as_ref()
+             .err()
+             .filter(|error| !matches!(error.details(), CodexErrorDetails::TurnAborted))
+             .map(|error| format!("; invocation retirement failed: {error}"))
+             .unwrap_or_default();
+-        return Err(CodexErr::ModelInvocationDeadlineExceeded(cleanup));
++        Err(CodexErr::ModelInvocationDeadlineExceeded(cleanup))
++    } else {
++        outcome
++    };
++    if let Some(span) = provider_response_span.as_ref() {
++        span.finish(match &outcome {
++            Ok(_) => codex_otel::sdk_trace::ProviderResponseOutcome::Ok,
++            Err(error) if matches!(error.details(), CodexErrorDetails::TurnAborted) => {
++                codex_otel::sdk_trace::ProviderResponseOutcome::Cancelled
++            }
++            Err(_) => codex_otel::sdk_trace::ProviderResponseOutcome::Error,
++        });
+     }
+     outcome
+ }
+
++// Only provider polling borrows the model-response ancestry. Function and
++// approval callbacks retain the existing operation context.
++async fn poll_provider_response<F: std::future::Future>(
++    future: F,
++    span: Option<&codex_otel::sdk_trace::ProviderResponseSpan>,
++) -> F::Output {
++    use codex_otel::sdk_trace::FutureExt as _;
++    match span {
++        Some(span) => future.with_context(span.context()).await,
++        None => future.await,
++    }
++}
++
++// One SDK scope owns all attempts in this logical model round. Generic Core
++// turns and disabled/unowned contexts never ask a host for an identifier.
++async fn admit_sdk_provider_response_span(
++    sess: &Session,
++    step: &Arc<StepContext>,
++    cancellation: CancellationToken,
++) -> CodexResult<Option<codex_otel::sdk_trace::ProviderResponseSpan>> {
++    if step
++        .extension_data
++        .get::<codex_extension_api::SdkTurnReceiptSeed>()
++        .is_none()
++        || codex_otel::sdk_trace::current_scope_policy().is_none_or(|policy| policy.disabled)
++    {
++        return Ok(None);
++    }
++    let Some(parent) = codex_otel::sdk_trace::ContextLease::capture() else {
++        return Ok(None);
++    };
++    let admission = crate::model_request::tool_admission_for_step(
++        sess.thread_id.to_string(),
++        step.clone(),
++        Vec::new(),
++    );
++    let mut selected = None;
++    for contributor in sess.services.extensions.model_request_contributors() {
++        if cancellation.is_cancelled() {
++            return Err(CodexErr::TurnAborted);
++        }
++        let reply = contributor
++            .admit_provider_response_span(codex_extension_api::SdkProviderResponseSpanInput {
++                admission: admission.clone(),
++                parent_context: parent.token().to_owned(),
++                cancellation: cancellation.clone(),
++            })
++            .await
++            .map_err(CodexErr::Fatal)?;
++        if let Some(reply) = reply {
++            if selected.replace(reply).is_some() {
++                return Err(CodexErr::Fatal(
++                    "Multiple SDK response span admissions".into(),
++                ));
++            }
++        }
++    }
++    if cancellation.is_cancelled() {
++        return Err(CodexErr::TurnAborted);
++    }
++    selected
++        .map(|reply| {
++            codex_otel::sdk_trace::start_provider_response_span(&parent, reply.span_id)
++                .map_err(CodexErr::Fatal)
++        })
++        .transpose()
++}
++
+ async fn publish_model_attempt(
+     sess: &Session,
+     step: &StepContext,
+@@ -4082,10 +4172,12 @@ async fn handle_assistant_item_done_in_plan_mode(
+             step_context,
+             item,
+             finalized_facts.as_ref(),
+-            provider_metadata.cloned().map(|metadata| codex_history::CodexHarnessMetadata {
+-                sdk_model_provider_metadata: Some(metadata),
+-                ..Default::default()
+-            }),
++            provider_metadata
++                .cloned()
++                .map(|metadata| codex_history::CodexHarnessMetadata {
++                    sdk_model_provider_metadata: Some(metadata),
++                    ..Default::default()
++                }),
+         )
+         .await;
+         if let Some(agent_message) = final_last_agent_message {
+@@ -4235,6 +4327,7 @@ async fn try_run_sampling_request(
+     cancellation_token: CancellationToken,
+     logical_deadline: Option<Arc<super::model_invocation_deadline::ModelInvocationDeadline>>,
+     invocation_deadline: Option<&super::model_invocation_deadline::ModelInvocationDeadline>,
++    provider_response_span: Option<&codex_otel::sdk_trace::ProviderResponseSpan>,
+ ) -> CodexResult<SamplingRequestResult> {
+     let turn_context = Arc::clone(&step_context.turn);
+     feedback_tags!(
+@@ -4376,6 +4469,10 @@ async fn try_run_sampling_request(
+         if timeout_ms.is_some() && sample_cancel.is_cancelled() {
+             return Err(CodexErr::TurnAborted);
+         }
++        let stream_request_span = trace_span!("stream_request");
++        if let Some(parent) = provider_response_span {
++            codex_otel::set_parent_from_context(&stream_request_span, parent.context());
++        }
+         let request = client_session
+             .stream(
+                 prompt,
+@@ -4387,11 +4484,12 @@ async fn try_run_sampling_request(
+                 responses_metadata,
+                 &inference_trace,
+             )
+-            .instrument(trace_span!("stream_request"));
+-        let mut stream = input_owner
+-            .admit_model(request)
+-            .or_cancel(&sample_cancel)
+-            .await???;
++            .instrument(stream_request_span);
++        let mut stream = poll_provider_response(
++            input_owner.admit_model(request).or_cancel(&sample_cancel),
++            provider_response_span,
++        )
++        .await???;
+         // Publish owned handles synchronously before checking raced cancellation.
+         deadline.attach_stream_stop(stream.consumer_dropped.clone(), stream.producer_stop.take());
+         if timeout_ms.is_some()
+@@ -4425,12 +4523,21 @@ async fn try_run_sampling_request(
+                 codex.usage.total_tokens = field::Empty,
+             );
+
+-            let event = stream
+-                .next()
+-                .instrument(trace_span!(parent: &handle_responses, "receiving"))
+-                .or_cancel(&preempt)
+-                .or_cancel(&sample_cancel)
+-                .await;
++            // Handling can dispatch tools, so only the provider polling span
++            // belongs to the logical response. Keep effect ancestry unchanged.
++            let receiving_poll_span = trace_span!(parent: &handle_responses, "receiving");
++            if let Some(parent) = provider_response_span {
++                codex_otel::set_parent_from_context(&receiving_poll_span, parent.context());
++            }
++            let event = poll_provider_response(
++                stream
++                    .next()
++                    .instrument(receiving_poll_span)
++                    .or_cancel(&preempt)
++                    .or_cancel(&sample_cancel),
++                provider_response_span,
++            )
++            .await;
+             if sample_cancel.is_cancelled() {
+                 break Err(CodexErr::TurnAborted);
+             }
+@@ -4529,8 +4636,10 @@ async fn try_run_sampling_request(
+                     }
+                 }
+                 ResponseEvent::OutputItemDone(mut item) => {
+-                    let provider_metadata = if let Some(metadata) = prompt.tool_admission
+-                        .as_ref().and_then(|admission| admission.provider_output_metadata())
++                    let provider_metadata = if let Some(metadata) = prompt
++                        .tool_admission
++                        .as_ref()
++                        .and_then(|admission| admission.provider_output_metadata())
+                     {
+                         match metadata.take_for(&item) {
+                             Ok(metadata) => metadata,
+@@ -4540,7 +4649,9 @@ async fn try_run_sampling_request(
+                                 break Err(CodexErr::InvalidRequest(error));
+                             }
+                         }
+-                    } else { None };
++                    } else {
++                        None
++                    };
+                     if matches!(&item, ResponseItem::Message { role, content, .. } if role == "assistant" && !content.is_empty())
+                     {
+                         if let Some(attempt) = &model_attempt {
+@@ -4549,7 +4660,9 @@ async fn try_run_sampling_request(
+                     }
+
+                     assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
+-                    sess.services.model_client.observe_provider_history_output(&item)?;
++                    sess.services
++                        .model_client
++                        .observe_provider_history_output(&item)?;
+                     sess.reserve_assistant_message_order(&turn_context, &item)
+                         .await;
+                     if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
+@@ -4658,14 +4771,18 @@ async fn try_run_sampling_request(
+                     };
+
+                     let direct_call = item.clone();
+-                    let output_result =
+-                        match handle_output_item_done(&mut ctx, item, previously_streamed_item, provider_metadata)
+-                            .instrument(handle_responses)
+-                            .await
+-                        {
+-                            Ok(output_result) => output_result,
+-                            Err(err) => break Err(err),
+-                        };
++                    let output_result = match handle_output_item_done(
++                        &mut ctx,
++                        item,
++                        previously_streamed_item,
++                        provider_metadata,
++                    )
++                    .instrument(handle_responses)
++                    .await
++                    {
++                        Ok(output_result) => output_result,
++                        Err(err) => break Err(err),
++                    };
+                     if let Some(text) = sdk_segmented_text.as_mut()
+                         && !text
+                             .observe_item(&direct_call, output_result.last_agent_message.is_some())
+@@ -4906,6 +5023,12 @@ async fn try_run_sampling_request(
+                     usage_metadata,
+                     end_turn,
+                 } => {
++                    // The provider has completed; tool and approval settlement below
++                    // belong to their existing operation owners.
++                    if let Some(span) = provider_response_span {
++                        span.record_response(&response_id);
++                        span.finish(codex_otel::sdk_trace::ProviderResponseOutcome::Ok);
++                    }
+                     if let (Some(attempt), Some(admission)) =
+                         (&model_attempt, &prompt.tool_admission)
+                     {
+@@ -5218,7 +5341,8 @@ async fn try_run_sampling_request(
+         async {
+             sess.ensure_rollout_durable().await?;
+             client_session.accept_provider_history().await
+-        }.await
++        }
++        .await
+     } else {
+         Ok(())
+     };
+@@ -5310,7 +5434,9 @@ async fn try_run_sampling_request(
+         release_failed_tool_candidates(&sess, &step_context).await;
+     }
+     tool_cleanup?;
+-    if history_acceptance.is_err() { release_failed_tool_candidates(&sess, &step_context).await; }
++    if history_acceptance.is_err() {
++        release_failed_tool_candidates(&sess, &step_context).await;
++    }
+     history_acceptance?;
+
+     // Tool effects have completed. Save their results before any dependent work.
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index c4257948aff87656327743517fce77aa314c0c1e..a61f6d394cf53d400b3f6e2e6eaa5b9fdebf4550 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -12,8 +12,8 @@ mod user_instructions;
+ pub use provider_image_reference_policy::ProviderImageReferencePolicy;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+-pub use tool_policy::FinalStepBuiltinTools;
+ pub use tool_not_found::ToolNotFoundBehavior;
++pub use tool_policy::FinalStepBuiltinTools;
+ pub use tool_policy::ToolPolicy;
+
+ pub use capabilities::ConversationHistorySnapshot;
+@@ -178,6 +178,8 @@ pub use model_request::ModelResponseStream;
+ pub use model_request::ModelToolAdmission;
+ pub use model_request::ProviderResponseAnchor;
+ pub use model_request::ResponseEvent;
++pub use model_request::SdkProviderResponseSpanAdmission;
++pub use model_request::SdkProviderResponseSpanInput;
+ pub use model_request::SelectedStagedInput;
+ pub use model_request::StagedInputBatch;
+ pub use model_request::StagedInputPreparation;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 4335605a1e89113106ac99a3e4f9e0c64e45e04f..5441b58f240fae8dd2caf2aec417306386cbb614 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -301,9 +301,36 @@ pub struct ToolsOnlyCallInput {
+     pub cancellation: tokio_util::sync::CancellationToken,
+ }
+
++/// Exact logical model round, before any of its retry attempts start.
++/// The context is a Core-retained live SDK capability, never a portable parent ID.
++#[derive(Clone)]
++pub struct SdkProviderResponseSpanInput {
++    pub admission: Arc<dyn ModelToolAdmission>,
++    pub parent_context: String,
++    pub cancellation: tokio_util::sync::CancellationToken,
++}
++
++/// A host-validated synchronous ID policy result for this exact admission.
++/// Core validates the optional span ID again before constructing its real span.
++#[derive(Debug, Clone, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct SdkProviderResponseSpanAdmission {
++    pub span_id: Option<String>,
++}
++
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    /// Await SDK ID allocation on the host's own loop, never in an OTel subscriber.
++    /// The host retains and joins its exact reply owner on cancellation.
++    /// None preserves generic native instrumentation without adding an SDK span.
++    fn admit_provider_response_span(
++        &self,
++        _input: SdkProviderResponseSpanInput,
++    ) -> BoxFuture<'_, Result<Option<SdkProviderResponseSpanAdmission>, String>> {
++        Box::pin(async { Ok(None) })
++    }
++
+     fn provider_history_route(
+         &self,
+         _url: &str,
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 91626c7f7baad203d0c863a571d8a2880cb4d27c..82b4aeb09f6dc0570874ce38b210fc48a61f9e55 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -622,11 +622,25 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     }
+     let options: Options =
+         serde_json::from_str(encoded).map_err(|_| "Invalid native tracing span options")?;
++    start_trace_span_options(options, false).map(|started| started.encoded)
++}
++
++struct StartedSpan {
++    encoded: String,
++    key: String,
++    handle: Arc<Handle>,
++}
++
++fn start_trace_span_options(
++    options: Options,
++    provider_response: bool,
++) -> Result<StartedSpan, String> {
+     if options.name.is_empty() || options.name.len() > 4096 {
+         return Err("Tracing span name must contain 1–4096 UTF-8 bytes".into());
+     }
+     if !["workflow", "custom", "callback", "validation", "operation"]
+         .contains(&options.kind.as_str())
++        && !(provider_response && options.kind == "model")
+     {
+         return Err("Unsupported native tracing span kind".into());
+     }
+@@ -775,9 +789,86 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     handles()
+         .lock()
+         .unwrap_or_else(|e| e.into_inner())
+-        .insert(key, handle);
+-    Ok(result)
++        .insert(key.clone(), Arc::clone(&handle));
++    Ok(StartedSpan {
++        encoded: result,
++        key,
++        handle,
++    })
++}
++
++/// One SDK response scope around a logical model round and all of its attempts.
++/// Construction reuses the public scope's live-parent, ID and export validation.
++pub struct ProviderResponseSpan {
++    key: String,
++    context: Context,
++    finished: AtomicBool,
++}
++
++#[derive(Clone, Copy)]
++pub enum ProviderResponseOutcome {
++    Ok,
++    Error,
++    Cancelled,
++}
++
++pub fn start_provider_response_span(
++    parent: &ContextLease,
++    span_id: Option<String>,
++) -> Result<ProviderResponseSpan, String> {
++    let started = start_trace_span_options(
++        Options {
++            name: "response".into(),
++            kind: "model".into(),
++            parent: Some(parent.token().to_owned()),
++            span_id,
++            ..Options::default()
++        },
++        true,
++    )?;
++    Ok(ProviderResponseSpan {
++        key: started.key,
++        context: explicit_submission_context(started.handle.context.clone()),
++        finished: AtomicBool::new(false),
++    })
++}
++
++impl ProviderResponseSpan {
++    pub fn context(&self) -> Context {
++        self.context.clone()
++    }
++
++    pub fn record_response(&self, response_id: &str) {
++        if !response_id.is_empty()
++            && response_id.len() <= 4096
++            && policy_for_context(&self.context).is_some_and(|policy| policy.include_sensitive_data)
++        {
++            self.context
++                .span()
++                .set_attribute(KeyValue::new("sdk.response.id", response_id.to_owned()));
++        }
++    }
++
++    pub fn finish(&self, outcome: ProviderResponseOutcome) {
++        if self.finished.swap(true, Ordering::AcqRel) {
++            return;
++        }
++        let status = match outcome {
++            ProviderResponseOutcome::Ok => "ok",
++            ProviderResponseOutcome::Error => "error",
++            ProviderResponseOutcome::Cancelled => "cancelled",
++        };
++        let _ = end_trace_span(&self.key, &json!({"status": status}).to_string());
++    }
++}
++
++impl Drop for ProviderResponseSpan {
++    fn drop(&mut self) {
++        self.finish(ProviderResponseOutcome::Cancelled);
++        release_trace_span(&self.key);
++    }
+ }
++
+ pub fn trace_span_context(key: &str) -> Result<String, String> {
+     readback(key, resolve(key)?.as_ref(), None)
+ }

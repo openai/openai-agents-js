@@ -185,6 +185,7 @@ struct SocketState {
     write: Mutex<Option<SplitSink<WebSocketConnection, Message>>>,
     read: Mutex<Option<SplitStream<WebSocketConnection>>>,
     terminal: watch::Sender<SocketTerminal>,
+    pongs: watch::Sender<Vec<u8>>,
 }
 
 // Only an ordinary, observed peer end may reconnect before a generating send.
@@ -509,6 +510,30 @@ impl NativeModelWebSocket {
             .await
     }
 
+    pub(crate) fn subscribe_pongs(&self) -> napi::Result<watch::Receiver<Vec<u8>>> {
+        Ok(self.state()?.pongs.subscribe())
+    }
+
+    pub(crate) async fn send_ping(&self, payload: Vec<u8>) -> napi::Result<()> {
+        let state = self.state()?;
+        let mut terminal = state.terminal.subscribe();
+        tokio::select! {
+            biased;
+            reason = terminal.wait_for(|reason| *reason != SocketTerminal::Live) => {
+                Err(reason.expect("ping owns socket sender").error())
+            }
+            result = async {
+                let write = state.write.lock().await;
+                let mut pending = PendingSend { state: &state, write, complete: false };
+                pending.write.as_mut().ok_or_else(socket_error)?
+                    .send(Message::Ping(payload.into())).await
+                    .map_err(|error| state.transport_error(error))?;
+                pending.complete = true;
+                Ok(())
+            } => result,
+        }
+    }
+
     pub(crate) async fn receive_frame(&self) -> napi::Result<Option<Frame>> {
         let state = self.state()?;
         (async move {
@@ -535,7 +560,10 @@ impl NativeModelWebSocket {
                                     Frame::Close(frame.code.into(), frame.reason.to_string())
                                 })).map(Some);
                             }
-                            Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => continue,
+                            Some(Ok(Message::Pong(payload))) => {
+                                state.pongs.send_replace(payload.to_vec());
+                            }
+                            Some(Ok(Message::Ping(_) | Message::Frame(_))) => continue,
                             Some(Err(Error::ConnectionClosed | Error::AlreadyClosed)) | None => {
                                 return state.peer_closed(Frame::Closed).map(Some);
                             }
@@ -679,6 +707,7 @@ pub(super) async fn sentinel_open(
                     write: Mutex::new(Some(write)),
                     read: Mutex::new(Some(read)),
                     terminal: watch::channel(SocketTerminal::Live).0,
+                    pongs: watch::channel(Vec::new()).0,
                 }))),
                 response.status().as_u16(),
                 header_pairs(response.headers()),

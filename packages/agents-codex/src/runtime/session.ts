@@ -155,6 +155,7 @@ import {
   withoutTracing,
   TraceCapture,
   withNativeCallbackContext,
+  providerResponseSpanAdmission,
 } from './tracing-context';
 import type { TraceOptions } from './telemetry';
 import {
@@ -7824,6 +7825,7 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     if (
+      msg.type === '_sdk_provider_response_span' ||
       msg.type === '_sdk_model_retry' ||
       msg.type === '_sdk_model_produce' ||
       msg.type === '_sdk_before_compact' ||
@@ -8204,6 +8206,7 @@ export class Session<OutputT = string, Context = unknown> {
       return;
     }
     if (
+      kind === '_sdk_provider_response_span' ||
       kind === '_sdk_model_retry' ||
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
@@ -9322,6 +9325,7 @@ export class Session<OutputT = string, Context = unknown> {
             generation: msg.generation,
             request_id: msg.request_id,
           };
+          const responseSpan = msg.type === '_sdk_provider_response_span';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
           const compact = compactPolicy || msg.type === '_sdk_before_compact';
@@ -9345,7 +9349,8 @@ export class Session<OutputT = string, Context = unknown> {
             const data = contextEdit
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
-            if (retry) sourceNative._reply_model_retry(data);
+            if (responseSpan) sourceNative._reply_provider_response_span(data);
+            else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
             else if (compact) sourceNative._reply_compaction(data);
             else if (contextEdit) sourceNative._reply_model_context(data);
@@ -9379,6 +9384,15 @@ export class Session<OutputT = string, Context = unknown> {
           signal.addEventListener('abort', reject, { once: true });
           try {
             check();
+            if (responseSpan) {
+              const admitted = await providerResponseSpanAdmission(
+                z.string().min(1).parse(msg.parent_context),
+                signal,
+              );
+              check();
+              reply({ data: admitted });
+              return;
+            }
             this.bindRunRetryPolicy(owner, msg);
             if (msg.type === '_sdk_before_complete')
               await this.awaitInputGuardrails(

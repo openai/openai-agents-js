@@ -3398,6 +3398,31 @@ impl NativeThread {
         owner.reply_compaction(response).map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_provider_response_span")]
+    pub fn reply_provider_response_span(&self, response_json: String) -> napi::Result<()> {
+        if response_json.len() > 4096 {
+            return Err(input_error("SDK response span reply exceeds capacity"));
+        }
+        let inner = self.current()?;
+        let response: python_tools::context_callbacks::ProviderResponseSpanReply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Model callbacks require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired model callback owner"))?;
+        owner
+            .reply_provider_response_span(response)
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_model_context")]
     pub fn _reply_model_context(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;

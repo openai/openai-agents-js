@@ -138,6 +138,8 @@ export interface ModelSettings {
   extraHeaders?: Readonly<Record<string, string | null>> | null;
   /** Request-local JSON query values; null clears the query override. */
   extraQuery?: Readonly<JsonObject> | null;
+  /** Explicit websocket has been preventing HTTP fallback and uncertain automatic replay. */
+  requestTransport?: 'auto' | 'http' | 'websocket' | null;
   /**
    * Ordinary text sampling only: opt-in release of required/named forcing after an
    * accepted tool batch on this profile.
@@ -256,6 +258,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'extraBody',
     'extraHeaders',
     'extraQuery',
+    'requestTransport',
   ]);
   for (const key of Object.getOwnPropertyNames(source)) {
     if (!allowed.has(key))
@@ -379,6 +382,11 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
             'extraBody cannot replace native request fields; use the corresponding model setting',
           );
         value = copyJsonValue(value);
+      } else if (key === 'requestTransport') {
+        if (!['auto', 'http', 'websocket'].includes(value as string))
+          throw new TypeError(
+            'requestTransport must select auto, http, or websocket',
+          );
       } else if (key === 'extraHeaders') {
         value = captureRequestHeaders(value);
       } else if (key === 'extraQuery') {
@@ -452,6 +460,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'extraBody',
         'extraHeaders',
         'extraQuery',
+        'requestTransport',
       ].includes(key)
     ) {
       throw new TypeError(`Invalid null model setting: ${key}`);
@@ -466,6 +475,8 @@ export function requestTransportWire(
   settings?: ModelSettings,
 ): JsonObject | undefined {
   const transport: JsonObject = {};
+  if (settings?.requestTransport !== undefined)
+    transport.mode = settings.requestTransport;
   if (settings?.extraHeaders !== undefined)
     transport.headers = copyJsonValue(settings.extraHeaders);
   if (settings?.extraQuery !== undefined) {

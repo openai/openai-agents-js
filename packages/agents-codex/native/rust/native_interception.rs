@@ -3264,6 +3264,29 @@ impl ContextContributor for Boundary {
 }
 
 impl ModelRequestContributor for Boundary {
+    fn admit_provider_response_span(
+        &self,
+        input: codex_extension_api::SdkProviderResponseSpanInput,
+    ) -> futures_util::future::BoxFuture<
+        '_,
+        Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, String>,
+    > {
+        let tools = input
+            .admission
+            .turn_store()
+            .get::<Weak<crate::python_tools::PythonTools>>()
+            .and_then(|tools| tools.upgrade());
+        Box::pin(async move {
+            let Some(tools) = tools else {
+                return Ok(None);
+            };
+            tools
+                .admit_provider_response_span(input)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
     fn model_attempt(&self, input: codex_extension_api::ModelAttemptInput) -> Result<(), String> {
         let Some(tools) = input
             .admission
@@ -3428,7 +3451,12 @@ impl ModelRequestContributor for Boundary {
         &self,
         url: &str,
         headers: &http::HeaderMap,
-    ) -> Option<futures_util::future::BoxFuture<'static, Result<codex_extension_api::ModelProviderHistoryRoute, String>>> {
+    ) -> Option<
+        futures_util::future::BoxFuture<
+            'static,
+            Result<codex_extension_api::ModelProviderHistoryRoute, String>,
+        >,
+    > {
         let engine = self.engine.get()?.upgrade()?;
         let base = engine.sentinel.read().expect("sentinel poisoned").as_ref()?.0.clone();
         if !url.starts_with(&format!("{}/p-", base.trim_end_matches('/'))) {
@@ -3579,6 +3607,7 @@ impl ModelRequestContributor for Boundary {
                 kind: input.kind,
                 model: input.model.to_owned(),
                 model_omitted: input.model_omitted,
+                provider_managed_history: input.provider_managed_history,
                 admitted: AtomicBool::new(false),
                 owner,
                 failure: Mutex::new(None),
@@ -3646,6 +3675,7 @@ struct SentinelTicket {
     kind: ModelRequestKind,
     model: String,
     model_omitted: bool,
+    provider_managed_history: bool,
     admitted: AtomicBool,
     owner: Option<Arc<DirectTurn>>,
     failure: Mutex<Option<SentinelFailure>>,
@@ -4007,6 +4037,7 @@ pub(crate) async fn sentinel_admit(
         "model_omitted": ticket.model_omitted,
         "content_item_kinds": content_item_kinds,
         "completion": completion,
+        "provider_managed_history": ticket.provider_managed_history,
     });
     if ticket.attempts.is_some() {
         receipt["request_attempts"] = Value::Bool(true);
@@ -8137,6 +8168,7 @@ mod tests {
                     thread_id: &control.id,
                     client_metadata,
                     model: "test-model",
+                    provider_managed_history: false,
                     model_omitted: false,
                 })
                 .unwrap()
@@ -8193,6 +8225,7 @@ mod tests {
                 kind,
                 model: "model".into(),
                 model_omitted: false,
+                provider_managed_history: false,
                 admitted: AtomicBool::new(true),
                 owner,
                 failure: Mutex::new(None),
@@ -8267,6 +8300,7 @@ mod tests {
                         kind: ModelRequestKind::Generation,
                         model: "issuing-model".into(),
                         model_omitted: false,
+                        provider_managed_history: false,
                         admitted: AtomicBool::new(false),
                         owner: Some(owner),
                         failure: Mutex::new(None),

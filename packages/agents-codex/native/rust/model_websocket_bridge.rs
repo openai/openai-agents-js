@@ -20,6 +20,9 @@ pub(crate) async fn connect(
     expected_url: String,
     request: http::Request<()>,
 ) -> Result<ResponsesWebsocketMessageTransport, ApiError> {
+    let websocket_options = request.extensions()
+        .get::<codex_protocol::model_request_transport::WebsocketOptions>()
+        .cloned().unwrap_or_default();
     let stopped = control.stopped_token().clone();
     let engine = Arc::downgrade(&engine);
     let (commands, command_rx) = mpsc::channel(32);
@@ -61,7 +64,7 @@ pub(crate) async fn connect(
                     biased;
                     () = stopped.cancelled() => Ok(()),
                     () = message_tx.closed() => Ok(()),
-                    result = bridge.run(command_rx, &message_tx) => result,
+                    result = bridge.run(command_rx, &message_tx, websocket_options) => result,
                 };
                 if let Some((ticket, oversized)) = bridge.pending.take()
                     && let Some(engine) = engine.upgrade()
@@ -115,8 +118,21 @@ impl Bridge<'_> {
         &mut self,
         mut commands: mpsc::Receiver<ResponsesWebsocketCommand>,
         messages: &mpsc::UnboundedSender<Result<Message, WsError>>,
+        options: codex_protocol::model_request_transport::WebsocketOptions,
     ) -> Result<()> {
         let mut buffered = None;
+        let mut pongs = self.socket.subscribe_pongs().map_err(|error| anyhow::anyhow!(error.reason))?;
+        let mut ping_timer = options.ping_interval_ms.and_then(|value| {
+            let interval = std::time::Duration::from_millis(value.get());
+            tokio::time::Instant::now().checked_add(interval).map(|deadline| {
+                let mut timer = tokio::time::interval_at(deadline, interval);
+                timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                timer
+            })
+        });
+        let mut ping_nonce = 0u64;
+        let mut awaiting_pong: Option<Vec<u8>> = None;
+        let mut pong_deadline = None;
         loop {
             tokio::select! {
                 biased;
@@ -145,6 +161,31 @@ impl Bridge<'_> {
                     if let Some(frame) = buffered.take() {
                         self.forward(Some(frame), messages)?;
                     }
+                }
+                _ = async { match ping_timer.as_mut() {
+                    Some(timer) => { timer.tick().await; },
+                    None => std::future::pending::<()>().await,
+                } }, if ping_timer.is_some() && awaiting_pong.is_none() => {
+                    ping_nonce = ping_nonce.wrapping_add(1);
+                    let payload = ping_nonce.to_be_bytes().to_vec();
+                    self.socket.send_ping(payload.clone()).await.map_err(|error| anyhow::anyhow!(error.reason))?;
+                    if let Some(timeout) = options.ping_timeout_ms {
+                        awaiting_pong = Some(payload);
+                        pong_deadline = tokio::time::Instant::now().checked_add(std::time::Duration::from_millis(timeout.get()));
+                    }
+                }
+                changed = pongs.changed(), if awaiting_pong.is_some() => {
+                    changed.map_err(|_| anyhow::anyhow!("Native WebSocket pong owner ended"))?;
+                    if awaiting_pong.as_deref() == Some(pongs.borrow_and_update().as_slice()) {
+                        awaiting_pong = None;
+                        pong_deadline = None;
+                    }
+                }
+                _ = async { match pong_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                } } => {
+                    anyhow::bail!("Responses websocket pong timeout");
                 }
                 received = self.socket.receive_frame(), if buffered.is_none() => {
                     let frame = received.map_err(|error| anyhow::anyhow!(error.reason))?;
@@ -237,20 +278,28 @@ impl Bridge<'_> {
         metadata.remove("sdk_sentinel_nonce");
         body["client_metadata"] = Value::Object(metadata);
         let native_continuation = body["previous_response_id"].is_string();
-        let mut body = self
-            .prefix
-            .reconstruct(body, &model, receipt.get("completion"))
-            .map_err(anyhow::Error::msg)?;
+        let provider_managed_history = receipt["provider_managed_history"] == true;
+        let mut body = if provider_managed_history {
+            // Core has verified the exact anchor and reduced the native history window.
+            body
+        } else {
+            self.prefix
+                .reconstruct(body, &model, receipt.get("completion"))
+                .map_err(anyhow::Error::msg)?
+        };
         native_interception::sentinel_restore_schemas(&engine, self.provider, &ticket, &mut body)
             .await?;
         normalize_relay_numbers(&mut body)?;
         ensure!(body["input"].is_array(), "Invalid native Responses input");
         drop(permit);
         drop(engine);
-        let wire = self
-            .prefix
-            .encode(&body, &model, native_continuation)
-            .map_err(anyhow::Error::msg)?;
+        let wire = if provider_managed_history {
+            body.clone()
+        } else {
+            self.prefix
+                .encode(&body, &model, native_continuation)
+                .map_err(anyhow::Error::msg)?
+        };
         let payload = serde_json::to_string(&wire)?;
         if payload.len() > MAX_REQUEST_BYTES {
             self.pending.as_mut().expect("native request admitted").1 = true;

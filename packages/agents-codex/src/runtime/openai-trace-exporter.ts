@@ -310,11 +310,21 @@ export class OpenAITraceExporter implements TraceProcessor {
             parent_id: spanId(event.parent_span_id),
             started_at: timestamp(event.start_time_unix_nanos),
             ended_at: timestamp(event.end_time_unix_nanos!),
-            span_data: {
-              type: 'custom',
-              name: event.name,
-              data: event.attributes,
-            },
+            span_data:
+              event.attributes['sdk.span.kind'] === 'model'
+                ? {
+                    type: 'response',
+                    response_id:
+                      typeof event.attributes['sdk.response.id'] === 'string'
+                        ? event.attributes['sdk.response.id']
+                        : null,
+                    usage: null,
+                  }
+                : {
+                    type: 'custom',
+                    name: event.name,
+                    data: event.attributes,
+                  },
             error:
               event.outcome === 'error'
                 ? {
