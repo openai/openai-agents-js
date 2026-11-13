@@ -13611,7 +13611,9 @@ export class Session<OutputT = string, Context = unknown> {
       }
       throw error;
     } finally {
-      release?.();
+      if (release && delivery?.cleanup)
+        delivery.cleanup = delivery.cleanup.finally(release);
+      else release?.();
     }
   }
 

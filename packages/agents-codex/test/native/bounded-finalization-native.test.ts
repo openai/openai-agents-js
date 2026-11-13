@@ -231,3 +231,60 @@ it('keeps cancellation before the deadline authoritative without late success', 
   expect(after).not.toHaveBeenCalled();
   expect(server.requests).toHaveLength(1);
 }, 15000);
+
+it('keeps the concurrency permit until a timed-out callback physically settles', async () => {
+  const firstEntered = Promise.withResolvers<void>();
+  const timeoutObserved = Promise.withResolvers<void>();
+  const releaseFirst = Promise.withResolvers<void>();
+  const effects: string[] = [];
+  const server = new ModelServer([
+    [
+      call('record', { sequence: 1 }, { callId: 'first' }),
+      call('record', { sequence: 2 }, { callId: 'second' }),
+    ],
+    [message('done')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    instructions: 'Run both calls.',
+    provider,
+    tools: [
+      tool({
+        name: 'record',
+        parameters: z.object({ sequence: z.number() }),
+        callbackTimeout: 0.03,
+        timeoutBehavior: 'error_as_result',
+        timeoutSettlement: 'at_deadline',
+        async execute({ sequence }, context) {
+          effects.push('start ' + sequence);
+          if (sequence === 1) {
+            context.signal.addEventListener(
+              'abort',
+              () => timeoutObserved.resolve(),
+              {
+                once: true,
+              },
+            );
+            firstEntered.resolve();
+            await releaseFirst.promise;
+          }
+          effects.push('end ' + sequence);
+          return 'recorded ' + sequence;
+        },
+      }),
+    ],
+  }).session({ maxFunctionConcurrency: 1 });
+  const turn = await session.submit('Run first, then second.');
+  const result = turn.wait();
+  try {
+    await firstEntered.promise;
+    await timeoutObserved.promise;
+    await sleep(100);
+    expect(effects).toEqual(['start 1']);
+  } finally {
+    releaseFirst.resolve();
+    await result.catch(() => {});
+  }
+  expect((await result).finalOutput).toBe('done');
+  expect(effects).toEqual(['start 1', 'end 1', 'start 2', 'end 2']);
+});
