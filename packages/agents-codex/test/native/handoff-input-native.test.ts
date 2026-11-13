@@ -157,7 +157,7 @@ it.each(['prepared', 'old-filter', 'old-plain'])(
   'restores pending handoff groups with mode=%s',
   async (mode) => {
     const prepareEnabled = mode !== 'old-plain';
-    let effects = 0;
+    const effects = 0;
     let preparations = 0;
     const gate = manualTool({
       name: 'gate',
