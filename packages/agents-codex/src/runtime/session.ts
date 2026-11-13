@@ -71,6 +71,7 @@ import {
   type InputGuardrail,
   type OutputGuardrail,
 } from './guardrails';
+import { settleOutputGuardrails } from './output-guardrails';
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
@@ -8969,48 +8970,18 @@ export class Session<OutputT = string, Context = unknown> {
     if (!guards.length) return;
     const scope = this.decisionScope(message, request.signal);
     try {
-      const settled = await Promise.allSettled(
-        guards.map(async (guard) => {
-          check();
-          const result = captureGuardrailResult(
-            await guard.callback(
-              Object.freeze({
-                ...request,
-                finalOutput: structuredClone(request.finalOutput),
-                decide: scope.decide,
-              }),
-              agent,
-            ),
-          );
-          check();
-          return Object.freeze({
-            kind: 'output' as const,
-            name: guard.name,
-            result,
+      await settleOutputGuardrails({
+        guards,
+        agent,
+        request,
+        guardrailResults: owner.guardrailResults,
+        invoke: (guard, finalOutput) =>
+          guard.callback(
+            Object.freeze({ ...request, finalOutput, decide: scope.decide }),
             agent,
-            sessionId: request.sessionId,
-            turnId: request.turnId,
-            ...(request.subagentId ? { subagentId: request.subagentId } : {}),
-            ...(request.toolCall ? { toolCall: request.toolCall } : {}),
-            ...(request.toolBatchCallIds
-              ? { toolBatchCallIds: request.toolBatchCallIds }
-              : {}),
-          });
-        }),
-      );
-      const records = settled.flatMap((entry) =>
-        entry.status === 'fulfilled' ? [entry.value] : [],
-      );
-      owner.guardrailResults.push(...records);
-      const failed = settled.find((entry) => entry.status === 'rejected');
-      if (failed?.status === 'rejected') throw failed.reason;
-      check();
-      const tripped = records.find((record) => record.result.tripwireTriggered);
-      if (tripped)
-        throw new GuardrailTripwire(
-          tripped,
-          Object.freeze([...owner.guardrailResults]),
-        );
+          ),
+        check,
+      });
     } finally {
       await scope.close();
     }
