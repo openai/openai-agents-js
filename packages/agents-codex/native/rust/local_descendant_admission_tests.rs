@@ -1052,9 +1052,11 @@ async fn cold_recovery_requires_owned_effect_free_sampling_evidence() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_recovery_keeps_durable_receipt_lineage_bound_to_the_active_turn() {
     for (old_receipt, root_possible, accepted) in [
-        (true, true, false),
-        (true, false, true),
-        (false, true, true),
+        (true, Some(true), false),
+        (true, Some(false), true),
+        (false, None, true),
+        (false, Some(false), true),
+        (false, Some(true), false),
     ] {
         let home = tempfile::tempdir().unwrap();
         let (store, [root, child]) = recovery_family(home.path()).await;
@@ -1064,7 +1066,7 @@ async fn cold_recovery_keeps_durable_receipt_lineage_bound_to_the_active_turn() 
             [
                 vec![
                     started("root"),
-                    sampling_context(home.path(), root, "root", Some(root_possible)),
+                    sampling_context(home.path(), root, "root", root_possible),
                 ],
                 spawn("spawn-child", child),
             ]
@@ -1095,6 +1097,83 @@ async fn cold_recovery_keeps_durable_receipt_lineage_bound_to_the_active_turn() 
             );
         }
         store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_exact_receipts_cannot_override_known_provider_uncertainty() {
+    for recorded in [false, true] {
+        for marker in [
+            "legacy", "false", "true", "invalid", "mixed", "foreign", "version",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let (store, [root, child]) = recovery_family(home.path()).await;
+            append(
+                &store,
+                root,
+                [
+                    vec![started("root"), legacy_context(home.path(), "root")],
+                    spawn("spawn-child", child),
+                    vec![completed("root")],
+                ]
+                .concat(),
+            )
+            .await;
+            let mut context = sampling_context(
+                home.path(),
+                if marker == "foreign" { root } else { child },
+                "child",
+                if marker == "legacy" {
+                    None
+                } else {
+                    Some(matches!(marker, "true" | "mixed"))
+                },
+            );
+            if let RolloutItem::TurnContext(context) = &mut context {
+                if marker == "invalid" {
+                    context.sdk_receipt.as_mut().unwrap()["provider_effects_possible"] =
+                        json!("false");
+                }
+                if marker == "version" {
+                    context.sdk_receipt.as_mut().unwrap()["version"] = json!(2);
+                }
+            }
+            let mut rows = vec![started("child"), context, call("effect")];
+            if marker == "mixed" {
+                rows.push(sampling_context(home.path(), child, "child", Some(false)));
+            }
+            if recorded {
+                rows.push(RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call_output","call_id":"effect","output":"confirmed absent","internal_chat_message_metadata_passthrough":{"turn_id":"child","content_item_kinds":["sdk_reconciliation.not_applied"]}})).unwrap())));
+            }
+            append(&store, child, rows).await;
+            for id in [child, root] {
+                store.shutdown_thread(id).await.unwrap();
+            }
+            let store = Arc::new(store);
+            let result = prepare_recovery(
+                &store,
+                home.path(),
+                root,
+                if recorded {
+                    Vec::new()
+                } else {
+                    vec![recovery_receipt(child, "child")]
+                },
+            )
+            .await;
+            if matches!(marker, "legacy" | "false") {
+                drop(result.unwrap());
+            } else {
+                let error = result.err().unwrap();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("cannot exclude provider effects"),
+                    "{marker}, recorded={recorded}: {error}"
+                );
+            }
+            store.close_database().await.unwrap();
+        }
     }
 }
 

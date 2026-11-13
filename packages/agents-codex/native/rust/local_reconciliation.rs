@@ -629,10 +629,11 @@ pub(crate) fn reconciled_turns(
         .collect())
 }
 
-pub(crate) fn validate_automatic_sampling(
+pub(crate) fn validate_sampling_effects(
     thread: ThreadId,
     history: &[RolloutItem],
     turns: &HashSet<String>,
+    automatic: &HashSet<String>,
 ) -> Result<()> {
     let thread = thread.to_string();
     for turn in turns {
@@ -646,17 +647,16 @@ pub(crate) fn validate_automatic_sampling(
             })
             .collect();
         ensure!(
-            !receipts.is_empty()
-                && receipts.iter().all(|receipt| receipt
-                    .get("version")
-                    .and_then(serde_json::Value::as_u64)
-                    == Some(1)
-                    && receipt.get("thread_id").and_then(serde_json::Value::as_str)
-                        == Some(thread.as_str())
-                    && receipt
-                        .get("provider_effects_possible")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(false)),
+            (!automatic.contains(turn) || !receipts.is_empty())
+                && receipts.iter().all(|receipt| (!automatic.contains(turn)
+                    && receipt.get("provider_effects_possible").is_none())
+                    || (receipt.get("version").and_then(serde_json::Value::as_u64) == Some(1)
+                        && receipt.get("thread_id").and_then(serde_json::Value::as_str)
+                            == Some(thread.as_str())
+                        && receipt
+                            .get("provider_effects_possible")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(false))),
             "local history cannot exclude provider effects in an interrupted sampling request"
         );
     }
