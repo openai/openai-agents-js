@@ -82,6 +82,7 @@ import {
   markModelRequestTransport,
   markRawProviderRequest,
   pumpModelStream,
+  borrowedResponsesRequestId,
   type NativeModel,
   type ModelRequest,
   type ModelProvider,
@@ -9122,6 +9123,11 @@ export class Session<OutputT = string, Context = unknown> {
                   ? failedAttempt
                   : undefined;
               let context = captured.context;
+              if (
+                context.transport === 'model_producer' &&
+                failed?.stream !== undefined
+              )
+                context = Object.freeze({ ...context, stream: failed.stream });
               const advice = failed?.advice
                 ? captureModelRetryAdvice(
                     await failed.advice.call(failed.model, {
@@ -9129,6 +9135,7 @@ export class Session<OutputT = string, Context = unknown> {
                       error: failed.error,
                       attemptId: captured.context.attemptId,
                       attempt: captured.context.attempt,
+                      stream: context.stream,
                       signal,
                     }),
                   )
@@ -9235,7 +9242,7 @@ export class Session<OutputT = string, Context = unknown> {
                 this.messageProfile(msg)?.profile_id,
                 owner,
               );
-              const failed = (error: unknown) => {
+              const failed = (error: unknown, stream?: boolean) => {
                 if (
                   attemptId === undefined ||
                   !this.current(owner) ||
@@ -9245,6 +9252,7 @@ export class Session<OutputT = string, Context = unknown> {
                 const failure = {
                   attemptId,
                   error,
+                  stream,
                   request: Object.freeze({
                     ...request,
                     body: losslessJsonObjectSchema.parse(msg.data),
@@ -9279,9 +9287,12 @@ export class Session<OutputT = string, Context = unknown> {
                   this.callbackDeliveries.authorityFailed(delivery, replyError);
                 }
               };
+              let requestStream: boolean | undefined;
               try {
-                if (backend.stream) {
-                  const stream = await backend.stream(request);
+                const streamModel = backend.stream;
+                requestStream = Boolean(streamModel);
+                if (streamModel) {
+                  const stream = await streamModel.call(backend, request);
                   let streamOwner: string;
                   await pumpModelStream(stream, {
                     check,
@@ -9290,6 +9301,7 @@ export class Session<OutputT = string, Context = unknown> {
                       sourceNative._start_model_producer(
                         streamOwner,
                         isChatModelStream(stream),
+                        borrowedResponsesRequestId(stream),
                       );
                     },
                     push: (event, original) =>
@@ -9315,7 +9327,7 @@ export class Session<OutputT = string, Context = unknown> {
                   reply({ data });
                 }
               } catch (error) {
-                failed(error);
+                failed(error, requestStream);
                 return;
               }
             } else if (compact) {

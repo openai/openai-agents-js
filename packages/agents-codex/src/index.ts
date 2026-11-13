@@ -498,6 +498,7 @@ export type {
   NativeModel,
   AiSdkLanguageModel,
   ModelAdapterOptions,
+  ResponsesModelOptions,
   ChatCompletionsModelOptions,
   ModelRequestOptions,
   ModelRequestOptionsFactory,
