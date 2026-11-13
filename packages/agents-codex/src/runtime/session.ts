@@ -1569,7 +1569,7 @@ export class Session<OutputT = string, Context = unknown> {
   private profileCurrent?: AgentProfileReceipt;
   private requestTransportDefaults: Pick<
     ModelSettings,
-    'extraHeaders' | 'extraQuery'
+    'extraHeaders' | 'extraQuery' | 'requestTransport'
   > = {};
   private profileHighWater = 0n;
   private profileKey(id: string, generation: bigint | string): string {
@@ -2772,6 +2772,8 @@ export class Session<OutputT = string, Context = unknown> {
     this.requestTransportDefaults = {
       extraHeaders: profile.profile.declaration.modelSettings?.extraHeaders,
       extraQuery: profile.profile.declaration.modelSettings?.extraQuery,
+      requestTransport:
+        profile.profile.declaration.modelSettings?.requestTransport,
     };
     this.catalog = profile.catalog;
     this.openingCatalog = profile.catalog;
@@ -3231,6 +3233,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.requestTransportDefaults = {
       extraHeaders: options.initialModelSettings?.extraHeaders,
       extraQuery: options.initialModelSettings?.extraQuery,
+      requestTransport: options.initialModelSettings?.requestTransport,
     };
     this.defaultOutput = options.output ?? prepareOutput(undefined);
     this.openingCatalog = catalog;
@@ -6733,6 +6736,7 @@ export class Session<OutputT = string, Context = unknown> {
     const settings: ModelSettings = {
       extraHeaders: transport?.extraHeaders,
       extraQuery: transport?.extraQuery,
+      requestTransport: transport?.requestTransport,
     };
     if (captured.invocation_timeout_ms !== undefined)
       settings.invocationTimeoutMs =
@@ -14279,6 +14283,9 @@ export class Session<OutputT = string, Context = unknown> {
           if (capturedSettings?.extraQuery !== undefined)
             this.requestTransportDefaults.extraQuery =
               capturedSettings.extraQuery;
+          if (capturedSettings?.requestTransport !== undefined)
+            this.requestTransportDefaults.requestTransport =
+              capturedSettings.requestTransport;
         } catch (error) {
           if (!(
             error instanceof Error &&
