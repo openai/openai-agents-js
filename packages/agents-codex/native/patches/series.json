@@ -1167,7 +1167,11 @@
     {
       "path": "sdk-original-item-eligibility.patch",
       "sha256": "8834d9bef58fd20daef0f21cdc0320808d94d5cd0b3c6aab15bcc882d3b4a26b"
+    },
+    {
+      "path": "sdk-bounded-original-eligibility.patch",
+      "sha256": "bd1849211ade60281639a6abb8d044d20ca5c1a2d86596be106d5404317da6bf"
     }
   ],
-  "result_tree": "f4de9be6517dec6fc2f809f0dd1e714290933594"
+  "result_tree": "5ad4072f0fda171c3e065a60409c9e8297c4b563"
 }

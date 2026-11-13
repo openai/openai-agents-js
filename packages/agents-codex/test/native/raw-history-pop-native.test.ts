@@ -9,8 +9,8 @@ const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(() => ModelServer.closeAll());
 
 function expectNativeOpeningContext(items: readonly Record<string, unknown>[]) {
-  expect(items.map((item) => item.type)).toEqual(['message', 'message']);
-  expect(items.map((item) => item.role)).toEqual(['developer', 'developer']);
+  expect(items.map((item) => item.type)).toEqual(['message']);
+  expect(items.map((item) => item.role)).toEqual(['developer']);
   expect(
     items.map(
       (item) =>
@@ -20,10 +20,7 @@ function expectNativeOpeningContext(items: readonly Record<string, unknown>[]) {
           }
         )?.content_item_kinds,
     ),
-  ).toEqual([
-    ['collaboration_mode.instructions'],
-    ['sdk_application.accepted'],
-  ]);
+  ).toEqual([['collaboration_mode.instructions']]);
 }
 
 async function providerFor(server: ModelServer) {
