@@ -1,3 +1,4 @@
+use crate::tool_callers::ToolDeclarations;
 #[path = "sandbox_events.rs"]
 mod sandbox_events;
 
@@ -68,7 +69,7 @@ pub(crate) struct Generation {
     manual_slots: Option<HashSet<usize>>,
     schema_token: Option<String>,
     entries: Vec<Entry>,
-    specs: Vec<DynamicToolSpec>,
+    specs: ToolDeclarations,
     defaults: Vec<usize>,
     terminal_slots: HashSet<usize>,
     input_error_slots: HashSet<usize>,
@@ -90,20 +91,14 @@ pub(crate) struct ProfileCatalog {
     pub(crate) before_compact: bool,
     pub(crate) before_complete: bool,
     pub(crate) post_turn_compact: bool,
+    pub(crate) tool_batch_completion: bool,
 }
 impl ProfileCatalog {
     pub(crate) fn slot_specs(&self) -> Result<Value> {
         checkpoint_specs(&self.generation.specs)
     }
-    pub(crate) fn checkpoint_specs(&self) -> Result<Value> {
-        checkpoint_specs(
-            &self
-                .generation
-                .defaults
-                .iter()
-                .map(|&slot| self.generation.specs[slot].clone())
-                .collect::<Vec<_>>(),
-        )
+    pub(crate) fn selected_declarations(&self) -> ToolDeclarations {
+        self.generation.specs.selected(&self.generation.defaults)
     }
 }
 
@@ -221,7 +216,7 @@ fn closed_tool_sender() -> oneshot::Sender<ToolReply> {
 
 #[derive(Deserialize)]
 struct ClientToolSearchCapture {
-    specs: Vec<DynamicToolSpec>,
+    specs: ToolDeclarations,
     manual_slots: Vec<usize>,
     terminal_slots: Vec<usize>,
     #[serde(default)]
@@ -302,6 +297,7 @@ pub(crate) struct ContextCallbacks {
     pub(crate) transform_context: bool,
     pub(crate) before_complete: bool,
     pub(crate) post_turn_compact: bool,
+    pub(crate) tool_batch_completion: bool,
 }
 
 #[derive(Clone)]
@@ -1012,12 +1008,12 @@ impl PythonTools {
 
     pub(crate) fn profile_catalog(
         &self,
-        specs: Vec<DynamicToolSpec>,
+        specs: ToolDeclarations,
         manual_slots: &[usize],
         terminal_slots: &[usize],
         input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 5],
+        flags: [bool; 6],
         _reuse_initial: bool,
     ) -> Result<ProfileCatalog> {
         self.allocate_profile_catalog(
@@ -1033,12 +1029,12 @@ impl PythonTools {
 
     pub(crate) fn voice_profile_catalog(
         &self,
-        specs: Vec<DynamicToolSpec>,
+        specs: ToolDeclarations,
         manual_slots: &[usize],
         terminal_slots: &[usize],
         input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 5],
+        flags: [bool; 6],
     ) -> Result<ProfileCatalog> {
         self.allocate_profile_catalog(
             specs,
@@ -1053,12 +1049,12 @@ impl PythonTools {
 
     fn allocate_profile_catalog(
         &self,
-        specs: Vec<DynamicToolSpec>,
+        specs: ToolDeclarations,
         manual_slots: &[usize],
         terminal_slots: &[usize],
         input_error_slots: &[usize],
         defaults: Option<&[usize]>,
-        flags: [bool; 5],
+        flags: [bool; 6],
         durable: bool,
     ) -> Result<ProfileCatalog> {
         let id = self.allocate_generation()?;
@@ -1116,12 +1112,13 @@ impl PythonTools {
             before_compact: flags[2],
             before_complete: flags[3],
             post_turn_compact: flags[4],
+            tool_batch_completion: flags[5],
         })
     }
 
     pub(crate) fn startup_profile_catalog(
         &self,
-        flags: [bool; 5],
+        flags: [bool; 6],
         source: &ProfileCatalog,
     ) -> Result<ProfileCatalog> {
         let generation = self.snapshot();
@@ -1197,6 +1194,7 @@ impl PythonTools {
             selecting_steps: false,
             transform_context: false,
             post_turn_compact: false,
+            tool_batch_completion: false,
             before_compact: false,
             before_complete: false,
         })
@@ -1298,7 +1296,7 @@ impl PythonTools {
     }
     pub(crate) fn install(
         startup: &mut StartThreadOptions,
-        specs: Vec<DynamicToolSpec>,
+        specs: ToolDeclarations,
         options: ToolInstallOptions,
     ) -> Result<()> {
         let ToolInstallOptions {
@@ -1501,7 +1499,7 @@ impl PythonTools {
                 schema_token: None,
                 manual_slots: None,
                 entries: Vec::new(),
-                specs: Vec::new(),
+                specs: ToolDeclarations::default(),
                 defaults: Vec::new(),
                 terminal_slots: HashSet::new(),
                 input_error_slots: HashSet::new(),
@@ -1711,14 +1709,14 @@ impl PythonTools {
         Ok(Some(item))
     }
 
-    fn prepare(&self, id: u64, specs: Vec<DynamicToolSpec>) -> Result<Generation> {
-        self.prepare_catalog(id, specs, Some(self.policy.as_ref()))
+    fn prepare(&self, id: u64, specs: impl Into<ToolDeclarations>) -> Result<Generation> {
+        self.prepare_catalog(id, specs.into(), Some(self.policy.as_ref()))
     }
 
     fn prepare_catalog(
         &self,
         id: u64,
-        specs: Vec<DynamicToolSpec>,
+        specs: ToolDeclarations,
         policy: Option<&ToolPolicy>,
     ) -> Result<Generation> {
         let mut entries = Vec::new();
@@ -1811,6 +1809,11 @@ impl PythonTools {
         })
     }
 
+    pub(crate) fn current_declarations(&self) -> ToolDeclarations {
+        let generation = self.snapshot();
+        generation.specs.selected(&generation.defaults)
+    }
+
     pub fn current_specs(&self) -> Result<Value> {
         let generation = self.snapshot();
         checkpoint_specs(
@@ -1873,7 +1876,7 @@ impl PythonTools {
         &self,
         thread: &CodexThread,
         id: u64,
-        specs: Vec<DynamicToolSpec>,
+        specs: ToolDeclarations,
         defaults: Option<Vec<usize>>,
         mut terminal: Option<TerminalSlots>,
         allocate_generation: bool,
@@ -2074,7 +2077,7 @@ impl PythonTools {
             specs.len() <= MAX_TOOLS,
             "Client tool search catalog exceeds its limit"
         );
-        for spec in &mut specs {
+        for spec in specs.iter_mut() {
             match spec {
                 DynamicToolSpec::Function(function) => function.defer_loading = true,
                 DynamicToolSpec::Namespace(namespace) => {
@@ -3244,7 +3247,12 @@ impl ToolContributor for PythonContributor {
         for (slot, (namespace, raw)) in functions(&catalog.generation.specs).into_iter().enumerate()
         {
             let entry = &catalog.generation.entries[slot];
-            if !catalog.generation.defaults.contains(&slot)
+            if catalog
+                .generation
+                .specs
+                .caller_limits(slot)
+                .is_some_and(|callers| !callers.contains(codex_tools::ToolExposures::DIRECT))
+                || !catalog.generation.defaults.contains(&slot)
                 || catalog
                     .defaults
                     .as_ref()
@@ -4048,6 +4056,10 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         self.generation.entries[self.slot].spec.clone()
     }
 
+    fn allowed_callers(&self) -> Option<codex_tools::ToolExposures> {
+        self.generation.specs.caller_limits(self.slot)
+    }
+
     fn exposure(&self) -> ToolExposure {
         match (
             self.generation.entries[self.slot].exposure,
@@ -4520,6 +4532,24 @@ impl TurnLifecycleContributor for PythonContributor {
     > {
         Box::pin(terminal_completion::propose(input))
     }
+    fn tool_batch_completion_enabled(
+        &self,
+        thread_store: &ExtensionData,
+        step_store: &ExtensionData,
+    ) -> bool {
+        terminal_completion::batch_enabled(thread_store, step_store)
+    }
+
+    fn propose_tool_batch_completion<'a>(
+        &'a self,
+        input: codex_extension_api::ToolBatchCompletionInput<'a>,
+    ) -> ExtensionFuture<
+        'a,
+        std::result::Result<Option<codex_extension_api::ToolCompletionDecision>, String>,
+    > {
+        Box::pin(terminal_completion::propose_batch(input))
+    }
+
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
             if let Some(seed) = input.turn_store.get::<RecoveredToolCompletionSeed>() {
@@ -4907,7 +4937,7 @@ mod pending_tests {
                 schema_token: None,
                 manual_slots: None,
                 entries: Vec::new(),
-                specs: Vec::new(),
+                specs: ToolDeclarations::default(),
                 defaults: Vec::new(),
                 terminal_slots: HashSet::new(),
                 input_error_slots: HashSet::new(),
@@ -5209,6 +5239,7 @@ mod pending_tests {
                     selecting_steps: true,
                     transform_context: false,
                     post_turn_compact: false,
+                    tool_batch_completion: false,
                     before_compact: false,
                     before_complete: false,
                 });
@@ -5954,14 +5985,17 @@ mod pending_tests {
         let (thread, tools) = selector_fixture(None);
         // A registered but non-default tool must not leak into an omitted roster.
         let mut specs = tools.snapshot().specs.clone();
-        specs.push(DynamicToolSpec::Function(DynamicToolFunctionSpec {
-            strict: false,
-            output_schema: None,
-            name: "hidden".into(),
-            description: "Optional tool.".into(),
-            input_schema: json!({"type":"object","properties":{}}),
-            defer_loading: false,
-        }));
+        specs.push(
+            DynamicToolSpec::Function(DynamicToolFunctionSpec {
+                strict: false,
+                output_schema: None,
+                name: "hidden".into(),
+                description: "Optional tool.".into(),
+                input_schema: json!({"type":"object","properties":{}}),
+                defer_loading: false,
+            }),
+            None,
+        );
         let mut generation = tools.prepare(0, specs).unwrap();
         generation.defaults = vec![0];
         *tools.current.write().unwrap() = Arc::new(generation);
@@ -6397,7 +6431,7 @@ mod pending_tests {
                 &[],
                 &[],
                 None,
-                [false; 5],
+                [false; 6],
                 false,
             )
             .unwrap();
@@ -6439,7 +6473,7 @@ mod pending_tests {
                 &[0],
                 &[],
                 None,
-                [false; 5],
+                [false; 6],
                 false,
             )
             .unwrap();
@@ -6471,7 +6505,7 @@ mod pending_tests {
             })
             .unwrap();
         assert!(Arc::ptr_eq(&source.generation, &tools.snapshot()));
-        let startup = tools.startup_profile_catalog([false; 5], &source).unwrap();
+        let startup = tools.startup_profile_catalog([false; 6], &source).unwrap();
         assert_eq!(startup.generation.terminal_slots, HashSet::from([0]));
         assert!(
             tools
@@ -6481,7 +6515,7 @@ mod pending_tests {
                     &[1],
                     &[],
                     None,
-                    [false; 5],
+                    [false; 6],
                     false
                 )
                 .is_err()
@@ -6494,7 +6528,7 @@ mod pending_tests {
                     &[0, 0],
                     &[],
                     None,
-                    [false; 5],
+                    [false; 6],
                     false
                 )
                 .is_err()

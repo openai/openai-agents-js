@@ -1,4 +1,4 @@
-import { toolCompletionSchema, type ToolCallInfo } from './call-metadata';
+import { toolCompletionSchema } from './call-metadata';
 import { z } from 'zod';
 import type { _NativeChildTurn } from '../../native/index.js';
 import { decode } from './binding';
@@ -151,7 +151,9 @@ export function issueChildTurn(
   native: _NativeChildTurn,
   callbacks: {
     beforeWait(): void;
-    toolCompletion?(fact: unknown): ToolCallInfo;
+    toolCompletion?(
+      fact: unknown,
+    ): Pick<Completed<string>, 'toolCall' | 'toolBatchCallIds'>;
     drain(): Promise<void>;
     observations(
       options: ObservationOptions,
@@ -191,7 +193,7 @@ export function issueChildTurn(
       ...(applicationToolOutputs.length ? { applicationToolOutputs } : {}),
       finalOutput: result.final_output,
       ...(result.tool_completion
-        ? { toolCall: callbacks.toolCompletion!(result.tool_completion) }
+        ? callbacks.toolCompletion!(result.tool_completion)
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
       runUsage: turn.runUsage,

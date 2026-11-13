@@ -31,6 +31,7 @@ use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 use crate::auth::SavedLoginFile;
 use crate::environment::LocalPrivatePaths;
+use crate::tool_callers::ToolDeclarations;
 use crate::{NativeThread, config, extensions, goals, options};
 
 pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -342,7 +343,7 @@ impl EngineState {
         origin: &str,
         grant: &str,
         options: options::ThreadOptions,
-        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        specs: ToolDeclarations,
     ) -> anyhow::Result<Option<NativeThread>> {
         let _guard = self.lifecycle.lock().await;
         if !self.private_reuse_ready()
@@ -1030,7 +1031,7 @@ impl EngineState {
     pub async fn start_with_tools(
         self: &Arc<Self>,
         options: options::ThreadOptions,
-        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        specs: ToolDeclarations,
     ) -> anyhow::Result<NativeThread> {
         self.start_with_initial_messages(options, specs, None).await
     }
@@ -1038,7 +1039,7 @@ impl EngineState {
     pub(crate) async fn start_with_initial_messages(
         self: &Arc<Self>,
         mut options: options::ThreadOptions,
-        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        specs: ToolDeclarations,
         initial_messages: Option<crate::initial_messages::Batch>,
     ) -> anyhow::Result<NativeThread> {
         let _guard = self.lifecycle.lock().await;
@@ -1085,7 +1086,7 @@ impl EngineState {
         instructions: Arc<options::ThreadInstructions>,
         resume: Option<ThreadId>,
         reconciled_calls: Vec<crate::local_reconciliation::Receipt>,
-        specs: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        specs: ToolDeclarations,
         initial_messages: Option<crate::initial_messages::Batch>,
     ) -> anyhow::Result<NativeThread> {
         let mut local_resume_admission = None;
@@ -1563,7 +1564,7 @@ impl EngineState {
                 .thread_extension_data()
                 .get::<crate::python_tools::PythonTools>()
                 .context("fork requires current managed tools")?
-                .current_specs()?
+                .current_declarations()
         };
         let (profiles, files) = crate::agent_profiles::opening(&source.thread)
             .map(|(profiles, files)| (Some(profiles), files))
@@ -1621,7 +1622,7 @@ impl EngineState {
         startup.initial_history = history.clone();
         crate::python_tools::PythonTools::install(
             &mut startup,
-            serde_json::from_value(specs)?,
+            specs,
             crate::python_tools::ToolInstallOptions {
                 preserve_schemas: self.sentinel.read().expect("sentinel poisoned").is_some(),
                 allow_local_goals: false,

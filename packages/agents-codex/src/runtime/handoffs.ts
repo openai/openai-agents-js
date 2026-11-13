@@ -29,6 +29,8 @@ export class Handoff<Context = undefined, Output = string> {
       throw new TypeError(
         'A handoff callback must run without a managed approval',
       );
+    if (captured.allowedCallers?.includes('direct') === false)
+      throw new TypeError('A handoff callback must allow direct model calls');
     if (captured.finishTurn)
       throw new TypeError('A handoff callback cannot finish the turn');
     if (captured.namespace != null && captured.namespace !== 'functions')

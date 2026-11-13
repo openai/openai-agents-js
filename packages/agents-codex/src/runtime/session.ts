@@ -96,6 +96,9 @@ import {
 import {
   captureCompletionDecision,
   type BeforeComplete,
+  captureToolBatchDecision,
+  type ToolBatchCompletion,
+  type ToolBatchResult,
   type CompletionContext,
   type CompletionDecision,
   type BeforeCompact,
@@ -223,6 +226,7 @@ import {
   OutputValidationError,
   prepareOutput,
   parseToolCompletion,
+  parseApplicationToolCompletion,
   type OutputSpec,
   type PreparedOutput,
 } from './output';
@@ -398,6 +402,7 @@ import {
   toolOutputSchema,
   toolApplicationData,
   captureTools,
+  captureToolBatchResults,
   isDirectFunctionTool,
   isClientToolSearchTool,
   toolIdentity,
@@ -417,6 +422,7 @@ import {
   type ToolCatalog,
   type FunctionTool,
   type ToolCallContext,
+  protocolToolSpecs,
 } from './tools';
 import type { NativeProviderRoutes } from './http-model';
 
@@ -477,6 +483,7 @@ export interface SessionOptions {
   includeRequestAttempts?: boolean;
   includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
+  toolBatchCompletion?: ToolBatchCompletion<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
   outputGuardrails?: readonly OutputGuardrail<any>[];
   /** @internal Captured root declaration; profile declarations own child guards. */
@@ -803,6 +810,7 @@ export interface Completed<OutputT = string> {
   readonly finalOutput: OutputT;
   /** Present when a validated direct function call supplied the final output. */
   readonly toolCall?: ToolCallInfo;
+  readonly toolBatchCallIds?: readonly string[];
   /** Cumulative native thread usage at completion, rather than a per-turn delta. */
   readonly threadUsage: TokenUsageInfo | null;
   readonly runUsage: RunUsage;
@@ -1945,7 +1953,11 @@ export class Session<OutputT = string, Context = unknown> {
     const specs = JSON.parse(catalog.specsJson) as JsonObject[];
     const tools: import('./realtime-policy').NativeRealtimeTool[] =
       specs.flatMap((spec) =>
-        spec.type === 'function' && typeof spec.name === 'string'
+        spec.type === 'function' &&
+        typeof spec.name === 'string' &&
+        (spec.allowedCallers === undefined ||
+          (Array.isArray(spec.allowedCallers) &&
+            spec.allowedCallers.includes('direct')))
           ? [{ type: 'function' as const, name: spec.name }]
           : [],
       );
@@ -2004,8 +2016,14 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (seen.has(captured))
         throw new TypeError(`Duplicate Realtime tool: ${captured.name}`);
+      const callable = managedApproval(captured)?.function ?? captured;
+      if (
+        callable.kind !== 'manual' &&
+        callable.allowedCallers?.includes('direct') === false
+      )
+        continue;
       seen.add(captured);
-      const [spec] = JSON.parse(captureTools([captured]).specsJson);
+      const [spec] = protocolToolSpecs(captureTools([captured]));
       if (spec.type !== 'function')
         throw new TypeError(
           'Realtime tools require bare function declarations',
@@ -2802,6 +2820,7 @@ export class Session<OutputT = string, Context = unknown> {
         readonly callId: string;
         readonly name: string;
         readonly namespace: string | null;
+        readonly batchCallIds?: readonly string[];
         readonly value?: unknown;
         readonly json?: JsonValue;
         waiterConsumed?: true;
@@ -2817,7 +2836,10 @@ export class Session<OutputT = string, Context = unknown> {
       >;
     }
   >();
-  private readonly terminalCalls = new WeakMap<NativeTurn, ToolCallInfo>();
+  private readonly terminalCalls = new WeakMap<
+    NativeTurn,
+    { call?: ToolCallInfo; batchCallIds?: readonly string[] }
+  >();
   private readonly childOutput = prepareOutput<string>(undefined);
   private readonly repairTurns: RepairTurnWire[];
   private readonly repairItems: RepairItemWire[];
@@ -4594,8 +4616,11 @@ export class Session<OutputT = string, Context = unknown> {
       finalOutput: this.decodedOutputs.has(run)
         ? this.decodedOutputs.get(run)
         : result.finalOutput,
-      ...(this.terminalCalls.has(run)
-        ? { toolCall: this.terminalCalls.get(run)! }
+      ...(this.terminalCalls.get(run)?.call
+        ? { toolCall: this.terminalCalls.get(run)!.call }
+        : {}),
+      ...(this.terminalCalls.get(run)?.batchCallIds
+        ? { toolBatchCallIds: this.terminalCalls.get(run)!.batchCallIds }
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
       guardrailResults: Object.freeze(
@@ -7477,6 +7502,7 @@ export class Session<OutputT = string, Context = unknown> {
         proposal?.accepted &&
         proposal.callId === fact.call_id &&
         proposal.name === fact.name &&
+        isDeepStrictEqual(proposal.batchCallIds, fact.batch_call_ids) &&
         (proposal.namespace ?? 'functions') ===
           (fact.namespace ?? 'functions') &&
         typeof fact.final_output === 'string' &&
@@ -7564,7 +7590,10 @@ export class Session<OutputT = string, Context = unknown> {
       this.failToolCompletion(owner, event);
       return;
     }
-    if (msg.type === '_sdk_tool_completion') {
+    if (
+      msg.type === '_sdk_tool_completion' ||
+      msg.type === '_sdk_tool_batch_completion'
+    ) {
       if (this.current(owner))
         void this.proposeToolCompletion(owner, event, native).catch(() => {});
       return;
@@ -7926,7 +7955,10 @@ export class Session<OutputT = string, Context = unknown> {
       this.failToolCompletion(run, event);
       return;
     }
-    if (kind === '_sdk_tool_completion') {
+    if (
+      kind === '_sdk_tool_completion' ||
+      kind === '_sdk_tool_batch_completion'
+    ) {
       if (msg.turn_id !== run.id) return;
       void this.proposeToolCompletion(run, event, this.#native).catch(() => {});
       return;
@@ -8196,6 +8228,7 @@ export class Session<OutputT = string, Context = unknown> {
             !proposal.accepted ||
             proposal.callId !== fact.call_id ||
             proposal.name !== fact.name ||
+            !isDeepStrictEqual(proposal.batchCallIds, fact.batch_call_ids) ||
             (proposal.namespace ?? 'functions') !==
               (fact.namespace ?? 'functions') ||
             !isDeepStrictEqual(proposal.json, fact.final_output)
@@ -8203,20 +8236,25 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Terminal tool completion has no matching accepted proposal',
             );
-          this.promotePendingApplicationOutputs(run, fact.call_id);
+          for (const callId of fact.batch_call_ids ?? [fact.call_id])
+            this.promotePendingApplicationOutputs(run, callId);
           this.decodedOutputs.set(run, proposal.value);
           this.terminalCalls.set(
             run,
-            terminalCallInfo(
-              {
-                sessionId: this.id,
-                turnId: run.id!,
-                childId: null,
-                childIncarnation: null,
-              },
-              fact,
-              proposal.namespace,
-            ),
+            fact.batch_call_ids
+              ? { batchCallIds: Object.freeze([...fact.batch_call_ids]) }
+              : {
+                  call: terminalCallInfo(
+                    {
+                      sessionId: this.id,
+                      turnId: run.id!,
+                      childId: null,
+                      childIncarnation: null,
+                    },
+                    fact,
+                    proposal.namespace,
+                  ),
+                },
           );
         } catch (cause) {
           error = cause;
@@ -8568,31 +8606,62 @@ export class Session<OutputT = string, Context = unknown> {
           await this.awaitInputGuardrails(
             owner instanceof NativeTurn ? this.rootRun(owner) : owner,
           );
-          const slot = z.number().int().nonnegative().safe().parse(msg.slot);
-          const captured = capturedCatalog.tools[slot];
-          const declaration =
-            captured && (managedApproval(captured)?.function ?? captured);
-          const identity = z
-            .object({ name: z.string(), namespace: z.string().nullable() })
-            .parse(msg.tool);
-          if (
-            !declaration ||
-            declaration.kind === 'manual' ||
-            !declaration.finishTurn ||
-            declaration.name !== identity.name ||
-            (toolNamespace(declaration) ?? 'functions') !==
-              (identity.namespace ?? 'functions')
-          )
-            throw new NativeError(
-              'Terminal proposal does not match its captured declaration',
+          check();
+          const model = z.string().parse(msg.model);
+          const batch = msg.type === '_sdk_tool_batch_completion';
+          let results: readonly ToolBatchResult[] | undefined;
+          let call: ToolCallInfo;
+          const callOwner = {
+            sessionId: this.id,
+            turnId: z.string().parse(turnId),
+            childId: child ? owner.childId : null,
+            childIncarnation: child ? owner.incarnation : null,
+          };
+          if (batch) {
+            results = captureToolBatchResults(callOwner, model, msg.results);
+            call = results[0].call;
+          } else {
+            const slot = z.number().int().nonnegative().safe().parse(msg.slot);
+            const captured = capturedCatalog.tools[slot];
+            const declaration =
+              captured && (managedApproval(captured)?.function ?? captured);
+            const identity = z
+              .object({ name: z.string(), namespace: z.string().nullable() })
+              .parse(msg.tool);
+            if (
+              !declaration ||
+              declaration.kind === 'manual' ||
+              !declaration.finishTurn ||
+              declaration.name !== identity.name ||
+              (toolNamespace(declaration) ?? 'functions') !==
+                (identity.namespace ?? 'functions')
+            )
+              throw new NativeError(
+                'Terminal proposal does not match its captured declaration',
+              );
+            call = Object.freeze({
+              ...terminalCallInfo(callOwner, {
+                call_id: z.string().parse(msg.call_id),
+                name: declaration.name,
+                namespace: toolNamespace(declaration),
+                final_output: null,
+              }),
+              model,
+            });
+          }
+          const batchCallIds =
+            results &&
+            Object.freeze(
+              results.map((result) => z.string().parse(result.call.callId)),
             );
           const attempt = {
             requestId: z.string().parse(msg.request_id),
             nativeStep: z.string().parse(msg.native_step),
             generation: capturedCatalog.generation,
-            callId: z.string().parse(msg.call_id),
-            name: declaration.name,
-            namespace: toolNamespace(declaration),
+            callId: z.string().parse(call.callId),
+            name: call.tool.name,
+            namespace: call.tool.namespace,
+            batchCallIds,
           };
           this.terminalState(owner).proposal = { ...attempt, accepted: false };
           let output: PreparedOutput = this.childOutput;
@@ -8609,7 +8678,55 @@ export class Session<OutputT = string, Context = unknown> {
             )
               output = this.profileRuntimes.get(source.profile_id)!.output;
           }
-          const converted = parseToolCompletion(output, msg.output);
+          let converted: ReturnType<typeof parseToolCompletion>;
+          if (results) {
+            const callback = this.sourceModelCallbacks(msg).toolBatchCompletion;
+            if (!callback)
+              throw new NativeError('Captured tool batch callback unavailable');
+            const returned = callback(
+              Object.freeze({
+                context: this.options.context,
+                results,
+                sessionId: this.id,
+                turnId: z.string().parse(turnId),
+                ...(child ? { subagentId: owner.childId } : {}),
+                model,
+                continuationCount: z
+                  .number()
+                  .int()
+                  .nonnegative()
+                  .safe()
+                  .parse(msg.continuation_count),
+                signal,
+              }),
+            );
+            const settled =
+              returned &&
+              typeof (returned as Promise<unknown>).then === 'function'
+                ? await returned
+                : returned;
+            const decision = captureToolBatchDecision(settled);
+            check();
+            if (decision?.action !== 'finish') {
+              this.discardTerminalValue(owner);
+              const data =
+                decision?.action === 'stop'
+                  ? { stop: true }
+                  : {
+                      continue:
+                        decision?.action === 'continue'
+                          ? decision.instructions
+                          : null,
+                    };
+              if (
+                !native._reply_tool_completion(encode({ ...receipt, ...data }))
+              )
+                throw new NativeError('Tool batch decision reply expired');
+              replied = true;
+              return;
+            }
+            converted = parseApplicationToolCompletion(output, decision.output);
+          } else converted = parseToolCompletion(output, msg.output);
           check();
           const beforeComplete = this.sourceModelCallbacks(msg).beforeComplete;
           if (beforeComplete && msg.guard_only !== true) {
@@ -8633,23 +8750,9 @@ export class Session<OutputT = string, Context = unknown> {
                     .parse(msg.continuation_count),
                   signal,
                   finalOutput: losslessJsonValueSchema.parse(converted.json),
-                  toolCall: Object.freeze({
-                    ...terminalCallInfo(
-                      {
-                        sessionId: this.id,
-                        turnId: z.string().parse(turnId),
-                        childId: child ? owner.childId : null,
-                        childIncarnation: child ? owner.incarnation : null,
-                      },
-                      {
-                        call_id: z.string().parse(msg.call_id),
-                        name: declaration.name,
-                        namespace: toolNamespace(declaration),
-                        final_output: converted.json,
-                      },
-                    ),
-                    model,
-                  }),
+                  ...(batchCallIds
+                    ? { toolBatchCallIds: batchCallIds }
+                    : { toolCall: call }),
                 }),
               );
               const settled =
@@ -8696,20 +8799,9 @@ export class Session<OutputT = string, Context = unknown> {
                 .nonnegative()
                 .parse(msg.continuation_count),
               finalOutput: converted.value,
-              toolCall: terminalCallInfo(
-                {
-                  sessionId: this.id,
-                  turnId: z.string().parse(turnId),
-                  childId: child ? owner.childId : null,
-                  childIncarnation: child ? owner.incarnation : null,
-                },
-                {
-                  call_id: z.string().parse(msg.call_id),
-                  name: declaration.name,
-                  namespace: toolNamespace(declaration),
-                  final_output: converted.json,
-                },
-              ),
+              ...(batchCallIds
+                ? { toolBatchCallIds: batchCallIds }
+                : { toolCall: Object.freeze({ ...call, model: null }) }),
             },
             check,
           );
@@ -8905,6 +8997,9 @@ export class Session<OutputT = string, Context = unknown> {
             turnId: request.turnId,
             ...(request.subagentId ? { subagentId: request.subagentId } : {}),
             ...(request.toolCall ? { toolCall: request.toolCall } : {}),
+            ...(request.toolBatchCallIds
+              ? { toolBatchCallIds: request.toolBatchCallIds }
+              : {}),
           });
         }),
       );
@@ -8959,6 +9054,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
+    toolBatchCompletion?: ToolBatchCompletion<any>;
     beforeCompact?: BeforeCompact<any>;
     compaction?: ResponsesCompaction<any>;
     transformContext?: ContextTransform<any>;
@@ -8970,6 +9066,7 @@ export class Session<OutputT = string, Context = unknown> {
     const captured = this.profileRuntimes.get(source.profile_id)!.profile;
     return {
       beforeComplete: captured.declaration.beforeComplete,
+      toolBatchCompletion: captured.declaration.toolBatchCompletion,
       beforeCompact: captured.declaration.beforeCompact,
       compaction: captured.declaration.compaction,
       transformContext: captured.declaration.transformContext,
@@ -14481,6 +14578,7 @@ export class Session<OutputT = string, Context = unknown> {
             !proposal.accepted ||
             proposal.callId !== fact.call_id ||
             proposal.name !== fact.name ||
+            !isDeepStrictEqual(proposal.batchCallIds, fact.batch_call_ids) ||
             (proposal.namespace ?? 'functions') !==
               (fact.namespace ?? 'functions') ||
             typeof fact.final_output !== 'string' ||
@@ -14494,16 +14592,22 @@ export class Session<OutputT = string, Context = unknown> {
           // The ordered reader still needs the accepted proposal to publish.
           if (owner.observationPhase === 'open') proposal.waiterConsumed = true;
           else this.clearTerminalProposal(owner);
-          return terminalCallInfo(
-            {
-              sessionId: this.id,
-              turnId: owner.turnId,
-              childId: owner.childId,
-              childIncarnation: owner.incarnation,
-            },
-            fact,
-            proposal.namespace,
-          );
+          if (fact.batch_call_ids)
+            return {
+              toolBatchCallIds: Object.freeze([...fact.batch_call_ids]),
+            };
+          return {
+            toolCall: terminalCallInfo(
+              {
+                sessionId: this.id,
+                turnId: owner.turnId,
+                childId: owner.childId,
+                childIncarnation: owner.incarnation,
+              },
+              fact,
+              proposal.namespace,
+            ),
+          };
         },
         drain: () =>
           this.childCallbacks.drain(
@@ -16330,10 +16434,7 @@ export class Session<OutputT = string, Context = unknown> {
       selection.operation_tools !== undefined
       ? {
           ...state,
-          managed_tool_specs: decode(
-            losslessJsonValueSchema,
-            this.catalog.specsJson,
-          ),
+          managed_tool_specs: protocolToolSpecs(this.catalog),
         }
       : state;
   }

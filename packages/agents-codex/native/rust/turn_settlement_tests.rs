@@ -168,7 +168,7 @@ async fn managed_root_continues_only_its_own_successfully_settled_tail() {
                         "_managed_instructions":true, "instructions":"Continue accepted work once."
                     }))
                     .unwrap(),
-                    Vec::new(),
+                    Vec::new().into(),
                 )
                 .await
                 .unwrap();
@@ -449,7 +449,7 @@ async fn completed_steering_ids_cannot_credit_a_later_generation_or_recovery() {
         let native = engine
             .start_with_tools(
                 serde_json::from_value(json!({"_managed_instructions":true})).unwrap(),
-                Vec::new(),
+                Vec::new().into(),
             )
             .await
             .unwrap();
@@ -573,7 +573,7 @@ impl Fixture {
         let provider = Provider::start().await;
         let (home, engine) = provider.engine().await;
         let parent = engine
-            .start_with_tools(Default::default(), Vec::new())
+            .start_with_tools(Default::default(), Vec::new().into())
             .await
             .unwrap();
         let parent_state = parent.current().unwrap();
@@ -687,7 +687,7 @@ async fn child_submit_waits_for_its_passive_native_turn_to_release_the_slot() {
     tokio::time::timeout(Duration::from_secs(20), async {
         let provider = Provider::start().await;
         let (_home, engine) = provider.engine().await;
-        let session = engine.start_with_tools(Default::default(), Vec::new()).await.unwrap();
+        let session = engine.start_with_tools(Default::default(), Vec::new().into()).await.unwrap();
         let parent = session.current().unwrap();
         let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id: parent.id,
@@ -1120,7 +1120,7 @@ async fn publication_waits_for_real_dequeued_error(status: u16) {
         let provider = Provider::start_with_http_error(Some(status)).await;
         let (_home, engine) = provider.engine().await;
         let session = engine
-            .start_with_tools(Default::default(), Vec::new())
+            .start_with_tools(Default::default(), Vec::new().into())
             .await
             .unwrap();
         let parent = session.current().unwrap();
@@ -1369,7 +1369,7 @@ async fn deferred_diagnostic_root(engine: &Arc<EngineState>, text: &str) -> Nati
     instructions.defer_manual().unwrap();
     crate::python_tools::PythonTools::install(
         &mut startup,
-        Vec::new(),
+        Vec::new().into(),
         crate::python_tools::ToolInstallOptions {
             preserve_schemas: false,
             allow_local_goals: false,
@@ -1543,7 +1543,7 @@ async fn checkpoint_capture_retains_context_admission_until_export_finishes() {
             let (_home, engine) = provider.engine().await;
             let native = Arc::new(
                 engine
-                    .start_with_tools(Default::default(), Vec::new())
+                    .start_with_tools(Default::default(), Vec::new().into())
                     .await
                     .unwrap(),
             );
@@ -1588,7 +1588,7 @@ async fn checkpoint_probe_refuses_native_admission_lock_without_waiting() {
         let provider = Provider::start().await;
         let (_home, engine) = provider.engine().await;
         let native = engine
-            .start_with_tools(Default::default(), Vec::new())
+            .start_with_tools(Default::default(), Vec::new().into())
             .await
             .unwrap();
         let state = native.current().unwrap();
@@ -1648,7 +1648,7 @@ async fn checkpoint_probe_lock_precedes_later_admission_and_raw_close_retires_it
         let (_home, engine) = provider.engine().await;
         let native = Arc::new(
             engine
-                .start_with_tools(Default::default(), Vec::new())
+                .start_with_tools(Default::default(), Vec::new().into())
                 .await
                 .unwrap(),
         );
