@@ -4185,3 +4185,177 @@ nativeIt.each(['server_vad', 'semantic_vad'] as const)(
   },
   20000,
 );
+
+nativeIt.each([false, true])(
+  'retains exact native call and output in voice history (fails=%s)',
+  async (fails) => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      errorFunction: () => 'safe failure',
+      execute: ({ key }) => {
+        if (fails) throw new Error('PRIVATE_TOOL_FAILURE');
+        return `found:${key}`;
+      },
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use lookup.',
+        tools: [lookup],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const item = {
+        type: 'function_call',
+        id: 'rich-item',
+        call_id: 'rich-call',
+        name: 'lookup',
+        arguments: '{"key":"retained"}',
+      };
+      peer.send({
+        type: 'response.created',
+        response: { id: 'rich-response' },
+      });
+      peer.send({
+        type: 'response.output_item.done',
+        response_id: 'rich-response',
+        output_index: 0,
+        item,
+      });
+      peer.send({
+        type: 'response.done',
+        response: { id: 'rich-response', output: [item] },
+      });
+      const expected = fails ? 'safe failure' : 'found:retained';
+      await vi.waitFor(() =>
+        expect(
+          voice.history.find((row) => row.callId === item.call_id),
+        ).toMatchObject({
+          kind: 'function_call',
+          callId: item.call_id,
+          itemId: item.id,
+          providerItemId: item.id,
+          name: item.name,
+          arguments: item.arguments,
+          output: expected,
+          status: fails ? 'failed' : 'completed',
+        }),
+      );
+      expect(peer.frames).toContainEqual(
+        expect.objectContaining({
+          type: 'conversation.item.create',
+          item: expect.objectContaining({
+            call_id: item.call_id,
+            output: expected,
+          }),
+        }),
+      );
+      expect(JSON.stringify(voice.history)).not.toContain(
+        'PRIVATE_TOOL_FAILURE',
+      );
+      expect(
+        voice.history.find((row) => row.callId === item.call_id)
+          ?.realtimeSessionId,
+      ).toBe(
+        voice.history.find((row) => row.kind === 'realtime_session_started')
+          ?.realtimeSessionId,
+      );
+      const retained = voice.history.filter(
+        (row) => row.kind === 'function_call',
+      );
+      await voice.close();
+      expect(
+        voice.history.filter((row) => row.kind === 'function_call'),
+      ).toEqual(retained);
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
+
+nativeIt(
+  'keeps interleaved native tool argument fragments on their original history records',
+  async () => {
+    const model = new ModelServer([]);
+    const peer = new HistoryPeer(model);
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({ key: z.string() }),
+      execute: ({ key }) => `found:${key}`,
+    });
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        provider,
+        instructions: 'Use lookup.',
+        tools: [lookup],
+      }).session();
+      await using voice = await session.realtime({ model: 'fixture-realtime' });
+      const items = ['first', 'second'].map((key) => ({
+        type: 'function_call',
+        id: `item-${key}`,
+        call_id: `call-${key}`,
+        name: 'lookup',
+        arguments: JSON.stringify({ key }),
+      }));
+      peer.send({
+        type: 'response.created',
+        response: { id: 'interleaved-history' },
+      });
+      for (const [index, item] of items.entries())
+        peer.send({
+          type: 'response.output_item.added',
+          response_id: 'interleaved-history',
+          output_index: index,
+          item: { ...item, arguments: '' },
+        });
+      for (const offset of [0, 7])
+        for (const item of [...items].reverse())
+          peer.send({
+            type: 'response.function_call_arguments.delta',
+            response_id: 'interleaved-history',
+            item_id: item.id,
+            delta: offset
+              ? item.arguments.slice(offset)
+              : item.arguments.slice(0, 7),
+          });
+      for (const [index, item] of items.entries())
+        peer.send({
+          type: 'response.output_item.done',
+          response_id: 'interleaved-history',
+          output_index: index,
+          item,
+        });
+      peer.send({
+        type: 'response.done',
+        response: { id: 'interleaved-history', output: items },
+      });
+      await vi.waitFor(() =>
+        expect(
+          voice.history.filter(
+            (row) => row.kind === 'function_call' && row.status === 'completed',
+          ),
+        ).toHaveLength(2),
+      );
+      for (const item of items)
+        expect(
+          voice.history.find((row) => row.callId === item.call_id),
+        ).toMatchObject({
+          itemId: item.id,
+          providerItemId: item.id,
+          name: item.name,
+          arguments: item.arguments,
+          output: `found:${JSON.parse(item.arguments).key}`,
+        });
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  20000,
+);
