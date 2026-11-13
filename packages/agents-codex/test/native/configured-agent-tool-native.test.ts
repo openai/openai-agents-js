@@ -1530,7 +1530,7 @@ nativeIt(
         tools: [leaf.asTool({ toolName: 'grandchild' })],
       });
       const sibling = f.parent.tools.find(
-        (tool) => tool.name === 'accepted_sibling',
+        (tool) => 'name' in tool && tool.name === 'accepted_sibling',
       );
       if (!sibling) throw new Error('Expected current sibling declaration');
       const parent = new Agent({
