@@ -18,6 +18,7 @@ export interface RetryNormalizedError {
   readonly isTimeout: boolean;
 }
 export interface ModelRetryAdvice {
+  readonly normalized?: Readonly<Partial<RetryNormalizedError>>;
   readonly suggested?: boolean;
   readonly retryAfterMs?: number;
   readonly replaySafety?: 'safe' | 'unsafe' | 'unknown';
@@ -169,7 +170,16 @@ function snapshot(context: RetryContext): RetryContext {
     providerAdvice:
       context.providerAdvice === undefined
         ? undefined
-        : Object.freeze({ ...context.providerAdvice }),
+        : Object.freeze({
+            ...context.providerAdvice,
+            ...(context.providerAdvice.normalized === undefined
+              ? {}
+              : {
+                  normalized: Object.freeze({
+                    ...context.providerAdvice.normalized,
+                  }),
+                }),
+          }),
   });
 }
 /** @internal Provider observations cannot clear a native response-start fact. */
@@ -186,6 +196,9 @@ export function withModelRetryAdvice(
       ...(advice.retryAfterMs === undefined
         ? {}
         : { retryAfterMs: advice.retryAfterMs }),
+      ...advice.normalized,
+      isAbort:
+        context.normalizedError.isAbort || advice.normalized?.isAbort === true,
     },
   });
 }
@@ -282,6 +295,7 @@ export function captureModelRetryAdvice(
     replaySafety?: 'safe' | 'unsafe' | 'unknown';
     reason?: string;
     responseStarted?: boolean;
+    normalized?: Readonly<Partial<RetryNormalizedError>>;
   } = {};
   for (const name of Object.getOwnPropertyNames(row)) {
     const part = row[name];
@@ -292,11 +306,49 @@ export function captureModelRetryAdvice(
         'replaySafety',
         'reason',
         'responseStarted',
+        'normalized',
       ].includes(name)
     )
       throw new TypeError('Unsupported model retry advice field');
     if (part === undefined) continue;
-    if (name === 'suggested' && typeof part === 'boolean')
+    if (name === 'normalized') {
+      if (!part || typeof part !== 'object' || Array.isArray(part))
+        throw new TypeError('normalized must be an options object');
+      const normalized: Record<string, unknown> = {};
+      for (const key of Object.getOwnPropertyNames(part)) {
+        if (
+          ![
+            'statusCode',
+            'errorCode',
+            'message',
+            'requestId',
+            'retryAfterMs',
+            'isAbort',
+            'isNetworkError',
+            'isTimeout',
+          ].includes(key)
+        )
+          throw new TypeError('Unsupported normalized retry field');
+        const value = (part as Record<string, unknown>)[key];
+        const flag = ['isAbort', 'isNetworkError', 'isTimeout'].includes(key);
+        if (value === undefined && flag) continue;
+        const valid = flag
+          ? typeof value === 'boolean'
+          : value === undefined ||
+            (key === 'statusCode'
+              ? typeof value === 'number' && Number.isInteger(value)
+              : key === 'retryAfterMs'
+                ? typeof value === 'number' &&
+                  Number.isFinite(value) &&
+                  value >= 0
+                : typeof value === 'string');
+        if (!valid) throw new TypeError('Invalid normalized retry field');
+        normalized[key] = value;
+      }
+      result.normalized = Object.freeze(normalized) as Readonly<
+        Partial<RetryNormalizedError>
+      >;
+    } else if (name === 'suggested' && typeof part === 'boolean')
       result.suggested = part;
     else if (
       name === 'retryAfterMs' &&

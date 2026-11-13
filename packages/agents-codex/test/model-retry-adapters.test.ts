@@ -237,3 +237,71 @@ it.each([undefined, false, true])(
     expect(withModelRetryAdvice(known, advice).responseStarted).toBe(true);
   },
 );
+
+it('merges detached normalized advisory fields without changing admitted facts', () => {
+  const wire = {
+    attempt_id: 'id',
+    attempt: 1,
+    request_attempt: 1,
+    max_retries: 1,
+    thread_id: 'thread',
+    turn_id: 'turn',
+    model: 'model',
+    transport: 'model_producer',
+    policy_enabled: true,
+    normalized: {
+      message: 'failure',
+      status_code: 503,
+      request_id: 'native-id',
+      is_abort: true,
+      is_network_error: true,
+      is_timeout: true,
+    },
+    provider_advice: {},
+    response_started: false,
+    retry_unsafe_output: true,
+    local_effects: true,
+    stateful: false,
+  };
+  const source = {
+    statusCode: undefined,
+    retryAfterMs: undefined,
+    isAbort: false,
+    isNetworkError: false,
+    isTimeout: false,
+  };
+  const advice = captureModelRetryAdvice({
+    retryAfterMs: 7,
+    normalized: source,
+  })!;
+  source.isTimeout = true;
+  const admitted = retryContextFromNative(
+    wire,
+    new AbortController().signal,
+    new Error('original'),
+  ).context;
+  const view = withModelRetryAdvice(admitted, advice);
+  expect(view.normalizedError).toMatchObject({
+    requestId: 'native-id',
+    isAbort: true,
+    isNetworkError: false,
+    isTimeout: false,
+  });
+  expect(view.normalizedError.statusCode).toBeUndefined();
+  expect(view.normalizedError.retryAfterMs).toBeUndefined();
+  expect(admitted.normalizedError).toMatchObject({
+    statusCode: 503,
+    isNetworkError: true,
+    isTimeout: true,
+  });
+  expect(view.localEffects).toBe(true);
+  expect(view.retryUnsafeOutput).toBe(true);
+  expect(Object.isFrozen(view.providerAdvice?.normalized)).toBe(true);
+  expect(retryAdviceToNative(advice)).not.toHaveProperty('normalized');
+  for (const normalized of [
+    { isTimeout: 1 },
+    { surprise: true },
+    { retryAfterMs: NaN },
+  ])
+    expect(() => captureModelRetryAdvice({ normalized })).toThrow();
+});

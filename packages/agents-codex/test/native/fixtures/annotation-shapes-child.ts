@@ -152,7 +152,7 @@ async function main() {
   try {
     if (mode.startsWith('redispatch-')) {
       let metadata: Metadata = Object.fromEntries(
-        Array.from({ length: 3000 }, (_, i) => ['f' + i, 0]),
+        Array.from({ length: 9000 }, (_, i) => ['f' + i, 0]),
       );
       let literal: unknown = 'literal';
       for (let i = 0; i < 65; i++) literal = { x: literal };
@@ -162,7 +162,7 @@ async function main() {
           name: 'bounds.replay.root',
           metadata:
             mode === 'redispatch-configured'
-              ? { x: 'x'.repeat(64000) }
+              ? { x: 'x'.repeat(100000) }
               : mode === 'redispatch-queue' ||
                   mode === 'redispatch-root-queue' ||
                   mode === 'redispatch-unrelated' ||
@@ -341,9 +341,9 @@ async function main() {
       await assert.rejects(
         telemetry.startTrace({
           name: 'too-large',
-          metadata: { x: 'x'.repeat(65536) },
+          metadata: { x: 'x'.repeat(131072) },
         }),
-        /64 KiB/,
+        /128 KiB/,
       );
       const over = await telemetry.startTrace({
         name: 'completion',
@@ -351,8 +351,8 @@ async function main() {
       });
       try {
         assert.throws(
-          () => over.end({ data: { x: 'x'.repeat(32768) } }),
-          /32 KiB/,
+          () => over.end({ data: { x: 'x'.repeat(65536) } }),
+          /64 KiB/,
         );
       } finally {
         over.close();
@@ -387,7 +387,7 @@ async function main() {
       assert(ended.dropped_attributes_count > 0);
     } else if (mode === 'wide' || mode === 'wide-queue') {
       const metadata = Object.fromEntries(
-        Array.from({ length: 3000 }, (_, i) => ['f' + i, 0]),
+        Array.from({ length: 9000 }, (_, i) => ['f' + i, 0]),
       );
       const root = await telemetry.withTrace(
         { name: 'bounds.wide.root', metadata },
@@ -414,9 +414,12 @@ async function main() {
         );
       }
     } else if (mode === 'combined' || mode === 'combined-escaped') {
-      const metadata = { x: 'x'.repeat(40000) };
+      const metadata = { x: 'x'.repeat(100000) };
       const data = {
-        x: mode === 'combined' ? 'y'.repeat(30000) : '\\'.repeat(16375),
+        x:
+          mode === 'combined'
+            ? 'y'.repeat(65536 - 8)
+            : '\\'.repeat((65536 - 8) / 2),
       };
       await telemetry.withTrace(
         { name: 'bounds.combined', metadata, includeSensitiveData: true },
@@ -433,10 +436,20 @@ async function main() {
         JSON.parse(String(ended[0].attributes['sdk.outcome.data'])),
         data,
       );
+      await telemetry.dispatchTraceEvent(JSON.parse(JSON.stringify(ended[0])));
+      assert.deepEqual(events.at(-1)!.attributes, ended[0].attributes);
+      const oversized = JSON.parse(JSON.stringify(ended[0]));
+      oversized.attributes['sdk.outcome.data'] = JSON.stringify({
+        x: 'x'.repeat(65536),
+      });
+      await assert.rejects(
+        () => telemetry.dispatchTraceEvent(oversized),
+        /queue capacity/,
+      );
     } else if (mode === 'otlp' || mode.startsWith('carrier-')) {
       const metadata = {
         ...payload('top-level'),
-        'a-long': 'x'.repeat(8192),
+        'a-long': 'x'.repeat(70000),
         'b-encoded': ['x'.repeat(3000), 'y'.repeat(3000)],
       };
       const childMetadata = mode.startsWith('carrier-')

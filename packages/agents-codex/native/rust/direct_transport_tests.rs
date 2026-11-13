@@ -94,6 +94,7 @@ impl Fixture {
                 thread_id: &self.control.id,
                 client_metadata: &mut metadata,
                 model: "test-model",
+                provider_managed_history: false,
                 model_omitted,
             })
             .expect("issued exact native ticket");

@@ -41,6 +41,10 @@ export interface NativeProviderOptions {
   /** Native phase timeouts in integer milliseconds; zero expires immediately. */
   streamIdleTimeoutMs?: number;
   websocketConnectTimeoutMs?: number;
+  websocketOptions?: Readonly<{
+    pingIntervalMs?: number | null;
+    pingTimeoutMs?: number | null;
+  }>;
   baseUrl?: string;
   /** Base URL for Responses WebSockets when that transport is allowed. */
   websocketBaseUrl?: string;
@@ -129,6 +133,30 @@ export class NativeProvider {
   #getPlanCredential?: SignInWithChatGPT['getCredential'];
 
   constructor(options: NativeProviderOptions = {}) {
+    const rawWebsocketOptions = options.websocketOptions;
+    let websocketOptions: NativeProviderOptions['websocketOptions'];
+    if (rawWebsocketOptions !== undefined) {
+      if (
+        !rawWebsocketOptions ||
+        typeof rawWebsocketOptions !== 'object' ||
+        Array.isArray(rawWebsocketOptions)
+      )
+        throw new TypeError('websocketOptions must be an options object');
+      const capturedOptions = { ...rawWebsocketOptions };
+      for (const [name, value] of Object.entries(capturedOptions)) {
+        if (!['pingIntervalMs', 'pingTimeoutMs'].includes(name))
+          throw new TypeError('Unsupported websocketOptions field');
+        if (
+          value !== null &&
+          value !== undefined &&
+          (!Number.isSafeInteger(value) || value <= 0)
+        )
+          throw new TypeError(
+            `${name} must be a positive safe integer or null`,
+          );
+      }
+      websocketOptions = Object.freeze(capturedOptions);
+    }
     const runtime = options.runtime;
     if (runtime !== undefined) validateNativeRuntime(runtime);
     const signIn = options.signInWithChatGPT;
@@ -248,6 +276,7 @@ export class NativeProvider {
       );
     this.#options = Object.freeze({
       ...captured,
+      websocketOptions,
       runtime,
       supportsWebsockets:
         runtime === undefined
@@ -546,6 +575,23 @@ export class NativeProvider {
                 : options.streamMaxRetries,
               stream_idle_timeout_ms: options.streamIdleTimeoutMs,
               websocket_connect_timeout_ms: options.websocketConnectTimeoutMs,
+              websocket_options:
+                options.websocketOptions === undefined
+                  ? undefined
+                  : {
+                      ...(options.websocketOptions.pingIntervalMs == null
+                        ? {}
+                        : {
+                            ping_interval_ms:
+                              options.websocketOptions.pingIntervalMs,
+                          }),
+                      ...(options.websocketOptions.pingTimeoutMs == null
+                        ? {}
+                        : {
+                            ping_timeout_ms:
+                              options.websocketOptions.pingTimeoutMs,
+                          }),
+                    },
             }).filter(([, value]) => value !== undefined),
           ),
         },

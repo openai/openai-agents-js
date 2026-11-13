@@ -533,6 +533,7 @@ export type { FunctionApprovalRequest } from './runtime/manual';
 export type {
   NativeRealtimeUsage,
   NativeRealtimeUsageAccounting,
+  NativeRealtimeUsageSnapshot,
   NativeRealtimeUsageCounters,
 } from './runtime/realtime-usage';
 

@@ -9,6 +9,7 @@ import {
   type JsonObject,
 } from './binding';
 import { NativeProviderRoutes } from './http-model';
+import { hasCustomTracingIds } from './tracing-context';
 import { nativeInput } from './input';
 import {
   markNativeErrorNotStarted,
@@ -225,9 +226,16 @@ export async function tryOpenPlainRun(
   signal?: AbortSignal,
 ): Promise<PreparedPlainRun | undefined> {
   const settings = options.initialModelSettings;
+  const providerConfig = lease.config['model_providers.native_agent'];
   if (
+    hasCustomTracingIds() ||
     lease.chatGPT ||
     !lease.apiKey ||
+    (lease.websocketsAllowed &&
+      providerConfig !== null &&
+      typeof providerConfig === 'object' &&
+      !Array.isArray(providerConfig) &&
+      providerConfig.websocket_options !== undefined) ||
     options.modelBackend ||
     options.beforeComplete ||
     options.toolBatchCompletion ||

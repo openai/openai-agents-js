@@ -659,6 +659,9 @@ class NativeRealtimeOwner {
     private readonly options: NativeRealtimeOptions,
     private readonly closeAfterGraph: (generation: string) => Promise<void>,
     private readonly adapterBridge?: NativeRealtimeAdapterBridge,
+    private readonly recordUsage?: (
+      reported: ReturnType<typeof reportedRealtimeUsage> | undefined,
+    ) => void,
   ) {
     this.options = { ...options };
     if (options.url !== undefined) {
@@ -2714,17 +2717,29 @@ class NativeRealtimeOwner {
           this.responseId = undefined;
       }
       let reportedUsage: NativeRealtimeUsage | undefined;
+      let reportedCounters:
+        ReturnType<typeof reportedRealtimeUsage> | undefined;
+      let usageTotals = this.usageTotals;
       if (
         name === 'ResponseDone' &&
         value.usage !== undefined &&
         value.usage !== null
       ) {
-        const reported = reportedRealtimeUsage(value.usage);
-        this.usageTotals = addRealtimeUsage(this.usageTotals ?? {}, reported);
-        reportedUsage = structuredClone(reported) as NativeRealtimeUsage;
-        this.usageReports++;
+        reportedCounters = reportedRealtimeUsage(value.usage);
+        usageTotals = addRealtimeUsage(
+          this.usageTotals ?? {},
+          reportedCounters,
+        );
+        reportedUsage = structuredClone(
+          reportedCounters,
+        ) as NativeRealtimeUsage;
       }
-      if (name === 'ResponseDone') this.finishedResponses++;
+      if (name === 'ResponseDone') {
+        this.recordUsage?.(reportedCounters);
+        this.usageTotals = usageTotals;
+        if (reportedCounters !== undefined) this.usageReports++;
+        this.finishedResponses++;
+      }
       if (name === 'ResponseDone' && !outOfBand) this.startFunctionBatch(value);
       this.emit({
         type: 'response',

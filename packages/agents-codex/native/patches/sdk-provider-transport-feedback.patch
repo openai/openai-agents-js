@@ -1,0 +1,150 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 030e75d1b407b91d2c8c7b9bb020dd3f7c637679..ed40a65a1655762be28e3fb93fc408eb47d23cf4 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -2610,6 +2610,7 @@ impl ModelClientSession {
+                         Arc::new(route.with_http_mode(prompt.prefer_buffered_response))
+                             as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
+                     }),
++                self.client.provider_history.is_some(),
+             );
+             if Self::request_transport_mode(prompt) != codex_protocol::model_request_transport::RequestTransportMode::Auto
+                 && interceptors.iter().any(|interceptor| interceptor.produces_response()) {
+@@ -2949,6 +2950,7 @@ impl ModelClientSession {
+                 responses_metadata.sdk_request_attempts.clone().map(|route| {
+                     Arc::new(route) as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
+                 }),
++                self.client.provider_history.is_some(),
+             );
+             if Self::request_transport_mode(prompt) != codex_protocol::model_request_transport::RequestTransportMode::Auto
+                 && interceptors.iter().any(|interceptor| interceptor.produces_response()) {
+diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index 5f49d14788cc248844ba38e275746663a55e3107..911374e73cdccc714d03a1adecee4af19f30e89e 100644
+--- a/codex-rs/core/src/model_request.rs
++++ b/codex-rs/core/src/model_request.rs
+@@ -42,6 +42,7 @@ pub(crate) fn prepare(
+         metadata,
+         tool_admission,
+         None,
++        false,
+     )
+ }
+
+@@ -54,6 +55,7 @@ pub(crate) fn prepare_with_attempts(
+     metadata: &mut Option<HashMap<String, String>>,
+     tool_admission: Option<Arc<dyn ModelToolAdmission>>,
+     attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
++    provider_managed_history: bool,
+ ) -> Vec<Box<dyn ModelResponseInterceptor>> {
+     contributors
+         .iter()
+@@ -66,6 +68,7 @@ pub(crate) fn prepare_with_attempts(
+                 client_metadata: &mut additions,
+                 model,
+                 model_omitted,
++                provider_managed_history,
+             });
+             if let Some(additions) = additions {
+                 for (key, value) in crate::responses_metadata::filter_extra_metadata(additions) {
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 5441b58f240fae8dd2caf2aec417306386cbb614..aa45caba46b1abc59792867926a9403f7071cb22 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -261,6 +261,8 @@ pub struct ModelRequestInput<'a> {
+     pub model: &'a str,
+     /// True only when the final typed provider request omits its model field.
+     pub model_omitted: bool,
++    /// Core owns the provider-managed history window and any response anchor.
++    pub provider_managed_history: bool,
+ }
+
+ /// Current in-process provider recipe for a read-only history-anchor check.
+diff --git a/codex-rs/protocol/src/model_request_transport.rs b/codex-rs/protocol/src/model_request_transport.rs
+index 0cef71c4929365c7f9b388ad50ba6f412badfd7d..2a2b06d2d10039bb1a0f61204e070d879a01d655 100644
+--- a/codex-rs/protocol/src/model_request_transport.rs
++++ b/codex-rs/protocol/src/model_request_transport.rs
+@@ -156,20 +156,80 @@ pub struct WebsocketOptions {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[ts(optional = nullable, type = "number | null")]
+     pub ping_timeout_ms: Option<std::num::NonZeroU64>,
+-    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_with::rust::double_option")]
++    #[serde(default, skip_serializing_if = "Option::is_none", with = "nullable_websocket_option")]
+     #[ts(optional = nullable, type = "number | null")]
+     #[schemars(with = "Option<usize>")]
+     pub max_message_bytes: Option<Option<usize>>,
+-    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_with::rust::double_option")]
++    #[serde(default, skip_serializing_if = "Option::is_none", with = "nullable_websocket_option")]
+     #[ts(optional = nullable, type = "number | null")]
+     #[schemars(with = "Option<u64>")]
+     pub send_timeout_ms: Option<Option<u64>>,
+-    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_with::rust::double_option")]
++    #[serde(default, skip_serializing_if = "Option::is_none", with = "nullable_websocket_option")]
+     #[ts(optional = nullable, type = "number | null")]
+     #[schemars(with = "Option<u64>")]
+     pub connect_timeout_ms: Option<Option<u64>>,
+-    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_with::rust::double_option")]
++    #[serde(default, skip_serializing_if = "Option::is_none", with = "nullable_websocket_option")]
+     #[ts(optional = nullable, type = "number | null")]
+     #[schemars(with = "Option<u64>")]
+     pub receive_timeout_ms: Option<Option<u64>>,
+ }
++
++// TOML config has no null; preserve explicit disabled overrides with a named value.
++mod nullable_websocket_option {
++    use serde::Deserialize;
++    pub use serde_with::rust::double_option::serialize;
++
++    pub fn deserialize<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
++    where
++        D: serde::Deserializer<'de>,
++        T: serde::Deserialize<'de>,
++    {
++        #[derive(serde::Deserialize)]
++        #[serde(untagged)]
++        enum Limit<T> {
++            Value(T),
++            Disabled(String),
++        }
++        match Option::<Limit<T>>::deserialize(deserializer)? {
++            None => Ok(Some(None)),
++            Some(Limit::Value(value)) => Ok(Some(Some(value))),
++            Some(Limit::Disabled(value)) if value == "disabled" => Ok(Some(None)),
++            Some(Limit::Disabled(_)) => Err(serde::de::Error::custom(
++                "expected an integer, null, or disabled",
++            )),
++        }
++    }
++}
++
++#[cfg(test)]
++mod websocket_option_config_tests {
++    use super::WebsocketOptions;
++    #[test]
++    fn omission_inherits_but_null_and_config_disabled_clear_phase_limits() {
++        let omitted: WebsocketOptions = serde_json::from_str("{}").unwrap();
++        assert_eq!(omitted.connect_timeout_ms, None);
++        assert_eq!(omitted.max_message_bytes, None);
++        let null: WebsocketOptions =
++            serde_json::from_str(r#"{"connect_timeout_ms":null,"max_message_bytes":null}"#)
++                .unwrap();
++        let disabled: WebsocketOptions = serde_json::from_str(
++            r#"{"connect_timeout_ms":"disabled","max_message_bytes":"disabled"}"#,
++        )
++        .unwrap();
++        assert_eq!(null, disabled);
++        assert_eq!(null.connect_timeout_ms, Some(None));
++        assert_eq!(null.max_message_bytes, Some(None));
++        let configured: WebsocketOptions =
++            serde_json::from_str(r#"{"connect_timeout_ms":7,"max_message_bytes":256}"#).unwrap();
++        assert_eq!(configured.connect_timeout_ms, Some(Some(7)));
++        assert_eq!(configured.max_message_bytes, Some(Some(256)));
++        assert!(
++            serde_json::from_str::<WebsocketOptions>(r#"{"connect_timeout_ms":"inherit"}"#)
++                .is_err()
++        );
++        assert_eq!(
++            serde_json::to_value(null).unwrap()["connect_timeout_ms"],
++            serde_json::Value::Null
++        );
++    }
++}

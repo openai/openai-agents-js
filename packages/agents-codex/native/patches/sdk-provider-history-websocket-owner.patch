@@ -1,0 +1,145 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 9d23cba3019ddff0f742b12e3685653bd9e4d7dc..030e75d1b407b91d2c8c7b9bb020dd3f7c637679 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -514,6 +514,24 @@ impl std::fmt::Debug for RealtimeConnectionAuth {
+     }
+ }
+
++async fn resolve_provider_history_owner(
++    owner: &dyn codex_extension_api::ModelRequestContributor,
++    url: &str,
++    setup: &CurrentClientSetup,
++) -> Result<codex_extension_api::ModelProviderHistoryRoute> {
++    let mut headers = setup.api_provider.headers.clone();
++    setup.api_auth.add_auth_headers(&mut headers);
++    owner
++        .provider_history_route(url, &headers)
++        .ok_or_else(|| {
++            CodexErr::InvalidRequest(
++                "Provider history requires a supported owning Responses transport".into(),
++            )
++        })?
++        .await
++        .map_err(CodexErr::InvalidRequest)
++}
++
+ struct RealtimeBearerAuth(HeaderValue);
+
+ impl AuthProvider for RealtimeBearerAuth {
+@@ -2603,14 +2621,7 @@ impl ModelClientSession {
+                     return Err(CodexErr::InvalidRequest("Provider history requires a supported owning Responses transport".into()));
+                 }
+                 let history_route = if let Some(owner) = &history_owner {
+-                    let mut headers = client_setup.api_provider.headers.clone();
+-                    client_setup.api_auth.add_auth_headers(&mut headers);
+-                    owner.provider_history_route(&url, &headers)
+-                        .ok_or_else(|| CodexErr::InvalidRequest(
+-                            "Provider history requires a supported owning Responses transport".into()
+-                        ))?
+-                        .await
+-                        .map_err(CodexErr::InvalidRequest)?
++                    resolve_provider_history_owner(owner.as_ref(), &url, &client_setup).await?
+                 } else {
+                     codex_extension_api::ModelProviderHistoryRoute {
+                         provider: client_setup.api_provider.clone(),
+@@ -2948,20 +2959,35 @@ impl ModelClientSession {
+                 if interceptors.iter().any(|interceptor| interceptor.produces_response()) {
+                     return Err(CodexErr::InvalidRequest("Provider history requires a supported owning Responses transport".into()));
+                 }
+-                let url = client_setup.api_provider.websocket_url_for_path("/responses")
+-                    .map_err(|_| CodexErr::InvalidRequest("Invalid provider history WebSocket route".into()))?;
++                let http_url = client_setup.api_provider.url_for_path("/responses");
++                let history_route = if let Some(owner) = self.client.request_contributors.iter()
++                    .find(|contributor| contributor.http_stream(&http_url).is_some())
++                {
++                    resolve_provider_history_owner(owner.as_ref(), &http_url, &client_setup).await?
++                } else {
++                    codex_extension_api::ModelProviderHistoryRoute {
++                        provider: client_setup.api_provider.clone(),
++                        transport: self.client.build_api_transport(
++                            &client_setup.api_provider,
++                            "/responses",
++                            client_setup.redirect_policy.clone(),
++                        )?,
++                        headers: responses_headers.clone(),
++                    }
++                };
+                 let connection = match self.websocket_session.connection.as_ref() {
+                     Some(connection) if !connection.is_closed().await =>
+                         self.websocket_session.physical_connection.clone(),
+                     _ => None,
+                 };
+-                logical_history_input = cursor.prepare(
++                logical_history_input = cursor.prepare_on_provider(
+                     &mut request,
+                     &client_setup,
+-                    self.client.build_api_transport(&client_setup.api_provider, "/responses", client_setup.redirect_policy.clone())?,
+-                    responses_headers.clone(),
++                    history_route.transport,
++                    history_route.headers,
++                    &history_route.provider,
+                     prompt.request_controls.request_transport.as_ref().and_then(Option::as_ref),
+-                    provider_history::HistoryTransport::Websocket { url: url.as_str(), connection: connection.as_ref() },
++                    provider_history::HistoryTransport::Websocket { connection: connection.as_ref() },
+                 ).await?;
+                 cursor.needs_live_websocket()
+             } else {
+diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
+index c6aa8d17feb66c25742e2e21d24f287d76c50aaf..a856dd006a3b31ce29f45d568ea38ec9df25db67 100644
+--- a/codex-rs/core/src/client/provider_history.rs
++++ b/codex-rs/core/src/client/provider_history.rs
+@@ -16,7 +16,6 @@ pub(crate) struct Start {
+ pub(crate) enum HistoryTransport<'a> {
+     Http,
+     Websocket {
+-        url: &'a str,
+         connection: Option<&'a Arc<()>>,
+     },
+ }
+@@ -455,29 +454,6 @@ impl Cursor {
+             .map_err(|error| CodexErr::Fatal(error.to_string()))
+     }
+
+-    pub(crate) async fn prepare(
+-        &self,
+-        request: &mut ResponsesApiRequest,
+-        setup: &CurrentClientSetup,
+-        transport: ReqwestTransport,
+-        headers: HeaderMap,
+-        request_transport: Option<
+-            &codex_protocol::model_request_transport::RequestTransportOverrides,
+-        >,
+-        history_transport: HistoryTransport<'_>,
+-    ) -> Result<Option<Vec<ResponseItem>>> {
+-        self.prepare_on_provider(
+-            request,
+-            setup,
+-            transport,
+-            headers,
+-            &setup.api_provider,
+-            request_transport,
+-            history_transport,
+-        )
+-        .await
+-    }
+-
+     pub(crate) async fn prepare_on_provider(
+         &self,
+         request: &mut ResponsesApiRequest,
+@@ -499,8 +475,13 @@ impl Cursor {
+         setup.api_auth.add_auth_headers(&mut auth_headers);
+         let (mut effective_url, connection) = match history_transport {
+             HistoryTransport::Http => (provider.url_for_path("/responses"), None),
+-            HistoryTransport::Websocket { url, connection } =>
+-                (url.to_owned(), connection.map(Arc::downgrade)),
++            HistoryTransport::Websocket { connection } => (
++                provider
++                    .websocket_url_for_path("/responses")
++                    .map_err(|_| invalid("Invalid provider history WebSocket route"))?
++                    .to_string(),
++                connection.map(Arc::downgrade),
++            ),
+         };
+         let prepared = codex_api::prepare_request_transport(&effective_url, request_transport)
+             .map_err(self_error)?;
