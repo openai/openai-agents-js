@@ -1,1 +1,2 @@
 Exact native bundle replay for the full hosted CI timing trial.
+warm-repeat=2
