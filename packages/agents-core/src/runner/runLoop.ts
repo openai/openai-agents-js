@@ -1,13 +1,18 @@
+import type { FunctionToolCheckpoint } from './functionToolCheckpoint';
 import type { Agent, AgentOutputType } from '../agent';
 import { UserError } from '../errors';
 import { resetCurrentSpan } from '../tracing/context';
 import type { RunState } from '../runState';
+import type { RunItem } from '../items';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { getFunctionToolStateKeyForCall } from '../toolIdentity';
 import type { SingleStepResult } from './steps';
 import type { ProcessedResponse } from './types';
 import type { ResumedSessionWritePreparation } from './sessionPersistence';
-import { getServerConversationOwner } from './conversation';
+import {
+  getServerConversationOwner,
+  type ServerConversationTracker,
+} from './conversation';
 import {
   preflightToolInvocations,
   resolveInterruptedTurn,
@@ -114,6 +119,24 @@ function hasUncommittedLocalEffects(
   ].some((toolCall) => !suppressedToolCalls.has(toolCall));
 }
 
+/** Merge deferred model items without republishing retained calls or their outputs. */
+function completeAcceptedResponseHistory(
+  source: RunItem[],
+  indexes: number[],
+  step: SingleStepResult,
+) {
+  const published = new Set(step.newStepItems);
+  const history: RunItem[] = [];
+  let cursor = 0;
+  for (const [i, item] of source.entries()) {
+    if (!published.delete(item)) continue;
+    const index = indexes[i];
+    while (cursor < index) history.push(step.preStepItems[cursor++]);
+    history.push(item);
+  }
+  return history.concat(step.preStepItems.slice(cursor), [...published]);
+}
+
 /**
  * Continues local processing for a response that was already accepted by the model provider.
  */
@@ -123,12 +146,14 @@ export async function resumeAcceptedModelResponse<
 >(options: {
   state: RunState<TContext, TAgent>;
   runner: Runner;
+  functionToolCheckpoint?: FunctionToolCheckpoint;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
   signal?: AbortSignal;
   onStepItems?: (turnResult: SingleStepResult) => void;
+  serverConversationTracker?: ServerConversationTracker;
   validateHandoffAgent?: (agent: Agent<any, any>) => void;
-}): Promise<SingleStepResult> {
+}): Promise<void> {
   const { state } = options;
   if (!state._lastTurnResponse || !state._lastProcessedResponse) {
     throw new UserError(
@@ -137,6 +162,18 @@ export async function resumeAcceptedModelResponse<
     );
   }
 
+  const indexes = state._lastProcessedResponse.newItemInsertionIndexes;
+  if (
+    indexes &&
+    (indexes.length !== state._lastProcessedResponse.newItems.length ||
+      indexes.some(
+        (value, i) =>
+          value > state._generatedItems.length ||
+          (i > 0 && value < indexes[i - 1]),
+      ))
+  ) {
+    throw new UserError('Invalid accepted-response history positions.', state);
+  }
   const suppressedToolCalls = preflightToolInvocations(
     state._currentAgent,
     state,
@@ -155,6 +192,10 @@ export async function resumeAcceptedModelResponse<
       state,
     );
   }
+  options.serverConversationTracker?.trackServerItems(
+    state._lastTurnResponse,
+    state._lastProcessedResponse.newItems,
+  );
   markAcceptedResponseProcessingStarted(state);
   const turnResult = await resolveTurnAfterModelResponse(
     state._currentAgent,
@@ -171,8 +212,10 @@ export async function resumeAcceptedModelResponse<
     suppressedToolCalls,
     undefined,
     options.validateHandoffAgent,
+    options.functionToolCheckpoint,
   );
   applyTurnResult({
+    functionToolCheckpoint: options.functionToolCheckpoint,
     state,
     turnResult,
     agent: state._currentAgent,
@@ -180,7 +223,6 @@ export async function resumeAcceptedModelResponse<
     resetTurnPersistence: false,
     onStepItems: options.onStepItems,
   });
-  return turnResult;
 }
 
 export type InterruptedTurnOutcome = {
@@ -203,6 +245,7 @@ type ApplyTurnResultOptions<
   agent: Agent<TContext, AgentOutputType>;
   toolsUsed: string[];
   resetTurnPersistence: boolean;
+  functionToolCheckpoint?: FunctionToolCheckpoint;
   onStepItems?: (turnResult: SingleStepResult) => void;
 };
 
@@ -223,7 +266,22 @@ export function applyTurnResult<
   state._commitToolInvocations(turnResult.toolInvocationCommitItems);
   state._toolUseTracker.addToolUse(agent, toolsUsed);
   state._originalInput = turnResult.originalInput;
-  state._replaceGeneratedItems(turnResult.generatedItems);
+  if (
+    responseAccepted &&
+    state._lastProcessedResponse?.newItemInsertionIndexes
+  ) {
+    state._replaceGeneratedItems(
+      completeAcceptedResponseHistory(
+        state._lastProcessedResponse.newItems,
+        state._lastProcessedResponse.newItemInsertionIndexes,
+        turnResult,
+      ),
+    );
+    delete state._lastProcessedResponse.newItemInsertionIndexes;
+  } else {
+    state._replaceGeneratedItems(turnResult.generatedItems);
+  }
+  options.functionToolCheckpoint?.clear();
   if (
     resetTurnPersistence &&
     turnResult.nextStep.type === 'next_step_run_again'
@@ -246,6 +304,7 @@ export async function resumeInterruptedTurn<
 >(options: {
   state: RunState<TContext, TAgent>;
   runner: Runner;
+  functionToolCheckpoint?: FunctionToolCheckpoint;
   toolErrorFormatter?: ToolErrorFormatter;
   agentToolParentRunConfig?: Partial<RunConfig>;
   signal?: AbortSignal;
@@ -304,6 +363,8 @@ export async function resumeInterruptedTurn<
     approvedToolWillResume || pendingHandoffs.length > 0
       ? await beforeResumedSideEffects?.()
       : undefined;
+  if (options.functionToolCheckpoint)
+    options.functionToolCheckpoint.sessionPreparation = preparation;
   let unfilteredHandoffInput: ResumedSessionWritePreparation['handoffInput'];
   const turnResult = await resolveInterruptedTurn<TContext>(
     state._currentAgent,
@@ -325,6 +386,7 @@ export async function resumeInterruptedTurn<
           );
         }
       : undefined,
+    options.functionToolCheckpoint,
   );
   const resumedSideEffects =
     turnResult.nextStep.type === 'next_step_handoff' ||
@@ -364,6 +426,7 @@ export async function resumeInterruptedTurn<
   }
 
   applyTurnResult({
+    functionToolCheckpoint: options.functionToolCheckpoint,
     state,
     turnResult,
     agent: state._currentAgent,

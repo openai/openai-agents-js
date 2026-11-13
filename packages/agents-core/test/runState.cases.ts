@@ -653,7 +653,7 @@ export function registerRunStateCoreTests(): void {
       expect(restored._context.toolInput).toEqual(context.toolInput);
     });
 
-    it('serializes sandbox state with the current schema version', async () => {
+    it('serializes sandbox state with schema 1.24', async () => {
       const context = new RunContext({ foo: 'bar' });
       const agent = new Agent({ name: 'SandboxStateAgent' });
       const state = new RunState(context, 'input', agent, 1);
@@ -687,7 +687,7 @@ export function registerRunStateCoreTests(): void {
       };
 
       const serialized = state.toJSON();
-      expect(serialized.$schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+      expect(serialized.$schemaVersion).toBe('1.24');
       expect(serialized.sandbox).toEqual(state._sandbox);
 
       const restored = await RunState.fromString(
