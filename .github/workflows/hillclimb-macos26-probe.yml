@@ -1,0 +1,16 @@
+name: CI hillclimb macOS runner probe
+on:
+  push:
+    branches: [ci/hillclimb/js-macos26-probe-01]
+permissions: {}
+jobs:
+  probe:
+    runs-on: macos-26-xlarge
+    timeout-minutes: 5
+    steps:
+      - name: Report runner configuration
+        run: |
+          sw_vers
+          uname -m
+          sysctl -n hw.ncpu
+          xcodebuild -version
