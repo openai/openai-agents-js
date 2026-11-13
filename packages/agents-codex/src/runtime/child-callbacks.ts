@@ -49,6 +49,23 @@ export interface ChildCallbackOwner {
 export class ChildCallbacks {
   constructor(private readonly observationSequence: () => number = () => 0) {}
   private readonly owners = new Map<string, ChildCallbackOwner>();
+  private readonly settlements = new Set<Promise<void>>();
+  /** Retain child settlement separately from entered callback cleanup. */
+  trackSettlement(
+    pending: Promise<void>,
+    failed?: (error: unknown) => void,
+  ): void {
+    this.settlements.add(pending);
+    const observed = failed ? pending.catch(failed) : pending;
+    void observed.finally(() => this.settlements.delete(pending));
+  }
+  hasPendingSettlements(): boolean {
+    return this.settlements.size > 0;
+  }
+  /** Join only after native shutdown and the final readers have settled. */
+  drainSettlements(): Promise<PromiseSettledResult<void>[]> {
+    return Promise.allSettled([...this.settlements]);
+  }
   private key(childId: string, incarnation: string, turnId: string): string {
     return JSON.stringify([childId, incarnation, turnId]);
   }

@@ -14,14 +14,15 @@ use codex_history::{ResponseItemEnvelope, RolloutItem};
 use codex_protocol::dynamic_tools::{DynamicToolFunctionSpec, DynamicToolSpec};
 use codex_protocol::model_request_transport::RequestTransportOverrides;
 use codex_tools::{
-    FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolName,
-    ToolOutput, ToolSpec, dynamic_tool_to_responses_api_tool,
+    FunctionCallError, ToolCall, ToolExecutor, ToolExecutorFuture, ToolExposure, ToolExposures,
+    ToolName, ToolOutput, ToolSpec, dynamic_tool_to_responses_api_tool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::application_instructions::Accepted;
+use crate::tool_callers::ToolDeclarations;
 type InstructionFile = Value;
 use crate::python_tools::{ProfileCatalog, PythonTools};
 
@@ -39,7 +40,7 @@ pub(crate) struct ProfileSpec {
     id: String,
     model: AgentProfileModelSettings,
     instructions: String,
-    tools: Vec<DynamicToolSpec>,
+    tools: ToolDeclarations,
     #[serde(default)]
     manual_slots: Vec<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -62,6 +63,8 @@ pub(crate) struct ProfileSpec {
     post_turn_compact: bool,
     #[serde(default)]
     before_complete: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tool_batch_completion: bool,
     #[serde(default)]
     selecting_steps: bool,
     output_fingerprint: String,
@@ -268,7 +271,7 @@ impl OpeningProfiles {
     pub(crate) fn manual_restore_declaration(
         &self,
         profile_id: &str,
-    ) -> Result<(&str, &[DynamicToolSpec], &[usize])> {
+    ) -> Result<(&str, &ToolDeclarations, &[usize])> {
         let profile = self
             .roster
             .iter()
@@ -282,7 +285,7 @@ impl OpeningProfiles {
         &self,
         history: &[RolloutItem],
         saved: &Value,
-    ) -> Result<(Vec<DynamicToolSpec>, Vec<usize>)> {
+    ) -> Result<(ToolDeclarations, Vec<usize>)> {
         ensure!(
             roster_fingerprint(&self.roster, &self.root_id)? == self.fingerprint,
             "Captured Agent graph fingerprint does not match its declarations"
@@ -293,6 +296,7 @@ impl OpeningProfiles {
         let (_, declarations, manual) = self.manual_restore_declaration(&source.profile_id)?;
         let mut seen = HashSet::new();
         let mut slots = Vec::new();
+        let mut rebound = ToolDeclarations::default();
         for (slot, spec) in saved.iter().enumerate() {
             let value = serde_json::to_value(spec)?;
             let original = declarations
@@ -308,17 +312,24 @@ impl OpeningProfiles {
             if manual.contains(&original) {
                 slots.push(slot);
             }
+            rebound.push(
+                declarations[original].clone(),
+                declarations.caller_limits(original),
+            );
         }
-        Ok((saved, slots))
+        Ok((rebound, slots))
     }
 
-    pub(crate) fn capabilities(&self) -> [bool; 5] {
+    pub(crate) fn capabilities(&self) -> [bool; 6] {
         [
             self.roster.iter().any(|profile| profile.selecting_steps),
             self.roster.iter().any(|profile| profile.transform_context),
             self.roster.iter().any(|profile| profile.before_compact),
             self.roster.iter().any(|profile| profile.before_complete),
             self.roster.iter().any(|profile| profile.post_turn_compact),
+            self.roster
+                .iter()
+                .any(|profile| profile.tool_batch_completion),
         ]
     }
 }
@@ -341,7 +352,7 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
             !profile.id.is_empty() && !profile.output_fingerprint.is_empty(),
             "Incomplete captured Agent declaration"
         );
-        let mut all_declarations = profile.tools.clone();
+        let mut all_declarations = profile.tools.to_vec();
         for name in profile.handoffs.keys() {
             if profile.handoff_callbacks.contains_key(name) {
                 continue;
@@ -363,6 +374,13 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
                     && !profile.manual_slots.contains(slot)
                     && !profile.terminal_slots.contains(slot),
                 "Handoff callback must name its exact automatic catalog slot"
+            );
+            ensure!(
+                profile
+                    .tools
+                    .caller_limits(*slot)
+                    .is_none_or(|callers| callers.contains(ToolExposures::DIRECT)),
+                "Handoff callback must allow direct model calls"
             );
         }
         for (name, declaration) in &profile.decision_handoffs {
@@ -717,6 +735,7 @@ async fn prepare_profile(
         descriptor.before_compact,
         descriptor.before_complete,
         descriptor.post_turn_compact,
+        descriptor.tool_batch_completion,
     ];
     let catalog = if voice {
         tools.voice_profile_catalog(
@@ -1090,7 +1109,7 @@ impl AgentProfiles {
     }
 }
 
-pub(crate) async fn active_specs(thread: &CodexThread) -> Result<Option<Value>> {
+pub(crate) async fn active_specs(thread: &CodexThread) -> Result<Option<ToolDeclarations>> {
     if thread
         .thread_extension_data()
         .get::<Arc<AgentProfiles>>()
@@ -1106,7 +1125,7 @@ pub(crate) async fn active_specs(thread: &CodexThread) -> Result<Option<Value>> 
         .data
         .get::<ProfileCatalog>()
         .context("Managed Agent checkpoint has no captured catalog")?;
-    Ok(Some(catalog.checkpoint_specs()?))
+    Ok(Some(catalog.selected_declarations()))
 }
 
 pub(crate) async fn active(thread: &CodexThread) -> Result<Option<AgentProfileReceipt>> {
@@ -1218,6 +1237,7 @@ pub(crate) async fn configure(
                 prepared.catalog.before_compact,
                 prepared.catalog.before_complete,
                 prepared.catalog.post_turn_compact,
+                prepared.catalog.tool_batch_completion,
             ],
             &prepared.catalog,
         )?;
@@ -1492,7 +1512,7 @@ async fn bind_accepted_mcp(
 pub(crate) async fn replace_tools(
     thread: &CodexThread,
     requested: u64,
-    specs: Vec<DynamicToolSpec>,
+    specs: ToolDeclarations,
     defaults: Option<Vec<usize>>,
     terminal_slots: &[usize],
     input_error_slots: &[usize],
@@ -1522,6 +1542,7 @@ pub(crate) async fn replace_tools(
             previous.before_compact,
             previous.before_complete,
             previous.post_turn_compact,
+            previous.tool_batch_completion,
         ],
         false,
     )?;
@@ -1732,6 +1753,12 @@ impl Drop for ProvisionalHandoff<'_> {
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
+    fn allowed_callers(&self) -> Option<ToolExposures> {
+        self.callback
+            .as_ref()
+            .and_then(|callback| callback.allowed_callers())
+            .map(|callers| callers & ToolExposures::DIRECT)
+    }
     fn exposure(&self) -> ToolExposure {
         ToolExposure::DirectModelOnly
     }

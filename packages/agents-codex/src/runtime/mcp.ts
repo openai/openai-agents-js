@@ -264,6 +264,8 @@ export interface MCPOptions<Context = unknown> {
   name: string;
   /** Selected raw tool names. Use [] for a resource-only server. */
   tools: readonly string[];
+  /** Model-visible leaf overrides keyed by raw MCP names, using native normalization. */
+  toolNameOverrides?: Readonly<Record<string, string>>;
   /**
    * Per-discovery narrowing with the current admitted text context.
    * Realtime and SIP omit tools from filtered MCP declarations. Use a separate
@@ -308,6 +310,7 @@ abstract class MCP<Context> {
   readonly deferLoading: boolean;
   readonly name: string;
   readonly tools: readonly string[];
+  readonly toolNameOverrides: Readonly<Record<string, string>>;
   readonly toolFilter?: MCPOptions<Context>['toolFilter'];
   readonly cacheToolsList?: boolean;
   readonly approvalMode: 'native' | 'preapproved';
@@ -357,6 +360,34 @@ abstract class MCP<Context> {
     this.deferLoading = options.deferLoading ?? false;
     this.name = options.name;
     this.tools = Object.freeze([...options.tools]);
+    const overrides = options.toolNameOverrides;
+    if (
+      overrides !== undefined &&
+      (overrides === null ||
+        typeof overrides !== 'object' ||
+        Array.isArray(overrides) ||
+        ![null, Object.prototype].includes(Object.getPrototypeOf(overrides)) ||
+        Object.getOwnPropertySymbols(overrides).length > 0)
+    )
+      throw new TypeError(
+        'MCP toolNameOverrides must map raw names to public names',
+      );
+    const entries = Object.entries(overrides ?? {});
+    for (const entry of entries)
+      for (const value of entry) {
+        if (
+          typeof value !== 'string' ||
+          !value ||
+          value.includes('\0') ||
+          Buffer.from(value, 'utf8').toString('utf8') !== value
+        )
+          throw new TypeError(
+            'MCP name overrides require nonempty valid Unicode without NUL',
+          );
+      }
+    if (entries.length && options.name === 'codex_apps')
+      throw new TypeError('MCP name overrides require an ordinary server');
+    this.toolNameOverrides = Object.freeze(Object.fromEntries(entries));
     this.approvalMode = options.approvalMode ?? 'native';
     if (!['native', 'preapproved'].includes(this.approvalMode))
       throw new TypeError('Invalid MCP approvalMode');
@@ -668,14 +699,24 @@ function mcpServerConfig(
     ...(server.cacheToolsList === undefined
       ? {}
       : { sdk_cache_tools_list: server.cacheToolsList }),
-    ...(server.approvalMode === 'preapproved'
-      ? {
-          tools: Object.fromEntries(
-            server.tools.map((name) => [name, { approval_mode: 'approve' }]),
-          ),
-        }
-      : {}),
   };
+  const approved = server.approvalMode === 'preapproved' ? server.tools : [];
+  const configured = new Set([
+    ...approved,
+    ...Object.keys(server.toolNameOverrides),
+  ]);
+  if (configured.size)
+    config.tools = Object.fromEntries(
+      [...configured].map((raw) => [
+        raw,
+        {
+          ...(approved.includes(raw) ? { approval_mode: 'approve' } : {}),
+          ...(Object.hasOwn(server.toolNameOverrides, raw)
+            ? { name_override: server.toolNameOverrides[raw]! }
+            : {}),
+        },
+      ]),
+    );
   if (server instanceof HttpMCP) {
     config.url = server.url;
     if (server instanceof ChatGPTAppsMCP) config.auth = 'chatgpt';
@@ -715,6 +756,7 @@ export function selectHttpLeaves(
 ): HttpMCP {
   const selected = new HttpMCP({
     name: server.name,
+    toolNameOverrides: server.toolNameOverrides,
     url: server.url,
     bearerToken: server.bearerToken,
     headers: server.headers,
@@ -780,6 +822,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
   if (server instanceof HttpMCP) return selectHttpLeaves(server, []);
   return new StdioMCP({
     name: server.name,
+    toolNameOverrides: server.toolNameOverrides,
     tools: [],
     toolFilter: server.toolFilter,
     cacheToolsList: server.cacheToolsList,
@@ -805,7 +848,8 @@ export function resourceMcpBinding(server: McpTool): McpTool {
 
 /** @internal Project names without loading the native addon during declaration. */
 export function mcpToolNames(
-  servers: readonly Pick<MCP<unknown>, 'name' | 'tools'>[],
+  servers: readonly (Pick<MCP<unknown>, 'name' | 'tools'> &
+    Partial<Pick<MCP<unknown>, 'toolNameOverrides'>>)[],
 ): Array<{ namespace: string; name: string }> {
   const namespaces = new Set<string>();
   for (const server of servers) {
@@ -840,6 +884,7 @@ export function mcpToolNames(
     servers.map((server) => ({
       name: server.name,
       tools: mcpNameSources.get(server) ?? server.tools,
+      toolNameOverrides: server.toolNameOverrides,
     })),
   );
   return servers.flatMap((server) =>

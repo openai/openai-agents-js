@@ -17,6 +17,7 @@ import {
 export interface ModelAttemptFailure {
   readonly attemptId: string;
   readonly error: unknown;
+  readonly stream?: boolean;
   readonly request: ModelRequest;
   readonly model: NativeModel;
   readonly advice: NativeModel['getRetryAdvice'];

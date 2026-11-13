@@ -54,6 +54,17 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
+const borrowedResponsesStreams = new WeakMap<
+  AsyncIterable<JsonObject>,
+  { upstreamRequestId?: string; abort: () => void }
+>();
+
+/** @internal Transport identity from the built-in borrowed Responses stream. */
+export function borrowedResponsesRequestId(
+  stream: AsyncIterable<JsonObject>,
+): string | undefined {
+  return borrowedResponsesStreams.get(stream)?.upstreamRequestId;
+}
 const receivedCacheWriteUsage = Symbol('received cache-write usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
@@ -160,7 +171,13 @@ export async function pumpModelStream(
       if (!continuing) break;
     }
   } finally {
-    if (!finished) await iterator.return?.();
+    if (!finished) {
+      try {
+        await iterator.return?.();
+      } finally {
+        borrowedResponsesStreams.get(stream)?.abort();
+      }
+    }
   }
   sink.finish();
 }
@@ -279,6 +296,11 @@ export interface ChatCompletionsModelOptions extends ModelAdapterOptions {
   stream?: boolean;
   /** Request terminal usage when streaming. Defaults to true. */
   includeUsage?: boolean;
+}
+
+export interface ResponsesModelOptions extends ModelAdapterOptions {
+  /** Use the provider's streaming API. Defaults to false. */
+  stream?: boolean;
 }
 
 type CapturedRequestOptions =
@@ -1215,16 +1237,21 @@ function chatCompletionResult(
 
 /** Borrow a Responses client; Core retains the turn, tool and history owners. */
 export class ResponsesModel implements NativeModel {
+  readonly stream?: (
+    request: ModelRequest,
+  ) => Promise<AsyncIterable<JsonObject>>;
   readonly #promptCacheKey: string | undefined;
   readonly #requestOptions: CapturedRequestOptions;
 
   constructor(
     readonly client: any,
     readonly model?: string,
-    options: ModelAdapterOptions = {},
+    options: ResponsesModelOptions = {},
   ) {
     this.#promptCacheKey = capturePromptCacheKey(options);
     this.#requestOptions = captureRequestOptionsSource(options);
+    if (options.stream === true)
+      this.stream = (request) => this.#create(request, true);
   }
 
   getRetryAdvice(
@@ -1232,20 +1259,32 @@ export class ResponsesModel implements NativeModel {
   ): ModelRetryAdvice | undefined {
     return openAIRetryAdvice(request);
   }
-  async complete(request: ModelRequest): Promise<ModelResponse> {
-    let response: any;
+  async #create(request: ModelRequest, stream: boolean): Promise<any> {
     try {
-      response = await this.client.responses.create(
+      const pending = this.client.responses.create(
         {
           ...request.body,
           model: this.model ?? request.body.model,
           ...(this.#promptCacheKey !== undefined
             ? { prompt_cache_key: this.#promptCacheKey }
             : {}),
-          stream: false,
+          stream,
         },
         await clientRequestOptions(this.#requestOptions, request),
       );
+      if (!stream) return await pending;
+      const response =
+        typeof pending.withResponse === 'function'
+          ? await pending.withResponse()
+          : { data: await pending };
+      const events = response.data;
+      borrowedResponsesStreams.set(events, {
+        ...(typeof response.request_id === 'string'
+          ? { upstreamRequestId: response.request_id }
+          : {}),
+        abort: () => events.controller?.abort(),
+      });
+      return events;
     } catch (error) {
       // Borrowed ESM clients can throw the other OpenAI module graph's class.
       if (
@@ -1259,7 +1298,10 @@ export class ResponsesModel implements NativeModel {
         request.signal.throwIfAborted();
       throw error;
     }
-    return projectResponsesResponse(response);
+  }
+
+  async complete(request: ModelRequest): Promise<ModelResponse> {
+    return projectResponsesResponse(await this.#create(request, false));
   }
 }
 

@@ -42,6 +42,9 @@ export async function settleOutputGuardrails({
         turnId: request.turnId,
         ...(request.subagentId ? { subagentId: request.subagentId } : {}),
         ...(request.toolCall ? { toolCall: request.toolCall } : {}),
+        ...(request.toolBatchCallIds
+          ? { toolBatchCallIds: request.toolBatchCallIds }
+          : {}),
       });
     }),
   );

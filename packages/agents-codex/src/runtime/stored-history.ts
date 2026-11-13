@@ -141,6 +141,74 @@ export function storedOptions(
   return { limit, cursor: cursor ?? null, descending: direction === 'desc' };
 }
 
+export function encodeStoredSessionsRequest(
+  options: { limit?: number; cursor?: string; archived?: boolean } = {},
+): string {
+  const { limit = 50, cursor, archived = false } = options;
+  const query = storedOptions(limit, cursor);
+  return JSON.stringify({
+    kind: 'sessions',
+    limit: query.limit,
+    cursor: query.cursor,
+    archived,
+  });
+}
+
+export function encodeStoredTurnsRequest(
+  options: {
+    limit?: number;
+    cursor?: string;
+    direction?: 'asc' | 'desc';
+    includeSummary?: boolean;
+  } = {},
+): string {
+  const {
+    limit = 50,
+    cursor,
+    direction = 'asc',
+    includeSummary = false,
+  } = options;
+  const query = storedOptions(limit, cursor, direction);
+  if (typeof includeSummary !== 'boolean')
+    throw new TypeError('includeSummary must be a boolean');
+  return JSON.stringify({
+    kind: 'turns',
+    ...query,
+    include_items: includeSummary,
+  });
+}
+
+export function encodeStoredItemsRequest(
+  options: {
+    turnId?: string;
+    limit?: number;
+    cursor?: string;
+    direction?: 'asc' | 'desc';
+  } = {},
+): string {
+  const { limit = 50, cursor, direction = 'asc', turnId } = options;
+  const query = storedOptions(limit, cursor, direction);
+  if (turnId !== undefined && (typeof turnId !== 'string' || !turnId))
+    throw new TypeError('turnId must be a nonempty string');
+  return JSON.stringify({ kind: 'items', ...query, turn_id: turnId ?? null });
+}
+
+export function encodeSearchHistoryRequest(
+  text: string,
+  options: { limit?: number; cursor?: string } = {},
+): string {
+  const { limit = 50, cursor } = options;
+  const query = storedOptions(limit, cursor);
+  if (typeof text !== 'string' || !text.trim())
+    throw new TypeError('Stored history search requires nonempty text');
+  return JSON.stringify({
+    kind: 'search',
+    limit: query.limit,
+    cursor: query.cursor,
+    text,
+  });
+}
+
 function item(raw: ItemWire): StoredItem {
   const data: unknown = JSON.parse(raw.data_json);
   if (!data || typeof data !== 'object' || Array.isArray(data))
