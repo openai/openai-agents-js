@@ -2,7 +2,7 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness, 'ci/native-bundle/**']
+    branches: [feat/codex-harness, 'ci/native-bundle/**', 'ci/hillclimb/*']
     paths-ignore:
       - '**/*.md'
       - '**/*.mdx'
@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: alpha-release-artifacts-${{ github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness' && github.sha || github.ref }}
+  group: alpha-release-artifacts-${{ github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -122,6 +122,7 @@ jobs:
     # No SDK code starts until every platform has published its native transfer.
     needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]
     if: >-
+      github.ref != 'refs/heads/ci/hillclimb/js-platform-current-10' &&
       !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
        (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success')) &&
@@ -141,7 +142,7 @@ jobs:
             artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
-            cargo_jobs: 4
+            cargo_jobs: ${{ github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&16 ||4 }}
             artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
           - platform: darwin-arm64
             runner: macos-15
@@ -151,7 +152,13 @@ jobs:
             runner: windows-2025
             cargo_jobs: 16
             artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: >-
+      ${{ fromJSON(
+        github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && matrix.platform == 'linux-arm64' && '{"group":"codex-runners","labels":"codex-linux-arm64"}' ||
+        toJSON(matrix.runner)
+      ) }}
     timeout-minutes: 180
     defaults:
       run:
@@ -318,3 +325,71 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+  qualify-linux:
+    needs: [select, produce-linux]
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ci/hillclimb/js-platform-current-10' &&
+      !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
+       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success'))
+    uses: ./.github/workflows/platform-alpha-qualification.yml
+    with:
+      platform: linux-x64
+      runner: ubuntu-24.04
+      cargo_jobs: 64
+      artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+
+  qualify-linux-arm64:
+    needs: [select, produce-linux-arm64]
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ci/hillclimb/js-platform-current-10' &&
+      !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.linux-arm64_hit == 'true' && needs.produce-linux-arm64.result == 'skipped') ||
+       (needs.select.outputs.linux-arm64_hit != 'true' && needs.produce-linux-arm64.result == 'success'))
+    uses: ./.github/workflows/platform-alpha-qualification.yml
+    with:
+      platform: linux-arm64
+      runner: ubuntu-24.04-arm
+      cargo_jobs: ${{ github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&16 ||4 }}
+      artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+
+  qualify-macos:
+    needs: [select, produce-macos]
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ci/hillclimb/js-platform-current-10' &&
+      !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
+       (needs.select.outputs.macos_hit != 'true' && needs.produce-macos.result == 'success'))
+    uses: ./.github/workflows/platform-alpha-qualification.yml
+    with:
+      platform: darwin-arm64
+      runner: macos-15
+      cargo_jobs: 5
+      artifact: ${{ needs.select.outputs.macos_hit == 'true' && needs.select.outputs.macos_artifact || needs.produce-macos.outputs.artifact }}
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+
+  qualify-windows:
+    needs: [select, produce-windows]
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/ci/hillclimb/js-platform-current-10' &&
+      !cancelled() && needs.select.result == 'success' &&
+      ((needs.select.outputs.windows_hit == 'true' && needs.produce-windows.result == 'skipped') ||
+       (needs.select.outputs.windows_hit != 'true' && needs.produce-windows.result == 'success'))
+    uses: ./.github/workflows/platform-alpha-qualification.yml
+    with:
+      platform: win32-x64
+      runner: windows-2025
+      cargo_jobs: 16
+      artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
+      inputs_hash: ${{ needs.select.outputs.inputs_hash }}
