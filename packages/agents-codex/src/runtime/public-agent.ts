@@ -1740,7 +1740,11 @@ export class Agent<Context = undefined, Output = string> {
     ];
 
     const native = graphNative ?? (await binding());
-    if (options.providerHistory?.type === 'previous_response' && graph) {
+    if (
+      options.providerHistory?.type === 'previous_response' &&
+      graph &&
+      provider.supportsWebsockets !== true
+    ) {
       const pending = [graph.rootId];
       const visited = new Set<string>();
       while (pending.length) {

@@ -1,6 +1,7 @@
 import { createServer, request as proxyRequest, type Server } from 'node:http';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { WebSocketServer } from 'ws';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -14,7 +15,11 @@ import {
   tool,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
-import { jsonObject } from '../../src/runtime/binding';
+import {
+  binding,
+  jsonObject,
+  type NativeThread,
+} from '../../src/runtime/binding';
 
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 const fronts: Server[] = [];
@@ -380,26 +385,218 @@ nativeIt(
 );
 
 nativeIt(
-  'refuses WebSocket lineage before any provider I/O',
+  'keeps unstored WebSocket lineage on one physical connection',
   async () => {
     const model = new ModelServer([]);
-    const remote = await peer(model);
-    await using provider = new NativeProvider({
-      ...remote.options,
-      supportsWebsockets: true,
+    const sockets = new WebSocketServer({ noServer: true });
+    const frames: Array<{
+      input: unknown[];
+      previous_response_id?: string;
+      store: boolean;
+    }> = [];
+    let connections = 0;
+    model.onUpgrade((request, socket, head) => {
+      connections++;
+      sockets.handleUpgrade(request, socket, head, (connection) => {
+        connection.on('message', (raw) => {
+          const payload = JSON.parse(raw.toString());
+          frames.push(payload);
+          const id = `response_ws_${frames.length}`;
+          const send = (frame: object) =>
+            connection.send(JSON.stringify(frame));
+          send({ type: 'response.created', response: { id } });
+          send({
+            type: 'response.output_item.done',
+            output_index: 0,
+            item: message('Done.'),
+          });
+          send({ type: 'response.completed', response: { id } });
+        });
+      });
     });
-    const agent = new Agent({
-      instructions: 'Never dispatch.',
-      model: 'gpt-5.5',
-      provider,
-      modelSettings: { store: true },
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: `http://127.0.0.1:${await model.port()}/v1`,
+        apiKey: 'synthetic-websocket',
+        supportsWebsockets: true,
+      });
+      const agent = new Agent({
+        instructions: 'Continue the current response chain.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: { store: false },
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'previous_response' },
+      });
+      await (await session.submit('Before.')).wait();
+      await (await session.submit('After.')).wait();
+      expect(connections).toBe(1);
+      expect(frames).toHaveLength(2);
+      expect(frames[0]!.previous_response_id).toBeUndefined();
+      expect(frames[1]!.previous_response_id).toBe('response_ws_1');
+      expect(frames[1]!.store).toBe(false);
+      expect(frames[1]!.input).toEqual([
+        expect.objectContaining({ role: 'user' }),
+      ]);
+      expect(JSON.stringify(frames[1]!.input)).toContain('After.');
+      expect(model.requests).toEqual([]);
+    } finally {
+      for (const socket of sockets.clients) socket.terminate();
+      sockets.close();
+    }
+  },
+  30_000,
+);
+
+nativeIt(
+  'clears unsent history after WebSocket owner revocation',
+  async () => {
+    const native = await binding();
+    const submit = native.NativeThread.prototype._submit;
+    let revoke: (() => void) | undefined;
+    const capture = vi
+      .spyOn(native.NativeThread.prototype, '_submit')
+      .mockImplementation(function (this: NativeThread, raw) {
+        revoke = () => this._revoke_native_interception();
+        return submit.call(this, raw);
+      });
+    let entered!: () => void;
+    const handshakeEntered = new Promise<void>((resolve) => {
+      entered = resolve;
     });
-    await expect(
-      agent.run('Never dispatch.', {
-        providerHistory: { type: 'previous_response', id: 'response_current' },
-      }),
-    ).rejects.toThrow('WebSocket');
-    expect(remote.wire).toEqual([]);
+    let release!: () => void;
+    const handshakeReleased = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const model = new ModelServer([]);
+    const sockets = new WebSocketServer({ noServer: true });
+    let connections = 0;
+    const frames: unknown[] = [];
+    model.onUpgrade((request, socket, head) => {
+      entered();
+      void handshakeReleased.then(() => {
+        sockets.handleUpgrade(request, socket, head, (connection) => {
+          connections++;
+          connection.on('message', (raw) =>
+            frames.push(JSON.parse(raw.toString())),
+          );
+        });
+      });
+    });
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: `http://127.0.0.1:${await model.port()}/v1`,
+        apiKey: 'synthetic-key',
+        supportsWebsockets: true,
+        requestMaxRetries: 0,
+        streamMaxRetries: 0,
+      });
+      const agent = new Agent({
+        instructions: 'Never dispatch a revoked request.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: { store: false },
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'previous_response' },
+      });
+      const turn = await session.submit('Known unsent.');
+      await handshakeEntered;
+      expect(revoke).toBeDefined();
+      revoke!();
+      release();
+      await expect(turn.wait()).rejects.toThrow(/interception|store=true/);
+      const state = await session.saveState();
+      const row = [...state.history].reverse().find((item) => {
+        const payload = jsonObject.safeParse(item.payload);
+        return (
+          payload.success &&
+          payload.data.type === 'thread_settings_applied' &&
+          payload.data.thread_id === state.source_session_id
+        );
+      });
+      const payload = jsonObject.parse(row!.payload);
+      const settings = jsonObject.parse(payload.thread_settings);
+      const history = jsonObject.parse(settings.provider_history);
+      expect(history.pending ?? false).toBe(false);
+      expect(connections).toBe(1);
+      expect(frames).toEqual([]);
+      expect(model.requests).toEqual([]);
+    } finally {
+      release();
+      capture.mockRestore();
+      for (const socket of sockets.clients) socket.terminate();
+      sockets.close();
+    }
+  },
+  30_000,
+);
+
+nativeIt(
+  'never replays an uncertain WebSocket dispatch',
+  async () => {
+    const model = new ModelServer([]);
+    const sockets = new WebSocketServer({ noServer: true });
+    const frames: unknown[] = [];
+    let connections = 0;
+    model.onUpgrade((request, socket, head) => {
+      sockets.handleUpgrade(request, socket, head, (connection) => {
+        connections++;
+        connection.on('message', (raw) => {
+          frames.push(JSON.parse(raw.toString()));
+          connection.send(
+            JSON.stringify({
+              type: 'response.created',
+              response: { id: 'resp_pending' },
+            }),
+          );
+          connection.close();
+        });
+      });
+    });
+    try {
+      await using provider = new NativeProvider({
+        baseUrl: `http://127.0.0.1:${await model.port()}/v1`,
+        apiKey: 'synthetic-key',
+        supportsWebsockets: true,
+        requestMaxRetries: 2,
+        streamMaxRetries: 2,
+      });
+      const agent = new Agent({
+        instructions: 'Dispatch the synthetic prompt once.',
+        model: 'gpt-5.5',
+        provider,
+        modelSettings: { store: false },
+      });
+      await using session = await agent.session({
+        providerHistory: { type: 'previous_response' },
+      });
+      await expect(
+        (await session.submit('Dispatch once.')).wait(),
+      ).rejects.toThrow();
+      await expect(
+        (await session.submit('Never resend.')).wait(),
+      ).rejects.toThrow(/reconcil/);
+      const state = await session.saveState();
+      const row = [...state.history].reverse().find((item) => {
+        const payload = jsonObject.safeParse(item.payload);
+        return (
+          payload.success &&
+          payload.data.type === 'thread_settings_applied' &&
+          payload.data.thread_id === state.source_session_id
+        );
+      });
+      const payload = jsonObject.parse(row!.payload);
+      const settings = jsonObject.parse(payload.thread_settings);
+      expect(jsonObject.parse(settings.provider_history).pending).toBe(true);
+      expect(connections).toBe(1);
+      expect(frames).toHaveLength(1);
+      expect(model.requests).toEqual([]);
+    } finally {
+      for (const socket of sockets.clients) socket.terminate();
+      sockets.close();
+    }
   },
   30_000,
 );

@@ -57,4 +57,16 @@ describe('provider history capture', () => {
     const settings = { store: true };
     expect(providerHistorySettings(undefined, settings)).toBe(settings);
   });
+  it.each([undefined, false])(
+    'keeps current WebSocket storage choice %j with explicit permission',
+    (store) => {
+      expect(
+        providerHistorySettings(
+          { type: 'previous_response' },
+          store === undefined ? undefined : { store },
+          true,
+        ),
+      ).toEqual({ store: store ?? null });
+    },
+  );
 });
