@@ -1,0 +1,81 @@
+diff --git a/codex-rs/core/src/unified_exec/process.rs b/codex-rs/core/src/unified_exec/process.rs
+index cac8de4aa1fb03bafaba99eff7daa546d5c4ced0..673e031cdbcdcd7633b24092e4947eca9bb95ca3 100644
+--- a/codex-rs/core/src/unified_exec/process.rs
++++ b/codex-rs/core/src/unified_exec/process.rs
+@@ -479,7 +479,14 @@ impl UnifiedExecProcess {
+
+     pub(super) async fn terminate_and_join(&self) -> bool {
+         let mut state = self.state_rx.clone();
+-        let stopped = tokio::time::timeout(Duration::from_secs(5), async {
++        let timeout = Duration::from_secs(5);
++        #[cfg(target_os = "macos")]
++        let timeout = if self.darwin_control.is_some() {
++            codex_exec_server::darwin_command::SHUTDOWN_TIMEOUT
++        } else {
++            timeout
++        };
++        let stopped = tokio::time::timeout(timeout, async {
+             match &self.process_handle {
+                 ProcessHandle::Local(process) => self.request_local_termination(process),
+                 ProcessHandle::ExecServer(process) => {
+diff --git a/codex-rs/exec-server/src/darwin_command.rs b/codex-rs/exec-server/src/darwin_command.rs
+index b341cbb6c856e77999ea02f8296a8b86a9e426a1..93bca7f12bfc4af88873eac875ef1828ddc42445 100644
+--- a/codex-rs/exec-server/src/darwin_command.rs
++++ b/codex-rs/exec-server/src/darwin_command.rs
+@@ -26,7 +26,17 @@ const INTERRUPT: u8 = 4;
+ const EXITED: u8 = 5;
+ const WRAPPER_STARTED: u8 = 6;
+ const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+-const DRAIN_TIMEOUT: Duration = Duration::from_secs(4);
++// macOS can keep a crashed task in its coalition while reporting the crash.
++const DRAIN_TIMEOUT: Duration = Duration::from_secs(12);
++const SERVICE_REMOVAL_TIMEOUT: Duration = Duration::from_secs(1);
++// Leave room for connection and registration lookup if shutdown races
++// startup, plus coalition drain, both removal calls, and wrapper exit.
++pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(
++    2 * SETUP_TIMEOUT.as_secs()
++        + DRAIN_TIMEOUT.as_secs()
++        + 2 * SERVICE_REMOVAL_TIMEOUT.as_secs()
++        + 2,
++);
+ const POLL_INTERVAL: Duration = Duration::from_millis(10);
+ const MAX_REQUEST_SIZE: usize = 16 * 1024 * 1024;
+
+@@ -317,8 +327,14 @@ pub fn wrapper_main(args: impl Iterator<Item = std::ffi::OsString>) -> io::Resul
+     // request, this exact coalition owns any resulting command.
+     let result = run_managed(&mut control, &mut worker, &owner, &request);
+     let _ = worker.shutdown(Shutdown::Write);
+-    owner.drain(DRAIN_TIMEOUT, /*keep_helper*/ false)?;
+-    job.finish()?;
++    owner
++        .drain(DRAIN_TIMEOUT, /*keep_helper*/ false)
++        .map_err(|error| {
++            io::Error::new(error.kind(), format!("drain command coalition: {error}"))
++        })?;
++    job.finish().map_err(|error| {
++        io::Error::new(error.kind(), format!("remove command service: {error}"))
++    })?;
+     control.write_all(&[DRAINED])?;
+     result
+ }
+@@ -673,10 +689,17 @@ impl LaunchdJob {
+         let Some(service) = &self.service else {
+             return Ok(());
+         };
+-        let deadline = Instant::now() + Duration::from_secs(1);
+-        let result = launchctl(&["bootout".as_ref(), service.as_ref()], deadline, false)?;
++        let result = launchctl(
++            &["bootout".as_ref(), service.as_ref()],
++            Instant::now() + SERVICE_REMOVAL_TIMEOUT,
++            false,
++        )?;
+         if !result.success {
+-            let inspection = launchctl(&["print".as_ref(), service.as_ref()], deadline, true)?;
++            let inspection = launchctl(
++                &["print".as_ref(), service.as_ref()],
++                Instant::now() + SERVICE_REMOVAL_TIMEOUT,
++                true,
++            )?;
+             let label = service.rsplit('/').next().ok_or_else(invalid_message)?;
+             if inspection.success
+                 || !inspection.stderr.contains("Could not find service")
