@@ -66,7 +66,7 @@ jobs:
       - name: Build the native runtime
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node packages/agents-codex/scripts/native.mjs package
+        run: node packages/agents-codex/scripts/native.mjs package ${{ inputs.platform == 'win32-x64' && '--parallel-windows' || '' }}
       - name: Test Windows project-search filename handling
         if: runner.os == 'Windows'
         working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
@@ -84,6 +84,7 @@ jobs:
           native_archive="librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
           native_suffix=""
           if [[ "$EXPECTED_PLATFORM" == win32-x64 ]]; then
+            export CARGO_TARGET_DIR="$CARGO_TARGET_DIR/windows-helpers"
             native_args+=(--config "$PWD/.upstream/reviewed-codex/codex-rs/.cargo/config.toml" --target "$native_host")
             native_output="$CARGO_TARGET_DIR/$native_host/release"
             native_archive="rusty_v8_ptrcomp_sandbox_release_${native_host}.lib.gz"

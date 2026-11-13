@@ -6273,12 +6273,14 @@ pub fn borrow_trace_context(
     restrictions_parent: Option<String>,
     disabled: bool,
     include_sensitive_data: bool,
+    ancestry_only: Option<bool>,
 ) -> napi::Result<String> {
     codex_otel::sdk_trace::borrow_trace_context(
         &parent,
         restrictions_parent.as_deref(),
         disabled,
         include_sensitive_data,
+        ancestry_only.unwrap_or(false),
     )
     .map_err(native_error)
 }

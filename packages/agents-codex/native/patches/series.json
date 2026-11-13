@@ -1127,7 +1127,11 @@
     {
       "path": "sdk-confirm-darwin-service-removal.patch",
       "sha256": "41aa8a2d4c452f038b481784f9d7a7483a1113160aeedd4a391d759fd5e0fd50"
+    },
+    {
+      "path": "sdk-provider-response-context-ancestry.patch",
+      "sha256": "5e4a9358526d4ba3447f66a68f4e40fa57c1fcd5e7940a4633ec72efd8917e3f"
     }
   ],
-  "result_tree": "0aa60ca0af99cc629a3ac6e8a7a4289281462248"
+  "result_tree": "816580b56170df2c287cae0f14d154e50ae4289d"
 }

@@ -387,10 +387,10 @@ nativeIt.each([false, true])(
         if (managed) {
           expect(policyContexts).toHaveLength(1);
           expect(policyContexts[0].realtimeUsage).toEqual(
-            session.realtimeUsage,
+            contexts[0].realtimeUsage,
           );
           expect(policyContexts[0].realtimeUsageAccounting).toEqual(
-            session.realtimeUsageAccounting,
+            contexts[0].realtimeUsageAccounting,
           );
         }
         const snapshot = contexts[0].realtimeUsage!;

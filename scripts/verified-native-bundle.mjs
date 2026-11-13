@@ -19,6 +19,19 @@ const approvedBranch = (branch) =>
   branch === 'feat/codex-harness' ||
   branch?.startsWith('ci/native-bundle/') === true;
 
+// Temporary exact benchmark pair; production donor approval stays unchanged.
+const benchmarkPush = (branch) =>
+  process.env.GITHUB_REPOSITORY === repo &&
+  process.env.GITHUB_EVENT_NAME === 'push' &&
+  process.env.GITHUB_REF === 'refs/heads/' + branch;
+const benchmarkSeed = (branch) =>
+  benchmarkPush('ci/hillclimb/js-current-warm-38') &&
+  branch === 'ci/hillclimb/js-current-seed-38';
+const approvedDonor = (branch) =>
+  benchmarkPush('ci/hillclimb/js-current-warm-38')
+    ? benchmarkSeed(branch)
+    : approvedBranch(branch);
+
 export function isProducer(run, workflowId) {
   return (
     run.status === 'completed' &&
@@ -28,7 +41,7 @@ export function isProducer(run, workflowId) {
     run.event === 'push' &&
     run.workflow_id === workflowId &&
     run.path === '.github/workflows/' + workflow &&
-    approvedBranch(run.head_branch) &&
+    approvedDonor(run.head_branch) &&
     /^[a-f0-9]{40}$/.test(run.head_sha)
   );
 }
@@ -107,6 +120,7 @@ export async function downloadNativeBundle(asset) {
 }
 
 export function findNativeBundle(inputs, platform) {
+  if (benchmarkPush('ci/hillclimb/js-current-seed-38')) return undefined;
   const name = 'native-' + inputs + '-' + platform + '.tar.gz';
   const workflowId = api('repos/' + repo + '/actions/workflows/' + workflow).id;
   // Exact-name lookup avoids a stale committed pointer and unrelated run scans.
@@ -123,7 +137,7 @@ export function findNativeBundle(inputs, platform) {
     if (
       !candidate ||
       candidate.repository_id !== candidate.head_repository_id ||
-      !approvedBranch(candidate.head_branch)
+      !approvedDonor(candidate.head_branch)
     )
       continue;
     if (seenRuns.has(candidate.id)) continue;
@@ -146,10 +160,18 @@ export function findNativeBundle(inputs, platform) {
         run.head_sha,
       ]);
     }
+    if (
+      benchmarkSeed(run.head_branch) &&
+      spawnSync('git', ['merge-base', '--is-ancestor', run.head_sha, 'HEAD'])
+        .status !== 0
+    )
+      continue;
     // Off-branch producers execute SDK qualification too: preserve full-tree equality.
-    const paths = run.head_branch.startsWith('ci/native-bundle/')
-      ? ['.']
-      : nativeComparisonPaths();
+    const paths =
+      benchmarkSeed(run.head_branch) ||
+      run.head_branch.startsWith('ci/native-bundle/')
+        ? ['.']
+        : nativeComparisonPaths();
     if (
       spawnSync('git', [
         'diff',

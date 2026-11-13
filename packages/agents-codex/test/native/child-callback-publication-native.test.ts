@@ -70,7 +70,7 @@ async function within<T>(promise: Promise<T>, label: string): Promise<T> {
 // when releasing the start, retaining complete arrays and original rejections.
 async function holdChildStart(
   missingLookup: boolean,
-  beforeCallback?: () => Promise<void>,
+  beforeCallback?: (event: NativeEventBatch) => Promise<void>,
 ) {
   const addon = await binding();
   const next = addon.NativeThread.prototype._next_session_events;
@@ -125,7 +125,7 @@ async function holdChildStart(
       if (start && callback) {
         const raw = callback;
         callback = undefined;
-        if (beforeCallback) await beforeCallback();
+        if (beforeCallback) await beforeCallback(raw);
         callbackDelivered.resolve();
         return raw;
       }
@@ -213,9 +213,19 @@ it.each([
     const missingLookup =
       !observeStorage && !['valid', 'manual-valid'].includes(mode);
     let captureKeyedTurn: (() => Promise<void>) | undefined;
+    let lookupTraceContext: string | undefined;
     const gate = await holdChildStart(
       missingLookup,
-      keyedMiss ? () => captureKeyedTurn!() : undefined,
+      keyedMiss
+        ? async (batch) => {
+            await captureKeyedTurn!();
+            const event = JSON.parse(firstNativeBatchWire(batch));
+            lookupTraceContext = z
+              .string()
+              .min(1)
+              .parse(event.msg.tracing_context);
+          }
+        : undefined,
     );
     const addon = await binding();
     const owners = vi.spyOn(ChildCallbacks.prototype, 'owner');
@@ -252,7 +262,12 @@ it.each([
       const startTraceSpan = addon.start_trace_span;
       vi.spyOn(addon, 'start_trace_span').mockImplementation((options) => {
         const raw = startTraceSpan(options);
-        if (JSON.parse(options).kind === 'callback') {
+        const scope = JSON.parse(options);
+        if (
+          lookupTraceContext !== undefined &&
+          scope.kind === 'callback' &&
+          scope.parent === lookupTraceContext
+        ) {
           const span = JSON.parse(raw);
           const key = span.callback_storage_key;
           if (typeof key === 'string' && registry()?.delete(key))
@@ -933,7 +948,13 @@ it.each(['trace entry', 'queued guardrail', 'graceful tree stop'] as const)(
   20000,
 );
 
-it('keeps the child trace storage until a parallel input guardrail returns on close', async () => {
+it.each([false, true])(
+  'keeps the child trace storage until a parallel input guardrail returns on close (custom IDs: %s)',
+  parallelGuardrailClose,
+  20000,
+);
+
+async function parallelGuardrailClose(customIds: boolean) {
   const addon = await binding();
   const owners = vi.spyOn(ChildCallbacks.prototype, 'owner');
   const retain = addon._retain_callback_dispatch_context;
@@ -1019,6 +1040,17 @@ it('keeps the child trace storage until a parallel input guardrail returns on cl
     ],
   });
   let session: Awaited<ReturnType<typeof agent.session>> | undefined;
+  const borrowedParents: telemetry.TraceSpan[] = [];
+  if (customIds) {
+    let nextId = 1;
+    telemetry.setTracingIdGenerator({
+      generateSpanId() {
+        const parent = telemetry.getCurrentSpan();
+        if (parent?.kind === 'context') borrowedParents.push(parent);
+        return (nextId++).toString(16).padStart(16, '0');
+      },
+    });
+  }
   try {
     telemetry.setTraceContextStorage(openingStorage);
     const opened = (session = await agent.session({
@@ -1031,13 +1063,16 @@ it('keeps the child trace storage until a parallel input guardrail returns on cl
     }));
     telemetry.setTraceContextStorage(submissionStorage);
     let traceId: string | undefined;
-    const root = await telemetry.withSpan({ name: 'submission' }, (span) => {
-      traceId = span.context.traceId;
-      return opened.submit('begin', {
-        beforeStep: ({ stepIndex }) =>
-          stepIndex === 0 ? [toolRef('spawn_agent', 'collaboration')] : [],
-      });
-    });
+    const root = await telemetry.withSpan(
+      { name: 'submission', metadata: { fixture: 'guardrail' } },
+      (span) => {
+        traceId = span.context.traceId;
+        return opened.submit('begin', {
+          beforeStep: ({ stepIndex }) =>
+            stepIndex === 0 ? [toolRef('spawn_agent', 'collaboration')] : [],
+        });
+      },
+    );
     const childId = await within(entered.promise, 'parallel guardrail entry');
     expect(await within(childRequest.promise, 'child model request')).toBe(
       childId,
@@ -1088,8 +1123,16 @@ it('keeps the child trace storage until a parallel input guardrail returns on cl
     expect(invocations).toBe(1);
     expect(registry.has(key)).toBe(false);
     expect(snapshotsAtDeletion).toEqual([2]);
+    if (customIds) {
+      expect(borrowedParents.length).toBeGreaterThan(0);
+      for (const parent of borrowedParents) {
+        expect(parent.context.traceId).toBe(traceId);
+        expect(parent.traceMetadata).toEqual({ fixture: 'guardrail' });
+      }
+    }
     server.assertExhausted();
   } finally {
+    telemetry.setTracingIdGenerator();
     releaseGuard.resolve();
     releaseModel.resolve();
     telemetry.setTraceContextStorage();
@@ -1099,4 +1142,4 @@ it('keeps the child trace storage until a parallel input guardrail returns on cl
       await executor.close();
     }
   }
-}, 20000);
+}

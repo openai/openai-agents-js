@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-Native model tracing has been honoring configured span IDs and closing response spans at accepted provider completion.
+fix: Native model tracing has been preserving span ownership and releasing child callback storage, while Windows native producers have been building the addon and helpers concurrently.

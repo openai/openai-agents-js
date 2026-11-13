@@ -1,0 +1,34 @@
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 0fc8fd6b2230ff5f2060139ad4d2ff90ce282379..bcea4cd02ffb5881dbfcb941e9da69fb2799a765 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -917,6 +917,7 @@ pub fn borrow_trace_context(
+     restrictions_parent: Option<&str>,
+     disabled: bool,
+     include_sensitive_data: bool,
++    ancestry_only: bool,
+ ) -> Result<String, String> {
+     let source = resolve(parent)?;
+     let captured = policy_for_context(&source.context)
+@@ -945,11 +946,17 @@ pub fn borrow_trace_context(
+         annotations: captured.annotations.clone(),
+         restriction_only: captured.restriction_only,
+     });
++    let (context, registration) = if ancestry_only {
++        // The ID generator may retain this alias after callback dispatch ends.
++        // Copy ancestry without retaining the recording span or its registration.
++        let span = source.context.span().span_context().clone();
++        (source.context.with_remote_span_context(span), None)
++    } else {
++        (source.context.clone(), source._registration.clone())
++    };
+     let handle = Arc::new(Handle {
+-        // A context-local policy restricts this lease without changing the
+-        // original identity's registration, routes, credentials, or lifetime.
+-        context: source.context.with_value(policy),
+-        _registration: source._registration.clone(),
++        context: context.with_value(policy),
++        _registration: registration,
+         parent_span_id: source.parent_span_id.clone(),
+         ended: Mutex::new(true),
+     });
