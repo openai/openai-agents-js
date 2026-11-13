@@ -1055,7 +1055,15 @@
     {
       "path": "sdk-client-version.patch",
       "sha256": "1fae03966cd574d2522aea5e036fc4fdd02bba45716952cf7991cae32ec642b1"
+    },
+    {
+      "path": "sdk-tool-batch-completion.patch",
+      "sha256": "e7879a15af43006af524c46d2e89fd59946bf824011d9abb83838d54640d9c79"
+    },
+    {
+      "path": "sdk-mcp-tool-name-overrides.patch",
+      "sha256": "4f8d04fdc36efd7217e3aca643eb4ab90c930cacb3060bd469518f4af9bc6abd"
     }
   ],
-  "result_tree": "b1a8edbe6268ec3214d71e81a9ca4e803637f3b7"
+  "result_tree": "b78ffddfdcf28b791ea62ddbb8cbe19781a1c69f"
 }

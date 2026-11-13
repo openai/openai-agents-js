@@ -3,6 +3,10 @@ import {
   type ProviderHistory,
 } from './provider-history';
 import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
+import {
+  privateOpeningContribution,
+  sdkMemoryPhase,
+} from './private-opening-contribution';
 import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
 import {
   ResponsesCompaction,
@@ -35,6 +39,7 @@ import {
 import type {
   BeforeCompact,
   BeforeComplete,
+  ToolBatchCompletion,
   ContextTransform,
 } from './model-callbacks';
 import {
@@ -178,6 +183,11 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Cancellation and close join entered callbacks. Do not mutate this Session.
    */
   beforeComplete?: BeforeComplete<Context>;
+  /** Reduce settled direct function results before another model request.
+   * Finish proposals use the source Agent's output and completion policies.
+   * Accepted handoffs and CodeMode calls remain outside this hook.
+   */
+  toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails?: readonly InputGuardrail<Context>[];
   outputGuardrails?: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
@@ -402,6 +412,7 @@ interface CapturedOpening {
   readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
+  readonly toolBatchCompletion?: ToolBatchCompletion<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
   readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
   readonly inputGuardrails: readonly InputGuardrail<any>[];
@@ -413,11 +424,13 @@ interface CapturedOpening {
   readonly hostedPromptControls?: JsonObject;
 }
 type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
+  [sdkMemoryPhase]?: true;
   [managedWorkspaceRestore]?: true;
   [outputSelection]?: OutputSpec<unknown>;
   [ownedRun]?: OneShotOptions & {
     decisions?: DecisionProvider;
     beforeComplete?: BeforeComplete<Context>;
+    toolBatchCompletion?: ToolBatchCompletion<Context>;
   };
   [deferredOpening]?: {
     readonly opening: CapturedOpening;
@@ -535,6 +548,7 @@ export class Agent<Context = undefined, Output = string> {
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
+  toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails: readonly InputGuardrail<Context>[];
   outputGuardrails: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
@@ -594,12 +608,14 @@ export class Agent<Context = undefined, Output = string> {
         : captureModelSettings(options.modelSettings);
     for (const name of [
       'beforeComplete',
+      'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
     ] as const)
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
+    this.toolBatchCompletion = options.toolBatchCompletion;
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
     this.beforeCompact = options.beforeCompact;
@@ -787,7 +803,7 @@ export class Agent<Context = undefined, Output = string> {
           (options as OwnedSessionOptions<Context>)[ownedRun]
             ?.privateEngineGrant,
         );
-      const { setup, session, lease, environmentOwner, privateRun } =
+      const { setup, session, lease, environmentOwner, privateRun, catalog } =
         await Reflect.apply(prepare, this, [
           options,
           (owner: EnvironmentAcquisition) => {
@@ -835,6 +851,7 @@ export class Agent<Context = undefined, Output = string> {
           session,
           lease,
           (options as OwnedSessionOptions<Context>)[ownedRun],
+          prepare === Agent.#canonicalPrepare ? catalog : undefined,
         );
         environmentOwner.opened();
         (options as OwnedSessionOptions<Context>)[deferredOpening]?.opened(
@@ -956,6 +973,9 @@ export class Agent<Context = undefined, Output = string> {
       providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
       ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
+      ...((options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
+        ? { [sdkMemoryPhase]: true as const }
+        : {}),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
@@ -988,6 +1008,7 @@ export class Agent<Context = undefined, Output = string> {
         returnItems: options.returnItems || captureErrorDetails,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
+        toolBatchCompletion: this.toolBatchCompletion,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
         beforeStep,
@@ -1079,11 +1100,30 @@ export class Agent<Context = undefined, Output = string> {
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
     );
-    const beforeComplete = opening
+    const declaredBeforeComplete = opening
       ? opening.beforeComplete
       : owned
         ? owned.beforeComplete
         : this.beforeComplete;
+    const contribution =
+      opening ||
+      (options as OwnedSessionOptions<Context>)[correctionOpening] ||
+      (options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
+        ? undefined
+        : privateOpeningContribution<Context>();
+    const contributedBeforeComplete =
+      declaredBeforeComplete === undefined
+        ? contribution?.beforeComplete
+        : undefined;
+    const beforeComplete =
+      declaredBeforeComplete === undefined
+        ? contributedBeforeComplete
+        : declaredBeforeComplete;
+    const toolBatchCompletion = opening
+      ? opening.toolBatchCompletion
+      : owned
+        ? owned.toolBatchCompletion
+        : this.toolBatchCompletion;
     const inputGuardrails =
       opening?.inputGuardrails ?? captureGuardrails(options.inputGuardrails);
     const outputGuardrails =
@@ -1115,6 +1155,7 @@ export class Agent<Context = undefined, Output = string> {
         : 'turn');
     for (const [name, callback] of [
       ['beforeComplete', beforeComplete],
+      ['toolBatchCompletion', toolBatchCompletion],
       ['beforeCompact', beforeCompact],
       ['transformContext', transformContext],
     ] as const)
@@ -1218,6 +1259,7 @@ export class Agent<Context = undefined, Output = string> {
             this.handoffs.length > 0,
           extraBody: settings?.extraBody,
         });
+    let contributedTools: readonly Tool<Context>[] | undefined;
     const declarations = opening
       ? {
           ...opening.declarations,
@@ -1225,8 +1267,32 @@ export class Agent<Context = undefined, Output = string> {
           mcp: [...opening.declarations.mcp],
         }
       : splitToolDeclarations(
-          options.tools === undefined ? this.tools : options.tools,
+          options.tools === undefined
+            ? (contributedTools = contribution?.tools)?.length
+              ? [...this.tools, ...contributedTools]
+              : this.tools
+            : options.tools,
         );
+    const hasPrivateContribution =
+      contributedBeforeComplete !== undefined || !!contributedTools?.length;
+    if (
+      hasPrivateContribution &&
+      (suppliedState != null ||
+        options.resume !== undefined ||
+        this.handoffs.length > 0 ||
+        this.realtime !== undefined ||
+        hostedPrompt !== undefined ||
+        declarations.mcp.length > 0 ||
+        declarations.nativeAgents !== undefined ||
+        declarations.hostedTools.length > 0 ||
+        declarations.webSearch !== undefined ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        declarations.tools.some((tool) => !isDirectFunctionTool(tool)))
+    )
+      throw new TypeError(
+        'Private opening contributions require a fresh root with eager direct function tools',
+      );
     const search = declarations.webSearch;
     const catalog = captureTools(declarations.tools);
     declarations.tools = [...catalog.tools];
@@ -1328,6 +1394,7 @@ export class Agent<Context = undefined, Output = string> {
               realtime: this.realtime,
               decisions,
               beforeComplete,
+              toolBatchCompletion,
               inputGuardrails: agentInputGuardrails,
               outputGuardrails: agentOutputGuardrails,
               programmaticToolCalling,
@@ -1700,6 +1767,7 @@ export class Agent<Context = undefined, Output = string> {
       !declarations.checklist &&
       !nativeAgents &&
       !search &&
+      contributedBeforeComplete === undefined &&
       correction === undefined &&
       outputType === undefined;
     const lease = provider._acquire(correction ?? opening, privateRun);
@@ -1848,6 +1916,12 @@ export class Agent<Context = undefined, Output = string> {
                 (profile) => profile.post_turn_compact === true,
               ) ??
                 false),
+            tool_batch_completion:
+              toolBatchCompletion !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.tool_batch_completion === true,
+              ) ??
+                false),
             before_complete:
               beforeComplete !== undefined ||
               agentOutputGuardrails.length > 0 ||
@@ -1962,6 +2036,7 @@ export class Agent<Context = undefined, Output = string> {
             } as AgentOptions<Context, Output>),
           ) as Agent<any, any>),
         beforeComplete,
+        toolBatchCompletion,
         inputGuardrails,
         outputGuardrails,
         agentInputGuardrails,
@@ -2042,6 +2117,7 @@ export class Agent<Context = undefined, Output = string> {
             profiles,
             decisions,
             beforeComplete,
+            toolBatchCompletion,
             inputGuardrails,
             outputGuardrails,
             agentInputGuardrails,
@@ -2132,7 +2208,7 @@ export class Agent<Context = undefined, Output = string> {
           }
         };
       }
-      return { setup, session, lease, environmentOwner, privateRun };
+      return { setup, session, lease, environmentOwner, privateRun, catalog };
     } catch (error) {
       return lease.failOpening(error);
     }
@@ -2233,6 +2309,7 @@ export function captureAgentProfiles<Context, Output>(
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
+      toolBatchCompletion: source.toolBatchCompletion,
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
@@ -2513,6 +2590,7 @@ export function openOwnedHistorySession<Context, Output>(
       input,
       decisions: captureDecisionProvider(agent.decisions),
       beforeComplete: agent.beforeComplete,
+      toolBatchCompletion: agent.toolBatchCompletion,
     },
   } as OwnedSessionOptions<Context>;
   return agent.session(...([options] as SessionArguments<Context>)) as Promise<

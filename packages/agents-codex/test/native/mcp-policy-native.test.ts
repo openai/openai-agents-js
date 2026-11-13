@@ -2935,3 +2935,409 @@ it.each(['transform', 'extract', 'metadata'] as const)(
     expect(model.requests).toHaveLength(1);
   },
 );
+
+it('uses a public alias while preserving raw MCP invocation and metadata identity', async () => {
+  const remote = await peer('source/read');
+  const metadata: unknown[] = [];
+  const descriptor = new HttpMCP({
+    name: 'fixture',
+    url: remote.url,
+    tools: ['source/read'],
+    toolNameOverrides: { 'source/read': 'public_read' },
+    approvalMode: 'preapproved',
+    requestMetadata(context) {
+      metadata.push([
+        context.serverName,
+        context.toolName,
+        context.call.tool.name,
+      ]);
+      return { application_marker: 'synthetic-alias' };
+    },
+  });
+  const { session, model } = await open(descriptor, [
+    [
+      call(
+        'public_read',
+        { key: 'read' },
+        { namespace: 'mcp__fixture', callId: 'aliased' },
+      ),
+    ],
+    [message('complete')],
+  ]);
+  expect((await (await session.submit('Read.')).wait()).finalOutput).toBe(
+    'complete',
+  );
+  expect(JSON.stringify(model.requests[0]!.tools)).toContain(
+    '"name":"public_read"',
+  );
+  expect(metadata).toEqual([['fixture', 'source/read', 'public_read']]);
+  expect(remote.effects).toEqual([
+    expect.objectContaining({
+      name: 'source/read',
+      arguments: { key: 'read' },
+      _meta: expect.objectContaining({ application_marker: 'synthetic-alias' }),
+    }),
+  ]);
+});
+
+it('keeps colliding public aliases bound to raw tools across narrowing', async () => {
+  const raw = ['source/first', 'source/second'];
+  const remote = await peer(raw[0], undefined, undefined, undefined, [raw[1]!]);
+  const descriptor = new HttpMCP({
+    name: 'fixture',
+    url: remote.url,
+    tools: raw,
+    toolNameOverrides: Object.fromEntries(raw.map((name) => [name, 'lookup'])),
+    approvalMode: 'preapproved',
+  });
+  const first = descriptor.tool(raw[0]!);
+  const second = descriptor.tool(raw[1]!);
+  expect(first.name).not.toBe(second.name);
+  expect(first.name).toMatch(/^lookup_[a-f0-9]{12}$/);
+  const { session, model } = await open(descriptor, [
+    [
+      call(
+        first.name,
+        { key: 'first' },
+        { namespace: first.namespace!, callId: 'first' },
+      ),
+    ],
+    [
+      call(
+        second.name,
+        { key: 'second' },
+        { namespace: second.namespace!, callId: 'second' },
+      ),
+    ],
+    [message('both complete')],
+    [
+      call(
+        second.name,
+        { key: 'narrowed' },
+        { namespace: second.namespace!, callId: 'narrowed' },
+      ),
+    ],
+    [message('narrowed complete')],
+  ]);
+  expect((await (await session.submit('Both.')).wait()).finalOutput).toBe(
+    'both complete',
+  );
+  expect(
+    (
+      await (
+        await session.submit('Second.', { beforeStep: () => [second] })
+      ).wait()
+    ).finalOutput,
+  ).toBe('narrowed complete');
+  expect(remote.effects.map((effect) => effect.name)).toEqual([
+    raw[0],
+    raw[1],
+    raw[1],
+  ]);
+  const narrowed = JSON.stringify(model.requests[3]!.tools);
+  expect(narrowed).toContain(`"name":"${second.name}"`);
+  expect(narrowed).not.toContain(`"name":"${first.name}"`);
+});
+
+it.each(['function', 'custom'] as const)(
+  'routing union keeps aliases, caller refusal and batch settlement together (%s)',
+  async (wire) => {
+    const { tool } = await import('../../src');
+    const remote = await peer('source/read');
+    const metadata: string[][] = [];
+    const descriptor = new HttpMCP({
+      name: 'fixture',
+      url: remote.url,
+      tools: ['source/read'],
+      toolNameOverrides: { 'source/read': 'public_read' },
+      approvalMode: 'preapproved',
+      requestMetadata(context) {
+        metadata.push([context.toolName, context.call.tool.name]);
+        return { routing_union: 'synthetic' };
+      },
+    });
+    const model = new ModelServer([
+      [
+        call(
+          'public_read',
+          { key: 'first' },
+          { namespace: 'mcp__fixture', callId: 'aliased' },
+        ),
+      ],
+      [
+        wire === 'function'
+          ? call('guarded', {}, { callId: 'forged' })
+          : {
+              type: 'custom_tool_call',
+              name: 'guarded',
+              call_id: 'forged',
+              input: '{}',
+            },
+      ],
+      [call('finish', {}, { callId: 'finish' })],
+    ]);
+    const config = await model.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-routing-union',
+      supportsWebsockets: false,
+    });
+    const before = vi.fn(() => ({ action: 'allow' as const }));
+    const forbidden = vi.fn(() => 'FORBIDDEN');
+    const permitted = vi.fn(() => 'ALLOWED');
+    const checked = vi.fn();
+    await using session = await new Agent({
+      instructions: 'Read, then finish.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [
+        descriptor,
+        tool({
+          name: 'guarded',
+          parameters: z.object({}),
+          allowedCallers: ['code'],
+          before,
+          execute: forbidden,
+        }),
+        tool({
+          name: 'finish',
+          parameters: z.object({}),
+          allowedCallers: ['direct'],
+          execute: permitted,
+        }),
+      ],
+      outputType: {
+        mode: 'prompted',
+        schema: z.object({ answer: z.string() }),
+      },
+      toolBatchCompletion(context) {
+        if (
+          !context.results.some((result) => result.call.tool.name === 'finish')
+        )
+          return;
+        expect(context.results.map((result) => result.call.callId)).toEqual([
+          'finish',
+        ]);
+        expect(context.results[0].output.success).toBe(true);
+        return { action: 'finish', output: { answer: 'ready' } };
+      },
+      beforeComplete(context) {
+        checked(context.toolBatchCallIds);
+      },
+    }).session();
+    const result = await (await session.submit('Run.')).wait();
+    expect(result.finalOutput).toEqual({ answer: 'ready' });
+    expect(result.toolBatchCallIds).toEqual(['finish']);
+    expect(before).not.toHaveBeenCalled();
+    expect(forbidden).not.toHaveBeenCalled();
+    expect(permitted).toHaveBeenCalledTimes(1);
+    expect(checked).toHaveBeenCalledExactlyOnceWith(['finish']);
+    expect(metadata).toEqual([['source/read', 'public_read']]);
+    expect(remote.effects).toEqual([
+      expect.objectContaining({
+        name: 'source/read',
+        arguments: { key: 'first' },
+      }),
+    ]);
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it('routing union refreshes restored masks while preserving alias and reducer ownership', async () => {
+  const { tool, parseSessionState } = await import('../../src');
+  const remote = await peer('source/read');
+  const descriptor = new HttpMCP({
+    name: 'fixture',
+    url: remote.url,
+    tools: ['source/read'],
+    toolNameOverrides: { 'source/read': 'public_read' },
+    approvalMode: 'preapproved',
+  });
+  const model = new ModelServer([
+    [
+      call(
+        'public_read',
+        { key: 'save' },
+        { namespace: 'mcp__fixture', callId: 'aliased-save' },
+      ),
+    ],
+    [message('SAVED')],
+    [call('guarded', {}, { callId: 'restored-forged' })],
+    [call('finish', {}, { callId: 'restored-finish' })],
+  ]);
+  const config = await model.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-routing-union',
+    supportsWebsockets: false,
+  });
+  const old = vi.fn(() => undefined);
+  const base = {
+    name: 'Root',
+    instructions: 'Read, then finish.',
+    model: 'gpt-5.5',
+    provider,
+  };
+  const initial = await new Agent({
+    ...base,
+    tools: [
+      descriptor,
+      tool({
+        name: 'guarded',
+        parameters: z.object({}),
+        allowedCallers: ['direct'],
+        execute: () => 'OLD',
+      }),
+      tool({
+        name: 'finish',
+        parameters: z.object({}),
+        allowedCallers: ['direct'],
+        execute: () => 'OLD FINISH',
+      }),
+    ],
+    toolBatchCompletion: old,
+  }).session();
+  expect((await (await initial.submit('Save.')).wait()).finalOutput).toBe(
+    'SAVED',
+  );
+  const state = await initial.saveState();
+  const oldCount = old.mock.calls.length;
+  await initial.close();
+  const before = vi.fn(() => ({ action: 'allow' as const }));
+  const forbidden = vi.fn(() => 'FORBIDDEN');
+  const permitted = vi.fn(() => 'NEW');
+  await using restored = await new Agent({
+    ...base,
+    tools: [
+      descriptor,
+      tool({
+        name: 'guarded',
+        parameters: z.object({}),
+        allowedCallers: ['code'],
+        before,
+        execute: forbidden,
+      }),
+      tool({
+        name: 'finish',
+        parameters: z.object({}),
+        allowedCallers: ['direct'],
+        execute: permitted,
+      }),
+    ],
+    toolBatchCompletion(context) {
+      if (!context.results.some((result) => result.call.tool.name === 'finish'))
+        return;
+      return { action: 'finish', output: 'RESTORED REDUCED' };
+    },
+  }).session({ state: parseSessionState(JSON.stringify(state)) });
+  const result = await (await restored.submit('Finish.')).wait();
+  expect(result.finalOutput).toBe('RESTORED REDUCED');
+  expect(result.toolBatchCallIds).toEqual(['restored-finish']);
+  expect(before).not.toHaveBeenCalled();
+  expect(forbidden).not.toHaveBeenCalled();
+  expect(permitted).toHaveBeenCalledTimes(1);
+  expect(old).toHaveBeenCalledTimes(oldCount);
+  expect(remote.effects.map((effect) => effect.name)).toEqual(['source/read']);
+  model.assertExhausted();
+}, 30_000);
+
+it('routing union keeps selected handoff masks and aliased Worker reduction', async () => {
+  const { tool, Handoff } = await import('../../src');
+  const remote = await peer('source/read');
+  const descriptor = new HttpMCP({
+    name: 'fixture',
+    url: remote.url,
+    tools: ['source/read'],
+    toolNameOverrides: { 'source/read': 'public_read' },
+    approvalMode: 'preapproved',
+  });
+  const model = new ModelServer([
+    [call('transfer', {}, { callId: 'transfer' })],
+    [
+      call(
+        'public_read',
+        { key: 'worker' },
+        { namespace: 'mcp__fixture', callId: 'worker-alias' },
+      ),
+    ],
+    [call('worker_guarded', {}, { callId: 'worker-forged' })],
+    [call('worker_finish', {}, { callId: 'worker-finish' })],
+  ]);
+  const config = await model.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-routing-union',
+    supportsWebsockets: false,
+  });
+  const finish = vi.fn(() => 'WORKER TOOL');
+  const guardedBefore = vi.fn(() => ({ action: 'allow' as const }));
+  const guarded = vi.fn(() => 'FORBIDDEN WORKER BODY');
+  const worker = new Agent({
+    name: 'Worker',
+    instructions: 'Read and finish.',
+    model: 'gpt-5.5',
+    provider,
+    tools: [
+      descriptor,
+      tool({
+        name: 'worker_guarded',
+        parameters: z.object({}),
+        allowedCallers: ['code'],
+        before: guardedBefore,
+        execute: guarded,
+      }),
+      tool({
+        name: 'worker_finish',
+        parameters: z.object({}),
+        allowedCallers: ['direct'],
+        execute: finish,
+      }),
+    ],
+    toolBatchCompletion(context) {
+      if (
+        !context.results.some(
+          (result) => result.call.tool.name === 'worker_finish',
+        )
+      )
+        return;
+      return { action: 'finish', output: 'WORKER REDUCED' };
+    },
+  });
+  const transfer = vi.fn(() => 'accepted');
+  const rootReducer = vi.fn(() => {
+    throw new Error('Root reducer replaced Worker authority');
+  });
+  await using session = await new Agent({
+    name: 'Root',
+    instructions: 'Hand off.',
+    model: 'gpt-5.5',
+    provider,
+    handoffs: [
+      new Handoff(
+        worker,
+        tool({
+          name: 'transfer',
+          parameters: z.object({}),
+          allowedCallers: ['direct'],
+          execute: transfer,
+        }),
+      ),
+    ],
+    toolBatchCompletion: rootReducer,
+  }).session();
+  const result = await (await session.submit('Delegate.')).wait();
+  expect(result.finalOutput).toBe('WORKER REDUCED');
+  expect(result.toolBatchCallIds).toEqual(['worker-finish']);
+  expect(rootReducer).not.toHaveBeenCalled();
+  expect(guardedBefore).not.toHaveBeenCalled();
+  expect(guarded).not.toHaveBeenCalled();
+  expect(transfer).toHaveBeenCalledTimes(1);
+  expect(finish).toHaveBeenCalledTimes(1);
+  expect(remote.effects.map((effect) => effect.name)).toEqual(['source/read']);
+  expect(await session.getActiveAgent()).toBe(worker);
+  model.assertExhausted();
+}, 30_000);

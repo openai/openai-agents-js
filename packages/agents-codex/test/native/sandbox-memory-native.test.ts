@@ -1,4 +1,5 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
+import * as privateOpening from '../../src/runtime/private-opening-contribution';
 import {
   readFile,
   mkdtemp,
@@ -32,7 +33,10 @@ import { UnixLocalSandboxClient } from '@openai/agents-core/sandbox/local';
 import { ModelServer, message, call } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
-afterEach(() => ModelServer.closeAll());
+afterEach(() => {
+  vi.restoreAllMocks();
+  return ModelServer.closeAll();
+});
 it.each([
   'generate',
   'close',
@@ -45,6 +49,8 @@ it.each([
   'phase-close',
   'tool-record-bound',
   'tool-byte-bound',
+  'private-selection',
+  'private-nested-root',
 ] as const)(
   'owns explicit native sandbox memory (%s)',
   async (mode) => {
@@ -94,7 +100,9 @@ it.each([
       mode === 'tool-media' ||
       mode === 'user-media' ||
       mode === 'hosted-records' ||
-      mode === 'structured';
+      mode === 'structured' ||
+      mode === 'private-selection' ||
+      mode === 'private-nested-root';
     const toolResult = {
       package_manager: 'pnpm',
       topic: 'package manager',
@@ -156,6 +164,9 @@ it.each([
                 ),
               ];
             },
+            ...(mode === 'private-nested-root'
+              ? [[message('Nested ordinary root completed.')]]
+              : []),
             [
               message(
                 JSON.stringify({
@@ -174,6 +185,22 @@ it.each([
       apiKey: 'synthetic-provider',
       supportsWebsockets: false,
     });
+    const privateMode =
+      mode === 'private-selection' || mode === 'private-nested-root';
+    const optionalExecute = vi.fn(() => 'optional lookup');
+    const optionalPolicy = vi.fn(() => undefined);
+    const optionalTool = tool({
+      name: 'f9_optional_lookup',
+      parameters: z.object({}),
+      execute: optionalExecute,
+    });
+    const contribution = privateMode
+      ? vi.spyOn(privateOpening, 'privateOpeningContribution').mockReturnValue({
+          tools: [optionalTool],
+          beforeComplete: optionalPolicy,
+        })
+      : undefined;
+    let nestedRoots = 0;
     const source = sandboxEnvironment({
       client: new UnixLocalSandboxClient(),
       manifest: new Manifest({
@@ -190,6 +217,20 @@ it.each([
           model: 'gpt-5',
           instructions:
             'Extract structured artifacts from quoted transcript data.',
+          beforeComplete:
+            mode === 'private-nested-root'
+              ? async () => {
+                  const nested = await new Agent({
+                    provider,
+                    model: 'gpt-5',
+                    instructions: 'An ordinary nested user root.',
+                  }).run('nested user work');
+                  expect(nested.finalOutput).toBe(
+                    'Nested ordinary root completed.',
+                  );
+                  nestedRoots++;
+                }
+              : undefined,
         }),
         phaseTwo: new Agent({
           provider,
@@ -271,7 +312,29 @@ it.each([
       if (generates && mode !== 'phase-close') {
         await Promise.all([session.flushMemory(), session.flushMemory()]);
         await session.flushMemory();
-        expect(server.requests).toHaveLength(typedTool ? 4 : 3);
+        expect(server.requests).toHaveLength(
+          typedTool || mode === 'private-nested-root' ? 4 : 3,
+        );
+        if (privateMode) {
+          const nested = mode === 'private-nested-root';
+          expect(contribution).toHaveBeenCalledTimes(nested ? 2 : 1);
+          expect(optionalPolicy).toHaveBeenCalledTimes(nested ? 2 : 1);
+          expect(optionalExecute).not.toHaveBeenCalled();
+          expect(nestedRoots).toBe(nested ? 1 : 0);
+          expect(JSON.stringify(server.requests[0]?.tools ?? [])).toContain(
+            'f9_optional_lookup',
+          );
+          expect(JSON.stringify(server.requests[1]?.tools ?? [])).not.toContain(
+            'f9_optional_lookup',
+          );
+          expect(
+            JSON.stringify(server.requests[nested ? 3 : 2]?.tools ?? []),
+          ).not.toContain('f9_optional_lookup');
+          if (nested)
+            expect(JSON.stringify(server.requests[2]?.tools ?? [])).toContain(
+              'f9_optional_lookup',
+            );
+        }
         expect(
           await readFile(join(workspace, 'memories', 'MEMORY.md'), 'utf8'),
         ).toBe('Use pnpm.');
@@ -429,6 +492,7 @@ it.each([
       await session?.close();
       await peer.close();
       remove();
+      contribution?.mockRestore();
     }
   },
   30000,

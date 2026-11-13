@@ -1,4 +1,9 @@
+import { z } from 'zod';
+import { HttpMCP } from '../../src/runtime/mcp';
+import * as environmentSource from '../../src/runtime/environment-source';
+import * as turnReceipt from '../../src/runtime/turn-receipt';
 import { access } from 'node:fs/promises';
+import * as tools from '../../src/runtime/tools';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   Agent,
@@ -25,11 +30,22 @@ const fixture = vi.hoisted(() => ({
   threadClose: vi.fn<() => Promise<void>>(),
   engineClose: vi.fn<() => Promise<void>>(),
   createEngine: vi.fn(),
+  contribution: vi.fn(),
+  constructed: vi.fn(),
   bind: vi.fn<() => Promise<void>>(),
   carrierStart: vi.fn<() => Promise<void>>(),
   carrierClose: vi.fn<() => Promise<void>>(),
 }));
 
+vi.mock(
+  '../../src/runtime/private-opening-contribution',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('../../src/runtime/private-opening-contribution')
+    >()),
+    privateOpeningContribution: () => fixture.contribution(),
+  }),
+);
 vi.mock('../../src/runtime/binding', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/runtime/binding')>()),
   binding: async () => {
@@ -60,7 +76,9 @@ vi.mock('../../src/runtime/session', async (importOriginal) => ({
       _thread: unknown,
       _catalog: unknown,
       private options: CloseOptions,
-    ) {}
+    ) {
+      fixture.constructed(_catalog, options);
+    }
     _start() {
       return fixture.start(this.options.initialModelSettings);
     }
@@ -131,6 +149,41 @@ beforeEach(() => {
 });
 
 describe('native opening options without loading native code', () => {
+  it.each(['canonical', 'instrumented'] as const)(
+    'retains catalog capture ownership with %s preparation',
+    async (preparation) => {
+      const connection = provider();
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider: connection,
+      });
+      const capture = vi.spyOn(tools, 'captureTools');
+      const prepare =
+        preparation === 'instrumented'
+          ? vi.spyOn(
+              agent as unknown as {
+                prepare: (...args: unknown[]) => Promise<unknown>;
+              },
+              'prepare',
+            )
+          : undefined;
+      try {
+        const session = await agent.session();
+        try {
+          expect(capture).toHaveBeenCalledTimes(
+            preparation === 'canonical' ? 1 : 2,
+          );
+        } finally {
+          await session.close();
+        }
+      } finally {
+        capture.mockRestore();
+        prepare?.mockRestore();
+        await connection.close();
+      }
+    },
+  );
+
   it('keeps the default provider and sibling lease usable after a Session closes', async () => {
     const agent = new Agent({ instructions: 'Answer.' });
     const initial = agent.provider;
@@ -650,4 +703,281 @@ describe('retained opening cleanup without loading native code', () => {
     await connection.close();
     expect(fixture.createEngine).not.toHaveBeenCalled();
   });
+});
+
+describe('private configured opening values before first effects', () => {
+  it.each(['default', 'A', 'B'] as const)(
+    'captures additive %s values through the canonical prepare function',
+    async (choice) => {
+      const connection = provider();
+      const base = tools.tool({
+        name: 'base',
+        parameters: z.object({}),
+        execute: vi.fn(),
+      });
+      const executeA = vi.fn(() => 'A');
+      const executeB = vi.fn(() => 'B');
+      const a = tools.tool({
+        name: 'lookup',
+        parameters: z.object({}),
+        execute: executeA,
+      });
+      const b = tools.tool({
+        name: 'lookup',
+        parameters: z.object({}),
+        execute: executeB,
+      });
+      const policyA = vi.fn(() => undefined);
+      const policyB = vi.fn(() => undefined);
+      let policyReads = 0,
+        toolReads = 0;
+      const selected = choice === 'A' ? a : choice === 'B' ? b : undefined;
+      const policy =
+        choice === 'A' ? policyA : choice === 'B' ? policyB : undefined;
+      fixture.contribution.mockImplementation(() =>
+        selected
+          ? {
+              get tools() {
+                toolReads++;
+                return [selected];
+              },
+              get beforeComplete() {
+                policyReads++;
+                return policy;
+              },
+            }
+          : undefined,
+      );
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider: connection,
+        tools: [base],
+      });
+      const prepare = Reflect.get(Object.getPrototypeOf(agent), 'prepare');
+      const capture = vi.spyOn(tools, 'captureTools');
+      try {
+        const session = await agent.session();
+        try {
+          expect(Reflect.get(Object.getPrototypeOf(agent), 'prepare')).toBe(
+            prepare,
+          );
+          expect(fixture.contribution).toHaveBeenCalledTimes(1);
+          expect(policyReads).toBe(selected ? 1 : 0);
+          expect(toolReads).toBe(selected ? 1 : 0);
+          const [catalog, options] = fixture.constructed.mock.lastCall!;
+          expect(catalog.tools.map(tools.toolDeclarationIdentity)).toEqual(
+            selected ? [base, selected] : [base],
+          );
+          expect(options.beforeComplete).toBe(policy);
+          expect(capture).toHaveBeenCalledTimes(1);
+          expect(catalog).toBe(capture.mock.results[0]!.value);
+          expect(policyA).not.toHaveBeenCalled();
+          expect(policyB).not.toHaveBeenCalled();
+          expect(executeA).not.toHaveBeenCalled();
+          expect(executeB).not.toHaveBeenCalled();
+        } finally {
+          await session.close();
+        }
+      } finally {
+        capture.mockRestore();
+        await connection.close();
+      }
+    },
+  );
+
+  it('omits private contributions from the real correction opening', async () => {
+    const connection = provider();
+    let closed = 0;
+    fixture.sessionClose.mockImplementation(async (options) => {
+      await options.onClose?.();
+      closed++;
+    });
+    const policy = vi.fn(() => undefined);
+    const privatePolicy = vi.fn(() => undefined);
+    fixture.contribution.mockReturnValue({
+      tools: [
+        tools.tool({
+          name: 'private_tool',
+          description: 'Private.',
+          parameters: z.object({}),
+          execute: () => 'private',
+        }),
+      ],
+      beforeComplete: privatePolicy,
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider: connection,
+      beforeComplete: policy,
+    });
+    try {
+      const session = await agent.session({ tools: [] });
+      try {
+        const [catalog, options] = fixture.constructed.mock.lastCall!;
+        expect(catalog.tools).toHaveLength(0);
+        expect(options.beforeComplete).toBe(policy);
+        const correction = await options.openCorrection(
+          undefined,
+          undefined,
+          () => undefined,
+        );
+        try {
+          expect(fixture.contribution).toHaveBeenCalledTimes(1);
+          const [correctionCatalog, correctionOptions] =
+            fixture.constructed.mock.lastCall!;
+          expect(correctionCatalog.tools).toHaveLength(0);
+          expect(correctionOptions.beforeComplete).toBeUndefined();
+        } finally {
+          await correction.close();
+        }
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await connection.close();
+    }
+    expect(fixture.sessionClose).toHaveBeenCalledTimes(2);
+    expect(closed).toBe(2);
+  });
+
+  it('omits overridden private fields, including explicit empty tools', async () => {
+    const connection = provider();
+    const policy = vi.fn(() => undefined);
+    fixture.contribution.mockReturnValue({
+      get tools() {
+        throw new Error('overridden tools read');
+      },
+      get beforeComplete() {
+        throw new Error('overridden policy read');
+      },
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider: connection,
+      beforeComplete: policy,
+    });
+    try {
+      const session = await agent.session({ tools: [] });
+      try {
+        const [catalog, options] = fixture.constructed.mock.lastCall!;
+        expect(catalog.tools).toHaveLength(0);
+        expect(options.beforeComplete).toBe(policy);
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it('preserves public-policy Agent.run acquisition without a private contribution', async () => {
+    const connection = provider();
+    const policy = vi.fn(() => undefined);
+    fixture.contribution.mockReturnValue(undefined);
+    try {
+      await new Agent({
+        instructions: 'Answer.',
+        provider: connection,
+        beforeComplete: policy,
+      }).run('go');
+      expect(vi.mocked(connection._acquire).mock.calls[0]![1]).toBe(true);
+      expect(fixture.constructed).toHaveBeenCalledTimes(1);
+      expect(fixture.constructed.mock.lastCall![1].beforeComplete).toBe(policy);
+      expect(policy).not.toHaveBeenCalled();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it('keeps a policy-only contribution on the ordinary Agent.run route', async () => {
+    const connection = provider();
+    const policy = vi.fn(() => undefined);
+    fixture.contribution.mockReturnValue({ beforeComplete: policy });
+    try {
+      await new Agent({ instructions: 'Answer.', provider: connection }).run(
+        'go',
+      );
+      expect(fixture.constructed).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(connection._acquire).mock.calls[0]![1]).toBe(false);
+      expect(fixture.constructed.mock.lastCall![1].beforeComplete).toBe(policy);
+      expect(policy).not.toHaveBeenCalled();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it.each(['restore', 'handoff', 'realtime', 'roles', 'mcp'] as const)(
+    'rejects unsupported private %s assembly before opening acquisition',
+    async (profile) => {
+      const connection = provider();
+      const optional = tools.tool({
+        name: 'lookup',
+        parameters: z.object({}),
+        execute: vi.fn(),
+      });
+      fixture.contribution.mockReturnValue({
+        tools: [optional],
+        beforeComplete: vi.fn(),
+      });
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider: connection,
+        ...(profile === 'handoff'
+          ? {
+              handoffs: [
+                new Agent({ instructions: 'Child.', provider: connection }),
+              ],
+            }
+          : {}),
+        ...(profile === 'realtime'
+          ? { realtime: { instructions: 'Voice.' } }
+          : {}),
+        tools:
+          profile === 'roles'
+            ? [new NativeAgents()]
+            : profile === 'mcp'
+              ? [
+                  new HttpMCP({
+                    name: 'remote',
+                    tools: ['lookup'],
+                    url: 'http://127.0.0.1:1/mcp',
+                  }),
+                ]
+              : [],
+      });
+      const files = vi
+        .spyOn(turnReceipt, 'loadInstructionFiles')
+        .mockRejectedValue(new Error('unexpected files'));
+      const environment = vi
+        .spyOn(environmentSource, 'acquireEnvironment')
+        .mockRejectedValue(new Error('unexpected environment'));
+      try {
+        await expect(
+          agent.session({
+            instructionFiles: ['unreachable.md'],
+            ...(profile === 'restore'
+              ? {
+                  state: {
+                    format_version: 2,
+                    codex_revision: CODEX_REVISION,
+                    source_session_id: 'saved',
+                    root_metadata: {},
+                    history: [],
+                  },
+                }
+              : {}),
+          } as never),
+        ).rejects.toThrow('Private opening contributions require a fresh root');
+        expect(files).not.toHaveBeenCalled();
+        expect(environment).not.toHaveBeenCalled();
+        expect(connection._acquire).not.toHaveBeenCalled();
+        expect(fixture.preflight).not.toHaveBeenCalled();
+        expect(fixture.createEngine).not.toHaveBeenCalled();
+      } finally {
+        files.mockRestore();
+        environment.mockRestore();
+        await connection.close();
+      }
+    },
+  );
 });

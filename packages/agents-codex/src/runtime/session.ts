@@ -50,11 +50,12 @@ import {
   type RequestAttempts,
 } from './request-attempts';
 import type { ResponsesCompaction } from './responses-compaction';
-import { audioInputByteLimit } from './media';
 import {
-  assertHostedMcpConfigurations,
-  hostedMcpBinding,
-} from './hosted-mcp-binding';
+  createCompactionContext,
+  captureCompactionSummary,
+} from './compaction-callbacks';
+import { audioInputByteLimit } from './media';
+import { hostedMcpBinding } from './hosted-mcp-binding';
 import {
   ManagedWorkspaceCheckpoint,
   captureRetiredWorkspace,
@@ -74,6 +75,7 @@ import {
   type InputGuardrail,
   type OutputGuardrail,
 } from './guardrails';
+import { settleOutputGuardrails } from './output-guardrails';
 import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
@@ -82,6 +84,7 @@ import {
   markModelRequestTransport,
   markRawProviderRequest,
   pumpModelStream,
+  borrowedResponsesRequestId,
   type NativeModel,
   type ModelRequest,
   type ModelProvider,
@@ -95,6 +98,9 @@ import {
 import {
   captureCompletionDecision,
   type BeforeComplete,
+  captureToolBatchDecision,
+  type ToolBatchCompletion,
+  type ToolBatchResult,
   type CompletionContext,
   type CompletionDecision,
   type BeforeCompact,
@@ -222,6 +228,7 @@ import {
   OutputValidationError,
   prepareOutput,
   parseToolCompletion,
+  parseApplicationToolCompletion,
   type OutputSpec,
   type PreparedOutput,
 } from './output';
@@ -357,7 +364,10 @@ import {
 } from './history';
 import type { ThreadOptions } from './options';
 import {
-  storedOptions,
+  encodeStoredSessionsRequest,
+  encodeStoredTurnsRequest,
+  encodeStoredItemsRequest,
+  encodeSearchHistoryRequest,
   storedTurnPage,
   storedItemPage,
   storedMatchPage,
@@ -397,6 +407,8 @@ import {
   toolOutputSchema,
   toolApplicationData,
   captureTools,
+  captureAdmittedToolUpdate,
+  captureToolBatchResults,
   isDirectFunctionTool,
   isClientToolSearchTool,
   toolIdentity,
@@ -416,6 +428,7 @@ import {
   type ToolCatalog,
   type FunctionTool,
   type ToolCallContext,
+  protocolToolSpecs,
 } from './tools';
 import type { NativeProviderRoutes } from './http-model';
 
@@ -476,6 +489,7 @@ export interface SessionOptions {
   includeRequestAttempts?: boolean;
   includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
+  toolBatchCompletion?: ToolBatchCompletion<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
   outputGuardrails?: readonly OutputGuardrail<any>[];
   /** @internal Captured root declaration; profile declarations own child guards. */
@@ -802,6 +816,7 @@ export interface Completed<OutputT = string> {
   readonly finalOutput: OutputT;
   /** Present when a validated direct function call supplied the final output. */
   readonly toolCall?: ToolCallInfo;
+  readonly toolBatchCallIds?: readonly string[];
   /** Cumulative native thread usage at completion, rather than a per-turn delta. */
   readonly threadUsage: TokenUsageInfo | null;
   readonly runUsage: RunUsage;
@@ -1944,7 +1959,11 @@ export class Session<OutputT = string, Context = unknown> {
     const specs = JSON.parse(catalog.specsJson) as JsonObject[];
     const tools: import('./realtime-policy').NativeRealtimeTool[] =
       specs.flatMap((spec) =>
-        spec.type === 'function' && typeof spec.name === 'string'
+        spec.type === 'function' &&
+        typeof spec.name === 'string' &&
+        (spec.allowedCallers === undefined ||
+          (Array.isArray(spec.allowedCallers) &&
+            spec.allowedCallers.includes('direct')))
           ? [{ type: 'function' as const, name: spec.name }]
           : [],
       );
@@ -2003,8 +2022,14 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (seen.has(captured))
         throw new TypeError(`Duplicate Realtime tool: ${captured.name}`);
+      const callable = managedApproval(captured)?.function ?? captured;
+      if (
+        callable.kind !== 'manual' &&
+        callable.allowedCallers?.includes('direct') === false
+      )
+        continue;
       seen.add(captured);
-      const [spec] = JSON.parse(captureTools([captured]).specsJson);
+      const [spec] = protocolToolSpecs(captureTools([captured]));
       if (spec.type !== 'function')
         throw new TypeError(
           'Realtime tools require bare function declarations',
@@ -2801,6 +2826,7 @@ export class Session<OutputT = string, Context = unknown> {
         readonly callId: string;
         readonly name: string;
         readonly namespace: string | null;
+        readonly batchCallIds?: readonly string[];
         readonly value?: unknown;
         readonly json?: JsonValue;
         waiterConsumed?: true;
@@ -2816,7 +2842,10 @@ export class Session<OutputT = string, Context = unknown> {
       >;
     }
   >();
-  private readonly terminalCalls = new WeakMap<NativeTurn, ToolCallInfo>();
+  private readonly terminalCalls = new WeakMap<
+    NativeTurn,
+    { call?: ToolCallInfo; batchCallIds?: readonly string[] }
+  >();
   private readonly childOutput = prepareOutput<string>(undefined);
   private readonly repairTurns: RepairTurnWire[];
   private readonly repairItems: RepairItemWire[];
@@ -2925,7 +2954,6 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private readonly observedChildTurns = new WeakSet<ChildCallbackOwner>();
   private forkCopy: NativeThread | undefined;
-  private readonly childContinuations = new Set<Promise<void>>();
   private readonly manualCalls = new Map<string, ManualCallRecord>();
   private readonly manualAdmissions = new Map<
     string,
@@ -3526,8 +3554,7 @@ export class Session<OutputT = string, Context = unknown> {
       matches,
     );
     if (!pending) return;
-    this.childContinuations.add(pending);
-    void pending.finally(() => this.childContinuations.delete(pending));
+    this.childCallbacks.trackSettlement(pending);
   }
 
   /**
@@ -4593,8 +4620,11 @@ export class Session<OutputT = string, Context = unknown> {
       finalOutput: this.decodedOutputs.has(run)
         ? this.decodedOutputs.get(run)
         : result.finalOutput,
-      ...(this.terminalCalls.has(run)
-        ? { toolCall: this.terminalCalls.get(run)! }
+      ...(this.terminalCalls.get(run)?.call
+        ? { toolCall: this.terminalCalls.get(run)!.call }
+        : {}),
+      ...(this.terminalCalls.get(run)?.batchCallIds
+        ? { toolBatchCallIds: this.terminalCalls.get(run)!.batchCallIds }
         : {}),
       threadUsage: tokenUsageInfo(result.usage),
       guardrailResults: Object.freeze(
@@ -7476,6 +7506,7 @@ export class Session<OutputT = string, Context = unknown> {
         proposal?.accepted &&
         proposal.callId === fact.call_id &&
         proposal.name === fact.name &&
+        isDeepStrictEqual(proposal.batchCallIds, fact.batch_call_ids) &&
         (proposal.namespace ?? 'functions') ===
           (fact.namespace ?? 'functions') &&
         typeof fact.final_output === 'string' &&
@@ -7542,12 +7573,9 @@ export class Session<OutputT = string, Context = unknown> {
         const next = await current._continue();
         if (next) this.publicChildTurn(next, producer);
       })();
-      this.childContinuations.add(continuation);
-      void continuation
-        .catch((error) => {
-          if (this.isOpen) this.readerFailed(error);
-        })
-        .finally(() => this.childContinuations.delete(continuation));
+      this.childCallbacks.trackSettlement(continuation, (error) => {
+        if (this.isOpen) this.readerFailed(error);
+      });
       return;
     }
     if (
@@ -7563,7 +7591,10 @@ export class Session<OutputT = string, Context = unknown> {
       this.failToolCompletion(owner, event);
       return;
     }
-    if (msg.type === '_sdk_tool_completion') {
+    if (
+      msg.type === '_sdk_tool_completion' ||
+      msg.type === '_sdk_tool_batch_completion'
+    ) {
       if (this.current(owner))
         void this.proposeToolCompletion(owner, event, native).catch(() => {});
       return;
@@ -7925,7 +7956,10 @@ export class Session<OutputT = string, Context = unknown> {
       this.failToolCompletion(run, event);
       return;
     }
-    if (kind === '_sdk_tool_completion') {
+    if (
+      kind === '_sdk_tool_completion' ||
+      kind === '_sdk_tool_batch_completion'
+    ) {
       if (msg.turn_id !== run.id) return;
       void this.proposeToolCompletion(run, event, this.#native).catch(() => {});
       return;
@@ -8195,6 +8229,7 @@ export class Session<OutputT = string, Context = unknown> {
             !proposal.accepted ||
             proposal.callId !== fact.call_id ||
             proposal.name !== fact.name ||
+            !isDeepStrictEqual(proposal.batchCallIds, fact.batch_call_ids) ||
             (proposal.namespace ?? 'functions') !==
               (fact.namespace ?? 'functions') ||
             !isDeepStrictEqual(proposal.json, fact.final_output)
@@ -8202,20 +8237,25 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Terminal tool completion has no matching accepted proposal',
             );
-          this.promotePendingApplicationOutputs(run, fact.call_id);
+          for (const callId of fact.batch_call_ids ?? [fact.call_id])
+            this.promotePendingApplicationOutputs(run, callId);
           this.decodedOutputs.set(run, proposal.value);
           this.terminalCalls.set(
             run,
-            terminalCallInfo(
-              {
-                sessionId: this.id,
-                turnId: run.id!,
-                childId: null,
-                childIncarnation: null,
-              },
-              fact,
-              proposal.namespace,
-            ),
+            fact.batch_call_ids
+              ? { batchCallIds: Object.freeze([...fact.batch_call_ids]) }
+              : {
+                  call: terminalCallInfo(
+                    {
+                      sessionId: this.id,
+                      turnId: run.id!,
+                      childId: null,
+                      childIncarnation: null,
+                    },
+                    fact,
+                    proposal.namespace,
+                  ),
+                },
           );
         } catch (cause) {
           error = cause;
@@ -8490,8 +8530,7 @@ export class Session<OutputT = string, Context = unknown> {
             owner.observationPhase = 'ended';
             this.observations.notify();
           });
-        this.childContinuations.add(settled);
-        void settled.finally(() => this.childContinuations.delete(settled));
+        this.childCallbacks.trackSettlement(settled);
       }
     }
     return true;
@@ -8567,31 +8606,62 @@ export class Session<OutputT = string, Context = unknown> {
           await this.awaitInputGuardrails(
             owner instanceof NativeTurn ? this.rootRun(owner) : owner,
           );
-          const slot = z.number().int().nonnegative().safe().parse(msg.slot);
-          const captured = capturedCatalog.tools[slot];
-          const declaration =
-            captured && (managedApproval(captured)?.function ?? captured);
-          const identity = z
-            .object({ name: z.string(), namespace: z.string().nullable() })
-            .parse(msg.tool);
-          if (
-            !declaration ||
-            declaration.kind === 'manual' ||
-            !declaration.finishTurn ||
-            declaration.name !== identity.name ||
-            (toolNamespace(declaration) ?? 'functions') !==
-              (identity.namespace ?? 'functions')
-          )
-            throw new NativeError(
-              'Terminal proposal does not match its captured declaration',
+          check();
+          const model = z.string().parse(msg.model);
+          const batch = msg.type === '_sdk_tool_batch_completion';
+          let results: readonly ToolBatchResult[] | undefined;
+          let call: ToolCallInfo;
+          const callOwner = {
+            sessionId: this.id,
+            turnId: z.string().parse(turnId),
+            childId: child ? owner.childId : null,
+            childIncarnation: child ? owner.incarnation : null,
+          };
+          if (batch) {
+            results = captureToolBatchResults(callOwner, model, msg.results);
+            call = results[0].call;
+          } else {
+            const slot = z.number().int().nonnegative().safe().parse(msg.slot);
+            const captured = capturedCatalog.tools[slot];
+            const declaration =
+              captured && (managedApproval(captured)?.function ?? captured);
+            const identity = z
+              .object({ name: z.string(), namespace: z.string().nullable() })
+              .parse(msg.tool);
+            if (
+              !declaration ||
+              declaration.kind === 'manual' ||
+              !declaration.finishTurn ||
+              declaration.name !== identity.name ||
+              (toolNamespace(declaration) ?? 'functions') !==
+                (identity.namespace ?? 'functions')
+            )
+              throw new NativeError(
+                'Terminal proposal does not match its captured declaration',
+              );
+            call = Object.freeze({
+              ...terminalCallInfo(callOwner, {
+                call_id: z.string().parse(msg.call_id),
+                name: declaration.name,
+                namespace: toolNamespace(declaration),
+                final_output: null,
+              }),
+              model,
+            });
+          }
+          const batchCallIds =
+            results &&
+            Object.freeze(
+              results.map((result) => z.string().parse(result.call.callId)),
             );
           const attempt = {
             requestId: z.string().parse(msg.request_id),
             nativeStep: z.string().parse(msg.native_step),
             generation: capturedCatalog.generation,
-            callId: z.string().parse(msg.call_id),
-            name: declaration.name,
-            namespace: toolNamespace(declaration),
+            callId: z.string().parse(call.callId),
+            name: call.tool.name,
+            namespace: call.tool.namespace,
+            batchCallIds,
           };
           this.terminalState(owner).proposal = { ...attempt, accepted: false };
           let output: PreparedOutput = this.childOutput;
@@ -8608,7 +8678,55 @@ export class Session<OutputT = string, Context = unknown> {
             )
               output = this.profileRuntimes.get(source.profile_id)!.output;
           }
-          const converted = parseToolCompletion(output, msg.output);
+          let converted: ReturnType<typeof parseToolCompletion>;
+          if (results) {
+            const callback = this.sourceModelCallbacks(msg).toolBatchCompletion;
+            if (!callback)
+              throw new NativeError('Captured tool batch callback unavailable');
+            const returned = callback(
+              Object.freeze({
+                context: this.options.context,
+                results,
+                sessionId: this.id,
+                turnId: z.string().parse(turnId),
+                ...(child ? { subagentId: owner.childId } : {}),
+                model,
+                continuationCount: z
+                  .number()
+                  .int()
+                  .nonnegative()
+                  .safe()
+                  .parse(msg.continuation_count),
+                signal,
+              }),
+            );
+            const settled =
+              returned &&
+              typeof (returned as Promise<unknown>).then === 'function'
+                ? await returned
+                : returned;
+            const decision = captureToolBatchDecision(settled);
+            check();
+            if (decision?.action !== 'finish') {
+              this.discardTerminalValue(owner);
+              const data =
+                decision?.action === 'stop'
+                  ? { stop: true }
+                  : {
+                      continue:
+                        decision?.action === 'continue'
+                          ? decision.instructions
+                          : null,
+                    };
+              if (
+                !native._reply_tool_completion(encode({ ...receipt, ...data }))
+              )
+                throw new NativeError('Tool batch decision reply expired');
+              replied = true;
+              return;
+            }
+            converted = parseApplicationToolCompletion(output, decision.output);
+          } else converted = parseToolCompletion(output, msg.output);
           check();
           const beforeComplete = this.sourceModelCallbacks(msg).beforeComplete;
           if (beforeComplete && msg.guard_only !== true) {
@@ -8632,23 +8750,9 @@ export class Session<OutputT = string, Context = unknown> {
                     .parse(msg.continuation_count),
                   signal,
                   finalOutput: losslessJsonValueSchema.parse(converted.json),
-                  toolCall: Object.freeze({
-                    ...terminalCallInfo(
-                      {
-                        sessionId: this.id,
-                        turnId: z.string().parse(turnId),
-                        childId: child ? owner.childId : null,
-                        childIncarnation: child ? owner.incarnation : null,
-                      },
-                      {
-                        call_id: z.string().parse(msg.call_id),
-                        name: declaration.name,
-                        namespace: toolNamespace(declaration),
-                        final_output: converted.json,
-                      },
-                    ),
-                    model,
-                  }),
+                  ...(batchCallIds
+                    ? { toolBatchCallIds: batchCallIds }
+                    : { toolCall: call }),
                 }),
               );
               const settled =
@@ -8695,20 +8799,9 @@ export class Session<OutputT = string, Context = unknown> {
                 .nonnegative()
                 .parse(msg.continuation_count),
               finalOutput: converted.value,
-              toolCall: terminalCallInfo(
-                {
-                  sessionId: this.id,
-                  turnId: z.string().parse(turnId),
-                  childId: child ? owner.childId : null,
-                  childIncarnation: child ? owner.incarnation : null,
-                },
-                {
-                  call_id: z.string().parse(msg.call_id),
-                  name: declaration.name,
-                  namespace: toolNamespace(declaration),
-                  final_output: converted.json,
-                },
-              ),
+              ...(batchCallIds
+                ? { toolBatchCallIds: batchCallIds }
+                : { toolCall: Object.freeze({ ...call, model: null }) }),
             },
             check,
           );
@@ -8881,45 +8974,18 @@ export class Session<OutputT = string, Context = unknown> {
     if (!guards.length) return;
     const scope = this.decisionScope(message, request.signal);
     try {
-      const settled = await Promise.allSettled(
-        guards.map(async (guard) => {
-          check();
-          const result = captureGuardrailResult(
-            await guard.callback(
-              Object.freeze({
-                ...request,
-                finalOutput: structuredClone(request.finalOutput),
-                decide: scope.decide,
-              }),
-              agent,
-            ),
-          );
-          check();
-          return Object.freeze({
-            kind: 'output' as const,
-            name: guard.name,
-            result,
+      await settleOutputGuardrails({
+        guards,
+        agent,
+        request,
+        guardrailResults: owner.guardrailResults,
+        invoke: (guard, finalOutput) =>
+          guard.callback(
+            Object.freeze({ ...request, finalOutput, decide: scope.decide }),
             agent,
-            sessionId: request.sessionId,
-            turnId: request.turnId,
-            ...(request.subagentId ? { subagentId: request.subagentId } : {}),
-            ...(request.toolCall ? { toolCall: request.toolCall } : {}),
-          });
-        }),
-      );
-      const records = settled.flatMap((entry) =>
-        entry.status === 'fulfilled' ? [entry.value] : [],
-      );
-      owner.guardrailResults.push(...records);
-      const failed = settled.find((entry) => entry.status === 'rejected');
-      if (failed?.status === 'rejected') throw failed.reason;
-      check();
-      const tripped = records.find((record) => record.result.tripwireTriggered);
-      if (tripped)
-        throw new GuardrailTripwire(
-          tripped,
-          Object.freeze([...owner.guardrailResults]),
-        );
+          ),
+        check,
+      });
     } finally {
       await scope.close();
     }
@@ -8958,6 +9024,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
+    toolBatchCompletion?: ToolBatchCompletion<any>;
     beforeCompact?: BeforeCompact<any>;
     compaction?: ResponsesCompaction<any>;
     transformContext?: ContextTransform<any>;
@@ -8969,6 +9036,7 @@ export class Session<OutputT = string, Context = unknown> {
     const captured = this.profileRuntimes.get(source.profile_id)!.profile;
     return {
       beforeComplete: captured.declaration.beforeComplete,
+      toolBatchCompletion: captured.declaration.toolBatchCompletion,
       beforeCompact: captured.declaration.beforeCompact,
       compaction: captured.declaration.compaction,
       transformContext: captured.declaration.transformContext,
@@ -9122,6 +9190,11 @@ export class Session<OutputT = string, Context = unknown> {
                   ? failedAttempt
                   : undefined;
               let context = captured.context;
+              if (
+                context.transport === 'model_producer' &&
+                failed?.stream !== undefined
+              )
+                context = Object.freeze({ ...context, stream: failed.stream });
               const advice = failed?.advice
                 ? captureModelRetryAdvice(
                     await failed.advice.call(failed.model, {
@@ -9129,6 +9202,7 @@ export class Session<OutputT = string, Context = unknown> {
                       error: failed.error,
                       attemptId: captured.context.attemptId,
                       attempt: captured.context.attempt,
+                      stream: context.stream,
                       signal,
                     }),
                   )
@@ -9235,7 +9309,7 @@ export class Session<OutputT = string, Context = unknown> {
                 this.messageProfile(msg)?.profile_id,
                 owner,
               );
-              const failed = (error: unknown) => {
+              const failed = (error: unknown, stream?: boolean) => {
                 if (
                   attemptId === undefined ||
                   !this.current(owner) ||
@@ -9245,6 +9319,7 @@ export class Session<OutputT = string, Context = unknown> {
                 const failure = {
                   attemptId,
                   error,
+                  stream,
                   request: Object.freeze({
                     ...request,
                     body: losslessJsonObjectSchema.parse(msg.data),
@@ -9279,9 +9354,12 @@ export class Session<OutputT = string, Context = unknown> {
                   this.callbackDeliveries.authorityFailed(delivery, replyError);
                 }
               };
+              let requestStream: boolean | undefined;
               try {
-                if (backend.stream) {
-                  const stream = await backend.stream(request);
+                const streamModel = backend.stream;
+                requestStream = Boolean(streamModel);
+                if (streamModel) {
+                  const stream = await streamModel.call(backend, request);
                   let streamOwner: string;
                   await pumpModelStream(stream, {
                     check,
@@ -9290,6 +9368,7 @@ export class Session<OutputT = string, Context = unknown> {
                       sourceNative._start_model_producer(
                         streamOwner,
                         isChatModelStream(stream),
+                        borrowedResponsesRequestId(stream),
                       );
                     },
                     push: (event, original) =>
@@ -9315,128 +9394,46 @@ export class Session<OutputT = string, Context = unknown> {
                   reply({ data });
                 }
               } catch (error) {
-                failed(error);
+                failed(error, requestStream);
                 return;
               }
             } else if (compact) {
-              const items = z.array(losslessJsonObjectSchema).parse(msg.items);
-              const context = Object.freeze({
-                ...base,
-                items: Object.freeze(items),
-                requestId: z.string().parse(msg.request_id),
-                automatic: z.boolean().parse(msg.automatic),
-              });
+              const context = createCompactionContext(base, msg);
               if (compaction !== undefined) {
                 const budget =
                   owner instanceof NativeTurn
                     ? owner.selection?.budget
                     : undefined;
                 try {
-                  let providerResponse:
-                    { response_id: string; model?: string } | undefined;
-                  if (
-                    transformContext === undefined &&
-                    msg.provider_response != null &&
-                    compaction.mode !== 'input'
-                  ) {
-                    const loading = compaction.loadClientEntrypoint();
-                    if (loading !== undefined) {
-                      await loading;
-                      check();
-                    }
-                    if (
-                      compaction.matchesProvider(
-                        this.#modelApiKey,
-                        this.threadOptions.config,
-                      )
-                    )
-                      providerResponse = z
-                        .object({
-                          response_id: z.string().trim().min(1),
-                          model: z.string().trim().min(1).optional(),
-                        })
-                        .strict()
-                        .parse(msg.provider_response);
-                  }
-                  const prepared = compaction.prepareContext(
+                  const result = await compaction.evaluateCapturedRequest(
                     context,
-                    z
-                      .array(z.number().int().nonnegative())
-                      .parse(msg.candidate_indexes),
-                    providerResponse,
-                    z.boolean().parse(msg.model_omitted),
-                  );
-                  if (compactPolicy) {
-                    const admitted =
-                      compaction.shouldCompact === undefined
-                        ? prepared.candidates.length >= 10
-                        : await compaction.shouldCompact(prepared);
-                    if (typeof admitted !== 'boolean')
-                      throw new TypeError(
-                        'shouldCompact must return a boolean',
-                      );
-                    check();
-                    reply({ admitted });
-                  } else {
-                    let canonicalItems: typeof prepared.items | undefined;
-                    let requestContext = prepared;
-                    if (prepared.mode === 'input' && transformContext) {
-                      canonicalItems = JSON.parse(
-                        JSON.stringify(
-                          prepared.items.filter(
-                            (item) =>
-                              item.type === 'message' &&
-                              (item.role === 'developer' ||
-                                item.role === 'system'),
-                          ),
+                    {
+                      policy: compactPolicy,
+                      providerResponse: msg.provider_response,
+                      candidateIndexes: msg.candidate_indexes,
+                      modelOmitted: msg.model_omitted,
+                    },
+                    {
+                      assertCurrent: check,
+                      matchesCurrentProvider: () =>
+                        compaction.matchesProvider(
+                          this.#modelApiKey,
+                          this.threadOptions.config,
                         ),
-                      ) as typeof prepared.items;
-                      const replacement = await transformContext(
-                        Object.freeze({
-                          ...base,
-                          model: prepared.model,
-                          items: prepared.items,
-                          requestId: prepared.requestId,
-                          purpose: 'compaction' as const,
-                        }),
-                      );
-                      check();
-                      if (replacement !== undefined)
-                        requestContext = Object.freeze({
-                          ...prepared,
-                          items: Object.freeze(
-                            z
-                              .array(losslessJsonObjectSchema)
-                              .parse(replacement),
-                          ),
-                        });
-                    }
-                    if (
-                      prepared.mode === 'previous_response_id' &&
-                      !compaction.matchesProvider(
-                        this.#modelApiKey,
-                        this.threadOptions.config,
-                      )
-                    )
-                      throw new TypeError(
-                        'Compaction client provider scope changed before dispatch',
-                      );
-                    const window = await compaction.requestWindow(
-                      requestContext,
-                      providerResponse,
-                      (usage) => {
+                      transformContext,
+                      observeUsage: (usage) => {
                         const report = captureUsageReport(usage);
                         this.addOwnerUsage(owner, report);
                         budget?.observe(
                           usage === null ? undefined : report.raw,
                         );
                       },
-                      canonicalItems,
-                      () => this.markBorrowedRequestAttempts(owner),
-                    );
-                    check();
-                    reply({ window });
-                  }
+                      markDispatch: () =>
+                        this.markBorrowedRequestAttempts(owner),
+                    },
+                  );
+                  check();
+                  reply(result);
                 } catch (error) {
                   check();
                   if (!compactPolicy && msg.optional !== true) throw error;
@@ -9446,14 +9443,9 @@ export class Session<OutputT = string, Context = unknown> {
               } else if (compactPolicy) {
                 reply({});
               } else {
-                const settled = await beforeCompact?.(context);
-                if (
-                  settled !== undefined &&
-                  (typeof settled !== 'string' || !settled.trim())
-                )
-                  throw new TypeError(
-                    'beforeCompact must return a nonempty summary or undefined',
-                  );
+                const settled = captureCompactionSummary(
+                  await beforeCompact?.(context),
+                );
                 check();
                 reply(settled === undefined ? {} : { summary: settled });
               }
@@ -13568,49 +13560,22 @@ export class Session<OutputT = string, Context = unknown> {
           throw new TypeError(
             'Updated MCP tools must have been declared when the Session opened',
           );
-      const replacements = captureTools(next.tools);
-      assertHostedMcpConfigurations(
-        replacements.tools,
-        this.threadOptions._hosted_tools ?? [],
-      );
       const callbackBindings = this.profileCurrent
         ? this.profileRuntimes.get(this.profileCurrent.profile_id)?.profile
             .callbackTools
         : undefined;
-      const callbacks = new Map(
-        (callbackBindings ?? []).map(
-          (tool) => [JSON.stringify(toolIdentity(tool)), tool] as const,
-        ),
-      );
-      for (const tool of replacements.tools) {
-        const expected = callbacks.get(JSON.stringify(toolIdentity(tool)));
-        if (
-          expected !== undefined &&
-          toolDeclarationIdentity(tool) !== toolDeclarationIdentity(expected)
-        )
-          throw new TypeError('A captured handoff callback cannot be replaced');
-      }
-      if (
-        this.options.customStore &&
-        replacements.tools.some((tool) => tool.kind === 'manual')
-      )
-        throw new TypeError(
-          'Custom canonical storage does not support manual tools',
-        );
-      const byName = new Map(
-        replacements.tools.map((tool) => [
-          JSON.stringify(toolIdentity(tool)),
-          tool,
-        ]),
-      );
-      let candidate = captureTools(
-        this.catalog.tools.map(
-          (tool) => byName.get(JSON.stringify(toolIdentity(tool))) ?? tool,
-        ),
+      const update = captureAdmittedToolUpdate(
+        next.tools,
+        this.catalog,
         (this.options.agentGraph
           ? this.profileHighWater
           : this.catalog.generation) + 1n,
+        this.threadOptions._hosted_tools ?? [],
+        callbackBindings,
+        Boolean(this.options.customStore),
       );
+      const replacements = update.replacements;
+      let candidate = update.candidate;
       if (!this.openingMcpTools.length) {
         await this.publishCatalog(async () => candidate, replacements.tools);
         await this.realtimeOwner?._syncProfile(true);
@@ -14466,6 +14431,7 @@ export class Session<OutputT = string, Context = unknown> {
             !proposal.accepted ||
             proposal.callId !== fact.call_id ||
             proposal.name !== fact.name ||
+            !isDeepStrictEqual(proposal.batchCallIds, fact.batch_call_ids) ||
             (proposal.namespace ?? 'functions') !==
               (fact.namespace ?? 'functions') ||
             typeof fact.final_output !== 'string' ||
@@ -14479,16 +14445,22 @@ export class Session<OutputT = string, Context = unknown> {
           // The ordered reader still needs the accepted proposal to publish.
           if (owner.observationPhase === 'open') proposal.waiterConsumed = true;
           else this.clearTerminalProposal(owner);
-          return terminalCallInfo(
-            {
-              sessionId: this.id,
-              turnId: owner.turnId,
-              childId: owner.childId,
-              childIncarnation: owner.incarnation,
-            },
-            fact,
-            proposal.namespace,
-          );
+          if (fact.batch_call_ids)
+            return {
+              toolBatchCallIds: Object.freeze([...fact.batch_call_ids]),
+            };
+          return {
+            toolCall: terminalCallInfo(
+              {
+                sessionId: this.id,
+                turnId: owner.turnId,
+                childId: owner.childId,
+                childIncarnation: owner.incarnation,
+              },
+              fact,
+              proposal.namespace,
+            ),
+          };
         },
         drain: () =>
           this.childCallbacks.drain(
@@ -14625,7 +14597,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before a stored fork');
     this.requireCompleteRepairReceipts();
-    if (this.graphStops.size || this.childContinuations.size)
+    if (this.graphStops.size || this.childCallbacks.hasPendingSettlements())
       throw new NativeError('Stored fork requires a settled Session');
     const request: Record<string, string> = {};
     for (const [name, value] of [
@@ -14758,17 +14730,8 @@ export class Session<OutputT = string, Context = unknown> {
   async storedSessions(
     options: { limit?: number; cursor?: string; archived?: boolean } = {},
   ): Promise<StoredSessionPage> {
-    const { limit = 50, cursor, archived = false } = options;
-    const query = storedOptions(limit, cursor);
     return storedSessionPage(
-      await this.#native._stored_history(
-        JSON.stringify({
-          kind: 'sessions',
-          limit: query.limit,
-          cursor: query.cursor,
-          archived,
-        }),
-      ),
+      await this.#native._stored_history(encodeStoredSessionsRequest(options)),
     );
   }
 
@@ -14784,23 +14747,8 @@ export class Session<OutputT = string, Context = unknown> {
       includeSummary?: boolean;
     } = {},
   ): Promise<StoredTurnPage> {
-    const {
-      limit = 50,
-      cursor,
-      direction = 'asc',
-      includeSummary = false,
-    } = options;
-    const query = storedOptions(limit, cursor, direction);
-    if (typeof includeSummary !== 'boolean')
-      throw new TypeError('includeSummary must be a boolean');
     return storedTurnPage(
-      await this.#native._stored_history(
-        JSON.stringify({
-          kind: 'turns',
-          ...query,
-          include_items: includeSummary,
-        }),
-      ),
+      await this.#native._stored_history(encodeStoredTurnsRequest(options)),
     );
   }
 
@@ -14814,14 +14762,8 @@ export class Session<OutputT = string, Context = unknown> {
       direction?: 'asc' | 'desc';
     } = {},
   ): Promise<StoredItemPage> {
-    const { limit = 50, cursor, direction = 'asc', turnId } = options;
-    const query = storedOptions(limit, cursor, direction);
-    if (turnId !== undefined && (typeof turnId !== 'string' || !turnId))
-      throw new TypeError('turnId must be a nonempty string');
     return storedItemPage(
-      await this.#native._stored_history(
-        JSON.stringify({ kind: 'items', ...query, turn_id: turnId ?? null }),
-      ),
+      await this.#native._stored_history(encodeStoredItemsRequest(options)),
     );
   }
 
@@ -14832,18 +14774,9 @@ export class Session<OutputT = string, Context = unknown> {
     text: string,
     options: { limit?: number; cursor?: string } = {},
   ): Promise<StoredMatchPage> {
-    const { limit = 50, cursor } = options;
-    const query = storedOptions(limit, cursor);
-    if (typeof text !== 'string' || !text.trim())
-      throw new TypeError('Stored history search requires nonempty text');
     return storedMatchPage(
       await this.#native._stored_history(
-        JSON.stringify({
-          kind: 'search',
-          limit: query.limit,
-          cursor: query.cursor,
-          text,
-        }),
+        encodeSearchHistoryRequest(text, options),
       ),
     );
   }
@@ -15238,7 +15171,10 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Supplied compaction does not support a goal store',
         );
-      if (this.childCallbacks.entered().length || this.childContinuations.size)
+      if (
+        this.childCallbacks.entered().length ||
+        this.childCallbacks.hasPendingSettlements()
+      )
         throw new NativeError(
           'Supplied compaction requires settled child callbacks',
         );
@@ -15566,7 +15502,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('fork');
     if (this.options.providerHistory !== undefined)
       throw new NativeError('Fork is unavailable for provider-managed history');
-    if (this.graphStops.size || this.childContinuations.size)
+    if (this.graphStops.size || this.childCallbacks.hasPendingSettlements())
       throw new NativeError('fork requires a settled Session');
     return this.mutate(async () => {
       // Native ownership retains the copy even if delivery of this handle fails.
@@ -16315,10 +16251,7 @@ export class Session<OutputT = string, Context = unknown> {
       selection.operation_tools !== undefined
       ? {
           ...state,
-          managed_tool_specs: decode(
-            losslessJsonValueSchema,
-            this.catalog.specsJson,
-          ),
+          managed_tool_specs: protocolToolSpecs(this.catalog),
         }
       : state;
   }
@@ -17692,7 +17625,7 @@ export class Session<OutputT = string, Context = unknown> {
       // Native close escalates any graceful stop. Join its callback/native
       // owners before releasing the engine, without waiting before closeNative.
       await joinGraphStops();
-      await Promise.allSettled([...this.childContinuations]);
+      await this.childCallbacks.drainSettlements();
       if (phase === 'engine') {
         if (!privateRuntime(this)) {
           acknowledgmentFailure = await engineCloseFailure(

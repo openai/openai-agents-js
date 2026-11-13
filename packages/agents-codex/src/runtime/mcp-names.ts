@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 
 /** @internal Synchronous projection of the existing native catalog name owner. */
 export function projectMcpToolNames(
-  servers: readonly { name: string; tools: readonly string[] }[],
+  servers: readonly {
+    name: string;
+    tools: readonly string[];
+    toolNameOverrides?: Readonly<Record<string, string>>;
+  }[],
   prefix = true,
 ): Map<string, { namespace: string; name: string }> {
   const project = (value: string) =>
@@ -33,14 +37,20 @@ export function projectMcpToolNames(
       prefix && !projected.startsWith('mcp__')
         ? `mcp__${projected}`
         : projected;
-    return server.tools.map((raw) => ({
-      server: server.name,
-      raw,
-      namespace,
-      name: project(raw),
-      rawNamespace,
-      identity: `${rawNamespace}\0${raw}\0${raw}`,
-    }));
+    return server.tools.map((raw) => {
+      const publicName =
+        server.toolNameOverrides && Object.hasOwn(server.toolNameOverrides, raw)
+          ? server.toolNameOverrides[raw]!
+          : raw;
+      return {
+        server: server.name,
+        raw,
+        namespace,
+        name: project(publicName),
+        rawNamespace,
+        identity: `${rawNamespace}\0${publicName}\0${raw}`,
+      };
+    });
   });
   const namespaces = new Map<string, Set<string>>();
   for (const candidate of candidates) {
