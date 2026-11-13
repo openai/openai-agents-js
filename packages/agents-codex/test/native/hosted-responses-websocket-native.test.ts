@@ -305,13 +305,16 @@ it('closes the paused provider response before joining an entered native tool on
 }, 20_000);
 
 it.each([
-  [true, false],
-  [true, true],
-  [false, false],
-  [false, true],
+  [true, false, false],
+  [true, true, true],
+  [false, false, true],
+  [false, true, false],
 ])(
-  'continues a physically completed hosted response with store=%s terminal-before-rejection=%s',
-  async (store, terminalFirst) => {
+  'continues a physically completed hosted response with store=%s terminal-before-rejection=%s steer=%s',
+  async (store, terminalFirst, steer) => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const steering = 'Apply the next instruction after lookup.';
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await once(server, 'listening');
     const frames: Record<string, any>[] = [];
@@ -370,7 +373,7 @@ it.each([
           );
         } else if (frames.length === 2) {
           expect(frame.type).toBe('response.inject');
-          expect(frame.input).toHaveLength(1);
+
           const terminal = { type: 'response.completed', response: completed };
           const rejection = {
             type: 'response.inject.failed',
@@ -439,6 +442,10 @@ it.each([
       parameters: z.object({}),
       execute: async () => {
         effects++;
+        if (steer) {
+          entered.resolve();
+          await release.promise;
+        }
         return 'result';
       },
     });
@@ -448,14 +455,29 @@ it.each([
         baseUrl: 'https://example.invalid/v1',
         apiKey: 'synthetic',
       });
-      const result = await new Agent({
+      const agent = new Agent({
         provider,
         model: 'gpt-5.5',
         instructions: 'Use lookup.',
         modelSettings: { store },
         tools: [lookup],
         programmaticToolCalling: false,
-      }).run('start', { signal: AbortSignal.timeout(6000) });
+      });
+      await using session = await agent.session();
+      const turn = await session.submit('start');
+      if (steer) {
+        try {
+          await entered.promise;
+          await turn.steer(steering);
+        } finally {
+          release.resolve();
+        }
+      }
+      const result = await turn.wait();
+      expect(frames[1]?.input).toHaveLength(steer ? 2 : 1);
+      const injected = JSON.stringify(frames[1]?.input);
+      expect(injected.includes(steering)).toBe(steer);
+      expect(injected).not.toContain('"text":"start"');
       expect(result.finalOutput).toBe('done');
       expect(effects).toBe(1);
       expect(frames.map((frame) => frame.type)).toEqual([
@@ -657,12 +679,18 @@ it.each(['response.create', 'response.inject'] as const)(
 );
 
 it.each([false, true])(
-  'replays acknowledged and rejected tool outputs in nonstored history, terminal first=%s',
+  'replays acknowledged and rejected tool outputs and steering in nonstored history, terminal first=%s',
   async (terminalFirst) => {
     const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
     await once(server, 'listening');
     const frames: Record<string, any>[] = [];
     const effects: string[] = [];
+    const steps = ['one', 'two'].map((key) => ({
+      key,
+      entered: Promise.withResolvers<void>(),
+      release: Promise.withResolvers<void>(),
+    }));
+    const steering = 'Keep the next answer short.';
     const calls = ['one', 'two'].map((key) => ({
       type: 'function_call',
       id: `fc_${key}`,
@@ -744,20 +772,35 @@ it.each([false, true])(
       name: 'lookup',
       description: 'Record a synthetic result.',
       parameters: z.object({ key: z.string() }),
-      execute: ({ key }) => {
+      execute: async ({ key }) => {
         effects.push(key);
+        const step = steps.find((step) => step.key === key)!;
+        step.entered.resolve();
+        await step.release.promise;
         return `result for ${key}`;
       },
     });
     try {
       await using provider = new NativeProvider({ modelBackend: model });
-      const result = await new Agent({
+      const agent = new Agent({
         instructions: 'Use lookup.',
         tools: [lookup],
         provider,
         model: 'gpt-5.5',
         modelSettings: { store: false },
-      }).run('start');
+      });
+      await using session = await agent.session();
+      const turn = await session.submit('start');
+      try {
+        for (const step of steps) {
+          await step.entered.promise;
+          await turn.steer(steering);
+          step.release.resolve();
+        }
+      } finally {
+        for (const step of steps) step.release.resolve();
+      }
+      const result = await turn.wait();
       expect(result.finalOutput).toBe('finished');
       expect(result.runUsage.requests).toBe(2);
       expect(effects).toEqual(['one', 'two']);
@@ -767,6 +810,14 @@ it.each([false, true])(
         'response.inject',
         'response.create',
       ]);
+      const [first, second] = [frames[1]!.input, frames[2]!.input];
+      expect(first).toHaveLength(2);
+      expect(second).toHaveLength(2);
+      expect(first[1]).toMatchObject({ role: 'user', id: expect.any(String) });
+      expect(second[1]).toMatchObject({ role: 'user', id: expect.any(String) });
+      expect(second[1].id).not.toBe(first[1].id);
+      expect(JSON.stringify(first[1])).toContain(steering);
+      expect(JSON.stringify(second[1])).toContain(steering);
       expect(frames[3]!.input).toEqual([
         ...frames[0]!.input,
         calls[0],

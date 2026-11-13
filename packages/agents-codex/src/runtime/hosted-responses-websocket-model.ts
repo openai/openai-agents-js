@@ -33,6 +33,10 @@ type ActiveResponse = {
   injectionInput?: JsonObject[];
   fallbackInput?: JsonObject[];
   acknowledgedOutputs: Map<string, JsonObject>;
+  acknowledgedUserItems: Map<
+    string,
+    { afterCallId?: string; item: JsonObject }
+  >;
   template?: JsonObject;
   responseId?: string;
   pending: Set<string>;
@@ -185,6 +189,7 @@ function hostedSocket(
       lineage,
       pending: new Set(),
       acknowledgedOutputs: new Map(),
+      acknowledgedUserItems: new Map(),
       emitted,
       queued: [],
       bytes,
@@ -199,14 +204,14 @@ function hostedSocket(
   const fallback = (
     active: ActiveResponse,
     frame: JsonObject,
-    outputs: JsonObject[],
+    input: JsonObject[],
   ) => {
     const completed = object(active.terminal?.response);
     if (!completed || typeof completed.id !== 'string')
       throw new TypeError(
         'Hosted continuation requires an exact terminal response',
       );
-    const next: JsonObject = { ...frame, input: outputs };
+    const next: JsonObject = { ...frame, input };
     if (next.conversation != null) delete next.previous_response_id;
     else if (
       typeof completed.store === 'boolean'
@@ -219,6 +224,20 @@ function hostedSocket(
         ? [...active.create.input]
         : [];
       const acknowledged = new Map(active.acknowledgedOutputs);
+      const anchoredUsers = new Map<string | undefined, JsonObject[]>();
+      for (const {
+        afterCallId,
+        item,
+      } of active.acknowledgedUserItems.values()) {
+        const messages = anchoredUsers.get(afterCallId);
+        if (messages) messages.push(item);
+        else anchoredUsers.set(afterCallId, [item]);
+      }
+      const appendUsers = (afterCallId?: string) => {
+        replay.push(...(anchoredUsers.get(afterCallId) ?? []));
+        anchoredUsers.delete(afterCallId);
+      };
+      appendUsers();
       for (const item of Array.isArray(completed.output)
         ? completed.output
         : []) {
@@ -231,11 +250,17 @@ function hostedSocket(
           const result = acknowledged.get(call.call_id);
           if (result) {
             replay.push(result);
+            appendUsers(call.call_id);
             acknowledged.delete(call.call_id);
           }
         }
       }
-      next.input = [...replay, ...acknowledged.values(), ...outputs];
+      for (const [callId, result] of acknowledged) {
+        replay.push(result);
+        appendUsers(callId);
+      }
+      for (const messages of anchoredUsers.values()) replay.push(...messages);
+      next.input = [...replay, ...input];
       if (typeof active.create.previous_response_id === 'string')
         next.previous_response_id = active.create.previous_response_id;
       else delete next.previous_response_id;
@@ -263,13 +288,32 @@ function hostedSocket(
             .map(object)
             .filter((item): item is JsonObject => Boolean(item))
         : [];
-      const outputs = input.filter(
-        (item) =>
-          item.type === 'function_call_output' &&
-          typeof item.call_id === 'string' &&
-          active.pending.has(item.call_id),
+      const originalUserIds = new Set(
+        Array.isArray(active.create.input)
+          ? active.create.input
+              .map(object)
+              .filter((item) => item?.role === 'user')
+              .map((item) => item?.id)
+          : [],
       );
-      const ids = new Set(outputs.map((item) => item.call_id as string));
+      const continuationInput = input.filter((item) => {
+        if (item.type === 'function_call_output')
+          return (
+            typeof item.call_id === 'string' && active.pending.has(item.call_id)
+          );
+        return (
+          item.type === 'message' &&
+          item.role === 'user' &&
+          typeof item.id === 'string' &&
+          !originalUserIds.has(item.id) &&
+          !active.acknowledgedUserItems.has(item.id)
+        );
+      });
+      const ids = new Set(
+        continuationInput
+          .filter((item) => item.type === 'function_call_output')
+          .map((item) => item.call_id as string),
+      );
       if (
         !active.responseId ||
         !ids.size ||
@@ -279,17 +323,17 @@ function hostedSocket(
           'Hosted response requires the matching local function outputs',
         );
       if (active.terminal) {
-        fallback(active, frame, outputs);
+        fallback(active, frame, continuationInput);
         return;
       }
       request().signal?.throwIfAborted();
-      active.bytes += Buffer.byteLength(JSON.stringify(outputs));
+      active.bytes += Buffer.byteLength(JSON.stringify(continuationInput));
       if (active.bytes > maxResponseBytes)
         throw new RangeError(
           'Hosted response exceeds the native retained-byte limit',
         );
       active.continuation = frame;
-      active.injectionInput = outputs;
+      active.injectionInput = continuationInput;
       active.injecting = ids;
       accountProviderRequest(request(), {
         operation: 'dispatch',
@@ -298,7 +342,7 @@ function hostedSocket(
       socket.send({
         type: 'response.inject',
         response_id: active.responseId,
-        input: outputs,
+        input: continuationInput,
       } as unknown as Parameters<ResponsesSocket['send']>[0]);
     },
     async *[Symbol.asyncIterator]() {
@@ -347,11 +391,21 @@ function hostedSocket(
             }
           } else if (event.type === 'response.inject.created') {
             if (active.injecting) {
-              for (const result of active.injectionInput ?? [])
-                active.acknowledgedOutputs.set(
-                  result.call_id as string,
-                  result,
-                );
+              let afterCallId: string | undefined;
+              for (const item of active.injectionInput ?? []) {
+                if (
+                  item.type === 'function_call_output' &&
+                  typeof item.call_id === 'string'
+                ) {
+                  afterCallId = item.call_id;
+                  active.acknowledgedOutputs.set(afterCallId, item);
+                } else if (typeof item.id === 'string') {
+                  active.acknowledgedUserItems.set(item.id, {
+                    afterCallId,
+                    item,
+                  });
+                }
+              }
               for (const id of active.injecting) active.pending.delete(id);
               active.injectionInput = undefined;
               active.injecting = undefined;
