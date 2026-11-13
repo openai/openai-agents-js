@@ -267,14 +267,11 @@ pub fn build(
         });
         builder.thread_lifecycle_contributor(web.clone());
         builder.config_contributor(web);
-        for contributor in media_registry.tool_contributors() {
-            builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
-                Arc::new(crate::canonical_rules::AccessContributor(
-                    contributor.clone(),
-                )),
-                crate::native_interception::DirectOutput::ResponseBody,
-            )));
-        }
+        install_audited_tools(
+            &mut builder,
+            &media_registry,
+            crate::native_interception::DirectOutput::ResponseBody,
+        );
         // Image generation owns both real filesystem access and a typed result body.
         let mut image_registry = ExtensionRegistryBuilder::with_event_sink(builder.event_sink());
         codex_image_generation_extension::install(&mut image_registry, auth, |_: &Config| None);
@@ -287,14 +284,11 @@ pub fn build(
         });
         builder.thread_lifecycle_contributor(image.clone());
         builder.config_contributor(image);
-        for contributor in image_registry.tool_contributors() {
-            builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
-                Arc::new(crate::canonical_rules::AccessContributor(
-                    contributor.clone(),
-                )),
-                crate::native_interception::DirectOutput::ResponseBody,
-            )));
-        }
+        install_audited_tools(
+            &mut builder,
+            &image_registry,
+            crate::native_interception::DirectOutput::ResponseBody,
+        );
     }
     let skills = codex_skills_extension::SkillProviders::new().with_executor_provider(Arc::new(
         codex_skills_extension::ExecutorSkillProvider::new_with_restriction_product(
@@ -467,6 +461,14 @@ fn install_audited_extensions(
     for contributor in installed.skill_invocation_contributors() {
         builder.skill_invocation_contributor(contributor.clone());
     }
+    install_audited_tools(builder, &installed, output);
+}
+
+fn install_audited_tools(
+    builder: &mut ExtensionRegistryBuilder<Config>,
+    installed: &ExtensionRegistry<Config>,
+    output: crate::native_interception::DirectOutput,
+) {
     for contributor in installed.tool_contributors() {
         builder.tool_contributor(Arc::new(crate::native_interception::DirectContributor(
             Arc::new(crate::canonical_rules::AccessContributor(
