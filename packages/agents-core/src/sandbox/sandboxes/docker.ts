@@ -515,6 +515,24 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     const target = this.resolveContainerFilesystemPath(path, {
       forWrite: true,
     });
+    const anchor = [
+      this.state.manifest.root,
+      ...this.mountedPathGrants
+        .filter((grant) => !grant.readOnly)
+        .map((grant) => grant.path),
+      ...this.state.manifest
+        .mountTargets()
+        .filter(({ entry }) => entry.readOnly === false)
+        .map(({ logicalPath, entry }) =>
+          resolveDockerMountPath(this.state.manifest.root, logicalPath, entry),
+        ),
+    ]
+      .filter((root) => target !== root && pathWithinDockerMount(target, root))
+      .sort((left, right) => right.length - left.length)[0];
+    if (!anchor)
+      throw new UserError(
+        'Exclusive Docker writes require a file below a writable root.',
+      );
     const args = ['exec', '-i', '-w', '/'];
     const user = runAs ?? this.state.defaultUser;
     if (user) args.push('-u', user);
@@ -530,6 +548,7 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     const request = JSON.stringify({
       operation: 'fs/createFileExclusive',
       params: {
+        anchor: pathToFileURL(anchor).href,
         path: pathToFileURL(target).href,
         dataBase64: Buffer.from(
           typeof entry.content === 'string'

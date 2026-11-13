@@ -1170,8 +1170,8 @@
     },
     {
       "path": "sdk-exclusive-workspace-file.patch",
-      "sha256": "ae8f67ef4c114dbac17ec4f7221605a8228a7cf91044edc8aaab89e6b8071364"
+      "sha256": "e0c797692c8f3efd843ea00f6148f7e8121dcdee02766682fbb18a7ff03a4938"
     }
   ],
-  "result_tree": "6c8154e76b28494062ac07fd3a4382e293503bfd"
+  "result_tree": "224d569282caf4c386909f80ab8666b69dfc437b"
 }

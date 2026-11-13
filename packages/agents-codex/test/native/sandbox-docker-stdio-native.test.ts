@@ -65,6 +65,10 @@ class RawSandboxCapability implements SandboxCapability {
             path: '/workspace/exclusive.txt',
             entry: { type: 'file', content: 'first content' },
           });
+          await createWorkspaceFileNoFollow(resource, {
+            path: '/workspace/generated/nested/config.txt',
+            entry: { type: 'file', content: 'nested content' },
+          });
           const prepared = await resource.exec!({
             cmd: 'mkdir /workspace/other; ln -s /workspace/other /workspace/link; mkfifo /workspace/existing-fifo; ln -s /workspace/other/missing /workspace/existing-link',
             login: false,
@@ -72,7 +76,7 @@ class RawSandboxCapability implements SandboxCapability {
           expect(prepared.exitCode).toBe(0);
           for (const path of [
             '/workspace/exclusive.txt',
-            '/workspace/link/unexpected',
+            '/workspace/link/nested/unexpected',
             '/workspace/existing-fifo',
             '/workspace/existing-link',
           ]) {
@@ -84,7 +88,7 @@ class RawSandboxCapability implements SandboxCapability {
             ).rejects.toThrow('exclusively');
           }
           const result = await resource.exec!({
-            cmd: 'set -e; test "$(cat /workspace/exclusive.txt)" = "first content"; test ! -e /workspace/other/unexpected; test ! -e /workspace/other/missing; cat /tools/marker.txt; pwd; printf retained > /data-write/output.txt; if (printf unsafe > /tools/denied.txt) 2>/dev/null; then exit 33; fi; printf "protected read-only mount"',
+            cmd: 'set -e; test "$(cat /workspace/exclusive.txt)" = "first content"; test "$(cat /workspace/generated/nested/config.txt)" = "nested content"; test ! -e /workspace/other/nested; test ! -e /workspace/other/missing; cat /tools/marker.txt; pwd; printf retained > /data-write/output.txt; if (printf unsafe > /tools/denied.txt) 2>/dev/null; then exit 33; fi; printf "protected read-only mount"',
             login: false,
           });
           if (result.exitCode !== 0) throw new Error(result.output);
