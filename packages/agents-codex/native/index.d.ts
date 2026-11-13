@@ -182,6 +182,11 @@ export class NativeThread {
     keep: number,
     itemsJson: string,
   ): Promise<string>;
+  _append_recovered_output(
+    expectedRevision: string,
+    messageId: string,
+    text: string,
+  ): Promise<string>;
   _pop_history(
     expectedRevision: string,
     allowRebuild: boolean,

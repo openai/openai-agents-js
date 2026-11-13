@@ -3154,7 +3154,6 @@ export class Session<OutputT = string, Context = unknown> {
       output: PreparedOutput;
       profile: string | undefined;
       revision: string;
-      total: number;
     }
   >();
   private openingCatalog: ToolCatalog;
@@ -15555,7 +15554,6 @@ export class Session<OutputT = string, Context = unknown> {
       this.recoveryOwners.set(details, {
         ...recoveryOwner,
         revision: canonical.revision,
-        total: canonical.total,
       });
     return Object.freeze(details);
   }
@@ -15673,12 +15671,16 @@ export class Session<OutputT = string, Context = unknown> {
         role: 'assistant',
         content: [{ type: 'output_text', text }],
       };
-      await this.transactHistory({
-        expectedRevision: owner.revision,
-        keep: owner.total,
-        items: [item],
+      await this.mutate(async () => {
+        this.historyMutationValue(
+          await this.#native._append_recovered_output(
+            owner.revision,
+            item.id,
+            text,
+          ),
+        );
       });
-      // transactHistory acknowledges these exact original JSON records.
+      // The private typed append acknowledges this exact assistant record.
       const projected = projectHistory(
         [
           { type: 'turn_context', payload: { turn_id: root.id } },

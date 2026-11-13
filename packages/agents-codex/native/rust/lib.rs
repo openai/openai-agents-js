@@ -3429,13 +3429,24 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_reply_handoff_input")]
-    pub fn _reply_handoff_input(&self, response_json:String) -> napi::Result<()> {
-        if response_json.len() > 8 * 1024 * 1024 { return Err(input_error("Handoff input exceeds 8 MiB")); }
+    pub fn _reply_handoff_input(&self, response_json: String) -> napi::Result<()> {
+        if response_json.len() > 8 * 1024 * 1024 {
+            return Err(input_error("Handoff input exceeds 8 MiB"));
+        }
         let inner = self.current()?;
-        let response:python_tools::handoff_inputs::Reply = serde_json::from_str(&response_json).map_err(input_error)?;
-        let tools = inner.thread.thread_extension_data().get::<python_tools::PythonTools>()
+        let response: python_tools::handoff_inputs::Reply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
             .ok_or_else(|| input_error("Handoff input requires a managed Session"))?;
-        let owner = tools.exact_owner(&inner.id.to_string(), &response.owner.thread, &response.owner.instance)
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
             .ok_or_else(|| input_error("Expired handoff input owner"))?;
         owner.reply_handoff_input(response).map_err(input_error)
     }
@@ -3827,9 +3838,10 @@ impl NativeThread {
             .configured_child_executor_tools(&key)
             .map_err(native_error)?;
         let restored = owner.check_restored_manual(&key.reply.thread, &key).is_ok();
-        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
-            .await
-            .map_err(native_error)?;
+        let mut policy =
+            environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
+                .await
+                .map_err(native_error)?;
         owner
             .check_pending(&key.reply.thread, &key)
             .map_err(native_error)?;
@@ -4904,6 +4916,21 @@ impl NativeThread {
         let value = canonical_history::replace(&inner, expected_revision, keep as usize, items)
             .await
             .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_append_recovered_output")]
+    pub async fn append_recovered_output(
+        &self,
+        expected_revision: String,
+        message_id: String,
+        text: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value =
+            canonical_history::append_recovered_output(&inner, expected_revision, message_id, text)
+                .await
+                .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
