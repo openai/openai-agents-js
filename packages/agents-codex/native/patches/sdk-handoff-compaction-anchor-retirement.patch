@@ -1,0 +1,151 @@
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -32,7 +32,20 @@
+
+ /// The original native publication remains the projection boundary after idle updates.
+ #[derive(Clone)]
+-struct HandoffPresentationAnchor(ResponseItem);
++struct HandoffPresentationAnchor(ResponseItem, Arc<std::sync::atomic::AtomicBool>);
++
++impl HandoffPresentationAnchor {
++    fn new(item: ResponseItem) -> Self {
++        Self(item, Arc::new(std::sync::atomic::AtomicBool::new(true)))
++    }
++}
++
++pub(super) fn handoff_presentation_is_live(profile: &AgentProfile) -> bool {
++    profile
++        .data
++        .get::<HandoffPresentationAnchor>()
++        .is_none_or(|anchor| anchor.1.load(std::sync::atomic::Ordering::Acquire))
++}
+
+ pub(super) fn handoff_presentation_anchor(profile: &AgentProfile) -> ResponseItem {
+     profile
+@@ -126,6 +139,10 @@
+     {
+         return Arc::clone(captured);
+     }
++    if let Some(anchor) = captured.profile.data.get::<HandoffPresentationAnchor>() {
++        // Already captured steps share this token; none may keep applying the retired view.
++        anchor.1.store(false, std::sync::atomic::Ordering::Release);
++    }
+     let mut profile = captured.profile.as_ref().clone();
+     profile.data.remove::<AgentProfileHandoffPresentation>();
+     profile.data.remove::<HandoffPresentationAnchor>();
+@@ -151,13 +168,20 @@
+             if matches!(
+                 checkpoint.sdk_originals.as_ref(),
+                 Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Replace(_))
+-            ) && let Some(replacement) = checkpoint.replacement_history.as_ref()
++            ) || (matches!(
++                checkpoint.sdk_originals.as_ref(),
++                Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Preserve)
++            ) && checkpoint.window_number.is_some()
++                && checkpoint.window_id.is_some())
++            {
++                if let Some(replacement) = checkpoint.replacement_history.as_ref()
+                 && let Some(profile) = latest.as_mut()
+                 && let Some(anchor) = profile.presentation_anchor
+                 && !retains_publication(replacement, anchor)
+             {
+                 profile.record.presentation = None;
+                 profile.presentation_anchor = None;
++                }
+             }
+             continue;
+         }
+@@ -583,7 +607,9 @@
+                     let mut restored_target = (*target).clone();
+                     restored_target.data.insert(presentation);
+                     if let Some(anchor) = presentation_anchor {
+-                        restored_target.data.insert(HandoffPresentationAnchor(anchor.clone()));
++                        restored_target
++                            .data
++                            .insert(HandoffPresentationAnchor::new(anchor.clone()));
+                     }
+                     Arc::new(restored_target)
+                 } else {
+@@ -678,7 +704,7 @@
+             if let Some(anchor) = inherited {
+                 Arc::make_mut(&mut target)
+                     .data
+-                    .insert(HandoffPresentationAnchor(anchor.clone()));
++                    .insert(HandoffPresentationAnchor::new(anchor.clone()));
+             } else if !expected_transfer {
+                 return Err(invalid("Handoff presentation differs from committed destination"));
+             }
+@@ -934,7 +960,12 @@
+         let mut input = values(&items[..frontier.root_count])?;
+         let mut previous = values(&items[frontier.root_count..frontier.sample_count])?;
+         if let Some(source) = source {
+-            if let Some(presentation) = source.profile.data.get::<AgentProfileHandoffPresentation>() {
++            if let Some(presentation) = source
++                .profile
++                .data
++                .get::<AgentProfileHandoffPresentation>()
++                .filter(|_| handoff_presentation_is_live(&source.profile))
++            {
+                 let publication = handoff_presentation_anchor(&source.profile);
+                 let publication = &publication;
+                 let anchors: Vec<_> = items.iter().enumerate().filter_map(|(index,item)|
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -4727,6 +4727,7 @@
+             },
+             None => commit_locks.await,
+         };
++        let compaction_profile = state.session_configuration.agent_profile.clone();
+         let (compacted_item, window_number, window_ids, reviewer_compaction_hash) = {
+             let mut state = state;
+             let mcp_resource_origins = self.services.mcp_runtime.resource_origin_checkpoint();
+@@ -4902,6 +4903,37 @@
+             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+             state.history.set_world_state_baseline(world_state_baseline);
+         }
++        // A native compaction, including its no-output branch, must be durable
++        // before a current profile or a captured step loses its admitted view.
++        if !persisted {
++            return Err(CodexErr::Fatal(
++                "Canonical compaction commit outcome is uncertain".into(),
++            ));
++        }
++        if registered_turn.is_none() {
++            self.flush_rollout().await.map_err(|_| {
++                CodexErr::Fatal("Canonical compaction commit outcome is uncertain".into())
++            })?;
++        }
++        if let Some(expected) = compaction_profile {
++            let replacement = rollout_items
++                .iter()
++                .find_map(|record| match record {
++                    RolloutItem::Compacted(checkpoint) => checkpoint.replacement_history.as_deref(),
++                    _ => None,
++                })
++                .expect("Native compaction has a replacement");
++            let mut state = self.state.lock().await;
++            if let Some(current) = state.session_configuration.agent_profile.as_ref()
++                && current.receipt == expected.receipt
++                && super::agent_profile::handoff_presentation_anchor(&current.profile)
++                    == super::agent_profile::handoff_presentation_anchor(&expected.profile)
++            {
++                state.session_configuration.agent_profile = Some(
++                    super::agent_profile::profile_after_history_replacement(current, replacement),
++                );
++            }
++        }
+         if persisted && let Some(revision) = mcp_revision {
+             self.services
+                 .executed_tool_calls
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2271,6 +2271,9 @@
+                         .profile
+                         .data
+                         .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                        .filter(|_| {
++                            super::agent_profile::handoff_presentation_is_live(&profile.profile)
++                        })
+                         .map(|presentation| (profile, presentation))
+                 })
+                 .map(|(profile, presentation)| {

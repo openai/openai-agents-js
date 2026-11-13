@@ -687,6 +687,7 @@ pub(crate) fn publish_mcp_metadata(
 }
 
 struct LastCompletion {
+    provider_id: String,
     response_id: String,
     model: String,
     output: Vec<ResponseItem>,
@@ -3600,9 +3601,10 @@ impl ModelRequestContributor for Boundary {
                 .lock()
                 .expect("command admission poisoned")
         });
-        if control.sentinel_provider.get().is_some() {
+        if let Some((root_provider, _)) = control.sentinel_provider.get() {
             let ticket = Arc::new(SentinelTicket {
                 attempts: input.attempts.clone(),
+                provider_id: input.sdk_profile_provider_id.unwrap_or(root_provider).into(),
                 nonce: codex_protocol::ThreadId::new().to_string(),
                 kind: input.kind,
                 model: input.model.to_owned(),
@@ -3670,6 +3672,7 @@ impl ModelRequestContributor for Boundary {
 }
 
 struct SentinelTicket {
+    provider_id: String,
     attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
     nonce: String,
     kind: ModelRequestKind,
@@ -3887,6 +3890,7 @@ impl ModelResponseInterceptor for SentinelRequest {
                                 .is_some_and(|now| Arc::ptr_eq(now, &guard.ticket))
                         {
                             request.completion = Some(LastCompletion {
+                                provider_id: guard.ticket.provider_id.clone(),
                                 response_id: response_id.clone(),
                                 model: guard.ticket.model.clone(),
                                 output: items,
@@ -3933,12 +3937,12 @@ pub(crate) async fn sentinel_admit(
         .request
         .clone()
         .context("No live sentinel request")?;
-    let (selected, content_item_kinds) = control
+    let (_, content_item_kinds) = control
         .sentinel_provider
         .get()
         .context("No routed provider")?;
     ensure!(
-        ticket.nonce == nonce && selected == provider_id,
+        ticket.nonce == nonce && ticket.provider_id == provider_id,
         "Invalid sentinel owner"
     );
     if ticket.kind == ModelRequestKind::Generation {
@@ -4010,7 +4014,7 @@ pub(crate) async fn sentinel_admit(
     );
     ticket.admitted.store(true, Ordering::Release);
     let completion = if ticket.kind == ModelRequestKind::Generation {
-        current.completion.take()
+        current.completion.take().filter(|last| last.provider_id == provider_id)
     } else {
         None
     };
@@ -4099,10 +4103,7 @@ pub(crate) async fn sentinel_restore_schemas(
         !control.stopped.is_cancelled()
             && ticket.nonce == nonce
             && ticket.admitted.load(Ordering::Acquire)
-            && control
-                .sentinel_provider
-                .get()
-                .is_some_and(|(id, _)| id == provider_id)
+            && ticket.provider_id == provider_id
             && ticket
                 .owner
                 .as_ref()
@@ -4149,10 +4150,7 @@ pub(crate) fn sentinel_http_turn(
     ensure!(
         ticket.nonce == nonce
             && ticket.admitted.load(Ordering::Acquire)
-            && control
-                .sentinel_provider
-                .get()
-                .is_some_and(|(selected, _)| selected == provider_id),
+            && ticket.provider_id == provider_id,
         "Sentinel request retired"
     );
     let settlement = ticket
@@ -4182,10 +4180,6 @@ pub(crate) fn sentinel_failed(
         .as_str()
         .context("Missing sentinel ticket")?;
     let control = sentinel_control(engine, id)?;
-    let (selected, _) = control
-        .sentinel_provider
-        .get()
-        .context("No routed provider")?;
     let state = control
         .channel
         .state
@@ -4204,7 +4198,7 @@ pub(crate) fn sentinel_failed(
         .as_ref()
         .context("No live sentinel request")?;
     ensure!(
-        selected == provider_id
+        ticket.provider_id == provider_id
             && ticket.nonce == nonce
             && ticket.admitted.load(Ordering::Acquire)
             && !control.stopped.is_cancelled()
@@ -8169,6 +8163,7 @@ mod tests {
                     client_metadata,
                     model: "test-model",
                     provider_managed_history: false,
+                    sdk_profile_provider_id: None,
                     model_omitted: false,
                 })
                 .unwrap()
@@ -8220,6 +8215,7 @@ mod tests {
                 .then(|| direct_request(control.clone(), "turn").owner);
             *control.direct_turn.lock().unwrap() = owner.clone();
             let ticket = Arc::new(SentinelTicket {
+                provider_id: "fixture".into(),
                 attempts: None,
                 nonce: "ticket".into(),
                 kind,
@@ -8295,6 +8291,7 @@ mod tests {
                     control: control.clone(),
                     tool_admission: None,
                     ticket: Arc::new(SentinelTicket {
+                        provider_id: "fixture".into(),
                         attempts: None,
                         nonce: "ticket".into(),
                         kind: ModelRequestKind::Generation,

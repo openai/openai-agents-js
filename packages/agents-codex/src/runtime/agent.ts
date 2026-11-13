@@ -1,3 +1,4 @@
+import type { RunErrorHandler } from './run-error-recovery';
 import { configuredAgentTool } from './agent-tool';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import { managedWorkspaceRestore } from './managed-workspace';
@@ -13,7 +14,11 @@ import { captureTraceContext } from './trace-context';
 import { networkPolicyDigest } from './network-policy';
 import { localRecoveryRequired } from './local-recovery';
 import { hostedMcpConfigurations } from './hosted-mcp-binding';
-import { assertCheckpointNetworkPolicy } from './state';
+import {
+  captureSessionState,
+  hasSessionStateAuthority,
+  assertCheckpointNetworkPolicy,
+} from './state';
 import {
   assertCheckpointSelections,
   checkpointResourceServers,
@@ -119,7 +124,11 @@ export async function openSession(
         throw new TypeError(
           'Use null input to resume a pending manual checkpoint',
         );
-      if (!options.onInteraction) throw new InteractionRequired(saved);
+      if (!options.onInteraction) {
+        if (options.state && hasSessionStateAuthority(options.state))
+          captureSessionState(saved);
+        throw new InteractionRequired(saved);
+      }
     } else if (oneShot.input == null) {
       throw new TypeError(
         'Input is required unless resuming a pending manual checkpoint',
@@ -389,7 +398,7 @@ export async function openSession(
     }
     await releaseEnvironmentBeforeProvider(
       options.environmentOwner,
-      lease.release,
+      options.onClose ?? lease.release,
     );
     if (completedFailure) throw completedFailure;
   });
@@ -521,6 +530,8 @@ export async function openSession(
             );
     }
   }
+  if (saved && options.state && hasSessionStateAuthority(options.state))
+    captureSessionState(saved);
   const session = new Session(
     engine,
     thread,
@@ -566,6 +577,8 @@ interface OwnedRunOptions {
   toolNotFoundBehavior?: 'raise_error' | 'return_error_to_model';
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
+  errorHandler?: RunErrorHandler<any, any>;
+  captureErrorDetails?: boolean;
   inputStoragePolicy?: CapturedInputStoragePolicy;
   returnState?: boolean;
   returnHistory?: boolean;
@@ -664,13 +677,26 @@ async function completeOwnedSession<Output>(
   const result = await pending.catch(async (error) => {
     let primary = originalFailure(error);
     if (options.errorInput !== undefined && !options.signal?.aborted) {
+      let details;
       try {
-        const details = await session._captureRunErrorDetails(
-          options.errorInput,
-        );
-        if (details) primary = new RunDiagnosticError(details, primary);
+        details = await session._captureRunErrorDetails(options.errorInput);
       } catch {
         // Preserve the original failure when evidence capture throws.
+      }
+      try {
+        if (details && options.errorHandler) {
+          const recovered = await session._recoverOneShot(
+            primary,
+            details,
+            options.errorHandler,
+            options.signal,
+          );
+          if (recovered) return recovered;
+        }
+        if (details && options.captureErrorDetails)
+          primary = new RunDiagnosticError(details, primary);
+      } catch (recoveryError) {
+        primary = recoveryError;
       }
     }
     try {
@@ -704,7 +730,11 @@ async function completeOwnedSession<Output>(
               ? { rawUsage: session._takeRawUsage(result.turn.turnId) }
               : {}),
             ...(options.returnItems
-              ? { items: session._takeProducedItems(result.turn.turnId) }
+              ? {
+                  items:
+                    result.items ??
+                    session._takeProducedItems(result.turn.turnId),
+                }
               : {}),
           })
         : result;

@@ -2482,7 +2482,7 @@ describe('OpenAIResponsesWSModel', () => {
     TestWebSocket.onCreate = (socket) => {
       socketCreateCount += 1;
       if (socketCreateCount === 2) {
-        socket.readyState = -1;
+        queueMicrotask(() => socket.close());
         return;
       }
       socket.onSend(() => {
@@ -2516,11 +2516,6 @@ describe('OpenAIResponsesWSModel', () => {
     };
 
     await (model as any)._fetchResponse(request as any, false);
-    (fakeClient as any).timeout = 25;
-    (fakeClient as any)._options = {
-      ...((fakeClient as any)._options ?? {}),
-      timeout: 25,
-    };
     const firstSocket = TestWebSocket.instances[0]!;
     firstSocket.send = (() => {
       firstSocket.close();
@@ -2545,6 +2540,7 @@ describe('OpenAIResponsesWSModel', () => {
       replaySafety: 'safe',
     });
     expect(TestWebSocket.instances).toHaveLength(2);
+    expect(TestWebSocket.instances[0]?.sent).toHaveLength(1);
     expect(TestWebSocket.instances[1]?.sent).toHaveLength(0);
   });
 

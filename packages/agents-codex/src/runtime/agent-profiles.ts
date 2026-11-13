@@ -12,7 +12,7 @@ import { HttpMCP, StdioMCP, mcpConfig, mcpPolicies, type McpTool } from './mcp';
 import { splitToolDeclarations } from './tool-declarations';
 import { prepareOutput, type PreparedOutput } from './output';
 import type { Environment } from './environment';
-import type { JsonObject } from './binding';
+import { binding, encode, type JsonObject } from './binding';
 import { modelOverrides } from './provider';
 
 /** Immutable declarations and original identities for one native roster. */
@@ -30,6 +30,7 @@ export interface CapturedAgentProfile<Context, Output> {
   >;
   readonly callbackTools?: readonly import('./tools').FunctionTool<Context>[];
   readonly hostedPromptControls?: JsonObject;
+  readonly nativeProviderId?: string;
 }
 
 export interface AgentProfileRuntime {
@@ -46,6 +47,7 @@ export interface CapturedAgentGraph {
   /** Owning-turn declaration supplying an explicit suspended operation ceiling. */
   readonly operationSource?: AgentProfileReceipt;
   readonly profiles: ReadonlyMap<string, AgentProfileRuntime>;
+  readonly usesProfileOutputGuidance: boolean;
   readonly roster: readonly JsonObject[];
 }
 export interface AgentProfileReceipt {
@@ -153,6 +155,84 @@ export function encodeProfileReceipt(receipt: AgentProfileReceipt): string {
   });
 }
 
+/** Require current declared content or independent authority before hiding saved instructions. */
+export async function assertRestoredInstructionContent<Context, Output>(
+  history: readonly JsonObject[],
+  profiles: readonly CapturedAgentProfile<Context, Output>[],
+  rootInstructions: string,
+): Promise<void> {
+  const expected = new Map(
+    profiles.map((profile, index) => [
+      profile.id,
+      index === 0 ? rootInstructions : (profile.declaration.instructions ?? ''),
+    ]),
+  );
+  const native = await binding();
+  const publications = new Map<string, JsonObject>();
+  const projections: JsonObject[] = [];
+  const unauthorized =
+    'Restoring changed Agent instructions requires authenticated SessionState';
+  for (const row of history) {
+    if (row.type !== 'response_item') continue;
+    const payload = row.payload as JsonObject | undefined;
+    const metadata = row.metadata as JsonObject | undefined;
+    const kinds = (
+      payload?.internal_chat_message_metadata_passthrough as
+        JsonObject | undefined
+    )?.content_item_kinds;
+    const hidden =
+      payload?.role === 'developer' &&
+      metadata?.client_authored !== true &&
+      Array.isArray(kinds) &&
+      kinds.length > 0 &&
+      Array.isArray(payload.content) &&
+      kinds.length === payload.content.length &&
+      kinds.every(
+        (kind) =>
+          kind === 'sdk_application.accepted' ||
+          kind === 'sdk_application.instructions',
+      );
+    if (hidden && kinds.includes('sdk_application.instructions'))
+      projections.push(row);
+    const receipt = metadata?.sdk_agent_profile as JsonObject | undefined;
+    if (receipt == null) {
+      if (hidden && kinds.includes('sdk_application.accepted'))
+        throw new TypeError(unauthorized);
+      continue;
+    }
+    const declared =
+      typeof receipt.profile_id === 'string'
+        ? expected.get(receipt.profile_id)
+        : undefined;
+    // Reuse the native receipt decoder, including its tag and revision checks.
+    const saved = native._read_session_instructions(encode([row]));
+    const revision = (row.payload as JsonObject | undefined)?.id;
+    // Native SDK revisions use an opaque UUID. Other text in this model-visible
+    // header requires the same explicit authority as changed instructions.
+    const canonicalRevision =
+      typeof revision === 'string' &&
+      /^msg_sdk_application_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
+        revision,
+      );
+    if (declared === undefined || saved !== declared || !canonicalRevision)
+      throw new TypeError(unauthorized);
+    const content = payload!.content as JsonObject[];
+    publications.set(content[0].text as string, row);
+  }
+  // A model-only projection needs its exact declaration-validated publication.
+  // Index the rendered body, then let the native decoder validate the pair.
+  for (const row of projections) {
+    const content = (row.payload as JsonObject).content as JsonObject[];
+    const owners = new Set<JsonObject>();
+    for (const part of content) {
+      const publication = publications.get(part.text as string);
+      if (!publication) throw new TypeError(unauthorized);
+      owners.add(publication);
+    }
+    native._read_session_instructions(encode([...owners, row]));
+  }
+}
+
 /** Capture callbacks and schemas before opening resources; Core owns activation. */
 export function captureProfileRuntimes(
   profiles: readonly CapturedAgentProfile<any, any>[],
@@ -168,6 +248,23 @@ export function captureProfileRuntimes(
   const usesHostedPrompts = profiles.some(
     (profile) => profile.hostedPromptControls !== undefined,
   );
+  const outputs = profiles.map(({ declaration }) =>
+    prepareOutput(declaration.outputType),
+  );
+  const usesProfileSchemas =
+    outputs.some((output) => output.schema !== undefined) &&
+    outputs.some(
+      (output) => !isDeepStrictEqual(output.schema, outputs[0].schema),
+    );
+  const usesDistinctProfileOutputGuidance = outputs.some(
+    (output) => output.prompt !== outputs[0].prompt,
+  );
+  const usesProfileOutputGuidance =
+    outputs.some((output) => output.prompt !== undefined) &&
+    (usesDistinctProfileOutputGuidance ||
+      profiles.some(
+        ({ declaration }) => declaration.prepareHandoffInput !== undefined,
+      ));
   const roster: JsonObject[] = [];
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
@@ -186,7 +283,7 @@ export function captureProfileRuntimes(
             ])
           : rootCatalog
         : captureTools(tools);
-    const output = prepareOutput(declaration.outputType);
+    const output = outputs[index];
     const instructions =
       index === 0 ? rootInstructions : (declaration.instructions ?? '');
     const model = modelOverrides(
@@ -217,6 +314,9 @@ export function captureProfileRuntimes(
     );
     roster.push({
       id: profile.id,
+      ...(profile.nativeProviderId === undefined
+        ? {}
+        : { native_provider_id: profile.nativeProviderId }),
       model: {
         model: model.model ?? '',
         reasoning_effort: model.effort ?? null,
@@ -272,6 +372,16 @@ export function captureProfileRuntimes(
         (guard) => guard.childCallback !== undefined,
       ),
       output_fingerprint: output.identity.fingerprint,
+      ...(usesProfileSchemas
+        ? output.schema === undefined
+          ? { wire_output_plain: true }
+          : { wire_output_schema: output.schema }
+        : {}),
+      ...(usesProfileOutputGuidance && output.prompt !== undefined
+        ? usesDistinctProfileOutputGuidance
+          ? { wire_output_guidance: output.prompt }
+          : { runtime_output_guidance: output.prompt }
+        : {}),
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
       mcp_result_tools: policies.servers,
       mcp_metadata_tools: policies.metadata_servers,
@@ -295,6 +405,7 @@ export function captureProfileRuntimes(
     rootId: profiles[0].id,
     profiles: captured,
     roster: Object.freeze(roster),
+    usesProfileOutputGuidance,
   });
 }
 

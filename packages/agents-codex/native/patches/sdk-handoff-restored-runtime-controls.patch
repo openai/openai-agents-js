@@ -1,0 +1,38 @@
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index a6c7e25a..8d010d6e 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -565,10 +565,6 @@ impl Session {
+                     }
+                     target
+                 };
+-                let profile = Arc::new(CapturedAgentProfile {
+-                    receipt: receipt.clone(),
+-                    profile: target,
+-                });
+                 let latest = saved
+                     .items
+                     .iter()
+@@ -595,7 +591,21 @@ impl Session {
+                         "Restored Agent effective settings differ from canonical history",
+                     ));
+                 }
+-                // Core already restored the effective settings, including explicit idle overrides.
++                // Keep the published model for the admission check above. The live
++                // profile must use the controls already rebound during thread restore.
++                let mut target = target;
++                let model = &mut Arc::make_mut(&mut target).model;
++                model.invocation_timeout_ms = effective.invocation_timeout_ms;
++                model
++                    .request_controls
++                    .retry
++                    .clone_from(&effective.request_controls.retry);
++                model.request_controls.attempt_timeout_ms =
++                    effective.request_controls.attempt_timeout_ms;
++                let profile = Arc::new(CapturedAgentProfile {
++                    receipt: receipt.clone(),
++                    profile: target,
++                });
+                 let mut state = self.state.lock().await;
+                 state.session_configuration.agent_profile = Some(profile);
+                 return Ok(receipt);

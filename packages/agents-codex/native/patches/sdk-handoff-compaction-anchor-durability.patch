@@ -1,0 +1,90 @@
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 5cfabeefbddfd949f4edbe72bd378faba8abbd8e..8d6a65c2f330f7a0e682fadcb0ceca523f958331 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -170,7 +170,9 @@ fn persisted_profile(items: &[RolloutItem]) -> CodexResult<Option<RestoredProfil
+                 Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Replace(_))
+             ) || (matches!(
+                 checkpoint.sdk_originals.as_ref(),
+-                Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Preserve)
++                Some(codex_history::sdk_originals::SdkOriginalHistoryCheckpoint::Preserve {
++                    preserve: true
++                })
+             ) && checkpoint.window_number.is_some()
+                 && checkpoint.window_id.is_some())
+             {
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index a9893b45a94384a6547251045d41fb55794ef1c7..7dded9c9dd436cef9a86b2bcda1bdcad064f7898 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -4727,7 +4727,19 @@ impl Session {
+             },
+             None => commit_locks.await,
+         };
+-        let compaction_profile = state.session_configuration.agent_profile.clone();
++        let compaction_profile = state
++            .session_configuration
++            .agent_profile
++            .as_ref()
++            .filter(|captured| {
++                captured
++                    .profile
++                    .data
++                    .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
++                    .is_some()
++                    && agent_profile::handoff_presentation_is_live(&captured.profile)
++            })
++            .cloned();
+         let (compacted_item, window_number, window_ids, reviewer_compaction_hash) = {
+             let mut state = state;
+             let mcp_resource_origins = self.services.mcp_runtime.resource_origin_checkpoint();
+@@ -4882,6 +4894,15 @@ impl Session {
+                 return Err(self.stage_compaction_fatal(turn));
+             }
+         }
++        // Idle compaction can retire a live admitted view only after durable replacement.
++        if registered_turn.is_none()
++            && compaction_profile.is_some()
++            && (!persisted || self.flush_rollout().await.is_err())
++        {
++            return Err(CodexErr::Fatal(
++                "Canonical compaction commit outcome is uncertain".into(),
++            ));
++        }
+         if let Some(source) = source_step_context {
+             let mut state = self.state.lock().await;
+             // Apply to current state: retained reservations and host facts can arrive
+@@ -4903,18 +4924,6 @@ impl Session {
+             state.reasoning_effort_pin = ReasoningEffortPin::Compacted;
+             state.history.set_world_state_baseline(world_state_baseline);
+         }
+-        // A native compaction, including its no-output branch, must be durable
+-        // before a current profile or a captured step loses its admitted view.
+-        if !persisted {
+-            return Err(CodexErr::Fatal(
+-                "Canonical compaction commit outcome is uncertain".into(),
+-            ));
+-        }
+-        if registered_turn.is_none() {
+-            self.flush_rollout().await.map_err(|_| {
+-                CodexErr::Fatal("Canonical compaction commit outcome is uncertain".into())
+-            })?;
+-        }
+         if let Some(expected) = compaction_profile {
+             let replacement = rollout_items
+                 .iter()
+@@ -4926,11 +4935,11 @@ impl Session {
+             let mut state = self.state.lock().await;
+             if let Some(current) = state.session_configuration.agent_profile.as_ref()
+                 && current.receipt == expected.receipt
+-                && super::agent_profile::handoff_presentation_anchor(&current.profile)
+-                    == super::agent_profile::handoff_presentation_anchor(&expected.profile)
++                && agent_profile::handoff_presentation_anchor(&current.profile)
++                    == agent_profile::handoff_presentation_anchor(&expected.profile)
+             {
+                 state.session_configuration.agent_profile = Some(
+-                    super::agent_profile::profile_after_history_replacement(current, replacement),
++                    agent_profile::profile_after_history_replacement(current, replacement),
+                 );
+             }
+         }

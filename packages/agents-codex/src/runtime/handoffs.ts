@@ -9,6 +9,17 @@ import {
 import { z } from 'zod';
 import { withHandoffResultTarget } from './handoff-result';
 
+/** Detached groups have been describing destination presentation after sibling settlement.
+ * target has been identifying the admitted Agent; replies have been supplying groups only.
+ */
+export type HandoffInput<Context = undefined> = {
+  readonly input: readonly Record<string, unknown>[];
+  readonly previous: readonly Record<string, unknown>[];
+  readonly generated: readonly Record<string, unknown>[];
+  readonly context: Context;
+  readonly target: Agent<Context, any>;
+};
+
 /** Callback-backed native transfer to a captured Agent.
  * The callback has been supplying the name, description, schema and acknowledgement.
  * The existing tool owner has been validating arguments and awaiting callback cleanup

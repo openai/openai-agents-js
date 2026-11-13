@@ -108,6 +108,7 @@ pub(super) enum PreparationReply {
             std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>,
         >,
     ),
+    HandoffInput(oneshot::Sender<std::result::Result<handoff_inputs::Groups, ()>>),
     Model(ModelDelivery),
     ModelRetry(
         oneshot::Sender<std::result::Result<codex_protocol::model_retry::ModelRetryResolution, ()>>,
@@ -132,6 +133,7 @@ impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
             Self::ProviderResponseSpan(reply) => reply.is_closed(),
+            Self::HandoffInput(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
             Self::ModelRetry(reply) => reply.is_closed(),

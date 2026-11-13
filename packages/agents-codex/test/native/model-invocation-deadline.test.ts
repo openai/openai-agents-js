@@ -86,6 +86,57 @@ function latestSettings(saved: SessionState) {
   return rows.at(-1)!.payload!.thread_settings as Record<string, unknown>;
 }
 
+it('keeps current restored profile controls through an instruction update', async () => {
+  const server = new ModelServer([
+    [call('transfer_to_b', {}, { callId: 'route_controls' })],
+    [message('Destination ready.')],
+  ]);
+  await using provider = await providerFor(server);
+  const target = new Agent({
+    name: 'B',
+    instructions: 'Destination.',
+    model: 'gpt-5.5',
+    modelSettings: {
+      invocationTimeoutMs: 40_000,
+      attemptTimeoutMs: 20_000,
+      retry: { maxRetries: 1 },
+    },
+  });
+  const source = new Agent({
+    name: 'A',
+    instructions: 'Source.',
+    model: 'gpt-5.5',
+    provider,
+    handoffs: [target],
+  });
+  let saved: SessionState;
+  {
+    await using session = await source.session();
+    expect((await (await session.submit('Route.')).wait()).finalOutput).toBe(
+      'Destination ready.',
+    );
+    await session.update({
+      modelSettings: {
+        invocationTimeoutMs: 7_000,
+        attemptTimeoutMs: 5_000,
+        retry: { maxRetries: 3 },
+      },
+    });
+    saved = await session.saveState();
+    expect(latestSettings(saved).invocation_timeout_ms).toBe(7_000);
+  }
+  await using restored = await source.session({ state: saved });
+  expect(await restored.getActiveAgent()).toBe(target);
+  await restored.update({ instructions: 'Destination updated.' });
+  expect(latestSettings(await restored.saveState())).toMatchObject({
+    invocation_timeout_ms: 40_000,
+    request_controls: {
+      attempt_timeout_ms: 20_000,
+      retry: { max_retries: 1 },
+    },
+  });
+});
+
 it.each([null, 1, 4_294_967_295])(
   'captures and restores native deadline=%s; null clears',
   async (value) => {

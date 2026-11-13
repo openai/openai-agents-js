@@ -129,6 +129,7 @@ pub fn _agent_profiles_restore_source(
     history_json: String,
 ) -> napi::Result<String> {
     let opening = agent_profiles::OpeningProfiles {
+        input_preparations: Default::default(),
         fingerprint: agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)?,
         root_id,
         roster: serde_json::from_str(&roster_json).map_err(input_error)?,
@@ -146,6 +147,7 @@ pub fn _agent_profiles_operation_source(
     turn_id: String,
 ) -> napi::Result<String> {
     let opening = agent_profiles::OpeningProfiles {
+        input_preparations: Default::default(),
         fingerprint: agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)?,
         root_id,
         roster: serde_json::from_str(&roster_json).map_err(input_error)?,
@@ -2076,9 +2078,12 @@ impl NativeThread {
             if !closing {
                 graph_stop::check_mutation(&inner).map_err(native_error)?;
             }
-            let mut state = checkpoint::export(&inner, request.as_ref())
-                .await
-                .map_err(native_error)?;
+            let mut state = if !closing && request.is_none() {
+                checkpoint::export_idle(&inner).await
+            } else {
+                checkpoint::export(&inner, request.as_ref()).await
+            }
+            .map_err(native_error)?;
             if request.is_none()
                 && let Some(retry) = python_tools::PythonTools::staged_retry(&inner, &state)
             {
@@ -3472,6 +3477,29 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_handoff_input")]
+    pub fn _reply_handoff_input(&self, response_json: String) -> napi::Result<()> {
+        if response_json.len() > 8 * 1024 * 1024 {
+            return Err(input_error("Handoff input exceeds 8 MiB"));
+        }
+        let inner = self.current()?;
+        let response: python_tools::handoff_inputs::Reply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Handoff input requires a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired handoff input owner"))?;
+        owner.reply_handoff_input(response).map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_model_context")]
     pub fn _reply_model_context(&self, response_json: String) -> napi::Result<()> {
         let inner = self.current()?;
@@ -3859,9 +3887,10 @@ impl NativeThread {
             .configured_child_executor_tools(&key)
             .map_err(native_error)?;
         let restored = owner.check_restored_manual(&key.reply.thread, &key).is_ok();
-        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
-            .await
-            .map_err(native_error)?;
+        let mut policy =
+            environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
+                .await
+                .map_err(native_error)?;
         owner
             .check_pending(&key.reply.thread, &key)
             .map_err(native_error)?;
@@ -4642,6 +4671,7 @@ impl NativeThread {
         trace_json: Option<String>,
         tracing_context: Option<String>,
         observation_submission_id: Option<String>,
+        profile_output_override: Option<bool>,
     ) -> napi::Result<String> {
         let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
             .map_err(input_error)?;
@@ -4758,6 +4788,7 @@ impl NativeThread {
                 terminal,
                 staged_input,
                 raise_on_unknown_tool,
+                profile_output_override.unwrap_or_default(),
             )
             .await
             .map_err(native_error)?;
@@ -4795,22 +4826,38 @@ impl NativeThread {
         if inner.thread.config_snapshot().await.ephemeral {
             return Err(input_error("native checklist requires a persistent thread"));
         }
-        if inner.engine.local_checklist_store.is_some() {
-            if id.is_some_and(|id| id != inner.id) {
-                return Err(input_error(
-                    "local checklist reads require the current root",
-                ));
+        let selected = id.unwrap_or(inner.id);
+        let result = if let Some(store) = &inner.engine.local_checklist_store {
+            if selected == inner.id {
+                store.checklist(selected).await.map_err(native_error)?
+            } else {
+                let descendants = inner
+                    .engine
+                    .manager
+                    .list_agent_subtree_thread_ids(inner.id)
+                    .await
+                    .map_err(native_error)?;
+                if !descendants.contains(&selected) {
+                    return Err(input_error("Thread is not part of this session"));
+                }
+                let reader = store
+                    .checkpoint_reader(vec![selected])
+                    .await
+                    .map_err(native_error)?;
+                let history = reader.history(selected).await.map_err(native_error)?;
+                reader
+                    .checklist(selected, &history)
+                    .await
+                    .map_err(native_error)?
             }
         } else {
-            // Memory/child membership and flush retain their existing owner.
             subagents::read_history(&inner, id)
                 .await
                 .map_err(native_error)?;
-        }
-        // Local history and sidecar must be sampled under one store writer lock.
-        let result = checkpoint::checklist(&inner, id.unwrap_or(inner.id))
-            .await
-            .map_err(native_error)?;
+            checkpoint::checklist(&inner, selected)
+                .await
+                .map_err(native_error)?
+        };
         if inner.engine.local_checklist_store.is_some() {
             if inner.is_closed()
                 || inner
@@ -4920,6 +4967,21 @@ impl NativeThread {
         let value = canonical_history::replace(&inner, expected_revision, keep as usize, items)
             .await
             .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_append_recovered_output")]
+    pub async fn append_recovered_output(
+        &self,
+        expected_revision: String,
+        message_id: String,
+        text: String,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value =
+            canonical_history::append_recovered_output(&inner, expected_revision, message_id, text)
+                .await
+                .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 

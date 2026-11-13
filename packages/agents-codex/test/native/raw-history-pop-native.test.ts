@@ -8,24 +8,6 @@ import { ModelServer, message } from './fixtures/model-server';
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 afterEach(() => ModelServer.closeAll());
 
-function expectNativeOpeningContext(items: readonly Record<string, unknown>[]) {
-  expect(items.map((item) => item.type)).toEqual(['message', 'message']);
-  expect(items.map((item) => item.role)).toEqual(['developer', 'developer']);
-  expect(
-    items.map(
-      (item) =>
-        (
-          item.internal_chat_message_metadata_passthrough as {
-            content_item_kinds?: unknown;
-          }
-        )?.content_item_kinds,
-    ),
-  ).toEqual([
-    ['collaboration_mode.instructions'],
-    ['sdk_application.accepted'],
-  ]);
-}
-
 async function providerFor(server: ModelServer) {
   const config = await server.config();
   return new NativeProvider({
@@ -46,7 +28,15 @@ nativeIt(
       provider,
     }).session();
     const opening = await session.historySnapshot();
-    expectNativeOpeningContext(opening.items);
+    for (const item of opening.items) {
+      expect(item).toMatchObject({
+        type: 'message',
+        role: 'developer',
+        internal_chat_message_metadata_passthrough: {
+          content_item_kinds: ['collaboration_mode.instructions'],
+        },
+      });
+    }
     await session.transactHistory({
       expectedRevision: opening.revision,
       keep: 0,
@@ -186,10 +176,16 @@ nativeIt(
           resume: siblingId!,
         });
         const siblingItems = (await sibling.historySnapshot()).items;
-        expect(siblingItems.slice(0, before!.items.length)).toEqual(
-          before!.items,
-        );
-        expectNativeOpeningContext(siblingItems.slice(before!.items.length));
+        expect(siblingItems.slice(0, before!.total)).toEqual(before!.items);
+        for (const item of siblingItems.slice(before!.total)) {
+          expect(item).toMatchObject({
+            type: 'message',
+            role: 'developer',
+            internal_chat_message_metadata_passthrough: {
+              content_item_kinds: ['collaboration_mode.instructions'],
+            },
+          });
+        }
       }
       expect(server.requests).toHaveLength(2);
     } finally {
@@ -256,9 +252,9 @@ nativeIt(
   30_000,
 );
 
-nativeIt(
-  'keeps a summary through successive native item pops after cold restores',
-  async () => {
+nativeIt.each([false, true])(
+  'keeps a summary through successive native item pops after cold restores (update=%s)',
+  async (updateAfterCompaction) => {
     const server = new ModelServer([
       [message('late answer to remove')],
       [message('continued after pop')],
@@ -266,6 +262,10 @@ nativeIt(
     await using provider = await providerFor(server);
     const agent = new Agent({ instructions: 'Answer.', provider });
     const source = await agent.session();
+    const instructions = 'New SDK configuration after compaction.';
+    const restoringAgent = updateAfterCompaction
+      ? new Agent({ instructions, provider })
+      : agent;
     let state: Awaited<ReturnType<typeof source.saveState>>;
     let before: Awaited<ReturnType<typeof source.historySnapshot>>;
     try {
@@ -284,6 +284,7 @@ nativeIt(
         ],
       });
       await source.compact({ summary: 'preserved compaction summary' });
+      if (updateAfterCompaction) await source.update({ instructions });
       expect(
         (await (await source.submit('late user input to keep')).wait())
           .finalOutput,
@@ -297,7 +298,7 @@ nativeIt(
     let after: Awaited<ReturnType<typeof source.historySnapshot>>;
     let secondState: Awaited<ReturnType<typeof source.saveState>>;
     {
-      await using restored = await agent.session({ state: state! });
+      await using restored = await restoringAgent.session({ state: state! });
       expect(await restored.historySnapshot()).toEqual(before!);
       const removed = await restored.popHistory({
         expectedRevision: before!.revision,
@@ -315,7 +316,9 @@ nativeIt(
     }
     expect(server.requests).toHaveLength(1);
     {
-      await using twiceRestored = await agent.session({ state: secondState! });
+      await using twiceRestored = await restoringAgent.session({
+        state: secondState!,
+      });
       expect(await twiceRestored.historySnapshot()).toEqual(after!);
       const removedUser = await twiceRestored.popHistory({
         expectedRevision: after!.revision,

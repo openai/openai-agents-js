@@ -1,3 +1,10 @@
+import { abortable } from '../voice/abortable';
+import {
+  RecoverRun,
+  type RunErrorHandler,
+  type RunFailure,
+} from './run-error-recovery';
+import type { HandoffInput } from './handoffs';
 import {
   bindModelProviderMetadata,
   captureModelProviderStreamFrame,
@@ -191,7 +198,11 @@ import {
 } from './selection-state';
 import { guardrailCheckpointSchema, readCheckpointSelections } from './state';
 import { nativeGoal, type NativeGoal } from './goals';
-import { RunBudgetTracker, type RunBudget } from './run-budget';
+import {
+  RunBudgetTracker,
+  isRequestLimitFailure,
+  type RunBudget,
+} from './run-budget';
 import {
   NativeError,
   enrichNativeError,
@@ -402,6 +413,8 @@ import {
   parseSessionState,
   parseNativeCheckpoint,
   fromNativeCheckpoint,
+  captureSessionState,
+  configuredChildSessionState,
   withOutputState,
   type NativeCheckpoint,
   isManualSessionState,
@@ -542,6 +555,7 @@ export interface SessionOptions {
     }) => void,
     parentTrace?: TraceContext,
     transformContext?: ContextTransform<any>,
+    provider?: import('./provider').NativeProvider,
   ) => Promise<Session<string>>;
   applicationAgent?: import('./public-agent').Agent<any, any>;
   realtimeDeclaration?: import('./public-agent').Agent<any, any>;
@@ -997,6 +1011,16 @@ export let issueTurn: <T, NativeId extends string | null = string>(
  * An issued turn. For roots, turnId identifies the initial native step.
  * Controls and results follow its owned continuations.
  */
+const recoveredOneShotResults = new WeakMap<Turn<any, any>, Completed<any>>();
+const recoverableOutputFailures = new WeakMap<
+  OutputValidationError,
+  NativeTurn
+>();
+const settledRunFailures = new WeakMap<
+  NativeError | OutputValidationError,
+  NativeTurn
+>();
+
 export class Turn<OutputT = string, NativeId extends string | null = string> {
   readonly childId: string | null;
   readonly instanceId: string | null;
@@ -1162,6 +1186,15 @@ export class Turn<OutputT = string, NativeId extends string | null = string> {
     // The completion owner checks the callback guard on every call, even after
     // memoization. Track its public settlement only once, before publishing it.
     const promise = this.completion();
+    const recovered = recoveredOneShotResults.get(this);
+    if (recovered) {
+      // The owner can create its original rejected promise on this first wait.
+      // Application recovery replaces presentation while still observing that failure.
+      void promise.catch(() => {});
+      if (options?.signal?.aborted)
+        return Promise.reject(options.signal.reason);
+      return Promise.resolve(recovered);
+    }
     let state = this.waitState.current;
     if (!state) {
       const current: TurnCompletion<OutputT> = {
@@ -3121,6 +3154,19 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly questionMcp = new WeakMap<NativeEvent, CapturedStepMcp>();
   private starting?: SessionStartup;
   private defaultOutput: PreparedOutput;
+  private issuedRunGeneration = 0;
+  private configurationGeneration = 0;
+  private readonly recoveryOwners = new WeakMap<
+    RunErrorDetails,
+    {
+      root: NativeTurn;
+      issued: number;
+      configuration: number;
+      output: PreparedOutput;
+      profile: string | undefined;
+      revision: string;
+    }
+  >();
   private openingCatalog: ToolCatalog;
   private readonly capabilityView: Capabilities;
   private sealedStateJson?: string;
@@ -3574,6 +3620,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (
         this.options.agentGraph &&
+        !this.options.agentGraph.restoredSource &&
         (this.restored ||
           this.threadOptions._sdk_resume_thread_id !== undefined) &&
         (!this.restored || !isManualSessionState(this.restored))
@@ -6236,6 +6283,11 @@ export class Session<OutputT = string, Context = unknown> {
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
       );
     if (selection) selection.generation = this.catalog.generation;
+    const outputPrompt =
+      state.outputOverride ||
+      !this.options.agentGraph?.usesProfileOutputGuidance
+        ? output.prompt
+        : undefined;
     const byteLimit = audioInputByteLimit(parts);
     const receipt = {
       ...(selection
@@ -6268,6 +6320,7 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
       ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
       mode: 'start_if_idle',
+      profile_output_override: state.outputOverride,
       ...(run.raiseOnUnknownTool === undefined
         ? {}
         : { raise_on_unknown_tool: run.raiseOnUnknownTool }),
@@ -6275,8 +6328,8 @@ export class Session<OutputT = string, Context = unknown> {
         ? {}
         : { writable_roots: run.writableRoots }),
       observation_submission_id: this.submissionIds.get(run)!,
-      input: output.prompt
-        ? [...parts, { type: 'text', text: output.prompt }]
+      input: outputPrompt
+        ? [...parts, { type: 'text', text: outputPrompt }]
         : parts,
       ...(output.schema === undefined &&
       selection?.modelOverride === undefined &&
@@ -6366,8 +6419,8 @@ export class Session<OutputT = string, Context = unknown> {
                 signal,
               );
               check();
-              receipt.input = output.prompt
-                ? [...parts, { type: 'text', text: output.prompt }]
+              receipt.input = outputPrompt
+                ? [...parts, { type: 'text', text: outputPrompt }]
                 : parts;
             } finally {
               if (run.preparation === preparation) run.preparation = undefined;
@@ -6411,6 +6464,7 @@ export class Session<OutputT = string, Context = unknown> {
   ): NativeTurn {
     if (this.options.localStorage && output.repair)
       throw new TypeError('Persistent storage does not support output repair');
+    this.issuedRunGeneration++;
     const run: NativeTurn = new NativeTurn(
       () => this.assertCanWait(run),
       (completion) => afterSubmissionRetirement(run, completion),
@@ -6679,6 +6733,19 @@ export class Session<OutputT = string, Context = unknown> {
     return repair.completion.then(() => result!);
   }
 
+  private recordedThreadSettings(
+    history: z.infer<typeof threadHistorySchema>,
+  ): JsonObject | undefined {
+    const settings = history.findLast(
+      (row) =>
+        row.type === 'event_msg' &&
+        row.payload.type === 'thread_settings_applied' &&
+        row.payload.thread_id === this.id,
+    );
+    const parsed = jsonObject.safeParse(settings?.payload.thread_settings);
+    return parsed.success ? parsed.data : undefined;
+  }
+
   private async repairOutput(
     run: NativeTurn,
     repair: OutputRepair,
@@ -6719,26 +6786,11 @@ export class Session<OutputT = string, Context = unknown> {
       : this.options.transformContext;
     const history = await this.#readHistory();
     if (!check(true)) return { type: 'stopped' };
-    const settingsEvent = history
-      .toReversed()
-      .find(
-        (row) =>
-          row.type === 'event_msg' &&
-          row.payload.type === 'thread_settings_applied' &&
-          row.payload.thread_id === this.id,
-      );
-    const accepted = jsonObject.safeParse(
-      settingsEvent?.payload.thread_settings,
-    );
-    if (
-      !accepted.success ||
-      typeof accepted.data.model !== 'string' ||
-      !accepted.data.model
-    )
+    const captured = this.recordedThreadSettings(history);
+    if (typeof captured?.model !== 'string' || !captured.model)
       throw new NativeError(
         'Native history does not contain accepted model settings for repair',
       );
-    const captured = accepted.data;
     // Durable settings omit transport. Retain the completing Agent's live defaults.
     const transport =
       source &&
@@ -6789,13 +6841,17 @@ export class Session<OutputT = string, Context = unknown> {
       if (!check(true)) return { type: 'stopped' };
       submission.repairAttemptsUsed = (submission.repairAttemptsUsed ?? 0) + 1;
       repair.session = await open(
-        accepted.data.model,
+        captured.model,
         settings,
         (owner) => {
           repair.opening = owner;
         },
         run.parentTrace,
         transformContext,
+        source
+          ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+              .provider
+          : undefined,
       );
       repair.opening = undefined;
       const correction = repair.session;
@@ -6917,7 +6973,9 @@ export class Session<OutputT = string, Context = unknown> {
       }
     }
     if (!check(true)) return { type: 'stopped' };
-    throw new OutputValidationError(text, issues);
+    const error = new OutputValidationError(text, issues);
+    recoverableOutputFailures.set(error, run);
+    throw error;
   }
 
   private retainRequestAttempts(run: NativeTurn): void {
@@ -7078,7 +7136,11 @@ export class Session<OutputT = string, Context = unknown> {
         // for the typed fallback if native refuses that continuation.
         if (retained && cause instanceof OutputValidationError)
           predecessorValidationError = cause;
-        else error = cause;
+        else {
+          error = cause;
+          if (cause instanceof OutputValidationError)
+            recoverableOutputFailures.set(cause, run);
+        }
       }
     }
     if (error === undefined && retained) {
@@ -7148,6 +7210,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ...(tracingContext ? { tracing_context: tracingContext } : {}),
                 input: [],
                 mode: 'continue_if_idle',
+                profile_output_override: submission.outputOverride,
                 ...(run.parentTrace
                   ? { trace: run.parentTrace.toHeaders() }
                   : {}),
@@ -7200,6 +7263,11 @@ export class Session<OutputT = string, Context = unknown> {
         ? terminalModel.error
         : (error ?? predecessorValidationError);
       if (originalModelFailure || settlementError !== undefined) {
+        if (
+          settlementError instanceof NativeError ||
+          settlementError instanceof OutputValidationError
+        )
+          settledRunFailures.set(settlementError, run);
         run.accepted.reject(settlementError);
         run.completion.reject(settlementError);
       } else if (run.id !== null) {
@@ -7906,6 +7974,7 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === '_sdk_model_produce' ||
       msg.type === '_sdk_before_compact' ||
       msg.type === '_sdk_before_compact_policy' ||
+      msg.type === '_sdk_handoff_input' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -8287,6 +8356,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
       kind === '_sdk_before_compact_policy' ||
+      kind === '_sdk_handoff_input' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -9414,6 +9484,7 @@ export class Session<OutputT = string, Context = unknown> {
             request_id: msg.request_id,
           };
           const responseSpan = msg.type === '_sdk_provider_response_span';
+          const handoffInput = msg.type === '_sdk_handoff_input';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
           const compact = compactPolicy || msg.type === '_sdk_before_compact';
@@ -9438,6 +9509,7 @@ export class Session<OutputT = string, Context = unknown> {
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
             if (responseSpan) sourceNative._reply_provider_response_span(data);
+            else if (handoffInput) sourceNative._reply_handoff_input(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
             else if (compact) sourceNative._reply_compaction(data);
@@ -9479,6 +9551,53 @@ export class Session<OutputT = string, Context = unknown> {
               );
               check();
               reply({ data: admitted });
+              return;
+            }
+            if (handoffInput) {
+              const source = this.messageProfile(msg);
+              if (!source)
+                throw new NativeError(
+                  'Handoff input lacks its captured source',
+                );
+              const runtime = this.profileRuntimes.get(source.profile_id)!;
+              const callback = runtime.profile.declaration.prepareHandoffInput;
+              if (!callback)
+                throw new NativeError(
+                  'Missing exact captured handoff input callback',
+                );
+              const name = z.string().parse(msg.tool_name);
+              const targetId = z.string().parse(msg.target_profile_id);
+              const target = this.profileRuntimes.get(targetId);
+              const declared =
+                runtime.profile.handoffs[name] === targetId ||
+                runtime.profile.decisionHandoffs?.[name]?.targets.includes(
+                  targetId,
+                );
+              if (!target || !declared)
+                throw new NativeError(
+                  'Handoff input destination differs from its captured target',
+                );
+              const items = z.array(losslessJsonObjectSchema);
+              const request: HandoffInput<Context> = Object.freeze({
+                input: Object.freeze(structuredClone(items.parse(msg.input))),
+                previous: Object.freeze(
+                  structuredClone(items.parse(msg.previous)),
+                ),
+                generated: Object.freeze(
+                  structuredClone(items.parse(msg.generated)),
+                ),
+                context: this.options.context as Context,
+                target: target.profile.agent,
+              });
+              const projected = await callback(request);
+              check();
+              reply({
+                groups: {
+                  input: items.parse(projected.input),
+                  previous: items.parse(projected.previous),
+                  generated: items.parse(projected.generated),
+                },
+              });
               return;
             }
             this.bindRunRetryPolicy(owner, msg);
@@ -9572,14 +9691,19 @@ export class Session<OutputT = string, Context = unknown> {
                 },
               });
             } else if (produce) {
-              if (!this.options.modelBackend)
+              const source = this.messageProfile(msg);
+              const captured = source
+                ? this.profileRuntimes.get(source.profile_id)!.profile
+                    .declaration.provider.modelBackend
+                : this.options.modelBackend;
+              if (!captured)
                 throw new NativeError(
                   'Native model producer has no application backend',
                 );
               const backend =
-                'complete' in this.options.modelBackend
-                  ? this.options.modelBackend
-                  : this.options.modelBackend.getModel(base.model);
+                'complete' in captured
+                  ? captured
+                  : captured.getModel(base.model);
               check();
               const attemptId =
                 typeof msg.attempt_id === 'string' ? msg.attempt_id : undefined;
@@ -9975,9 +10099,15 @@ export class Session<OutputT = string, Context = unknown> {
                     if (this.decodedOutputs.has(owner))
                       value = this.decodedOutputs.get(owner);
                     else {
-                      value = prepared.parse
-                        ? prepared.parse(text ?? '')
-                        : (text ?? '');
+                      try {
+                        value = prepared.parse
+                          ? prepared.parse(text ?? '')
+                          : (text ?? '');
+                      } catch (error) {
+                        if (error instanceof OutputValidationError)
+                          recoverableOutputFailures.set(error, owner);
+                        throw error;
+                      }
                       this.decodedOutputs.set(owner, value);
                     }
                   }
@@ -11956,6 +12086,7 @@ export class Session<OutputT = string, Context = unknown> {
               : undefined,
             tracingContext,
             this.submissionIds.get(run)!,
+            submissions.get(run)!.outputOverride,
           )
           .then((wire) => {
             const submission = decode(manualCompletionSchema, wire);
@@ -12497,9 +12628,11 @@ export class Session<OutputT = string, Context = unknown> {
         this.retainRequestAttempts(run);
         this.finish(
           run,
-          new InteractionRequired(parseSessionState(this.sealedStateJson)),
+          new InteractionRequired(
+            captureSessionState(parseSessionState(this.sealedStateJson)),
+          ),
         );
-        return parseSessionState(this.sealedStateJson);
+        return captureSessionState(parseSessionState(this.sealedStateJson));
       } catch (error) {
         this.manualSuspending = false;
         if (sealed && this.owns(run)) this.retire(error);
@@ -12983,8 +13116,11 @@ export class Session<OutputT = string, Context = unknown> {
     const restoredChild =
       configuredData === undefined
         ? undefined
-        : parseSessionState(
-            encode(losslessJsonObjectSchema.parse(configuredData).state),
+        : configuredChildSessionState(
+            this.restored,
+            request.turnId,
+            request.callId,
+            configuredData,
           );
     let session = await declaration.open(
       context.context,
@@ -14037,6 +14173,7 @@ export class Session<OutputT = string, Context = unknown> {
   async update(options: SessionUpdate<Context> = {}): Promise<void> {
     this.checkCallbackOperation('update');
     this.idle('update');
+    this.configurationGeneration++;
     if (options.agent !== undefined) {
       if (
         options.model !== undefined ||
@@ -15433,6 +15570,33 @@ export class Session<OutputT = string, Context = unknown> {
     const guardrailResults = turn.guardrailResults;
     if (!turn.turnId && guardrailResults.length === 0) return;
     const settled = this.rootObservationScope(run).phase() === 'ended';
+    const issued = this.issuedRunGeneration;
+    const configuration = this.configurationGeneration;
+    let recoveryOwner;
+    if (settled) {
+      try {
+        this.idle('capture run recovery');
+        // A failed completion can follow a native handoff before successful
+        // settlement has adopted the destination's output and guardrails.
+        await this.refreshProfileBindings();
+        this.idle('capture run recovery');
+        if (
+          this.lastRun &&
+          this.rootRun(this.lastRun) === run &&
+          this.issuedRunGeneration === issued &&
+          this.configurationGeneration === configuration
+        )
+          recoveryOwner = {
+            root: run,
+            issued,
+            configuration,
+            output: this.defaultOutput,
+            profile: JSON.stringify(this.profileCurrent),
+          };
+      } catch {
+        // The original failure can still carry diagnostics without recovery.
+      }
+    }
     const originalInput = input ?? submissions.get(run)?.originalInput ?? null;
     let incomplete = !settled || originalInput === null;
     const rawResponses: JsonObject[] = [];
@@ -15482,10 +15646,21 @@ export class Session<OutputT = string, Context = unknown> {
     } catch {
       incomplete = true;
     }
+    let history: RunErrorDetails['history'] = [];
+    let canonical: CanonicalHistorySnapshot | undefined;
+    if (settled) {
+      try {
+        canonical = await this._historyForReplay();
+        history = Object.freeze(canonical.items);
+      } catch {
+        incomplete = true;
+      }
+    }
     const details: RunErrorDetails = {
       input: originalInput === null ? null : structuredClone(originalInput),
       lastAgent,
       items,
+      history,
       rawResponses: Object.freeze(rawResponses),
       guardrailResults,
       incomplete,
@@ -15494,10 +15669,237 @@ export class Session<OutputT = string, Context = unknown> {
       input: { enumerable: false },
       lastAgent: { enumerable: false },
       items: { enumerable: false },
+      history: { enumerable: false },
       rawResponses: { enumerable: false },
       guardrailResults: { enumerable: false },
     });
+    if (canonical && recoveryOwner)
+      this.recoveryOwners.set(details, {
+        ...recoveryOwner,
+        revision: canonical.revision,
+      });
     return Object.freeze(details);
+  }
+
+  /** @internal Recover application output without changing native settlement. */
+  async _recoverOneShot(
+    error: unknown,
+    details: RunErrorDetails,
+    handler: RunErrorHandler<OutputT, Context>,
+    signal?: AbortSignal,
+  ): Promise<Completed<OutputT> | undefined> {
+    const owner = this.recoveryOwners.get(details);
+    if (!owner || !this.lastRun || !details.lastAgent) return;
+    const root = owner.root;
+    const steps = [...this.rootSteps(root)];
+    const last = steps.at(-1)!;
+    const kind: RunFailure['kind'] | undefined =
+      error instanceof NativeError
+        ? isRequestLimitFailure(error, root.selection?.budget)
+          ? 'max_requests'
+          : error.responseIntegrityReason === 'provider_refusal'
+            ? 'model_refusal'
+            : undefined
+        : error instanceof OutputValidationError &&
+            steps.some((step) => recoverableOutputFailures.get(error) === step)
+          ? 'invalid_output'
+          : undefined;
+    if (
+      !kind ||
+      !(
+        error instanceof NativeError || error instanceof OutputValidationError
+      ) ||
+      !steps.some((step) => settledRunFailures.get(error) === step) ||
+      !root.id ||
+      this.rootObservationScope(root).phase() !== 'ended' ||
+      signal?.aborted
+    )
+      return;
+    try {
+      this.idle('recover a one-shot run');
+    } catch {
+      return;
+    }
+    const check = () => {
+      signal?.throwIfAborted();
+      this.idle('recover a one-shot run');
+      if (
+        !this.lastRun ||
+        this.rootRun(this.lastRun) !== root ||
+        this.issuedRunGeneration !== owner.issued ||
+        this.configurationGeneration !== owner.configuration ||
+        this.defaultOutput !== owner.output ||
+        JSON.stringify(this.profileCurrent) !== owner.profile
+      )
+        throw new NativeError('The recovery run is no longer current');
+    };
+    const checkHistory = async () => {
+      check();
+      const current = await this.historySnapshot({ limit: 0 });
+      check();
+      if (current.revision !== owner.revision)
+        throw new NativeError('Canonical history changed during run recovery');
+    };
+    await checkHistory();
+    const failure: RunFailure<Context> = {
+      kind,
+      error: error as NativeError | OutputValidationError,
+      details: details as RunFailure<Context>['details'],
+      context: this.options.context as Context | undefined,
+    };
+    Object.defineProperties(failure, {
+      error: { enumerable: false },
+      details: { enumerable: false },
+      context: { enumerable: false },
+    });
+    const scope: ToolInvocation = {
+      session: this,
+      run: root,
+      active: true,
+      parent: toolInvocation.getStore(),
+    };
+    let recovery;
+    try {
+      const pending = Promise.resolve(
+        toolInvocation.run(scope, () => handler(Object.freeze(failure))),
+      );
+      recovery = signal ? await abortable(pending, signal) : await pending;
+    } finally {
+      scope.active = false;
+    }
+    check();
+    if (recovery == null) return;
+    if (!(recovery instanceof RecoverRun))
+      throw new TypeError('errorHandler must return RecoverRun or no recovery');
+    const parsed = parseApplicationToolCompletion(
+      owner.output,
+      recovery.output,
+    );
+    await checkHistory();
+    const turn = this.issuedTurn(root) as Turn<OutputT>;
+    const profile = this.profileCurrent;
+    const declaration = profile
+      ? this.profileRuntimes.get(profile.profile_id)?.profile.declaration
+      : undefined;
+    const hasGuards =
+      (this.options.outputGuardrails?.length ?? 0) > 0 ||
+      (
+        declaration?.outputGuardrails ??
+        this.options.agentOutputGuardrails ??
+        []
+      ).length > 0;
+    if (hasGuards) {
+      const history = await this.#readHistory();
+      const receipt = projectHistory(history, this.id).turns.find(
+        (candidate) => candidate.id === last.id,
+      )?.receipt;
+      const configuredModel = this.recordedThreadSettings(history)?.model;
+      const model =
+        receipt?.model ??
+        last.selection?.modelOverride ??
+        (typeof configuredModel === 'string' ? configuredModel : undefined);
+      if (!model)
+        throw new NativeError(
+          'Cannot validate recovered output without its model receipt',
+        );
+      check();
+      const recoverySignal = signal ?? new AbortController().signal;
+      const activeScope: ToolInvocation = {
+        session: this,
+        run: root,
+        active: true,
+        parent: toolInvocation.getStore(),
+      };
+      try {
+        const pending = toolInvocation.run(activeScope, () =>
+          this.checkOutputGuardrails(
+            last,
+            profile
+              ? { profile_id: profile.profile_id, profile_epoch: profile.epoch }
+              : {},
+            {
+              context: this.options.context,
+              text: null,
+              sessionId: this.id,
+              turnId: root.id!,
+              model,
+              signal: recoverySignal,
+              continuationCount: 0,
+              finalOutput: parsed.value,
+            },
+            () => {
+              if (!activeScope.active)
+                throw new NativeError(
+                  'Run recovery guardrail is no longer active',
+                );
+              check();
+            },
+          ),
+        );
+        await abortable(pending, recoverySignal);
+      } finally {
+        activeScope.active = false;
+      }
+      await checkHistory();
+    }
+    let items = details.items;
+    if (recovery.includeInHistory) {
+      const text = this.defaultOutput.wrapped
+        ? JSON.stringify({ response: parsed.json })
+        : this.defaultOutput.schema || this.defaultOutput.prompt
+          ? JSON.stringify(parsed.json)
+          : (parsed.json as string);
+      const item = {
+        type: 'message',
+        id: randomUUID(),
+        role: 'assistant',
+        content: [{ type: 'output_text', text }],
+      };
+      await this.mutate(async () => {
+        signal?.throwIfAborted();
+        this.historyMutationValue(
+          await this.#native._append_recovered_output(
+            owner.revision,
+            item.id,
+            text,
+          ),
+        );
+      });
+      // The private typed append acknowledges this exact assistant record.
+      const projected = projectHistory(
+        [
+          { type: 'turn_context', payload: { turn_id: root.id } },
+          { type: 'response_item', payload: item },
+        ],
+        this.id,
+      ).items;
+      items = Object.freeze([
+        ...items,
+        ...projected.map((item) =>
+          Object.freeze({
+            item,
+            agent: details.lastAgent!,
+          }),
+        ),
+      ]);
+    }
+    check();
+    const completed: Completed<OutputT> = Object.freeze({
+      turn,
+      finalOutput: parsed.value as OutputT,
+      threadUsage: tokenUsageInfo(last.usage),
+      runUsage: this.runUsage(root),
+      repairAttempts: Object.freeze(
+        this.repairTurns
+          .filter((entry) => entry.parentTurnId === root.id)
+          .map((entry) => recordedTurnFromWire(structuredClone(entry))),
+      ),
+      guardrailResults: turn.guardrailResults,
+      applicationToolOutputs: this.applicationOutputSnapshot(root),
+      items,
+    });
+    recoveredOneShotResults.set(turn, completed);
+    return completed;
   }
 
   /** @internal Read the exact owned turn before closing its Session. */
@@ -16010,7 +16412,7 @@ export class Session<OutputT = string, Context = unknown> {
       checklist: !!this.options.checklist,
     });
   }
-  private checkpointRefusal(): string | undefined {
+  private checkpointRefusal(allowLocal = false): string | undefined {
     if (this.repairReceiptsIncomplete)
       return 'Output repair receipts are incomplete';
     if (
@@ -16020,7 +16422,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.manualSeal
     )
       return 'Session is not available for checkpoint inspection';
-    if (this.options.localStorage)
+    if (this.options.localStorage && !allowLocal)
       return 'Persistent storage cannot export SessionState';
     if (this.pendingRoots.size) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
@@ -16035,11 +16437,11 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('inspect checkpoints of');
     if (options?.kind !== 'idle' && options?.kind !== 'manualWait')
       throw new TypeError('kind must be idle or manualWait');
-    const refusal = this.checkpointRefusal();
+    const refusal = this.checkpointRefusal(options.kind === 'idle');
     if (refusal) return checkpointStatus('notReady', refusal);
     if (options.kind === 'idle') {
       const idleRefusal = () =>
-        this.checkpointRefusal() ??
+        this.checkpointRefusal(true) ??
         (this.lifecycle.kind !== 'idle' ||
         this.lastRun?.callbacks.size ||
         this.lastRun?.toolInvocations.size ||
@@ -16204,7 +16606,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       await this.discardForkCopy();
       if (!this.isOpen) throw new NativeError('Session closed during fork');
-      return state;
+      return captureSessionState(state);
     });
   }
 
@@ -16557,6 +16959,12 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
 
+  /**
+   * Copy an idle native Session, including its LocalStorage graph and sidecars.
+   * Restore without storage into isolated memory using the current Agent.
+   * Canonical custom storage exports its owned root; persistent manual
+   * suspension and fork remain unsupported.
+   */
   async saveState(): Promise<SessionState> {
     return this.captureIdleState(false);
   }
@@ -16567,7 +16975,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
-    if (this.options.localStorage)
+    if (this.options.localStorage && retire)
       throw new TypeError(
         'Persistent storage does not support saveState; retain Session.id and reopen with the same storage backend',
       );
@@ -16637,7 +17045,7 @@ export class Session<OutputT = string, Context = unknown> {
     }).then(() => {
       if (!snapshot)
         throw new NativeError('Native checkpoint was not captured');
-      return snapshot;
+      return captureSessionState(snapshot);
     });
   }
   async suspend(): Promise<SessionState> {
@@ -16657,7 +17065,9 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
       );
     if (this.sealedStateJson !== undefined)
-      return Promise.resolve(parseSessionState(this.sealedStateJson));
+      return Promise.resolve(
+        captureSessionState(parseSessionState(this.sealedStateJson)),
+      );
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
@@ -16711,7 +17121,7 @@ export class Session<OutputT = string, Context = unknown> {
             'Deferred reopening requires a sealed checkpoint',
           );
         return reopen(
-          parseSessionState(this.sealedStateJson),
+          captureSessionState(parseSessionState(this.sealedStateJson)),
           active.output,
           active.outputOverride,
           run.parentTrace,

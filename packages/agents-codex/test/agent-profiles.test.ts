@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { NativeProvider } from '../src/runtime/provider';
 import { Agent, captureAgentProfiles } from '../src/runtime/public-agent';
 import { tool } from '../src/runtime/tools';
 import { NativeAgents } from '../src/runtime/native-agents';
@@ -54,7 +55,7 @@ it('preserves distinct validators and retry policies when output wire encoding m
   );
 });
 
-it('rejects incompatible output modes, schemas and child-role declarations before native acquisition', () => {
+it('captures mixed text outputs and retains Realtime and child-role admission', () => {
   const plain = new Agent({ name: 'plain', instructions: 'x' });
   const prompted = new Agent({
     name: 'prompted',
@@ -62,7 +63,10 @@ it('rejects incompatible output modes, schemas and child-role declarations befor
     outputType: { mode: 'prompted', schema: z.string() },
     handoffs: [plain],
   });
-  expect(() => captureAgentProfiles(prompted)).toThrow('share output mode');
+  expect(captureAgentProfiles(prompted)).toHaveLength(2);
+  expect(() =>
+    captureAgentProfiles(prompted, prompted, true, undefined, undefined, true),
+  ).toThrow('share output mode');
   const different = new Agent({
     name: 'different',
     instructions: 'x',
@@ -73,7 +77,10 @@ it('rejects incompatible output modes, schemas and child-role declarations befor
     outputType: { mode: 'prompted', schema: z.string() },
     handoffs: [different as never],
   });
-  expect(() => captureAgentProfiles(root)).toThrow('share output mode');
+  expect(captureAgentProfiles(root)).toHaveLength(2);
+  expect(() =>
+    captureAgentProfiles(root, root, true, undefined, undefined, true),
+  ).toThrow('share output mode');
   const child = new Agent({
     name: 'child',
     instructions: 'x',
@@ -218,7 +225,7 @@ it('consumes rejected async resolver promises while rejecting their unsupported 
   await Promise.resolve();
 });
 
-it('inherits default target providers and rejects unsupported explicit provider or runtime grant changes', () => {
+it('inherits default target providers and captures compatible explicit providers and rejects unsupported inference or runtime grants', () => {
   const child = new Agent({ name: 'B', instructions: 'b' });
   const root = new Agent({ instructions: 'a', handoffs: [child] });
   expect(captureAgentProfiles(root)[1].declaration.provider).toBe(
@@ -229,11 +236,21 @@ it('inherits default target providers and rejects unsupported explicit provider 
     instructions: 'c',
     provider: child.provider,
   });
+  const routed = captureAgentProfiles(
+    new Agent({ instructions: 'a', handoffs: [explicit] }),
+  );
+  expect(routed[1].nativeProviderId).toBe('sdk_profile_1');
+  expect(routed[1].declaration.provider).toBe(child.provider);
+  const incompatible = new Agent({
+    name: 'D',
+    instructions: 'd',
+    provider: new NativeProvider({ responseMode: 'buffered' }),
+  });
   expect(() =>
     captureAgentProfiles(
-      new Agent({ instructions: 'a', handoffs: [explicit] }),
+      new Agent({ instructions: 'a', handoffs: [incompatible] }),
     ),
-  ).toThrow('share the Session provider');
+  ).toThrow('compatible text inference providers');
   child.programmaticToolCalling = true;
   expect(() => captureAgentProfiles(root)).toThrow('runtime grants');
 });

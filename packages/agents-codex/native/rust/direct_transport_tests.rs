@@ -95,6 +95,7 @@ impl Fixture {
                 client_metadata: &mut metadata,
                 model: "test-model",
                 provider_managed_history: false,
+                sdk_profile_provider_id: None,
                 model_omitted,
             })
             .expect("issued exact native ticket");
