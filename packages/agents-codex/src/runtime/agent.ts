@@ -204,12 +204,13 @@ export async function openSession(
   const parentTrace = captureTraceContext(options.parentTrace);
   const { _sdk_reconciled_calls, ...capturedThreadOptions } =
     setup.threadOptions;
-  const workspaceInstructions = options.agentGraph?.workspace
-    ? undefined
-    : options.agentGraph &&
-        options.environmentOwner?.sandboxCapabilities?.hasPreparedProfiles
-      ? options.environmentOwner?.profileWorkspaceInstructions
-      : options.environmentOwner?.workspaceInstructions;
+  const workspaceInstructions =
+    options.agentGraph?.workspace || options.agentGraph?.environments
+      ? undefined
+      : options.agentGraph &&
+          options.environmentOwner?.sandboxCapabilities?.hasPreparedProfiles
+        ? options.environmentOwner?.profileWorkspaceInstructions
+        : options.environmentOwner?.workspaceInstructions;
   let threadOptions: ThreadOptions = {
     ...(parentTrace ? { parent_trace: { ...parentTrace.toHeaders() } } : {}),
     ...capturedThreadOptions,

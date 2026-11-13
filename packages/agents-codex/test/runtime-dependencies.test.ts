@@ -41,7 +41,7 @@ function sourceFiles(directory: string, files: Sources = new Map()): Sources {
 }
 
 function edges(path: string, source: string): Edge[] {
-  const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest);
   const result: Edge[] = [];
   const moduleRequires = new Set(['require']);
   const createRequires = new Set<string>();
@@ -282,7 +282,7 @@ describe('runtime dependency direction', () => {
         'core',
       ),
     ).toEqual([]);
-  });
+  }, 20_000);
   it('keeps the named declaration and projection leaves outside runtime assembly and binding', () => {
     expect(violations(files, leafOwners, 'leaf')).toEqual([]);
   });

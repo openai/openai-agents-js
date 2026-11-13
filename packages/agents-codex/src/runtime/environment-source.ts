@@ -117,6 +117,8 @@ export class EnvironmentAcquisition {
   #detachCaller: () => void;
   #detachSession?: () => void;
   #disposal?: Promise<void>;
+  readonly #profileAbort = new AbortController();
+  readonly #profileOwners = new Map<EnvironmentAcquisition, () => void>();
 
   constructor(
     readonly environment: Environment | undefined,
@@ -125,9 +127,27 @@ export class EnvironmentAcquisition {
     private readonly state?: LeaseState,
   ) {
     this.#detachCaller = detachCaller;
-    this.signal = state?.signal
-      ? AbortSignal.any([openingController.signal, state.signal])
-      : openingController.signal;
+    this.signal = AbortSignal.any([
+      openingController.signal,
+      this.#profileAbort.signal,
+      ...(state?.signal ? [state.signal] : []),
+    ]);
+  }
+
+  /** Captured graph resources have been joining the same opening and retirement. */
+  async adoptProfile(owner: EnvironmentAcquisition): Promise<void> {
+    if (owner === this || this.#profileOwners.has(owner)) return;
+    if (this.#disposal) {
+      await owner.dispose();
+      throw new Error('Environment acquisition has been retiring');
+    }
+    const abort = () => this.#profileAbort.abort(owner.signal.reason);
+    owner.signal.addEventListener('abort', abort, { once: true });
+    this.#profileOwners.set(owner, () =>
+      owner.signal.removeEventListener('abort', abort),
+    );
+    if (owner.signal.aborted) abort();
+    this.signal.throwIfAborted();
   }
 
   /** @internal Mutable capture state belongs to this exact acquired resource. */
@@ -211,6 +231,7 @@ export class EnvironmentAcquisition {
     // A Session opening signal ends at publication. The source's own signal
     // remains connected until retirement. Agent.run retains its caller separately.
     this.#detachCaller();
+    for (const owner of this.#profileOwners.keys()) owner.opened();
   }
 
   dispose(
@@ -221,7 +242,13 @@ export class EnvironmentAcquisition {
     return (this.#disposal ??= Promise.resolve().then(async () => {
       this.#detachCaller();
       this.#detachSession?.();
-      if (this.state) await disposeLease(this.state, guard);
+      for (const detach of this.#profileOwners.values()) detach();
+      const settled = await Promise.allSettled([
+        ...(this.state ? [disposeLease(this.state, guard)] : []),
+        ...[...this.#profileOwners.keys()].map((owner) => owner.dispose(guard)),
+      ]);
+      for (const result of settled)
+        if (result.status === 'rejected') throw result.reason;
     }));
   }
 }

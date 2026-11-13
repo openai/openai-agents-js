@@ -3944,10 +3944,15 @@ impl NativeThread {
             .configured_child_executor_tools(&key)
             .map_err(native_error)?;
         let restored = owner.check_restored_manual(&key.reply.thread, &key).is_ok();
-        let mut policy =
-            environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
-                .await
-                .map_err(native_error)?;
+        let mut policy = environment::configured_child_policy(
+            &inner.thread,
+            &thread,
+            &inner.engine.manager.environment_manager(),
+            &key.turn,
+            restored,
+        )
+        .await
+        .map_err(native_error)?;
         owner
             .check_pending(&key.reply.thread, &key)
             .map_err(native_error)?;

@@ -1,0 +1,69 @@
+diff --git a/codex-rs/exec-server/src/environment.rs b/codex-rs/exec-server/src/environment.rs
+index ca2eb5b62b7..37d6418abb8 100644
+--- a/codex-rs/exec-server/src/environment.rs
++++ b/codex-rs/exec-server/src/environment.rs
+@@ -467,6 +467,18 @@ impl EnvironmentManager {
+             .and_then(Weak::upgrade)
+     }
+ 
++    /// Registers a host-owned local executor without selecting it by default.
++    pub fn register_scoped_local_environment(
++        self: &Arc<Self>,
++        environment_id: String,
++        runtime: ExecServerRuntimeOptions,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped(
++            environment_id,
++            Environment::local(runtime, self.http_client_factory.clone()),
++        )
++    }
++
+     /// Registers an explicitly selected remote WebSocket executor for one owner.
+     pub fn register_scoped_environment(
+         self: &Arc<Self>,
+@@ -497,14 +509,25 @@ impl EnvironmentManager {
+         self: &Arc<Self>,
+         id: String,
+         transport: ExecServerTransportParams,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped(
++            id,
++            Environment::remote_with_transport(
++                transport,
++                self.local_runtime_paths.clone(),
++                self.http_client_factory.clone(),
++                ScopedSkillsConfig::default(),
++            ),
++        )
++    }
++
++    fn register_scoped(
++        self: &Arc<Self>,
++        id: String,
++        environment: Environment,
+     ) -> Result<ScopedEnvironment, ExecServerError> {
+         validate_environment_id(&id)?;
+-        let environment = Arc::new(Environment::remote_with_transport(
+-            transport,
+-            self.local_runtime_paths.clone(),
+-            self.http_client_factory.clone(),
+-            ScopedSkillsConfig::default(),
+-        ));
++        let environment = Arc::new(environment);
+         {
+             let configured = self
+                 .environments
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index b93e177ea59..bb789e6ea88 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -102,6 +102,9 @@ pub struct CodexHarnessMetadata {
+     /// Host graph declaration fingerprint; never an authority or a serialized graph.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_agent_graph: Option<String>,
++    /// Fingerprint of executor grants accepted by the SDK at Agent publication.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub sdk_agent_environment_policy: Option<String>,
+ 
+     /// Native Agent profile/model receipt accompanying an accepted instruction envelope.
+     #[serde(default, skip_serializing_if = "Option::is_none")]

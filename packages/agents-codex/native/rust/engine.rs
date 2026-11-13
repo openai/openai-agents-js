@@ -2445,6 +2445,7 @@ impl EngineState {
                 );
             }
         }
+        crate::agent_profiles::prepare_environments(self, &mut startup).await?;
         let config = &startup.config;
         let original = &self.service_config;
         if let Some(enabled) = self.sdk_user_input_enabled {

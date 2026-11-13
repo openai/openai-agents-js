@@ -174,6 +174,8 @@ pub struct Checkpoint {
     root_turn_budget: Option<crate::response_control::BudgetSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     executor_policy_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_environment_policy_digest: Option<String>,
 }
 
 #[derive(Default)]
@@ -751,6 +753,9 @@ async fn export_inner(
         Some(fork) => fork.executor_policy_digest.clone(),
         None => crate::environment::checkpoint_policy(&state.thread).await?,
     };
+    let agent_environment_policy_digest = state.thread.thread_extension_data()
+        .get::<crate::agent_profiles::ProfileEnvironments>()
+        .map(|environments| environments.digest.clone());
     let plan = codex_thread_store::is_chatgpt_plan_provider(&root_metadata.model_provider);
     let mut exported = serde_json::to_value(Checkpoint {
         format_version: if plan {
@@ -773,6 +778,7 @@ async fn export_inner(
         managed_tool_specs,
         root_turn_budget,
         executor_policy_digest,
+        agent_environment_policy_digest,
     })?;
     if let Some(metadata) = state.retained_metadata.get() {
         metadata.overlay(&mut exported, state.id)?;
@@ -1661,6 +1667,12 @@ pub async fn restore(
         checkpoint.executor_policy_digest.as_deref(),
         &startup,
     )?;
+    let environment = startup.thread_extension_init.get::<crate::agent_profiles::ProfileEnvironments>();
+    ensure!(
+        checkpoint.agent_environment_policy_digest.as_deref()
+            == environment.as_ref().map(|environments| environments.digest.as_str()),
+        "Restore requires the recorded Agent environment grants"
+    );
 
     if python_specs.is_some() {
         // An absent current environment is an explicit empty selection on restore.

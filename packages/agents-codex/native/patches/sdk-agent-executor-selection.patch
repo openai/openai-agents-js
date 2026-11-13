@@ -1,0 +1,723 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index c7346d022ea..3740273817f 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1441,6 +1441,20 @@ impl CodexThread {
+         self.session.prepare_agent_profile_mcp(servers).await
+     }
+ 
++    /// Prepare a profile's MCP catalog on the host-admitted destination executor.
++    pub async fn prepare_agent_profile_mcp_in_environment(
++        &self,
++        servers: std::collections::HashMap<String, codex_config::McpServerConfig>,
++        environment: &codex_extension_api::AgentProfileEnvironment,
++    ) -> CodexResult<(
++        Arc<codex_mcp::McpBinding>,
++        codex_extension_api::SelectedPluginSnapshot,
++    )> {
++        self.session
++            .prepare_agent_profile_mcp_in_environment(servers, Some(environment))
++            .await
++    }
++
+     /// The committed native receipt; observation buffers never provide this authority.
+     pub async fn agent_profile_receipt(
+         &self,
+diff --git a/codex-rs/core/src/environment_selection.rs b/codex-rs/core/src/environment_selection.rs
+index 2fa0a6429f6..999494829d7 100644
+--- a/codex-rs/core/src/environment_selection.rs
++++ b/codex-rs/core/src/environment_selection.rs
+@@ -919,6 +919,47 @@ impl ThreadEnvironments {
+         self.resolve_snapshot(self.snapshot_now())
+     }
+ 
++    /// Prepare a profile's owner-configured attachment without publishing it to live work.
++    pub(crate) async fn snapshot_for_profile(
++        &self,
++        selection: &TurnEnvironmentSelection,
++    ) -> CodexResult<TurnEnvironmentSnapshot> {
++        let manager = self.environment_manager();
++        validate_environment_ids_and_cwds(&manager, std::slice::from_ref(selection))?;
++        if !matches!(selection.config, EnvironmentConfigState::Ready(_)) {
++            return Err(CodexErr::InvalidRequest(
++                "Agent environment requires a ready owner configuration".into(),
++            ));
++        }
++        let environment = manager
++            .get_environment(&selection.environment_id)
++            .ok_or_else(|| CodexErr::InvalidRequest("Agent executor is unavailable".into()))?;
++        let selected = Self::start_environment(
++            selection.clone(),
++            EnvironmentConfigOrigin::Owner,
++            environment,
++            None,
++            None,
++            &self.local_shell,
++            &self.shell_snapshot,
++        );
++        let starting = StartingTurnEnvironment {
++            selection: selected.selection,
++            config_origin: selected.config_origin,
++            resolution: selected.resolution,
++            environment: selected.environment,
++            owner_config_result: selected.owner_config_result,
++        };
++        let ready = starting.resolution.clone().await;
++        let snapshot = TurnEnvironmentSnapshot {
++            environments: vec![TurnEnvironmentState::from_resolution(starting, Some(ready))],
++        };
++        if snapshot.primary().is_none() {
++            return Err(CodexErr::InvalidRequest("Agent executor failed to start".into()));
++        }
++        Ok(snapshot)
++    }
++
+     /// Copies the current selection without waiting for any executor to connect.
+     pub(crate) fn snapshot_now(&self) -> TurnEnvironmentSnapshot {
+         // Keep the startup results, but not the senders that would keep removed Pending work alive.
+@@ -1607,6 +1648,31 @@ url = "ws://127.0.0.1:8765"
+         assert_eq!(resolved.snapshot().await.to_selections(), vec![first]);
+     }
+ 
++    #[tokio::test]
++    async fn preparing_an_agent_environment_keeps_the_live_selection() {
++        let cwd = AbsolutePathBuf::current_dir().expect("cwd");
++        let initial = TurnEnvironmentSelection {
++            environment_id: "local".to_string(),
++            cwd: PathUri::from_abs_path(&cwd),
++            workspace_roots: Vec::new(),
++            config: EnvironmentConfigState::FromThread,
++        };
++        let environments = resolve_turn_environments(
++            Arc::new(EnvironmentManager::default_for_tests()),
++            std::slice::from_ref(&initial),
++        )
++        .await;
++        let destination = TurnEnvironmentSelection {
++            cwd: PathUri::from_abs_path(&cwd.join("destination")),
++            config: EnvironmentConfigState::Ready(test_environment_config()),
++            ..initial.clone()
++        };
++        let prepared = environments.snapshot_for_profile(&destination).await.unwrap();
++        assert_eq!(prepared.primary().unwrap().selection, destination);
++        assert_eq!(environments.selections(), vec![initial.clone()]);
++        assert!(environments.snapshot_for_profile(&initial).await.is_err());
++    }
++
+     #[tokio::test]
+     async fn resolved_environment_selections_use_first_selection_as_primary() {
+         let cwd = AbsolutePathBuf::current_dir().expect("cwd");
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 07768eb85c2..9bbbced19b3 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -1,19 +1,20 @@
+ //! Atomic, host-admitted Agent selection at actual sampling boundaries.
+ 
++use super::environment::{ensure_configs_stay_owner_provided, validate_environment_configs};
+ use super::session::Session;
+ use super::step_activation::check_legacy_turn_safety;
+ use super::step_settings::ResolvedStepSettings;
+ use super::turn_context::TurnContext;
+ use codex_async_utils::OrCancelExt;
+ use codex_extension_api::{
+-    AgentProfile, AgentProfileBoundaryInput, AgentProfileModelSettings, AgentProfileReceipt,
+-    CapturedAgentProfile,
++    AgentProfile, AgentProfileBoundaryInput, AgentProfileEnvironment, AgentProfileModelSettings,
++    AgentProfileReceipt, CapturedAgentProfile,
+ };
+ use codex_history::{ResponseItemEnvelope, RolloutItem};
+ use codex_protocol::error::{CodexErr, Result as CodexResult};
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::{
+-    AgentProfileChangedEvent, Event, EventMsg, ThreadSettingsAppliedEvent,
++    AgentProfileChangedEvent, EnvironmentConfigState, Event, EventMsg, ThreadSettingsAppliedEvent,
+ };
+ use serde::{Deserialize, Serialize};
+ use std::sync::Arc;
+@@ -337,6 +338,23 @@ impl Session {
+             }
+             None => {}
+         }
++        let environment = target.data.get::<AgentProfileEnvironment>();
++        let selected_environments = environment
++            .as_ref()
++            .map(|environment| environment.0.as_slice());
++        if let Some(selections) = selected_environments {
++            if selections
++                .iter()
++                .any(|selection| !matches!(selection.config, EnvironmentConfigState::Ready(_)))
++            {
++                return Err(invalid("Agent environment requires a ready owner configuration"));
++            }
++            crate::environment_selection::validate_environment_ids_and_cwds(
++                &self.services.turn_environments.environment_manager(),
++                selections,
++            )?;
++            validate_environment_configs(selections).map_err(|error| invalid(error.to_string()))?;
++        }
+         let (mut configuration, restored) = {
+             let state = self.state.lock().await;
+             if !Arc::ptr_eq(
+@@ -353,11 +371,15 @@ impl Session {
+                     "Agent activation source changed during preparation",
+                 ));
+             }
++            let current_environments = self.services.turn_environments.selections();
++            let proposed = selected_environments.unwrap_or(&current_environments);
++            ensure_configs_stay_owner_provided(&current_environments, proposed)
++                .map_err(|error| invalid(error.to_string()))?;
+             self.validate_active_step_settings(
+                 &context,
+                 &destination,
+                 &state.session_configuration,
+-                &self.services.turn_environments.selections(),
++                proposed,
+             )
+             .map_err(|error| invalid(error.to_string()))?;
+             if task_fence.is_some() {
+@@ -371,6 +393,9 @@ impl Session {
+             }
+             (state.session_configuration.clone(), expected.is_none())
+         };
++        if let Some(selections) = selected_environments {
++            configuration.environments = selections.to_vec();
++        }
+         let live = self
+             .live_thread()
+             .ok_or_else(|| invalid("Agent profiles require retained native history"))?;
+@@ -435,6 +460,10 @@ impl Session {
+                 // Core already restored the effective settings, including explicit idle overrides.
+                 let mut state = self.state.lock().await;
+                 state.session_configuration.agent_profile = Some(profile);
++                if let Some(selections) = selected_environments {
++                    state.session_configuration.environments = configuration.environments;
++                    self.services.turn_environments.update_selections(selections);
++                }
+                 return Ok(receipt);
+             }
+         } else if previous
+@@ -525,7 +554,7 @@ impl Session {
+                 &context,
+                 &destination,
+                 &state.session_configuration,
+-                &self.services.turn_environments.selections(),
++                selected_environments.unwrap_or(&self.services.turn_environments.selections()),
+             )
+             .is_err()
+         {
+@@ -538,6 +567,10 @@ impl Session {
+         );
+         state.session_configuration.agent_profile = configuration.agent_profile;
+         state.session_configuration.step_settings = configuration.step_settings;
++        if let Some(selections) = selected_environments {
++            state.session_configuration.environments = configuration.environments;
++            self.services.turn_environments.update_selections(selections);
++        }
+         if task_fence.is_some() {
+             context.next_step_settings.store(Arc::new(destination));
+         }
+@@ -1014,6 +1047,84 @@ for line in sys.stdin:
+         );
+     }
+ 
++    #[tokio::test]
++    async fn agent_profile_environment_switch_and_restore_share_the_profile_fence() {
++        let (mut session, context) = make_session_and_context().await;
++        attach_thread_persistence(&mut session).await;
++        let workspace = tempfile::tempdir().unwrap();
++        let root = codex_utils_absolute_path::AbsolutePathBuf::try_from(workspace.path()).unwrap();
++        let initial = session.services.turn_environments.selections()[0].clone();
++        let mut config = session
++            .state
++            .lock()
++            .await
++            .session_configuration
++            .inferred_environment_config();
++        let destination = codex_utils_path_uri::PathUri::from_abs_path(&root);
++        config.workspace_roots = vec![destination.clone()];
++        let selection = codex_protocol::protocol::TurnEnvironmentSelection {
++            environment_id: initial.environment_id.clone(),
++            cwd: destination.clone(),
++            workspace_roots: vec![destination.clone()],
++            config: EnvironmentConfigState::Ready(config),
++        };
++        let a = session
++            .activate_agent_profile(None, profile(&context, "a", "resource-a"))
++            .await
++            .unwrap();
++        let mut b = profile(&context, "b", "resource-b").as_ref().clone();
++        b.data.insert(AgentProfileEnvironment(Some(selection.clone())));
++        let b = Arc::new(b);
++        let mut unavailable = b.as_ref().clone();
++        let mut invalid_selection = selection.clone();
++        invalid_selection.environment_id = "unregistered-profile-environment".into();
++        unavailable.data.insert(AgentProfileEnvironment(Some(invalid_selection)));
++        assert!(
++            session
++                .activate_agent_profile(Some(a.clone()), Arc::new(unavailable))
++                .await
++                .is_err()
++        );
++        assert_eq!(session.agent_profile_receipt().await.unwrap(), Some(a.clone()));
++        assert_eq!(session.services.turn_environments.selections(), vec![initial.clone()]);
++
++        let b_receipt = session
++            .activate_agent_profile(Some(a), Arc::clone(&b))
++            .await
++            .unwrap();
++        let snapshot = session.services.turn_environments.snapshot().await;
++        assert_eq!(snapshot.primary().unwrap().selection.cwd, destination);
++        assert_eq!(session.configured_environment_selections().await, vec![selection.clone()]);
++        assert_eq!(session.agent_profile_receipt().await.unwrap(), Some(b_receipt.clone()));
++
++        // Reopening a bound Agent reselects from the current host graph. History
++        // supplies the Agent receipt and never provides the environment grant.
++        {
++            let mut state = session.state.lock().await;
++            state.session_configuration.agent_profile = None;
++            state.session_configuration.environments = vec![initial.clone()];
++        }
++        session.services.turn_environments.update_selections(&[initial]);
++        assert_eq!(
++            session.activate_agent_profile(None, b).await.unwrap(),
++            b_receipt
++        );
++        assert_eq!(session.configured_environment_selections().await, vec![selection]);
++        assert_eq!(
++            session.services.turn_environments.snapshot().await.primary().unwrap().selection.cwd,
++            destination
++        );
++
++        let mut model_only = profile(&context, "model-only", "no-workspace").as_ref().clone();
++        model_only.data.insert(AgentProfileEnvironment(None));
++        session
++            .activate_agent_profile(Some(b_receipt), Arc::new(model_only))
++            .await
++            .unwrap();
++        assert!(session.configured_environment_selections().await.is_empty());
++        assert!(session.services.turn_environments.snapshot().await.primary().is_none());
++    }
++
+     #[tokio::test]
+     async fn agent_profile_restore_checks_model_and_exact_instruction_publication() {
+         let (mut session, context) = make_session_and_context().await;
+diff --git a/codex-rs/core/src/session/mcp_runtime.rs b/codex-rs/core/src/session/mcp_runtime.rs
+index a4fedb20189..be7033004fc 100644
+--- a/codex-rs/core/src/session/mcp_runtime.rs
++++ b/codex-rs/core/src/session/mcp_runtime.rs
+@@ -113,15 +113,36 @@ impl Session {
+     ) -> CodexResult<(
+         Arc<codex_mcp::McpBinding>,
+         codex_extension_api::SelectedPluginSnapshot,
++    )> {
++        self.prepare_agent_profile_mcp_in_environment(servers, None).await
++    }
++
++    pub(crate) async fn prepare_agent_profile_mcp_in_environment(
++        self: &Arc<Self>,
++        servers: std::collections::HashMap<String, codex_config::McpServerConfig>,
++        environment: Option<&codex_extension_api::AgentProfileEnvironment>,
++    ) -> CodexResult<(
++        Arc<codex_mcp::McpBinding>,
++        codex_extension_api::SelectedPluginSnapshot,
+     )> {
+         self.check_agent_profile_admission()?;
++        if let Some(selection) = environment.and_then(|environment| environment.0.as_ref()) {
++            super::environment::validate_environment_configs(std::slice::from_ref(selection))
++                .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++        }
+         let _refresh = self
+             .mcp_refresh
+             .acquire()
+             .await
+             .map_err(|_| CodexErr::TurnAborted)?;
+         self.check_agent_profile_admission()?;
+-        let environments = self.services.turn_environments.snapshot().await;
++        let environments = match environment.map(|environment| environment.0.as_ref()) {
++            Some(Some(selection)) => {
++                self.services.turn_environments.snapshot_for_profile(selection).await?
++            }
++            Some(None) => crate::environment_selection::TurnEnvironmentSnapshot::default(),
++            None => self.services.turn_environments.snapshot().await,
++        };
+         let auth = self.services.auth_manager.auth().await;
+         let mut desired = self.latest_mcp_desired_state(auth, environments).await;
+         let mut config = desired.config.as_ref().clone();
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 17a2009c2e0..faa35ac7cb8 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -150,6 +150,18 @@ pub(crate) async fn build_tool_router(
+     let mut resolved_forced_tool = None;
+     let mut forced_identity_seen = false;
+     let mut resolved_policy = tool_policy.as_ref().clone();
++    if let Some(executor) = step_store
++        .get::<codex_extension_api::AgentProfileExecutorTools>()
++        .or_else(|| {
++            session.services.thread_extension_data
++                .get::<codex_extension_api::AgentProfileExecutorTools>()
++        })
++    {
++        // Named Agent environment grants can only narrow the host's thread ceiling.
++        // SDKs declaring a profile graph always provide that explicit ceiling.
++        let allowed = resolved_policy.allowed_tools.get_or_insert_with(Vec::new);
++        allowed.retain(|tool| executor.permits(tool));
++    }
+     if let Some(selectors) = &resolved_policy.allowed_mcp_tools {
+         let named_ceiling = resolved_policy.allowed_tools.clone();
+         if let Some(allowed) = &mut resolved_policy.allowed_tools {
+diff --git a/codex-rs/exec-server/src/environment.rs b/codex-rs/exec-server/src/environment.rs
+index 41f692fb235..ca2eb5b62b7 100644
+--- a/codex-rs/exec-server/src/environment.rs
++++ b/codex-rs/exec-server/src/environment.rs
+@@ -5,6 +5,7 @@ use std::collections::HashSet;
+ use std::sync::Arc;
+ use std::sync::Mutex;
+ use std::sync::RwLock;
++use std::sync::Weak;
+ 
+ use arc_swap::ArcSwapOption;
+ use codex_config::ScopedSkillsConfig;
+@@ -92,11 +93,43 @@ pub enum EnvironmentConnectionState {
+ pub struct EnvironmentManager {
+     default_environment: Option<String>,
+     pub(super) environments: RwLock<HashMap<String, Arc<Environment>>>,
++    scoped_environments: RwLock<HashMap<String, Weak<Environment>>>,
+     local_environment: Option<Arc<Environment>>,
+     local_runtime_paths: Option<ExecServerRuntimeOptions>,
+     http_client_factory: HttpClientFactory,
+ }
+ 
++/// Owner of a named executor that is never selected by default.
++#[derive(Debug)]
++pub struct ScopedEnvironment {
++    manager: Weak<EnvironmentManager>,
++    id: String,
++    environment: Arc<Environment>,
++}
++
++impl ScopedEnvironment {
++    pub fn environment(&self) -> &Environment {
++        &self.environment
++    }
++}
++
++impl Drop for ScopedEnvironment {
++    fn drop(&mut self) {
++        if let Some(manager) = self.manager.upgrade() {
++            let mut scoped = manager
++                .scoped_environments
++                .write()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if scoped
++                .get(&self.id)
++                .is_some_and(|entry| entry.as_ptr() == Arc::as_ptr(&self.environment))
++            {
++                scoped.remove(&self.id);
++            }
++        }
++    }
++}
++
+ /// Information supplied by the environment owner when an environment is ready.
+ #[derive(Clone, Debug, Default, Eq, PartialEq)]
+ pub struct EnvironmentReadyInfo {
+@@ -143,6 +176,7 @@ impl EnvironmentManager {
+                 LOCAL_ENVIRONMENT_ID.to_string(),
+                 Arc::new(Environment::default_for_tests()),
+             )])),
++            scoped_environments: RwLock::default(),
+             local_environment: Some(Arc::new(Environment::default_for_tests())),
+             local_runtime_paths: None,
+             // Test-only construction has no application config from which to resolve proxy policy.
+@@ -155,6 +189,7 @@ impl EnvironmentManager {
+         Self {
+             default_environment: None,
+             environments: RwLock::new(HashMap::new()),
++            scoped_environments: RwLock::default(),
+             local_environment: None,
+             local_runtime_paths: None,
+             http_client_factory,
+@@ -253,6 +288,7 @@ impl EnvironmentManager {
+         let manager = Self {
+             default_environment: Some(REMOTE_ENVIRONMENT_ID.to_string()),
+             environments: RwLock::new(HashMap::new()),
++            scoped_environments: RwLock::default(),
+             local_environment: None,
+             local_runtime_paths,
+             http_client_factory,
+@@ -369,6 +405,7 @@ impl EnvironmentManager {
+         Ok(Self {
+             default_environment,
+             environments: RwLock::new(environment_map),
++            scoped_environments: RwLock::default(),
+             local_environment,
+             local_runtime_paths,
+             http_client_factory,
+@@ -412,13 +449,84 @@ impl EnvironmentManager {
+         self.local_environment.as_ref().map(Arc::clone)
+     }
+ 
+-    /// Returns a named environment instance.
++    /// Returns a named environment instance, including a live explicit scope.
+     pub fn get_environment(&self, environment_id: &str) -> Option<Arc<Environment>> {
+-        self.environments
++        if let Some(environment) = self
++            .environments
+             .read()
+             .unwrap_or_else(std::sync::PoisonError::into_inner)
+             .get(environment_id)
+             .cloned()
++        {
++            return Some(environment);
++        }
++        self.scoped_environments
++            .read()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .get(environment_id)
++            .and_then(Weak::upgrade)
++    }
++
++    /// Registers an explicitly selected remote WebSocket executor for one owner.
++    pub fn register_scoped_environment(
++        self: &Arc<Self>,
++        environment_id: String,
++        options: RemoteEnvironmentOptions,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped_transport(environment_id, options.into_transport_params()?)
++    }
++
++    /// Registers an explicitly selected stdio executor for one owner.
++    pub fn register_scoped_stdio_environment(
++        self: &Arc<Self>,
++        environment_id: String,
++        command: StdioExecServerCommand,
++        initialize_timeout: Option<std::time::Duration>,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        self.register_scoped_transport(
++            environment_id,
++            ExecServerTransportParams::StdioCommand {
++                command,
++                initialize_timeout: initialize_timeout
++                    .unwrap_or(crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT),
++            },
++        )
++    }
++
++    fn register_scoped_transport(
++        self: &Arc<Self>,
++        id: String,
++        transport: ExecServerTransportParams,
++    ) -> Result<ScopedEnvironment, ExecServerError> {
++        validate_environment_id(&id)?;
++        let environment = Arc::new(Environment::remote_with_transport(
++            transport,
++            self.local_runtime_paths.clone(),
++            self.http_client_factory.clone(),
++            ScopedSkillsConfig::default(),
++        ));
++        {
++            let configured = self
++                .environments
++                .read()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            let mut scoped = self
++                .scoped_environments
++                .write()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if configured.contains_key(&id) || scoped.contains_key(&id) {
++                return Err(ExecServerError::Protocol(
++                    "scoped executor identity is already registered".to_owned(),
++                ));
++            }
++            scoped.insert(id.clone(), Arc::downgrade(&environment));
++        }
++        environment.start_connecting();
++        Ok(ScopedEnvironment {
++            manager: Arc::downgrade(self),
++            id,
++            environment,
++        })
+     }
+ 
+     /// Records a Ready or Failed provisioning result for an environment.
+@@ -442,6 +550,9 @@ impl EnvironmentManager {
+             .environments
+             .write()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if self.has_scoped_environment(&environment_id) {
++            return Ok(None);
++        }
+         if let Some(environment) = environments.get(&environment_id).cloned() {
+             if environment.provisioning_status_tx.is_none() {
+                 return Ok(None);
+@@ -566,6 +677,11 @@ impl EnvironmentManager {
+             .environments
+             .write()
+             .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if self.has_scoped_environment(&environment_id) {
++            return Err(ExecServerError::Protocol(
++                "scoped executor identity is already registered".to_owned(),
++            ));
++        }
+         if let Some(environment) = environments.get(&environment_id) {
+             if environment.provisioning_status_tx.is_none() {
+                 return Err(ExecServerError::ProvisioningModeConflict { environment_id });
+@@ -599,6 +715,14 @@ impl EnvironmentManager {
+         Ok(environment)
+     }
+ 
++    // Configured writers hold the registry lock before checking the scoped map.
++    fn has_scoped_environment(&self, id: &str) -> bool {
++        self.scoped_environments
++            .read()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++            .contains_key(id)
++    }
++
+     fn insert_environment(
+         &self,
+         environment_id: String,
+@@ -609,6 +733,11 @@ impl EnvironmentManager {
+                 .environments
+                 .write()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if self.has_scoped_environment(&environment_id) {
++                return Err(ExecServerError::Protocol(
++                    "scoped executor identity is already registered".to_owned(),
++                ));
++            }
+             environments.insert(environment_id, Arc::clone(&environment))
+         };
+         drop(replaced);
+@@ -1941,6 +2070,45 @@ mod tests {
+         assert!(status.warnings[0].contains("environment `stdio` is unavailable"));
+     }
+ 
++    #[tokio::test]
++    async fn scoped_environment_never_enters_defaults_and_retires_by_identity() {
++        let manager = Arc::new(EnvironmentManager::default_for_tests());
++        let listener = TcpListener::bind("127.0.0.1:0")
++            .await
++            .expect("executor listener");
++        let url = format!("ws://{}", listener.local_addr().expect("executor address"));
++        let id = "sdk-profile-test";
++        let attach = || {
++            manager.register_scoped_environment(
++                id.to_owned(),
++                RemoteEnvironmentOptions {
++                    exec_server_url: url.clone(),
++                    connect_timeout: None,
++                    http_headers: HashMap::new(),
++                },
++            )
++        };
++        let scope = attach().expect("first scoped registration");
++        let retained = manager.get_environment(id).expect("live scoped executor");
++        assert_eq!(
++            manager.default_environment_ids(),
++            vec![LOCAL_ENVIRONMENT_ID]
++        );
++        assert!(attach().is_err());
++        assert!(
++            manager
++                .upsert_environment(id.to_owned(), url.clone(), None)
++                .is_err()
++        );
++        drop(scope);
++        assert!(manager.get_environment(id).is_none());
++        let next = attach().expect("scope can register again after retirement");
++        let current = manager.get_environment(id).expect("fresh scoped executor");
++        assert!(!Arc::ptr_eq(&retained, &current));
++        drop(next);
++        assert!(manager.get_environment(id).is_none());
++    }
++
+     #[tokio::test]
+     async fn replacing_environment_stops_its_startup_task() {
+         let first_listener = TcpListener::bind("127.0.0.1:0")
+diff --git a/codex-rs/exec-server/src/environment/accepted.rs b/codex-rs/exec-server/src/environment/accepted.rs
+index a3772a24860..855abba800f 100644
+--- a/codex-rs/exec-server/src/environment/accepted.rs
++++ b/codex-rs/exec-server/src/environment/accepted.rs
+@@ -37,6 +37,7 @@ impl EnvironmentManager {
+         Ok(Self {
+             default_environment: Some(environment_id.clone()),
+             environments: RwLock::new(HashMap::from([(environment_id, environment)])),
++            scoped_environments: RwLock::default(),
+             local_environment: None,
+             local_runtime_paths: None,
+             http_client_factory,
+diff --git a/codex-rs/exec-server/src/lib.rs b/codex-rs/exec-server/src/lib.rs
+index c87d8ee33f4..4877812c4c0 100644
+--- a/codex-rs/exec-server/src/lib.rs
++++ b/codex-rs/exec-server/src/lib.rs
+@@ -126,6 +126,7 @@ pub use environment::LOCAL_ENVIRONMENT_ID;
+ pub use environment::MAX_SELECTED_CAPABILITY_ROOTS;
+ pub use environment::REMOTE_ENVIRONMENT_ID;
+ pub use environment::RemoteEnvironmentOptions;
++pub use environment::ScopedEnvironment;
+ pub use environment_bootstrap::PreparedEnvironmentManager;
+ pub use environment_provider::DefaultEnvironmentProvider;
+ pub use environment_provider::EnvironmentProvider;
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index c1425a4e0c0..8c64334b847 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -68,6 +68,8 @@ pub use turn_lifecycle::AgentProfile;
+ pub use turn_lifecycle::AgentProfileActivation;
+ pub use turn_lifecycle::AgentProfileBoundaryInput;
+ pub use turn_lifecycle::AgentProfileDecisionHandoffTools;
++pub use turn_lifecycle::AgentProfileEnvironment;
++pub use turn_lifecycle::AgentProfileExecutorTools;
+ pub use turn_lifecycle::AgentProfileHandoffTools;
+ pub use turn_lifecycle::AgentProfileInstructions;
+ pub use turn_lifecycle::AgentProfileModelSettings;
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index e24d2b593b0..78ed490eb26 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -232,6 +232,29 @@ impl std::fmt::Debug for AgentProfile {
+     }
+ }
+ 
++/// Trusted environment selection provided by the current host Agent graph.
++/// Portable history only records the profile identity, never this attachment.
++#[derive(Clone, Debug)]
++pub struct AgentProfileEnvironment(pub Option<codex_protocol::protocol::TurnEnvironmentSelection>);
++
++/// Exact executor tools admitted by the current host Agent's Environment.
++/// The thread-level tool policy remains a ceiling.
++#[derive(Clone, Debug, Default)]
++pub struct AgentProfileExecutorTools {
++    pub allowed: std::collections::HashSet<String>,
++}
++
++impl AgentProfileExecutorTools {
++    pub fn permits(&self, tool: &codex_tools::ToolName) -> bool {
++        !tool.is_default_namespace()
++            || !matches!(
++                tool.name.as_str(),
++                "exec_command" | "write_stdin" | "apply_patch" | "project_glob" | "project_grep"
++            )
++            || self.allowed.contains(tool.name.as_str())
++    }
++}
++
+ /// One committed native profile, shared by current and future step captures.
+ #[derive(Clone, Debug)]
+ pub struct CapturedAgentProfile {
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 11d2d80ee8d..d3545e49737 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -55,6 +55,8 @@ pub use contributors::AgentProfile;
+ pub use contributors::AgentProfileActivation;
+ pub use contributors::AgentProfileBoundaryInput;
+ pub use contributors::AgentProfileDecisionHandoffTools;
++pub use contributors::AgentProfileEnvironment;
++pub use contributors::AgentProfileExecutorTools;
+ pub use contributors::AgentProfileHandoffTools;
+ pub use contributors::AgentProfileInstructions;
+ pub use contributors::AgentProfileModelSettings;

@@ -418,6 +418,7 @@ import {
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
 import {
+  copyEnvironmentCommand,
   captureWritableRoots,
   Environment,
   projectSearchRuntime,
@@ -2406,6 +2407,20 @@ export class Session<OutputT = string, Context = unknown> {
     }
     this.voiceProfileGraphs.clear();
     this.voiceGraphGeneration = undefined;
+  }
+
+  private callbackEnvironmentOwner(message: Record<string, unknown>) {
+    const source = this.messageProfile(message);
+    const graph = source ? this.callbackProfileGraph(source) : undefined;
+    if (source && graph?.environments) {
+      const owner = graph.environments.get(source.profile_id);
+      if (!owner)
+        throw new NativeError(
+          'Callback resource is outside its captured Agent graph',
+        );
+      return owner;
+    }
+    return this.options.environmentOwner;
   }
 
   private messageProfile(
@@ -13102,9 +13117,10 @@ export class Session<OutputT = string, Context = unknown> {
   private configuredExecutorTools(
     policy: readonly string[],
     owner?: NativeTurn | ChildCallbackOwner,
+    environment: Environment | null = this.environment,
   ) {
     const tools =
-      this.environment?.tools.filter((tool) => policy.includes(tool)) ?? [];
+      environment?.tools.filter((tool) => policy.includes(tool)) ?? [];
     const restored = this.restoredExecutorTurn;
     const restoredOwner =
       owner === undefined ||
@@ -13138,8 +13154,10 @@ export class Session<OutputT = string, Context = unknown> {
     context.signal.throwIfAborted();
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
-    let environment = this.environment;
+    let environment =
+      this.callbackEnvironmentOwner(request)?.environment ?? null;
     if (environment) {
+      const inheritedEnvironment = environment;
       const policy = await this.configuredChildPolicy(request);
       context.signal.throwIfAborted();
       if (!this.current(owner))
@@ -13157,7 +13175,11 @@ export class Session<OutputT = string, Context = unknown> {
         transformResult,
         ...settings
       } = environment;
-      const tools = this.configuredExecutorTools(policy.tools, owner);
+      const tools = this.configuredExecutorTools(
+        policy.tools,
+        owner,
+        environment,
+      );
       const commands = tools.includes('exec_command');
       environment = new Environment({
         ...settings,
@@ -13192,6 +13214,7 @@ export class Session<OutputT = string, Context = unknown> {
           ? tools
           : tools.filter((tool) => tool !== 'write_stdin'),
       });
+      copyEnvironmentCommand(inheritedEnvironment, environment);
     }
     const configuredData = request._sdk_configured_continuation;
     const restoredChild =
@@ -13481,10 +13504,12 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
-      const sandboxProvider = this.options.environmentOwner?.sandboxProvider;
-      if (sandboxProvider?.environment === this.environment)
+      const environmentOwner = this.callbackEnvironmentOwner(msg);
+      const callbackEnvironment = environmentOwner?.environment ?? null;
+      const sandboxProvider = environmentOwner?.sandboxProvider;
+      if (sandboxProvider?.environment === callbackEnvironment)
         bindSandboxContext(context, sandboxProvider, check);
-      const skillLease = this.options.environmentOwner?.skillLease;
+      const skillLease = environmentOwner?.skillLease;
       registerToolSessionOwner(
         context,
         this.toolSessionOwner,
@@ -13501,7 +13526,9 @@ export class Session<OutputT = string, Context = unknown> {
                 admit,
               )
           : undefined,
-        skillLease?.environment === this.environment ? skillLease : undefined,
+        skillLease?.environment === callbackEnvironment
+          ? skillLease
+          : undefined,
         configuredAgentTool(tool)
           ? (input) =>
               this.invokeConfiguredChild(

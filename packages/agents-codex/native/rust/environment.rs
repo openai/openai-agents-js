@@ -65,19 +65,13 @@ async fn local_environment_manager(
             config.http_client_factory(),
         ));
     }
-    let paths = ExecServerRuntimeOptions::from_optional_paths(
-        config.codex_self_exe.clone(),
-        config.codex_linux_sandbox_exe.clone(),
-    )?;
     let paths = if restricted {
-        let paths = paths
-            .with_file_system_helper_env(local_command_env())
-            .with_join_unreturned_local_exec_on_interrupt();
-        #[cfg(target_os = "macos")]
-        let paths = paths.with_restricted_macos_process_sandbox();
-        paths
+        restricted_local_runtime(config)?
     } else {
-        paths
+        ExecServerRuntimeOptions::from_optional_paths(
+            config.codex_self_exe.clone(),
+            config.codex_linux_sandbox_exe.clone(),
+        )?
     };
     // The SDK owns its explicit execution selection. Reserve host MCP capacity
     // without reading ambient Noise or user environment configuration.
@@ -85,6 +79,19 @@ async fn local_environment_manager(
         paths,
         config.http_client_factory(),
     )?)
+}
+
+fn restricted_local_runtime(config: &Config) -> Result<ExecServerRuntimeOptions> {
+    check_local_helpers(config)?;
+    let paths = ExecServerRuntimeOptions::from_optional_paths(
+        config.codex_self_exe.clone(),
+        config.codex_linux_sandbox_exe.clone(),
+    )?
+    .with_file_system_helper_env(local_command_env())
+    .with_join_unreturned_local_exec_on_interrupt();
+    #[cfg(target_os = "macos")]
+    let paths = paths.with_restricted_macos_process_sandbox();
+    Ok(paths)
 }
 
 const LOCAL_COMMAND_PATH: &str = "/usr/bin:/bin";
@@ -388,6 +395,18 @@ fn write_root_key(path: &PathUri) -> Vec<u8> {
         .join(&b'/')
 }
 
+enum RemoteTransport {
+    Stdio(StdioExecServerCommand, Option<Duration>),
+    WebSocket(RemoteEnvironmentOptions),
+}
+
+fn environment_registration_error(error: codex_exec_server::ExecServerError) -> anyhow::Error {
+    anyhow::anyhow!(
+        "invalid remote executor connection settings: {}",
+        startup_cause(&error)
+    )
+}
+
 impl EnvironmentOptions {
     pub(crate) fn id(&self) -> &'static str {
         if self.local {
@@ -434,7 +453,10 @@ impl EnvironmentOptions {
     }
 
     pub fn capability_roots(&self) -> Option<Vec<SelectedCapabilityRoot>> {
-        let environment_id = self.id();
+        self.capability_roots_at(self.id())
+    }
+
+    fn capability_roots_at(&self, environment_id: &str) -> Option<Vec<SelectedCapabilityRoot>> {
         self.capability_directories.as_ref().map(|directories| {
             directories
                 .iter()
@@ -697,7 +719,6 @@ impl EnvironmentOptions {
                     && self.connect_timeout.is_none(),
                 "a local executor does not accept connection settings"
             );
-            check_local_helpers(config)?;
             return local_environment_manager(config, /*restricted*/ true).await;
         }
         let needs_local_mcp = config.mcp_servers.get().values().any(|server| {
@@ -729,8 +750,20 @@ impl EnvironmentOptions {
         private_paths: LocalPrivatePaths<'_>,
         trusted_temp: Option<&Path>,
     ) -> Result<()> {
+        self.check_ready_at(self.id(), config, manager, private_paths, trusted_temp)
+            .await
+    }
+
+    async fn check_ready_at(
+        &self,
+        environment_id: &str,
+        config: &Config,
+        manager: &EnvironmentManager,
+        private_paths: LocalPrivatePaths<'_>,
+        trusted_temp: Option<&Path>,
+    ) -> Result<()> {
         let environment = manager
-            .get_environment(self.id())
+            .get_environment(environment_id)
             .context("selected executor was not registered")?;
         environment.wait_until_ready().await.map_err(|error| {
             let location = if self.local { "local" } else { "remote" };
@@ -758,16 +791,50 @@ impl EnvironmentOptions {
     }
 
     fn register(&self, manager: &EnvironmentManager) -> Result<Arc<Environment>> {
+        let transport = self.remote_transport()?;
+        match transport {
+            RemoteTransport::Stdio(command, timeout) => {
+                manager.upsert_stdio_environment(REMOTE_ENVIRONMENT_ID.to_owned(), command, timeout)
+            }
+            RemoteTransport::WebSocket(options) => manager.upsert_environment_with_options(
+                REMOTE_ENVIRONMENT_ID.to_owned(),
+                options,
+                Default::default(),
+            ),
+        }
+        .map_err(environment_registration_error)?;
+        manager
+            .get_environment(REMOTE_ENVIRONMENT_ID)
+            .context("remote environment was not registered")
+    }
+
+    fn register_scoped(
+        &self,
+        manager: &Arc<EnvironmentManager>,
+        id: &str,
+    ) -> Result<codex_exec_server::ScopedEnvironment> {
+        match self.remote_transport()? {
+            RemoteTransport::Stdio(command, timeout) => {
+                manager.register_scoped_stdio_environment(id.to_owned(), command, timeout)
+            }
+            RemoteTransport::WebSocket(options) => {
+                manager.register_scoped_environment(id.to_owned(), options)
+            }
+        }
+        .map_err(environment_registration_error)
+    }
+
+    fn remote_transport(&self) -> Result<RemoteTransport> {
         ensure!(
             !self.local,
-            "a deferred executor requires a remote connection"
+            "a remote executor requires a remote connection"
         );
         let timeout = self
             .connect_timeout
             .map(Duration::try_from_secs_f64)
             .transpose()
             .map_err(|_| anyhow::anyhow!("invalid remote executor connect timeout"))?;
-        let registration = if let Some(command) = &self.stdio_command {
+        if let Some(command) = &self.stdio_command {
             ensure!(
                 self.headers.is_empty(),
                 "stdio executor cannot send HTTP headers"
@@ -778,8 +845,7 @@ impl EnvironmentOptions {
                     .is_some_and(|url| url.starts_with("docker://")),
                 "stdio executor requires a current SDK Docker source"
             );
-            manager.upsert_stdio_environment(
-                REMOTE_ENVIRONMENT_ID.to_owned(),
+            Ok(RemoteTransport::Stdio(
                 StdioExecServerCommand {
                     program: command.program.clone(),
                     args: command.args.clone(),
@@ -787,27 +853,14 @@ impl EnvironmentOptions {
                     cwd: command.cwd.clone(),
                 },
                 timeout,
-            )
+            ))
         } else {
-            manager.upsert_environment_with_options(
-                REMOTE_ENVIRONMENT_ID.to_owned(),
-                RemoteEnvironmentOptions {
-                    exec_server_url: self.url.clone().context("remote executor requires a URL")?,
-                    http_headers: self.headers.clone(),
-                    connect_timeout: timeout,
-                },
-                Default::default(),
-            )
-        };
-        registration.map_err(|error| {
-            anyhow::anyhow!(
-                "invalid remote executor connection settings: {}",
-                startup_cause(&error)
-            )
-        })?;
-        Ok(manager
-            .get_environment(REMOTE_ENVIRONMENT_ID)
-            .context("remote environment was not registered")?)
+            Ok(RemoteTransport::WebSocket(RemoteEnvironmentOptions {
+                exec_server_url: self.url.clone().context("remote executor requires a URL")?,
+                http_headers: self.headers.clone(),
+                connect_timeout: timeout,
+            }))
+        }
     }
 
     async fn profile(
@@ -855,9 +908,21 @@ impl EnvironmentOptions {
         private_paths: LocalPrivatePaths<'_>,
         trusted_temp: Option<&Path>,
     ) -> Result<(TurnEnvironmentSelection, Option<StrictExecutorWrites>)> {
+        self.selection_at(self.id(), config, manager, private_paths, trusted_temp)
+            .await
+    }
+
+    async fn selection_at(
+        &self,
+        environment_id: &str,
+        config: &Config,
+        manager: &EnvironmentManager,
+        private_paths: LocalPrivatePaths<'_>,
+        trusted_temp: Option<&Path>,
+    ) -> Result<(TurnEnvironmentSelection, Option<StrictExecutorWrites>)> {
         self.check_config(config)?;
         let environment = manager
-            .get_environment(self.id())
+            .get_environment(environment_id)
             .context("selected executor was not registered")?;
         let needs_info = !self.env.is_empty()
             || self.strict_writes()
@@ -897,7 +962,8 @@ impl EnvironmentOptions {
             }
             configured => configured,
         };
-        let selected_capability_roots = self.capability_roots().unwrap_or_default();
+        let selected_capability_roots =
+            self.capability_roots_at(environment_id).unwrap_or_default();
         let workspace_roots = vec![self.cwd.clone()];
         let mut shell_environment_policy = if self.local {
             ShellEnvironmentPolicy {
@@ -918,7 +984,7 @@ impl EnvironmentOptions {
         };
         shell_environment_policy.set_sdk_environment_overrides(self.env.clone());
         let selection = TurnEnvironmentSelection {
-            environment_id: self.id().to_owned(),
+            environment_id: environment_id.to_owned(),
             workspace_roots: workspace_roots.clone(),
             cwd: self.cwd.clone(),
             // Owner configuration prevents executor-advertised roots from being added.
@@ -941,6 +1007,57 @@ impl EnvironmentOptions {
             }),
         };
         Ok((selection, strict))
+    }
+
+    /// Prepares a named executor before committing its Agent profile.
+    pub(crate) async fn prepare_profile_selection(
+        &self,
+        environment_id: &str,
+        config: &Config,
+        manager: &Arc<EnvironmentManager>,
+        private_paths: LocalPrivatePaths<'_>,
+    ) -> Result<(
+        TurnEnvironmentSelection,
+        Option<StrictExecutorWrites>,
+        Option<codex_exec_server::ScopedEnvironment>,
+    )> {
+        ensure!(
+            environment_id
+                .strip_prefix("sdk-profile-")
+                .is_some_and(|id| {
+                    !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+                }),
+            "invalid Agent profile executor identity"
+        );
+        self.check_config(config)?;
+        self.check_local_session_paths(config, private_paths)?;
+        let owner = if self.local {
+            ensure!(
+                self.url.is_none()
+                    && self.stdio_command.is_none()
+                    && self.headers.is_empty()
+                    && self.connect_timeout.is_none(),
+                "a local executor does not accept connection settings"
+            );
+            ensure!(
+                self.network.is_none() && self.write_policy.is_none(),
+                "Agent profile cannot replace the Session's local proxy or trusted write policy"
+            );
+            manager
+                .register_scoped_local_environment(
+                    environment_id.to_owned(),
+                    restricted_local_runtime(config)?,
+                )
+                .map_err(environment_registration_error)?
+        } else {
+            self.register_scoped(manager, environment_id)?
+        };
+        self.check_ready_at(environment_id, config, manager, private_paths, None)
+            .await?;
+        let (selection, strict) = self
+            .selection_at(environment_id, config, manager, private_paths, None)
+            .await?;
+        Ok((selection, strict, Some(owner)))
     }
 
     pub(crate) fn configure_local_proxy(
@@ -1922,8 +2039,11 @@ pub(crate) async fn replace_writable_roots(
         !previous.read_only || writable_roots.is_empty(),
         "read-only execution does not accept writable_roots"
     );
+    let environment = manager
+        .get_environment(&selection.environment_id)
+        .context("selected executor was not registered")?;
     // The SDK installs its local proxy after rejecting an ambient controller at selection.
-    let local = selection.environment_id == LOCAL_ENVIRONMENT_ID;
+    let local = !environment.is_remote();
     check_writable_config(config, local)?;
     let mut selection = selection.clone();
     let EnvironmentConfigState::Ready(settings) = &mut selection.config else {
@@ -1947,9 +2067,6 @@ pub(crate) async fn replace_writable_roots(
     } else {
         None
     };
-    let environment = manager
-        .get_environment(&selection.environment_id)
-        .context("selected executor was not registered")?;
     let info = executor_info(&environment).await?;
     let platform = Platform::from_platform_os(info.platform_os.as_deref());
     let (strict, profile) = strict_write_profile(
@@ -2081,7 +2198,14 @@ pub(crate) async fn checkpoint_policy(
     let Some(strict) = thread.thread_extension_data().get::<StrictExecutorWrites>() else {
         return Ok(None);
     };
-    let selections = thread.environment_selections().await;
+    let selections = if let Some(profile) = thread
+        .thread_extension_data()
+        .get::<crate::agent_profiles::ProfileEnvironments>()
+    {
+        profile.default.0.as_slice().to_vec()
+    } else {
+        thread.environment_selections().await
+    };
     let config = thread.config().await;
     let values = executor_policy_values(&selections, &config)?;
     Ok(Some(digest(&declared_executor_policies(
@@ -2214,6 +2338,8 @@ fn is_legacy_executor_profile(profile: &PermissionProfile) -> bool {
 #[derive(Default)]
 pub(crate) struct LocalResumeExecutorPolicy {
     values: Vec<serde_json::Value>,
+    agent_graph: Option<std::sync::Arc<crate::agent_profiles::OpeningProfiles>>,
+    agent_environment_policy: Option<String>,
     strict: bool,
     trusted: bool,
     local_writes: Option<Arc<StrictExecutorWrites>>,
@@ -2231,6 +2357,13 @@ impl LocalResumeExecutorPolicy {
                 executor_policy_values(selections, &startup.config)?,
                 trusted,
             )?,
+            agent_graph: startup
+                .thread_extension_init
+                .get::<crate::agent_profiles::OpeningProfiles>(),
+            agent_environment_policy: startup
+                .thread_extension_init
+                .get::<crate::agent_profiles::ProfileEnvironments>()
+                .map(|graph| graph.digest.clone()),
             strict: strict_writes.is_some(),
             trusted,
             local_writes: strict_writes.filter(|_| {
@@ -2239,6 +2372,10 @@ impl LocalResumeExecutorPolicy {
                     .any(|selection| selection.environment_id == LOCAL_ENVIRONMENT_ID)
             }),
         })
+    }
+
+    pub(crate) fn agent_graph(&self) -> Option<&crate::agent_profiles::OpeningProfiles> {
+        self.agent_graph.as_deref()
     }
 
     pub(crate) async fn check_rollout_path(&self, path: &Path) -> Result<()> {
@@ -2255,6 +2392,14 @@ impl LocalResumeExecutorPolicy {
     ) -> Result<()> {
         let id = id.to_string();
         validate_sdk_receipt_identities(history, &id)?;
+        if crate::agent_profiles::validate_restored_environment(
+            self.agent_environment_policy.as_deref(),
+            history,
+        )? {
+            // Profile publications pin the entire fresh graph and the active
+            // profile. Ordinary executor receipts contain per-engine route IDs.
+            return Ok(());
+        }
         let is_strict = |flag: Option<&serde_json::Value>| {
             flag.is_some_and(|flag| flag.as_bool() != Some(false))
         };
@@ -2406,6 +2551,7 @@ fn is_implicit_remote_policy(receipt: &Value) -> bool {
 pub(crate) async fn configured_child_policy(
     owner: &codex_core_api::CodexThread,
     thread: &codex_core_api::CodexThread,
+    manager: &EnvironmentManager,
     turn: &str,
     restored: bool,
 ) -> Result<Value> {
@@ -2424,9 +2570,12 @@ pub(crate) async fn configured_child_policy(
     };
     let config = thread.config().await;
     let local_network = local_session_network_policy(&config);
+    let environment = manager
+        .get_environment(&selection.environment_id)
+        .context("selected executor was not registered")?;
     let receipt = codex_protocol::protocol::sdk_executor_policy_receipt(
         selection,
-        selection.environment_id == REMOTE_ENVIRONMENT_ID,
+        environment.is_remote(),
         local_network.as_ref(),
     )
     .context("Configured child executor policy is unavailable")?;
@@ -2824,12 +2973,14 @@ mod tests {
             }
         }))
         .expect("decode host options");
-        let manager = EnvironmentManager::without_environments(
-            codex_http_client::HttpClientFactory::new(
+        let manager =
+            EnvironmentManager::without_environments(codex_http_client::HttpClientFactory::new(
                 codex_http_client::OutboundProxyPolicy::ReqwestDefault,
-            ),
-        );
-        let error = options.register(&manager).err().expect("reject HTTP headers");
+            ));
+        let error = options
+            .register(&manager)
+            .err()
+            .expect("reject HTTP headers");
         assert_eq!(error.to_string(), "stdio executor cannot send HTTP headers");
         assert!(manager.get_environment(REMOTE_ENVIRONMENT_ID).is_none());
     }

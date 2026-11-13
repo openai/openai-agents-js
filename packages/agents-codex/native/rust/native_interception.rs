@@ -2998,6 +2998,8 @@ impl ThreadLifecycleContributor<Config> for Boundary {
             // A child carries receipt provenance, and Core reads its cwd and
             // policy from the executor actually selected for each sample.
             let strict_executor_writes = input.thread_store.get::<StrictExecutorWrites>().is_some()
+                || input.thread_store.get::<crate::agent_profiles::ProfileEnvironments>()
+                    .is_some_and(|environments| environments.strict)
                 || (matches!(input.environments, [selection]
                     if matches!(selection.config, EnvironmentConfigState::Ready(_)))
                     && parent.as_ref().is_some_and(|owner| {
@@ -3026,6 +3028,12 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                 control.enable_profile_policies();
             }
             if let Some(step) = input.spawning_step_store {
+                if let Some(environment) = step.get::<codex_extension_api::AgentProfileEnvironment>() {
+                    input.thread_store.insert((*environment).clone());
+                }
+                if let Some(tools) = step.get::<codex_extension_api::AgentProfileExecutorTools>() {
+                    input.thread_store.insert((*tools).clone());
+                }
                 match capture_mcp_source(Some(step)) {
                     Ok(Some(source)) => {
                         input.thread_store.insert((*source).clone());
@@ -3268,7 +3276,11 @@ impl ContextContributor for Boundary {
                             selection.environment_id.as_str(),
                             codex_exec_server::LOCAL_ENVIRONMENT_ID
                                 | codex_exec_server::REMOTE_ENVIRONMENT_ID
-                        ) =>
+                        ) || input.step_store
+                            .get::<codex_extension_api::AgentProfileEnvironment>()
+                            .or_else(|| input.thread_store.get::<codex_extension_api::AgentProfileEnvironment>())
+                            .and_then(|owner| owner.0.clone())
+                            .is_some_and(|owner| owner.environment_id == selection.environment_id) =>
                     {
                         match (&selection.config, control.command_tty.get()) {
                             (EnvironmentConfigState::Ready(environment), Some(tty)) => {

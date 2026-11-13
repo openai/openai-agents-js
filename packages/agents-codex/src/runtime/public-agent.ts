@@ -1,3 +1,4 @@
+import { acquireProfileEnvironments } from './profile-environments';
 import {
   captureProviderHistory,
   type ProviderHistory,
@@ -180,6 +181,8 @@ import type {
 } from './session';
 
 export type AgentOptions<Context = undefined, Output = string> = {
+  /** Default resource opening; Session.environment has been taking precedence. */
+  environment?: Environment<Context> | EnvironmentSource<Context>;
   realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
@@ -560,6 +563,7 @@ export class Agent<Context = undefined, Output = string> {
   realtime?: RealtimeAgentConfig<Context>;
   name?: string;
   model?: string;
+  environment?: Environment<Context> | EnvironmentSource<Context>;
   decisions?: DecisionProvider;
   readonly decide: BoundDecide = ((
     question: string,
@@ -601,6 +605,7 @@ export class Agent<Context = undefined, Output = string> {
         'Agent instructions are required unless hostedPrompt supplies them',
       );
     this.instructions = declaredInstructions ?? '';
+    this.environment = options.environment;
     if (declaredInstructions === undefined) {
       // Keep the public string property while capturing hosted omission. A later
       // assignment, including an empty string, supplies explicit instructions.
@@ -1364,7 +1369,7 @@ export class Agent<Context = undefined, Output = string> {
     );
     declarations.tools = [...catalog.tools];
     const {
-      environment: environmentInput,
+      environment: environmentInput = this.environment,
       context: suppliedContext,
       resume,
       storage: descriptor,
@@ -1538,8 +1543,16 @@ export class Agent<Context = undefined, Output = string> {
       options.signal,
     );
     acquiredEnvironment(environmentOwner);
+    const profileEnvironments = profiles
+      ? await acquireProfileEnvironments(profiles, environmentOwner)
+      : undefined;
     const capabilityLease = environmentOwner.sandboxCapabilities;
-    if (capabilityLease?.hasContributions) {
+    if (
+      capabilityLease?.hasContributions ||
+      [...(profileEnvironments?.values() ?? [])].some(
+        (owner) => owner.sandboxCapabilities?.hasContributions,
+      )
+    ) {
       if (stateResult && !stateResult.success) throw stateResult.error;
       if (
         opening ||
@@ -1568,10 +1581,9 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(
           'Sandbox capability contributions require a fresh root or idle restore with eager direct function tools or owned Shell/ApplyPatch callbacks',
         );
-      const contributed = await capabilityLease.contributions(
-        settings,
-        transformContext,
-      );
+      const contributed = capabilityLease?.hasContributions
+        ? await capabilityLease.contributions(settings, transformContext)
+        : { tools: [], settings, transformContext };
       if (
         contributed.tools.some(
           (tool) => !isSandboxCapabilityTool(tool) || tool.deferLoading,
@@ -1593,6 +1605,7 @@ export class Agent<Context = undefined, Output = string> {
           capabilityLease,
           contributed,
           instructions,
+          profileEnvironments,
         );
         catalog = captureTools(
           profiles[0].declaration.tools as readonly SessionTool[],
@@ -1613,6 +1626,11 @@ export class Agent<Context = undefined, Output = string> {
       transformContext = contributed.transformContext;
     }
     const environment = environmentOwner.environment;
+    const hasExecutorEnvironment =
+      !!environment ||
+      [...(profileEnvironments?.values() ?? [])].some(
+        (owner) => owner.environment !== undefined,
+      );
     if (projectGuidance && !(environment instanceof Environment))
       throw new TypeError('Project guidance requires an explicit Environment');
     if (declarations.nativeGoals && storage === undefined)
@@ -1701,7 +1719,9 @@ export class Agent<Context = undefined, Output = string> {
           graph.roster.map((row) =>
             Object.freeze({
               ...row,
-              workspace_preparation: true,
+              workspace_preparation:
+                !profileEnvironments ||
+                profileEnvironments.get(row.id as string) === environmentOwner,
               ...(row.id === graph!.rootId
                 ? {
                     workspace_instructions:
@@ -1710,6 +1730,24 @@ export class Agent<Context = undefined, Output = string> {
                 : {}),
             }),
           ),
+        ),
+      });
+    if (graph && profileEnvironments)
+      graph = Object.freeze({
+        ...graph,
+        environments: profileEnvironments,
+        roster: Object.freeze(
+          graph.roster.map((row) => {
+            if (row.workspace_preparation === true) return row;
+            const owner = profileEnvironments.get(row.id as string)!;
+            return Object.freeze({
+              ...row,
+              workspace_instructions:
+                (owner.sandboxCapabilities?.hasPreparedProfiles
+                  ? owner.profileWorkspaceInstructions
+                  : owner.workspaceInstructions) ?? '',
+            });
+          }),
         ),
       });
     const graphNative = graph ? await binding() : undefined;
@@ -1798,7 +1836,14 @@ export class Agent<Context = undefined, Output = string> {
             namespace: 'collaboration',
           }))
         : []),
-      ...(environment?.tools ?? []).map((name) => ({
+      ...[
+        ...new Set([
+          ...(environment?.tools ?? []),
+          ...[...(profileEnvironments?.values() ?? [])].flatMap(
+            (owner) => owner.environment?.tools ?? [],
+          ),
+        ]),
+      ].map((name) => ({
         name,
         namespace: 'functions',
       })),
@@ -2064,7 +2109,9 @@ export class Agent<Context = undefined, Output = string> {
           ...(projectGuidance ? { _sdk_project_guidance_config: true } : {}),
           base_instructions:
             "You are an AI agent. Follow the application instructions and use the tools provided to complete the user's request accurately.",
-          ...(environment ? { sandbox_mode: 'read-only' as const } : {}),
+          ...(hasExecutorEnvironment
+            ? { sandbox_mode: 'read-only' as const }
+            : {}),
         },
         threadOptions: {
           ...(options.providerHistory === undefined
@@ -2173,7 +2220,7 @@ export class Agent<Context = undefined, Output = string> {
                 ? [...graph.profiles.values()].flatMap((profile) => profile.mcp)
                 : []),
             ]),
-            ...(environment
+            ...(hasExecutorEnvironment
               ? {
                   require_managed_sandbox: true,
                   require_unified_exec: true,
@@ -2486,13 +2533,24 @@ function supportsCapabilityProfile(declaration: Agent<any, any>): boolean {
 
 async function prepareCapabilityProfiles(
   profiles: readonly CapturedAgentProfile<any, any>[],
-  owner: SandboxCapabilityLease,
+  owner: SandboxCapabilityLease | undefined,
   root: Awaited<ReturnType<SandboxCapabilityLease['contributions']>>,
   instructions: string,
+  resources?: ReadonlyMap<string, EnvironmentAcquisition>,
 ): Promise<readonly CapturedAgentProfile<any, any>[]> {
   const prepared: CapturedAgentProfile<any, any>[] = [];
   for (const [index, profile] of profiles.entries()) {
-    const lease = index === 0 ? owner : await owner.forProfile();
+    const resourceOwner = resources
+      ? resources.get(profile.id)?.sandboxCapabilities
+      : owner;
+    if (!resourceOwner) {
+      prepared.push(profile);
+      continue;
+    }
+    const lease =
+      index === 0 || resourceOwner !== owner
+        ? resourceOwner
+        : await resourceOwner.forProfile();
     const contribution =
       index === 0
         ? root
@@ -2533,7 +2591,7 @@ async function prepareCapabilityProfiles(
         );
       return next;
     };
-    owner.captureProfile(
+    resourceOwner.captureProfile(
       profile.id,
       lease,
       index === 0 ? instructions : (profile.declaration.instructions ?? ''),
@@ -2684,6 +2742,7 @@ export function captureAgentProfiles<Context, Output>(
         : source.outputType;
     const declaration = new Agent<Context, Output>({
       instructions: capturedInstructions(source),
+      environment: source.environment,
       realtime: source.realtime,
       name: source.name,
       model: source.model,

@@ -1255,7 +1255,15 @@
     {
       "path": "sdk-exclusive-workspace-file.patch",
       "sha256": "e0c797692c8f3efd843ea00f6148f7e8121dcdee02766682fbb18a7ff03a4938"
+    },
+    {
+      "path": "sdk-agent-executor-selection.patch",
+      "sha256": "0daaee66bfae0af6d1fc3397591c529183fbe742fd35bef56c6663a147c433bd"
+    },
+    {
+      "path": "sdk-scoped-local-and-durable-agent-executors.patch",
+      "sha256": "6f477e87c5eb956aa708a318d552c477ad94e8a9fac95893640cee66096e943e"
     }
   ],
-  "result_tree": "e482e0eecb70075bc4cf594ddf1ce7a6b27e9cfc"
+  "result_tree": "4eb60f6aaf2c11e47b5d7c8be7c99b27b2d1aa28"
 }

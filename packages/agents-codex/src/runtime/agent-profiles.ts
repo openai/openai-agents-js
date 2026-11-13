@@ -11,7 +11,7 @@ import {
 import { HttpMCP, StdioMCP, mcpConfig, mcpPolicies, type McpTool } from './mcp';
 import { splitToolDeclarations } from './tool-declarations';
 import { prepareOutput, type PreparedOutput } from './output';
-import type { Environment } from './environment';
+import { environmentConfig, type Environment } from './environment';
 import type { JsonObject } from './binding';
 import { modelOverrides } from './provider';
 
@@ -41,6 +41,10 @@ export interface AgentProfileRuntime {
 }
 export interface CapturedAgentGraph {
   readonly rootId: string;
+  readonly environments?: ReadonlyMap<
+    string,
+    import('./environment-source').EnvironmentAcquisition
+  >;
   readonly workspace?: import('./sandbox-capabilities').SandboxCapabilityLease;
   /** Pure native preflight of this exact supplied history, before resource acquisition. */
   readonly restoredSource?: AgentProfileReceipt;
@@ -306,6 +310,23 @@ export function profileRoster(
 ): readonly JsonObject[] {
   return graph.roster.map((row) => ({
     ...row,
+    ...(graph.environments
+      ? {
+          environment_tools: [
+            ...(graph.environments.get(row.id as string)?.environment?.tools ??
+              []),
+          ],
+          ...(graph.environments.get(row.id as string) !==
+            graph.environments.get(graph.rootId) &&
+          graph.environments.get(row.id as string)?.environment
+            ? {
+                environment: environmentConfig(
+                  graph.environments.get(row.id as string)!.environment!,
+                ),
+              }
+            : {}),
+        }
+      : {}),
     mcp_servers: mcpConfig(
       graph.profiles
         .get(row.id as string)!
@@ -315,7 +336,7 @@ export function profileRoster(
               (server instanceof StdioMCP && server.lifetime === 'turn')) &&
             (!(server instanceof HttpMCP) || server.activation !== 'operation'),
         ),
-      environment,
+      graph.environments?.get(row.id as string)?.environment ?? environment,
       graph.profiles.get(row.id as string)!.profile.declaration
         .programmaticToolCalling,
       graph.profiles.get(row.id as string)!.mcp,

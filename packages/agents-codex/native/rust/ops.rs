@@ -473,7 +473,15 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
             .map_err(pre_admission)?;
     }
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
+    let agent_environments = thread.thread_extension_data()
+        .get::<crate::agent_profiles::ProfileEnvironments>();
+    if agent_environments.is_some() && p.writable_roots.is_some() {
+        return Err(pre_admission(anyhow::anyhow!(
+            "Writable roots belong to the admitted Agent environment"
+        )));
+    }
     if (strict.is_some()
+        || agent_environments.is_some()
         || state.engine.local_checklist_store.is_some()
         || state.engine.saved_login_file.is_some())
         && p.thread_settings
