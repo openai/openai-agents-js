@@ -230,6 +230,9 @@ export async function tryOpenPlainRun(
     hasCustomTracingIds() ||
     lease.chatGPT ||
     !lease.apiKey ||
+    (lease.websocketsAllowed &&
+      lease.config['model_providers.native_agent']?.websocket_options !==
+        undefined) ||
     options.modelBackend ||
     options.beforeComplete ||
     options.toolBatchCompletion ||

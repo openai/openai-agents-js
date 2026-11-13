@@ -36,6 +36,18 @@ it.each([
     success: true,
   },
   {
+    selector: undefined,
+    mode: 'pong',
+    options: { pingIntervalMs: 20, pingTimeoutMs: 40 },
+    success: true,
+  },
+  {
+    selector: undefined,
+    mode: 'no-pong',
+    options: { pingIntervalMs: 20, pingTimeoutMs: 40 },
+    success: false,
+  },
+  {
     selector: 'websocket' as const,
     mode: 'uncertain',
     options: undefined,
@@ -133,8 +145,8 @@ it.each([
         baseUrl: `http://127.0.0.1:${address.port}/v1`,
         apiKey: 'synthetic-controls',
         supportsWebsockets: true,
-        requestMaxRetries: 3,
-        streamMaxRetries: 3,
+        requestMaxRetries: selector === undefined ? 0 : 3,
+        streamMaxRetries: selector === undefined ? 0 : 3,
         streamIdleTimeoutMs: 1000,
         websocketOptions: options,
       });
@@ -142,7 +154,9 @@ it.each([
         instructions: 'Answer.',
         model: 'gpt-5.5',
         provider,
-        modelSettings: { requestTransport: selector },
+        ...(selector === undefined
+          ? {}
+          : { modelSettings: { requestTransport: selector } }),
       });
       if (success)
         expect((await agent.run('hello')).finalOutput).toBe('wire answer');
