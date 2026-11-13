@@ -21,7 +21,16 @@ jobs:
   native:
     name: Native bundle (${{ inputs.platform }})
     if: github.repository == 'openai/openai-agents-js'
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"' || '"macos-15-xlarge"') }}
+    runs-on: >-
+      ${{ fromJSON(
+        github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'linux-arm64' && '{"group":"codex-runners","labels":"codex-linux-arm64"}' ||
+        inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"' ||
+        (github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&
+         '"macos-26-xlarge"' || '"macos-15-xlarge"')
+      ) }}
     timeout-minutes: 180
     outputs:
       artifact: ${{ toJSON(steps.upload.outputs) }}
@@ -31,8 +40,10 @@ jobs:
     env:
       EXPECTED_PLATFORM: ${{ inputs.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' &&64 || inputs.platform == 'win32-x64' &&16 || inputs.platform == 'linux-arm64' &&4 ||5 }}
+      CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' &&64 || inputs.platform == 'win32-x64' && (github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&48 ||16) || inputs.platform == 'linux-arm64' && (github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&16 ||4) ||5 }}
       CARGO_INCREMENTAL: '0'
+      OPENAI_AGENTS_NATIVE_TIMINGS: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/ci/hillclimb/js-cold-timing-seed-32' || github.ref == 'refs/heads/ci/hillclimb/js-cold-timing-consumer-32') && '1' || '0' }}
+      NATIVE_PARALLEL_WINDOWS: ${{ github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'win32-x64' && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -66,9 +77,16 @@ jobs:
       - name: Build the native runtime
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node packages/agents-codex/scripts/native.mjs package
+        run: |
+          native_args=(package)
+          if [[ "$NATIVE_PARALLEL_WINDOWS" == 1 ]]; then
+            native_args+=(--parallel-windows)
+            # Divide the 48-job Windows build budget across both Cargo graphs.
+            export CARGO_BUILD_JOBS=24
+          fi
+          node packages/agents-codex/scripts/native.mjs "${native_args[@]}"
       - name: Test Windows project-search filename handling
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !(github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')))
         working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/agents-project-search-target
@@ -84,6 +102,9 @@ jobs:
           native_archive="librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
           native_suffix=""
           if [[ "$EXPECTED_PLATFORM" == win32-x64 ]]; then
+            if [[ "$NATIVE_PARALLEL_WINDOWS" == 1 ]]; then
+              export CARGO_TARGET_DIR="$CARGO_TARGET_DIR/windows-helpers"
+            fi
             native_args+=(--config "$PWD/.upstream/reviewed-codex/codex-rs/.cargo/config.toml" --target "$native_host")
             native_output="$CARGO_TARGET_DIR/$native_host/release"
             native_archive="rusty_v8_ptrcomp_sandbox_release_${native_host}.lib.gz"
@@ -115,3 +136,57 @@ jobs:
           if-no-files-found: error
           # Automatic reuse is opportunistic; an expired bundle is rebuilt immediately.
           retention-days: 90
+
+      - name: Save Cargo timing reports
+        if: ${{ always() && env.OPENAI_AGENTS_NATIVE_TIMINGS == '1' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cargo-timings-${{ inputs.platform }}
+          path: |
+            ${{ runner.temp }}/agents-target/cargo-timings/*.html
+            ${{ runner.temp }}/agents-target/windows-helpers/cargo-timings/*.html
+          if-no-files-found: error
+          retention-days: 2
+
+  windows-filenames:
+    name: Windows project-search filename handling
+    if: >-
+      github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'win32-x64'
+    runs-on:
+      group: codex-runners
+      labels: codex-windows-x64
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: '1.95.0'
+      CARGO_BUILD_JOBS: 16
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install Rust
+        run: |
+          echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-project-search-target" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install Windows build tools
+        shell: pwsh
+        run: choco install protoc --yes --no-progress
+      - name: Prepare the reviewed native source
+        run: node packages/agents-codex/scripts/native.mjs prepare
+      - name: Test Windows project-search filename handling
+        working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
+        run: |
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture
+      - name: Audit the reviewed native source
+        run: node packages/agents-codex/scripts/native.mjs audit
