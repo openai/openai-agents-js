@@ -8,6 +8,7 @@ import {
   decodeBoundedFileRead,
 } from '../shared/boundedFileRead';
 import { UserError } from '../../errors';
+import { registerExclusiveWorkspaceCreate } from './shared/exclusiveWorkspaceFiles';
 import {
   copyRemoteSnapshotAuthority,
   markDeserializedSandboxState,
@@ -57,6 +58,7 @@ import {
   sep,
 } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import type { SandboxSessionLike } from '../session';
 import { Header, Pax } from 'tar';
 import {
@@ -252,7 +254,9 @@ async function runDockerCli(
   return runSandboxProcess(
     invocation.executable,
     invocation.args,
-    invocation.env === undefined ? options : { ...options, env: invocation.env },
+    invocation.env === undefined
+      ? options
+      : { ...options, env: invocation.env },
   );
 }
 
@@ -398,6 +402,9 @@ export async function openDockerGatewayScope(
         const daemon = createHash('sha256')
           .update(socket + '\0' + identity)
           .digest('hex');
+        registerExclusiveWorkspaceCreate(resource, (args) =>
+          resource.createExclusiveDockerWorkspaceFile(execServerPath, args),
+        );
         return {
           url: 'docker://' + daemon + '/' + containerId,
           cwd: manifest.root,
@@ -488,6 +495,66 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
     super({ ...args, [preparedFileIO]: null });
     this.mountedPathGrants = args.state.manifest.extraPathGrants.map(
       (grant) => ({ ...grant }),
+    );
+  }
+
+  /** @internal Use the captured gateway helper after resource admission. */
+  async createExclusiveDockerWorkspaceFile(
+    execServerPath: string,
+    { path, entry, runAs }: MaterializeEntryArgs,
+  ): Promise<void> {
+    this.assertSessionUsable();
+    if (
+      entry.type !== 'file' ||
+      (typeof entry.content !== 'string' &&
+        !(entry.content instanceof Uint8Array)) ||
+      entry.permissions !== undefined ||
+      entry.group !== undefined
+    )
+      throw new UserError('Exclusive Docker writes require an ordinary file.');
+    const target = this.resolveContainerFilesystemPath(path, {
+      forWrite: true,
+    });
+    const args = ['exec', '-i', '-w', '/'];
+    const user = runAs ?? this.state.defaultUser;
+    if (user) args.push('-u', user);
+    args.push(
+      this.state.containerId,
+      '/usr/bin/env',
+      '-i',
+      'PATH=/usr/bin:/bin',
+      'LC_ALL=C',
+      execServerPath,
+      '--codex-run-as-fs-helper',
+    );
+    const request = JSON.stringify({
+      operation: 'fs/createFileExclusive',
+      params: {
+        path: pathToFileURL(target).href,
+        dataBase64: Buffer.from(
+          typeof entry.content === 'string'
+            ? new TextEncoder().encode(entry.content)
+            : entry.content,
+        ).toString('base64'),
+      },
+    });
+    const result = await runDockerProcess(args, request + '\n', 2048, this);
+    if (result.status === 0) {
+      try {
+        const response: unknown = JSON.parse(result.stdout);
+        if (
+          isRecord(response) &&
+          response.status === 'ok' &&
+          isRecord(response.payload) &&
+          response.payload.operation === 'fs/createFileExclusive'
+        )
+          return;
+      } catch {
+        // The image does not support the exclusive-write helper.
+      }
+    }
+    throw new UserError(
+      'Docker workspace file could not be created exclusively.',
     );
   }
 

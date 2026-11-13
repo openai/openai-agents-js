@@ -202,4 +202,5 @@ export {
 export {
   createWorkspaceFileNoFollow,
   hasExclusiveWorkspaceCreate,
+  registerExclusiveWorkspaceCreate,
 } from './sandboxes/shared/exclusiveWorkspaceFiles';

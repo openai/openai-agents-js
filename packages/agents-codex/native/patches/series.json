@@ -1167,7 +1167,11 @@
     {
       "path": "sdk-native-mcp-transport-cause.patch",
       "sha256": "485fe4e94e626f4e6f12a0c9c110ed365ec227227f5ba666cb99ddc932c430f3"
+    },
+    {
+      "path": "sdk-exclusive-workspace-file.patch",
+      "sha256": "ae8f67ef4c114dbac17ec4f7221605a8228a7cf91044edc8aaab89e6b8071364"
     }
   ],
-  "result_tree": "15ff19e846c2e763b80a71cfa78d37a88ae49a37"
+  "result_tree": "6c8154e76b28494062ac07fd3a4382e293503bfd"
 }

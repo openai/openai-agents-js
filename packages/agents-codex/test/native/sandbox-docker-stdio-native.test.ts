@@ -14,6 +14,7 @@ import { promisify } from 'node:util';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { DockerSandboxClient } from '@openai/agents/sandbox/local';
+import { createWorkspaceFileNoFollow } from '@openai/agents-core/sandbox/internal';
 import {
   Manifest,
   sandboxEnvironment,
@@ -59,8 +60,31 @@ class RawSandboxCapability implements SandboxCapability {
         description: 'Read and write the fixture grants.',
         parameters: z.object({}),
         execute: async () => {
-          const result = await this.resource!.exec!({
-            cmd: 'set -e; cat /tools/marker.txt; pwd; printf retained > /data-write/output.txt; if (printf unsafe > /tools/denied.txt) 2>/dev/null; then exit 33; fi; printf "protected read-only mount"',
+          const resource = this.resource!;
+          await createWorkspaceFileNoFollow(resource, {
+            path: '/workspace/exclusive.txt',
+            entry: { type: 'file', content: 'first content' },
+          });
+          const prepared = await resource.exec!({
+            cmd: 'mkdir /workspace/other; ln -s /workspace/other /workspace/link; mkfifo /workspace/existing-fifo; ln -s /workspace/other/missing /workspace/existing-link',
+            login: false,
+          });
+          expect(prepared.exitCode).toBe(0);
+          for (const path of [
+            '/workspace/exclusive.txt',
+            '/workspace/link/unexpected',
+            '/workspace/existing-fifo',
+            '/workspace/existing-link',
+          ]) {
+            await expect(
+              createWorkspaceFileNoFollow(resource, {
+                path,
+                entry: { type: 'file', content: 'unexpected write' },
+              }),
+            ).rejects.toThrow('exclusively');
+          }
+          const result = await resource.exec!({
+            cmd: 'set -e; test "$(cat /workspace/exclusive.txt)" = "first content"; test ! -e /workspace/other/unexpected; test ! -e /workspace/other/missing; cat /tools/marker.txt; pwd; printf retained > /data-write/output.txt; if (printf unsafe > /tools/denied.txt) 2>/dev/null; then exit 33; fi; printf "protected read-only mount"',
             login: false,
           });
           if (result.exitCode !== 0) throw new Error(result.output);

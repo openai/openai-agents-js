@@ -12,7 +12,7 @@ import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import { Agent, Environment, NativeProvider, tool } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
-import { registerExclusiveWorkspaceCreate } from '../../../agents-core/src/sandbox/sandboxes/shared/exclusiveWorkspaceFiles';
+import { registerExclusiveWorkspaceCreate } from '@openai/agents-core/sandbox/internal';
 
 let peer: Awaited<ReturnType<typeof startPublicExecutor>>;
 beforeAll(async () => {
