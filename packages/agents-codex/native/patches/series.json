@@ -1139,7 +1139,11 @@
     {
       "path": "sdk-handoff-restored-runtime-controls.patch",
       "sha256": "38ece9b77708c02aab4ae05afef8f4070e06b1ebdb80dc709c684e14202a9d41"
+    },
+    {
+      "path": "sdk-handoff-idle-update.patch",
+      "sha256": "6c7a4cf95a6f045702b808428f4ad7a6d5be508a52f902ccb4fa00cc27630d6f"
     }
   ],
-  "result_tree": "d63cf8d3f0792b78e94c60df5029024344d0964b"
+  "result_tree": "fe25c5eb6305f2177763717eb4911c8df171cad3"
 }

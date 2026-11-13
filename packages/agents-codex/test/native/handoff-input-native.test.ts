@@ -493,3 +493,73 @@ it.each(['input', 'previous', 'generated'] as const)(
   },
   30000,
 );
+
+it('keeps an admitted handoff view through idle updates and cold restore', async () => {
+  const retained = 'filtered source context';
+  const requests = new ModelServer([
+    [call('transfer_to_destination', {}, { callId: 'source-handoff' })],
+    [message('destination reached')],
+    [message('first follow-up complete')],
+    [message('cold follow-up complete')],
+  ]);
+  const config = await requests.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-handoff-update',
+    supportsWebsockets: false,
+  });
+  const destination = new Agent({
+    name: 'destination',
+    instructions: 'Use the handoff context.',
+  });
+  const source = new Agent({
+    name: 'source',
+    model: 'gpt-5.5',
+    provider,
+    instructions: 'Transfer to the destination.',
+    handoffs: [destination],
+    prepareHandoffInput: (value) => ({
+      ...value,
+      input: [
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: retained }],
+        },
+      ],
+      previous: [],
+      generated: [],
+    }),
+  });
+
+  let state: SessionState;
+  {
+    await using session = await source.session();
+    expect(
+      (await (await session.submit('private original')).wait()).finalOutput,
+    ).toBe('destination reached');
+    await session.update({ instructions: 'Use the updated instruction.' });
+    expect(
+      (await (await session.submit('first follow-up')).wait()).finalOutput,
+    ).toBe('first follow-up complete');
+    await session.update({ instructions: 'Use the final instruction.' });
+    state = await session.saveState();
+  }
+  await using restored = await source.session({ state });
+  expect(
+    (await (await restored.submit('cold follow-up')).wait()).finalOutput,
+  ).toBe('cold follow-up complete');
+
+  const first = JSON.stringify(requests.requests[2]?.input);
+  expect(first).toContain(retained);
+  expect(first).toContain('Use the updated instruction.');
+  expect(first).toContain('destination reached');
+  expect(first).not.toContain('private original');
+  const cold = JSON.stringify(requests.requests[3]?.input);
+  expect(cold).toContain(retained);
+  expect(cold).toContain('Use the final instruction.');
+  expect(cold).toContain('first follow-up complete');
+  expect(cold).not.toContain('private original');
+  requests.assertExhausted();
+});

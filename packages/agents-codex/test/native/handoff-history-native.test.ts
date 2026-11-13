@@ -101,7 +101,7 @@ it.each([
 );
 
 it.each(['model', 'instructions'] as const)(
-  'publishes a real %s update and rejects carrying an inapplicable projection',
+  'publishes a real %s update and preserves the admitted handoff view',
   async (change) => {
     for (const projected of [false, true]) {
       const server = new ModelServer([
@@ -153,30 +153,24 @@ it.each(['model', 'instructions'] as const)(
         change === 'model'
           ? { model: 'gpt-6.1-sol' }
           : { instructions: 'CHANGED destination authority.' };
-      if (projected) {
-        await expect(session.update(update)).rejects.toThrow(
-          'Handoff presentation differs from committed destination',
+      await session.update(update);
+      const after = publications(await session.saveState());
+      expect(after).toHaveLength(before.length + 1);
+      expect(after.at(-1)!.metadata.sdk_agent_profile.epoch).toBe(
+        before.at(-1)!.metadata.sdk_agent_profile.epoch + 1,
+      );
+      expect(after.at(-1)!.payload.id).not.toBe(before.at(-1)!.payload.id);
+      expect(after.at(-1)!.metadata.sdk_agent_profile.presentation).toEqual(
+        before.at(-1)!.metadata.sdk_agent_profile.presentation,
+      );
+      if (change === 'model')
+        expect(after.at(-1)!.metadata.sdk_agent_profile.model.model).toBe(
+          'gpt-6.1-sol',
         );
-        if (change === 'instructions')
-          expect(publications(await session.saveState())).toEqual(before);
-        else await expect(session.saveState()).rejects.toThrow();
-      } else {
-        await session.update(update);
-        const after = publications(await session.saveState());
-        expect(after).toHaveLength(before.length + 1);
-        expect(after.at(-1)!.metadata.sdk_agent_profile.epoch).toBe(
-          before.at(-1)!.metadata.sdk_agent_profile.epoch + 1,
+      else
+        expect(JSON.stringify(after.at(-1)!.payload)).toContain(
+          'CHANGED destination authority.',
         );
-        expect(after.at(-1)!.payload.id).not.toBe(before.at(-1)!.payload.id);
-        if (change === 'model')
-          expect(after.at(-1)!.metadata.sdk_agent_profile.model.model).toBe(
-            'gpt-6.1-sol',
-          );
-        else
-          expect(JSON.stringify(after.at(-1)!.payload)).toContain(
-            'CHANGED destination authority.',
-          );
-      }
       expect(server.requests).toHaveLength(2);
       server.assertExhausted();
     }

@@ -501,14 +501,14 @@ struct PersistedProfile {
 
 impl PersistedProfile {
     fn validate_presentation(&self) -> Result<()> {
-        let destination = AgentProfileReceipt {
-            profile_id: self.profile_id.clone(),
-            epoch: self.epoch,
-        };
+        // An idle update may retain an earlier admitted presentation. Core
+        // validates the complete publication chain before it can use that view.
         ensure!(
-            self.presentation
-                .as_ref()
-                .is_none_or(|value| value.belongs_to(&destination)),
+            self.presentation.as_ref().is_none_or(|value| {
+                value.destination.profile_id == self.profile_id
+                    && value.destination.epoch <= self.epoch
+                    && value.belongs_to(&value.destination)
+            }),
             "Restored presentation belongs to another Agent destination"
         );
         Ok(())
