@@ -2688,13 +2688,28 @@ impl PythonTools {
                 .accepted_replies
                 .get(id)
                 .context("manual result missing")?;
-            let item = receipt.envelope(call, &history.turn)?;
+            let mut item = receipt.envelope(call, &history.turn)?;
             if let Some(written) = history.outputs.get(id) {
                 ensure!(
                     receipt.matches(written, call, &history.turn)?,
                     "manual result conflicts with history"
                 );
             } else if !held_ids.contains(id) {
+                let name =
+                    ToolName::new(call.namespace.clone(), call.name.clone()).with_default_namespace();
+                let origin = generation
+                    .entries
+                    .iter()
+                    .position(|entry| entry.name.clone().with_default_namespace() == name)
+                    .and_then(|slot| generation.specs.configured_agent_role(slot))
+                    .map(|role| codex_history::ManagedAgentToolOrigin {
+                        name: call.name.clone(),
+                        role: role.to_owned(),
+                    });
+                if let Some(origin) = origin {
+                    item.metadata.get_or_insert_with(Default::default).sdk_managed_agent_tool =
+                        Some(origin);
+                }
                 items.push(item);
             } else {
                 continue;

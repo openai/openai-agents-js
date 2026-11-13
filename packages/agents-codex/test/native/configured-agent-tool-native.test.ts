@@ -951,6 +951,7 @@ nativeIt.each([false, true])(
     await using restored = await f.parent.session({ state: portable });
     if (!restored.restoredTurn)
       throw new Error('Expected restored parent turn');
+    restored._startProducedItems();
     expect(restored.restoredTurn.runUsage).toMatchObject({
       requests: 2,
       missingUsageRequests: 2,
@@ -974,6 +975,19 @@ nativeIt.each([false, true])(
     });
     expect(restored.restoredTurn.runUsage).toEqual(completed.runUsage);
     expect(completed.finalOutput).toBe('parent complete');
+    const origins = restored
+      ._takeProducedItems(restored.restoredTurn.turnId)
+      .filter(
+        ({ item }) => 'callId' in item && item.callId === 'nested-parent-call',
+      );
+    expect(
+      origins.map(({ item, toolOrigin }) => [item.type, toolOrigin]),
+    ).toEqual([
+      [
+        'function_call_output',
+        { name: 'nested_child', role: 'Nested guarded child' },
+      ],
+    ]);
     expect(completed.guardrailResults?.map((record) => record.name)).toEqual([
       'parent-input-owner',
       'parent-output-owner',
