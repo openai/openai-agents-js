@@ -2,6 +2,7 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import {
+  chmod,
   copyFile,
   link,
   mkdir,
@@ -501,7 +502,7 @@ it.skipIf(process.platform !== 'darwin')(
           timeout: 5_000,
         }).trim(),
       ).toBe(host.username);
-      const sshArgs = ['-G', '-F', '/dev/null', 'sdk-fixture.invalid'];
+      const sshArgs = ['-G', '-T', '-F', '/dev/null', 'sdk-fixture.invalid'];
       const sshUser = `user ${host.username}`;
       const hostSsh = execFileSync('/usr/bin/ssh', sshArgs, {
         encoding: 'utf8',
@@ -2915,8 +2916,9 @@ it
   'blocks delegation from a local command to launchd with %s',
   { timeout: 45_000 },
   async (writePolicy) => {
+    const launchctlPath = '/bin/launchctl';
     const launchctl = (...args: string[]) => {
-      const result = spawnSync('/bin/launchctl', args, {
+      const result = spawnSync(launchctlPath, args, {
         encoding: 'utf8',
         timeout: 5_000,
       });
@@ -2952,7 +2954,12 @@ it
       const marker = join(root, 'launchd-marker');
       const submitMarker = join(root, 'launchd-submit-marker');
       const plist = join(cwd, `${label}.plist`);
+      const copiedLaunchctl = join(cwd, 'launchctl-copy');
+      const linkedLaunchctl = join(cwd, 'launchctl-link');
       await mkdir(cwd);
+      await copyFile(launchctlPath, copiedLaunchctl);
+      await chmod(copiedLaunchctl, 0o755);
+      await symlink(launchctlPath, linkedLaunchctl);
       const xmlMarker = marker
         .replaceAll('&', '&amp;')
         .replaceAll('<', '&lt;')
@@ -2985,15 +2992,15 @@ it
         submitMarker,
       ];
       const attempts = [
-        ['bootstrap', [domain, plist]],
-        ['kickstart', [service]],
-        ['submit', submitArgs],
+        ['bootstrap', [launchctlPath, 'bootstrap', domain, plist]],
+        ['kickstart', [launchctlPath, 'kickstart', service]],
+        ['kickstart-copy', [copiedLaunchctl, 'kickstart', service]],
+        ['kickstart-link', [linkedLaunchctl, 'kickstart', service]],
+        ['submit', [launchctlPath, 'submit', ...submitArgs]],
       ] as const;
       const server = new ModelServer(
         attempts.flatMap(([operation, args]) => {
-          const command = ['/bin/launchctl', operation, ...args]
-            .map(quote)
-            .join(' ');
+          const command = args.map(quote).join(' ');
           const checkWrite =
             operation === 'bootstrap'
               ? `if /usr/bin/touch ${quote(marker)} 2>/dev/null; then exit 20; fi; `
@@ -3046,9 +3053,15 @@ it
         expect(bootstrapped.status, bootstrapped.stderr).toBe(0);
         expect(runCount()).toBe(0);
 
-        await tryDelegation('kickstart');
-        expect(runCount()).toBe(0);
-        expect(existsSync(marker)).toBe(false);
+        for (const operation of [
+          'kickstart',
+          'kickstart-copy',
+          'kickstart-link',
+        ] as const) {
+          await tryDelegation(operation);
+          expect(runCount()).toBe(0);
+          expect(existsSync(marker)).toBe(false);
+        }
 
         await tryDelegation('submit');
         expect(launchctl('list', submitLabel).status).not.toBe(0);

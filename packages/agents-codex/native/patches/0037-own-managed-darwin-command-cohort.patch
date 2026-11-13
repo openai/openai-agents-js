@@ -1951,16 +1951,24 @@ index bf21a065cc2b68e946583959a65979e0d3ed0d96..cb47f0f4403bc7461de06bfe88bc71df
  ) -> io::Result<std::os::fd::OwnedFd> {
      use rustix::net::RecvAncillaryBuffer;
 diff --git a/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl b/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl
-index 2fca6a886e4f3ad5a5d8d8e6e6e88894fc8f0ed9..ea23e7e6d7b6aa96880a2d89912f51723a43df47 100644
+index 2fca6a886e4f3ad5a5d8d8e6e6e88894fc8f0ed9..0cf943d701737946170e149477c75a14933cd69c 100644
 --- a/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl
 +++ b/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl
-@@ -7,6 +7,10 @@
+@@ -7,6 +7,18 @@
  ; start with closed-by-default
  (deny default)
 
 +; Bootstrap lookup remains available to the managed payload. Deny launchd job
 +; creation explicitly, including brokers that check a path-filtered operation.
 +(deny job-creation)
++
++; launchd requires service-attach to kickstart an existing job. Keep Mach
++; messaging available to ordinary tools, including OpenDirectory clients.
++(with-filter (require-entitlement "com.apple.private.xpc.service-attach")
++  (deny syscall-mach
++    (machtrap-number MSC_mach_msg_trap
++                     MSC_mach_msg_overwrite_trap
++                     MSC_mach_msg2_trap)))
 +
  ; child processes inherit the policy of their parent
  (allow process-exec)
