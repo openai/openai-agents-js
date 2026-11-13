@@ -1747,6 +1747,20 @@ export type AiSdkOutputTextTransform = (
   },
 ) => string | Promise<string>;
 
+/**
+ * Supplies provider options for one admitted message or one of its content
+ * parts, for example an explicit Anthropic cache breakpoint.
+ */
+export type AiSdkPromptProviderOptionsResolver = (input: {
+  readonly role: 'system' | 'user' | 'assistant';
+  readonly inputIndex: number;
+  /** Undefined for message-level options, including system instructions. */
+  readonly contentIndex?: number;
+  /** The message for message-level options, or the individual content part. */
+  readonly item: Readonly<JsonObject>;
+  readonly context: unknown;
+}) => JsonObject | undefined;
+
 /** AI SDK generation within the native Core turn and tool loop.
  * Streaming: new AiSdkModel(model, {}, {stream: true}).
  * Renamed OpenAI factories: new AiSdkModel(model, {}, {providerFamily: 'openai'}).
@@ -1758,6 +1772,7 @@ export class AiSdkModel implements NativeModel {
   readonly #openaiChat: boolean;
   readonly #openaiResponses: boolean;
   readonly #resolveFileOptions: AiSdkFileOptionsResolver | undefined;
+  readonly #resolvePromptProviderOptions?: AiSdkPromptProviderOptionsResolver;
   readonly #transformOutputText?: AiSdkOutputTextTransform;
 
   constructor(
@@ -1768,6 +1783,8 @@ export class AiSdkModel implements NativeModel {
       readonly stream?: boolean;
       /** Supply media type hints and provider options for an admitted file. */
       readonly resolveFileOptions?: AiSdkFileOptionsResolver;
+      /** Add provider-only options to admitted messages or parts before each request. */
+      readonly resolvePromptProviderOptions?: AiSdkPromptProviderOptionsResolver;
       /** Normalize finalized assistant text. Stream deltas retain provider text. */
       readonly transformOutputText?: AiSdkOutputTextTransform;
     } = {},
@@ -1790,6 +1807,8 @@ export class AiSdkModel implements NativeModel {
     }
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
     this.#resolveFileOptions = adapterOptions.resolveFileOptions;
+    this.#resolvePromptProviderOptions =
+      adapterOptions.resolvePromptProviderOptions;
     this.#transformOutputText = adapterOptions.transformOutputText;
     this.#openai =
       adapterOptions.providerFamily === 'openai' ||
@@ -1959,9 +1978,27 @@ export class AiSdkModel implements NativeModel {
       if (item.type === 'message') {
         const parts = (item.content ?? []) as JsonObject[];
         const scopedMetadata = providerMetadata?.[modelTextPartMetadataKey];
+        const system = item.role === 'system' || item.role === 'developer';
+        const role = system ? 'system' : (item.role as 'user' | 'assistant');
+        const resolve = this.#resolvePromptProviderOptions;
+        const resolveOptions = (contentIndex?: number) =>
+          resolve?.({
+            role,
+            inputIndex,
+            contentIndex,
+            item: copyJsonValue(
+              contentIndex === undefined ? item : parts[contentIndex],
+            ) as JsonObject,
+            context: request.context,
+          });
         const messageMetadata =
           scopedMetadata === undefined ? providerMetadata : undefined;
+        const messageOptions = mergeModelProviderMetadata(
+          messageMetadata,
+          resolveOptions(),
+        );
         const content = parts.map((part, index) => {
+          const options = system ? undefined : resolveOptions(index);
           if (part.type === 'input_text' || part.type === 'output_text') {
             const metadata =
               messageMetadata ??
@@ -1969,24 +2006,38 @@ export class AiSdkModel implements NativeModel {
               scopedMetadata.length === parts.length
                 ? scopedMetadata[index]
                 : undefined);
+            const partOptions = mergeModelProviderMetadata(
+              metadata &&
+                typeof metadata === 'object' &&
+                !Array.isArray(metadata)
+                ? metadata
+                : undefined,
+              options,
+            );
             return {
               type: 'text',
               text: part.text,
-              ...(metadata &&
-              typeof metadata === 'object' &&
-              !Array.isArray(metadata)
-                ? { providerOptions: metadata }
-                : {}),
+              ...(partOptions ? { providerOptions: partOptions } : {}),
             };
           }
-          if (part.type === 'input_file')
-            return aiSdkFilePart(
+          if (part.type === 'input_file') {
+            const file = aiSdkFilePart(
               part,
               this.model.specificationVersion,
               this.#resolveFileOptions,
             );
+            const partOptions = mergeModelProviderMetadata(
+              file.providerOptions as JsonObject | undefined,
+              options,
+            );
+            return {
+              ...file,
+              ...(partOptions ? { providerOptions: partOptions } : {}),
+            };
+          }
           if (part.type === 'input_audio') {
             const audio = inlineAudioSource(part.audio_url);
+            const partOptions = mergeModelProviderMetadata(undefined, options);
             return {
               type: 'file',
               mediaType: audio.mediaType,
@@ -1994,6 +2045,7 @@ export class AiSdkModel implements NativeModel {
                 this.model.specificationVersion === 'v4'
                   ? { type: 'data', data: audio.data }
                   : audio.data,
+              ...(partOptions ? { providerOptions: partOptions } : {}),
             };
           }
           if (part.type === 'input_image' && part.image_url) {
@@ -2005,10 +2057,12 @@ export class AiSdkModel implements NativeModel {
               throw new TypeError(
                 'AiSdkModel requires an OpenAI provider for explicit image detail',
               );
-            const imageOptions =
+            const partOptions = mergeModelProviderMetadata(
               part.detail != null && openai
-                ? { providerOptions: { openai: { imageDetail: part.detail } } }
-                : {};
+                ? { openai: { imageDetail: part.detail } }
+                : undefined,
+              options,
+            );
             return {
               type: 'file',
               mediaType,
@@ -2018,14 +2072,14 @@ export class AiSdkModel implements NativeModel {
                     ? { type: 'data', data: image }
                     : { type: 'url', url: image }
                   : image,
-              ...imageOptions,
+              ...(partOptions ? { providerOptions: partOptions } : {}),
             };
           }
           throw new TypeError(
             'AiSdkModel received unsupported message content',
           );
         });
-        if (item.role === 'system' || item.role === 'developer') {
+        if (system) {
           prompt.push({
             role: 'system',
             content: content
@@ -2035,19 +2089,20 @@ export class AiSdkModel implements NativeModel {
                 return part.text;
               })
               .join(''),
+            ...(messageOptions ? { providerOptions: messageOptions } : {}),
           });
         } else {
           const pending =
             item.role === 'assistant' ? pendingReasoning : undefined;
           if (pending) pendingReasoning = undefined;
-          const messageOptions = mergeModelProviderMetadata(
+          const assistantOptions = mergeModelProviderMetadata(
             pending?.providerOptions,
-            messageMetadata,
+            messageOptions,
           );
           prompt.push({
-            role: item.role,
+            role,
             content: pending ? [...pending.content, ...content] : content,
-            ...(messageOptions ? { providerOptions: messageOptions } : {}),
+            ...(assistantOptions ? { providerOptions: assistantOptions } : {}),
           });
         }
       } else if (toolCall) {

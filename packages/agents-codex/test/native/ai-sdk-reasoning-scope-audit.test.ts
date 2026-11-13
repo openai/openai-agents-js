@@ -261,3 +261,89 @@ it.each([false, true])(
     );
   },
 );
+
+it.each([false, true])(
+  'sets explicit provider cache breakpoints on admitted prompt parts without changing native history (stream=%s)',
+  async (stream) => {
+    const prompts: any[][] = [];
+    const breakPoint = { anthropic: { cacheControl: { type: 'ephemeral' } } };
+    const output = 'native cache breakpoint answer';
+    const model = new AiSdkModel(
+      {
+        specificationVersion: 'v3',
+        provider: 'anthropic.messages',
+        modelId: 'cache-test',
+        doGenerate(options) {
+          prompts.push(options.prompt);
+          return {
+            content: [{ type: 'text', text: output }],
+            finishReason: 'stop',
+          };
+        },
+        doStream(options) {
+          prompts.push(options.prompt);
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({
+                  type: 'text-delta',
+                  id: 'text',
+                  delta: output,
+                });
+                controller.enqueue({ type: 'finish', finishReason: 'stop' });
+                controller.close();
+              },
+            }),
+          };
+        },
+      },
+      {},
+      {
+        stream,
+        resolvePromptProviderOptions({ role, contentIndex, item }) {
+          if (role === 'system') return breakPoint;
+          if (
+            role === 'user' &&
+            contentIndex === 0 &&
+            item.text === 'Cache this exact input.'
+          ) {
+            return breakPoint;
+          }
+          return undefined;
+        },
+      },
+    );
+    await using provider = new NativeProvider({
+      apiKey: 'synthetic',
+      modelBackend: model,
+    });
+    const root = new Agent({
+      instructions: 'Cache the developer instructions.',
+      model: 'cache-test',
+      provider,
+    });
+    await using session = await root.session();
+    expect(
+      (await (await session.submit('Cache this exact input.')).wait())
+        .finalOutput,
+    ).toBe(output);
+    expect(prompts[0]).toContainEqual({
+      role: 'system',
+      content: expect.stringContaining('Cache the developer instructions.'),
+      providerOptions: breakPoint,
+    });
+    expect(prompts[0]).toContainEqual({
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: 'Cache this exact input.',
+          providerOptions: breakPoint,
+        },
+      ],
+    });
+    expect(JSON.stringify(await session.historySnapshot())).not.toContain(
+      'cacheControl',
+    );
+  },
+);
