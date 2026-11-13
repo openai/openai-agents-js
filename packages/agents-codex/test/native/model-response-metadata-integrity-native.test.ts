@@ -1,6 +1,12 @@
 import { expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeError, NativeProvider, tool } from '../../src';
+import {
+  Agent,
+  NativeError,
+  NativeProvider,
+  tool,
+  type ModelResponse,
+} from '../../src';
 import { retainModelProviderMetadata } from '../../src/runtime/model-provider-metadata';
 
 it.each([
@@ -11,7 +17,7 @@ it.each([
   async ({ outcome, reason }) => {
     for (const withMetadata of [false, true]) {
       let effects = 0;
-      const response = {
+      const response: ModelResponse = {
         responseId: 'synthetic-metadata-integrity',
         output: [
           {
@@ -38,6 +44,7 @@ it.each([
         modelBackend: { complete: async () => response },
       });
       await using session = await new Agent({
+        instructions: 'Use lookup.',
         model: 'fixture',
         provider,
         tools: [
