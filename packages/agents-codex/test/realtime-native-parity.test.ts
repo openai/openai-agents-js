@@ -101,7 +101,7 @@ class RealtimePeer {
     this.send(update);
   }
 
-  call(name: string, args: Frame, id: string) {
+  call(name: string, args: Frame, id: string, usage?: Frame) {
     const responseId = `response-${id}`;
     const item = {
       id: `item-${id}`,
@@ -119,7 +119,7 @@ class RealtimePeer {
     });
     this.send({
       type: 'response.done',
-      response: { id: responseId, output: [item] },
+      response: { id: responseId, output: [item], ...(usage ? { usage } : {}) },
     });
   }
 
@@ -369,7 +369,17 @@ nativeIt.each([false, true])(
         await vi.waitFor(() =>
           expect(session.realtimeUsage?.total_tokens).toBe(7),
         );
-        peer.call('inspect_usage', {}, 'usage-tool');
+        peer.call('inspect_usage', {}, 'usage-tool', { total_tokens: 8 });
+        for await (const event of voice.events()) {
+          if (event.type === 'function_call' && event.status === 'started') {
+            expect(event.runContext?.realtimeUsage?.total_tokens).toBe(15);
+            expect(event.runContext?.realtimeUsageAccounting).toEqual({
+              finishedResponses: 2,
+              usageReports: 2,
+            });
+            break;
+          }
+        }
         const usageOutput = await peer.frame(
           (frame) => frame.item?.call_id === 'usage-tool',
         );
@@ -379,9 +389,16 @@ nativeIt.each([false, true])(
           expect(policyContexts[0].realtimeUsage).toEqual(
             session.realtimeUsage,
           );
+          expect(policyContexts[0].realtimeUsageAccounting).toEqual(
+            session.realtimeUsageAccounting,
+          );
         }
         const snapshot = contexts[0].realtimeUsage!;
-        expect(snapshot.total_tokens).toBe(7);
+        expect(snapshot.total_tokens).toBe(15);
+        expect(contexts[0].realtimeUsageAccounting).toEqual({
+          finishedResponses: 2,
+          usageReports: 2,
+        });
         (
           snapshot.input_token_details as { audio_tokens: number }
         ).audio_tokens = 999;
@@ -393,7 +410,7 @@ nativeIt.each([false, true])(
         await voice.close();
       }
       expect(session.realtimeUsage).toBeUndefined();
-      expect(voice.usage?.total_tokens).toBe(7);
+      expect(voice.usage?.total_tokens).toBe(15);
       const next = await session.realtime({
         model: 'fixture-realtime',
         tools: [inspectUsage],
@@ -406,7 +423,7 @@ nativeIt.each([false, true])(
         expect(contexts[1].realtimeUsage).toBeUndefined();
         expect(policyContexts).toHaveLength(managed ? 2 : 0);
         if (managed) expect(policyContexts[1].realtimeUsage).toBeUndefined();
-        expect(contexts[0].realtimeUsage?.total_tokens).toBe(7);
+        expect(contexts[0].realtimeUsage?.total_tokens).toBe(15);
         expect(application.usage).toBe(marker);
       } finally {
         await next.close();

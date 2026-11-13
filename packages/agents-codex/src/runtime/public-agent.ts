@@ -511,6 +511,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'buildRealtimeSipConfig'
   | 'realtime'
   | 'realtimeUsage'
+  | 'realtimeUsageAccounting'
   | 'getActiveAgent'
   | 'goal'
   | 'setPausedGoal'

@@ -1,12 +1,16 @@
 import { abortable } from '../voice/abortable';
 import type { Agent } from './public-agent';
-import type { NativeRealtimeUsage } from './realtime-usage';
+import type {
+  NativeRealtimeUsage,
+  NativeRealtimeUsageAccounting,
+} from './realtime-usage';
 
 /** Application context for one captured native voice profile. */
 export interface NativeRealtimePolicyContext<Context = unknown> {
   readonly agent: Agent<Context, any>;
   readonly context: Context;
   readonly realtimeUsage?: NativeRealtimeUsage;
+  readonly realtimeUsageAccounting?: NativeRealtimeUsageAccounting;
   readonly signal?: AbortSignal;
 }
 
@@ -29,6 +33,7 @@ export async function resolveRealtimePolicy(
   snapshot?: Awaited<
     ReturnType<import('./session').Session['_realtimeSourceSnapshot']>
   >,
+  realtimeUsageAccounting?: NativeRealtimeUsageAccounting,
 ) {
   const instructions = options.instructions;
   const enabled = options.isToolEnabled;
@@ -45,6 +50,7 @@ export async function resolveRealtimePolicy(
     agent: source.agent,
     context: source.context,
     realtimeUsage,
+    realtimeUsageAccounting,
     signal,
   });
   let resolved: string | undefined;

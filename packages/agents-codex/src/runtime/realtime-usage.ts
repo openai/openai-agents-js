@@ -30,6 +30,12 @@ export interface NativeRealtimeUsage {
   readonly output_token_details?: NativeRealtimeUsageCounters;
 }
 
+/** Counts of accepted response completions and reports on one connection. */
+export interface NativeRealtimeUsageAccounting {
+  readonly finishedResponses: number;
+  readonly usageReports: number;
+}
+
 /** @internal Add measured counters without filling absent values with invented zeros. */
 export function addRealtimeUsage(
   total: UsageCounterTree,

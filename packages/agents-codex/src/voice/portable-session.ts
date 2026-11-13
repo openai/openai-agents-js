@@ -27,6 +27,7 @@ import {
   addRealtimeUsage,
   reportedRealtimeUsage,
   type NativeRealtimeUsage,
+  type NativeRealtimeUsageAccounting,
 } from '../runtime/realtime-usage';
 
 /** Host effects for the target-neutral Rust Realtime control crate. */
@@ -98,6 +99,7 @@ export interface PortableVoiceToolContext extends PortableVoiceContext {
   readonly context: unknown;
   readonly history: readonly Readonly<Record<string, unknown>>[];
   readonly usage?: NativeRealtimeUsage;
+  readonly usageAccounting?: NativeRealtimeUsageAccounting;
 }
 
 export interface PortableVoiceOptions {
@@ -210,8 +212,10 @@ export class PortableVoiceSession {
   readonly #responses = new Map<string, Profile>();
   readonly #detachedResponses = new Set<string>();
   readonly #detachedProfiles = new Map<string, Profile>();
-  readonly #reportedResponses = new Set<string>();
+  readonly #accountedResponses = new Set<string>();
   #usageTotals?: ReturnType<typeof reportedRealtimeUsage>;
+  #finishedResponses = 0;
+  #usageReports = 0;
   #outputAudioBytesPerMillisecond = 48;
   readonly #responseAudioBytesPerMillisecond = new Map<string, number>();
   readonly #responseHistories = new Map<
@@ -367,7 +371,7 @@ export class PortableVoiceSession {
     this.#responses.clear();
     this.#detachedResponses.clear();
     this.#detachedProfiles.clear();
-    this.#reportedResponses.clear();
+    this.#accountedResponses.clear();
     this.#responseHistories.clear();
     this.#responseAudioBytesPerMillisecond.clear();
     this.#observers.close();
@@ -406,6 +410,14 @@ export class PortableVoiceSession {
     return this.#usageTotals === undefined
       ? undefined
       : (JSON.parse(JSON.stringify(this.#usageTotals)) as NativeRealtimeUsage);
+  }
+
+  /** Counts of accepted response completions and provider usage reports. */
+  get usageAccounting(): NativeRealtimeUsageAccounting {
+    return Object.freeze({
+      finishedResponses: this.#finishedResponses,
+      usageReports: this.#usageReports,
+    });
   }
 
   /** Replace observed messages in order, retaining unchanged tool/control anchors. */
@@ -859,6 +871,7 @@ export class PortableVoiceSession {
       ...this.#context(call.profile, call.history, call.abort.signal),
       callId,
       usage: this.usage,
+      usageAccounting: this.usageAccounting,
     };
   }
 
@@ -990,14 +1003,17 @@ export class PortableVoiceSession {
     if (
       event.type === 'response.done' &&
       typeof responseId === 'string' &&
-      event.response?.usage != null &&
-      !this.#reportedResponses.has(responseId)
+      !this.#accountedResponses.has(responseId)
     ) {
-      this.#usageTotals = addRealtimeUsage(
-        this.#usageTotals ?? {},
-        reportedRealtimeUsage(event.response.usage),
-      );
-      this.#reportedResponses.add(responseId);
+      if (event.response?.usage != null) {
+        this.#usageTotals = addRealtimeUsage(
+          this.#usageTotals ?? {},
+          reportedRealtimeUsage(event.response.usage),
+        );
+        this.#usageReports++;
+      }
+      this.#finishedResponses++;
+      this.#accountedResponses.add(responseId);
     }
     const detached = this.#detachedResponses.has(
       event.response_id ?? event.response?.id,
@@ -1149,7 +1165,7 @@ export class PortableVoiceSession {
           target.delete(oldest);
           this.#firstHandoffs.delete(oldest);
           this.#responseHistories.delete(oldest);
-          this.#reportedResponses.delete(oldest);
+          this.#accountedResponses.delete(oldest);
           this.#responseAudioBytesPerMillisecond.delete(oldest);
           if (effect.out_of_band) this.#detachedResponses.delete(oldest);
         }

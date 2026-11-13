@@ -1087,7 +1087,15 @@
     {
       "path": "sdk-ordered-workspace-callbacks.patch",
       "sha256": "d2355e27e5e22e2b5426058559c6cc9ddb9b68465c671a6e68309fa65a449931"
+    },
+    {
+      "path": "sdk-realtime-provider-extensions.patch",
+      "sha256": "993e066fd5a53e66dc59dba67a1de574060a80dc41052831a59e7cef97ee9282"
+    },
+    {
+      "path": "sdk-portable-realtime-response-extensions.patch",
+      "sha256": "fccc9dcab7f0af9ca1e37d12b27e36cdba9d58b1e7981662a56a4b050c8bffbd"
     }
   ],
-  "result_tree": "6d05dfe13b2788641989027bf49615a1d55615cf"
+  "result_tree": "c32ab95caf9d7fc2c5c8209c170fba777da0ed14"
 }

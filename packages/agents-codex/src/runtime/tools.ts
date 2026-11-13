@@ -296,6 +296,7 @@ export interface ToolCallContext<
   readonly history?: readonly Readonly<Record<string, unknown>>[];
   /** Detached speech usage at callback creation; excludes backend thread usage. */
   readonly realtimeUsage?: import('./realtime-usage').NativeRealtimeUsage;
+  readonly realtimeUsageAccounting?: import('./realtime-usage').NativeRealtimeUsageAccounting;
   readonly decide?: BoundDecide;
   /** @internal */
   readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
