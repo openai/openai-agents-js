@@ -1,4 +1,4 @@
-import { captureModelSettings, type ModelSettings } from './provider';
+import { captureModelSettings, type ModelSettings } from './model-settings';
 
 export function captureOpeningModelSettings(
   defaults?: ModelSettings,

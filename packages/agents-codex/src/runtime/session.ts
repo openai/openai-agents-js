@@ -81,6 +81,7 @@ import {
   isRawChatChunk,
   markModelRequestTransport,
   markRawProviderRequest,
+  pumpModelStream,
   type NativeModel,
   type ModelRequest,
   type ModelProvider,
@@ -9281,39 +9282,27 @@ export class Session<OutputT = string, Context = unknown> {
               try {
                 if (backend.stream) {
                   const stream = await backend.stream(request);
-                  const iterator = stream[Symbol.asyncIterator]();
-                  let finished = false;
-                  try {
-                    check();
-                    const streamOwner = encode(receipt);
-                    sourceNative._start_model_producer(
-                      streamOwner,
-                      isChatModelStream(stream),
-                    );
-                    while (true) {
+                  let streamOwner: string;
+                  await pumpModelStream(stream, {
+                    check,
+                    start: () => {
+                      streamOwner = encode(receipt);
+                      sourceNative._start_model_producer(
+                        streamOwner,
+                        isChatModelStream(stream),
+                      );
+                    },
+                    push: (event, original) =>
+                      sourceNative._push_model_producer(
+                        streamOwner,
+                        event,
+                        isRawChatChunk(original),
+                      ),
+                    finish: () => {
                       check();
-                      const next = await iterator.next();
-                      check();
-                      if (next.done) {
-                        finished = true;
-                        break;
-                      }
-                      const continuing =
-                        await sourceNative._push_model_producer(
-                          streamOwner,
-                          JSON.stringify(
-                            losslessJsonObjectSchema.parse(next.value),
-                          ),
-                          isRawChatChunk(next.value),
-                        );
-                      check();
-                      if (!continuing) break;
-                    }
-                  } finally {
-                    if (!finished) await iterator.return?.();
-                  }
-                  check();
-                  reply({});
+                      reply({});
+                    },
+                  });
                 } else {
                   const returned = await backend.complete(request);
                   check();
