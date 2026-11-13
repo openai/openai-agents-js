@@ -1886,7 +1886,8 @@ nativeIt(
       await using session = await original.session();
       const voice = await session.realtime({ model: 'fixture-realtime' });
       const reading = (async () => {
-        for await (const _event of voice.events()) {
+        for await (const event of voice.events()) {
+          void event;
         }
       })();
       try {
