@@ -1163,7 +1163,11 @@
     {
       "path": "sdk-handoff-restored-model-identity.patch",
       "sha256": "1f8f148c0710c400812a533c94b801fe5636bd9f6eac71c7db51424c168c45f9"
+    },
+    {
+      "path": "sdk-original-item-eligibility.patch",
+      "sha256": "8834d9bef58fd20daef0f21cdc0320808d94d5cd0b3c6aab15bcc882d3b4a26b"
     }
   ],
-  "result_tree": "d95212ad77d8d03df2732d02f19f421353f069f5"
+  "result_tree": "f4de9be6517dec6fc2f809f0dd1e714290933594"
 }
