@@ -2753,10 +2753,11 @@ export function captureRealtimeAgentGraph(
     undefined,
     true,
   );
+  const resolved = profiles[0].declaration;
   return captureProfileRuntimes(
     profiles,
-    captureTools(splitToolDeclarations(declaration.tools).tools),
-    declaration.instructions ?? '',
+    captureTools(splitToolDeclarations(resolved.tools).tools),
+    resolved.instructions ?? '',
   );
 }
 
