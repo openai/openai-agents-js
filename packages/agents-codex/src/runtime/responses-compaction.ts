@@ -1,10 +1,11 @@
 import { isDeepStrictEqual } from 'node:util';
 import OpenAI from 'openai';
+import { z } from 'zod';
 import OpenAICommonJS from 'openai/index.js';
 import { loadOpenAIEntrypoint } from '../../node/openai-entrypoint.js';
 import { losslessJsonObjectSchema } from './binding';
 import type { TokenUsage } from './run-events';
-import type { CompactionContext } from './model-callbacks';
+import type { CompactionContext, ContextTransform } from './model-callbacks';
 
 export interface ResponsesCompactionContext<
   Context = unknown,
@@ -136,6 +137,122 @@ export class ResponsesCompaction<Context = unknown> {
       headers['openai-organization'] ?? null,
       headers['openai-project'] ?? null,
     ]);
+  }
+
+  /** @internal Evaluate configured policy or request work within the caller's owned callback. */
+  async evaluateCapturedRequest(
+    context: CompactionContext<Context>,
+    request: {
+      policy: boolean;
+      providerResponse: unknown;
+      candidateIndexes: unknown;
+      modelOmitted: unknown;
+    },
+    {
+      assertCurrent,
+      matchesCurrentProvider,
+      transformContext,
+      observeUsage,
+      markDispatch,
+    }: {
+      assertCurrent: () => void;
+      matchesCurrentProvider: () => boolean;
+      transformContext?: ContextTransform<Context>;
+      observeUsage: (usage: TokenUsage | null) => void;
+      markDispatch: () => void;
+    },
+  ): Promise<
+    | { admitted: boolean }
+    | {
+        window: Awaited<
+          ReturnType<ResponsesCompaction<Context>['requestWindow']>
+        >;
+      }
+  > {
+    let providerResponse: { response_id: string; model?: string } | undefined;
+    if (
+      transformContext === undefined &&
+      request.providerResponse != null &&
+      this.mode !== 'input'
+    ) {
+      const loading = this.loadClientEntrypoint();
+      if (loading !== undefined) {
+        await loading;
+        assertCurrent();
+      }
+      if (matchesCurrentProvider())
+        providerResponse = z
+          .object({
+            response_id: z.string().trim().min(1),
+            model: z.string().trim().min(1).optional(),
+          })
+          .strict()
+          .parse(request.providerResponse);
+    }
+    const prepared = this.prepareContext(
+      context,
+      z.array(z.number().int().nonnegative()).parse(request.candidateIndexes),
+      providerResponse,
+      z.boolean().parse(request.modelOmitted),
+    );
+    if (request.policy) {
+      const admitted =
+        this.shouldCompact === undefined
+          ? prepared.candidates.length >= 10
+          : await this.shouldCompact(prepared);
+      if (typeof admitted !== 'boolean')
+        throw new TypeError('shouldCompact must return a boolean');
+      return { admitted };
+    } else {
+      let canonicalItems: typeof prepared.items | undefined;
+      let requestContext = prepared;
+      if (prepared.mode === 'input' && transformContext) {
+        canonicalItems = JSON.parse(
+          JSON.stringify(
+            prepared.items.filter(
+              (item) =>
+                item.type === 'message' &&
+                (item.role === 'developer' || item.role === 'system'),
+            ),
+          ),
+        ) as typeof prepared.items;
+        const replacement = await transformContext(
+          Object.freeze({
+            context: context.context,
+            sessionId: context.sessionId,
+            turnId: context.turnId,
+            ...(context.subagentId === undefined
+              ? {}
+              : { subagentId: context.subagentId }),
+            signal: context.signal,
+            model: prepared.model,
+            items: prepared.items,
+            requestId: prepared.requestId,
+            purpose: 'compaction' as const,
+          }),
+        );
+        assertCurrent();
+        if (replacement !== undefined)
+          requestContext = Object.freeze({
+            ...prepared,
+            items: Object.freeze(
+              z.array(losslessJsonObjectSchema).parse(replacement),
+            ),
+          });
+      }
+      if (prepared.mode === 'previous_response_id' && !matchesCurrentProvider())
+        throw new TypeError(
+          'Compaction client provider scope changed before dispatch',
+        );
+      const window = await this.requestWindow(
+        requestContext,
+        providerResponse,
+        observeUsage,
+        canonicalItems,
+        markDispatch,
+      );
+      return { window };
+    }
   }
 
   /** @internal Resolve the captured native request before predicate/client effects. */
