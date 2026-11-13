@@ -4089,6 +4089,24 @@ struct PythonExecutor {
     receipts: Option<Arc<Mutex<HashSet<PendingKey>>>>,
 }
 
+impl PythonExecutor {
+    fn manual_call(&self) -> bool {
+        self.manual
+            .as_ref()
+            .map(|manual| manual.slots.contains(&self.slot))
+            .or_else(|| {
+                self.generation
+                    .manual_slots
+                    .as_ref()
+                    .map(|slots| slots.contains(&self.slot))
+            })
+            .unwrap_or_else(|| {
+                self.tools
+                    .is_manual(&self.generation.entries[self.slot].name)
+            })
+    }
+}
+
 impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
     fn tool_name(&self) -> ToolName {
         self.generation.entries[self.slot].name.clone()
@@ -4136,6 +4154,13 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         // Core admits each callback independently. A waiting callback must not
         // prevent an automatic or manual sibling from producing its result.
         true
+    }
+
+    fn is_automatic_function_callback(&self) -> bool {
+        matches!(
+            &self.generation.entries[self.slot].spec,
+            ToolSpec::Function(_) | ToolSpec::Namespace(_)
+        ) && !self.manual_call()
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {
@@ -4288,9 +4313,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     }),
                     self.admission.clone(),
                     self.profile.as_ref(),
-                    self.manual
-                        .as_ref()
-                        .map(|manual| manual.slots.contains(&self.slot)),
+                    Some(self.manual_call()),
                     call.conversation_history.realtime_tool_call().cloned(),
                     client_search.clone(),
                     self.executor_tools
