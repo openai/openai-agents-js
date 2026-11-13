@@ -550,6 +550,7 @@ export interface SessionOptions {
     }) => void,
     parentTrace?: TraceContext,
     transformContext?: ContextTransform<any>,
+    provider?: import('./provider').NativeProvider,
   ) => Promise<Session<string>>;
   applicationAgent?: import('./public-agent').Agent<any, any>;
   realtimeDeclaration?: import('./public-agent').Agent<any, any>;
@@ -6268,6 +6269,11 @@ export class Session<OutputT = string, Context = unknown> {
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
       );
     if (selection) selection.generation = this.catalog.generation;
+    const outputPrompt =
+      state.outputOverride ||
+      !this.options.agentGraph?.usesProfileOutputGuidance
+        ? output.prompt
+        : undefined;
     const byteLimit = audioInputByteLimit(parts);
     const receipt = {
       ...(selection
@@ -6300,6 +6306,7 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
       ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
       mode: 'start_if_idle',
+      profile_output_override: state.outputOverride,
       ...(run.raiseOnUnknownTool === undefined
         ? {}
         : { raise_on_unknown_tool: run.raiseOnUnknownTool }),
@@ -6307,8 +6314,8 @@ export class Session<OutputT = string, Context = unknown> {
         ? {}
         : { writable_roots: run.writableRoots }),
       observation_submission_id: this.submissionIds.get(run)!,
-      input: output.prompt
-        ? [...parts, { type: 'text', text: output.prompt }]
+      input: outputPrompt
+        ? [...parts, { type: 'text', text: outputPrompt }]
         : parts,
       ...(output.schema === undefined &&
       selection?.modelOverride === undefined &&
@@ -6398,8 +6405,8 @@ export class Session<OutputT = string, Context = unknown> {
                 signal,
               );
               check();
-              receipt.input = output.prompt
-                ? [...parts, { type: 'text', text: output.prompt }]
+              receipt.input = outputPrompt
+                ? [...parts, { type: 'text', text: outputPrompt }]
                 : parts;
             } finally {
               if (run.preparation === preparation) run.preparation = undefined;
@@ -6827,6 +6834,10 @@ export class Session<OutputT = string, Context = unknown> {
         },
         run.parentTrace,
         transformContext,
+        source
+          ? this.profileRuntimes.get(source.profile_id)!.profile.declaration
+              .provider
+          : undefined,
       );
       repair.opening = undefined;
       const correction = repair.session;
@@ -7177,6 +7188,7 @@ export class Session<OutputT = string, Context = unknown> {
                 ...(tracingContext ? { tracing_context: tracingContext } : {}),
                 input: [],
                 mode: 'continue_if_idle',
+                profile_output_override: submission.outputOverride,
                 ...(run.parentTrace
                   ? { trace: run.parentTrace.toHeaders() }
                   : {}),
@@ -9638,14 +9650,19 @@ export class Session<OutputT = string, Context = unknown> {
                 },
               });
             } else if (produce) {
-              if (!this.options.modelBackend)
+              const source = this.messageProfile(msg);
+              const captured = source
+                ? this.profileRuntimes.get(source.profile_id)!.profile
+                    .declaration.provider.modelBackend
+                : this.options.modelBackend;
+              if (!captured)
                 throw new NativeError(
                   'Native model producer has no application backend',
                 );
               const backend =
-                'complete' in this.options.modelBackend
-                  ? this.options.modelBackend
-                  : this.options.modelBackend.getModel(base.model);
+                'complete' in captured
+                  ? captured
+                  : captured.getModel(base.model);
               check();
               const attemptId =
                 typeof msg.attempt_id === 'string' ? msg.attempt_id : undefined;
@@ -11996,6 +12013,7 @@ export class Session<OutputT = string, Context = unknown> {
               : undefined,
             tracingContext,
             this.submissionIds.get(run)!,
+            submissions.get(run)!.outputOverride,
           )
           .then((wire) => {
             const submission = decode(manualCompletionSchema, wire);
@@ -16330,7 +16348,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.manualSeal
     )
       return 'Session is not available for checkpoint inspection';
-    if (this.options.localStorage && (!allowLocal || this.options.customStore))
+    if (this.options.localStorage && !allowLocal)
       return 'Persistent storage cannot export SessionState';
     if (this.pendingRoots.size) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
@@ -16870,7 +16888,8 @@ export class Session<OutputT = string, Context = unknown> {
   /**
    * Copy an idle native Session, including its LocalStorage graph and sidecars.
    * Restore without storage into isolated memory using the current Agent.
-   * CustomStorage export and persistent manual suspension/fork remain unsupported.
+   * Canonical custom storage exports its owned root; persistent manual
+   * suspension and fork remain unsupported.
    */
   async saveState(): Promise<SessionState> {
     return this.captureIdleState(false);
@@ -16882,7 +16901,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
-    if (this.options.localStorage && (retire || this.options.customStore))
+    if (this.options.localStorage && retire)
       throw new TypeError(
         'Persistent storage does not support saveState; retain Session.id and reopen with the same storage backend',
       );

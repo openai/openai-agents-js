@@ -587,8 +587,8 @@ async fn export_inner(
     allow_local: bool,
 ) -> anyhow::Result<Value> {
     ensure!(
-        state.engine.local_checklist_store.is_none()
-            || (allow_local && state.engine.custom_store.is_none()),
+        (state.engine.local_checklist_store.is_none() && state.engine.custom_store.is_none())
+            || allow_local,
         "local storage cannot export portable checkpoints"
     );
     let tools = state
@@ -650,6 +650,10 @@ async fn export_inner(
         None
     };
     let before = crate::subagents::list(state).await?;
+    ensure!(
+        state.engine.custom_store.is_none() || before.is_empty(),
+        "Canonical custom storage exports only its owned root"
+    );
     let reader = if let Some(store) = &state.engine.local_checklist_store {
         Some(
             store
@@ -757,8 +761,9 @@ async fn export_inner(
         .get::<crate::response_control::ResponseControl>();
     let root_turn_budget = control.and_then(|control| control.checkpoint_budget());
     let mut history = history;
-    // Only the admitted idle LocalStorage export detaches these live decisions.
-    if reader.is_some() && allow_local && pending.is_none() {
+    // Idle persistent exports detach settled decisions without changing source history.
+    if (reader.is_some() || state.engine.custom_store.is_some()) && allow_local && pending.is_none()
+    {
         archive_exported_mcp_approvals(&mut history)?;
         for child in &mut descendants {
             archive_exported_mcp_approvals(&mut child.history)?;
@@ -1308,6 +1313,14 @@ async fn memory_mode(
         // The resolved canonical headers retain the local thread's memory mode.
         return Ok(None);
     }
+    if state.engine.custom_store.is_some() {
+        ensure!(
+            id == state.id,
+            "Canonical custom storage exports only its owned root"
+        );
+        // Canonical headers retain the root memory mode.
+        return Ok(None);
+    }
     let store = state
         .engine
         .store
@@ -1323,6 +1336,13 @@ pub(crate) async fn checklist(
 ) -> anyhow::Result<Option<crate::storage::ChecklistState>> {
     if let Some(store) = &state.engine.local_checklist_store {
         Ok(store.checklist(id).await?)
+    } else if state.engine.custom_store.is_some() {
+        ensure!(
+            id == state.id,
+            "Canonical custom storage exports only its owned root"
+        );
+        // Custom storage does not admit the local checklist sidecar.
+        Ok(None)
     } else {
         Ok(state
             .engine

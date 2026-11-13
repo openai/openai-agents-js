@@ -2369,8 +2369,9 @@ impl PythonTools {
                 .entries
                 .iter()
                 .position(|entry| entry.name.clone().with_default_namespace() == name);
-            if slot.is_some_and(|slot| generation.terminal_slots.contains(&slot))
-                && frame.accepted_replies.contains_key(&call.call_id)
+            if slot.is_some_and(|slot| {
+                generation.terminal_slots.contains(&slot) || frame.batch_completion
+            }) && frame.accepted_replies.contains_key(&call.call_id)
             {
                 ensure!(
                     !call.custom,
@@ -2392,9 +2393,9 @@ impl PythonTools {
             }) {
                 self.slot_for_catalog(&manual, call, generation)?;
             }
-            // Captured nonterminal automatic siblings may be absent from the
-            // strict history prefix. Their accepted receipts are validated below;
-            // they neither acquire manual grants nor become held terminal results.
+            // Captured automatic siblings outside the current completion policy may
+            // be absent from the strict history prefix. Their accepted receipts
+            // are validated below and do not acquire manual grants.
         }
         ensure!(
             held_ids.is_empty() || frame.tool_outcomes.is_some(),

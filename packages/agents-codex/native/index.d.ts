@@ -390,6 +390,7 @@ export class NativeThread {
     traceJson?: string,
     tracing_context?: string,
     observationSubmissionId?: string,
+    profileOutputOverride?: boolean,
   ): Promise<string>;
   _start_raw_usage(): void;
   _start_request_attempts(): void;

@@ -1662,7 +1662,13 @@ export class Agent<Context = undefined, Output = string> {
       (restoredSource
         ? graph!.profiles.get(restoredSource.profile_id)!.output
         : output);
-    if (persistent && output.repair)
+    if (
+      persistent &&
+      (output.repair ||
+        [...(graph?.profiles.values() ?? [])].some(
+          ({ output }) => output.repair,
+        ))
+    )
       throw new TypeError('Persistent storage does not support output repair');
     assertOutputState(state, activeOutput.identity);
     if (
@@ -1867,17 +1873,35 @@ export class Agent<Context = undefined, Output = string> {
       correction === undefined &&
       outputType === undefined;
     const lease = provider._acquire(correction ?? opening, privateRun);
+    const profileLeases = new Map<NativeProvider, ProviderLease>();
+    const releaseProfileLeases = async (releaseRoot: () => Promise<void>) => {
+      const results = await Promise.allSettled([
+        releaseRoot(),
+        ...Array.from(profileLeases.values(), (profile) => profile.release()),
+      ]);
+      const errors = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : [],
+      );
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1)
+        throw new AggregateError(errors, 'Provider lease cleanup failed');
+    };
+    const releaseProviders = () => releaseProfileLeases(lease.release);
     const previousOpeningCleanup: (() => Promise<void>) | undefined =
       lease.retainOpeningCleanup(() =>
-        releaseEnvironmentBeforeProvider(
-          environmentOwner,
-          previousOpeningCleanup ?? lease.release,
+        releaseEnvironmentBeforeProvider(environmentOwner, () =>
+          releaseProfileLeases(previousOpeningCleanup ?? lease.release),
         ),
       );
     cleanupAcquired();
     const apiKey = lease.apiKey;
 
     try {
+      for (const profile of completedGraph?.profiles.values() ?? []) {
+        const current = profile.profile.declaration.provider;
+        if (current !== provider && !profileLeases.has(current))
+          profileLeases.set(current, current._acquire());
+      }
       if (lease.codexLogin)
         assertOutputRepairSupported(
           output,
@@ -2171,7 +2195,7 @@ export class Agent<Context = undefined, Output = string> {
         hostedPromptControls: promptControls,
         checklist: declarations.checklist,
         websocketsAllowed: lease.websocketsAllowed && !historyHttpOnly,
-        onClose: lease.release,
+        onClose: releaseProviders,
         managedWorkspace: environmentOwner.managedWorkspace,
         [managedWorkspaceRestore]: (options as OwnedSessionOptions<Context>)[
           managedWorkspaceRestore
@@ -2185,16 +2209,18 @@ export class Agent<Context = undefined, Output = string> {
               retainOpening,
               parentTrace,
               repairTransformContext,
+              sourceProvider,
             ) => {
               // Native fallback may read a later environment key; repair needs this snapshot.
               if (apiKey === undefined)
                 throw new NativeError(
                   'Output repair requires a captured API key',
                 );
+              const correctionProvider = sourceProvider ?? provider;
               const correction = new Agent({
                 instructions:
                   'Correct the supplied JSON to match its schema. Return only JSON.',
-                provider,
+                provider: correctionProvider,
                 model,
                 modelSettings,
                 tools: [],
@@ -2213,7 +2239,8 @@ export class Agent<Context = undefined, Output = string> {
                 includeOutputAccepted,
                 includeRawProviderEvents,
                 [correctionOpening]: {
-                  apiKey: lease.realtimeApiKey,
+                  apiKey: (profileLeases.get(correctionProvider) ?? lease)
+                    .realtimeApiKey,
                   retainOpening,
                 },
               };
@@ -2404,6 +2431,21 @@ export function captureAgentProfiles<Context, Output>(
       source.outputType && 'mode' in source.outputType
         ? Object.freeze({ ...source.outputType })
         : source.outputType;
+    const targetProvider = !captureProvider
+      ? undefined
+      : agent === root || implicitProviders.get(source.provider)?.has(source)
+        ? rootDeclaration.provider
+        : source.provider;
+    if (
+      targetProvider !== undefined &&
+      targetProvider !== rootDeclaration.provider &&
+      (realtimeGraph ||
+        rootDeclaration.provider.modelBackend === undefined ||
+        targetProvider.modelBackend === undefined)
+    )
+      throw new TypeError(
+        'Handoff targets must inherit or share the Session provider, or use captured text model backends on both Agents',
+      );
     const declaration = new Agent<Context, Output>({
       instructions: capturedInstructions(source),
       realtime: source.realtime,
@@ -2411,7 +2453,7 @@ export function captureAgentProfiles<Context, Output>(
       model: source.model,
       decisions: source.decisions,
       modelSettings: source.modelSettings,
-      provider: captureProvider ? rootDeclaration.provider : undefined,
+      provider: targetProvider,
       outputType,
       tools:
         source[implicitTools] === source.tools && source.tools.length === 0
@@ -2431,18 +2473,9 @@ export function captureAgentProfiles<Context, Output>(
       prepareHandoffInput: source.prepareHandoffInput,
       hostedPrompt: source.hostedPrompt,
     } as AgentOptions<Context, Output>);
-    if (wireIdentity(declaration) !== output)
+    if (realtimeGraph && wireIdentity(declaration) !== output)
       throw new TypeError(
-        'Handoff profiles must share output mode, schema and wrapping',
-      );
-    if (
-      captureProvider &&
-      agent !== root &&
-      !implicitProviders.get(agent.provider)?.has(agent) &&
-      agent.provider !== rootDeclaration.provider
-    )
-      throw new TypeError(
-        'Handoff targets must inherit or share the Session provider',
+        'Realtime handoff profiles must share output mode, schema and wrapping',
       );
     if (!isDeepStrictEqual(runtimeGrants(declaration), grants))
       throw new TypeError(

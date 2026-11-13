@@ -198,14 +198,14 @@ async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyho
             crate::subagents::list(&state).await?.is_empty(),
             "history transactions do not rewrite child graphs"
         );
+        ensure!(
+            state.engine.goals.is_none(),
+            "history transactions do not rewrite goal-backed sessions"
+        );
     }
     ensure!(
         state.thread.list_background_terminals().await.is_empty(),
         "history transactions require completed background execution"
-    );
-    ensure!(
-        state.engine.goals.is_none(),
-        "history transactions do not rewrite goal-backed sessions"
     );
     let result = match edit {
         HistoryEdit::Replace { keep, items } => {

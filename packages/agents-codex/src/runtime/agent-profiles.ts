@@ -46,6 +46,7 @@ export interface CapturedAgentGraph {
   /** Owning-turn declaration supplying an explicit suspended operation ceiling. */
   readonly operationSource?: AgentProfileReceipt;
   readonly profiles: ReadonlyMap<string, AgentProfileRuntime>;
+  readonly usesProfileOutputGuidance: boolean;
   readonly roster: readonly JsonObject[];
 }
 export interface AgentProfileReceipt {
@@ -207,6 +208,17 @@ export function captureProfileRuntimes(
   const usesHostedPrompts = profiles.some(
     (profile) => profile.hostedPromptControls !== undefined,
   );
+  const outputs = profiles.map(({ declaration }) =>
+    prepareOutput(declaration.outputType),
+  );
+  const usesProfileSchemas =
+    outputs.some((output) => output.schema !== undefined) &&
+    outputs.some(
+      (output) => !isDeepStrictEqual(output.schema, outputs[0].schema),
+    );
+  const usesProfileOutputGuidance =
+    outputs.some((output) => output.prompt !== undefined) &&
+    outputs.some((output) => output.prompt !== outputs[0].prompt);
   const roster: JsonObject[] = [];
   for (const [index, profile] of profiles.entries()) {
     const declaration = profile.declaration;
@@ -225,7 +237,7 @@ export function captureProfileRuntimes(
             ])
           : rootCatalog
         : captureTools(tools);
-    const output = prepareOutput(declaration.outputType);
+    const output = outputs[index];
     const instructions =
       index === 0 ? rootInstructions : (declaration.instructions ?? '');
     const model = modelOverrides(
@@ -310,6 +322,14 @@ export function captureProfileRuntimes(
         (guard) => guard.childCallback !== undefined,
       ),
       output_fingerprint: output.identity.fingerprint,
+      ...(usesProfileSchemas
+        ? output.schema === undefined
+          ? { wire_output_plain: true }
+          : { wire_output_schema: output.schema }
+        : {}),
+      ...(usesProfileOutputGuidance && output.prompt !== undefined
+        ? { wire_output_guidance: output.prompt }
+        : {}),
       mcp_servers: Object.fromEntries(mcp.map((server) => [server.name, {}])),
       mcp_result_tools: policies.servers,
       mcp_metadata_tools: policies.metadata_servers,
@@ -333,6 +353,7 @@ export function captureProfileRuntimes(
     rootId: profiles[0].id,
     profiles: captured,
     roster: Object.freeze(roster),
+    usesProfileOutputGuidance,
   });
 }
 

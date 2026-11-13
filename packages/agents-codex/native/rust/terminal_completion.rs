@@ -459,7 +459,8 @@ pub(super) fn hold(input: ToolCompletionInput<'_>) -> bool {
     let Ok(Some((generation, slot))) = resolve_tool(&input, &tools, &catalog, &name) else {
         return false;
     };
-    if !generation.terminal_slots.contains(&slot)
+    if (!generation.terminal_slots.contains(&slot)
+        && !batch_enabled(input.thread_store, input.step_store))
         || !tools.current_completion_owner(input.thread_store.level_id())
         || !tools.admits_generation(&generation)
     {

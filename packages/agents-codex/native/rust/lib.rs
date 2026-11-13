@@ -4622,6 +4622,7 @@ impl NativeThread {
         trace_json: Option<String>,
         tracing_context: Option<String>,
         observation_submission_id: Option<String>,
+        profile_output_override: Option<bool>,
     ) -> napi::Result<String> {
         let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
             .map_err(input_error)?;
@@ -4738,6 +4739,7 @@ impl NativeThread {
                 terminal,
                 staged_input,
                 raise_on_unknown_tool,
+                profile_output_override.unwrap_or_default(),
             )
             .await
             .map_err(native_error)?;

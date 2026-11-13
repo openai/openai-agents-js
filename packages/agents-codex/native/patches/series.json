@@ -1187,7 +1187,11 @@
     {
       "path": "sdk-auditable-collaboration-history.patch",
       "sha256": "2c798b0e66ffce1ec2b1c7278220673db2edb79901851860c90f1d7d680534f1"
+    },
+    {
+      "path": "sdk-native-handoff-profile-output.patch",
+      "sha256": "9a030e96cb18989f36e2c82976b481c442a839355444301d531581b81dff4c5c"
     }
   ],
-  "result_tree": "6a59b6c14a0e9de97210f80d0d8fd90ce35bae75"
+  "result_tree": "6dcc2b888323b0aaa785d0ee12b40732cdf4fbac"
 }

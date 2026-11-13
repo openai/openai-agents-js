@@ -397,7 +397,7 @@ export async function openSession(
     }
     await releaseEnvironmentBeforeProvider(
       options.environmentOwner,
-      lease.release,
+      options.onClose ?? lease.release,
     );
     if (completedFailure) throw completedFailure;
   });

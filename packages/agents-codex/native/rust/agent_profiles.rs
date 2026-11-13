@@ -71,6 +71,12 @@ pub(crate) struct ProfileSpec {
     #[serde(default)]
     selecting_steps: bool,
     output_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wire_output_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    wire_output_plain: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wire_output_guidance: Option<String>,
     #[serde(default)]
     mcp_servers: BTreeMap<String, Value>,
     #[serde(default)]
@@ -354,6 +360,24 @@ fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
         ensure!(
             !profile.id.is_empty() && !profile.output_fingerprint.is_empty(),
             "Incomplete captured Agent declaration"
+        );
+        ensure!(
+            profile
+                .wire_output_schema
+                .as_ref()
+                .is_none_or(Value::is_object),
+            "Captured Agent wire output schema must be an object"
+        );
+        ensure!(
+            !profile.wire_output_plain || profile.wire_output_schema.is_none(),
+            "Captured Agent cannot declare both plain and structured wire output"
+        );
+        ensure!(
+            profile
+                .wire_output_guidance
+                .as_ref()
+                .is_none_or(|guidance| !guidance.is_empty() && profile.wire_output_schema.is_none()),
+            "Captured Agent prompted output requires text wire output and guidance"
         );
         let mut all_declarations = profile.tools.to_vec();
         for name in profile.handoffs.keys() {
@@ -1096,6 +1120,18 @@ impl AgentProfiles {
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });
+        if let Some(guidance) = &prepared.declaration.wire_output_guidance {
+            data.insert(codex_extension_api::AgentProfileOutputGuidance(
+                guidance.clone(),
+            ));
+        }
+        if prepared.declaration.wire_output_plain
+            || prepared.declaration.wire_output_schema.is_some()
+        {
+            data.insert(codex_extension_api::AgentProfileOutputSchema(
+                prepared.declaration.wire_output_schema.clone(),
+            ));
+        }
         data.insert(accepted);
         data.insert(prepared.catalog.clone());
         data.insert(prepared.plugins.clone());
@@ -1283,6 +1319,18 @@ pub(crate) async fn configure(
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });
+        if let Some(guidance) = &prepared.declaration.wire_output_guidance {
+            data.insert(codex_extension_api::AgentProfileOutputGuidance(
+                guidance.clone(),
+            ));
+        }
+        if prepared.declaration.wire_output_plain
+            || prepared.declaration.wire_output_schema.is_some()
+        {
+            data.insert(codex_extension_api::AgentProfileOutputSchema(
+                prepared.declaration.wire_output_schema.clone(),
+            ));
+        }
         data.insert(accepted);
         data.insert(catalog);
         data.insert(prepared.declaration.decision_tools());
