@@ -357,7 +357,10 @@ import {
 } from './history';
 import type { ThreadOptions } from './options';
 import {
-  storedOptions,
+  encodeStoredSessionsRequest,
+  encodeStoredTurnsRequest,
+  encodeStoredItemsRequest,
+  encodeSearchHistoryRequest,
   storedTurnPage,
   storedItemPage,
   storedMatchPage,
@@ -14761,17 +14764,8 @@ export class Session<OutputT = string, Context = unknown> {
   async storedSessions(
     options: { limit?: number; cursor?: string; archived?: boolean } = {},
   ): Promise<StoredSessionPage> {
-    const { limit = 50, cursor, archived = false } = options;
-    const query = storedOptions(limit, cursor);
     return storedSessionPage(
-      await this.#native._stored_history(
-        JSON.stringify({
-          kind: 'sessions',
-          limit: query.limit,
-          cursor: query.cursor,
-          archived,
-        }),
-      ),
+      await this.#native._stored_history(encodeStoredSessionsRequest(options)),
     );
   }
 
@@ -14787,23 +14781,8 @@ export class Session<OutputT = string, Context = unknown> {
       includeSummary?: boolean;
     } = {},
   ): Promise<StoredTurnPage> {
-    const {
-      limit = 50,
-      cursor,
-      direction = 'asc',
-      includeSummary = false,
-    } = options;
-    const query = storedOptions(limit, cursor, direction);
-    if (typeof includeSummary !== 'boolean')
-      throw new TypeError('includeSummary must be a boolean');
     return storedTurnPage(
-      await this.#native._stored_history(
-        JSON.stringify({
-          kind: 'turns',
-          ...query,
-          include_items: includeSummary,
-        }),
-      ),
+      await this.#native._stored_history(encodeStoredTurnsRequest(options)),
     );
   }
 
@@ -14817,14 +14796,8 @@ export class Session<OutputT = string, Context = unknown> {
       direction?: 'asc' | 'desc';
     } = {},
   ): Promise<StoredItemPage> {
-    const { limit = 50, cursor, direction = 'asc', turnId } = options;
-    const query = storedOptions(limit, cursor, direction);
-    if (turnId !== undefined && (typeof turnId !== 'string' || !turnId))
-      throw new TypeError('turnId must be a nonempty string');
     return storedItemPage(
-      await this.#native._stored_history(
-        JSON.stringify({ kind: 'items', ...query, turn_id: turnId ?? null }),
-      ),
+      await this.#native._stored_history(encodeStoredItemsRequest(options)),
     );
   }
 
@@ -14835,18 +14808,9 @@ export class Session<OutputT = string, Context = unknown> {
     text: string,
     options: { limit?: number; cursor?: string } = {},
   ): Promise<StoredMatchPage> {
-    const { limit = 50, cursor } = options;
-    const query = storedOptions(limit, cursor);
-    if (typeof text !== 'string' || !text.trim())
-      throw new TypeError('Stored history search requires nonempty text');
     return storedMatchPage(
       await this.#native._stored_history(
-        JSON.stringify({
-          kind: 'search',
-          limit: query.limit,
-          cursor: query.cursor,
-          text,
-        }),
+        encodeSearchHistoryRequest(text, options),
       ),
     );
   }
