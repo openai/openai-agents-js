@@ -1692,7 +1692,8 @@ const aiSdkStreamReasoningBlocks = Symbol('aiSdkStreamReasoningBlocks');
 
 type AiSdkStreamReasoning = {
   type: 'reasoning';
-  providerMetadata: JsonObject & { openai: AiSdkReasoningMetadata };
+  providerMetadata?: JsonObject;
+  openai: AiSdkReasoningMetadata;
   [aiSdkStreamReasoningBlocks]: { text: string }[];
 };
 
@@ -1990,10 +1991,9 @@ export class AiSdkModel implements NativeModel {
             ...(providerMetadata ? { providerOptions: providerMetadata } : {}),
           });
       } else if (item.type === 'reasoning') {
-        if (!this.#openaiResponses)
-          throw new TypeError(
-            'AiSdkModel supports native reasoning replay only with OpenAI Responses',
-          );
+        const recorded = hasModelProviderMetadata(request, inputIndex, item);
+        if (!this.#openaiResponses && providerMetadata === undefined) continue;
+        if (recorded && providerMetadata === undefined) continue;
         const summary = (item.summary ?? []) as JsonObject[];
         if (
           summary.some(
@@ -2004,16 +2004,16 @@ export class AiSdkModel implements NativeModel {
           throw new TypeError(
             'AiSdkModel received unsupported reasoning summary',
           );
-        const metadata =
-          providerMetadata === undefined &&
-          hasModelProviderMetadata(request, inputIndex, item)
-            ? {}
-            : {
+        const metadata = this.#openaiResponses
+          ? mergeModelProviderMetadata(providerMetadata, {
+              openai: {
                 ...(item.id != null ? { itemId: item.id } : {}),
                 ...(item.encrypted_content != null
                   ? { reasoningEncryptedContent: item.encrypted_content }
                   : {}),
-              };
+              },
+            })
+          : providerMetadata;
         const previous =
           providerMetadata || prompt.at(-1)?.providerOptions
             ? undefined
@@ -2025,9 +2025,7 @@ export class AiSdkModel implements NativeModel {
           content.push({
             type: 'reasoning',
             text,
-            providerOptions: mergeModelProviderMetadata(providerMetadata, {
-              openai: metadata,
-            }),
+            ...(metadata === undefined ? {} : { providerOptions: metadata }),
           });
         if (previous?.role !== 'assistant')
           prompt.push({
@@ -2357,10 +2355,6 @@ export class AiSdkModel implements NativeModel {
           case 'reasoning-start':
           case 'reasoning-delta':
           case 'reasoning-end': {
-            if (!this.#openaiResponses)
-              throw new TypeError(
-                'AiSdkModel supports native reasoning replay only with OpenAI Responses',
-              );
             const id = part.id;
             if (typeof id !== 'string' || !id)
               throw new TypeError('AiSdkModel requires a reasoning block ID');
@@ -2381,7 +2375,9 @@ export class AiSdkModel implements NativeModel {
               block.metadata,
               part.providerMetadata,
             );
-            const metadata = aiSdkReasoningMetadata(part);
+            const metadata = this.#openaiResponses
+              ? aiSdkReasoningMetadata(part)
+              : {};
             if (part.type === 'reasoning-delta') {
               if (typeof part.delta !== 'string')
                 throw new TypeError(
@@ -2392,7 +2388,7 @@ export class AiSdkModel implements NativeModel {
             const itemId = metadata.itemId;
             const existingItem =
               itemId == null ? undefined : reasoningItems.get(itemId);
-            const currentId = block.item?.providerMetadata.openai.itemId;
+            const currentId = block.item?.openai.itemId;
             if (
               (existingItem && block.item && existingItem !== block.item) ||
               (currentId != null && itemId != null && currentId !== itemId)
@@ -2404,13 +2400,14 @@ export class AiSdkModel implements NativeModel {
               !block.item &&
               (block.text !== '' ||
                 itemId != null ||
-                metadata.reasoningEncryptedContent != null)
+                metadata.reasoningEncryptedContent != null ||
+                block.metadata !== undefined)
             ) {
               let item = existingItem;
               if (!item) {
                 item = {
                   type: 'reasoning',
-                  providerMetadata: { openai: {} },
+                  openai: {},
                   [aiSdkStreamReasoningBlocks]: [],
                 };
                 content.push(item);
@@ -2420,18 +2417,11 @@ export class AiSdkModel implements NativeModel {
               item[aiSdkStreamReasoningBlocks].push(block);
             }
             if (block.item) {
-              block.item.providerMetadata = {
-                ...mergeModelProviderMetadata(
-                  block.item.providerMetadata,
-                  block.metadata,
-                ),
-                openai: {
-                  ...block.item.providerMetadata.openai,
-                  ...(block.metadata?.openai as JsonObject),
-                  ...metadata,
-                },
-              };
-              Object.assign(block.item.providerMetadata.openai, metadata);
+              block.item.providerMetadata = mergeModelProviderMetadata(
+                block.item.providerMetadata,
+                block.metadata,
+              );
+              Object.assign(block.item.openai, metadata);
               if (itemId != null) reasoningItems.set(itemId, block.item);
             }
             block.ended = part.type === 'reasoning-end';
@@ -2780,8 +2770,11 @@ export class AiSdkModel implements NativeModel {
         }
         continue;
       }
-      if (part.type === 'reasoning' && this.#openaiResponses) {
-        const metadata = aiSdkReasoningMetadata(part);
+      if (part.type === 'reasoning') {
+        const metadata = this.#openaiResponses
+          ? ((part as AiSdkStreamReasoning).openai ??
+            aiSdkReasoningMetadata(part))
+          : {};
         const texts = (part as AiSdkStreamReasoning)[
           aiSdkStreamReasoningBlocks
         ]?.map((block) => block.text) ?? [part.text];
@@ -2794,7 +2787,9 @@ export class AiSdkModel implements NativeModel {
         if (
           !summary.length &&
           itemId == null &&
-          reasoningEncryptedContent == null
+          reasoningEncryptedContent == null &&
+          part.providerMetadata == null &&
+          result.providerMetadata == null
         )
           continue;
         flushText();
@@ -2820,7 +2815,9 @@ export class AiSdkModel implements NativeModel {
           output.push(item);
           retainMetadata(
             output.length - 1,
-            part.providerMetadata ?? result.providerMetadata,
+            part.providerMetadata ??
+              result.providerMetadata ??
+              (this.#openaiResponses ? undefined : {}),
           );
           if (itemId != null) reasoningItems.set(itemId, item);
         }
