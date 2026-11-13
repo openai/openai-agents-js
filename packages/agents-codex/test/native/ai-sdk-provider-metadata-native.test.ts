@@ -267,7 +267,12 @@ for (const mode of ['buffered', 'streamed'] as const) {
     expect(prompts).toHaveLength(2);
   }, 30_000);
 
-  for (const isolation of ['provider', 'model'] as const)
+  for (const [isolation, providerName, modelId] of [
+    ['provider', 'foreign.metadata', 'fixture-metadata-model'],
+    ['model', 'fixture.metadata', 'foreign-fixture-model'],
+    ['provider casing', 'Fixture.Metadata', 'fixture-metadata-model'],
+    ['model casing', 'fixture.metadata', 'Fixture-Metadata-Model'],
+  ] as const)
     it(`keeps ${mode} metadata off a different current ${isolation}`, async () => {
       let foreignPrompt: any[] | undefined;
       let selected: AiSdkModel;
@@ -277,10 +282,8 @@ for (const mode of ['buffered', 'streamed'] as const) {
           foreignPrompt = prompt;
           return done();
         },
-        isolation === 'provider' ? 'foreign.metadata' : 'fixture.metadata',
-        isolation === 'model'
-          ? 'foreign-fixture-model'
-          : 'fixture-metadata-model',
+        providerName,
+        modelId,
       );
       const first = adapter(mode, () => calls(['switch']));
       selected = first;

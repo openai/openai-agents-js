@@ -138,8 +138,8 @@ export function replayModelProviderMetadata(
     ?.find((entry) => entry.input_index === inputIndex);
   if (
     !entry ||
-    entry.metadata.provider.toLowerCase() !== provider.toLowerCase() ||
-    entry.metadata.model.toLowerCase() !== model.toLowerCase() ||
+    entry.metadata.provider !== provider ||
+    entry.metadata.model !== model ||
     !isDeepStrictEqual(entry.item, item)
   )
     return;
