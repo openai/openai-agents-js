@@ -925,7 +925,9 @@ type FunctionToolOptions<
   callbackTimeout?: number;
   /** Fail the turn by default, or send a failed textual result after cleanup. */
   timeoutBehavior?: FunctionToolTimeoutBehavior;
-  /** Root application functions may settle at the deadline while the Session retains cleanup. */
+  /** Root application functions may settle at the deadline while the Session retains cleanup.
+   * Standalone calls have been retaining cleanup before settlement.
+   */
   timeoutSettlement?: 'after_cleanup' | 'at_deadline';
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: (
@@ -1965,7 +1967,7 @@ export async function invokeFunctionTool(
   );
 }
 
-/** @internal A callback deadline revokes publication; the caller still joins physical work. */
+/** @internal Callback deadline with retained cleanup or joined body settlement. */
 export async function invokeWithTimeout<T>(
   invoke: (signal: AbortSignal) => T | Promise<T>,
   parentSignal: AbortSignal,
@@ -1995,7 +1997,9 @@ export async function invokeWithTimeout<T>(
   if (!timeoutError) timeout.name = 'TimeoutError';
   const deadline = performance.now() + timeoutSeconds * 1000;
   const deadlineResult =
-    settlement === 'at_deadline' ? Promise.withResolvers<never>() : undefined;
+    settlement === 'at_deadline' && retainBody !== undefined
+      ? Promise.withResolvers<never>()
+      : undefined;
   void deadlineResult?.promise.catch(() => {});
   let body: Promise<T> | undefined;
   const expire = () => {
