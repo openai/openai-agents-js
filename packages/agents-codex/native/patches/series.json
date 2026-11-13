@@ -1142,7 +1142,7 @@
     },
     {
       "path": "sdk-explicit-prompt-cache-breakpoints.patch",
-      "sha256": "6f8c6664e089c76e850ea328d932016b4c08ca946287d2b187ba45bedbe1e4cd"
+      "sha256": "b502232724d4db60f294e2f36b6903f843479205b534aa287cea76d80bda6113"
     },
     {
       "path": "sdk-programmatic-tool-catalog.patch",
@@ -1205,5 +1205,5 @@
       "sha256": "9c5e1e12c80d5b41b8dad5de245db2edca295b839c4af1c1321766dd877715c7"
     }
   ],
-  "result_tree": "89028551b6fe08a4f54e6ab78c0d3d889afecb22"
+  "result_tree": "9abccdc4753d0903a162f309e20b45eb257f24c4"
 }

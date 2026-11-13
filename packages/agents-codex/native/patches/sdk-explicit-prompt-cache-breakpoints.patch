@@ -1,12 +1,22 @@
 diff --git a/codex-rs/Cargo.lock b/codex-rs/Cargo.lock
-index 83287bff7813e0ab241837b18b21ac7dfb091bcd..4bf7d06260f398209371b295c17670e257b72755 100644
+index 83287bff7813e0ab241837b18b21ac7dfb091bcd..4e384abaf67d06790ff43373f95f681190c949a1 100644
 --- a/codex-rs/Cargo.lock
 +++ b/codex-rs/Cargo.lock
-@@ -4339,6 +4339,7 @@ dependencies = [
+@@ -4309,8 +4309,8 @@
+ name = "codex-protocol"
+ version = "0.0.0"
+ dependencies = [
+- "base64 0.22.1",
+  "anyhow",
++ "base64 0.22.1",
+  "chardetng",
+  "chrono",
+  "codex-async-utils",
+@@ -4339,6 +4339,7 @@
   "serde",
   "serde_json",
   "serde_with",
-+ "sha2",
++ "sha2 0.10.9",
   "strum 0.27.2",
   "strum_macros 0.28.0",
   "sys-locale",
