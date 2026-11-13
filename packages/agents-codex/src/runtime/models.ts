@@ -1,3 +1,13 @@
+import {
+  captureModelProviderMetadata,
+  replayModelProviderMetadata,
+  retainModelProviderMetadata,
+  retainModelProviderStreamFrame,
+  mergeModelProviderMetadata,
+  hasModelProviderMetadata,
+  modelTextPartMetadata,
+  modelTextPartMetadataKey,
+} from './model-provider-metadata';
 import type { TokenUsage } from './run-events';
 import {
   modelErrorHeader,
@@ -13,7 +23,12 @@ import type {
 } from 'openai/resources/chat';
 import { z } from 'zod';
 import { applyPatchOperationSchema } from './apply-patch';
-import { captureImage, inlineAudioSource } from './media';
+import {
+  captureFile,
+  captureImage,
+  inlineAudioSource,
+  type FileReference,
+} from './media';
 import {
   copyJsonValue,
   losslessJsonObjectSchema,
@@ -249,7 +264,11 @@ export function captureModelResponse(
     throw new TypeError(
       'Original Responses usage requires its unchanged provider response ID',
     );
+  const providerMetadata = captureModelProviderMetadata(response);
   return copyJsonValue({
+    ...(providerMetadata === undefined
+      ? {}
+      : { provider_metadata: providerMetadata }),
     response_id: responseId,
     output: response.output,
     usage,
@@ -1394,16 +1413,122 @@ function aiSdkImageSource(source: string): {
       };
 }
 
-function assertAiSdkOutputMetadata(part: any): void {
+type AiSdkFileOptionsResolver = (
+  file: Readonly<FileReference>,
+) =>
+  | { readonly mediaType?: string; readonly providerOptions?: JsonObject }
+  | undefined;
+
+function aiSdkFilePart(
+  part: JsonObject,
+  version: AiSdkLanguageModel['specificationVersion'],
+  resolveOptions?: AiSdkFileOptionsResolver,
+) {
+  const reference = { ...part };
+  delete reference.type;
+  const file = captureFile(reference);
+  const source = file.file_data ?? file.file_url;
+  if (source === undefined)
+    throw new TypeError('AiSdkModel does not support provider file IDs');
+
+  const url = file.file_url ? new URL(file.file_url) : undefined;
+  const comma = /^data:/i.test(source) ? source.indexOf(',') : -1;
+  const options = resolveOptions?.(Object.freeze(file));
+  const hasPdfName = [file.filename, url?.pathname].some((name) =>
+    name?.toLowerCase().endsWith('.pdf'),
+  );
+  const mediaType =
+    comma >= 0
+      ? source.slice(5, comma).split(';')[0]?.trim()
+      : (options?.mediaType ?? (hasPdfName ? 'application/pdf' : undefined));
+  if (typeof mediaType !== 'string' || !mediaType.trim())
+    throw new TypeError('AiSdkModel file inputs require a media type');
+
+  const data = url ?? source.slice(comma + 1);
+  return {
+    type: 'file',
+    mediaType,
+    data:
+      version !== 'v4'
+        ? data
+        : typeof data === 'string'
+          ? { type: 'data', data }
+          : { type: 'url', url: data },
+    ...(file.filename ? { filename: file.filename } : {}),
+    ...(options?.providerOptions == null
+      ? {}
+      : { providerOptions: copyJsonValue(options.providerOptions) }),
+  };
+}
+
+type AiSdkReasoningMetadata = {
+  itemId?: string;
+  reasoningEncryptedContent?: string;
+};
+
+function aiSdkReasoningMetadata(part: any): AiSdkReasoningMetadata {
+  const metadata = part.providerMetadata?.openai;
+  const id = metadata?.itemId;
+  const encrypted = metadata?.reasoningEncryptedContent;
   if (
-    ['google', 'googleVertex', 'vertex'].some(
-      (provider) => part.providerMetadata?.[provider]?.thoughtSignature != null,
-    )
+    (id != null && (typeof id !== 'string' || id.length === 0)) ||
+    (encrypted != null && typeof encrypted !== 'string')
   )
     throw new TypeError(
-      'AiSdkModel does not support Google thought signatures',
+      'AiSdkModel received invalid Responses reasoning metadata',
     );
+  return {
+    ...(id == null ? {} : { itemId: id }),
+    ...(encrypted == null ? {} : { reasoningEncryptedContent: encrypted }),
+  };
 }
+
+const aiSdkStreamTextParts = Symbol('aiSdkStreamTextParts');
+
+type AiSdkTextPart = {
+  text: string;
+  providerMetadata?: JsonObject;
+};
+
+type AiSdkStreamText = {
+  type: 'text';
+  [aiSdkStreamTextParts]: AiSdkTextPart[];
+};
+
+type AiSdkStreamTextBlock = {
+  metadata?: JsonObject;
+  active?: {
+    message: AiSdkStreamText;
+    part: AiSdkTextPart;
+    index: number;
+    signedDelta: boolean;
+  };
+};
+
+const googleThoughtSignatureOptions = ['google', 'googleVertex', 'vertex'];
+
+function hasAiSdkThoughtSignature(metadata: JsonObject | undefined): boolean {
+  return googleThoughtSignatureOptions.some(
+    (provider) =>
+      typeof (metadata?.[provider] as JsonObject | undefined)
+        ?.thoughtSignature === 'string',
+  );
+}
+
+const aiSdkStreamReasoningBlocks = Symbol('aiSdkStreamReasoningBlocks');
+
+type AiSdkStreamReasoning = {
+  type: 'reasoning';
+  providerMetadata: JsonObject & { openai: AiSdkReasoningMetadata };
+  [aiSdkStreamReasoningBlocks]: { text: string }[];
+};
+
+type AiSdkStreamReasoningBlock = {
+  text: string;
+  ended: boolean;
+  item?: AiSdkStreamReasoning;
+  metadata?: JsonObject;
+};
 
 function aiSdkToolArguments(input: unknown, schema: any): string | undefined {
   const type = schema?.type;
@@ -1426,6 +1551,7 @@ export class AiSdkModel implements NativeModel {
   readonly #openai: boolean;
   readonly #openaiChat: boolean;
   readonly #openaiResponses: boolean;
+  readonly #resolveFileOptions: AiSdkFileOptionsResolver | undefined;
 
   constructor(
     readonly model: AiSdkLanguageModel,
@@ -1433,6 +1559,8 @@ export class AiSdkModel implements NativeModel {
     adapterOptions: {
       readonly providerFamily?: 'openai';
       readonly stream?: boolean;
+      /** Supply media type hints and provider options for an admitted file. */
+      readonly resolveFileOptions?: AiSdkFileOptionsResolver;
     } = {},
   ) {
     if (!['v2', 'v3', 'v4'].includes(model.specificationVersion))
@@ -1443,6 +1571,7 @@ export class AiSdkModel implements NativeModel {
       this.stream = (request) => this.#streamResponse(request);
     }
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
+    this.#resolveFileOptions = adapterOptions.resolveFileOptions;
     this.#openai =
       adapterOptions.providerFamily === 'openai' ||
       model.provider.startsWith('openai.');
@@ -1534,16 +1663,48 @@ export class AiSdkModel implements NativeModel {
     const declarations = [...((body.tools ?? []) as JsonObject[])];
     const names = new Map<string, string>();
     const patchCalls = new Map<string, ApplyPatchWire>();
-    for (const item of body.input as JsonObject[]) {
+    for (const [inputIndex, item] of (body.input as JsonObject[]).entries()) {
+      const providerMetadata = replayModelProviderMetadata(
+        request,
+        inputIndex,
+        item,
+        this.model.provider,
+        this.model.modelId,
+      );
       if (item.type === 'additional_tools') {
         declarations.push(...(item.tools as JsonObject[]));
         continue;
       }
       if (item.type === 'configuration_update') continue;
       if (item.type === 'message') {
-        const content = ((item.content ?? []) as JsonObject[]).map((part) => {
-          if (part.type === 'input_text' || part.type === 'output_text')
-            return { type: 'text', text: part.text };
+        const parts = (item.content ?? []) as JsonObject[];
+        const scopedMetadata = providerMetadata?.[modelTextPartMetadataKey];
+        const messageMetadata =
+          scopedMetadata === undefined ? providerMetadata : undefined;
+        const content = parts.map((part, index) => {
+          if (part.type === 'input_text' || part.type === 'output_text') {
+            const metadata =
+              messageMetadata ??
+              (Array.isArray(scopedMetadata) &&
+              scopedMetadata.length === parts.length
+                ? scopedMetadata[index]
+                : undefined);
+            return {
+              type: 'text',
+              text: part.text,
+              ...(metadata &&
+              typeof metadata === 'object' &&
+              !Array.isArray(metadata)
+                ? { providerOptions: metadata }
+                : {}),
+            };
+          }
+          if (part.type === 'input_file')
+            return aiSdkFilePart(
+              part,
+              this.model.specificationVersion,
+              this.#resolveFileOptions,
+            );
           if (part.type === 'input_audio') {
             const audio = inlineAudioSource(part.audio_url);
             return {
@@ -1585,13 +1746,22 @@ export class AiSdkModel implements NativeModel {
           );
         });
         if (item.role === 'system' || item.role === 'developer') {
-          if (content.some((part) => part.type !== 'text'))
-            throw new TypeError('AiSdkModel requires text instructions');
           prompt.push({
             role: 'system',
-            content: content.map((part) => part.text).join(''),
+            content: content
+              .map((part) => {
+                if (part.type !== 'text' || !('text' in part))
+                  throw new TypeError('AiSdkModel requires text instructions');
+                return part.text;
+              })
+              .join(''),
           });
-        } else prompt.push({ role: item.role, content });
+        } else
+          prompt.push({
+            role: item.role,
+            content,
+            ...(messageMetadata ? { providerOptions: messageMetadata } : {}),
+          });
       } else if (
         item.type === 'function_call' ||
         item.type === 'apply_patch_call' ||
@@ -1605,7 +1775,10 @@ export class AiSdkModel implements NativeModel {
         const name = patchCall ? 'apply_patch' : (item.name as string);
         names.set(item.call_id as string, name);
         if (patchCall) patchCalls.set(item.call_id as string, patchCall.wire);
-        const previous = prompt.at(-1);
+        const previous =
+          providerMetadata || prompt.at(-1)?.providerOptions
+            ? undefined
+            : prompt.at(-1);
         const content = previous?.role === 'assistant' ? previous.content : [];
         content.push({
           type: 'tool-call',
@@ -1614,9 +1787,14 @@ export class AiSdkModel implements NativeModel {
           input: patchCall
             ? patchCall.args
             : JSON.parse(item.arguments as string),
+          ...(providerMetadata ? { providerOptions: providerMetadata } : {}),
         });
         if (previous?.role !== 'assistant')
-          prompt.push({ role: 'assistant', content });
+          prompt.push({
+            role: 'assistant',
+            content,
+            ...(providerMetadata ? { providerOptions: providerMetadata } : {}),
+          });
       } else if (item.type === 'reasoning') {
         if (!this.#openaiResponses)
           throw new TypeError(
@@ -1632,13 +1810,20 @@ export class AiSdkModel implements NativeModel {
           throw new TypeError(
             'AiSdkModel received unsupported reasoning summary',
           );
-        const metadata = {
-          ...(item.id != null ? { itemId: item.id } : {}),
-          ...(item.encrypted_content != null
-            ? { reasoningEncryptedContent: item.encrypted_content }
-            : {}),
-        };
-        const previous = prompt.at(-1);
+        const metadata =
+          providerMetadata === undefined &&
+          hasModelProviderMetadata(request, inputIndex, item)
+            ? {}
+            : {
+                ...(item.id != null ? { itemId: item.id } : {}),
+                ...(item.encrypted_content != null
+                  ? { reasoningEncryptedContent: item.encrypted_content }
+                  : {}),
+              };
+        const previous =
+          providerMetadata || prompt.at(-1)?.providerOptions
+            ? undefined
+            : prompt.at(-1);
         const content = previous?.role === 'assistant' ? previous.content : [];
         for (const text of summary.length
           ? summary.map((part) => part.text)
@@ -1646,10 +1831,16 @@ export class AiSdkModel implements NativeModel {
           content.push({
             type: 'reasoning',
             text,
-            providerOptions: { openai: metadata },
+            providerOptions: mergeModelProviderMetadata(providerMetadata, {
+              openai: metadata,
+            }),
           });
         if (previous?.role !== 'assistant')
-          prompt.push({ role: 'assistant', content });
+          prompt.push({
+            role: 'assistant',
+            content,
+            ...(providerMetadata ? { providerOptions: providerMetadata } : {}),
+          });
       } else if (
         item.type === 'function_call_output' ||
         matchesPatchOutput(item, patchCalls)
@@ -1854,8 +2045,16 @@ export class AiSdkModel implements NativeModel {
     const content: any[] = [];
     const messageIds = new Map<number, string>();
     const pendingInputs = new Set<string>();
+    const toolInputMetadata = new Map<string, JsonObject>();
     const calls = new Set<string>();
-    let text: { type: 'text'; text: string } | undefined;
+    const reasoningBlocks = new Map<string, AiSdkStreamReasoningBlock>();
+    const reasoningItems = new Map<string, AiSdkStreamReasoning>();
+    let text: AiSdkStreamText | undefined;
+    const textBlocks = new Map<string, AiSdkStreamTextBlock>();
+    const googleTextChunks = /^(google|vertex)(?:\.|$)/.test(
+      this.model.provider,
+    );
+    let responseProviderMetadata: JsonObject | undefined;
     try {
       request.signal.throwIfAborted();
       while (true) {
@@ -1867,17 +2066,22 @@ export class AiSdkModel implements NativeModel {
         if (bytes > maxChatStreamBytes)
           throw new TypeError('AiSdkModel stream exceeded its buffer limit');
         if (part.type === 'error') throw part.error;
-        assertAiSdkOutputMetadata(part);
         if (finished && part.type !== 'response-metadata')
           throw new TypeError('AiSdkModel stream continued after finish');
         if (part.type === 'response-metadata') {
+          responseProviderMetadata = mergeModelProviderMetadata(
+            responseProviderMetadata,
+            part.providerMetadata,
+          );
           if (!started && typeof part.id === 'string' && part.id.trim())
             responseId = part.id;
           continue;
         }
         if (
           !started &&
-          ['text-delta', 'tool-call', 'finish'].includes(part.type)
+          ['text-delta', 'tool-call', 'reasoning-start', 'finish'].includes(
+            part.type,
+          )
         ) {
           started = true;
           yield { type: 'response.created', response: { id: responseId } };
@@ -1888,8 +2092,13 @@ export class AiSdkModel implements NativeModel {
               throw new TypeError(
                 'AiSdkModel received unsupported output content',
               );
+            const metadata = mergeModelProviderMetadata(
+              undefined,
+              part.providerMetadata,
+            );
+            const signedDelta = hasAiSdkThoughtSignature(metadata);
             if (!text) {
-              text = { type: 'text', text: '' };
+              text = { type: 'text', [aiSdkStreamTextParts]: [] };
               content.push(text);
               const id = 'msg_aisdk_' + randomUUID();
               messageIds.set(content.length - 1, id);
@@ -1899,14 +2108,133 @@ export class AiSdkModel implements NativeModel {
                 item: { id, type: 'message', role: 'assistant', content: [] },
               };
             }
-            text.text += part.delta;
+            const block = textBlocks.get(part.id) ?? {};
+            textBlocks.set(part.id, block);
+            let active = block.active;
+            // Google can sign an earlier delta with a later empty chunk.
+            // Preserve each wire text part even if the AI SDK reuses its block ID.
+            if (
+              active?.message !== text ||
+              active.index !== text[aiSdkStreamTextParts].length - 1 ||
+              (part.delta !== '' &&
+                active.part.text !== '' &&
+                (googleTextChunks || signedDelta || active.signedDelta))
+            ) {
+              const parts = text[aiSdkStreamTextParts];
+              const textPart: AiSdkTextPart = {
+                text: '',
+                providerMetadata: active ? undefined : block.metadata,
+              };
+              active = {
+                message: text,
+                part: textPart,
+                index: parts.length,
+                signedDelta: false,
+              };
+              block.active = active;
+              parts.push(textPart);
+            }
+            active.part.providerMetadata = mergeModelProviderMetadata(
+              active.part.providerMetadata,
+              metadata,
+            );
+            active.part.text += part.delta;
+            active.signedDelta ||= signedDelta;
             yield {
               type: 'response.output_text.delta',
               item_id: messageIds.get(content.length - 1)!,
               output_index: content.length - 1,
-              content_index: 0,
+              content_index: active.index,
               delta: part.delta,
             };
+            break;
+          }
+          case 'reasoning-start':
+          case 'reasoning-delta':
+          case 'reasoning-end': {
+            if (!this.#openaiResponses)
+              throw new TypeError(
+                'AiSdkModel supports native reasoning replay only with OpenAI Responses',
+              );
+            const id = part.id;
+            if (typeof id !== 'string' || !id)
+              throw new TypeError('AiSdkModel requires a reasoning block ID');
+            let block = reasoningBlocks.get(id);
+            if (part.type === 'reasoning-start') {
+              if (block)
+                throw new TypeError(
+                  'AiSdkModel received a duplicate reasoning block',
+                );
+              block = { text: '', ended: false };
+              reasoningBlocks.set(id, block);
+            }
+            if (!block || block.ended)
+              throw new TypeError(
+                'AiSdkModel received an inactive reasoning block',
+              );
+            block.metadata = mergeModelProviderMetadata(
+              block.metadata,
+              part.providerMetadata,
+            );
+            const metadata = aiSdkReasoningMetadata(part);
+            if (part.type === 'reasoning-delta') {
+              if (typeof part.delta !== 'string')
+                throw new TypeError(
+                  'AiSdkModel received invalid reasoning text',
+                );
+              block.text += part.delta;
+            }
+            const itemId = metadata.itemId;
+            const existingItem =
+              itemId == null ? undefined : reasoningItems.get(itemId);
+            const currentId = block.item?.providerMetadata.openai.itemId;
+            if (
+              (existingItem && block.item && existingItem !== block.item) ||
+              (currentId != null && itemId != null && currentId !== itemId)
+            )
+              throw new TypeError(
+                'AiSdkModel received conflicting Responses reasoning IDs',
+              );
+            if (
+              !block.item &&
+              (block.text !== '' ||
+                itemId != null ||
+                metadata.reasoningEncryptedContent != null)
+            ) {
+              let item = existingItem;
+              if (!item) {
+                item = {
+                  type: 'reasoning',
+                  providerMetadata: { openai: {} },
+                  [aiSdkStreamReasoningBlocks]: [],
+                };
+                content.push(item);
+                text = undefined;
+              }
+              block.item = item;
+              item[aiSdkStreamReasoningBlocks].push(block);
+            }
+            if (block.item) {
+              block.item.providerMetadata = {
+                ...mergeModelProviderMetadata(
+                  block.item.providerMetadata,
+                  block.metadata,
+                ),
+                openai: {
+                  ...block.item.providerMetadata.openai,
+                  ...(block.metadata?.openai as JsonObject),
+                  ...metadata,
+                },
+              };
+              Object.assign(block.item.providerMetadata.openai, metadata);
+              if (itemId != null) reasoningItems.set(itemId, block.item);
+            }
+            block.ended = part.type === 'reasoning-end';
+            // Keep the provider's live block IDs on the raw observation path.
+            // Continuation metadata belongs to the completed reasoning item.
+            yield part.type === 'reasoning-delta'
+              ? { type: part.type, id, delta: part.delta }
+              : { type: part.type, id };
             break;
           }
           case 'tool-input-start':
@@ -1920,6 +2248,11 @@ export class AiSdkModel implements NativeModel {
                 'AiSdkModel stream requires unique tool call IDs',
               );
             pendingInputs.add(part.id);
+            if (part.providerMetadata != null)
+              toolInputMetadata.set(
+                part.id,
+                mergeModelProviderMetadata(undefined, part.providerMetadata)!,
+              );
             break;
           case 'tool-call':
             if (
@@ -1933,9 +2266,24 @@ export class AiSdkModel implements NativeModel {
             calls.add(part.toolCallId);
             pendingInputs.delete(part.toolCallId);
             text = undefined;
-            content.push(copyJsonValue(part));
+            content.push({
+              ...(copyJsonValue(part) as JsonObject),
+              ...(toolInputMetadata.has(part.toolCallId)
+                ? {
+                    providerMetadata: mergeModelProviderMetadata(
+                      toolInputMetadata.get(part.toolCallId),
+                      part.providerMetadata,
+                    ),
+                  }
+                : {}),
+            });
+            toolInputMetadata.delete(part.toolCallId);
             break;
           case 'finish':
+            responseProviderMetadata = mergeModelProviderMetadata(
+              responseProviderMetadata,
+              part.providerMetadata,
+            );
             finished = true;
             finishReason = part.finishReason;
             usage = part.usage;
@@ -1956,10 +2304,44 @@ export class AiSdkModel implements NativeModel {
             }
             break;
           case 'stream-start':
+            responseProviderMetadata = mergeModelProviderMetadata(
+              responseProviderMetadata,
+              part.providerMetadata,
+            );
+            break;
           case 'text-start':
-          case 'text-end':
+            textBlocks.set(part.id, {
+              metadata: mergeModelProviderMetadata(
+                undefined,
+                part.providerMetadata,
+              ),
+            });
+            break;
+          case 'text-end': {
+            const active = textBlocks.get(part.id)?.active;
+            if (active)
+              active.part.providerMetadata = mergeModelProviderMetadata(
+                active.part.providerMetadata,
+                part.providerMetadata,
+              );
+            textBlocks.delete(part.id);
+            break;
+          }
           case 'tool-input-delta':
           case 'tool-input-end':
+            if (part.providerMetadata != null) {
+              if (typeof part.id !== 'string' || !pendingInputs.has(part.id))
+                throw new TypeError(
+                  'AI SDK tool metadata requires its active input block',
+                );
+              toolInputMetadata.set(
+                part.id,
+                mergeModelProviderMetadata(
+                  toolInputMetadata.get(part.id),
+                  part.providerMetadata,
+                )!,
+              );
+            }
             break;
           default:
             throw new TypeError(
@@ -1967,21 +2349,38 @@ export class AiSdkModel implements NativeModel {
             );
         }
       }
-      if (!finished || pendingInputs.size)
+      if (
+        !finished ||
+        pendingInputs.size ||
+        Array.from(reasoningBlocks.values()).some((block) => !block.ended)
+      )
         throw new TypeError(
           'AiSdkModel stream ended without a completed response',
         );
       const result = this.#projectResponse(
-        { content, finishReason, usage, response: { id: responseId } },
+        {
+          content,
+          finishReason,
+          usage,
+          providerMetadata: responseProviderMetadata,
+          response: { id: responseId },
+        },
         tools,
         applyPatchWire,
       );
       const output = result.output.map((item, index) => ({
         ...item,
-        id: messageIds.get(index) ?? 'item_aisdk_' + randomUUID(),
+        id: item.id ?? messageIds.get(index) ?? 'item_aisdk_' + randomUUID(),
       }));
-      for (const [index, item] of output.entries())
-        yield { type: 'response.output_item.done', output_index: index, item };
+      for (const [index, item] of output.entries()) {
+        const event = {
+          type: 'response.output_item.done',
+          output_index: index,
+          item,
+        };
+        retainModelProviderStreamFrame(event, result, index);
+        yield event;
+      }
       yield {
         type: 'response.completed',
         response: {
@@ -2047,8 +2446,8 @@ export class AiSdkModel implements NativeModel {
       refusal == null
     )
       throw new TypeError('AiSdkModel requires a completed response');
-    if (this.#openaiResponses && raw?.status != null)
-      return projectResponsesResponse({
+    if (this.#openaiResponses && raw?.status != null) {
+      const projected = projectResponsesResponse({
         ...raw,
         output: raw.output?.map((item: any) =>
           item.type === 'function_call'
@@ -2065,24 +2464,161 @@ export class AiSdkModel implements NativeModel {
             : item,
         ),
       });
+      const values = projected.output.flatMap((item, outputIndex) => {
+        const matching = (result.content ?? []).filter(
+          (part: any) =>
+            (typeof item.call_id === 'string' &&
+              part.type === 'tool-call' &&
+              part.toolCallId === item.call_id) ||
+            (typeof item.id === 'string' &&
+              part.providerMetadata?.openai?.itemId === item.id),
+        );
+        if (
+          item.type === 'message' &&
+          Array.isArray(item.content) &&
+          item.content.length > 1
+        ) {
+          const texts = matching.filter((part: any) => part.type === 'text');
+          const value =
+            texts.length === item.content.length &&
+            item.content.every(
+              (part: any, index) =>
+                part.type === 'output_text' && part.text === texts[index].text,
+            )
+              ? modelTextPartMetadata(
+                  texts.map((part: any) => part.providerMetadata),
+                )
+              : undefined;
+          return value === undefined ? [] : [{ outputIndex, value }];
+        }
+        let value: JsonObject | undefined;
+        for (const part of matching)
+          value = mergeModelProviderMetadata(value, part.providerMetadata);
+        value ??= mergeModelProviderMetadata(
+          undefined,
+          result.providerMetadata,
+        );
+        return value === undefined ? [] : [{ outputIndex, value }];
+      });
+      retainModelProviderMetadata(
+        projected,
+        this.model.provider,
+        this.model.modelId,
+        values,
+      );
+      return projected;
+    }
     const output: JsonObject[] = [];
-    let pendingTextParts: string[] = [];
-    const flushText = () => {
+    const providerMetadata = new Map<number, JsonObject>();
+    const retainMetadata = (index: number, value: unknown) => {
+      const merged = mergeModelProviderMetadata(
+        providerMetadata.get(index),
+        value,
+      );
+      if (merged !== undefined) providerMetadata.set(index, merged);
+    };
+    const reasoningItems = new Map<
+      string,
+      {
+        type: 'reasoning';
+        id: string;
+        summary: { type: 'summary_text'; text: string }[];
+        encrypted_content?: string;
+      }
+    >();
+    let pendingTextParts: AiSdkTextPart[] = [];
+    const flushText = (streamed = false) => {
       if (pendingTextParts.length) {
+        // Keep ordinary buffered text coalesced. Preserve explicit part
+        // metadata and the content indexes already emitted by streaming.
+        if (
+          !streamed &&
+          pendingTextParts.every((part) => part.providerMetadata == null)
+        ) {
+          pendingTextParts = [
+            { text: pendingTextParts.map((part) => part.text).join('') },
+          ];
+        }
         output.push({
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'output_text', text: pendingTextParts.join('') }],
+          content: pendingTextParts.map(({ text }) => ({
+            type: 'output_text',
+            text,
+          })),
         });
+        retainMetadata(
+          output.length - 1,
+          pendingTextParts.length === 1
+            ? (pendingTextParts[0].providerMetadata ?? result.providerMetadata)
+            : modelTextPartMetadata(
+                pendingTextParts.map((part) => part.providerMetadata),
+              ),
+        );
         pendingTextParts = [];
       }
     };
     for (const part of result.content ?? []) {
-      assertAiSdkOutputMetadata(part);
       if (part.type === 'text') {
-        if (typeof part.text !== 'string')
-          throw new TypeError('AiSdkModel received unsupported output content');
-        pendingTextParts.push(part.text);
+        const streamed = part[aiSdkStreamTextParts] as
+          AiSdkTextPart[] | undefined;
+        if (streamed) {
+          flushText();
+          pendingTextParts = streamed;
+          flushText(true);
+        } else {
+          if (typeof part.text !== 'string')
+            throw new TypeError(
+              'AiSdkModel received unsupported output content',
+            );
+          pendingTextParts.push(part);
+        }
+        continue;
+      }
+      if (part.type === 'reasoning' && this.#openaiResponses) {
+        const metadata = aiSdkReasoningMetadata(part);
+        const texts = (part as AiSdkStreamReasoning)[
+          aiSdkStreamReasoningBlocks
+        ]?.map((block) => block.text) ?? [part.text];
+        if (texts.some((text) => typeof text !== 'string'))
+          throw new TypeError('AiSdkModel received invalid reasoning text');
+        const summary = texts
+          .filter((text) => text !== '')
+          .map((text) => ({ type: 'summary_text' as const, text }));
+        const { itemId, reasoningEncryptedContent } = metadata;
+        if (
+          !summary.length &&
+          itemId == null &&
+          reasoningEncryptedContent == null
+        )
+          continue;
+        flushText();
+        const previous =
+          itemId == null ? undefined : reasoningItems.get(itemId);
+        if (previous) {
+          retainMetadata(
+            output.indexOf(previous),
+            part.providerMetadata ?? result.providerMetadata,
+          );
+          previous.summary.push(...summary);
+          if (reasoningEncryptedContent != null)
+            previous.encrypted_content = reasoningEncryptedContent;
+        } else {
+          const item = {
+            type: 'reasoning' as const,
+            id: itemId ?? 'rs_aisdk_' + randomUUID(),
+            summary,
+            ...(reasoningEncryptedContent == null
+              ? {}
+              : { encrypted_content: reasoningEncryptedContent }),
+          };
+          output.push(item);
+          retainMetadata(
+            output.length - 1,
+            part.providerMetadata ?? result.providerMetadata,
+          );
+          if (itemId != null) reasoningItems.set(itemId, item);
+        }
         continue;
       }
       flushText();
@@ -2101,6 +2637,10 @@ export class AiSdkModel implements NativeModel {
             },
             applyPatchWire,
           ),
+        );
+        retainMetadata(
+          output.length - 1,
+          part.providerMetadata ?? result.providerMetadata,
         );
       } else
         throw new TypeError('AiSdkModel received unsupported output content');
@@ -2121,7 +2661,7 @@ export class AiSdkModel implements NativeModel {
       typeof usage?.outputTokens === 'number'
         ? usage.outputTokens
         : (usage?.outputTokens?.total ?? 0);
-    return {
+    const projected: ModelResponse = {
       output,
       ...(result.response?.id ? { responseId: result.response.id } : {}),
       ...(usage
@@ -2139,5 +2679,15 @@ export class AiSdkModel implements NativeModel {
           }
         : {}),
     };
+    retainModelProviderMetadata(
+      projected,
+      this.model.provider,
+      this.model.modelId,
+      [...providerMetadata].map(([outputIndex, value]) => ({
+        outputIndex,
+        value,
+      })),
+    );
+    return projected;
   }
 }

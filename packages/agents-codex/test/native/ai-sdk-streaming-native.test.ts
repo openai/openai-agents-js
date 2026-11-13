@@ -1,7 +1,54 @@
 import { expect, it } from 'vitest';
 import { z } from 'zod';
 import { createOpenAI } from '@ai-sdk/openai';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Agent, AiSdkModel, NativeProvider, tool } from '../../src';
+import type { JsonObject } from '../../src/runtime/binding';
+
+it('delivers an admitted native file to the borrowed AI SDK model', async () => {
+  const prompts: unknown[] = [];
+  const modelBackend = new AiSdkModel({
+    specificationVersion: 'v4',
+    modelId: 'fixture-file-model',
+    provider: 'fixture.files',
+    doGenerate(options) {
+      prompts.push(options.prompt);
+      return {
+        content: [{ type: 'text', text: 'File received.' }],
+        finishReason: 'stop',
+      };
+    },
+  });
+  await using provider = new NativeProvider({ modelBackend });
+  const agent = new Agent({
+    model: 'fixture-file-model',
+    instructions: 'Acknowledge the attached file.',
+    provider,
+  });
+  const result = await agent.run({
+    role: 'user',
+    content: [
+      {
+        type: 'input_file',
+        file_data: 'data:text/plain;base64,YQ==',
+        filename: 'note.txt',
+      },
+    ],
+  });
+  expect(result.finalOutput).toBe('File received.');
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]).toContainEqual({
+    role: 'user',
+    content: [
+      {
+        type: 'file',
+        data: { type: 'data', data: 'YQ==' },
+        mediaType: 'text/plain',
+        filename: 'note.txt',
+      },
+    ],
+  });
+});
 
 it.each(['v2', 'v3', 'v4'] as const)(
   'runs a borrowed AI SDK %s stream and function continuation in native Core',
@@ -114,11 +161,360 @@ it.each(['v2', 'v3', 'v4'] as const)(
   },
 );
 
+it('publishes Responses reasoning before the borrowed stream can finish', async () => {
+  const waiting = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const live = Promise.withResolvers<JsonObject>();
+  let cancelled = false;
+  const model = new AiSdkModel(
+    {
+      specificationVersion: 'v3',
+      modelId: 'fixture-live-reasoning',
+      provider: 'openai.responses',
+      doGenerate() {
+        throw new Error('Expected streaming');
+      },
+      doStream() {
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              controller.enqueue({
+                type: 'reasoning-start',
+                id: 'summary',
+                providerMetadata: { openai: { itemId: 'rs_live' } },
+              });
+              controller.enqueue({
+                type: 'reasoning-delta',
+                id: 'summary',
+                delta: 'Checking the record.',
+              });
+            },
+            async pull(controller) {
+              waiting.resolve();
+              await release.promise;
+              if (cancelled) return;
+              controller.enqueue({
+                type: 'reasoning-end',
+                id: 'summary',
+                providerMetadata: {
+                  openai: { reasoningEncryptedContent: 'private-ciphertext' },
+                },
+              });
+              controller.enqueue({
+                type: 'text-delta',
+                id: 'answer',
+                delta: 'Done.',
+              });
+              controller.enqueue({
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+              });
+              controller.close();
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        };
+      },
+    },
+    {},
+    { stream: true },
+  );
+  await using provider = new NativeProvider({ modelBackend: model });
+  await using session = await new Agent({
+    model: 'fixture-live-reasoning',
+    instructions: 'Check the record.',
+    provider,
+  }).session({ includeRawProviderEvents: true, observationRetention: 'all' });
+  const turn = await session.submit('Begin.');
+  const reasoning: JsonObject[] = [];
+  const observations = (async () => {
+    for await (const event of turn.events({ includeExecutionDetails: true })) {
+      if (event.type !== 'raw_provider_event') continue;
+      const part = event.payload;
+      if (
+        part.type === 'reasoning-start' ||
+        part.type === 'reasoning-delta' ||
+        part.type === 'reasoning-end'
+      ) {
+        reasoning.push(part);
+        if (part.type === 'reasoning-delta') live.resolve(part);
+      }
+    }
+  })();
+
+  let beforeFinish: JsonObject | undefined;
+  try {
+    await waiting.promise;
+    beforeFinish =
+      (await Promise.race([live.promise, delay(3000)])) ?? undefined;
+  } finally {
+    release.resolve();
+  }
+  expect((await turn.wait()).finalOutput).toBe('Done.');
+  await observations;
+  expect(beforeFinish).toMatchObject({
+    type: 'reasoning-delta',
+    id: 'summary',
+    delta: 'Checking the record.',
+  });
+  expect(reasoning).toEqual([
+    { type: 'reasoning-start', id: 'summary' },
+    { type: 'reasoning-delta', id: 'summary', delta: 'Checking the record.' },
+    { type: 'reasoning-end', id: 'summary' },
+  ]);
+}, 20_000);
+
+it.each([false, true])(
+  'composes text across reasoning before completion checks, streamed=%s',
+  async (stream) => {
+    const finishReason = { unified: 'stop', raw: 'stop' };
+    const content = [
+      { type: 'text', text: 'First' },
+      {
+        type: 'reasoning',
+        text: 'Check.',
+        providerMetadata: { openai: { itemId: 'rs_first' } },
+      },
+      { type: 'text', text: ' ' },
+      {
+        type: 'reasoning',
+        text: 'Confirm.',
+        providerMetadata: { openai: { itemId: 'rs_second' } },
+      },
+      { type: 'text', text: 'last.' },
+    ];
+    const backend = new AiSdkModel(
+      {
+        specificationVersion: 'v3',
+        modelId: 'fixture-final-text',
+        provider: 'openai.responses',
+        doGenerate() {
+          return { content, finishReason };
+        },
+        doStream() {
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                for (const [index, part] of content.entries()) {
+                  const id = String(index);
+                  if (part.type === 'text') {
+                    controller.enqueue({
+                      type: 'text-delta',
+                      id,
+                      delta: part.text,
+                    });
+                  } else {
+                    controller.enqueue({
+                      type: 'reasoning-start',
+                      id,
+                      providerMetadata: part.providerMetadata,
+                    });
+                    controller.enqueue({
+                      type: 'reasoning-delta',
+                      id,
+                      delta: part.text,
+                    });
+                    controller.enqueue({ type: 'reasoning-end', id });
+                  }
+                }
+                controller.enqueue({ type: 'finish', finishReason });
+                controller.close();
+              },
+            }),
+          };
+        },
+      },
+      {},
+      { stream },
+    );
+    const checked: unknown[] = [];
+    await using provider = new NativeProvider({ modelBackend: backend });
+    const result = await new Agent({
+      model: 'fixture-final-text',
+      instructions: 'Answer.',
+      provider,
+      beforeComplete({ text }) {
+        checked.push(text);
+      },
+    }).run('Begin.');
+    expect({ checked, finalOutput: result.finalOutput }).toEqual({
+      checked: ['First last.'],
+      finalOutput: 'First last.',
+    });
+  },
+);
+
+it.each(['v2', 'v3', 'v4'] as const)(
+  'replays streamed Responses reasoning under its original provider item ID for %s',
+  async (specificationVersion) => {
+    const prompts: { role: string; content: { type: string }[] }[][] = [];
+    const effects: string[] = [];
+    const model = new AiSdkModel(
+      {
+        specificationVersion,
+        modelId: 'fixture-reasoning-stream',
+        provider: 'openai.responses',
+        doGenerate() {
+          throw new Error('Buffered path');
+        },
+        doStream(options) {
+          const initial = prompts.push(options.prompt) === 1;
+          const parts = initial
+            ? [
+                {
+                  type: 'reasoning-start',
+                  id: 'stream-reasoning',
+                  providerMetadata: { openai: { itemId: 'rs_original' } },
+                },
+                {
+                  type: 'reasoning-delta',
+                  id: 'stream-reasoning',
+                  delta: 'Check the ',
+                },
+                {
+                  type: 'reasoning-delta',
+                  id: 'stream-reasoning',
+                  delta: 'record.',
+                },
+                {
+                  type: 'reasoning-end',
+                  id: 'stream-reasoning',
+                },
+                {
+                  type: 'reasoning-start',
+                  id: 'stream-reasoning-second-summary',
+                  providerMetadata: { openai: { itemId: 'rs_original' } },
+                },
+                {
+                  type: 'reasoning-delta',
+                  id: 'stream-reasoning-second-summary',
+                  delta: 'Confirm the match.',
+                },
+                {
+                  type: 'reasoning-end',
+                  id: 'stream-reasoning-second-summary',
+                  providerMetadata: {
+                    openai: { reasoningEncryptedContent: 'fixture-ciphertext' },
+                  },
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'call_lookup',
+                  toolName: 'lookup',
+                  input: '{}',
+                },
+              ]
+            : [
+                { type: 'text-delta', id: 'answer', delta: 'Found ' },
+                { type: 'reasoning-start', id: 'empty-reasoning' },
+                { type: 'reasoning-end', id: 'empty-reasoning' },
+                { type: 'text-delta', id: 'answer', delta: 'it.' },
+              ];
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                for (const part of parts) controller.enqueue(part);
+                controller.enqueue({
+                  type: 'finish',
+                  finishReason:
+                    specificationVersion === 'v2'
+                      ? initial
+                        ? 'tool-calls'
+                        : 'stop'
+                      : { unified: initial ? 'tool-calls' : 'stop' },
+                  usage: {
+                    inputTokens:
+                      specificationVersion === 'v2' ? 3 : { total: 3 },
+                    outputTokens:
+                      specificationVersion === 'v2'
+                        ? 2
+                        : { total: 2, reasoning: initial ? 1 : 0 },
+                  },
+                });
+                controller.close();
+              },
+            }),
+          };
+        },
+      },
+      {},
+      { stream: true },
+    );
+    await using provider = new NativeProvider({ modelBackend: model });
+    const lookup = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute() {
+        effects.push('lookup');
+        return 'present';
+      },
+    });
+    const result = await new Agent({
+      model: model.model.modelId,
+      instructions: 'Look up the record before answering.',
+      provider,
+      tools: [lookup],
+    }).run('Check the record.');
+    expect(result.finalOutput).toBe('Found it.');
+    expect(effects).toEqual(['lookup']);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContainEqual({
+      role: 'assistant',
+      content: [
+        {
+          type: 'reasoning',
+          text: 'Check the record.',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_original',
+              reasoningEncryptedContent: 'fixture-ciphertext',
+            },
+          },
+        },
+        {
+          type: 'reasoning',
+          text: 'Confirm the match.',
+          providerOptions: {
+            openai: {
+              itemId: 'rs_original',
+              reasoningEncryptedContent: 'fixture-ciphertext',
+            },
+          },
+        },
+      ],
+      providerOptions: {
+        openai: {
+          itemId: 'rs_original',
+          reasoningEncryptedContent: 'fixture-ciphertext',
+        },
+      },
+    });
+    const assistants = prompts[1].filter((entry) => entry.role === 'assistant');
+    expect(
+      assistants.map((entry) => entry.content.map((part) => part.type)),
+    ).toEqual([['reasoning', 'reasoning'], ['tool-call']]);
+    expect(assistants[1]).toEqual({
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call_lookup',
+          toolName: 'lookup',
+          input: {},
+        },
+      ],
+    });
+  },
+);
+
 it.each([
   'missing-finish',
   'incomplete',
   'error-after-finish',
   'pending-input',
+  'pending-reasoning',
   'overflow',
 ] as const)('withholds streamed tool effects on %s', async (outcome) => {
   const effects: string[] = [];
@@ -142,6 +538,12 @@ it.each([
       id: 'unfinished',
       toolName: 'record',
     });
+  if (outcome === 'pending-reasoning')
+    parts.unshift({
+      type: 'reasoning-start',
+      id: 'unfinished-reasoning',
+      providerMetadata: { openai: { itemId: 'rs_unfinished' } },
+    });
   if (outcome !== 'missing-finish')
     parts.push({
       type: 'finish',
@@ -155,7 +557,8 @@ it.each([
       {
         specificationVersion: 'v3',
         modelId: 'fixture',
-        provider: 'fixture',
+        provider:
+          outcome === 'pending-reasoning' ? 'openai.responses' : 'fixture',
         doGenerate() {
           throw new Error('Buffered path');
         },

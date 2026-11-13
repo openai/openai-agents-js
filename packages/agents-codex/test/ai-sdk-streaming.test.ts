@@ -1,5 +1,9 @@
 import { expect, it, vi } from 'vitest';
 import { AiSdkModel, type ModelRequest } from '../src/runtime/models';
+import {
+  bindModelProviderMetadata,
+  captureModelProviderStreamFrame,
+} from '../src/runtime/model-provider-metadata';
 
 function request(signal = new AbortController().signal): ModelRequest {
   return {
@@ -147,16 +151,83 @@ it('keeps streaming opt-in and rejects an explicitly selected missing implementa
   );
 });
 
-it('preserves the existing thought-signature refusal on streamed text metadata', async () => {
-  const model = adapter([
+it('retains streamed thought signatures privately without publishing them on frames', async () => {
+  const metadata = {
+    google: { thoughtSignature: 'synthetic-private-signature' },
+  };
+  const model = adapter(
+    [
+      {
+        type: 'text-delta',
+        id: 'one',
+        delta: 'answer',
+        providerMetadata: metadata,
+      },
+      { type: 'finish', finishReason: 'stop' },
+    ],
+    { close: true },
+  );
+  const events = await Array.fromAsync(model.stream!(request()));
+  const frame = events.find(
+    (event) => event.type === 'response.output_item.done',
+  )!;
+  expect(frame.item).toMatchObject({
+    type: 'message',
+    content: [{ type: 'output_text', text: 'answer' }],
+  });
+  expect(JSON.stringify(events)).not.toContain('synthetic-private-signature');
+  const wire = JSON.parse(
+    captureModelProviderStreamFrame(JSON.stringify(frame), frame),
+  );
+  expect(wire.__sdk_model_provider_metadata.metadata.value).toEqual(metadata);
+  const prompts: unknown[] = [];
+  const next = new AiSdkModel({
+    specificationVersion: 'v3',
+    modelId: 'fixture',
+    provider: 'fixture',
+    doGenerate(options) {
+      prompts.push(options.prompt);
+      return {
+        content: [{ type: 'text', text: 'continued' }],
+        finishReason: 'stop',
+      };
+    },
+  });
+  const continuation: ModelRequest = {
+    ...request(),
+    body: { model: 'fixture', input: [frame.item!] },
+  };
+  bindModelProviderMetadata(continuation, [
     {
-      type: 'text-delta',
-      id: 'one',
-      delta: 'opaque',
-      providerMetadata: { google: { thoughtSignature: 'unsupported' } },
+      input_index: 0,
+      item: frame.item,
+      metadata: wire.__sdk_model_provider_metadata.metadata,
     },
   ]);
-  await expect(Array.fromAsync(model.stream!(request()))).rejects.toThrow(
-    'thought signatures',
+  metadata.google.thoughtSignature = 'changed-caller-owned-value';
+  expect((await next.complete(continuation)).output).toMatchObject([
+    { type: 'message', content: [{ type: 'output_text', text: 'continued' }] },
+  ]);
+  expect(prompts).toEqual([
+    [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'answer',
+            providerOptions: {
+              google: { thoughtSignature: 'synthetic-private-signature' },
+            },
+          },
+        ],
+        providerOptions: {
+          google: { thoughtSignature: 'synthetic-private-signature' },
+        },
+      },
+    ],
+  ]);
+  expect(JSON.stringify(continuation)).not.toContain(
+    'synthetic-private-signature',
   );
 });

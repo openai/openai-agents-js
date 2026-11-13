@@ -1,0 +1,208 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 8ce88cb4..19f65933 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -78,6 +78,7 @@ use codex_async_utils::OrCancelExt;
+ use codex_connectors::AppToolPolicyEvaluator;
+ use codex_core_plugins::RecommendedPluginCandidatesInput;
+ use codex_extension_api::ExtensionData;
++use codex_extension_api::SdkSegmentedAssistantText;
+ use codex_extension_api::TurnInputContext;
+ use codex_extension_api::TurnInputEnvironment;
+ use codex_features::Feature;
+@@ -3918,7 +3919,8 @@ async fn handle_assistant_item_done_in_plan_mode(
+         }
+         let final_last_agent_message = finalized_facts
+             .as_ref()
+-            .and_then(|facts| facts.last_agent_message.clone());
++            .and_then(|facts| facts.last_agent_message.clone())
++            .filter(|text| !text.trim().is_empty());
+
+         record_completed_response_item_with_finalized_facts(
+             sess,
+@@ -4171,6 +4173,12 @@ async fn try_run_sampling_request(
+     let plan_mode = turn_context.mode() == ModeKind::Plan;
+     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
+     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
++    let mut sdk_segmented_text = (!plan_mode
++        && step_context
++            .extension_data
++            .get::<codex_extension_api::SdkTurnReceiptSeed>()
++            .is_some())
++    .then(SdkSegmentedAssistantText::default);
+     let defer_streamed_turn_items_for_contributors =
+         !sess.services.extensions.turn_item_contributors().is_empty();
+     let mut active_item_is_streaming_to_client = false;
+@@ -4278,7 +4286,9 @@ async fn try_run_sampling_request(
+                         accepted_handoff: None,
+                         settled_tools: SettledDirectTools::default(),
+                         needs_follow_up: true,
+-                        last_agent_message,
++                        last_agent_message: sdk_segmented_text
++                            .take()
++                            .map_or(last_agent_message, SdkSegmentedAssistantText::last_nonblank),
+                     });
+                 }
+                 Err(_) => break Err(CodexErr::TurnAborted),
+@@ -4477,12 +4487,24 @@ async fn try_run_sampling_request(
+                             Ok(output_result) => output_result,
+                             Err(err) => break Err(err),
+                         };
++                    if let Some(text) = sdk_segmented_text.as_mut()
++                        && !text
++                            .observe_item(&direct_call, output_result.last_agent_message.is_some())
++                    {
++                        last_agent_message = sdk_segmented_text
++                            .take()
++                            .and_then(SdkSegmentedAssistantText::last_nonblank);
++                    }
+                     if let Some(tool_future) = output_result.tool_future {
+                         settled_tools.calls.push(direct_call);
+                         in_flight.push_back(tool_future);
+                     }
+                     if let Some(agent_message) = output_result.last_agent_message {
+-                        last_agent_message = Some(agent_message);
++                        if let Some(text) = sdk_segmented_text.as_mut() {
++                            text.push_text(agent_message);
++                        } else if !agent_message.trim().is_empty() {
++                            last_agent_message = Some(agent_message);
++                        }
+                     }
+                     needs_follow_up |= output_result.needs_follow_up;
+                     // Hosts can keep the current response intact and deliver mail before the next
+@@ -4506,7 +4528,10 @@ async fn try_run_sampling_request(
+                             accepted_handoff: None,
+                             settled_tools: SettledDirectTools::default(),
+                             needs_follow_up: true,
+-                            last_agent_message,
++                            last_agent_message: sdk_segmented_text.take().map_or(
++                                last_agent_message,
++                                SdkSegmentedAssistantText::last_nonblank,
++                            ),
+                         });
+                     }
+                 }
+@@ -4794,7 +4819,9 @@ async fn try_run_sampling_request(
+                         accepted_handoff: None,
+                         settled_tools: SettledDirectTools::default(),
+                         needs_follow_up,
+-                        last_agent_message,
++                        last_agent_message: sdk_segmented_text
++                            .take()
++                            .map_or(last_agent_message, |text| text.finish(!needs_follow_up)),
+                     });
+                 }
+                 ResponseEvent::OutputTextDelta(delta) => {
+diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
+index b817d2fd..65d21948 100644
+--- a/codex-rs/core/src/stream_events_utils.rs
++++ b/codex-rs/core/src/stream_events_utils.rs
+@@ -241,6 +241,7 @@ pub(crate) type InFlightFuture<'f> =
+
+ #[derive(Default)]
+ pub(crate) struct OutputItemResult {
++    /// Finalized assistant display text, including a whitespace-only fragment.
+     pub last_agent_message: Option<String>,
+     pub needs_follow_up: bool,
+     pub tool_future: Option<InFlightFuture<'static>>,
+@@ -299,13 +300,12 @@ pub(crate) async fn finalize_non_tool_response_item(
+         match &turn_item {
+             TurnItem::AgentMessage(agent_message) => {
+                 let text = agent_message.text();
+-                let last_agent_message = (!text.trim().is_empty()).then(|| text.into_owned());
+                 let defers_mailbox_delivery_to_next_turn =
+                     !matches!(agent_message.phase, Some(MessagePhase::Commentary))
+-                        && last_agent_message.is_some();
++                        && !text.trim().is_empty();
+                 (
+                     agent_message.memory_citation.clone(),
+-                    last_agent_message,
++                    Some(text.into_owned()),
+                     defers_mailbox_delivery_to_next_turn,
+                 )
+             }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 5e799280..50bd5b94 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -149,11 +149,13 @@ pub use codex_api::ModelInvocationDeadlineState;
+
+ mod model_request;
+ mod model_request_observation;
++mod sdk_final_text;
+ pub use model_request_observation::{
+     ModelRequestDispatching, ModelRequestEffort, ModelRequestObservation,
+     ModelRequestObservationRoute, ModelRequestObserver, ModelRequestTransport, ModelRequestWire,
+     ModelResponseLinked,
+ };
++pub use sdk_final_text::SdkSegmentedAssistantText;
+
+ pub use codex_api::completed_model_response;
+ pub use model_request::CapturedRunModelOverride;
+diff --git a/codex-rs/ext/extension-api/src/sdk_final_text.rs b/codex-rs/ext/extension-api/src/sdk_final_text.rs
+new file mode 100644
+index 00000000..b30c17de
+--- /dev/null
++++ b/codex-rs/ext/extension-api/src/sdk_final_text.rs
+@@ -0,0 +1,61 @@
++use codex_protocol::models::{ContentItem, ResponseItem};
++
++/// Finalized assistant text from one SDK model response.
++///
++/// A completed response may separate assistant messages with reasoning or hosted
++/// search. Its final result joins the visible text while the caller retains the
++/// original output items in their original order.
++#[derive(Default)]
++pub struct SdkSegmentedAssistantText {
++    has_separator: bool,
++    final_message_has_text: bool,
++    fragments: Vec<String>,
++}
++
++impl SdkSegmentedAssistantText {
++    /// Returns false if this item rules out composition for the whole response.
++    pub fn observe_item(&mut self, item: &ResponseItem, finalized: bool) -> bool {
++        match item {
++            ResponseItem::Message { role, content, .. } => {
++                if role == "assistant" {
++                    self.final_message_has_text = finalized
++                        && content
++                            .iter()
++                            .any(|part| matches!(part, ContentItem::OutputText { .. }));
++                }
++                true
++            }
++            ResponseItem::Reasoning { .. }
++            | ResponseItem::ToolSearchCall { .. }
++            | ResponseItem::ToolSearchOutput { .. } => {
++                self.has_separator = true;
++                true
++            }
++            _ => false,
++        }
++    }
++
++    pub fn push_text(&mut self, text: String) {
++        if !text.is_empty() {
++            self.fragments.push(text);
++        }
++    }
++
++    pub fn is_segmented(&self) -> bool {
++        self.has_separator && self.final_message_has_text
++    }
++
++    pub fn finish(self, terminal: bool) -> Option<String> {
++        if terminal && self.is_segmented() {
++            return Some(self.fragments.concat());
++        }
++        self.last_nonblank()
++    }
++
++    pub fn last_nonblank(self) -> Option<String> {
++        self.fragments
++            .into_iter()
++            .rev()
++            .find(|fragment| !fragment.trim().is_empty())
++    }
++}
