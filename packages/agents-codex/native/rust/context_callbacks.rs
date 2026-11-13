@@ -802,6 +802,7 @@ mod tests {
             finish: Some(finish),
             accepted: Vec::new().into_iter(),
             failed: false,
+            upstream_request_id: None,
             lease: Some(ContextLease {
                 wait: StepWait { tools, id: 17 },
                 callback,
@@ -999,6 +1000,7 @@ pub(super) enum ProducedResponse {
     Stream {
         events: tokio::sync::mpsc::Receiver<codex_api::ResponseEvent>,
         finish: oneshot::Receiver<ModelStreamFinish>,
+        upstream_request_id: Option<String>,
     },
 }
 pub(super) enum ModelDelivery {
@@ -1017,6 +1019,7 @@ struct ModelStreamCursor {
     accepted: std::vec::IntoIter<codex_api::ResponseEvent>,
     lease: Option<ContextLease>,
     failed: bool,
+    upstream_request_id: Option<String>,
 }
 fn model_stream_error(error: impl std::fmt::Display) -> codex_api::ApiError {
     codex_api::ApiError::InvalidRequest {
@@ -1035,7 +1038,14 @@ impl ModelStreamCursor {
         use futures_util::StreamExt;
         futures_util::stream::unfold(self, |mut cursor| async move {
             match cursor.next().await {
-                Ok(Some(event)) => Some((Ok(event), cursor)),
+                Ok(Some(mut event)) => {
+                    if let Some(request_id) = &cursor.upstream_request_id
+                        && let codex_api::ResponseEvent::ResponseObserved(observation) = &mut event
+                    {
+                        observation.upstream_request_id = Some(request_id.clone());
+                    }
+                    Some((Ok(event), cursor))
+                }
                 Ok(None) => None,
                 Err(error) => {
                     cursor.events.close();
@@ -1273,13 +1283,18 @@ impl PythonTools {
                 }
                 Ok(futures_util::stream::iter(events).boxed())
             }
-            ProducedResponse::Stream { events, finish } => {
+            ProducedResponse::Stream {
+                events,
+                finish,
+                upstream_request_id,
+            } => {
                 let cursor = ModelStreamCursor {
                     events,
                     finish: Some(finish),
                     accepted: Vec::new().into_iter(),
                     lease: Some(lease),
                     failed: false,
+                    upstream_request_id,
                 };
                 Ok(cursor.into_stream())
             }
@@ -1290,6 +1305,7 @@ impl PythonTools {
         response: &StepReply,
         observe_raw: bool,
         chat_stream: bool,
+        upstream_request_id: Option<String>,
     ) -> Result<()> {
         let active = self
             .selection
@@ -1331,6 +1347,7 @@ impl PythonTools {
             .send(Ok(ProducedResponse::Stream {
                 events: receive_events,
                 finish: receive_finish,
+                upstream_request_id,
             }))
             .map_err(|_| anyhow::anyhow!("Expired model stream start"))
     }

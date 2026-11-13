@@ -4,10 +4,12 @@ import {
   Agent,
   Handoff,
   NativeProvider,
+  isFunctionApprovalRequest,
   parseSessionState,
   tool,
   type ToolContext,
 } from '../../src';
+import { isManualSessionState } from '../../src/runtime/state';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(async () => {
@@ -283,6 +285,169 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       },
       20_000,
     );
+
+    it.each([
+      { routes: undefined, canRestore: true },
+      { routes: ['direct'] as const, canRestore: true },
+      { routes: ['code'] as const, canRestore: false },
+    ])(
+      'checks the current caller policy before reissuing a direct approval ($routes)',
+      async ({ routes, canRestore }) => {
+        const server = new ModelServer([
+          [call('guarded', {}, { callId: 'pending-direct' })],
+          ...(canRestore ? [[message('done')]] : []),
+        ]);
+        await using provider = await providerFor(server);
+        const declaration = {
+          instructions: 'Run.',
+          model: 'gpt-5',
+          provider,
+        };
+        const previous = new Agent({
+          ...declaration,
+          tools: [
+            tool({
+              name: 'guarded',
+              parameters: z.object({}),
+              allowedCallers: ['direct'],
+              needsApproval: true,
+              execute: () => 'previous',
+            }),
+          ],
+        });
+        let state;
+        {
+          await using source = await previous.session();
+          await source.submit('Run.');
+          for await (const event of source.interactions()) {
+            if (isFunctionApprovalRequest(event)) break;
+          }
+          state = parseSessionState(JSON.stringify(await source.suspend()));
+        }
+        const execute = vi.fn(() => 'current');
+        const current = new Agent({
+          ...declaration,
+          tools: [
+            tool({
+              name: 'guarded',
+              parameters: z.object({}),
+              allowedCallers: routes,
+              needsApproval: true,
+              execute,
+            }),
+          ],
+        });
+        if (canRestore) {
+          await using restored = await current.session({ state });
+          for await (const event of restored.interactions()) {
+            if (isFunctionApprovalRequest(event)) {
+              await restored.respond(event.approve());
+              break;
+            }
+          }
+          expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+            'done',
+          );
+          expect(execute).toHaveBeenCalledTimes(1);
+        } else {
+          // Always dispose the session if this check regresses and opens it.
+          await expect(
+            (async () => {
+              await using _restored = await current.session({ state });
+            })(),
+          ).rejects.toThrow('does not permit direct calls');
+          expect(execute).not.toHaveBeenCalled();
+        }
+        server.assertExhausted();
+      },
+      20_000,
+    );
+
+    it('keeps a completed approval as history after its tool becomes code-only', async () => {
+      const server = new ModelServer([
+        [
+          call('pending', {}, { callId: 'pending-first' }),
+          call('completed', {}, { callId: 'completed-second' }),
+        ],
+        [message('done')],
+      ]);
+      await using provider = await providerFor(server);
+      const declaration = {
+        instructions: 'Run both.',
+        model: 'gpt-5',
+        provider,
+      };
+      const pending = tool({
+        name: 'pending',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: () => 'pending result',
+      });
+      const completed = Promise.withResolvers<void>();
+      const previous = new Agent({
+        ...declaration,
+        tools: [
+          pending,
+          tool({
+            name: 'completed',
+            parameters: z.object({}),
+            allowedCallers: ['direct'],
+            needsApproval: true,
+            execute: () => {
+              completed.resolve();
+              return 'original result';
+            },
+          }),
+        ],
+      });
+      let state;
+      {
+        await using source = await previous.session();
+        await source.submit('Run.');
+        for await (const event of source.interactions()) {
+          if (
+            !isFunctionApprovalRequest(event) ||
+            event.callId !== 'completed-second'
+          )
+            continue;
+          await source.respond(event.approve());
+          break;
+        }
+        await completed.promise;
+        state = parseSessionState(JSON.stringify(await source.suspend()));
+      }
+      expect(
+        isManualSessionState(state) &&
+          state.manual_continuation.accepted_replies['completed-second'],
+      ).toBeTruthy();
+      const execute = vi.fn(() => 'must not execute again');
+      await using restored = await new Agent({
+        ...declaration,
+        tools: [
+          pending,
+          tool({
+            name: 'completed',
+            parameters: z.object({}),
+            allowedCallers: ['code'],
+            needsApproval: true,
+            execute,
+          }),
+        ],
+      }).session({ state });
+      for await (const event of restored.interactions()) {
+        if (isFunctionApprovalRequest(event)) {
+          expect(event.callId).toBe('pending-first');
+          await restored.respond(event.approve());
+          break;
+        }
+      }
+      expect((await restored.restoredTurn!.wait()).finalOutput).toBe('done');
+      expect(execute).not.toHaveBeenCalled();
+      expect(JSON.stringify(server.requests[1].input)).toContain(
+        'original result',
+      );
+      server.assertExhausted();
+    }, 20_000);
 
     it('keeps the selected profile mask after an explicit-direct callback handoff', async () => {
       const server = new ModelServer([

@@ -3309,6 +3309,7 @@ impl NativeThread {
         &self,
         owner_json: String,
         chat_stream: Option<bool>,
+        upstream_request_id: Option<String>,
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
@@ -3324,7 +3325,12 @@ impl NativeThread {
             .get::<codex_core::ObserveRawProviderEvents>()
             .is_some();
         owner
-            .start_model_producer_stream(&response, observe_raw, chat_stream.unwrap_or(false))
+            .start_model_producer_stream(
+                &response,
+                observe_raw,
+                chat_stream.unwrap_or(false),
+                upstream_request_id,
+            )
             .map_err(input_error)
     }
 

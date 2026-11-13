@@ -1769,7 +1769,17 @@ impl PythonTools {
                     !history.outputs.contains_key(&call.call_id),
                     "a pending grant has recorded output"
                 );
-                self.slot_for_catalog(manual, call, &generation)?;
+                let slot = self.slot_for_catalog(manual, call, &generation)?;
+                // Saved specs are descriptive. Only current catalog authority
+                // can allow an unanswered direct call to be reissued.
+                ensure!(
+                    generation
+                        .specs
+                        .caller_limits(slot)
+                        .is_none_or(|callers| callers.contains(codex_tools::ToolExposures::DIRECT)),
+                    "manual tool {} does not permit direct calls",
+                    generation.entries[slot].name
+                );
                 expected.push(call);
             }
         }

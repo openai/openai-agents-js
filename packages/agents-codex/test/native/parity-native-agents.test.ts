@@ -802,7 +802,8 @@ it('captures a reloaded child when its row is issued by an open iterator', async
     const context = savedChild.history.find(
       (item) =>
         item.type === 'turn_context' &&
-        (item.payload as JsonObject).sdk_receipt,
+        ((item.payload as JsonObject).sdk_receipt as JsonObject | undefined)
+          ?.thread_id === savedChild.thread_id,
     )!.payload as JsonObject;
     const receipt = context.sdk_receipt as JsonObject;
     expect(receipt.thread_id).toBe(savedChild.thread_id);
@@ -820,7 +821,9 @@ it('captures a reloaded child when its row is issued by an open iterator', async
       ?.history.find(
         (item) =>
           item.type === 'turn_context' &&
-          (item.payload as JsonObject).turn_id === context.turn_id,
+          (item.payload as JsonObject).turn_id === context.turn_id &&
+          ((item.payload as JsonObject).sdk_receipt as JsonObject | undefined)
+            ?.thread_id === savedChild.thread_id,
       )?.payload as JsonObject | undefined;
     expect(restoredContext?.sdk_receipt).toEqual(expectedReceipt);
     const iterator = restored.subagents();

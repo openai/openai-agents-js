@@ -101,6 +101,7 @@ export type {
 } from './runtime/native-questions';
 export {
   checklist,
+  standaloneTool,
   tool,
   toolRef,
   ToolOutput,
@@ -118,6 +119,9 @@ export type {
   Tool,
   ToolContext,
   ToolCallContext,
+  ToolInvocationContext,
+  ToolInvocationInputContext,
+  StandaloneFunctionTool,
   ToolDecision,
   ToolImageReference,
 } from './runtime/tools';
@@ -498,6 +502,7 @@ export type {
   NativeModel,
   AiSdkLanguageModel,
   ModelAdapterOptions,
+  ResponsesModelOptions,
   ChatCompletionsModelOptions,
   ModelRequestOptions,
   ModelRequestOptionsFactory,

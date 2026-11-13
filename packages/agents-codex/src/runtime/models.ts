@@ -54,6 +54,17 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
+const borrowedResponsesStreams = new WeakMap<
+  AsyncIterable<JsonObject>,
+  { upstreamRequestId?: string; abort: () => void }
+>();
+
+/** @internal Transport identity from the built-in borrowed Responses stream. */
+export function borrowedResponsesRequestId(
+  stream: AsyncIterable<JsonObject>,
+): string | undefined {
+  return borrowedResponsesStreams.get(stream)?.upstreamRequestId;
+}
 const receivedCacheWriteUsage = Symbol('received cache-write usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
@@ -160,7 +171,13 @@ export async function pumpModelStream(
       if (!continuing) break;
     }
   } finally {
-    if (!finished) await iterator.return?.();
+    if (!finished) {
+      try {
+        await iterator.return?.();
+      } finally {
+        borrowedResponsesStreams.get(stream)?.abort();
+      }
+    }
   }
   sink.finish();
 }
@@ -279,6 +296,11 @@ export interface ChatCompletionsModelOptions extends ModelAdapterOptions {
   stream?: boolean;
   /** Request terminal usage when streaming. Defaults to true. */
   includeUsage?: boolean;
+}
+
+export interface ResponsesModelOptions extends ModelAdapterOptions {
+  /** Use the provider's streaming API. Defaults to false. */
+  stream?: boolean;
 }
 
 type CapturedRequestOptions =
@@ -1215,16 +1237,21 @@ function chatCompletionResult(
 
 /** Borrow a Responses client; Core retains the turn, tool and history owners. */
 export class ResponsesModel implements NativeModel {
+  readonly stream?: (
+    request: ModelRequest,
+  ) => Promise<AsyncIterable<JsonObject>>;
   readonly #promptCacheKey: string | undefined;
   readonly #requestOptions: CapturedRequestOptions;
 
   constructor(
     readonly client: any,
     readonly model?: string,
-    options: ModelAdapterOptions = {},
+    options: ResponsesModelOptions = {},
   ) {
     this.#promptCacheKey = capturePromptCacheKey(options);
     this.#requestOptions = captureRequestOptionsSource(options);
+    if (options.stream === true)
+      this.stream = (request) => this.#create(request, true);
   }
 
   getRetryAdvice(
@@ -1232,20 +1259,32 @@ export class ResponsesModel implements NativeModel {
   ): ModelRetryAdvice | undefined {
     return openAIRetryAdvice(request);
   }
-  async complete(request: ModelRequest): Promise<ModelResponse> {
-    let response: any;
+  async #create(request: ModelRequest, stream: boolean): Promise<any> {
     try {
-      response = await this.client.responses.create(
+      const pending = this.client.responses.create(
         {
           ...request.body,
           model: this.model ?? request.body.model,
           ...(this.#promptCacheKey !== undefined
             ? { prompt_cache_key: this.#promptCacheKey }
             : {}),
-          stream: false,
+          stream,
         },
         await clientRequestOptions(this.#requestOptions, request),
       );
+      if (!stream) return await pending;
+      const response =
+        typeof pending.withResponse === 'function'
+          ? await pending.withResponse()
+          : { data: await pending };
+      const events = response.data;
+      borrowedResponsesStreams.set(events, {
+        ...(typeof response.request_id === 'string'
+          ? { upstreamRequestId: response.request_id }
+          : {}),
+        abort: () => events.controller?.abort(),
+      });
+      return events;
     } catch (error) {
       // Borrowed ESM clients can throw the other OpenAI module graph's class.
       if (
@@ -1259,7 +1298,10 @@ export class ResponsesModel implements NativeModel {
         request.signal.throwIfAborted();
       throw error;
     }
-    return projectResponsesResponse(response);
+  }
+
+  async complete(request: ModelRequest): Promise<ModelResponse> {
+    return projectResponsesResponse(await this.#create(request, false));
   }
 }
 
@@ -1331,6 +1373,11 @@ export interface AiSdkLanguageModel {
   readonly modelId: string;
   readonly provider: string;
   doGenerate(options: any): PromiseLike<any> | any;
+  doStream?(
+    options: any,
+  ):
+    | PromiseLike<{ stream: ReadableStream<any> }>
+    | { stream: ReadableStream<any> };
 }
 
 function aiSdkImageSource(source: string): {
@@ -1347,6 +1394,17 @@ function aiSdkImageSource(source: string): {
       };
 }
 
+function assertAiSdkOutputMetadata(part: any): void {
+  if (
+    ['google', 'googleVertex', 'vertex'].some(
+      (provider) => part.providerMetadata?.[provider]?.thoughtSignature != null,
+    )
+  )
+    throw new TypeError(
+      'AiSdkModel does not support Google thought signatures',
+    );
+}
+
 function aiSdkToolArguments(input: unknown, schema: any): string | undefined {
   const type = schema?.type;
   const object =
@@ -1358,10 +1416,12 @@ function aiSdkToolArguments(input: unknown, schema: any): string | undefined {
   return typeof input === 'string' ? input : JSON.stringify(input);
 }
 
-/** Completed AI SDK generation within the native Core turn and tool loop.
+/** AI SDK generation within the native Core turn and tool loop.
+ * Streaming: new AiSdkModel(model, {}, {stream: true}).
  * Renamed OpenAI factories: new AiSdkModel(model, {}, {providerFamily: 'openai'}).
  */
 export class AiSdkModel implements NativeModel {
+  readonly stream?: (request: ModelRequest) => AsyncIterable<JsonObject>;
   readonly #providerOptions: JsonObject;
   readonly #openai: boolean;
   readonly #openaiChat: boolean;
@@ -1370,10 +1430,18 @@ export class AiSdkModel implements NativeModel {
   constructor(
     readonly model: AiSdkLanguageModel,
     providerOptions: JsonObject = {},
-    adapterOptions: { readonly providerFamily?: 'openai' } = {},
+    adapterOptions: {
+      readonly providerFamily?: 'openai';
+      readonly stream?: boolean;
+    } = {},
   ) {
     if (!['v2', 'v3', 'v4'].includes(model.specificationVersion))
       throw new TypeError('AiSdkModel supports AI SDK v2, v3 and v4 models');
+    if (adapterOptions.stream === true) {
+      if (typeof model.doStream !== 'function')
+        throw new TypeError('AiSdkModel streaming requires doStream');
+      this.stream = (request) => this.#streamResponse(request);
+    }
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
     this.#openai =
       adapterOptions.providerFamily === 'openai' ||
@@ -1391,7 +1459,7 @@ export class AiSdkModel implements NativeModel {
       ? { suggested: retryable }
       : undefined;
   }
-  async complete(request: ModelRequest): Promise<ModelResponse> {
+  #parameters(request: ModelRequest) {
     const body = request.body;
     const admitted = new Set([
       'model',
@@ -1724,6 +1792,11 @@ export class AiSdkModel implements NativeModel {
       providerOptions,
       abortSignal: request.signal,
     };
+    return { options, tools, applyPatchWire };
+  }
+
+  async complete(request: ModelRequest): Promise<ModelResponse> {
+    const { options, tools, applyPatchWire } = this.#parameters(request);
     let result: any;
     try {
       result = await this.model.doGenerate(options);
@@ -1757,6 +1830,203 @@ export class AiSdkModel implements NativeModel {
       }
       throw error;
     }
+    return this.#projectResponse(result, tools, applyPatchWire);
+  }
+
+  async *#streamResponse(request: ModelRequest): AsyncIterable<JsonObject> {
+    const { options, tools, applyPatchWire } = this.#parameters(request);
+    request.signal.throwIfAborted();
+    const { stream } = await this.model.doStream!(options);
+    const reader = stream.getReader();
+    let cancellation: Promise<void> | undefined;
+    const cancel = () =>
+      (cancellation ??= reader.cancel(request.signal.reason));
+    const abort = () => {
+      void cancel().catch(() => {});
+    };
+    request.signal.addEventListener('abort', abort, { once: true });
+    let responseId = 'resp_aisdk_' + randomUUID();
+    let started = false;
+    let finished = false;
+    let finishReason: any;
+    let usage: any;
+    let bytes = 0;
+    const content: any[] = [];
+    const messageIds = new Map<number, string>();
+    const pendingInputs = new Set<string>();
+    const calls = new Set<string>();
+    let text: { type: 'text'; text: string } | undefined;
+    try {
+      request.signal.throwIfAborted();
+      while (true) {
+        const next = await reader.read();
+        request.signal.throwIfAborted();
+        if (next.done) break;
+        const part = next.value;
+        bytes += Buffer.byteLength(JSON.stringify(part));
+        if (bytes > maxChatStreamBytes)
+          throw new TypeError('AiSdkModel stream exceeded its buffer limit');
+        if (part.type === 'error') throw part.error;
+        assertAiSdkOutputMetadata(part);
+        if (finished && part.type !== 'response-metadata')
+          throw new TypeError('AiSdkModel stream continued after finish');
+        if (part.type === 'response-metadata') {
+          if (!started && typeof part.id === 'string' && part.id.trim())
+            responseId = part.id;
+          continue;
+        }
+        if (
+          !started &&
+          ['text-delta', 'tool-call', 'finish'].includes(part.type)
+        ) {
+          started = true;
+          yield { type: 'response.created', response: { id: responseId } };
+        }
+        switch (part.type) {
+          case 'text-delta': {
+            if (typeof part.delta !== 'string')
+              throw new TypeError(
+                'AiSdkModel received unsupported output content',
+              );
+            if (!text) {
+              text = { type: 'text', text: '' };
+              content.push(text);
+              const id = 'msg_aisdk_' + randomUUID();
+              messageIds.set(content.length - 1, id);
+              yield {
+                type: 'response.output_item.added',
+                output_index: content.length - 1,
+                item: { id, type: 'message', role: 'assistant', content: [] },
+              };
+            }
+            text.text += part.delta;
+            yield {
+              type: 'response.output_text.delta',
+              item_id: messageIds.get(content.length - 1)!,
+              output_index: content.length - 1,
+              content_index: 0,
+              delta: part.delta,
+            };
+            break;
+          }
+          case 'tool-input-start':
+            if (
+              typeof part.id !== 'string' ||
+              !part.id ||
+              pendingInputs.has(part.id) ||
+              calls.has(part.id)
+            )
+              throw new TypeError(
+                'AiSdkModel stream requires unique tool call IDs',
+              );
+            pendingInputs.add(part.id);
+            break;
+          case 'tool-call':
+            if (
+              typeof part.toolCallId !== 'string' ||
+              !part.toolCallId ||
+              calls.has(part.toolCallId)
+            )
+              throw new TypeError(
+                'AiSdkModel stream requires unique tool call IDs',
+              );
+            calls.add(part.toolCallId);
+            pendingInputs.delete(part.toolCallId);
+            text = undefined;
+            content.push(copyJsonValue(part));
+            break;
+          case 'finish':
+            finished = true;
+            finishReason = part.finishReason;
+            usage = part.usage;
+            if (usage) {
+              const measured = this.#projectResponse(
+                { content: [], finishReason: 'stop', usage },
+                tools,
+                applyPatchWire,
+              ).usage!;
+              request.reportUsage?.({
+                inputTokens: measured.input_tokens ?? 0,
+                cachedInputTokens: measured.cached_input_tokens ?? 0,
+                cacheWriteInputTokens: measured.cache_write_input_tokens ?? 0,
+                outputTokens: measured.output_tokens ?? 0,
+                reasoningOutputTokens: measured.reasoning_output_tokens ?? 0,
+                totalTokens: measured.total_tokens ?? 0,
+              });
+            }
+            break;
+          case 'stream-start':
+          case 'text-start':
+          case 'text-end':
+          case 'tool-input-delta':
+          case 'tool-input-end':
+            break;
+          default:
+            throw new TypeError(
+              'AiSdkModel received unsupported output content',
+            );
+        }
+      }
+      if (!finished || pendingInputs.size)
+        throw new TypeError(
+          'AiSdkModel stream ended without a completed response',
+        );
+      const result = this.#projectResponse(
+        { content, finishReason, usage, response: { id: responseId } },
+        tools,
+        applyPatchWire,
+      );
+      const output = result.output.map((item, index) => ({
+        ...item,
+        id: messageIds.get(index) ?? 'item_aisdk_' + randomUUID(),
+      }));
+      for (const [index, item] of output.entries())
+        yield { type: 'response.output_item.done', output_index: index, item };
+      yield {
+        type: 'response.completed',
+        response: {
+          id: responseId,
+          status: 'completed',
+          output,
+          ...(result.usage
+            ? {
+                usage: {
+                  input_tokens: result.usage.input_tokens ?? 0,
+                  output_tokens: result.usage.output_tokens ?? 0,
+                  total_tokens: result.usage.total_tokens ?? 0,
+                  input_tokens_details: {
+                    cached_tokens: result.usage.cached_input_tokens ?? 0,
+                    ...(usage?.inputTokens?.cacheWrite == null
+                      ? {}
+                      : {
+                          cache_write_tokens:
+                            result.usage.cache_write_input_tokens,
+                        }),
+                  },
+                  output_tokens_details: {
+                    reasoning_tokens: result.usage.reasoning_output_tokens ?? 0,
+                  },
+                },
+              }
+            : {}),
+        },
+      };
+    } finally {
+      request.signal.removeEventListener('abort', abort);
+      try {
+        await cancel();
+      } catch {
+        /* Original stream failure retention. */
+      }
+      reader.releaseLock();
+    }
+  }
+
+  #projectResponse(
+    result: any,
+    tools: any[],
+    applyPatchWire: ApplyPatchWire | undefined,
+  ): ModelResponse {
     const finishReason =
       typeof result.finishReason === 'string'
         ? result.finishReason
@@ -1808,15 +2078,7 @@ export class AiSdkModel implements NativeModel {
       }
     };
     for (const part of result.content ?? []) {
-      if (
-        ['google', 'googleVertex', 'vertex'].some(
-          (provider) =>
-            part.providerMetadata?.[provider]?.thoughtSignature != null,
-        )
-      )
-        throw new TypeError(
-          'AiSdkModel does not support Google thought signatures',
-        );
+      assertAiSdkOutputMetadata(part);
       if (part.type === 'text') {
         if (typeof part.text !== 'string')
           throw new TypeError('AiSdkModel received unsupported output content');
