@@ -168,11 +168,38 @@ export async function assertRestoredInstructionContent<Context, Output>(
     ]),
   );
   const native = await binding();
+  const publications = new Map<string, JsonObject>();
+  const projections: JsonObject[] = [];
+  const unauthorized =
+    'Restoring changed Agent instructions requires authenticated SessionState';
   for (const row of history) {
     if (row.type !== 'response_item') continue;
-    const receipt = (row.metadata as JsonObject | undefined)
-      ?.sdk_agent_profile as JsonObject | undefined;
-    if (receipt == null) continue;
+    const payload = row.payload as JsonObject | undefined;
+    const metadata = row.metadata as JsonObject | undefined;
+    const kinds = (
+      payload?.internal_chat_message_metadata_passthrough as
+        JsonObject | undefined
+    )?.content_item_kinds;
+    const hidden =
+      payload?.role === 'developer' &&
+      metadata?.client_authored !== true &&
+      Array.isArray(kinds) &&
+      kinds.length > 0 &&
+      Array.isArray(payload.content) &&
+      kinds.length === payload.content.length &&
+      kinds.every(
+        (kind) =>
+          kind === 'sdk_application.accepted' ||
+          kind === 'sdk_application.instructions',
+      );
+    if (hidden && kinds.includes('sdk_application.instructions'))
+      projections.push(row);
+    const receipt = metadata?.sdk_agent_profile as JsonObject | undefined;
+    if (receipt == null) {
+      if (hidden && kinds.includes('sdk_application.accepted'))
+        throw new TypeError(unauthorized);
+      continue;
+    }
     const declared =
       typeof receipt.profile_id === 'string'
         ? expected.get(receipt.profile_id)
@@ -188,9 +215,21 @@ export async function assertRestoredInstructionContent<Context, Output>(
         revision,
       );
     if (declared === undefined || saved !== declared || !canonicalRevision)
-      throw new TypeError(
-        'Restoring changed Agent instructions requires authenticated SessionState',
-      );
+      throw new TypeError(unauthorized);
+    const content = payload!.content as JsonObject[];
+    publications.set(content[0].text as string, row);
+  }
+  // A model-only projection needs its exact declaration-validated publication.
+  // Index the rendered body, then let the native decoder validate the pair.
+  for (const row of projections) {
+    const content = (row.payload as JsonObject).content as JsonObject[];
+    const owners = new Set<JsonObject>();
+    for (const part of content) {
+      const publication = publications.get(part.text as string);
+      if (!publication) throw new TypeError(unauthorized);
+      owners.add(publication);
+    }
+    native._read_session_instructions(encode([...owners, row]));
   }
 }
 

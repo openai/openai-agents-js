@@ -1495,6 +1495,21 @@ export class Agent<Context = undefined, Output = string> {
           )
         : undefined;
 
+    // An editable receipt can hide a prior preparation and select the root.
+    // Only current declarations, not saved markers or reachability, own this gate.
+    if (
+      budgetState &&
+      profiles?.some(
+        ({ declaration, handoffs, decisionHandoffs }) =>
+          declaration.prepareHandoffInput !== undefined &&
+          (Object.keys(handoffs).length > 0 ||
+            Object.values(decisionHandoffs ?? {}).some(
+              ({ targets }) => targets.length > 0,
+            )),
+      )
+    )
+      assertHandoffPresentationAuthority(budgetState, true);
+
     if (
       profiles?.some((profile) => profile.nativeProviderId !== undefined) &&
       (options.providerHistory !== undefined || provider._usesChatGPTPlan)

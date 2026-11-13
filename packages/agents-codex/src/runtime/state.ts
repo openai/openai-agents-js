@@ -1199,9 +1199,12 @@ export function configuredChildSessionState(
 }
 
 /** @internal Hidden handoff context requires independent checkpoint authority. */
-export function assertHandoffPresentationAuthority(state: SessionState): void {
+export function assertHandoffPresentationAuthority(
+  state: SessionState,
+  preparedGraph = false,
+): void {
   const hasPresentation = containsHandoffPresentation(state);
-  if (hasPresentation && !hasSessionStateAuthority(state))
+  if ((preparedGraph || hasPresentation) && !hasSessionStateAuthority(state))
     throw new TypeError(
       'Restoring handoff presentation requires authenticated SessionState; use parseSessionState with an independently trusted expectedSha256',
     );
