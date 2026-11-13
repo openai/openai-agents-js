@@ -37,6 +37,9 @@ import {
 import {
   addModelReportedUsage,
   attachModelUsageSource,
+  attachConfiguredModelUsageSource,
+  type ModelAttemptOwner,
+  mergeConfiguredChildRestoreUsage,
   modelAttemptUsage,
   modelAttemptUsageJson,
   retainModelAttemptFailure,
@@ -513,6 +516,9 @@ export interface SessionOptions {
   onInteraction?: InteractionHandler;
   toolErrorFormatter?: ToolErrorFormatter<any>;
   verifyRememberedApprovals?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
+  verifyConfiguredChildExecutorTools?: (
     state: SessionState,
   ) => boolean | Promise<boolean>;
   /** @internal Captured opening scope; never stored in SessionState. */
@@ -1286,6 +1292,7 @@ interface ToolInvocation {
   active: boolean;
   realtimeAdapter?: object;
   parent?: ToolInvocation;
+  invocation?: Promise<void>;
 }
 const toolInvocation = new AsyncLocalStorage<ToolInvocation>();
 
@@ -1509,6 +1516,16 @@ type ConfiguredChild = {
   owner: NativeTurn | ChildCallbackOwner;
   signal: AbortSignal;
   active: boolean;
+  request: JsonObject;
+  delivery?: NativeCallbackDelivery;
+  invocation?: Promise<void>;
+  sealing: boolean;
+  captureAllowed: boolean;
+  checkpoint?: SessionState;
+  sealOutcome?: ReturnType<typeof Promise.withResolvers<Completed<unknown>>>;
+  recover?: () => Promise<Completed<unknown>>;
+  recovery?: Promise<Completed<unknown>>;
+  recoveryReady?: ReturnType<typeof Promise.withResolvers<void>>;
 };
 
 export class Session<OutputT = string, Context = unknown> {
@@ -2759,7 +2776,10 @@ export class Session<OutputT = string, Context = unknown> {
       preserveCurrent && same
         ? this.catalog
         : this.profileRuntimes.get(receipt.profile_id)!.catalog;
-    const manual = catalog.tools.some((tool) => tool.kind === 'manual')
+    const manual = catalog.tools.some(
+      (tool) =>
+        tool.kind === 'manual' || configuredAgentTool(tool) !== undefined,
+    )
       ? await this.#native._manual_checkpoint_config_supported()
       : false;
     if (owner && !this.owns(owner)) return;
@@ -2796,6 +2816,84 @@ export class Session<OutputT = string, Context = unknown> {
       );
     return this.restoredRoot.turn as Turn<OutputT>;
   }
+  private configuredUsageParent?: ModelAttemptOwner;
+
+  private checkpointUsage(
+    value: ManualSessionState['manual_context']['usage'] | undefined,
+  ): RunUsage {
+    if (!value) return runUsageSnapshot(null);
+    return runUsageSnapshot(
+      addRunUsage(null, {
+        input_tokens: value.inputTokens,
+        cached_input_tokens: value.cachedInputTokens,
+        cache_write_input_tokens: value.cacheWriteInputTokens,
+        output_tokens: value.outputTokens,
+        reasoning_output_tokens: value.reasoningOutputTokens,
+        total_tokens: value.totalTokens,
+      }),
+      parseTokenCount(value.requests ?? 0),
+      parseTokenCount(value.missingUsageRequests ?? 0),
+    );
+  }
+
+  private configuredCheckpointUsage(state: SessionState): RunUsage {
+    const manual = state as Partial<ManualSessionState>;
+    if (!manual.manual_context || !manual.manual_continuation)
+      throw new TypeError('Configured child requires a manual checkpoint');
+    let total = this.checkpointUsage(
+      manual.manual_context.model_usage_offset ?? manual.manual_context.usage,
+    );
+    const children = manual.manual_continuation.pending_manual.filter(
+      (entry) => entry.continuation,
+    );
+    if (children.length > 1)
+      throw new TypeError('Concurrent configured child usage is not supported');
+    for (const entry of children) {
+      const captured = entry.continuation!;
+      const child = parseSessionState(encode(captured.state));
+      total = mergeConfiguredChildRestoreUsage(
+        total,
+        this.configuredCheckpointUsage(child),
+        this.checkpointUsage(captured.usage_in_parent),
+      );
+    }
+    return total;
+  }
+
+  private bindConfiguredUsage(
+    parent: NativeTurn | ChildCallbackOwner,
+    restored?: SessionState,
+  ): void {
+    const parentState = modelAttemptState(parent);
+    if (
+      this.configuredUsageParent &&
+      this.configuredUsageParent.modelAttempts !== parentState
+    )
+      throw new NativeError('Configured child usage already has a parent');
+    if (restored) {
+      const root = this.lastRun && this.rootRun(this.lastRun);
+      if (
+        !root ||
+        !this.restoredRoot ||
+        root.id !== (restored as ManualSessionState).manual_continuation.turn_id
+      )
+        throw new NativeError('Configured child usage has no restored turn');
+      const accounted = this.configuredCheckpointUsage(restored);
+      for (const step of this.rootSteps(root))
+        attachConfiguredModelUsageSource(
+          parent,
+          step,
+          step === root ? accounted : undefined,
+        );
+    }
+    this.configuredUsageParent = {
+      tokenUsage: null,
+      requests: 0,
+      missingUsageRequests: 0,
+      modelAttempts: parentState,
+    };
+  }
+
   private repairUsageParent?: NativeTurn;
   private apiRateLimitState: { snapshot: ApiRateLimits } = {
     snapshot: Object.freeze({}),
@@ -3001,6 +3099,8 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private nativeManualCheckpoint = false;
   private readonly rememberedApprovals = new Map<string, RememberedApproval>();
+  private verifiedConfiguredExecutorCheckpoint = false;
+  private restoredExecutorTurn?: NativeTurn;
   private readonly restoredApprovalSlots = new Map<
     string,
     RememberedApproval
@@ -3040,7 +3140,7 @@ export class Session<OutputT = string, Context = unknown> {
     () => this.observations.currentSequence,
   );
   private readonly toolSessionOwner = Object.freeze({});
-  private readonly configuredChildren = new Map<string, ConfiguredChild>();
+  private readonly configuredChildren = new Set<ConfiguredChild>();
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -3303,6 +3403,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.catalog.tools.some(
           (tool) =>
             tool.kind === 'manual' ||
+            configuredAgentTool(tool) !== undefined ||
             tool.finishTurn ||
             supportsInputErrorRecovery(tool),
         )
@@ -6254,6 +6355,8 @@ export class Session<OutputT = string, Context = unknown> {
       (completion) => afterSubmissionRetirement(run, completion),
       this.repairUsageParent,
     );
+    if (this.configuredUsageParent)
+      attachConfiguredModelUsageSource(this.configuredUsageParent, run);
     run.controller.signal.addEventListener(
       'abort',
       () => this.discardTerminalValue(run),
@@ -8138,9 +8241,9 @@ export class Session<OutputT = string, Context = unknown> {
         run.executing.add(key);
         this.track(
           run,
-          this.handleRequest(run, event).finally(() =>
-            run.executing.delete(key),
-          ),
+          this.handleRequest(run, event, () => {
+            run.executing.delete(key);
+          }),
         );
       }
       return;
@@ -8423,7 +8526,9 @@ export class Session<OutputT = string, Context = unknown> {
       run.executing.add(key);
       this.track(
         run,
-        this.handleRequest(run, event).finally(() => run.executing.delete(key)),
+        this.handleRequest(run, event, () => {
+          run.executing.delete(key);
+        }),
         undefined,
         () => this.publishManualRequest(run, event),
       );
@@ -10706,7 +10811,7 @@ export class Session<OutputT = string, Context = unknown> {
     signal: AbortSignal = run.controller.signal,
     tracingContext?: string,
   ): Promise<void> {
-    const scope = {
+    const scope: ToolInvocation = {
       session: this,
       run,
       active: true,
@@ -10749,6 +10854,7 @@ export class Session<OutputT = string, Context = unknown> {
         scope.active = false;
         run.toolInvocations.delete(invocation);
       });
+    scope.invocation = invocation;
     run.toolInvocations.add(invocation);
     return invocation;
   }
@@ -11854,6 +11960,121 @@ export class Session<OutputT = string, Context = unknown> {
       submissions.get(run)!.output = this.defaultOutput;
   }
 
+  private configuredCaptureWork(run: NativeTurn): boolean {
+    const children = [...this.configuredChildren.values()].filter(
+      (child) =>
+        child.owner === run && child.sealing && child.checkpoint !== undefined,
+    );
+    return (
+      [...run.callbacks].some(
+        (work) =>
+          !children.some((child) => child.delivery?.completion === work),
+      ) ||
+      [...run.toolInvocations].some(
+        (work) => !children.some((child) => child.invocation === work),
+      ) ||
+      run.manualReplies.size > 0
+    );
+  }
+
+  private async captureConfiguredParent(
+    beforeSeal?: () => void,
+  ): Promise<SessionState> {
+    if (this.lifecycle.kind !== 'turn')
+      throw new NativeError('Configured parent requires its original turn');
+    const run = this.lifecycle.run;
+    if (!this.nativeManualCheckpoint)
+      throw new NativeError(
+        'Configured checkpoints require native manual support',
+      );
+    if (!this.current(run) || run.failure !== undefined)
+      throw (
+        run.failure ?? new NativeError('Configured parent is no longer active')
+      );
+    const children = [...this.configuredChildren.values()];
+    if (children.length !== 1 || children[0].owner !== run)
+      throw new NativeError(
+        'Concurrent configured continuations are not supported',
+      );
+    const child = children[0];
+    if (!child.captureAllowed)
+      throw new NativeError(
+        'Configured parent approvals require a live Session',
+      );
+    if (child.sealing || child.recovery)
+      throw new NativeError('Configured capture or recovery is already active');
+    if (!child.delivery || !child.invocation || !child.delivery.completion)
+      throw new NativeError('Configured callback has no physical owner');
+    if (
+      [...run.callbacks].some((work) => work !== child.delivery!.completion) ||
+      [...run.toolInvocations].some((work) => work !== child.invocation) ||
+      run.manualReplies.size
+    )
+      throw new NativeError('Other automatic callbacks have not settled');
+    child.sealing = true;
+    child.sealOutcome = Promise.withResolvers<Completed<unknown>>();
+    void child.sealOutcome.promise.catch(() => {});
+    try {
+      child.checkpoint = await child.session.suspend();
+    } catch (error) {
+      child.sealing = false;
+      child.sealOutcome = undefined;
+      throw error;
+    }
+    let parked = false;
+    try {
+      const childUsage = this.configuredCheckpointUsage(child.checkpoint);
+      mergeConfiguredChildRestoreUsage(
+        this.runUsage(run),
+        childUsage,
+        childUsage,
+      );
+      await this.#native._set_configured_continuation(
+        encodeReceipt(child.request),
+        child.delivery.wire,
+        encodeReceipt({
+          kind: 'configured-child-v1',
+          state: child.checkpoint,
+          usage_in_parent: runUsageToWire(
+            childUsage,
+            childUsage.requests,
+            childUsage.missingUsageRequests,
+          ),
+        }),
+      );
+      parked = true;
+      return await this.sealManualTurn(run, beforeSeal);
+    } catch (error) {
+      if (
+        !this.manualSealed &&
+        this.current(run) &&
+        !child.signal.aborted &&
+        child.recover
+      ) {
+        if (parked)
+          await this.#native._set_configured_continuation(
+            encodeReceipt(child.request),
+            child.delivery.wire,
+          );
+        child.recoveryReady = Promise.withResolvers<void>();
+        void child.recoveryReady.promise.catch(() => {});
+        child.recovery = child.recover();
+        const recovery = child.recovery.then(
+          (result) => {
+            child.sealOutcome!.resolve(result);
+          },
+          (failure) => {
+            child.sealOutcome!.reject(failure);
+            throw failure;
+          },
+        );
+        this.track(run, recovery, run.toolInvocations);
+        await child.recoveryReady.promise;
+      }
+      throw error;
+    }
+  }
+
   private async captureManualTurn(
     run: NativeTurn,
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
@@ -11886,11 +12107,20 @@ export class Session<OutputT = string, Context = unknown> {
           ): request is typeof request & { action: ManualToolRequest } =>
             request.action !== undefined,
         );
-      if (!requests.length)
+      const configured = [...this.configuredChildren.values()].filter(
+        (child) =>
+          child.owner === run &&
+          child.sealing &&
+          child.checkpoint !== undefined,
+      );
+      if (!requests.length && !configured.length)
         throw new NativeError('Original manual checkpoint requests expired');
       const keys =
         '[' +
-        requests.map(({ call }) => encodeReceipt(call.event.msg)).join(',') +
+        [
+          ...requests.map(({ call }) => encodeReceipt(call.event.msg)),
+          ...configured.map((child) => encodeReceipt(child.request)),
+        ].join(',') +
         ']';
       const progress = this.manualProgress;
       const changed = Promise.withResolvers<void>();
@@ -11940,10 +12170,7 @@ export class Session<OutputT = string, Context = unknown> {
             )
           );
         signal?.throwIfAborted();
-        const settling =
-          run.callbacks.size ||
-          run.toolInvocations.size ||
-          run.manualReplies.size;
+        const settling = this.configuredCaptureWork(run);
         if (!ready || settling) {
           // Both JS and native notifications were registered before ready().
           // Testing the epoch after registration covers a change during check.
@@ -12089,10 +12316,17 @@ export class Session<OutputT = string, Context = unknown> {
                   ? this.#native._application_instructions()
                   : (this.threadOptions.instructions ?? null),
                 result_schemas: this.catalog.tools
-                  .filter((tool) => tool.kind === 'manual')
+                  .filter(
+                    (tool) =>
+                      tool.kind === 'manual' ||
+                      configuredAgentTool(tool) !== undefined,
+                  )
                   .map((tool) => ({
                     name: tool.name,
-                    schema: manualResultSchema(tool),
+                    schema:
+                      tool.kind === 'manual'
+                        ? manualResultSchema(tool)
+                        : configuredAgentTool(tool)!.resultSchema,
                   })),
                 ...(run.modelAttempts?.native
                   ? {
@@ -12222,9 +12456,13 @@ export class Session<OutputT = string, Context = unknown> {
       });
     });
   }
-  async _restoreManualContinuation(state: ManualSessionState): Promise<void> {
+  async _restoreManualContinuation(
+    state: ManualSessionState,
+    verifiedExecutorCheckpoint = false,
+  ): Promise<void> {
     this.idle('restore manual continuation');
     const guardrailRecords = this.restoreGuardrailRecords(state);
+    const operation = readCheckpointSelections(state).operation_tools;
     const tracing = this.captureRootTracing(
       undefined,
       this.options.parentTrace === undefined
@@ -12239,12 +12477,14 @@ export class Session<OutputT = string, Context = unknown> {
         await this.#native._restore_manual_continuation(
           encodeReceipt(state.manual_continuation),
           context,
+          operation === undefined ? undefined : JSON.stringify(operation),
         ),
       );
     } catch (error) {
       tracing?.finish(error ?? null);
       throw error;
     }
+    this.verifiedConfiguredExecutorCheckpoint = verifiedExecutorCheckpoint;
     const restoredOutput = this.options.restoredOutput ?? {
       output: this.defaultOutput,
       outputOverride: false,
@@ -12253,6 +12493,7 @@ export class Session<OutputT = string, Context = unknown> {
       restoredOutput.output,
       restoredOutput.outputOverride,
     );
+    this.restoredExecutorTurn = run;
     if (
       (state.manual_continuation.pending_input?.length ?? 0) > 0 ||
       state.manual_continuation.staged_retry
@@ -12266,7 +12507,6 @@ export class Session<OutputT = string, Context = unknown> {
 
     run.parentTrace = this.options.parentTrace;
     run.id = state.manual_continuation.turn_id;
-    const operation = readCheckpointSelections(state).operation_tools;
     const origin = this.options.agentGraph?.operationSource;
     if (this.options.agentGraph && operation?.length && !origin)
       throw new NativeError(
@@ -12310,26 +12550,14 @@ export class Session<OutputT = string, Context = unknown> {
       };
     this.#turnFor(run);
     run.accepted.resolve({ status: 'started', turn_id: run.id });
-    const usage = state.manual_context.usage;
-    const historicalUsage = state.manual_context.model_usage_offset ?? usage;
-    if (historicalUsage) {
-      const raw = {
-        input_tokens: historicalUsage.inputTokens,
-        cached_input_tokens: historicalUsage.cachedInputTokens,
-        cache_write_input_tokens: historicalUsage.cacheWriteInputTokens,
-        output_tokens: historicalUsage.outputTokens,
-        reasoning_output_tokens: historicalUsage.reasoningOutputTokens,
-        total_tokens: historicalUsage.totalTokens,
-      };
-      restoreModelUsageOffset(
-        run,
-        runUsageSnapshot(
-          addRunUsage(null, raw),
-          parseTokenCount(historicalUsage.requests ?? 0),
-          parseTokenCount(historicalUsage.missingUsageRequests ?? 0),
-        ),
-      );
-    }
+    if (
+      state.manual_context.model_usage_offset ??
+      state.manual_context.usage ??
+      state.manual_continuation.pending_manual.some(
+        (entry) => entry.continuation,
+      )
+    )
+      restoreModelUsageOffset(run, this.configuredCheckpointUsage(state));
     this.lifecycle = { kind: 'turn', run };
     this.lastRun = run;
     this.manualCheckpointRun = run;
@@ -12343,7 +12571,24 @@ export class Session<OutputT = string, Context = unknown> {
     const events = requests.map((request) =>
       parseEvent(JSON.stringify(request)),
     );
-    for (const event of events) await this.handleRequest(run, event);
+    if (this.environment && !verifiedExecutorCheckpoint) {
+      for (const event of events) {
+        if (event.msg._sdk_configured_continuation === undefined) continue;
+        const policy = await this.configuredChildPolicy(event.msg);
+        this.options.environmentOwner?.signal.throwIfAborted();
+        this.configuredExecutorTools(policy.tools);
+      }
+    }
+    for (const event of events) {
+      if (event.msg._sdk_configured_continuation !== undefined) {
+        this.callbackDeliveries.capture(
+          this.#native,
+          event.msg._sdk_callback,
+          event,
+        );
+        this.track(run, this.handleRequest(run, event));
+      } else await this.handleRequest(run, event);
+    }
     // Register all saved requests before a handler can resolve the last grant
     // and restart the original turn.
     for (const event of events) {
@@ -12454,10 +12699,15 @@ export class Session<OutputT = string, Context = unknown> {
   private handleRequest(
     owner: NativeTurn | ChildCallbackOwner,
     event: NativeEvent,
+    cleanup?: () => void,
   ): Promise<void> {
-    return this.callbackDeliveries.own(event, owner, (signal, delivery) =>
+    const work = this.callbackDeliveries.own(event, owner, (signal, delivery) =>
       this.executeCallbackRequest(owner, event, signal, delivery),
     );
+    const completion = cleanup ? work.finally(cleanup) : work;
+    const delivery = this.callbackDeliveries.get(event);
+    if (delivery) delivery.completion = completion;
+    return completion;
   }
   private async configuredChildRequests(
     child: ConfiguredChild,
@@ -12485,29 +12735,62 @@ export class Session<OutputT = string, Context = unknown> {
     return requests;
   }
 
+  private async configuredChildPolicy(request: unknown) {
+    return z
+      .object({
+        cwd: z.string(),
+        writableRoots: z.array(z.string()),
+        tools: z.array(z.string()),
+      })
+      .parse(
+        JSON.parse(
+          await this.#native._configured_child_policy(encodeReceipt(request)),
+        ),
+      );
+  }
+
+  private configuredExecutorTools(
+    policy: readonly string[],
+    owner?: NativeTurn | ChildCallbackOwner,
+  ) {
+    const tools =
+      this.environment?.tools.filter((tool) => policy.includes(tool)) ?? [];
+    const restored = this.restoredExecutorTurn;
+    const restoredOwner =
+      owner === undefined ||
+      (restored !== undefined &&
+        (owner === restored ||
+          (!(owner instanceof NativeTurn) &&
+            (owner.rootTurnId === restored.id ||
+              (owner.rootTurnId === undefined &&
+                this.lifecycle.kind === 'turn' &&
+                this.lifecycle.run === restored)))));
+    if (
+      restoredOwner &&
+      !this.verifiedConfiguredExecutorCheckpoint &&
+      tools.length
+    )
+      throw new NativeError(
+        'Restored configured executors require verifyConfiguredChildExecutorTools',
+      );
+    return tools;
+  }
+
   private async invokeConfiguredChild(
     owner: NativeTurn | ChildCallbackOwner,
     context: ToolCallContext,
     declaration: ConfiguredAgentTool,
     input: string,
     request: JsonObject,
+    delivery?: NativeCallbackDelivery,
+    captureAllowed = false,
   ): Promise<string> {
     context.signal.throwIfAborted();
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
     let environment = this.environment;
     if (environment) {
-      const policy = z
-        .object({
-          cwd: z.string(),
-          writableRoots: z.array(z.string()),
-          tools: z.array(z.string()),
-        })
-        .parse(
-          JSON.parse(
-            await this.#native._configured_child_policy(encodeReceipt(request)),
-          ),
-        );
+      const policy = await this.configuredChildPolicy(request);
       context.signal.throwIfAborted();
       if (!this.current(owner))
         throw new NativeError('Configured child parent is no longer active');
@@ -12524,9 +12807,7 @@ export class Session<OutputT = string, Context = unknown> {
         transformResult,
         ...settings
       } = environment;
-      const tools = environment.tools.filter((tool) =>
-        policy.tools.includes(tool),
-      );
+      const tools = this.configuredExecutorTools(policy.tools, owner);
       const commands = tools.includes('exec_command');
       environment = new Environment({
         ...settings,
@@ -12562,12 +12843,31 @@ export class Session<OutputT = string, Context = unknown> {
           : tools.filter((tool) => tool !== 'write_stdin'),
       });
     }
-    const session = await declaration.open(
+    const configuredData = request._sdk_configured_continuation;
+    const restoredChild =
+      configuredData === undefined
+        ? undefined
+        : parseSessionState(
+            encode(losslessJsonObjectSchema.parse(configuredData).state),
+          );
+    let session = await declaration.open(
       context.context,
       environment,
       context.signal,
+      restoredChild,
+      this.verifiedConfiguredExecutorCheckpoint,
     );
-    const child = { session, owner, signal: context.signal, active: true };
+    const child: ConfiguredChild = {
+      session,
+      owner,
+      signal: context.signal,
+      active: true,
+      request,
+      delivery,
+      invocation: toolInvocation.getStore()?.invocation,
+      sealing: false,
+      captureAllowed,
+    };
     let closing: Promise<void> | undefined;
     const close = () => {
       child.active = false;
@@ -12575,9 +12875,10 @@ export class Session<OutputT = string, Context = unknown> {
       return (closing ??= session.close());
     };
     const abort = () => {
+      child.sealOutcome?.reject(context.signal.reason);
       void close().catch(() => {});
     };
-    this.configuredChildren.set(session.id, child);
+    this.configuredChildren.add(child);
     context.signal.addEventListener('abort', abort, { once: true });
     let reader: AsyncIterableIterator<Interaction> | undefined;
     let relay = Promise.resolve();
@@ -12588,47 +12889,100 @@ export class Session<OutputT = string, Context = unknown> {
       context.signal.throwIfAborted();
       if (!this.current(owner))
         throw new NativeError('Configured child parent is no longer active');
-      reader = session.interactions();
-      const interactions = reader;
-      relay = (async () => {
-        for await (const request of interactions) {
-          if (!child.active || context.signal.aborted || !this.current(owner))
-            return;
-          this.observations.notify();
-          const handler = this.options.onInteraction;
-          if (!handler && this.oneShot) {
-            const failure = new InteractionRequired();
-            const root =
-              owner instanceof NativeTurn
-                ? owner
-                : this.lifecycle.kind === 'turn'
-                  ? this.lifecycle.run
-                  : undefined;
-            if (!root) this.oneShotChildCleanupErrors.push(failure);
-            toolInvocation.exit(() => {
-              void this.trackQuestionCallback(root ?? owner, async () => {
-                throw failure;
-              }).catch(() => {});
-            });
-            return;
-          }
-          if (handler) {
-            const reply = await toolInvocation.exit(() =>
-              handler(request, context.signal),
-            );
-            if (child.active && !context.signal.aborted && this.current(owner))
-              await session.respond(reply);
+      if (!(session instanceof Session))
+        throw new NativeError('Configured child requires its native Session');
+      session.bindConfiguredUsage(owner, restoredChild);
+      const startRelay = () => {
+        reader = session.interactions();
+        const interactions = reader;
+        relay = (async () => {
+          for await (const request of interactions) {
+            if (!child.active || context.signal.aborted || !this.current(owner))
+              return;
             this.observations.notify();
+            const handler = this.options.onInteraction;
+            if (!handler && this.oneShot) {
+              const failure = new InteractionRequired();
+              const root =
+                owner instanceof NativeTurn
+                  ? owner
+                  : this.lifecycle.kind === 'turn'
+                    ? this.lifecycle.run
+                    : undefined;
+              if (!root) this.oneShotChildCleanupErrors.push(failure);
+              toolInvocation.exit(() => {
+                void this.trackQuestionCallback(root ?? owner, async () => {
+                  throw failure;
+                }).catch(() => {});
+              });
+              return;
+            }
+            if (handler) {
+              const reply = await toolInvocation.exit(() =>
+                handler(request, context.signal),
+              );
+              if (
+                child.active &&
+                !context.signal.aborted &&
+                this.current(owner)
+              )
+                await session.respond(reply);
+              this.observations.notify();
+            }
           }
+        })().catch((error) => {
+          if (context.signal.aborted && Object.is(error, context.signal.reason))
+            return;
+          relayFailure = { error };
+          abort();
+        });
+      };
+      startRelay();
+      child.recover = async () => {
+        try {
+          if (!child.checkpoint || !child.recoveryReady)
+            throw new NativeError('Configured recovery has no saved child');
+          await close();
+          await reader?.return?.();
+          await relay;
+          session = await declaration.open(
+            context.context,
+            environment,
+            context.signal,
+            child.checkpoint,
+            true,
+          );
+          if (!(session instanceof Session))
+            throw new NativeError(
+              'Configured child requires its native Session',
+            );
+          session.bindConfiguredUsage(owner, child.checkpoint);
+          child.session = session;
+          child.active = true;
+          child.checkpoint = undefined;
+          child.sealing = false;
+          closing = undefined;
+          startRelay();
+          if (!session.restoredTurn)
+            throw new NativeError('Configured recovery has no original turn');
+          child.recoveryReady.resolve();
+          this.observations.notify();
+          return await session.restoredTurn.wait();
+        } catch (error) {
+          child.recoveryReady?.reject(error);
+          throw error;
         }
-      })().catch((error) => {
-        if (context.signal.aborted && Object.is(error, context.signal.reason))
-          return;
-        relayFailure = { error };
-        abort();
-      });
-      const turn = await session.submit(input);
-      const result = await turn.wait().catch((error) => {
+      };
+      const turn = restoredChild
+        ? session.restoredTurn
+        : await session.submit(input);
+      if (!turn)
+        throw new NativeError(
+          'Configured continuation has no original child turn',
+        );
+      const result = await turn.wait().catch(async (error) => {
+        if (child.sealing && child.sealOutcome)
+          return await child.sealOutcome.promise;
         if (
           context.signal.aborted &&
           error instanceof TurnAborted &&
@@ -12646,7 +13000,7 @@ export class Session<OutputT = string, Context = unknown> {
       errors.push(error);
     } finally {
       context.signal.removeEventListener('abort', abort);
-      this.configuredChildren.delete(session.id);
+      this.configuredChildren.delete(child);
       const cleanup = await Promise.allSettled([
         close(),
         reader?.return?.(),
@@ -12719,6 +13073,13 @@ export class Session<OutputT = string, Context = unknown> {
       }
     };
     const execute = async () => {
+      if (
+        msg._sdk_configured_continuation !== undefined &&
+        configuredAgentTool(tool) === undefined
+      )
+        throw new NativeError(
+          'Configured continuation requires its current SDK declaration',
+        );
       if (!this.current(owner) || signal.aborted) return;
       if (!check()) return;
       const submission = root
@@ -12788,7 +13149,15 @@ export class Session<OutputT = string, Context = unknown> {
                   _sdk_python_tool: marker,
                   turnId: msg.turnId!,
                   callId: msg.callId!,
+                  ...(msg._sdk_configured_continuation === undefined
+                    ? {}
+                    : {
+                        _sdk_configured_continuation:
+                          msg._sdk_configured_continuation,
+                      }),
                 },
+                delivery,
+                captured.kind !== 'manual',
               )
           : undefined,
       );
@@ -12895,7 +13264,9 @@ export class Session<OutputT = string, Context = unknown> {
         const responseOutput = structuredClone(response);
         const applicationData = toolApplicationData(response);
         const restoredApplicationOutput =
-          this.manualRestoring && msg._sdk_managed_approved === true;
+          this.manualRestoring &&
+          (msg._sdk_managed_approved === true ||
+            msg._sdk_configured_continuation !== undefined);
         const waitForApplicationAcceptance =
           applicationData !== undefined && !restoredApplicationOutput;
         if (tool.finishTurn && responseOutput.success) {
@@ -13952,21 +14323,23 @@ export class Session<OutputT = string, Context = unknown> {
       ),
     });
   }
+  private manualToolSlots() {
+    return this.catalog.tools
+      .filter(
+        (tool) =>
+          tool.kind === 'manual' || configuredAgentTool(tool) !== undefined,
+      )
+      .map((tool) => ({
+        name: tool.name,
+        namespace: toolNamespace(tool),
+        configured:
+          tool.kind !== 'manual' && configuredAgentTool(tool) !== undefined,
+      }));
+  }
   private async configureManualTools(): Promise<void> {
-    this.#native._configure_manual_tools(
-      encode(
-        this.catalog.tools
-          .filter((tool) => tool.kind === 'manual')
-          .map((tool) => ({
-            name: tool.name,
-            namespace: toolNamespace(tool),
-          })),
-      ),
-      this.terminalSlots(),
-    );
-    this.nativeManualCheckpoint = this.catalog.tools.some(
-      (tool) => tool.kind === 'manual',
-    )
+    const slots = this.manualToolSlots();
+    this.#native._configure_manual_tools(encode(slots), this.terminalSlots());
+    this.nativeManualCheckpoint = slots.length
       ? await this.#native._manual_checkpoint_config_supported()
       : false;
   }
@@ -15777,11 +16150,8 @@ export class Session<OutputT = string, Context = unknown> {
       );
       beforeRetirement();
       this.configureNative(owner.thread);
-      const manualSlots = encode(
-        this.catalog.tools
-          .filter((tool) => tool.kind === 'manual')
-          .map((tool) => ({ name: tool.name, namespace: toolNamespace(tool) })),
-      );
+      const slots = this.manualToolSlots();
+      const manualSlots = encode(slots);
       owner.thread._configure_manual_tools(manualSlots);
       if (this.options.includeRawProviderEvents)
         owner.thread._enable_raw_provider_events();
@@ -15791,9 +16161,7 @@ export class Session<OutputT = string, Context = unknown> {
       beforeRetirement();
       // Validation retains the source catalog generation and narrowed defaults.
       owner.thread._configure_manual_tools(manualSlots, this.terminalSlots());
-      const manualCheckpoint = this.catalog.tools.some(
-        (tool) => tool.kind === 'manual',
-      )
+      const manualCheckpoint = slots.length
         ? await owner.thread._manual_checkpoint_config_supported()
         : false;
       beforeRetirement();
@@ -16152,6 +16520,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
+    if (this.configuredChildren.size) return this.captureConfiguredParent();
     if (
       this.graphStops.size ||
       this.lifecycle.kind !== 'turn' ||

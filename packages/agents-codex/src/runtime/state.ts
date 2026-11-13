@@ -344,6 +344,14 @@ const manualContinuationSchema = z.object({
       patch: z.boolean().optional(),
       approval_required: z.boolean().optional(),
       effective_arguments: optionalStringSchema,
+      continuation: z
+        .object({
+          kind: z.literal('configured-child-v1'),
+          state: losslessJsonObjectSchema,
+          usage_in_parent: z.lazy(() => manualUsageSchema).optional(),
+        })
+        .strict()
+        .optional(),
     }),
   ),
 });

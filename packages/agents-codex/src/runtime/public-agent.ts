@@ -309,6 +309,14 @@ export interface SessionBaseOptions<Context = undefined> {
   verifyRememberedApprovals?: (
     state: SessionState,
   ) => boolean | Promise<boolean>;
+  /**
+   * Authenticate the entire saved checkpoint for the current application principal
+   * before restoring configured-child executor selections. Without verification,
+   * restored configured children cannot receive executor tools.
+   */
+  verifyConfiguredChildExecutorTools?: (
+    state: SessionState,
+  ) => boolean | Promise<boolean>;
   /** Replace opening declarations. Omission inherits Agent.tools; [] removes them. */
   tools?: readonly Tool<Context>[];
 }
@@ -794,6 +802,13 @@ export class Agent<Context = undefined, Output = string> {
       typeof options.verifyRememberedApprovals !== 'function'
     )
       throw new TypeError('verifyRememberedApprovals must be callable');
+    if (
+      options.verifyConfiguredChildExecutorTools !== undefined &&
+      typeof options.verifyConfiguredChildExecutorTools !== 'function'
+    )
+      throw new TypeError(
+        'verifyConfiguredChildExecutorTools must be callable',
+      );
     let tracingCapture = captureTracing(options.tracing);
     let acquiredEnvironment: EnvironmentAcquisition | undefined;
     let providerOwnsCleanup = false;
@@ -1005,6 +1020,8 @@ export class Agent<Context = undefined, Output = string> {
       context: options.context,
       onInteraction: options.onInteraction,
       verifyRememberedApprovals: options.verifyRememberedApprovals,
+      verifyConfiguredChildExecutorTools:
+        options.verifyConfiguredChildExecutorTools,
       toolErrorFormatter: options.toolErrorFormatter,
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
@@ -2051,6 +2068,8 @@ export class Agent<Context = undefined, Output = string> {
         context,
         onInteraction: options.onInteraction,
         verifyRememberedApprovals: options.verifyRememberedApprovals,
+        verifyConfiguredChildExecutorTools:
+          options.verifyConfiguredChildExecutorTools,
         toolErrorFormatter,
         applicationAgent: this,
         realtimeDeclaration:

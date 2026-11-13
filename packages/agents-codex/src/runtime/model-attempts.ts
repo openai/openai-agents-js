@@ -29,6 +29,7 @@ export interface ModelAttemptState {
   additive: RunUsage;
   failure?: ModelAttemptFailure;
   sources?: Set<ModelAttemptState>;
+  configuredSources?: Map<ModelAttemptState, RunUsage>;
   terminalError?: { readonly attemptId: string; readonly error: unknown };
 }
 export interface ModelAttemptOwner {
@@ -106,6 +107,45 @@ export function modelAttemptOriginalError(
   const current = owner.modelAttempts?.failure;
   return current && current.attemptId === attemptId ? current : undefined;
 }
+function subtractConfiguredUsage(
+  current: RunUsage,
+  baseline: RunUsage,
+): RunUsage {
+  const delta = (key: keyof RunUsage): TokenCount => {
+    const value = BigInt(current[key]) - BigInt(baseline[key]);
+    if (value < 0n)
+      throw new RangeError(
+        'Configured child usage exceeds its accounted scope',
+      );
+    return parseTokenCount(value);
+  };
+  const result = runUsageSnapshot(
+    {
+      inputTokens: delta('inputTokens'),
+      cachedInputTokens: delta('cachedInputTokens'),
+      cacheWriteInputTokens: delta('cacheWriteInputTokens'),
+      outputTokens: delta('outputTokens'),
+      reasoningOutputTokens: delta('reasoningOutputTokens'),
+      totalTokens: delta('totalTokens'),
+    },
+    delta('requests'),
+    delta('missingUsageRequests'),
+  );
+  if (BigInt(result.missingUsageRequests) > BigInt(result.requests))
+    throw new TypeError(
+      'Configured child missing-usage count exceeds requests',
+    );
+  return result;
+}
+/** Reconcile only this captured child's already included historical prefix. */
+export function mergeConfiguredChildRestoreUsage(
+  parent: RunUsage,
+  child: RunUsage,
+  accounted: RunUsage = runUsageSnapshot(null),
+): RunUsage {
+  subtractConfiguredUsage(parent, accounted);
+  return mergeRunUsage(parent, subtractConfiguredUsage(child, accounted));
+}
 function stateUsage(state: ModelAttemptState): RunUsage {
   let total = mergeRunUsage(
     state.native?.usage ?? runUsageSnapshot(null),
@@ -113,6 +153,14 @@ function stateUsage(state: ModelAttemptState): RunUsage {
   );
   for (const source of state.sources ?? [])
     total = mergeRunUsage(total, stateUsage(source));
+  for (const [source, baseline] of state.configuredSources ?? []) {
+    if (state.sources?.has(source))
+      throw new TypeError('Configured child already has a plain usage link');
+    total = mergeRunUsage(
+      total,
+      subtractConfiguredUsage(stateUsage(source), baseline),
+    );
+  }
   return total;
 }
 export function modelAttemptUsage(owner: ModelAttemptOwner): RunUsage {
@@ -132,6 +180,35 @@ export function attachModelUsageSource(
   (modelAttemptState(owner).sources ??= new Set()).add(
     modelAttemptState(source),
   );
+}
+/** Link only new work from this current configured-child owner. */
+export function attachConfiguredModelUsageSource(
+  owner: ModelAttemptOwner,
+  source: ModelAttemptOwner,
+  accounted: RunUsage = runUsageSnapshot(null),
+): void {
+  const parent = modelAttemptState(owner);
+  const child = modelAttemptState(source);
+  if (parent === child)
+    throw new TypeError('Configured child cannot own its parent usage');
+  const sources = (parent.configuredSources ??= new Map());
+  if (!sources.has(child)) {
+    if (parent.sources?.has(child))
+      throw new TypeError('Configured child already has a plain usage link');
+    mergeConfiguredChildRestoreUsage(
+      stateUsage(parent),
+      stateUsage(child),
+      accounted,
+    );
+    sources.set(
+      child,
+      runUsageSnapshot(
+        accounted,
+        accounted.requests,
+        accounted.missingUsageRequests,
+      ),
+    );
+  }
 }
 function publish(owner: ModelAttemptOwner, state: ModelAttemptState): void {
   const total = stateUsage(state);

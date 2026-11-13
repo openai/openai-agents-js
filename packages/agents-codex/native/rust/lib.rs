@@ -3784,7 +3784,8 @@ impl NativeThread {
         let executor_tools = owner
             .configured_child_executor_tools(&key)
             .map_err(native_error)?;
-        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn)
+        let restored = owner.check_restored_manual(&key.reply.thread, &key).is_ok();
+        let mut policy = environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
             .await
             .map_err(native_error)?;
         owner
@@ -3844,6 +3845,33 @@ impl NativeThread {
             sender.closed().await;
         }
         Ok(interrupted)
+    }
+
+    #[napi(js_name = "_set_configured_continuation")]
+    pub async fn _set_configured_continuation(
+        &self,
+        request_json: String,
+        receipt_json: String,
+        state_json: Option<String>,
+    ) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = Arc::clone(&inner.mutations).lock_owned().await;
+        let key: python_tools::PendingKey =
+            serde_json::from_str(&request_json).map_err(native_error)?;
+        let receipt = serde_json::from_str(&receipt_json).map_err(native_error)?;
+        let state = state_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(native_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| native_error("Configured callback owner is unavailable"))?;
+        tools
+            .set_configured_continuation(&inner.id.to_string(), &key, &receipt, state)
+            .map_err(native_error)
     }
 
     #[napi(js_name = "_respond_python_tool")]
@@ -4442,6 +4470,7 @@ impl NativeThread {
         &self,
         continuation_json: String,
         tracing_context: Option<String>,
+        operation_tools_json: Option<String>,
     ) -> napi::Result<String> {
         let context = tracing_context
             .as_deref()
@@ -4452,6 +4481,11 @@ impl NativeThread {
         (async {
             let frame: python_tools::Continuation =
                 serde_json::from_str(&continuation_json).map_err(native_error)?;
+            let operation_tools: Option<Vec<codex_tools::ToolName>> = operation_tools_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(input_error)?;
             let inner = self.current()?;
             let control = self.response_control()?;
             let _operation = inner.engine.operation(false).map_err(native_error)?;
@@ -4478,7 +4512,7 @@ impl NativeThread {
                 .map_err(native_error)?;
             graph.check(&inner, &saved).await.map_err(native_error)?;
             let events = tools
-                .restore_manual(&inner, frame, &saved["history"])
+                .restore_manual(&inner, frame, &saved["history"], operation_tools.as_deref())
                 .await
                 .map_err(native_error)?;
             serde_json::to_string(&events).map_err(native_error)

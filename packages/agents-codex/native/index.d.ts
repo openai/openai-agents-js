@@ -245,6 +245,11 @@ export class NativeThread {
     probe?: boolean,
   ): Promise<string>;
   _check_python_tool(request_json: string): boolean;
+  _set_configured_continuation(
+    request_json: string,
+    receipt_json: string,
+    state_json?: string,
+  ): Promise<boolean>;
   _enter_python_callback(receipt_json: string): boolean;
   _python_callback_cancelled(receipt_json: string): boolean;
   _release_python_callback(
@@ -369,6 +374,7 @@ export class NativeThread {
   _restore_manual_continuation(
     continuation_json: string,
     tracing_context?: string,
+    operation_tools_json?: string,
   ): Promise<string>;
   _respond_manual_continuation(request_and_output_json: string): Promise<void>;
   _complete_manual_continuation(
