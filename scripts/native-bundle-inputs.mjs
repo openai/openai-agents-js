@@ -15,6 +15,7 @@ export const nativeInputPaths = [
   ':(glob)**/.gitattributes',
   '.github/workflows/alpha-release-artifacts.yml',
   '.github/workflows/native-bundle.yml',
+  '.github/workflows/platform-alpha-qualification.yml',
   'scripts/install-linux-native-build-tools.sh',
   'scripts/native-bundle-inputs.mjs',
   'scripts/restore-native-bundle.mjs',
