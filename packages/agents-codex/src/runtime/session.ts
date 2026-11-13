@@ -408,6 +408,7 @@ import {
   parseSessionState,
   parseNativeCheckpoint,
   fromNativeCheckpoint,
+  captureSessionState,
   withOutputState,
   type NativeCheckpoint,
   isManualSessionState,
@@ -16421,7 +16422,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       await this.discardForkCopy();
       if (!this.isOpen) throw new NativeError('Session closed during fork');
-      return state;
+      return captureSessionState(state);
     });
   }
 
@@ -16859,7 +16860,7 @@ export class Session<OutputT = string, Context = unknown> {
     }).then(() => {
       if (!snapshot)
         throw new NativeError('Native checkpoint was not captured');
-      return snapshot;
+      return captureSessionState(snapshot);
     });
   }
   async suspend(): Promise<SessionState> {
@@ -16879,18 +16880,21 @@ export class Session<OutputT = string, Context = unknown> {
         'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
       );
     if (this.sealedStateJson !== undefined)
-      return Promise.resolve(parseSessionState(this.sealedStateJson));
+      return Promise.resolve(
+        captureSessionState(parseSessionState(this.sealedStateJson)),
+      );
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
-    if (this.configuredChildren.size) return this.captureConfiguredParent();
+    if (this.configuredChildren.size)
+      return this.captureConfiguredParent().then(captureSessionState);
     if (
       this.graphStops.size ||
       this.lifecycle.kind !== 'turn' ||
       !this.manualCalls.size
     )
       throw new NativeError('suspend requires a pending manual-tool boundary');
-    return this.sealManualTurn(this.lifecycle.run);
+    return this.sealManualTurn(this.lifecycle.run).then(captureSessionState);
   }
 
   /** @internal Capture the original opening authority before a deferred seal. */
@@ -16933,7 +16937,7 @@ export class Session<OutputT = string, Context = unknown> {
             'Deferred reopening requires a sealed checkpoint',
           );
         return reopen(
-          parseSessionState(this.sealedStateJson),
+          captureSessionState(parseSessionState(this.sealedStateJson)),
           active.output,
           active.outputOverride,
           run.parentTrace,

@@ -77,6 +77,7 @@ import {
 } from './trace-context';
 import {
   assertOutputState,
+  assertHandoffPresentationAuthority,
   sessionStateSchema,
   isManualSessionState,
   isOutputAwareState,
@@ -1407,7 +1408,9 @@ export class Agent<Context = undefined, Output = string> {
     const stateResult =
       suppliedState == null
         ? undefined
-        : sessionStateSchema.safeParse(suppliedState);
+        : sessionStateSchema.safeParse(structuredClone(suppliedState));
+    if (stateResult?.success)
+      assertHandoffPresentationAuthority(suppliedState as SessionState);
     const budgetState = stateResult?.success ? stateResult.data : undefined;
     const restoredRunBudget = isBudgetedManualSessionState(budgetState)
       ? RunBudgetTracker.restoreCheckpoint(

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   captureProviderHistory,
   type ProviderHistory,
@@ -1124,6 +1125,53 @@ function validateCheckpointTree(
 }
 export type SessionState = z.infer<typeof sessionStateSchema>;
 
+const capturedStateDigests = new WeakMap<SessionState, string>();
+
+function stateDigest(state: SessionState): string {
+  return createHash('sha256').update(encode(state)).digest('hex');
+}
+
+/** @internal Grant only to complete checkpoints produced by the SDK. */
+export function captureSessionState<T extends SessionState>(state: T): T {
+  capturedStateDigests.set(state, stateDigest(state));
+  return state;
+}
+
+function hasStateAuthority(state: SessionState): boolean {
+  const digest = capturedStateDigests.get(state);
+  return digest !== undefined && digest === stateDigest(state);
+}
+
+/** @internal Hidden handoff context requires independent checkpoint authority. */
+export function assertHandoffPresentationAuthority(state: SessionState): void {
+  const hasPresentation = [state, ...(state.descendants ?? [])].some((thread) =>
+    thread.history.some((row) => {
+      if (row.type !== 'response_item') return false;
+      const profile = (
+        row.metadata as
+          { sdk_agent_profile?: { presentation?: unknown } } | undefined
+      )?.sdk_agent_profile;
+      return profile?.presentation != null;
+    }),
+  );
+  if (hasPresentation && !hasStateAuthority(state))
+    throw new TypeError(
+      'Restoring handoff presentation requires authenticated SessionState; use parseSessionState with an independently trusted expectedSha256',
+    );
+}
+
+function retainStateAuthority<T extends SessionState>(
+  source: SessionState,
+  target: T,
+): T {
+  if (capturedStateDigests.has(source)) {
+    if (!hasStateAuthority(source))
+      throw new TypeError('SessionState changed after being authenticated');
+    captureSessionState(target);
+  }
+  return target;
+}
+
 /** Untrusted saved anchor data; independent application authorization required before restore. */
 export function getProviderHistory(
   state: SessionState,
@@ -1505,7 +1553,8 @@ export function withPendingInput(
     ...(state.manual_continuation.pending_input ?? []),
     ...additions,
   ];
-  if (!items.length) return freezePendingSnapshot(state);
+  if (!items.length)
+    return retainStateAuthority(source, freezePendingSnapshot(state));
   validateStagedInputAudio(items);
   const staged = parseSessionState(
     encode({
@@ -1519,7 +1568,7 @@ export function withPendingInput(
   );
   if (!isManualSessionState(staged))
     throw new TypeError('Expected staged manual checkpoint');
-  return freezePendingSnapshot(staged);
+  return retainStateAuthority(source, freezePendingSnapshot(staged));
 }
 
 /** Clear staged occurrences while retaining every accepted tool receipt. */
@@ -1564,13 +1613,38 @@ export function withoutPendingInput(source: SessionState): SessionState {
     delete clean.repair_turns;
     delete clean.repair_items;
   }
-  return freezePendingSnapshot(parseSessionState(encode(clean)));
+  return retainStateAuthority(
+    source,
+    freezePendingSnapshot(parseSessionState(encode(clean))),
+  );
 }
 
-/** Validate a serialized session checkpoint read from application storage. */
-export function parseSessionState(source: string): SessionState {
+/**
+ * Validate serialized state. To restore saved handoff presentation, authenticate
+ * the exact UTF-8 bytes with a SHA-256 digest from independently trusted storage.
+ * Computing expectedSha256 from untrusted incoming bytes does not authenticate them.
+ */
+export function parseSessionState(
+  source: string,
+  options: { expectedSha256?: string } = {},
+): SessionState {
+  const expected = options.expectedSha256;
+  if (expected !== undefined) {
+    if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/i.test(expected))
+      throw new TypeError(
+        'expectedSha256 must contain 64 hexadecimal characters',
+      );
+    if (
+      createHash('sha256').update(source).digest('hex') !==
+      expected.toLowerCase()
+    )
+      throw new TypeError(
+        'SessionState SHA-256 does not match the authenticated digest',
+      );
+  }
   try {
-    return sessionStateSchema.parse(parseNative(source));
+    const state = sessionStateSchema.parse(parseNative(source));
+    return expected === undefined ? state : captureSessionState(state);
   } catch (error) {
     if (error instanceof SyntaxError) {
       throw new SyntaxError('Invalid native session checkpoint JSON');

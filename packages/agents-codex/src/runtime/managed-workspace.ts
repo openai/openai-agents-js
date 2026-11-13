@@ -1,6 +1,10 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { encode, parseNative } from './binding';
-import { parseSessionState, type SessionState } from './state';
+import {
+  captureSessionState,
+  parseSessionState,
+  type SessionState,
+} from './state';
 import type { EnvironmentSource } from './environment-source';
 
 export function capturedWorkspaceJson(value: unknown): string {
@@ -223,7 +227,7 @@ export function validateManagedWorkspaceOpening(
     throw new TypeError(
       'Managed resume requires trusted authorization of the whole checkpoint',
     );
-  return { state: captured.conversation };
+  return { state: captureSessionState(captured.conversation) };
 }
 
 /** @internal Exact paired opening, consumed only after current-authority preflight. */

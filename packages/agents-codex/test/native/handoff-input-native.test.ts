@@ -1,9 +1,13 @@
+import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
   Handoff,
   NativeProvider,
+  parseSessionState,
+  withPendingInput,
+  withoutPendingInput,
   manualTool,
   hostedMcp,
   tool,
@@ -140,6 +144,7 @@ it('prepares settled sibling presentation and restores it while canonical effect
     .filter(Boolean);
   expect(admitted).toHaveLength(1);
   expect(JSON.stringify(admitted[0])).toContain('settled sibling summary');
+  state = withoutPendingInput(withPendingInput(state, 'temporary pending input'));
   await using restored = await source.session({ context: application, state });
   const pending = await restored.pendingInteractions();
   const request = confirm.match(pending[0]);
@@ -426,7 +431,11 @@ it('rejects positive hosted MCP approvals in every restored presentation group b
       }
     }
     expect(changed).toBe(1);
-    await expect(source.session({ state: imported })).rejects.toThrow(
+    const serialized = JSON.stringify(imported);
+    const authenticated = parseSessionState(serialized, {
+      expectedSha256: createHash('sha256').update(serialized).digest('hex'),
+    });
+    await expect(source.session({ state: authenticated })).rejects.toThrow(
       'hosted MCP approvals require live SDK approval authority',
     );
     expect(server.requests).toHaveLength(2);
