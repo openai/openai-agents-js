@@ -6712,6 +6712,19 @@ export class Session<OutputT = string, Context = unknown> {
     return repair.completion.then(() => result!);
   }
 
+  private recordedThreadSettings(
+    history: z.infer<typeof threadHistorySchema>,
+  ): JsonObject | undefined {
+    const settings = history.findLast(
+      (row) =>
+        row.type === 'event_msg' &&
+        row.payload.type === 'thread_settings_applied' &&
+        row.payload.thread_id === this.id,
+    );
+    const parsed = jsonObject.safeParse(settings?.payload.thread_settings);
+    return parsed.success ? parsed.data : undefined;
+  }
+
   private async repairOutput(
     run: NativeTurn,
     repair: OutputRepair,
@@ -6752,26 +6765,11 @@ export class Session<OutputT = string, Context = unknown> {
       : this.options.transformContext;
     const history = await this.#readHistory();
     if (!check(true)) return { type: 'stopped' };
-    const settingsEvent = history
-      .toReversed()
-      .find(
-        (row) =>
-          row.type === 'event_msg' &&
-          row.payload.type === 'thread_settings_applied' &&
-          row.payload.thread_id === this.id,
-      );
-    const accepted = jsonObject.safeParse(
-      settingsEvent?.payload.thread_settings,
-    );
-    if (
-      !accepted.success ||
-      typeof accepted.data.model !== 'string' ||
-      !accepted.data.model
-    )
+    const captured = this.recordedThreadSettings(history);
+    if (typeof captured?.model !== 'string' || !captured.model)
       throw new NativeError(
         'Native history does not contain accepted model settings for repair',
       );
-    const captured = accepted.data;
     // Durable settings omit transport. Retain the completing Agent's live defaults.
     const transport =
       source &&
@@ -6822,7 +6820,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (!check(true)) return { type: 'stopped' };
       submission.repairAttemptsUsed = (submission.repairAttemptsUsed ?? 0) + 1;
       repair.session = await open(
-        accepted.data.model,
+        captured.model,
         settings,
         (owner) => {
           repair.opening = owner;
@@ -10011,9 +10009,15 @@ export class Session<OutputT = string, Context = unknown> {
                     if (this.decodedOutputs.has(owner))
                       value = this.decodedOutputs.get(owner);
                     else {
-                      value = prepared.parse
-                        ? prepared.parse(text ?? '')
-                        : (text ?? '');
+                      try {
+                        value = prepared.parse
+                          ? prepared.parse(text ?? '')
+                          : (text ?? '');
+                      } catch (error) {
+                        if (error instanceof OutputValidationError)
+                          recoverableOutputFailures.set(error, owner);
+                        throw error;
+                      }
                       this.decodedOutputs.set(owner, value);
                     }
                   }
@@ -15470,17 +15474,37 @@ export class Session<OutputT = string, Context = unknown> {
   ): Promise<RunErrorDetails | undefined> {
     if (!this.lastRun) return;
     const run = this.rootRun(this.lastRun);
-    const recoveryOwner = {
-      root: run,
-      issued: this.issuedRunGeneration,
-      configuration: this.configurationGeneration,
-      output: this.defaultOutput,
-      profile: JSON.stringify(this.profileCurrent),
-    };
     const turn = this.issuedTurn(run);
     const guardrailResults = turn.guardrailResults;
     if (!turn.turnId && guardrailResults.length === 0) return;
     const settled = this.rootObservationScope(run).phase() === 'ended';
+    const issued = this.issuedRunGeneration;
+    const configuration = this.configurationGeneration;
+    let recoveryOwner;
+    if (settled) {
+      try {
+        this.idle('capture run recovery');
+        // A failed completion can follow a native handoff before successful
+        // settlement has adopted the destination's output and guardrails.
+        await this.refreshProfileBindings();
+        this.idle('capture run recovery');
+        if (
+          this.lastRun &&
+          this.rootRun(this.lastRun) === run &&
+          this.issuedRunGeneration === issued &&
+          this.configurationGeneration === configuration
+        )
+          recoveryOwner = {
+            root: run,
+            issued,
+            configuration,
+            output: this.defaultOutput,
+            profile: JSON.stringify(this.profileCurrent),
+          };
+      } catch {
+        // The original failure can still carry diagnostics without recovery.
+      }
+    }
     const originalInput = input ?? submissions.get(run)?.originalInput ?? null;
     let incomplete = !settled || originalInput === null;
     const rawResponses: JsonObject[] = [];
@@ -15557,7 +15581,7 @@ export class Session<OutputT = string, Context = unknown> {
       rawResponses: { enumerable: false },
       guardrailResults: { enumerable: false },
     });
-    if (canonical)
+    if (canonical && recoveryOwner)
       this.recoveryOwners.set(details, {
         ...recoveryOwner,
         revision: canonical.revision,
@@ -15596,8 +15620,6 @@ export class Session<OutputT = string, Context = unknown> {
       !steps.some((step) => settledRunFailures.get(error) === step) ||
       !root.id ||
       this.rootObservationScope(root).phase() !== 'ended' ||
-      (this.options.outputGuardrails?.length ?? 0) > 0 ||
-      details.lastAgent.outputGuardrails.length > 0 ||
       signal?.aborted
     )
       return;
@@ -15657,14 +15679,77 @@ export class Session<OutputT = string, Context = unknown> {
     if (recovery == null) return;
     if (!(recovery instanceof RecoverRun))
       throw new TypeError('errorHandler must return RecoverRun or no recovery');
-    await this.refreshProfileBindings();
-    check();
     const parsed = parseApplicationToolCompletion(
       owner.output,
       recovery.output,
     );
     await checkHistory();
     const turn = this.issuedTurn(root) as Turn<OutputT>;
+    const profile = this.profileCurrent;
+    const declaration = profile
+      ? this.profileRuntimes.get(profile.profile_id)?.profile.declaration
+      : undefined;
+    const hasGuards =
+      (this.options.outputGuardrails?.length ?? 0) > 0 ||
+      (
+        declaration?.outputGuardrails ??
+        this.options.agentOutputGuardrails ??
+        []
+      ).length > 0;
+    if (hasGuards) {
+      const history = await this.#readHistory();
+      const receipt = projectHistory(history, this.id).turns.find(
+        (candidate) => candidate.id === last.id,
+      )?.receipt;
+      const configuredModel = this.recordedThreadSettings(history)?.model;
+      const model =
+        receipt?.model ??
+        last.selection?.modelOverride ??
+        (typeof configuredModel === 'string' ? configuredModel : undefined);
+      if (!model)
+        throw new NativeError(
+          'Cannot validate recovered output without its model receipt',
+        );
+      check();
+      const recoverySignal = signal ?? new AbortController().signal;
+      const activeScope: ToolInvocation = {
+        session: this,
+        run: root,
+        active: true,
+        parent: toolInvocation.getStore(),
+      };
+      try {
+        const pending = toolInvocation.run(activeScope, () =>
+          this.checkOutputGuardrails(
+            last,
+            profile
+              ? { profile_id: profile.profile_id, profile_epoch: profile.epoch }
+              : {},
+            {
+              context: this.options.context,
+              text: null,
+              sessionId: this.id,
+              turnId: root.id!,
+              model,
+              signal: recoverySignal,
+              continuationCount: 0,
+              finalOutput: parsed.value,
+            },
+            () => {
+              if (!activeScope.active)
+                throw new NativeError(
+                  'Run recovery guardrail is no longer active',
+                );
+              check();
+            },
+          ),
+        );
+        await abortable(pending, recoverySignal);
+      } finally {
+        activeScope.active = false;
+      }
+      await checkHistory();
+    }
     let items = details.items;
     if (recovery.includeInHistory) {
       const text = this.defaultOutput.wrapped
@@ -15679,6 +15764,7 @@ export class Session<OutputT = string, Context = unknown> {
         content: [{ type: 'output_text', text }],
       };
       await this.mutate(async () => {
+        signal?.throwIfAborted();
         this.historyMutationValue(
           await this.#native._append_recovered_output(
             owner.revision,
@@ -15716,7 +15802,7 @@ export class Session<OutputT = string, Context = unknown> {
           .filter((entry) => entry.parentTurnId === root.id)
           .map((entry) => recordedTurnFromWire(structuredClone(entry))),
       ),
-      guardrailResults: details.guardrailResults,
+      guardrailResults: turn.guardrailResults,
       applicationToolOutputs: this.applicationOutputSnapshot(root),
       items,
     });

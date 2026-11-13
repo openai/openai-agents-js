@@ -2,6 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   Agent,
+  GuardrailTripwire,
+  Handoff,
   NativeError,
   NativeProvider,
   OutputValidationError,
@@ -83,6 +85,27 @@ it('recovers an admitted request ceiling with zero provider requests', async () 
     },
   });
   expect(result.finalOutput).toBe('budget fallback');
+  expect(server.requests).toHaveLength(0);
+});
+
+it('validates a zero-request recovery with the native default model', async () => {
+  const server = new ModelServer([]);
+  await using provider = await providerFor(server);
+  const guard = vi.fn(({ model }: { model: string }) => {
+    expect(model).toBeTruthy();
+    return { tripwireTriggered: false, outputInfo: null };
+  });
+  const agent = new Agent({
+    instructions: 'Answer.',
+    provider,
+    outputGuardrails: [{ name: 'budget fallback', callback: guard }],
+  });
+  const result = await agent.run('begin', {
+    budget: { maxRequests: 0 },
+    errorHandler: () => new RecoverRun('budget fallback'),
+  });
+  expect(result.finalOutput).toBe('budget fallback');
+  expect(guard).toHaveBeenCalledOnce();
   expect(server.requests).toHaveLength(0);
 });
 
@@ -323,26 +346,188 @@ it('keeps a failed provider request outside output recovery', async () => {
   expect(server.requests).toHaveLength(1);
 });
 
-it('keeps configured output guardrails outside output recovery', async () => {
+it.each([false, true])(
+  'checks synthesized output before history admission (tripwire=%s)',
+  async (tripwire) => {
+    const server = new ModelServer([[message('{"answer":42}')]]);
+    await using provider = await providerFor(server);
+    const context = { tenant: 'current' };
+    const seen: string[] = [];
+    const agent = new Agent<typeof context, { answer: string }>({
+      instructions: 'Answer.',
+      model: 'gpt-5.5',
+      provider,
+      outputType: z.object({ answer: z.string() }),
+      outputGuardrails: [
+        {
+          name: 'agent-check',
+          callback: (request, source) => {
+            expect(source).toBe(agent);
+            expect(request.context).toBe(context);
+            expect(request.model).toBe('gpt-5.5');
+            expect(request.finalOutput).toEqual({ answer: 'safe fallback' });
+            seen.push('agent');
+            return { tripwireTriggered: tripwire, outputInfo: 'agent verdict' };
+          },
+        },
+      ],
+    });
+    const originalSession = agent.session.bind(agent);
+    let retainedHistory: unknown;
+    vi.spyOn(agent, 'session').mockImplementation(async (options) => {
+      const session = await originalSession(options);
+      const close = session.close.bind(session);
+      vi.spyOn(session, 'close').mockImplementation(async () => {
+        try {
+          retainedHistory = await session.historySnapshot();
+        } finally {
+          await close();
+        }
+      });
+      return session;
+    });
+    const pending = agent.run('begin', {
+      context,
+      returnHistory: true,
+      errorHandler: (failure) => {
+        expect(failure.kind).toBe('invalid_output');
+        seen.push('handler');
+        return new RecoverRun({ answer: 'safe fallback' });
+      },
+      outputGuardrails: [
+        {
+          name: 'run-check',
+          callback: (request, source) => {
+            expect(source).toBe(agent);
+            expect(request.finalOutput).toEqual({ answer: 'safe fallback' });
+            seen.push('run');
+            return { tripwireTriggered: false, outputInfo: 'run verdict' };
+          },
+        },
+      ],
+    });
+    if (tripwire) {
+      await expect(pending).rejects.toBeInstanceOf(GuardrailTripwire);
+      await expect(pending).rejects.toMatchObject({
+        record: { name: 'agent-check' },
+      });
+      expect(retainedHistory).toBeDefined();
+      expect(JSON.stringify(retainedHistory)).not.toContain('safe fallback');
+    } else {
+      const result = await pending;
+      expect(result.finalOutput).toEqual({ answer: 'safe fallback' });
+      expect(result.guardrailResults?.map((record) => record.name)).toEqual([
+        'run-check',
+        'agent-check',
+      ]);
+      expect(result.turn.guardrailResults).toEqual(result.guardrailResults);
+      expect(JSON.stringify(result.history)).toContain('safe fallback');
+    }
+    expect(seen).toEqual(['handler', 'run', 'agent']);
+    expect(server.requests).toHaveLength(1);
+    server.assertExhausted();
+  },
+);
+
+it('uses the destination guardrail and model for recovery after a handoff', async () => {
+  const server = new ModelServer([
+    [call('route', {}, { callId: 'recovery-handoff' })],
+    [message('{"answer":42}')],
+  ]);
+  await using provider = await providerFor(server);
+  const outputType = z.object({ answer: z.string() });
+  const sourceGuard = vi.fn(() => ({
+    tripwireTriggered: false,
+    outputInfo: null,
+  }));
+  const target = new Agent({
+    instructions: 'Resolve.',
+    model: 'gpt-5.5',
+    outputType,
+    outputGuardrails: [
+      {
+        name: 'destination',
+        callback(request, source) {
+          expect(source).toBe(target);
+          expect(request.model).toBe('gpt-5.5');
+          expect(request.finalOutput).toEqual({ answer: 'fallback' });
+          return { tripwireTriggered: false, outputInfo: null };
+        },
+      },
+    ],
+  });
+  const route = tool({
+    name: 'route',
+    parameters: z.object({}),
+    execute: () => 'accepted',
+  });
+  const agent = new Agent({
+    instructions: 'Route.',
+    model: 'gpt-5.5',
+    provider,
+    outputType,
+    outputGuardrails: [{ name: 'source', callback: sourceGuard }],
+    handoffs: [new Handoff(target, route)],
+  });
+  const result = await agent.run('begin', {
+    errorHandler: ({ details }) => {
+      expect(details.lastAgent).toBe(target);
+      return new RecoverRun({ answer: 'fallback' });
+    },
+  });
+  expect(result.finalOutput).toEqual({ answer: 'fallback' });
+  expect(result.guardrailResults?.map(({ name }) => name)).toEqual([
+    'destination',
+  ]);
+  expect(sourceGuard).not.toHaveBeenCalled();
+  expect(server.requests).toHaveLength(2);
+  server.assertExhausted();
+});
+
+it('cancels a waiting recovery guardrail and discards its late verdict', async () => {
   const server = new ModelServer([[message('{"answer":42}')]]);
   await using provider = await providerFor(server);
-  const handler = vi.fn(() => new RecoverRun({ answer: 'fallback' }));
+  const controller = new AbortController();
+  const reason = new Error('cancel recovery guardrail');
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<void>();
   const agent = new Agent({
     instructions: 'Answer.',
     provider,
     outputType: z.object({ answer: z.string() }),
     outputGuardrails: [
       {
-        name: 'out',
-        callback: () => ({ tripwireTriggered: false, outputInfo: null }),
+        name: 'wait',
+        async callback({ signal }) {
+          entered.resolve();
+          await release.promise;
+          expect(signal.reason).toBe(reason);
+          exited.resolve();
+          return { tripwireTriggered: false, outputInfo: null };
+        },
       },
     ],
   });
-  await expect(
-    agent.run('begin', { errorHandler: handler }),
-  ).rejects.toBeInstanceOf(Error);
-  expect(handler).not.toHaveBeenCalled();
+  const pending = agent.run('begin', {
+    signal: controller.signal,
+    errorHandler: () => new RecoverRun({ answer: 'late fallback' }),
+  });
+  try {
+    await Promise.race([
+      entered.promise,
+      pending.then(() => {
+        throw new Error('Expected recovery guardrail entry');
+      }),
+    ]);
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  } finally {
+    release.resolve();
+  }
+  await exited.promise;
   expect(server.requests).toHaveLength(1);
+  server.assertExhausted();
 });
 
 it('cancels a waiting recovery policy and ignores its late fallback', async () => {
