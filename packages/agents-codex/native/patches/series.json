@@ -1171,7 +1171,15 @@
     {
       "path": "sdk-bounded-original-eligibility.patch",
       "sha256": "bd1849211ade60281639a6abb8d044d20ca5c1a2d86596be106d5404317da6bf"
+    },
+    {
+      "path": "sdk-model-only-history-projection.patch",
+      "sha256": "a2428a8f5dfad3c965b1daaebb66ff1333f63cad909696ed9d817895ca99df44"
+    },
+    {
+      "path": "sdk-fresh-handoff-presentation-anchor.patch",
+      "sha256": "239e4aff067b129f06d632d2a21105ada7425cd1a584ee87756cbf09bcea7b8f"
     }
   ],
-  "result_tree": "5ad4072f0fda171c3e065a60409c9e8297c4b563"
+  "result_tree": "30fc9175c046acaf4f7a07397f446543a8c90999"
 }
