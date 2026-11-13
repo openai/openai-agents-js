@@ -141,6 +141,10 @@ import {
   type NativeRealtimeOptions,
 } from './realtime';
 import { serializeRealtimeSettings } from './realtime-settings';
+import {
+  addRealtimeUsage,
+  type NativeRealtimeUsageSnapshot,
+} from './realtime-usage';
 import { privateRuntime } from './private-engine-reuse';
 import {
   capturePreparedRequest,
@@ -1581,6 +1585,22 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private realtimeOwner?: ReturnType<typeof createNativeRealtimeOwner>;
+  private realtimeLifetimeTotals?: ReturnType<typeof addRealtimeUsage>;
+  private realtimeLifetimeAccounting = {
+    finishedResponses: 0,
+    usageReports: 0,
+  };
+
+  /** Detached speech totals and counts across this Session's voice connections. */
+  get realtimeLifetimeUsage(): NativeRealtimeUsageSnapshot {
+    return {
+      usage:
+        this.realtimeLifetimeTotals === undefined
+          ? undefined
+          : structuredClone(this.realtimeLifetimeTotals),
+      accounting: { ...this.realtimeLifetimeAccounting },
+    };
+  }
 
   /** Detached speech usage for the current connection, separate from thread usage.
    * Undefined means no reported usage or no current connection. A new connection
@@ -1875,6 +1895,23 @@ export class Session<OutputT = string, Context = unknown> {
         create: (generation) => native._realtime_adapter(generation),
         prepare: (params, handle) =>
           native._prepare_realtime(encode(params), handle),
+      },
+      (reported) => {
+        if (this.realtimeOwner !== owner)
+          throw new Error('Realtime usage lacks its current Session owner');
+        const totals =
+          reported === undefined
+            ? this.realtimeLifetimeTotals
+            : addRealtimeUsage(this.realtimeLifetimeTotals ?? {}, reported);
+        const accounting = addRealtimeUsage(this.realtimeLifetimeAccounting, {
+          finishedResponses: 1,
+          usageReports: reported === undefined ? 0 : 1,
+        });
+        this.realtimeLifetimeTotals = totals;
+        this.realtimeLifetimeAccounting = {
+          finishedResponses: accounting.finishedResponses as number,
+          usageReports: accounting.usageReports as number,
+        };
       },
     );
     this.realtimeOwner = owner;

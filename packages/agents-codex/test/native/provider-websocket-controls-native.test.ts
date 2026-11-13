@@ -6,6 +6,12 @@ import { Agent, NativeProvider } from '../../src';
 
 it.each([
   {
+    selector: 'websocket' as const,
+    mode: 'frame-header',
+    options: undefined,
+    success: false,
+  },
+  {
     selector: 'http' as const,
     mode: 'upgrade426',
     options: undefined,
@@ -124,6 +130,16 @@ it.each([
           return;
         }
         wire.frames++;
+        if (mode === 'frame-header') {
+          const header = Buffer.alloc(10);
+          header[0] = 0x81;
+          header[1] = 127;
+          header.writeBigUInt64BE(BigInt((16 << 20) + 1), 2);
+          (
+            socket as unknown as { _socket: { write(bytes: Buffer): void } }
+          )._socket.write(header);
+          return;
+        }
         socket.send(JSON.stringify(events[0]));
         if (mode === 'uncertain') socket.close();
         else {
@@ -147,7 +163,7 @@ it.each([
         supportsWebsockets: true,
         requestMaxRetries: selector === undefined ? 0 : 3,
         streamMaxRetries: selector === undefined ? 0 : 3,
-        streamIdleTimeoutMs: 1000,
+        streamIdleTimeoutMs: mode === 'frame-header' ? 10000 : 1000,
         websocketOptions: options,
       });
       const agent = new Agent({
@@ -158,9 +174,25 @@ it.each([
           ? {}
           : { modelSettings: { requestTransport: selector } }),
       });
-      if (success)
-        expect((await agent.run('hello')).finalOutput).toBe('wire answer');
-      else await expect(agent.run('hello')).rejects.toThrow();
+      const controller = new AbortController();
+      const result = agent.run('hello', { signal: controller.signal });
+      try {
+        if (mode === 'frame-header') {
+          const earlyError = await Promise.race([
+            result.then(
+              () => false,
+              () => true,
+            ),
+            delay(2000).then(() => false),
+          ]);
+          expect(earlyError).toBe(true);
+        } else if (success) {
+          expect((await result).finalOutput).toBe('wire answer');
+        } else await expect(result).rejects.toThrow();
+      } finally {
+        controller.abort();
+        await result.catch(() => {});
+      }
       if (selector === 'http')
         expect(wire).toMatchObject({ http: 1, upgrades: 0, frames: 0 });
       else {
