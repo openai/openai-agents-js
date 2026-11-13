@@ -1203,7 +1203,15 @@
     {
       "path": "sdk-bounded-hosted-program-replay.patch",
       "sha256": "9c5e1e12c80d5b41b8dad5de245db2edca295b839c4af1c1321766dd877715c7"
+    },
+    {
+      "path": "sdk-provider-programmatic-callers.patch",
+      "sha256": "48abc2b8d3dd54526242999ab0dce97f5862a0dcf40301ec53dcb69095ea3a70"
+    },
+    {
+      "path": "sdk-provider-programmatic-progress.patch",
+      "sha256": "5bda827970cc426dab1181869d427019b8e212e7f938f64cfb8277a00ab33adf"
     }
   ],
-  "result_tree": "9abccdc4753d0903a162f309e20b45eb257f24c4"
+  "result_tree": "923f966cf02935deb8a9f3fb39193e9b7d7cf3bc"
 }

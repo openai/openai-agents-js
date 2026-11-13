@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   copyJsonValue,
@@ -45,7 +46,9 @@ type ActiveResponse = {
   responseId?: string;
   pending: Set<string>;
   emitted: Set<string>;
-  passive: Set<string>;
+  passive: Map<string, number>;
+  passiveCount: number;
+  admittedPrograms: Set<string>;
   queued: JsonObject[];
   injecting?: Set<string>;
   terminal?: JsonObject;
@@ -142,6 +145,15 @@ export class HostedResponsesWebSocketModel implements NativeModel {
     if (run.request)
       throw new TypeError('Hosted Responses already has an active request');
     accountProviderRequest(request, { operation: 'manage' });
+    const body = request.body;
+    if (Object.hasOwn(body, 'multi_agent') || Object.hasOwn(body, 'betas'))
+      throw new TypeError('Hosted Responses owns multi_agent and betas');
+    if (body.max_tool_calls != null)
+      throw new TypeError('Hosted Responses does not support max_tool_calls');
+    if (object(body.reasoning)?.summary != null)
+      throw new TypeError(
+        'Hosted Responses does not support reasoning.summary',
+      );
     run.request = request;
     return run;
   }
@@ -192,10 +204,30 @@ function isProgramItem(item: JsonObject): boolean {
   return item.type === 'program' || item.type === 'program_output';
 }
 function programItemKey(item: JsonObject): string {
-  return JSON.stringify([
-    item.type,
-    typeof item.call_id === 'string' ? item.call_id : null,
-  ]);
+  const content = JSON.stringify(item, (_key, value: unknown) => {
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      !JSON.isRawJSON(value)
+    ) {
+      const fields = value as JsonObject;
+      return Object.fromEntries(
+        Object.keys(fields)
+          .sort()
+          .map((key) => [key, fields[key]]),
+      );
+    }
+    return value;
+  });
+  return createHash('sha256').update(content).digest('hex');
+}
+function recordProgramItem(active: ActiveResponse, item: JsonObject): void {
+  const key = programItemKey(item);
+  active.passive.set(key, (active.passive.get(key) ?? 0) + 1);
+  active.passiveCount++;
+  if (item.type === 'program' && typeof item.call_id === 'string')
+    active.admittedPrograms.add(item.call_id);
 }
 function responseConfiguration(frame: JsonObject): object {
   const {
@@ -262,7 +294,9 @@ function hostedSocket(
       acknowledgedOutputs: new Map(),
       acknowledgedUserItems: new Map(),
       emitted,
-      passive: new Set(),
+      passive: new Map(),
+      passiveCount: 0,
+      admittedPrograms: new Set(),
       queued: [],
       bytes,
     };
@@ -413,7 +447,7 @@ function hostedSocket(
         return;
       run.active = active;
       retiring = true;
-      const admitted = new Set(active.passive);
+      const admitted = new Set(active.admittedPrograms);
       const admittedCalls = new Set(active.emitted);
       const deadline = AbortSignal.any([
         request().signal,
@@ -445,11 +479,10 @@ function hostedSocket(
               );
             if (
               item?.type === 'program_output' &&
-              admitted.has(JSON.stringify(['program', item.call_id])) &&
-              !admitted.has(programItemKey(item))
+              typeof item.call_id === 'string' &&
+              admitted.has(item.call_id)
             ) {
               recover(envelope);
-              admitted.add(programItemKey(item));
             }
             if (terminal.has(String(event.type)) && active.terminalReported)
               break;
@@ -559,7 +592,7 @@ function hostedSocket(
               ) {
                 if (
                   active.emitted.size +
-                    active.passive.size +
+                    active.passiveCount +
                     active.queued.length >=
                   maxResponseItems
                 )
@@ -631,31 +664,33 @@ function hostedSocket(
               active.terminalReported = true;
               active.terminal = copyJsonValue(event) as JsonObject;
               // Terminal snapshots can settle a Program before a failed injection falls back.
-              const queuedPrograms = new Set(
-                active.queued.filter(isProgramItem).map(programItemKey),
-              );
+              const prior = new Map(active.passive);
+              for (const item of active.queued) {
+                if (!isProgramItem(item)) continue;
+                const key = programItemKey(item);
+                prior.set(key, (prior.get(key) ?? 0) + 1);
+              }
               for (const value of Array.isArray(response?.output)
                 ? response.output
                 : []) {
                 const item = object(value);
-                if (
-                  item &&
-                  isProgramItem(item) &&
-                  !active.passive.has(programItemKey(item)) &&
-                  !queuedPrograms.has(programItemKey(item))
-                ) {
-                  if (
-                    active.emitted.size +
-                      active.passive.size +
-                      active.queued.length >=
-                    maxResponseItems
-                  )
-                    throw new RangeError(
-                      'Hosted response exceeds the native output-item limit',
-                    );
-                  active.queued.push(copyJsonValue(item) as JsonObject);
-                  queuedPrograms.add(programItemKey(item));
+                if (!item || !isProgramItem(item)) continue;
+                const key = programItemKey(item);
+                const observed = prior.get(key) ?? 0;
+                if (observed > 0) {
+                  prior.set(key, observed - 1);
+                  continue;
                 }
+                if (
+                  active.emitted.size +
+                    active.passiveCount +
+                    active.queued.length >=
+                  maxResponseItems
+                )
+                  throw new RangeError(
+                    'Hosted response exceeds the native output-item limit',
+                  );
+                active.queued.push(copyJsonValue(item) as JsonObject);
               }
             }
             if (
@@ -671,7 +706,7 @@ function hostedSocket(
               // Preserve the existing fallback priority over queued function callbacks.
               for (const item of active.queued) {
                 if (!isProgramItem(item)) continue;
-                active.passive.add(programItemKey(item));
+                recordProgramItem(active, item);
                 yield markResponsesSocketFrame(
                   {
                     type: 'message',
@@ -693,8 +728,7 @@ function hostedSocket(
                 (item) => item.type === 'function_call',
               );
               for (const item of items) {
-                if (isProgramItem(item))
-                  active.passive.add(programItemKey(item));
+                if (isProgramItem(item)) recordProgramItem(active, item);
                 else active.emitted.add(item.call_id as string);
               }
               for (const [output_index, item] of items.entries())

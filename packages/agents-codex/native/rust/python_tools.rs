@@ -282,7 +282,9 @@ fn configured_executor_names<'a>(tools: impl IntoIterator<Item = &'a ToolName>) 
         .filter(|tool| tool.is_default_namespace())
         .filter_map(|tool| match tool.name.as_str() {
             "exec_command" | "shell_command" => Some("exec_command".to_string()),
-            "write_stdin" | "apply_patch" | "project_glob" | "project_grep" => Some(tool.name.clone()),
+            "write_stdin" | "apply_patch" | "project_glob" | "project_grep" => {
+                Some(tool.name.clone())
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -1784,7 +1786,9 @@ impl PythonTools {
             .preserve_schemas
             .then(|| codex_protocol::ThreadId::new().to_string());
         validate_declarations(&specs)?;
-        for (declaration, (namespace, tool)) in specs.iter().zip(functions(&specs)) {
+        for (slot, (declaration, (namespace, tool))) in
+            specs.iter().zip(functions(&specs)).enumerate()
+        {
             let name = ToolName::new(
                 namespace.as_ref().map(|ns| ns.name.clone()),
                 tool.name.clone(),
@@ -1809,6 +1813,17 @@ impl PythonTools {
             }
             let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
             function.defer_loading = None;
+            if let Some(callers) = specs.provider_callers(slot) {
+                use codex_tools::{ProviderToolCaller, ProviderToolCallers};
+                let mut values = Vec::new();
+                if callers.contains(ProviderToolCallers::DIRECT) {
+                    values.push(ProviderToolCaller::Direct);
+                }
+                if callers.contains(ProviderToolCallers::PROGRAMMATIC) {
+                    values.push(ProviderToolCaller::Programmatic);
+                }
+                function.allowed_callers = Some(values);
+            }
             if let Some(token) = &schema_token {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
@@ -2428,10 +2443,8 @@ impl PythonTools {
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
             thread, generation, slot, turn, call, arguments, None, None, source, model, media,
-            admission, None, None, None, None, None,
-
-                    None,
-)
+            admission, None, None, None, None, None, None,
+        )
     }
 
     fn enqueue_profile(
@@ -3330,6 +3343,7 @@ impl ToolContributor for PythonContributor {
                 .specs
                 .caller_limits(slot)
                 .is_some_and(|callers| !callers.contains(codex_tools::ToolExposures::DIRECT))
+                && (voice || catalog.generation.specs.provider_callers(slot).is_none())
                 || !catalog.generation.defaults.contains(&slot)
                 || catalog
                     .defaults
@@ -4152,8 +4166,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         self.generation.entries[self.slot].spec.clone()
     }
 
+    fn allowed_provider_callers(&self) -> Option<codex_tools::ProviderToolCallers> {
+        self.generation.specs.provider_callers(self.slot)
+    }
+
     fn allowed_callers(&self) -> Option<codex_tools::ToolExposures> {
-        self.generation.specs.caller_limits(self.slot)
+        self.generation.specs.model_surfaces(self.slot)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -4356,9 +4374,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .as_ref()
                         .and_then(|selection| selection.names())
                         .map(configured_executor_names),
-
                     call.conversation_history.provider_agent_metadata().cloned(),
-)
+                )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
                 tools: &self.tools,
@@ -4981,9 +4998,8 @@ mod pending_tests {
                 None,
                 None,
                 None,
-
-                    None,
-)
+                None,
+            )
             .unwrap();
         assert!(key.reply.manual_grant.is_some());
         assert!(tools.manual_tool_current("root", &key));

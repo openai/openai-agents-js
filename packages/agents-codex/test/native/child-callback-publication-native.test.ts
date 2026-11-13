@@ -213,9 +213,15 @@ it.each([
     const missingLookup =
       !observeStorage && !['valid', 'manual-valid'].includes(mode);
     let captureKeyedTurn: (() => Promise<void>) | undefined;
+    let lookupTraceReady = false;
     const gate = await holdChildStart(
       missingLookup,
-      keyedMiss ? () => captureKeyedTurn!() : undefined,
+      keyedMiss
+        ? async () => {
+            await captureKeyedTurn!();
+            lookupTraceReady = true;
+          }
+        : undefined,
     );
     const addon = await binding();
     const owners = vi.spyOn(ChildCallbacks.prototype, 'owner');
@@ -252,7 +258,7 @@ it.each([
       const startTraceSpan = addon.start_trace_span;
       vi.spyOn(addon, 'start_trace_span').mockImplementation((options) => {
         const raw = startTraceSpan(options);
-        if (JSON.parse(options).kind === 'callback') {
+        if (lookupTraceReady && JSON.parse(options).kind === 'callback') {
           const span = JSON.parse(raw);
           const key = span.callback_storage_key;
           if (typeof key === 'string' && registry()?.delete(key))
