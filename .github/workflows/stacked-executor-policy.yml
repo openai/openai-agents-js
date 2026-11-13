@@ -8,6 +8,7 @@ on:
       - '!feat/codex-harness'
     paths:
       - '.github/workflows/alpha-release-artifacts.yml'
+      - '.github/workflows/platform-alpha-qualification.yml'
       - '.github/workflows/stacked-executor-policy.yml'
       - 'packages/agents-codex/native/**'
       - 'packages/agents-codex/scripts/**'
