@@ -17,7 +17,7 @@ it.each([
     if (failure === 'provider-timeout') rejection.name = 'TimeoutError';
     const policy = vi.fn((context: RetryContext) => {
       expect(context.stream).toBe(true);
-      expect(context.normalizedError.isTimeout).toBe(timeout);
+      expect(context.normalizedError.isTimeout).toBe(!timeout);
       return { retry: true, delayMs: 0, approveUnsafeReplay: approve };
     });
     await using provider = new NativeProvider({
@@ -55,6 +55,7 @@ it.each([
             suggested: true,
             replaySafety: 'unsafe',
             responseStarted: false,
+            normalized: { isTimeout: !timeout, isAbort: false },
           };
         },
       },

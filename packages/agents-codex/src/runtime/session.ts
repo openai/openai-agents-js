@@ -9457,7 +9457,8 @@ export class Session<OutputT = string, Context = unknown> {
                 context.stream &&
                 context.providerAdvice?.replaySafety === 'unsafe';
               const ownedDeadline =
-                originalId == null && context.normalizedError.isTimeout;
+                originalId == null &&
+                captured.context.normalizedError.isTimeout;
               const policy = failed
                 ? failed.policy
                 : this.capturedRetryPolicy(
