@@ -1,0 +1,34 @@
+diff --git a/codex-rs/realtime-control/src/lib.rs b/codex-rs/realtime-control/src/lib.rs
+index 03875db8f54367f1832456de92f9ffe4a97ed7b8..413acd7e439a8be2358e3aaa888b0d21dad42a55 100644
+--- a/codex-rs/realtime-control/src/lib.rs
++++ b/codex-rs/realtime-control/src/lib.rs
+@@ -1784,28 +1784,7 @@ impl Control {
+         self.batches.remove(response_id);
+     }
+     fn validate_response(&self, response: &Value) -> Result<(), String> {
+-        let object = response
+-            .as_object()
+-            .ok_or("Response options must be an object")?;
+-        if object.keys().any(|key| {
+-            !matches!(
+-                key.as_str(),
+-                "conversation"
+-                    | "input"
+-                    | "instructions"
+-                    | "output_modalities"
+-                    | "max_output_tokens"
+-                    | "metadata"
+-                    | "parallel_tool_calls"
+-                    | "reasoning"
+-                    | "prompt"
+-                    | "audio"
+-                    | "tools"
+-                    | "tool_choice"
+-            )
+-        }) {
+-            return Err("Unsupported Realtime response option".into());
+-        }
++        response.as_object().ok_or("Response options must be an object")?;
+         if response
+             .get("conversation")
+             .is_some_and(|value| value != "auto" && value != "none")

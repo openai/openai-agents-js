@@ -68,6 +68,56 @@ afterEach(() => {
 });
 
 describe.runIf(enabled)('portable Rust control', () => {
+  it('forwards provider response extensions within native response scope', async () => {
+    const frames: Record<string, unknown>[] = [];
+    const session: PortableVoiceSession = new PortableVoiceSession(
+      control(),
+      {
+        send(frame) {
+          const event = JSON.parse(frame);
+          frames.push(event);
+          if (event.type === 'session.update') {
+            queueMicrotask(() =>
+              session.receive({
+                type: 'session.updated',
+                session: event.session,
+              }),
+            );
+          }
+        },
+        close() {},
+      },
+      { model: 'test-realtime', instructions: 'Help.' },
+    );
+    try {
+      await session.start();
+      session.createResponse({ vendor_feature: { enabled: true } });
+      await vi.waitFor(() =>
+        expect(frames.at(-1)).toMatchObject({
+          type: 'response.create',
+          response: { vendor_feature: { enabled: true } },
+        }),
+      );
+      expect(frames.at(-1)?.response).not.toHaveProperty('conversation');
+      expect(
+        frames.filter((event) => event.type === 'response.create'),
+      ).toHaveLength(1);
+      expect(() =>
+        session.createResponse({
+          tools: [
+            {
+              type: 'function',
+              name: 'unowned',
+              parameters: { type: 'object' },
+            },
+          ],
+        }),
+      ).toThrow('outside accepted configuration');
+    } finally {
+      await session.close();
+    }
+  });
+
   it('sends raw provider events with history and response ownership', async () => {
     const frames: Record<string, any>[] = [];
     const message = {
@@ -841,8 +891,16 @@ describe.runIf(enabled)('portable Rust control', () => {
     );
     await session.start();
     expect(session.usage).toBeUndefined();
+    expect(session.usageAccounting).toEqual({
+      finishedResponses: 0,
+      usageReports: 0,
+    });
     vi.stubGlobal('structuredClone', undefined);
-    for (const id of ['first', 'second']) {
+    for (const [id, usage] of [
+      ['first', { input_tokens: 4, input_token_details: { audio_tokens: 2 } }],
+      ['second', { input_tokens: 4, input_token_details: { audio_tokens: 2 } }],
+      ['missing', undefined],
+    ] as const) {
       session.receive({ type: 'response.created', response: { id } });
       const done = {
         type: 'response.done',
@@ -850,16 +908,36 @@ describe.runIf(enabled)('portable Rust control', () => {
           id,
           status: 'completed',
           output: [],
-          usage: { input_tokens: 4, input_token_details: { audio_tokens: 2 } },
+          ...(usage === undefined ? {} : { usage }),
         },
       };
       session.receive(done);
       session.receive(done);
     }
+    session.receive({
+      type: 'response.created',
+      response: { id: 'cancelled' },
+    });
+    session.receive({ type: 'input_audio_buffer.speech_started' });
+    const cancelled = {
+      type: 'response.done',
+      response: {
+        id: 'cancelled',
+        status: 'cancelled',
+        output: [],
+        usage: { input_tokens: 2 },
+      },
+    };
+    session.receive(cancelled);
+    session.receive(cancelled);
     await session.close();
     expect(session.usage).toEqual({
-      input_tokens: 8,
+      input_tokens: 10,
       input_token_details: { audio_tokens: 4 },
+    });
+    expect(session.usageAccounting).toEqual({
+      finishedResponses: 4,
+      usageReports: 3,
     });
   });
 

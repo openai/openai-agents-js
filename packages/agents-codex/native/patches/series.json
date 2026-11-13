@@ -1089,6 +1089,14 @@
       "sha256": "d2355e27e5e22e2b5426058559c6cc9ddb9b68465c671a6e68309fa65a449931"
     },
     {
+      "path": "sdk-realtime-provider-extensions.patch",
+      "sha256": "993e066fd5a53e66dc59dba67a1de574060a80dc41052831a59e7cef97ee9282"
+    },
+    {
+      "path": "sdk-portable-realtime-response-extensions.patch",
+      "sha256": "fccc9dcab7f0af9ca1e37d12b27e36cdba9d58b1e7981662a56a4b050c8bffbd"
+    },
+    {
       "path": "sdk-websocket-controls.patch",
       "sha256": "efb48d3289a8d5a9e2623a142f03e907aa762b359ca5f88163e677dd2e820b83"
     },
@@ -1113,5 +1121,5 @@
       "sha256": "d8ed8c8fbe247827e87eb880fc92f2bcbb5b51f9f494ec5919c6e88617cd9d8d"
     }
   ],
-  "result_tree": "92b765ef38d4f672ecf4a240bab32027c9418bd7"
+  "result_tree": "052989ac1f0072ce95b844b02e24fcdc83251d6e"
 }

@@ -98,6 +98,8 @@ export type NativeRealtimeToolChoice =
 
 /** Sparse settings; omission retains state and null explicitly disables a setting. */
 export type NativeRealtimeSettings = {
+  /** Extra provider wire fields. Native settings and identities stay reserved. */
+  readonly providerData?: Readonly<Record<string, JsonValue>>;
   readonly inputFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
   readonly outputFormat?: 'pcm16' | 'g711_ulaw' | 'g711_alaw';
   readonly noiseReduction?: {
@@ -233,6 +235,7 @@ function settingsObject(
   settings: NativeRealtimeSettings,
 ): Record<string, unknown> {
   const result = fields(settings, [
+    ['providerData', 'provider_data'],
     ['inputFormat', 'input_format'],
     ['outputFormat', 'output_format'],
     ['noiseReduction', 'noise_reduction'],

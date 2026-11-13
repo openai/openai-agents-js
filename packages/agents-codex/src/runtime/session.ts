@@ -1591,6 +1591,12 @@ export class Session<OutputT = string, Context = unknown> {
     return this.realtimeOwner?.usage;
   }
 
+  /** Completed response and usage report counts for the current voice owner. */
+  get realtimeUsageAccounting():
+    import('./realtime-usage').NativeRealtimeUsageAccounting | undefined {
+    return this.realtimeOwner?.usageAccounting;
+  }
+
   /**
    * Build the call-accept request body for an inbound SIP call using the captured
    * Agent instructions, tools, and handoffs. Send it to the Realtime calls accept
@@ -11202,6 +11208,7 @@ export class Session<OutputT = string, Context = unknown> {
             [decisionBinding]: scope[decisionBinding],
             [toolErrorFormatterBinding]: this.options.toolErrorFormatter,
             realtimeUsage: this.realtimeUsage,
+            realtimeUsageAccounting: this.realtimeUsageAccounting,
             ...(this.realtimeOwner?._realtimeToolContext(
               msg._sdk_realtime_tool_call,
               this.options.context,
@@ -13117,6 +13124,7 @@ export class Session<OutputT = string, Context = unknown> {
           msg._sdk_trace_context as TraceContextHeaders | null | undefined,
         ),
         realtimeUsage: this.realtimeUsage,
+        realtimeUsageAccounting: this.realtimeUsageAccounting,
         ...(this.realtimeOwner?._realtimeToolContext(
           msg._sdk_realtime_tool_call,
           this.options.context,
