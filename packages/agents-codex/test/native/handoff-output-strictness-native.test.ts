@@ -37,7 +37,7 @@ it.each([
       apiKey: 'synthetic-output-strictness',
       supportsWebsockets: false,
     });
-    const destination = new Agent({
+    const destination = new Agent<undefined, unknown>({
       name: 'B',
       instructions: 'Complete.',
       outputType: {
@@ -46,7 +46,7 @@ it.each([
         strict: !sourceStrict,
       },
     });
-    const source = new Agent({
+    const source = new Agent<undefined, unknown>({
       model: 'gpt-5.5',
       provider,
       instructions: 'Transfer.',
@@ -101,7 +101,7 @@ it.each([false, true])(
       apiKey: 'synthetic-output-override',
       supportsWebsockets: false,
     });
-    const destination = new Agent({
+    const destination = new Agent<undefined, unknown>({
       name: 'B',
       instructions: 'Complete.',
       outputType: {
@@ -110,7 +110,7 @@ it.each([false, true])(
         strict: !strict,
       },
     });
-    const source = new Agent({
+    const source = new Agent<undefined, unknown>({
       model: 'gpt-5.5',
       provider,
       instructions: 'Transfer.',

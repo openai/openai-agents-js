@@ -205,11 +205,12 @@ it.each([false, true])(
       try {
         const internal = session as unknown as CoreSession<string, undefined>;
         const current = await internal._realtimeCurrentProfile();
-        expect(current).not.toBeNull();
+        if (current === null || typeof current.profile_id !== 'string')
+          throw new Error('Expected the native text Agent receipt');
         const admit = internal._admitRealtimeGraph.bind(internal);
         for (const invalid of [
           { profile_id: 'foreign-profile', epoch: '0' },
-          { ...current!, epoch: '18446744073709551615' },
+          { profile_id: current.profile_id, epoch: '18446744073709551615' },
         ]) {
           const admission = vi
             .spyOn(internal, '_admitRealtimeGraph')
