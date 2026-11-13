@@ -1,3 +1,4 @@
+import { sdkMemoryPhase } from './private-opening-contribution';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import { encode } from './binding';
@@ -265,11 +266,13 @@ export class SandboxMemoryOwner {
     invocation: MemoryInvocation,
   ): Promise<Output> {
     this.active();
+    const options = {
+      signal: this.controller.signal,
+      [sdkMemoryPhase]: true as const,
+    };
     return memoryInvocation.run(
       invocation,
-      async () =>
-        (await agent.run(input, { signal: this.controller.signal }))
-          .finalOutput,
+      async () => (await agent.run(input, options)).finalOutput,
     );
   }
 

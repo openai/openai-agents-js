@@ -3,6 +3,10 @@ import {
   type ProviderHistory,
 } from './provider-history';
 import { createAgentTool, type AgentAsToolOptions } from './agent-tool';
+import {
+  privateOpeningContribution,
+  sdkMemoryPhase,
+} from './private-opening-contribution';
 import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
 import {
   ResponsesCompaction,
@@ -413,6 +417,7 @@ interface CapturedOpening {
   readonly hostedPromptControls?: JsonObject;
 }
 type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
+  [sdkMemoryPhase]?: true;
   [managedWorkspaceRestore]?: true;
   [outputSelection]?: OutputSpec<unknown>;
   [ownedRun]?: OneShotOptions & {
@@ -957,6 +962,9 @@ export class Agent<Context = undefined, Output = string> {
       providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
       ...(captureErrorDetails ? { includeRawProviderEvents: true } : {}),
+      ...((options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
+        ? { [sdkMemoryPhase]: true as const }
+        : {}),
       maxFunctionConcurrency: validateMaxFunctionConcurrency(
         options.maxFunctionConcurrency,
       ),
@@ -1080,11 +1088,24 @@ export class Agent<Context = undefined, Output = string> {
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
     );
-    const beforeComplete = opening
+    const declaredBeforeComplete = opening
       ? opening.beforeComplete
       : owned
         ? owned.beforeComplete
         : this.beforeComplete;
+    const contribution =
+      opening ||
+      (options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
+        ? undefined
+        : privateOpeningContribution<Context>();
+    const contributedBeforeComplete =
+      declaredBeforeComplete === undefined
+        ? contribution?.beforeComplete
+        : undefined;
+    const beforeComplete =
+      declaredBeforeComplete === undefined
+        ? contributedBeforeComplete
+        : declaredBeforeComplete;
     const inputGuardrails =
       opening?.inputGuardrails ?? captureGuardrails(options.inputGuardrails);
     const outputGuardrails =
@@ -1219,6 +1240,7 @@ export class Agent<Context = undefined, Output = string> {
             this.handoffs.length > 0,
           extraBody: settings?.extraBody,
         });
+    let contributedTools: readonly Tool<Context>[] | undefined;
     const declarations = opening
       ? {
           ...opening.declarations,
@@ -1226,8 +1248,32 @@ export class Agent<Context = undefined, Output = string> {
           mcp: [...opening.declarations.mcp],
         }
       : splitToolDeclarations(
-          options.tools === undefined ? this.tools : options.tools,
+          options.tools === undefined
+            ? (contributedTools = contribution?.tools)?.length
+              ? [...this.tools, ...contributedTools]
+              : this.tools
+            : options.tools,
         );
+    const hasPrivateContribution =
+      contributedBeforeComplete !== undefined || !!contributedTools?.length;
+    if (
+      hasPrivateContribution &&
+      (suppliedState != null ||
+        options.resume !== undefined ||
+        this.handoffs.length > 0 ||
+        this.realtime !== undefined ||
+        hostedPrompt !== undefined ||
+        declarations.mcp.length > 0 ||
+        declarations.nativeAgents !== undefined ||
+        declarations.hostedTools.length > 0 ||
+        declarations.webSearch !== undefined ||
+        declarations.nativeGoals ||
+        declarations.checklist ||
+        declarations.tools.some((tool) => !isDirectFunctionTool(tool)))
+    )
+      throw new TypeError(
+        'Private opening contributions require a fresh root with eager direct function tools',
+      );
     const search = declarations.webSearch;
     const catalog = captureTools(declarations.tools);
     declarations.tools = [...catalog.tools];
@@ -1701,6 +1747,7 @@ export class Agent<Context = undefined, Output = string> {
       !declarations.checklist &&
       !nativeAgents &&
       !search &&
+      contributedBeforeComplete === undefined &&
       correction === undefined &&
       outputType === undefined;
     const lease = provider._acquire(correction ?? opening, privateRun);
