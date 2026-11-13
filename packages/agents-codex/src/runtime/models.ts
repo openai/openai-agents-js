@@ -733,10 +733,38 @@ export class ChatCompletionsModel implements NativeModel {
         continue;
       }
       if (raw.type === 'message') {
-        const content = (raw.content as JsonObject[])
-          .map((part) => {
+        let audio: JsonObject | undefined;
+        const content = (raw.content as JsonObject[]).flatMap<JsonObject>(
+          (part) => {
+            const withCacheBreakpoint = (converted: JsonObject) => [
+              Object.hasOwn(part, 'prompt_cache_breakpoint')
+                ? {
+                    ...converted,
+                    prompt_cache_breakpoint: capturePromptCacheBreakpoint(
+                      part.prompt_cache_breakpoint,
+                    ),
+                  }
+                : converted,
+            ];
+            if (part.type === 'output_audio' && raw.role === 'assistant') {
+              const metadata = part.provider_data;
+              if (
+                audio !== undefined ||
+                metadata == null ||
+                typeof metadata !== 'object' ||
+                Array.isArray(metadata) ||
+                typeof metadata.id !== 'string' ||
+                !metadata.id.trim()
+              )
+                throw new TypeError(
+                  'Chat assistant audio requires one provider audio reference',
+                );
+              audio = { ...metadata };
+              delete audio.data;
+              return [];
+            }
             if (part.type === 'input_text' || part.type === 'output_text')
-              return { type: 'text', text: part.text };
+              return withCacheBreakpoint({ type: 'text', text: part.text });
             if (part.type === 'input_audio') {
               const audio = inlineAudioSource(part.audio_url);
               const mediaType = audio.mediaType.split(';', 1)[0].toLowerCase();
@@ -752,42 +780,42 @@ export class ChatCompletionsModel implements NativeModel {
                   : undefined;
               if (!format)
                 throw new TypeError('Chat audio requires WAV or MP3 input');
-              return {
+              return withCacheBreakpoint({
                 type: 'input_audio',
                 input_audio: { data: audio.data, format },
-              };
+              });
             }
             if (part.type === 'input_image' && part.image_url)
-              return {
+              return withCacheBreakpoint({
                 type: 'image_url',
                 image_url: {
                   url: part.image_url,
                   ...(part.detail ? { detail: part.detail } : {}),
                 },
-              };
+              });
             throw new TypeError(
               'ChatCompletionsModel received unsupported message content',
             );
-          })
-          .map((converted, index) => {
-            const original = (raw.content as JsonObject[])[index];
-            return original &&
-              Object.hasOwn(original, 'prompt_cache_breakpoint')
-              ? {
-                  ...converted,
-                  prompt_cache_breakpoint: capturePromptCacheBreakpoint(
-                    original.prompt_cache_breakpoint,
-                  ),
-                }
-              : converted;
-          });
+          },
+        );
         const previous = messages.at(-1);
-        if (raw.role === 'assistant' && previous?.role === 'assistant')
+        if (
+          raw.role === 'assistant' &&
+          previous?.role === 'assistant' &&
+          (audio === undefined || previous.audio === undefined)
+        ) {
           previous.content = [
             ...((previous.content as unknown[]) ?? []),
             ...content,
           ];
-        else messages.push({ role: raw.role, content });
+          if (audio !== undefined) previous.audio = audio;
+        } else {
+          messages.push({
+            role: raw.role,
+            content,
+            ...(audio === undefined ? {} : { audio }),
+          });
+        }
       } else if (raw.type === 'function_call' || patchCall) {
         if (raw.namespace != null && raw.namespace !== 'functions')
           throw new TypeError(
@@ -908,6 +936,8 @@ export class ChatCompletionsModel implements NativeModel {
         'safety_identifier',
         'prediction',
         'logprobs',
+        'modalities',
+        'audio',
         'response_format',
         'prompt_cache_key',
       ]
@@ -1044,6 +1074,7 @@ export class ChatCompletionsModel implements NativeModel {
       | undefined;
     let text: string | undefined;
     let refusal: string | undefined;
+    let audio: JsonObject | undefined;
     let usage: ChatCompletion['usage'];
     let bufferedBytes = 0;
     let logprobs:
@@ -1100,10 +1131,12 @@ export class ChatCompletionsModel implements NativeModel {
           'ChatCompletionsModel stream continued after its final choice',
         );
       const { delta } = choice;
+      const audioDelta = (delta as typeof delta & { audio?: unknown }).audio;
       bufferedBytes += Buffer.byteLength(
         JSON.stringify({
           content: delta.content,
           refusal: delta.refusal,
+          audio: audioDelta,
           toolCalls: delta.tool_calls,
           logprobs: choice.logprobs?.content,
         }),
@@ -1137,6 +1170,10 @@ export class ChatCompletionsModel implements NativeModel {
         };
       }
       if (delta.refusal != null) refusal = (refusal ?? '') + delta.refusal;
+      if (audioDelta != null) {
+        audio ??= Object.create(null) as JsonObject;
+        appendChatAudioDelta(audio, audioDelta);
+      }
       if (choice.logprobs?.content != null)
         (logprobs ??= []).push(...choice.logprobs.content);
       for (const fragment of delta.tool_calls ?? []) {
@@ -1208,6 +1245,7 @@ export class ChatCompletionsModel implements NativeModel {
         ],
       },
       applyPatchWire,
+      audio,
     );
     const output = result.output.map((item) => ({
       ...item,
@@ -1252,9 +1290,28 @@ function chatCompletionUsage(usage: NonNullable<ChatCompletion['usage']>) {
   };
 }
 
+function appendChatAudioDelta(audio: JsonObject, fragment: unknown): void {
+  const delta = copyJsonValue(fragment);
+  if (delta === null || typeof delta !== 'object' || Array.isArray(delta))
+    throw new TypeError('ChatCompletionsModel received malformed audio');
+  for (const [key, value] of Object.entries(delta)) {
+    if (value == null) continue;
+    if (key === 'data' || key === 'transcript') {
+      if (typeof value !== 'string')
+        throw new TypeError('ChatCompletionsModel received malformed audio');
+      audio[key] = (audio[key] ?? '') + value;
+    } else {
+      if (key === 'id' && audio.id !== undefined && audio.id !== value)
+        throw new TypeError('ChatCompletionsModel stream changed audio ID');
+      audio[key] = value;
+    }
+  }
+}
+
 function chatCompletionResult(
   value: Pick<ChatCompletion, 'id' | 'choices' | 'usage'>,
   applyPatchWire: ApplyPatchWire | undefined,
+  streamedAudio?: JsonObject,
 ): ModelResponse {
   if (!Array.isArray(value.choices) || value.choices.length !== 1)
     throw new TypeError(
@@ -1286,6 +1343,23 @@ function chatCompletionResult(
   }
   if (message.refusal != null)
     content.push({ type: 'refusal', refusal: message.refusal });
+  const audio = streamedAudio ?? message.audio;
+  if (audio != null) {
+    const captured = copyJsonValue(audio);
+    if (
+      captured === null ||
+      typeof captured !== 'object' ||
+      Array.isArray(captured) ||
+      typeof captured.data !== 'string'
+    )
+      throw new TypeError('ChatCompletionsModel received malformed audio');
+    const { data, ...providerData } = captured;
+    content.push({
+      type: 'output_audio',
+      audio: data,
+      provider_data: providerData,
+    });
+  }
   if (content.length)
     output.push({ type: 'message', role: 'assistant', content });
   for (const call of message.tool_calls ?? []) {
@@ -1335,6 +1409,22 @@ export class ResponsesModel implements NativeModel {
     return openAIRetryAdvice(request);
   }
   async #create(request: ModelRequest, stream: boolean): Promise<any> {
+    const input = request.body.input;
+    if (
+      Array.isArray(input) &&
+      input.some((item) => {
+        const parts = (item as JsonObject | null)?.content;
+        return (
+          Array.isArray(parts) &&
+          parts.some(
+            (part) => (part as JsonObject | null)?.type === 'output_audio',
+          )
+        );
+      })
+    )
+      throw new TypeError(
+        'Chat assistant audio requires a compatible Chat Completions provider',
+      );
     try {
       const pending = this.client.responses.create(
         {

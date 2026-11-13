@@ -1175,7 +1175,11 @@
     {
       "path": "sdk-hosted-provider-dispatch-fence.patch",
       "sha256": "229ffa64282829572c164c9b5244e46b4acebe56c4ca4ee4b2de7f2ba34a15b2"
+    },
+    {
+      "path": "sdk-chat-output-audio.patch",
+      "sha256": "50a27d673f3276c68fcb5c010dd9d827c787a54e161df6b6c026913ff3fcf0b3"
     }
   ],
-  "result_tree": "17838061e54b03e6defaf08b03f8cb1fd979c7e7"
+  "result_tree": "9b708e7a0c745983002d1d48d577fcc589dae01f"
 }

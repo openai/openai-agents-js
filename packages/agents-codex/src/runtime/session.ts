@@ -8374,12 +8374,22 @@ export class Session<OutputT = string, Context = unknown> {
             ? [part.text]
             : [],
         );
+        const hasTerminalAudio =
+          item.phase !== 'commentary' &&
+          item.content.some(
+            (part) =>
+              part !== null &&
+              typeof part === 'object' &&
+              !Array.isArray(part) &&
+              part.type === 'output_audio' &&
+              typeof part.audio === 'string',
+          );
         // Rust char::is_whitespace uses Unicode White_Space, unlike JS trim
         // (which also strips BOM and omits U+0085).
         const blank =
-          texts.length > 0 &&
+          (texts.length > 0 || hasTerminalAudio) &&
           texts.every((text) => /^\p{White_Space}*$/u.test(text));
-        if (!blank || item.phase === 'final_answer')
+        if (!blank || item.phase === 'final_answer' || hasTerminalAudio)
           submission.blankFinal = blank;
       }
     }

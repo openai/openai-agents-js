@@ -32,6 +32,7 @@ type ActiveResponse = {
   continuation?: JsonObject;
   injectionInput?: JsonObject[];
   fallbackInput?: JsonObject[];
+  acknowledgedOutputs: Map<string, JsonObject>;
   template?: JsonObject;
   responseId?: string;
   pending: Set<string>;
@@ -182,6 +183,7 @@ function hostedSocket(
       create: frame,
       lineage,
       pending: new Set(),
+      acknowledgedOutputs: new Map(),
       emitted,
       queued: [],
       bytes,
@@ -212,11 +214,27 @@ function hostedSocket(
     )
       next.previous_response_id = completed.id;
     else {
-      next.input = [
-        ...(Array.isArray(active.create.input) ? active.create.input : []),
-        ...(Array.isArray(completed.output) ? completed.output : []),
-        ...outputs,
-      ];
+      const replay = Array.isArray(active.create.input)
+        ? [...active.create.input]
+        : [];
+      const acknowledged = new Map(active.acknowledgedOutputs);
+      for (const item of Array.isArray(completed.output)
+        ? completed.output
+        : []) {
+        replay.push(item);
+        const call = object(item);
+        if (
+          call?.type === 'function_call' &&
+          typeof call.call_id === 'string'
+        ) {
+          const result = acknowledged.get(call.call_id);
+          if (result) {
+            replay.push(result);
+            acknowledged.delete(call.call_id);
+          }
+        }
+      }
+      next.input = [...replay, ...acknowledged.values(), ...outputs];
       if (typeof active.create.previous_response_id === 'string')
         next.previous_response_id = active.create.previous_response_id;
       else delete next.previous_response_id;
@@ -264,6 +282,11 @@ function hostedSocket(
         return;
       }
       request().signal?.throwIfAborted();
+      active.bytes += Buffer.byteLength(JSON.stringify(outputs));
+      if (active.bytes > maxResponseBytes)
+        throw new RangeError(
+          'Hosted response exceeds the native retained-byte limit',
+        );
       active.continuation = frame;
       active.injectionInput = outputs;
       active.injecting = ids;
@@ -315,8 +338,16 @@ function hostedSocket(
               active.queued.push(copyJsonValue(item) as JsonObject);
             }
           } else if (event.type === 'response.inject.created') {
-            for (const id of active.injecting ?? []) active.pending.delete(id);
-            active.injecting = undefined;
+            if (active.injecting) {
+              for (const result of active.injectionInput ?? [])
+                active.acknowledgedOutputs.set(
+                  result.call_id as string,
+                  result,
+                );
+              for (const id of active.injecting) active.pending.delete(id);
+              active.injectionInput = undefined;
+              active.injecting = undefined;
+            }
           } else if (
             event.type === 'response.inject.failed' &&
             object(event.error)?.code === 'response_already_completed'

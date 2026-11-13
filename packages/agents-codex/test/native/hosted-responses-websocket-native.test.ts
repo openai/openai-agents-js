@@ -655,3 +655,129 @@ it.each(['response.create', 'response.inject'] as const)(
   },
   20_000,
 );
+
+it.each([false, true])(
+  'replays acknowledged and rejected tool outputs in nonstored history, terminal first=%s',
+  async (terminalFirst) => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const frames: Record<string, any>[] = [];
+    const effects: string[] = [];
+    const calls = ['one', 'two'].map((key) => ({
+      type: 'function_call',
+      id: `fc_${key}`,
+      namespace: 'functions',
+      call_id: `call_${key}`,
+      name: 'lookup',
+      arguments: JSON.stringify({ key }),
+    }));
+    server.on('connection', (socket) => {
+      const emit = (event: object) => socket.send(JSON.stringify(event));
+      const emitCall = (index: number) =>
+        emit({ type: 'response.output_item.done', item: calls[index] });
+      socket.on('message', (raw) => {
+        frames.push(JSON.parse(raw.toString()));
+        if (frames.length === 1) {
+          emit({
+            type: 'response.created',
+            response: { id: 'first', output: [] },
+          });
+          emitCall(0);
+        } else if (frames.length === 2) {
+          emit({ type: 'response.inject.created', response_id: 'first' });
+          emitCall(1);
+        } else if (frames.length === 3) {
+          const terminal = {
+            type: 'response.completed',
+            response: {
+              id: 'first',
+              store: false,
+              status: 'completed',
+              output: calls,
+            },
+          };
+          const rejected = {
+            type: 'response.inject.failed',
+            error: { code: 'response_already_completed' },
+          };
+          for (const event of terminalFirst
+            ? [terminal, rejected]
+            : [rejected, terminal]) {
+            emit(event);
+          }
+        } else {
+          emit({
+            type: 'response.created',
+            response: { id: 'second', output: [] },
+          });
+          emit({
+            type: 'response.completed',
+            response: {
+              id: 'second',
+              status: 'completed',
+              output: [
+                {
+                  type: 'message',
+                  id: 'msg_two',
+                  role: 'assistant',
+                  status: 'completed',
+                  phase: 'final_answer',
+                  agent: { agent_name: '/root' },
+                  content: [{ type: 'output_text', text: 'finished' }],
+                },
+              ],
+            },
+          });
+        }
+      });
+    });
+    const address = server.address() as AddressInfo;
+    const client = new OpenAI({
+      apiKey: 'synthetic',
+      baseURL: `http://127.0.0.1:${address.port}/v1`,
+    });
+    const model = new HostedResponsesWebSocketModel(
+      (_request, options) =>
+        new ResponsesWS(client, { headers: options.headers as any }),
+    );
+    const lookup = tool({
+      name: 'lookup',
+      description: 'Record a synthetic result.',
+      parameters: z.object({ key: z.string() }),
+      execute: ({ key }) => {
+        effects.push(key);
+        return `result for ${key}`;
+      },
+    });
+    try {
+      await using provider = new NativeProvider({ modelBackend: model });
+      const result = await new Agent({
+        instructions: 'Use lookup.',
+        tools: [lookup],
+        provider,
+        model: 'gpt-5.5',
+        modelSettings: { store: false },
+      }).run('start');
+      expect(result.finalOutput).toBe('finished');
+      expect(result.runUsage.requests).toBe(2);
+      expect(effects).toEqual(['one', 'two']);
+      expect(frames.map((frame) => frame.type)).toEqual([
+        'response.create',
+        'response.inject',
+        'response.inject',
+        'response.create',
+      ]);
+      expect(frames[3]!.input).toEqual([
+        ...frames[0]!.input,
+        calls[0],
+        ...frames[1]!.input,
+        calls[1],
+        ...frames[2]!.input,
+      ]);
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+  20_000,
+);
