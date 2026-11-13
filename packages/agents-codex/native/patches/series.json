@@ -1127,7 +1127,91 @@
     {
       "path": "sdk-confirm-darwin-service-removal.patch",
       "sha256": "41aa8a2d4c452f038b481784f9d7a7483a1113160aeedd4a391d759fd5e0fd50"
+    },
+    {
+      "path": "sdk-provider-programmatic-cache-controls.patch",
+      "sha256": "c4c67e3874a8cbbad08a9a59a2cb7a84b666d9d6a38c1b18e0de3d8d69175f17"
+    },
+    {
+      "path": "sdk-hosted-program-replay.patch",
+      "sha256": "b295123c21785268fbeeef3031705ab21a6e1120475a01aed39e1b48adee34e3"
+    },
+    {
+      "path": "sdk-ai-sdk-raw-source.patch",
+      "sha256": "8adc8ec2d0a5cdd2a54c346992cf2ab3debddab58849e1b039b8f2dcaa931b68"
+    },
+    {
+      "path": "sdk-explicit-prompt-cache-breakpoints.patch",
+      "sha256": "b502232724d4db60f294e2f36b6903f843479205b534aa287cea76d80bda6113"
+    },
+    {
+      "path": "sdk-programmatic-tool-catalog.patch",
+      "sha256": "e4fe41e46c642f5f2ac3dbb3bb2f30a9a67cb7333b7ec29a361fa0c3f080c455"
+    },
+    {
+      "path": "sdk-programmatic-prompt-history.patch",
+      "sha256": "6eea3760a9a4b27d58cdbe3d77bfc60f339ff1a7cfa1428d9fb010833473dbca"
+    },
+    {
+      "path": "sdk-cache-provider-history-projection.patch",
+      "sha256": "ac6d9c77509fd98d237d4e6b15946b7091c62a4a7291a330bbf5bad7e6841b5d"
+    },
+    {
+      "path": "sdk-cache-owned-input.patch",
+      "sha256": "3866538296d170a4314a8deaf396d0d95f906b48e3284ce0bd310236685f6bae"
+    },
+    {
+      "path": "sdk-program-caller-containment.patch",
+      "sha256": "c3facdb55982561a39c53e4414a968c03f2c63ccd748718e1c027db4113f4040"
+    },
+    {
+      "path": "sdk-seed-cache-and-program-observations.patch",
+      "sha256": "401e4ac78b6d1a4bdf4313effe86177b5fea9791b5890e0f991292ec0326842b"
+    },
+    {
+      "path": "sdk-provider-output-strictness.patch",
+      "sha256": "98fccbf09d93fc65910e8fe7f829b011d1912e23cd851438878fa870e4bd3661"
+    },
+    {
+      "path": "sdk-hosted-provider-request-accounting.patch",
+      "sha256": "bbc0c4195954f4c6e458cd21f8923445ba5762a8c0a1c1a755d7b732216a375f"
+    },
+    {
+      "path": "sdk-hosted-provider-dispatch-fence.patch",
+      "sha256": "229ffa64282829572c164c9b5244e46b4acebe56c4ca4ee4b2de7f2ba34a15b2"
+    },
+    {
+      "path": "sdk-chat-output-audio.patch",
+      "sha256": "50a27d673f3276c68fcb5c010dd9d827c787a54e161df6b6c026913ff3fcf0b3"
+    },
+    {
+      "path": "sdk-linear-prompt-cache-breakpoints.patch",
+      "sha256": "e01afc641b34792f1e1619e93651f5cc7fbaa2860530a6dd89df8372f7a7d7fd"
+    },
+    {
+      "path": "sdk-managed-history-attempts.patch",
+      "sha256": "c6630843af2aa01b6a059404d91aa72084c741f2750bc57e321082ffb8008e21"
+    },
+    {
+      "path": "sdk-hosted-provider-tool-attribution.patch",
+      "sha256": "e7dd024824520ab4a9d801b71a553a0987fb800fd778eeef15ff3946f094a1c7"
+    },
+    {
+      "path": "sdk-hosted-attribution-completion-call.patch",
+      "sha256": "86ec4b704dd88fcb2c6918569160c327a805e610391d42e45bd7b4c10de8aee6"
+    },
+    {
+      "path": "sdk-bounded-hosted-program-replay.patch",
+      "sha256": "9c5e1e12c80d5b41b8dad5de245db2edca295b839c4af1c1321766dd877715c7"
+    },
+    {
+      "path": "sdk-provider-programmatic-callers.patch",
+      "sha256": "48abc2b8d3dd54526242999ab0dce97f5862a0dcf40301ec53dcb69095ea3a70"
+    },
+    {
+      "path": "sdk-provider-programmatic-progress.patch",
+      "sha256": "5bda827970cc426dab1181869d427019b8e212e7f938f64cfb8277a00ab33adf"
     }
   ],
-  "result_tree": "0aa60ca0af99cc629a3ac6e8a7a4289281462248"
+  "result_tree": "923f966cf02935deb8a9f3fb39193e9b7d7cf3bc"
 }

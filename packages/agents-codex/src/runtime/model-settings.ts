@@ -39,7 +39,8 @@ export type HostedToolChoice =
         | 'computer_use_preview'
         | 'shell'
         | 'apply_patch'
-        | 'tool_search';
+        | 'tool_search'
+        | 'programmatic_tool_calling';
     }
   | {
       readonly type: 'mcp';
@@ -61,6 +62,7 @@ function captureHostedToolChoice(value: unknown): HostedToolChoice {
     'shell',
     'apply_patch',
     'tool_search',
+    'programmatic_tool_calling',
     'mcp',
   ];
   if (
@@ -127,6 +129,8 @@ export interface ModelSettings {
   promptCacheRetention?: 'in_memory' | '24h' | null;
   /** Distinct from retention; omission leaves the provider default omitted. */
   promptCacheTtl?: '30m' | '12h' | null;
+  /** Request policy; null clears this override independently of TTL. */
+  promptCacheMode?: 'explicit' | null;
   truncation?: 'auto' | 'disabled' | null;
   /** Additional response fields; native replay and hosted-tool includes remain enabled. */
   include?: readonly string[] | null;
@@ -251,6 +255,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
     'store',
     'promptCacheRetention',
     'promptCacheTtl',
+    'promptCacheMode',
     'truncation',
     'include',
     'contextManagement',
@@ -313,6 +318,9 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
       ) {
         if (typeof value !== 'boolean')
           throw new TypeError(`${key} must be boolean or null`);
+      } else if (key === 'promptCacheMode') {
+        if (value !== 'explicit')
+          throw new TypeError('promptCacheMode must be explicit or null');
       } else if (key === 'truncation') {
         if (value !== 'auto' && value !== 'disabled')
           throw new TypeError('truncation must be auto or disabled');
@@ -453,6 +461,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'store',
         'promptCacheRetention',
         'promptCacheTtl',
+        'promptCacheMode',
         'truncation',
         'include',
         'contextManagement',
@@ -528,6 +537,7 @@ export function modelOverrides(
     store: 'store',
     promptCacheRetention: 'prompt_cache_retention',
     promptCacheTtl: 'prompt_cache_ttl',
+    promptCacheMode: 'prompt_cache_mode',
     truncation: 'truncation',
     include: 'include',
     contextManagement: 'context_management',

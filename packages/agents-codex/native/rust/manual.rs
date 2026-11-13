@@ -443,6 +443,7 @@ struct HandoffProof {
 }
 
 struct History {
+    programmatic: std::collections::HashSet<String>,
     turn: String,
     calls: Vec<ManualCall>,
     outputs: HashMap<String, Receipt>,
@@ -455,6 +456,7 @@ struct History {
 fn history(value: &Value) -> Result<History> {
     let items: Vec<RolloutItem> = serde_json::from_value(value.clone())?;
     let mut result = History {
+        programmatic: Default::default(),
         turn: String::new(),
         calls: Vec::new(),
         outputs: HashMap::new(),
@@ -527,6 +529,7 @@ fn history(value: &Value) -> Result<History> {
                 // public ID. Earlier committed calls still guard against replay.
                 if turn.turn_id != result.turn || completed {
                     result = History {
+                        programmatic: Default::default(),
                         turn: turn.turn_id,
                         calls: Vec::new(),
                         outputs: HashMap::new(),
@@ -611,6 +614,7 @@ fn history(value: &Value) -> Result<History> {
                     *settled = true;
                 }
                 ResponseItem::FunctionCall {
+                    caller,
                     name,
                     namespace,
                     arguments,
@@ -622,6 +626,12 @@ fn history(value: &Value) -> Result<History> {
                             && !result.calls.iter().any(|call| call.call_id == call_id),
                         "invalid or duplicate manual checkpoint call"
                     );
+                    if matches!(
+                        caller,
+                        Some(codex_protocol::models::ProviderFunctionCaller::Program { .. })
+                    ) {
+                        result.programmatic.insert(call_id.clone());
+                    }
                     if let Some(source) = &source {
                         result.sources.insert(call_id.clone(), source.clone());
                     }
@@ -831,6 +841,14 @@ fn history(value: &Value) -> Result<History> {
     ensure!(
         !completed && !result.turn.is_empty(),
         "no unfinished manual tool turn in history"
+    );
+    ensure!(
+        result
+            .calls
+            .iter()
+            .all(|call| !result.programmatic.contains(&call.call_id)
+                || result.outputs.contains_key(&call.call_id)),
+        "Pending provider programmatic calls require their original live native owner"
     );
     Ok(result)
 }
@@ -2165,19 +2183,14 @@ impl PythonTools {
         let mut events = Vec::new();
         // The imported operation can narrow the fresh opening policy only.
         // Portable configured captures exclude callbacks that select per step.
-        let executor_tools = configured_executor_names(
-            self.policy
-                .allowed_tools
-                .iter()
-                .flatten()
-                .filter(|tool| {
-                    operation_tools.is_none_or(|selected| {
-                        selected.iter().any(|name| {
-                            name.name == tool.name && name.is_default_namespace()
-                        })
-                    })
-                }),
-        );
+        let executor_tools =
+            configured_executor_names(self.policy.allowed_tools.iter().flatten().filter(|tool| {
+                operation_tools.is_none_or(|selected| {
+                    selected
+                        .iter()
+                        .any(|name| name.name == tool.name && name.is_default_namespace())
+                })
+            }));
         for call in &frame.pending_manual {
             let key = PendingKey {
                 reply: ReplyKey {

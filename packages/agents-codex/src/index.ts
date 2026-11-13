@@ -266,8 +266,10 @@ export type {
   CanonicalHistorySnapshot,
   Failure,
   RecordedTokenUsage,
+  RecordedRequestUsage,
   ReceivedTokenUsage,
   RecordedResponse,
+  OutputAudioPart,
   OutputTextPart,
   SearchItem,
   WebSearchAction,
@@ -508,6 +510,7 @@ export type {
   ModelRequestOptions,
   ModelRequestOptionsFactory,
   ModelProvider,
+  ModelRunOwner,
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
@@ -590,3 +593,16 @@ export type {
 export type { SandboxMemoryOptions } from './runtime/sandbox-memory';
 
 export type { PendingInput, PendingInputItem } from './runtime/state';
+
+export { ResponsesWebSocketModel } from './runtime/responses-websocket-model';
+export type {
+  ResponsesSocket,
+  ResponsesSocketOptions,
+  ResponsesSocketFactory,
+} from './runtime/responses-websocket-model';
+
+export { HostedResponsesWebSocketModel } from './runtime/hosted-responses-websocket-model';
+export type { HostedResponsesWebSocketModelOptions } from './runtime/hosted-responses-websocket-model';
+
+export { getHostedAgentMetadata } from './runtime/hosted-agent-metadata';
+export type { HostedAgentMetadata } from './runtime/hosted-agent-metadata';
