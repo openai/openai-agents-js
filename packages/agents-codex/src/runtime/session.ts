@@ -3135,7 +3135,7 @@ export class Session<OutputT = string, Context = unknown> {
     () => this.observations.currentSequence,
   );
   private readonly toolSessionOwner = Object.freeze({});
-  private readonly configuredChildren = new Map<string, ConfiguredChild>();
+  private readonly configuredChildren = new Set<ConfiguredChild>();
   private readonly functionAdmissions = new WeakMap<
     NativeTurn | ChildCallbackOwner,
     FunctionAdmission
@@ -12830,7 +12830,7 @@ export class Session<OutputT = string, Context = unknown> {
       child.sealOutcome?.reject(context.signal.reason);
       void close().catch(() => {});
     };
-    this.configuredChildren.set(session.id, child);
+    this.configuredChildren.add(child);
     context.signal.addEventListener('abort', abort, { once: true });
     let reader: AsyncIterableIterator<Interaction> | undefined;
     let relay = Promise.resolve();
@@ -12951,7 +12951,7 @@ export class Session<OutputT = string, Context = unknown> {
       errors.push(error);
     } finally {
       context.signal.removeEventListener('abort', abort);
-      this.configuredChildren.delete(session.id);
+      this.configuredChildren.delete(child);
       const cleanup = await Promise.allSettled([
         close(),
         reader?.return?.(),

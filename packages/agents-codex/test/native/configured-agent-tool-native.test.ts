@@ -71,6 +71,7 @@ async function fixture(
   afterApproval: ConstructorParameters<typeof ModelServer>[0] = [
     [message('child complete')],
   ],
+  parentFollowUp: ConstructorParameters<typeof ModelServer>[0] = [],
 ) {
   const rootModel = new ModelServer([
     [
@@ -82,6 +83,7 @@ async function fixture(
       call('accepted_sibling', {}, { callId: 'held-sibling-call' }),
     ],
     [message('parent complete')],
+    ...parentFollowUp,
   ]);
   const childModel = new ModelServer([
     [call('child_effect', {}, { callId: 'child-approval-call' })],
@@ -997,7 +999,24 @@ nativeIt.each([false, true])(
 nativeIt(
   'rolls back a pre-seal parent refusal without repeating accepted siblings',
   async () => {
-    await using f = await fixture();
+    await using f = await fixture(
+      false,
+      undefined,
+      undefined,
+      [
+        [message('child complete')],
+        [call('child_effect', {}, { callId: 'second-child-approval' })],
+      ],
+      [
+        [
+          call(
+            'nested_child',
+            { input: 'second child' },
+            { callId: 'second-parent-call' },
+          ),
+        ],
+      ],
+    );
     await using source = await f.parent.session();
     const turn = await source.submit('begin configured rollback');
     const original = await turn.wait({ until: 'interaction' });
@@ -1041,6 +1060,15 @@ nativeIt(
     expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
     expect(f.rootModel.requests).toHaveLength(2);
     expect(f.childModel.requests).toHaveLength(2);
+
+    const next = await source.submit('begin another configured child');
+    const nextPending = await next.wait({ until: 'interaction' });
+    if (!('requests' in nextPending))
+      throw new Error('Expected the next child approval');
+    expect(nextPending.requests.some(isFunctionApprovalRequest)).toBe(true);
+    const nextCheckpoint = await source.suspend();
+    expect(nextCheckpoint).toHaveProperty('manual_continuation');
+    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
   },
   20_000,
 );
