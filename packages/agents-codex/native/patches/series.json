@@ -1123,7 +1123,11 @@
     {
       "path": "sdk-provider-websocket-frame-cap.patch",
       "sha256": "e260e7b46598b5656ec0ff77813b1460c012bf016293f49af4ece3a975ae6ddb"
+    },
+    {
+      "path": "sdk-provider-response-context-ancestry.patch",
+      "sha256": "5e4a9358526d4ba3447f66a68f4e40fa57c1fcd5e7940a4633ec72efd8917e3f"
     }
   ],
-  "result_tree": "b2d0e6fe3ef271fa3bda1ef319ace4410796f675"
+  "result_tree": "b063405476f8152bb68175e189b3e194b3a4f832"
 }

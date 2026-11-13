@@ -533,6 +533,7 @@ export function borrow_trace_context(
   restrictions_parent: string | null,
   disabled: boolean,
   include_sensitive_data: boolean,
+  ancestry_only?: boolean,
 ): string;
 export function _retain_callback_dispatch_context(
   handle: string,
