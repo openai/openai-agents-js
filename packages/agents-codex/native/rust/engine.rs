@@ -1455,6 +1455,7 @@ impl EngineState {
             publication_boundaries,
             child_instances: RwLock::new(HashMap::new()),
             native_questions: std::sync::Mutex::new(HashMap::new()),
+            native_question_gate: tokio::sync::Mutex::new(()),
             child_reader_retired: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closing: watch::channel(false).0,
@@ -2847,6 +2848,7 @@ pub struct ThreadState {
     closing: watch::Sender<bool>,
     pub(crate) child_instances: RwLock<HashMap<ThreadId, crate::subagents::Instance>>,
     native_questions: std::sync::Mutex<HashMap<String, OwnedNativeQuestion>>,
+    pub(crate) native_question_gate: tokio::sync::Mutex<()>,
     child_reader_retired: AtomicBool,
 }
 
@@ -3382,6 +3384,38 @@ impl ThreadState {
             .cloned()
     }
 
+    pub(crate) async fn pending_root_mcp_approval(
+        &self,
+    ) -> anyhow::Result<
+        Option<(
+            codex_core::McpApprovalSource,
+            codex_core::CapturedMcpApproval,
+        )>,
+    > {
+        let questions: Vec<_> = self
+            .native_questions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter(|question| question.child.is_none() && self.question_owner_current(question))
+            .filter_map(|question| question.captured.grant.clone())
+            .collect();
+        let mut result = None;
+        for question in questions {
+            let Some(source) = question.mcp_approval_source().await? else {
+                continue;
+            };
+            if let Some(captured) = question.capture_mcp_approval(source.binding()).await? {
+                anyhow::ensure!(
+                    result.is_none(),
+                    "Native MCP checkpoint requires one pending owner"
+                );
+                result = Some((source, captured));
+            }
+        }
+        Ok(result)
+    }
+
     pub(crate) async fn native_question_pending(&self, id: &str) -> bool {
         let Some(question) = self.captured_question(id) else {
             return false;
@@ -3528,6 +3562,7 @@ impl ThreadState {
         id: &str,
         response_json: &str,
     ) -> anyhow::Result<bool> {
+        let _reply_gate = self.native_question_gate.lock().await;
         let Some(question) = self.captured_question(id) else {
             return Ok(false);
         };

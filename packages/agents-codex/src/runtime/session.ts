@@ -1297,6 +1297,7 @@ interface ToolInvocation {
   child?: ChildCallbackOwner;
   active: boolean;
   realtimeAdapter?: object;
+  timeoutCleanup?: Promise<void>;
   parent?: ToolInvocation;
   invocation?: Promise<void>;
 }
@@ -3042,7 +3043,7 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly runs = new Set<WeakRef<NativeTurn>>();
   private readonly runFinalizer: FinalizationRegistry<WeakRef<NativeTurn>>;
   private readonly callbackDeliveries: CallbackDeliveries =
-    new CallbackDeliveries();
+    new CallbackDeliveries((error) => this.readerFailed(error));
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
   private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
@@ -8255,6 +8256,7 @@ export class Session<OutputT = string, Context = unknown> {
     }
     if (
       kind === '_sdk_provider_response_span' ||
+      kind === '_sdk_tool_not_found' ||
       kind === '_sdk_model_retry' ||
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
@@ -9374,6 +9376,7 @@ export class Session<OutputT = string, Context = unknown> {
             request_id: msg.request_id,
           };
           const responseSpan = msg.type === '_sdk_provider_response_span';
+          const notFound = msg.type === '_sdk_tool_not_found';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
           const compact = compactPolicy || msg.type === '_sdk_before_compact';
@@ -9398,6 +9401,7 @@ export class Session<OutputT = string, Context = unknown> {
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
             if (responseSpan) sourceNative._reply_provider_response_span(data);
+            else if (notFound) sourceNative._reply_tool_not_found(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
             else if (compact) sourceNative._reply_compaction(data);
@@ -9464,6 +9468,44 @@ export class Session<OutputT = string, Context = unknown> {
                 retryCaptured?.context.model ?? z.string().parse(msg.model),
               signal,
             };
+            if (notFound) {
+              if (child)
+                throw new NativeError(
+                  'Unknown tool formatting requires its root owner',
+                );
+              const defaultMessage = z.string().parse(msg.default_message);
+              const call = managedCallInfo(
+                { sessionId: this.id, childId: null, childIncarnation: null },
+                {
+                  ...msg,
+                  callId: z.string().parse(msg.call_id),
+                  turnId: receipt.turn_id,
+                  _sdk_code_origin: null,
+                  _sdk_model: msg.model,
+                },
+              );
+              let text: string | undefined;
+              try {
+                const formatted = await this.options.toolErrorFormatter?.(
+                  Object.freeze({
+                    context: this.options.context,
+                    call,
+                    signal,
+                    phase: 'execution',
+                    reason: 'tool_not_found',
+                    defaultMessage,
+                    error: new NativeError(defaultMessage),
+                  }),
+                );
+                if (typeof formatted === 'string') text = formatted;
+              } catch {
+                // User formatting failures retain the original authority rejection.
+                signal.throwIfAborted();
+              }
+              check();
+              reply(text === undefined ? {} : { text });
+              return;
+            }
             if (retry) {
               const captured = retryCaptured!;
               if (
@@ -10914,7 +10956,11 @@ export class Session<OutputT = string, Context = unknown> {
         throw error;
       })
       .finally(() => {
-        scope.active = false;
+        if (scope.timeoutCleanup)
+          void scope.timeoutCleanup.then(() => {
+            scope.active = false;
+          });
+        else scope.active = false;
         run.toolInvocations.delete(invocation);
       });
     scope.invocation = invocation;
@@ -11965,7 +12011,25 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn,
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
+    nativeMcp = false,
   ): Promise<SessionState> {
+    if (
+      nativeMcp &&
+      (this.configuredChildren.size ||
+        this.manualCalls.size ||
+        !this.nativeQuestions.size ||
+        !this.current(run) ||
+        run.failure !== undefined ||
+        run.callbacks.size ||
+        run.toolInvocations.size ||
+        run.manualReplies.size ||
+        this.graphStops.size ||
+        run.selection?.prepareRequest !== undefined ||
+        submissions.get(run)!.output.prompt)
+    )
+      return Promise.reject(
+        new NativeError('Native MCP boundary is not settled'),
+      );
     if (
       [...this.manualCalls.values()].some(
         (call) => call.run === run && hostedMcpBinding(call.tool),
@@ -11990,7 +12054,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     // Claim the single writer/waiter before inspecting any native grant.
     const pending = Promise.resolve().then(() =>
-      this.captureManualTurn(run, beforeSeal, signal),
+      this.captureManualTurn(run, beforeSeal, signal, nativeMcp),
     );
     this.manualSeal = pending;
     return pending
@@ -12143,8 +12207,18 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn,
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
+    nativeMcp = false,
   ): Promise<SessionState> {
     await this.refreshManualProfile(run);
+    if (nativeMcp) {
+      // Only the native raw record, sample and question owners authorize this path.
+      if (
+        !this.current(run) ||
+        !(await this.#native._manual_checkpoint_ready('[]'))
+      )
+        throw new NativeError('Native MCP boundary is not settled');
+      this.manualCheckpointRun = run;
+    }
     for (;;) {
       signal?.throwIfAborted();
       if (
@@ -12177,7 +12251,7 @@ export class Session<OutputT = string, Context = unknown> {
           child.sealing &&
           child.checkpoint !== undefined,
       );
-      if (!requests.length && !configured.length)
+      if (!requests.length && !configured.length && !nativeMcp)
         throw new NativeError('Original manual checkpoint requests expired');
       const keys =
         '[' +
@@ -12196,7 +12270,7 @@ export class Session<OutputT = string, Context = unknown> {
       let nativeProgress: Promise<void> | undefined;
       try {
         // A restored frame has a checked ledger, but no running native Turn.
-        if (!this.manualRestoring) {
+        if (!this.manualRestoring && !nativeMcp) {
           token = this.#native._begin_manual_checkpoint_wait(keys);
           nativeProgress = this.#native._wait_manual_checkpoint_progress(token);
           // Readiness can itself reject before Promise.race has been reached.
@@ -12236,6 +12310,8 @@ export class Session<OutputT = string, Context = unknown> {
         signal?.throwIfAborted();
         const settling = this.configuredCaptureWork(run);
         if (!ready || settling) {
+          if (nativeMcp)
+            throw new NativeError('Native MCP boundary changed before capture');
           // Both JS and native notifications were registered before ready().
           // Testing the epoch after registration covers a change during check.
           if (this.manualProgress === progress) {
@@ -12658,7 +12734,10 @@ export class Session<OutputT = string, Context = unknown> {
     for (const event of events) {
       this.publishManualRequest(run, event);
     }
-    if (state.manual_continuation.staged_retry)
+    if (
+      state.manual_continuation.staged_retry ||
+      (state.manual_continuation.pending_mcp?.length ?? 0) > 0
+    )
       await this.resumeManualIfReady(run);
   }
   /** @internal Recheck the declaration that owns the retained native source. */
@@ -13116,6 +13195,16 @@ export class Session<OutputT = string, Context = unknown> {
     )
       throw new NativeError('Invalid managed tool identity');
     if (tool.kind === 'manual') return;
+    if (
+      tool.timeoutSettlement === 'at_deadline' &&
+      (!root ||
+        configuredAgentTool(tool) ||
+        isClientToolSearchTool(tool) ||
+        (this.manualRestoring && msg._sdk_managed_approved === true))
+    )
+      throw new TypeError(
+        'Deadline settlement requires an application function on a root Session',
+      );
     if (typeof msg.callId !== 'string')
       throw new NativeError('Native tool invocation has no call identity');
     let admission = this.functionAdmissions.get(owner);
@@ -13228,6 +13317,22 @@ export class Session<OutputT = string, Context = unknown> {
                 captured.kind !== 'manual',
               )
           : undefined,
+        (body) => {
+          if (!delivery)
+            throw new NativeError('Timed callback has no native cleanup owner');
+          const cleanup = body.then(
+            () => {},
+            () => {},
+          );
+          delivery.cleanup = cleanup;
+          const invocation = toolInvocation.getStore();
+          if (invocation?.session === this) invocation.timeoutCleanup = cleanup;
+          if (
+            tool.timeoutBehavior === 'error_as_result' &&
+            !delivery.native._defer_python_callback_cleanup(delivery.wire)
+          )
+            throw new NativeError('Timed callback cleanup was not admitted');
+        },
       );
       const identity: ToolIdentity = {
         callId: context.callId,
@@ -13287,13 +13392,15 @@ export class Session<OutputT = string, Context = unknown> {
           (error) => {
             owner.failure ??= error;
             admission?.seal(error);
-            if (root)
+            if (root) {
+              if (tool.timeoutSettlement === 'at_deadline')
+                owner.completion.reject(owner.failure);
               toolInvocation.exit(() => {
                 void this.#cancel(owner).catch((cause) =>
                   this.readerFailed(cause),
                 );
               });
-            else {
+            } else {
               owner.controller.abort(error);
               void this.#native
                 ._cancel_child_callback(encodeReceipt(msg))
@@ -13410,6 +13517,14 @@ export class Session<OutputT = string, Context = unknown> {
             : 'failed'
           : 'cancelled';
       } catch (error) {
+        if (
+          root &&
+          delivery?.cleanup &&
+          tool.timeoutSettlement === 'at_deadline'
+        ) {
+          owner.failure ??= error;
+          owner.completion.reject(owner.failure);
+        }
         if (error === admissionEnded) {
           status = 'cancelled';
           return;
@@ -13652,6 +13767,7 @@ export class Session<OutputT = string, Context = unknown> {
       cancelError = error;
     }
     await Promise.allSettled([...run.toolInvocations, ...run.manualReplies]);
+    await this.callbackDeliveries.joinCleanup(run);
     if (run.toolCleanupErrors.length) throw cleanupFailure(run, cancelError);
     if (failed) throw cancelError;
   }
@@ -13787,6 +13903,7 @@ export class Session<OutputT = string, Context = unknown> {
             ...run.toolInvocations,
             ...run.manualReplies,
           ]);
+          await this.callbackDeliveries.joinCleanup(run);
           failure = cleanupFailure(run, failure);
         }
         if (failure !== undefined) {
@@ -13797,6 +13914,7 @@ export class Session<OutputT = string, Context = unknown> {
             this.childCallbacks.stop(new TurnAborted('Session work stopped'));
         }
         if (options.scope === 'thread_tree') {
+          await this.callbackDeliveries.joinCleanup();
           try {
             await this.childCallbacks.drainEntered(enteredChildren);
           } catch (error) {
@@ -16580,8 +16698,6 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Sign in with ChatGPT requires settled state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before suspend');
-    if (this.nativeQuestions.size)
-      throw new TypeError('Native questions cannot be suspended or serialized');
     if (this.options.localStorage)
       throw new TypeError(
         'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
@@ -16591,6 +16707,22 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
+    if (this.nativeQuestions.size) {
+      const [question] = this.nativeQuestions.values();
+      const run =
+        this.lifecycle.kind === 'turn' ? this.lifecycle.run : undefined;
+      if (
+        this.nativeQuestions.size !== 1 ||
+        !run ||
+        question?.run !== run ||
+        question.mcpCallId === undefined ||
+        !question.grant.current()
+      )
+        throw new TypeError(
+          'Native questions cannot be suspended or serialized',
+        );
+      return this.sealManualTurn(run, undefined, undefined, true);
+    }
     if (this.configuredChildren.size) return this.captureConfiguredParent();
     if (
       this.graphStops.size ||
@@ -17307,7 +17439,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.childCallbacks.track(
         owner,
         async () => {
-          const scope = {
+          const scope: ToolInvocation = {
             session: this,
             child: owner,
             active: true,
@@ -17328,7 +17460,11 @@ export class Session<OutputT = string, Context = unknown> {
             pending.reject(error);
             throw error;
           } finally {
-            scope.active = false;
+            if (scope.timeoutCleanup)
+              void scope.timeoutCleanup.then(() => {
+                scope.active = false;
+              });
+            else scope.active = false;
           }
         },
         async () => {

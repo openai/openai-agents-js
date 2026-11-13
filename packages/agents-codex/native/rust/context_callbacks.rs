@@ -108,6 +108,7 @@ pub(super) enum PreparationReply {
             std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>,
         >,
     ),
+    ToolNotFound(oneshot::Sender<std::result::Result<Option<String>, ()>>),
     Model(ModelDelivery),
     ModelRetry(
         oneshot::Sender<std::result::Result<codex_protocol::model_retry::ModelRetryResolution, ()>>,
@@ -132,6 +133,7 @@ impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
             Self::ProviderResponseSpan(reply) => reply.is_closed(),
+            Self::ToolNotFound(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
             Self::ModelRetry(reply) => reply.is_closed(),
@@ -222,7 +224,70 @@ fn model_provider_metadata_item_matches(captured: &ResponseItem, wire: &Value) -
     projected == wire
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ToolNotFoundReply {
+    pub(crate) owner: StepReply,
+    text: Option<String>,
+    #[serde(default)]
+    failed: bool,
+}
+
 impl PythonTools {
+    pub(crate) async fn format_tool_not_found(
+        self: &Arc<Self>,
+        input: codex_extension_api::ToolNotFoundInput<'_>,
+    ) -> Result<Option<String>> {
+        self.exchange_context(
+            input.step_store,
+            input.thread_store.level_id(),
+            input.turn_id,
+            input.cancellation,
+            None,
+            json!({"type":"_sdk_tool_not_found", "tool":input.tool_name.name,
+                "namespace":input.tool_name.namespace, "call_id":input.call_id,
+                "model":input.model, "default_message":input.default_message}),
+            PreparationReply::ToolNotFound,
+        )
+        .await
+    }
+
+    pub(crate) fn reply_tool_not_found(&self, response: ToolNotFoundReply) -> Result<()> {
+        ensure!(
+            !(response.failed && response.text.is_some()),
+            "Conflicting tool error reply"
+        );
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+        let id = crate::native_id(&response.owner.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::ToolNotFound(_)
+            )),
+            "Expired tool error reply"
+        );
+        let pending = take_pending_step(&mut replies, id).expect("checked tool error reply");
+        let PreparationReply::ToolNotFound(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(response.text)
+            })
+            .map_err(|_| anyhow::anyhow!("Expired tool error reply"))
+    }
+
     pub(crate) fn publish_model_attempt(
         &self,
         input: codex_extension_api::ModelAttemptInput,
@@ -536,6 +601,14 @@ impl PythonTools {
                 .insert(
                     id,
                     PendingStep {
+                        tool_error_call: if matches!(
+                            message["type"].as_str(),
+                            Some("_sdk_tool_not_found")
+                        ) {
+                            message["call_id"].as_str().map(str::to_owned)
+                        } else {
+                            None
+                        },
                         source_cancellation: Some(cancellation.clone()),
                         callback: Some(callback.clone()),
                         operation_generation: active
@@ -935,6 +1008,7 @@ mod tests {
         tools.step_replies.lock().unwrap().insert(
             17,
             PendingStep {
+                tool_error_call: None,
                 source_cancellation: Some(CancellationToken::new()),
                 callback: None,
                 operation_generation: 0,
@@ -1187,6 +1261,7 @@ mod tests {
             tools.step_replies.lock().unwrap().insert(
                 17,
                 PendingStep {
+                    tool_error_call: None,
                     source_cancellation: stop.callback_cancellation(),
                     callback: None,
                     operation_generation: 0,

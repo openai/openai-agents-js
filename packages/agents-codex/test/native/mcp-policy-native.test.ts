@@ -39,10 +39,15 @@ import {
 } from '../../src/runtime/child-callbacks';
 import {
   binding,
+  jsonObject,
   type JsonObject,
   type NativeThread,
 } from '../../src/runtime/binding';
 import { ModelServer, call, message } from './fixtures/model-server';
+import {
+  isManualSessionState,
+  parseSessionState,
+} from '../../src/runtime/state';
 import { startPublicExecutor } from './fixtures/public-executor';
 
 const callbackTraceEvents: unknown[] = [];
@@ -3399,3 +3404,352 @@ it('routing union keeps selected handoff masks and aliased Worker reduction', as
   expect(await session.getActiveAgent()).toBe(worker);
   model.assertExhausted();
 }, 30_000);
+
+// Inspect the native question identity to verify sender isolation.
+type PortableMcpCandidate = {
+  nativeQuestions: Map<unknown, { native: NativeThread; questionId?: string }>;
+};
+
+async function portableMcpApproval(turn: {
+  wait(options: { until: 'interaction' }): Promise<unknown>;
+}) {
+  const pending = (await turn.wait({ until: 'interaction' })) as {
+    requests?: import('../../src').ApprovalRequest[];
+  };
+  expect(pending.requests).toHaveLength(1);
+  const request = pending.requests![0]!;
+  expect(request.type).toBe('approval_request');
+  return request;
+}
+
+async function capturePortableMcpCandidate(session: Session) {
+  return parseSessionState(JSON.stringify(await session.suspend()));
+}
+
+async function portableMcpAgent(finalReplies = 1) {
+  const remote = await peer('find-record');
+  const sampled = call(
+    'reviewed',
+    { key: '43' },
+    { namespace: 'mcp__fixture', callId: 'portable-native' },
+  );
+  sampled.arguments = ' { "key" : "43" } ';
+  const model = new ModelServer([
+    [sampled],
+    ...Array.from({ length: finalReplies }, () => [
+      message('settled through native decision'),
+    ]),
+  ]);
+  const config = await model.config();
+  const provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-portable-mcp',
+    supportsWebsockets: false,
+  });
+  cleanup.push(() => provider.close());
+  const agent = new Agent({
+    instructions: 'Read the record.',
+    provider,
+    model: 'gpt-5.5',
+    programmaticToolCalling: false,
+    tools: [
+      new HttpMCP({
+        name: 'fixture',
+        url: remote.url,
+        tools: ['find-record'],
+        toolNameOverrides: { 'find-record': 'reviewed' },
+        approvalMode: 'preapproved',
+        toolApprovalOverrides: { 'find-record': 'prompt' },
+        cacheToolsList: false,
+      }),
+    ],
+  });
+  return { agent, model, remote, sampled, provider };
+}
+
+it.each(['allow_once', 'deny'] as const)(
+  'portable ordinary MCP candidate settles one fresh exact decision (%s)',
+  async (decision) => {
+    const { agent, model, remote, sampled } = await portableMcpAgent();
+    const source = await agent.session();
+    cleanup.push(() => source.close());
+    const sourceTurn = await source.submit('Read');
+    const old = await portableMcpApproval(sourceTurn);
+    const oldEntry = (
+      source as unknown as PortableMcpCandidate
+    ).nativeQuestions.get(old)!;
+    expect(oldEntry.questionId).toBeDefined();
+    const oldReply = old.reply('allow_once');
+    const saved = await capturePortableMcpCandidate(source);
+    await source.close();
+    expect('manual_continuation' in saved).toBe(true);
+    if (!isManualSessionState(saved)) throw new Error('Native frame missing');
+    const [data] = saved.manual_continuation.pending_mcp!;
+    expect(data).toMatchObject({
+      server_name: 'fixture',
+      tool_name: 'find-record',
+      callable_namespace: 'mcp__fixture',
+      callable_name: 'reviewed',
+    });
+    expect(data).not.toHaveProperty('tool');
+    expect(remote.effects).toEqual([]);
+    await using restored = await agent.session({ state: saved });
+    const fresh = await portableMcpApproval(restored.restoredTurn!);
+    const entry = (
+      restored as unknown as PortableMcpCandidate
+    ).nativeQuestions.get(fresh)!;
+    expect(entry.questionId).toBeDefined();
+    expect(entry.questionId).not.toBe(oldEntry.questionId);
+    expect(entry.questionId).not.toBe(data!.receipt);
+    expect(entry.questionId).not.toBe(data!.token);
+    expect(model.requests).toHaveLength(1);
+    await expect(restored.respond(oldReply)).rejects.toThrow();
+    const wire = JSON.stringify({
+      kind: 'mcp_approval',
+      server_name: data!.server_name,
+      request_id: data!.request_id,
+      decision: 'allow_once',
+    });
+    for (const token of [oldEntry.questionId!, data!.receipt, data!.token])
+      expect(
+        await entry.native._respond_owned_native_question(token, wire),
+      ).toBe(false);
+    await using wrongOwner = await agent.session();
+    await expect(
+      wrongOwner.respond(fresh.reply('allow_once')),
+    ).rejects.toThrow();
+    expect(() => fresh.reply({ allow: true, always: true } as never)).toThrow(
+      /allow_once.*deny/,
+    );
+    expect(remote.effects).toEqual([]);
+    const reply = fresh.reply(decision);
+    await restored.respond(reply);
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+      'settled through native decision',
+    );
+    await expect(restored.respond(reply)).rejects.toThrow();
+    expect(
+      remote.effects.map((effect) => [effect.name, effect.arguments]),
+    ).toEqual(
+      decision === 'allow_once' ? [['find-record', { key: '43' }]] : [],
+    );
+    expect(model.requests).toHaveLength(2);
+    const input = model.requests[1]!.input as JsonObject[];
+    const original = input.filter(
+      (item) =>
+        item.type === 'function_call' && item.call_id === 'portable-native',
+    );
+    const outputs = input.filter(
+      (item) =>
+        item.type === 'function_call_output' &&
+        item.call_id === 'portable-native',
+    );
+    expect(original).toHaveLength(1);
+    expect(outputs).toHaveLength(1);
+    expect(original[0]).toMatchObject({
+      namespace: 'mcp__fixture',
+      name: 'reviewed',
+      arguments: sampled.arguments,
+    });
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it('portable ordinary MCP candidate refuses a changed declaration before an effect', async () => {
+  const { agent, model, remote } = await portableMcpAgent();
+  const source = await agent.session();
+  cleanup.push(() => source.close());
+  const turn = await source.submit('Read');
+  await portableMcpApproval(turn);
+  const saved = await capturePortableMcpCandidate(source);
+  await source.close();
+  const description = recordTool.description;
+  try {
+    recordTool.description = 'A materially different current declaration';
+    await expect(agent.session({ state: saved })).rejects.toThrow(
+      /declaration|source|catalog|changed/,
+    );
+    expect(remote.effects).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+  } finally {
+    recordTool.description = description;
+  }
+}, 30_000);
+
+it('portable ordinary MCP candidate cancellation keeps no approval grant', async () => {
+  const { agent, model, remote } = await portableMcpAgent();
+  const source = await agent.session();
+  cleanup.push(() => source.close());
+  const turn = await source.submit('Read');
+  await portableMcpApproval(turn);
+  const saved = await capturePortableMcpCandidate(source);
+  await source.close();
+  let expired: import('../../src').NativeQuestionReply;
+  let oldId: string;
+  {
+    await using cancelled = await agent.session({ state: saved });
+    const stale = await portableMcpApproval(cancelled.restoredTurn!);
+    expired = stale.reply('allow_once');
+    oldId = (cancelled as unknown as PortableMcpCandidate).nativeQuestions.get(
+      stale,
+    )!.questionId!;
+    await cancelled.restoredTurn!.cancel({ mode: 'force' });
+    await expect(cancelled.respond(expired)).rejects.toThrow();
+    expect(remote.effects).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+  }
+  await using restored = await agent.session({ state: saved });
+  const fresh = await portableMcpApproval(restored.restoredTurn!);
+  expect(
+    (restored as unknown as PortableMcpCandidate).nativeQuestions.get(fresh)!
+      .questionId,
+  ).not.toBe(oldId);
+  await expect(restored.respond(expired)).rejects.toThrow();
+  await restored.respond(fresh.reply('allow_once'));
+  expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+    'settled through native decision',
+  );
+  expect(remote.effects).toHaveLength(1);
+  expect(model.requests).toHaveLength(2);
+  model.assertExhausted();
+}, 30_000);
+
+it.each([
+  ['source_thread_id', '11111111-1111-4111-8111-111111111111'],
+  ['server_name', 'other-fixture'],
+  ['tool_name', 'reviewed'],
+  ['callable_name', 'find-record'],
+  ['declaration_sha256', '0'.repeat(64)],
+])(
+  'portable ordinary MCP candidate refuses a substituted %s',
+  async (field, value) => {
+    const { agent, model, remote } = await portableMcpAgent();
+    const source = await agent.session();
+    cleanup.push(() => source.close());
+    const turn = await source.submit('Read');
+    await portableMcpApproval(turn);
+    const saved = await capturePortableMcpCandidate(source);
+    await source.close();
+    const forged = jsonObject.parse(JSON.parse(JSON.stringify(saved)));
+    const continuation = jsonObject.parse(forged.manual_continuation);
+    const data = jsonObject.parse(
+      (continuation.pending_mcp as JsonObject[])[0],
+    );
+    data[field!] = value!;
+    continuation.pending_mcp = [data];
+    forged.manual_continuation = continuation;
+    let unexpected: Session | undefined;
+    try {
+      await expect(
+        (async () => {
+          const state = parseSessionState(JSON.stringify(forged));
+          unexpected = await agent.session({ state });
+        })(),
+      ).rejects.toThrow(/MCP|mcp|declaration|owner|source|catalog|call/);
+    } finally {
+      await unexpected?.close();
+    }
+    expect(remote.effects).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+  },
+  30_000,
+);
+
+it('portable ordinary MCP candidate gives copied snapshots separate native owners', async () => {
+  const { agent, model, remote } = await portableMcpAgent(2);
+  const source = await agent.session();
+  const turn = await source.submit('Read');
+  const old = await portableMcpApproval(turn);
+  const oldReply = old.reply('allow_once');
+  const saved = await capturePortableMcpCandidate(source);
+  await expect(source.respond(oldReply)).rejects.toThrow();
+  expect(remote.effects).toEqual([]);
+  await source.close();
+  await using left = await agent.session({ state: saved });
+  await using right = await agent.session({ state: saved });
+  expect(left.id).not.toBe(right.id);
+  const a = await portableMcpApproval(left.restoredTurn!);
+  const b = await portableMcpApproval(right.restoredTurn!);
+  const aEntry = (left as unknown as PortableMcpCandidate).nativeQuestions.get(
+    a,
+  )!;
+  const bEntry = (right as unknown as PortableMcpCandidate).nativeQuestions.get(
+    b,
+  )!;
+  expect(aEntry.questionId).not.toBe(bEntry.questionId);
+  const reply = a.reply('allow_once');
+  await expect(right.respond(reply)).rejects.toThrow();
+  expect(
+    await bEntry.native._respond_owned_native_question(
+      aEntry.questionId!,
+      JSON.stringify({
+        kind: 'mcp_approval',
+        server_name: 'fixture',
+        request_id: 'mcp_tool_call_approval_portable-native',
+        decision: 'allow_once',
+      }),
+    ),
+  ).toBe(false);
+  expect(remote.effects).toEqual([]);
+  expect(model.requests).toHaveLength(1);
+  await left.respond(reply);
+  expect((await left.restoredTurn!.wait()).finalOutput).toBe(
+    'settled through native decision',
+  );
+  expect(await bEntry.native._native_question_pending(bEntry.questionId!)).toBe(
+    true,
+  );
+  expect(remote.effects).toHaveLength(1);
+  await right.respond(b.reply('deny'));
+  await right.restoredTurn!.wait();
+  await expect(left.respond(reply)).rejects.toThrow();
+  expect(remote.effects).toHaveLength(1);
+  expect(model.requests).toHaveLength(3);
+}, 30_000);
+
+it.each(['endpoint', 'callback'] as const)(
+  'portable ordinary MCP candidate denies current root %s replacement',
+  async (replacement) => {
+    const { agent, model, remote, provider } = await portableMcpAgent();
+    const source = await agent.session();
+    const turn = await source.submit('Read');
+    await portableMcpApproval(turn);
+    const saved = await capturePortableMcpCandidate(source);
+    await source.close();
+    const other = await peer('find-record');
+    let callbacks = 0;
+    const changed = new Agent({
+      instructions: 'Read the record.',
+      provider,
+      model: 'gpt-5.5',
+      programmaticToolCalling: false,
+      tools: [
+        new HttpMCP({
+          name: 'fixture',
+          url: replacement === 'endpoint' ? other.url : remote.url,
+          tools: ['find-record'],
+          toolNameOverrides: { 'find-record': 'reviewed' },
+          approvalMode: 'preapproved',
+          toolApprovalOverrides: { 'find-record': 'prompt' },
+          cacheToolsList: false,
+          ...(replacement === 'callback'
+            ? {
+                before: () => {
+                  callbacks++;
+                  return { action: 'allow' as const };
+                },
+              }
+            : {}),
+        }),
+      ],
+    });
+    await expect(changed.session({ state: saved })).rejects.toThrow();
+    expect(callbacks).toBe(0);
+    expect(remote.effects).toEqual([]);
+    expect(other.effects).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+  },
+  30_000,
+);

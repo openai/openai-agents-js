@@ -447,9 +447,49 @@ pub(crate) async fn capture_code_states(state: &ThreadState) -> anyhow::Result<C
     Ok(snapshots)
 }
 
+enum ExportOwner<'a> {
+    Idle,
+    Managed(&'a Value),
+    NativeMcp(&'a codex_core::CapturedMcpApproval),
+}
+
+impl ExportOwner<'_> {
+    fn pending(&self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+    async fn check(&self, state: &ThreadState) -> anyhow::Result<()> {
+        match self {
+            Self::Idle => Ok(()),
+            Self::Managed(key) => check_capture(state, key),
+            Self::NativeMcp(captured) => {
+                ensure!(
+                    captured.checkpoint_data().source_thread_id == state.id
+                        && captured.is_pending().await,
+                    "Native MCP export owner expired"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+pub(crate) async fn export_native_mcp(
+    state: &ThreadState,
+    captured: &codex_core::CapturedMcpApproval,
+) -> anyhow::Result<Value> {
+    let owner = ExportOwner::NativeMcp(captured);
+    owner.check(state).await?;
+    export_inner(state, owner, false).await
+}
+
 pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<Value> {
     check_export_owner(state, pending).await?;
-    export_inner(state, pending, false).await
+    export_inner(
+        state,
+        pending.map_or(ExportOwner::Idle, ExportOwner::Managed),
+        false,
+    )
+    .await
 }
 
 async fn check_export_owner(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<()> {
@@ -474,7 +514,7 @@ pub(crate) async fn export_restored_manual(state: &ThreadState) -> anyhow::Resul
         .get::<crate::python_tools::PythonTools>()
         .context("restored manual snapshot requires managed tools")?;
     tools.check_restored_manual_idle(&state.thread).await?;
-    export_inner(state, None, false).await
+    export_inner(state, ExportOwner::Idle, false).await
 }
 
 pub(crate) fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
@@ -559,7 +599,7 @@ mod receipt_projection_tests {
 
 async fn export_inner(
     state: &ThreadState,
-    pending: Option<&Value>,
+    owner: ExportOwner<'_>,
     probe: bool,
 ) -> anyhow::Result<Value> {
     ensure!(
@@ -589,7 +629,7 @@ async fn export_inner(
         .get::<crate::agent_profiles::OpeningProfiles>();
     if !probe
         && graph.is_none()
-        && pending.is_none()
+        && !owner.pending()
         && state.instructions.needs_publication(true)
         && tools
             .as_ref()
@@ -615,8 +655,8 @@ async fn export_inner(
     let code_graph = if !probe {
         Some(
             async {
-                let graph = ProbeGraph::observe(state, pending.is_some())?;
-                graph.check(state, pending.is_some()).await?;
+                let graph = ProbeGraph::observe(state, owner.pending())?;
+                graph.check(state, owner.pending()).await?;
                 Ok::<_, anyhow::Error>(graph)
             }
             .await,
@@ -693,12 +733,10 @@ async fn export_inner(
         "subagent graph changed during checkpoint; save again at a stable boundary"
     );
     if requires_code_graph && let Some(graph) = code_graph {
-        graph?.check(state, pending.is_some()).await?;
+        graph?.check(state, owner.pending()).await?;
     }
     // Native cancellation can retire a pending executor while history flushes.
-    if let Some(key) = pending {
-        check_capture(state, key)?;
-    }
+    owner.check(state).await?;
     let control = state
         .thread
         .thread_extension_data()
@@ -905,7 +943,7 @@ pub(crate) async fn probe(state: &ThreadState) -> anyhow::Result<Probe<Value>> {
         let before = ProbeGraph::observe(state, false)?;
         before.check(state, false).await?;
         check_export_owner(state, None).await?;
-        let captured = export_inner(state, None, true).await;
+        let captured = export_inner(state, ExportOwner::Idle, true).await;
         before.check(state, false).await?;
         captured
     }

@@ -814,9 +814,17 @@ pub async fn recover_prepared(
     terminal: Option<crate::python_tools::RecoveredToolCompletionSeed>,
     staged_input: codex_extension_api::StagedInputBatch,
     raise_on_unknown_tool: bool,
+    native_mcp: Option<codex_core::NativeMcpRecovery>,
 ) -> Result<Value> {
     let thread = &state.thread;
     let mut init = thread.config_snapshot().await.turn_extension_init;
+    if let Some(native_mcp) = native_mcp {
+        anyhow::ensure!(
+            terminal.is_none(),
+            "Native MCP recovery cannot inherit function completion authority"
+        );
+        init.insert(native_mcp);
+    }
     if let Some(submission) = observation_submission_id {
         state
             .request_metadata

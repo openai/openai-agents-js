@@ -251,6 +251,7 @@ export class NativeThread {
     state_json?: string,
   ): Promise<boolean>;
   _enter_python_callback(receipt_json: string): boolean;
+  _defer_python_callback_cleanup(receipt_json: string): boolean;
   _python_callback_cancelled(receipt_json: string): boolean;
   _release_python_callback(
     receipt_json: string,
@@ -306,6 +307,7 @@ export class NativeThread {
     traceJson?: string | null,
     tracing_context?: string,
   ): Promise<string>;
+  _reply_tool_not_found(responseJson: string): void;
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
   _reply_model_producer(response_json: string): void;

@@ -1949,6 +1949,7 @@ export class Agent<Context = undefined, Output = string> {
               }
             : {}),
           _context_callbacks: {
+            tool_not_found: toolErrorFormatter !== undefined,
             model_producer: provider.modelBackend !== undefined,
             before_compact:
               beforeCompact !== undefined ||
