@@ -15,6 +15,7 @@ import {
   type Session,
   type Completed,
 } from '../../src';
+import type { Session as CoreSession } from '../../src/runtime/session';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -951,7 +952,8 @@ nativeIt.each([false, true])(
     await using restored = await f.parent.session({ state: portable });
     if (!restored.restoredTurn)
       throw new Error('Expected restored parent turn');
-    restored._startProducedItems();
+    const coreSession = restored as CoreSession;
+    coreSession._startProducedItems();
     expect(restored.restoredTurn.runUsage).toMatchObject({
       requests: 2,
       missingUsageRequests: 2,
@@ -975,7 +977,7 @@ nativeIt.each([false, true])(
     });
     expect(restored.restoredTurn.runUsage).toEqual(completed.runUsage);
     expect(completed.finalOutput).toBe('parent complete');
-    const origins = restored
+    const origins = coreSession
       ._takeProducedItems(restored.restoredTurn.turnId)
       .filter(
         ({ item }) => 'callId' in item && item.callId === 'nested-parent-call',
