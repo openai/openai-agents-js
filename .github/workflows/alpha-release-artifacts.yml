@@ -2,7 +2,7 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness, 'ci/native-bundle/**']
+    branches: [feat/codex-harness, 'ci/native-bundle/**', 'ci/hillclimb/*']
     paths-ignore:
       - '**/*.md'
       - '**/*.mdx'
@@ -15,7 +15,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: alpha-release-artifacts-${{ github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness' && github.sha || github.ref }}
+  group: alpha-release-artifacts-${{ github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -141,7 +141,7 @@ jobs:
             artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
-            cargo_jobs: 4
+            cargo_jobs: ${{ github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&16 ||4 }}
             artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
           - platform: darwin-arm64
             runner: macos-15
@@ -151,7 +151,13 @@ jobs:
             runner: windows-2025
             cargo_jobs: 16
             artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || toJSON(matrix.runner)) }}
+    runs-on: >-
+      ${{ fromJSON(
+        github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && matrix.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && matrix.platform == 'linux-arm64' && '{"group":"codex-runners","labels":"codex-linux-arm64"}' ||
+        toJSON(matrix.runner)
+      ) }}
     timeout-minutes: 180
     defaults:
       run:

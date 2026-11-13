@@ -21,7 +21,16 @@ jobs:
   native:
     name: Native bundle (${{ inputs.platform }})
     if: github.repository == 'openai/openai-agents-js'
-    runs-on: ${{ fromJSON(github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' || github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' || inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"' || '"macos-15-xlarge"') }}
+    runs-on: >-
+      ${{ fromJSON(
+        github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64-xl"}' ||
+        github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+        github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) && inputs.platform == 'linux-arm64' && '{"group":"codex-runners","labels":"codex-linux-arm64"}' ||
+        inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"' ||
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/ci/hillclimb/') &&
+         '"macos-26-xlarge"' || '"macos-15-xlarge"')
+      ) }}
     timeout-minutes: 180
     outputs:
       artifact: ${{ toJSON(steps.upload.outputs) }}
@@ -31,7 +40,7 @@ jobs:
     env:
       EXPECTED_PLATFORM: ${{ inputs.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' &&64 || inputs.platform == 'win32-x64' &&16 || inputs.platform == 'linux-arm64' &&4 ||5 }}
+      CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' &&64 || inputs.platform == 'win32-x64' && (github.event_name == 'push' && github.ref == 'refs/heads/ci/hillclimb/js-macos26-win48-03' &&48 ||16) || inputs.platform == 'linux-arm64' && (github.repository == 'openai/openai-agents-js' && github.event_name == 'push' && (github.ref == 'refs/heads/feat/codex-harness' || startsWith(github.ref, 'refs/heads/ci/hillclimb/')) &&16 ||4) ||5 }}
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
