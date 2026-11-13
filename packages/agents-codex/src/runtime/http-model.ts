@@ -482,7 +482,9 @@ export class NativeProviderRoutes {
           if (!Array.isArray(body.input))
             throw new NativeError('Invalid native Responses input');
           const ref = body.previous_response_id;
-          if (ref != null) {
+          const providerManagedHistory =
+            admitted.provider_managed_history === true;
+          if (ref != null && !providerManagedHistory) {
             if (ref !== prefix.id)
               throw new NativeError('Unknown native WebSocket continuation');
             let tail: JsonValue[] = [];
@@ -523,7 +525,9 @@ export class NativeProviderRoutes {
           let oversized = false;
           try {
             // Core records this continuation for retry safety before dispatch.
-            const payload = prefix.encode(body, admitted.model, ref != null);
+            const payload = providerManagedHistory
+              ? encode(body)
+              : prefix.encode(body, admitted.model, ref != null);
             if (Buffer.byteLength(payload, 'utf8') > maxWebsocketRequestBytes) {
               oversized = true;
               throw new NativeError(

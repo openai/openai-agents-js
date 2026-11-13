@@ -512,6 +512,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'realtime'
   | 'realtimeUsage'
   | 'realtimeUsageAccounting'
+  | 'realtimeLifetimeUsage'
   | 'getActiveAgent'
   | 'goal'
   | 'setPausedGoal'

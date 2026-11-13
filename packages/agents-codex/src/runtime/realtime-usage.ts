@@ -36,6 +36,12 @@ export interface NativeRealtimeUsageAccounting {
   readonly usageReports: number;
 }
 
+/** Detached speech usage across sequential connections owned by one Session. */
+export interface NativeRealtimeUsageSnapshot {
+  readonly usage: NativeRealtimeUsage | undefined;
+  readonly accounting: NativeRealtimeUsageAccounting;
+}
+
 /** @internal Add measured counters without filling absent values with invented zeros. */
 export function addRealtimeUsage(
   total: UsageCounterTree,

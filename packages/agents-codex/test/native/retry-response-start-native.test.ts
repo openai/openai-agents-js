@@ -27,7 +27,16 @@ it.each([
           };
         },
         getRetryAdvice() {
-          return { suggested: true, replaySafety, responseStarted };
+          return {
+            suggested: true,
+            replaySafety,
+            responseStarted,
+            normalized: {
+              statusCode: 429,
+              requestId: 'provider-fact',
+              isAbort: false,
+            },
+          };
         },
       },
     });
@@ -41,6 +50,8 @@ it.each([
           backoff: { initialDelayMs: 0, maxDelayMs: 0 },
           policy(context) {
             seen.push(context);
+            expect(context.normalizedError.statusCode).toBe(429);
+            expect(context.normalizedError.requestId).toBe('provider-fact');
             return {
               retry:
                 !context.responseStarted &&

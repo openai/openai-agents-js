@@ -103,6 +103,11 @@ impl ContextLease {
 }
 
 pub(super) enum PreparationReply {
+    ProviderResponseSpan(
+        oneshot::Sender<
+            std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>,
+        >,
+    ),
     Model(ModelDelivery),
     ModelRetry(
         oneshot::Sender<std::result::Result<codex_protocol::model_retry::ModelRetryResolution, ()>>,
@@ -126,6 +131,7 @@ pub(super) enum PreparationReply {
 impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
+            Self::ProviderResponseSpan(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
             Self::ModelRetry(reply) => reply.is_closed(),
@@ -140,6 +146,15 @@ impl PreparationReply {
     pub(super) fn is_selection(&self) -> bool {
         matches!(self, Self::Selection(_))
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderResponseSpanReply {
+    pub(crate) owner: StepReply,
+    data: Option<codex_extension_api::SdkProviderResponseSpanAdmission>,
+    #[serde(default)]
+    failed: bool,
 }
 
 #[derive(Deserialize)]
@@ -680,6 +695,76 @@ impl PythonTools {
             |reply| PreparationReply::Completion { reply, stop }).await
     }
 
+    pub(crate) async fn admit_provider_response_span(
+        self: &Arc<Self>,
+        input: codex_extension_api::SdkProviderResponseSpanInput,
+    ) -> Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>> {
+        self.exchange_context(
+            input.admission.step_store(),
+            input.admission.thread_id(),
+            input.admission.turn_store().level_id(),
+            input.cancellation,
+            None,
+            json!({"type":"_sdk_provider_response_span", "parent_context":input.parent_context}),
+            PreparationReply::ProviderResponseSpan,
+        )
+        .await
+    }
+
+    pub(crate) fn reply_provider_response_span(
+        &self,
+        response: ProviderResponseSpanReply,
+    ) -> Result<()> {
+        ensure!(
+            !response.failed || response.data.is_none(),
+            "Conflicting SDK response span reply"
+        );
+        if let Some(id) = response
+            .data
+            .as_ref()
+            .and_then(|value| value.span_id.as_ref())
+        {
+            ensure!(
+                id.len() == 16
+                    && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && id.bytes().any(|byte| byte != b'0'),
+                "Invalid SDK response span ID"
+            );
+        }
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self
+            .step_replies
+            .lock()
+            .expect("JavaScript step replies poisoned");
+        let id = crate::native_id(&response.owner.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::ProviderResponseSpan(_)
+            )),
+            "Expired SDK response span admission"
+        );
+        let pending = take_pending_step(&mut replies, id).expect("checked response span reply");
+        let PreparationReply::ProviderResponseSpan(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(response.data)
+            })
+            .map_err(|_| anyhow::anyhow!("Expired SDK response span admission"))
+    }
+
     pub(crate) fn reply_model_context(&self, response: ContextReply) -> Result<()> {
         ensure!(
             !(response.failed
@@ -861,6 +946,117 @@ mod tests {
         );
         receive
     }
+    fn pending_response_span(
+        tools: &PythonTools,
+    ) -> oneshot::Receiver<std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>> {
+        let (reply, receive) = oneshot::channel();
+        tools.step_replies.lock().unwrap().insert(
+            17,
+            PendingStep {
+                source_cancellation: Some(CancellationToken::new()),
+                callback: None,
+                operation_generation: 0,
+                turn: "turn".into(),
+                generation: 0,
+                allowed: vec![],
+                reply: PreparationReply::ProviderResponseSpan(reply),
+            },
+        );
+        receive
+    }
+
+    #[tokio::test]
+    async fn response_span_reply_is_typed_owned_and_single_use() {
+        let tools = super::super::pending_tests::tools();
+        let receive = pending_response_span(&tools);
+        for data in [
+            json!({"span_id":"0000000000000000"}),
+            json!({"span_id":"not-hex-span-id!"}),
+        ] {
+            assert!(
+                tools
+                    .reply_provider_response_span(
+                        serde_json::from_value(json!({"owner":owner(),"data":data})).unwrap()
+                    )
+                    .is_err()
+            );
+        }
+        assert!(serde_json::from_value::<ProviderResponseSpanReply>(
+            json!({"owner":owner(),"data":{"span_id":"1234567890abcdef","parent_context":"foreign"}})
+        ).is_err());
+        let mut foreign = owner();
+        foreign["turn_id"] = json!("successor");
+        assert!(
+            tools
+                .reply_provider_response_span(
+                    serde_json::from_value(
+                        json!({"owner":foreign,"data":{"span_id":"1234567890abcdef"}})
+                    )
+                    .unwrap()
+                )
+                .is_err()
+        );
+        assert!(tools.step_replies.lock().unwrap().contains_key(&17));
+        tools
+            .reply_provider_response_span(
+                serde_json::from_value(
+                    json!({"owner":owner(),"data":{"span_id":"1234567890abcdef"}}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            receive.await.unwrap().unwrap().unwrap().span_id.as_deref(),
+            Some("1234567890abcdef")
+        );
+        assert!(
+            tools
+                .reply_provider_response_span(
+                    serde_json::from_value(
+                        json!({"owner":owner(),"data":{"span_id":"1234567890abcdef"}})
+                    )
+                    .unwrap()
+                )
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn response_span_default_suppression_and_failure_remain_distinct() {
+        let tools = super::super::pending_tests::tools();
+        let receive = pending_response_span(&tools);
+        tools
+            .reply_provider_response_span(
+                serde_json::from_value(json!({"owner":owner(),"data":{"span_id":null}})).unwrap(),
+            )
+            .unwrap();
+        assert!(receive.await.unwrap().unwrap().unwrap().span_id.is_none());
+        let receive = pending_response_span(&tools);
+        tools
+            .reply_provider_response_span(
+                serde_json::from_value(json!({"owner":owner(),"data":null})).unwrap(),
+            )
+            .unwrap();
+        assert!(receive.await.unwrap().unwrap().is_none());
+        let receive = pending_response_span(&tools);
+        assert!(
+            tools
+                .reply_provider_response_span(
+                    serde_json::from_value(
+                        json!({"owner":owner(),"failed":true,"data":{"span_id":null}})
+                    )
+                    .unwrap()
+                )
+                .is_err()
+        );
+        tools
+            .reply_provider_response_span(
+                serde_json::from_value(json!({"owner":owner(),"failed":true})).unwrap(),
+            )
+            .unwrap();
+        assert!(receive.await.unwrap().is_err());
+    }
+
     #[tokio::test]
     async fn malformed_or_foreign_reply_leaves_the_original_context_waiter_available() {
         let tools = super::super::pending_tests::tools();

@@ -1,0 +1,25 @@
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index 5dc03288b17891cc4e18d8ce5059750c8760c12d..3210f3da2dd9bbbbc699817de5afbcb45aec12d8 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -615,6 +615,7 @@ impl ResponsesWebsocketClient {
+             /*turn_state*/ None,
+             /*host_connect*/ None,
+             /*request_transport*/ None,
++            &self.websocket_options,
+         )
+         .await
+         .map_err(|error| {
+diff --git a/codex-rs/protocol/src/model_request_transport.rs b/codex-rs/protocol/src/model_request_transport.rs
+index 41fa6f27dc2c5729d7413bf502164258ee9a904c..0cef71c4929365c7f9b388ad50ba6f412badfd7d 100644
+--- a/codex-rs/protocol/src/model_request_transport.rs
++++ b/codex-rs/protocol/src/model_request_transport.rs
+@@ -17,7 +17,7 @@ pub enum RequestTransportMode {
+ #[serde(deny_unknown_fields)]
+ pub struct RequestTransportOverrides {
+     #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_with::rust::double_option")]
+-    #[ts(optional = nullable)]
++    #[ts(optional = nullable, as = "Option<RequestTransportMode>")]
+     #[schemars(with = "Option<RequestTransportMode>")]
+     pub mode: Option<Option<RequestTransportMode>>,
+     #[serde(

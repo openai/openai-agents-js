@@ -289,8 +289,8 @@ async function main() {
       const over = await telemetry.startTrace({ name: 'over-bound' });
       try {
         assert.throws(
-          () => over.end({ data: { large: 'x'.repeat(32769) } }),
-          /32 KiB/,
+          () => over.end({ data: { large: 'x'.repeat(65537) } }),
+          /64 KiB/,
         );
       } finally {
         over.close();
@@ -312,9 +312,9 @@ async function main() {
       await assert.rejects(
         telemetry.startTrace({
           name: 'metadata-still-bounded',
-          metadata: { value: 'é'.repeat(32769) },
+          metadata: { value: 'é'.repeat(65537) },
         }),
-        /64 KiB/,
+        /128 KiB/,
       );
       assert.equal(
         (await telemetry.forceFlush({ timeoutMs: 3000 })).status,

@@ -1097,9 +1097,37 @@
       "sha256": "fccc9dcab7f0af9ca1e37d12b27e36cdba9d58b1e7981662a56a4b050c8bffbd"
     },
     {
+      "path": "sdk-websocket-controls.patch",
+      "sha256": "efb48d3289a8d5a9e2623a142f03e907aa762b359ca5f88163e677dd2e820b83"
+    },
+    {
+      "path": "sdk-native-response-span-tracing.patch",
+      "sha256": "cb8d0700197509768100535bc7b73007c3c8fc31c36098e6253113015c5d241d"
+    },
+    {
+      "path": "sdk-native-trace-annotation-budget.patch",
+      "sha256": "7623a97a7535d3683fe252dcb819f4e1ff43c69d2af2f7b2366b684b861e4b6d"
+    },
+    {
+      "path": "sdk-provider-history-websocket-owner.patch",
+      "sha256": "1f9f36c6bf69b94e6811a05e538baa0ef781f51cc3009372b1a2840ca62bde23"
+    },
+    {
+      "path": "sdk-request-transport-mode-type.patch",
+      "sha256": "c62d646daaa32d1f5e39cbce272d303ef9bf6d1465ebbf108e28c983a5113c04"
+    },
+    {
+      "path": "sdk-provider-transport-feedback.patch",
+      "sha256": "d8ed8c8fbe247827e87eb880fc92f2bcbb5b51f9f494ec5919c6e88617cd9d8d"
+    },
+    {
+      "path": "sdk-provider-websocket-frame-cap.patch",
+      "sha256": "e260e7b46598b5656ec0ff77813b1460c012bf016293f49af4ece3a975ae6ddb"
+    },
+    {
       "path": "sdk-provider-programmatic-cache-controls.patch",
       "sha256": "c4c67e3874a8cbbad08a9a59a2cb7a84b666d9d6a38c1b18e0de3d8d69175f17"
     }
   ],
-  "result_tree": "3687ab99593ed37ea54184ede9776304d12847ad"
+  "result_tree": "21b4af9f890edf25da7ce8afbf3b13dd7e0e453a"
 }
