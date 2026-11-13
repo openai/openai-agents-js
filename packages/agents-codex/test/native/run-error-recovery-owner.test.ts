@@ -172,13 +172,14 @@ it.each(['token', 'spoofed_budget', 'spoofed_output', 'handler_throw'])(
               throw new OutputValidationError('application callback');
             }
           : undefined;
-    const agent = new Agent({
-      instructions: 'Answer.',
-      provider,
-      ...(mode === 'handler_throw'
-        ? { outputType: z.object({ answer: z.string() }) }
-        : {}),
-    });
+    const options = { instructions: 'Answer.', provider };
+    const agent =
+      mode === 'handler_throw'
+        ? new Agent({
+            ...options,
+            outputType: z.object({ answer: z.string() }),
+          })
+        : new Agent(options);
     const error = await agent
       .run('begin', {
         budget: mode === 'token' ? { maxTokens: 0 } : undefined,
