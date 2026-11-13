@@ -1086,8 +1086,8 @@
     },
     {
       "path": "sdk-ordered-workspace-callbacks.patch",
-      "sha256": "e1fc1611a0d92e19d3fb7adabab00c87135faefd1c5964c9a2ea2e0054252a3b"
+      "sha256": "d2355e27e5e22e2b5426058559c6cc9ddb9b68465c671a6e68309fa65a449931"
     }
   ],
-  "result_tree": "b4b793555a9af02af04f408f2a22f3204a0fb6ec"
+  "result_tree": "6d05dfe13b2788641989027bf49615a1d55615cf"
 }

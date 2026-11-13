@@ -14,7 +14,7 @@ index edd9e516..1040b2a9 100644
          self.0.search_info()
      }
 diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
-index 9a26038c..e2ff7f28 100644
+index 9a26038c..6fa49d89 100644
 --- a/codex-rs/core/src/tools/parallel.rs
 +++ b/codex-rs/core/src/tools/parallel.rs
 @@ -1,3 +1,4 @@
@@ -22,41 +22,105 @@ index 9a26038c..e2ff7f28 100644
  use std::sync::Arc;
  use std::sync::OnceLock;
  use std::sync::atomic::Ordering;
-@@ -50,6 +51,147 @@ pub(crate) struct DirectToolResult {
+@@ -50,6 +51,205 @@ pub(crate) struct DirectToolResult {
      pub(crate) pending_exec: Option<PendingLocalExec>,
  }
 
 +// Reserve workspace mutations before dispatch tasks can be scheduled out of order.
 +// Automatic callbacks remain concurrent, but later mutations await their settlement.
 +// Manual callbacks stay independent so they can unblock an automatic callback.
-+#[derive(Default)]
 +struct OrderedWorkspaceCalls {
 +    state: std::sync::Mutex<WorkspaceDispatchState>,
++    progress: tokio::sync::watch::Sender<CallbackProgress>,
++}
++
++impl Default for OrderedWorkspaceCalls {
++    fn default() -> Self {
++        let (progress, _) = tokio::sync::watch::channel(CallbackProgress::default());
++        Self {
++            state: std::sync::Mutex::new(WorkspaceDispatchState::default()),
++            progress,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Default)]
++struct CallbackProgress {
++    settled: usize,
++    failed_at: Option<usize>,
 +}
 +
 +#[derive(Default)]
 +struct WorkspaceDispatchState {
 +    waiting: VecDeque<WorkspaceWaiter>,
-+    callbacks: Vec<tokio::sync::watch::Receiver<Option<bool>>>,
++    callbacks: VecDeque<bool>,
++    progress: CallbackProgress,
++}
++
++struct CallbackBarrier {
++    progress: tokio::sync::watch::Receiver<CallbackProgress>,
++    through: usize,
 +    failed: bool,
++}
++
++impl CallbackBarrier {
++    async fn wait(mut self) -> Result<(), FunctionCallError> {
++        if self.failed {
++            return Err(FunctionCallError::Fatal(
++                "Earlier automatic callback failed".into(),
++            ));
++        }
++        let progress = self
++            .progress
++            .wait_for(|progress| {
++                let boundary = progress
++                    .failed_at
++                    .filter(|failed| *failed <= self.through)
++                    .unwrap_or(self.through);
++                progress.settled >= boundary
++            })
++            .await
++            .map_err(|_| FunctionCallError::Fatal("Automatic callback settlement closed".into()))?;
++        if progress
++            .failed_at
++            .is_some_and(|failed| failed <= self.through)
++        {
++            return Err(FunctionCallError::Fatal(
++                "Earlier automatic callback failed".into(),
++            ));
++        }
++        Ok(())
++    }
 +}
 +
 +struct AutomaticCallbackLease {
 +    calls: Arc<OrderedWorkspaceCalls>,
-+    settled: tokio::sync::watch::Sender<Option<bool>>,
++    sequence: usize,
 +    success: bool,
 +}
 +
 +impl Drop for AutomaticCallbackLease {
 +    fn drop(&mut self) {
++        let mut state = self
++            .calls
++            .state
++            .lock()
++            .expect("workspace dispatch queue poisoned");
 +        if !self.success {
-+            self.calls
-+                .state
-+                .lock()
-+                .expect("workspace dispatch queue poisoned")
-+                .failed = true;
++            state.progress.failed_at = Some(
++                state
++                    .progress
++                    .failed_at
++                    .map_or(self.sequence, |previous| previous.min(self.sequence)),
++            );
 +        }
-+        let _ = self.settled.send(Some(self.success));
++        let index = self.sequence - state.progress.settled - 1;
++        state.callbacks[index] = true;
++        while state.callbacks.front() == Some(&true) {
++            state.callbacks.pop_front();
++            state.progress.settled += 1;
++        }
++        self.calls.progress.send_replace(state.progress);
 +    }
 +}
 +
@@ -68,8 +132,7 @@ index 9a26038c..e2ff7f28 100644
 +struct WorkspaceTicket {
 +    lease: WorkspaceLease,
 +    ready: tokio::sync::oneshot::Receiver<()>,
-+    callbacks: Vec<tokio::sync::watch::Receiver<Option<bool>>>,
-+    failed: bool,
++    callbacks: CallbackBarrier,
 +}
 +
 +struct WorkspaceLease {
@@ -78,30 +141,26 @@ index 9a26038c..e2ff7f28 100644
 +}
 +
 +impl OrderedWorkspaceCalls {
-+    fn callbacks_at_drain(&self) -> (Vec<tokio::sync::watch::Receiver<Option<bool>>>, bool) {
-+        let mut state = self
++    fn callbacks_at_drain(&self) -> (usize, bool) {
++        let state = self
 +            .state
 +            .lock()
 +            .expect("workspace dispatch queue poisoned");
-+        state
-+            .callbacks
-+            .retain(|callback| callback.borrow().is_none());
-+        (state.callbacks.clone(), state.failed)
++        (
++            state.progress.settled + state.callbacks.len(),
++            state.progress.failed_at.is_some(),
++        )
 +    }
 +
 +    fn reserve_callback(self: &Arc<Self>) -> AutomaticCallbackLease {
-+        let (settled, waiting) = tokio::sync::watch::channel(None);
 +        let mut state = self
 +            .state
 +            .lock()
 +            .expect("workspace dispatch queue poisoned");
-+        state
-+            .callbacks
-+            .retain(|callback| callback.borrow().is_none());
-+        state.callbacks.push(waiting);
++        state.callbacks.push_back(false);
 +        AutomaticCallbackLease {
 +            calls: Arc::clone(self),
-+            settled,
++            sequence: state.progress.settled + state.callbacks.len(),
 +            success: false,
 +        }
 +    }
@@ -113,11 +172,11 @@ index 9a26038c..e2ff7f28 100644
 +            .state
 +            .lock()
 +            .expect("workspace dispatch queue poisoned");
-+        state
-+            .callbacks
-+            .retain(|callback| callback.borrow().is_none());
-+        let callbacks = state.callbacks.clone();
-+        let failed = state.failed;
++        let callbacks = CallbackBarrier {
++            progress: self.progress.subscribe(),
++            through: state.progress.settled + state.callbacks.len(),
++            failed: state.progress.failed_at.is_some(),
++        };
 +        let waiting = &mut state.waiting;
 +        let sender = if waiting.is_empty() {
 +            let _ = sender.send(());
@@ -136,7 +195,6 @@ index 9a26038c..e2ff7f28 100644
 +            },
 +            ready,
 +            callbacks,
-+            failed,
 +        }
 +    }
 +}
@@ -170,7 +228,7 @@ index 9a26038c..e2ff7f28 100644
  #[derive(Default)]
  struct AgentHandoffSelection {
      first_requested: Option<(String, codex_tools::ToolName)>,
-@@ -227,8 +369,18 @@ impl ToolCallRuntime {
+@@ -227,8 +427,18 @@ impl ToolCallRuntime {
          let call_state = Arc::new(ToolCallState::default());
          let retained_step_context = Arc::clone(&step_context);
          let dispatch_call_state = Arc::clone(&call_state);
@@ -191,7 +249,7 @@ index 9a26038c..e2ff7f28 100644
          let future = if ignored {
              Either::Left(std::future::ready(Ok(AnyToolResult {
                  harness_metadata: None,
-@@ -242,15 +394,19 @@ impl ToolCallRuntime {
+@@ -242,15 +452,19 @@ impl ToolCallRuntime {
                  pending_exec: None,
              })))
          } else {
@@ -212,7 +270,7 @@ index 9a26038c..e2ff7f28 100644
              let result = future.await;
              let mut recorded_call =
                  recorded_call.filter(|(_, recording)| recording.strong_count() > 0);
-@@ -355,6 +511,25 @@ impl ToolCallRuntime {
+@@ -355,6 +569,25 @@ impl ToolCallRuntime {
          source: ToolCallSource,
          cancellation_token: CancellationToken,
          call_state: Arc<ToolCallState>,
@@ -238,7 +296,7 @@ index 9a26038c..e2ff7f28 100644
      ) -> impl std::future::Future<Output = Result<AnyToolResult, FunctionCallError>> {
          let message_admission =
              super::user_messaging::admit_code_mode_send(&self.session, &source, &call.tool_name);
-@@ -365,6 +540,57 @@ impl ToolCallRuntime {
+@@ -365,6 +598,55 @@ impl ToolCallRuntime {
          let router = &step_context.tool_router;
          let supports_parallel = router.tool_supports_parallel(&call);
          let tool_runtime = router.tool_runtime(&call.tool_name);
@@ -273,15 +331,13 @@ index 9a26038c..e2ff7f28 100644
 +                .as_ref()
 +                .map(|ticket| Arc::clone(&ticket.lease.calls))
 +        });
-+        let (workspace_lease, workspace_ready, callbacks, failed_callback) = match workspace_ticket
-+        {
++        let (workspace_lease, workspace_ready, mut callbacks) = match workspace_ticket {
 +            Some(ticket) => (
 +                Some(ticket.lease),
 +                Some(ticket.ready),
-+                ticket.callbacks,
-+                ticket.failed,
++                Some(ticket.callbacks),
 +            ),
-+            None => (None, None, Vec::new(), false),
++            None => (None, None, None),
 +        };
 +        // These operations retain admission until callback cleanup settles,
 +        // including when a caller passively drops its future.
@@ -296,7 +352,7 @@ index 9a26038c..e2ff7f28 100644
          let router = Arc::clone(router);
          let session = Arc::clone(&self.session);
          let turn = Arc::clone(&step_context.turn);
-@@ -423,6 +649,43 @@ impl ToolCallRuntime {
+@@ -423,6 +705,28 @@ impl ToolCallRuntime {
          let mut dispatch_handle = AbortOnDropHandle::new(tokio::spawn(
              async move {
                  let _message_admission = message_admission?;
@@ -309,38 +365,23 @@ index 9a26038c..e2ff7f28 100644
 +                }
 +                // Every automatic sibling has registered by the model-response
 +                // drain boundary, including calls appearing after this mutation.
-+                let (callbacks, failed_callback) = callback_batch
-+                    .as_ref()
-+                    .map_or((callbacks, failed_callback), |batch| {
-+                        batch.callbacks_at_drain()
-+                    });
++                if let (Some(callbacks), Some(batch)) =
++                    (callbacks.as_mut(), callback_batch.as_ref())
++                {
++                    (callbacks.through, callbacks.failed) = batch.callbacks_at_drain();
++                }
 +                if let Some(ready) = workspace_ready {
 +                    ready.await.map_err(|_| {
 +                        FunctionCallError::Fatal("Workspace dispatch queue closed".to_string())
 +                    })?;
 +                }
-+                if failed_callback {
-+                    return Err(FunctionCallError::Fatal(
-+                        "Earlier automatic callback failed".into(),
-+                    ));
-+                }
-+                for mut callback in callbacks {
-+                    let result = callback
-+                        .wait_for(|settled| settled.is_some())
-+                        .await
-+                        .map_err(|_| {
-+                            FunctionCallError::Fatal("Automatic callback settlement closed".into())
-+                        })?;
-+                    if *result != Some(true) {
-+                        return Err(FunctionCallError::Fatal(
-+                            "Earlier automatic callback failed".into(),
-+                        ));
-+                    }
++                if let Some(callbacks) = callbacks {
++                    callbacks.wait().await?;
 +                }
                  if let Some(tool_runtime) = tool_runtime {
                      if crate::realtime_conversation::uses_retained_mcp_binding(&step_context)
                          && let Some(server) = tool_runtime.mcp_server_name()
-@@ -445,30 +708,38 @@ impl ToolCallRuntime {
+@@ -445,30 +749,38 @@ impl ToolCallRuntime {
                          "Canonical thread persistence failed; tool execution stopped".to_string(),
                      )
                  })?;
@@ -402,7 +443,7 @@ index 9a26038c..e2ff7f28 100644
                  drop(guard);
                  // The sampling loop collects results in order only after its stream ends.
                  // Record readiness here, before either caller encodes or collects the result.
-@@ -488,7 +759,11 @@ impl ToolCallRuntime {
+@@ -488,7 +800,11 @@ impl ToolCallRuntime {
              .in_current_span(),
          ));
 
@@ -415,7 +456,7 @@ index 9a26038c..e2ff7f28 100644
              let mut tool_call_timing_guard = tool_call_timing_guard;
              let mut result = tokio::select! {
                  res = &mut dispatch_handle => res.map_err(Self::tool_task_join_error)?,
-@@ -502,7 +777,9 @@ impl ToolCallRuntime {
+@@ -502,7 +818,9 @@ impl ToolCallRuntime {
                          match dispatch_handle.await {
                              Ok(result) => result,
                              Err(err) if err.is_cancelled() => {
@@ -426,7 +467,7 @@ index 9a26038c..e2ff7f28 100644
                                      return Err(FunctionCallError::Fatal("computer call cancelled".into()));
                                  }
                                  if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
-@@ -525,6 +802,9 @@ impl ToolCallRuntime {
+@@ -525,6 +843,9 @@ impl ToolCallRuntime {
                                      (call_state.builtin_sandbox_operation.get().copied(), call_state.dispatch_started_at.get().map(Instant::elapsed), None),
                                  )
                                  .await;
@@ -436,7 +477,7 @@ index 9a26038c..e2ff7f28 100644
                                  Ok(response)
                              }
                              Err(err) => Err(Self::tool_task_join_error(err)),
-@@ -532,6 +812,10 @@ impl ToolCallRuntime {
+@@ -532,6 +853,10 @@ impl ToolCallRuntime {
                      }
                  },
              };
@@ -447,7 +488,7 @@ index 9a26038c..e2ff7f28 100644
              // Use one completion measurement for logging and response formatting.
              // Measuring inside a handler would omit routing and output processing.
              if let Some(timing) = tool_call_timing_guard.as_mut()
-@@ -542,7 +826,19 @@ impl ToolCallRuntime {
+@@ -542,7 +867,19 @@ impl ToolCallRuntime {
              }
              result
          }
@@ -468,7 +509,7 @@ index 9a26038c..e2ff7f28 100644
      }
  }
 
-@@ -956,6 +1252,428 @@ mod tests {
+@@ -956,6 +1293,493 @@ mod tests {
          Ok(())
      }
 
@@ -636,6 +677,71 @@ index 9a26038c..e2ff7f28 100644
 +            }
 +        }
 +        Ok(())
++    }
++
++    #[test]
++    fn workspace_callback_barriers_keep_linear_shared_state() {
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let mut callbacks = (0..2048)
++            .map(|_| calls.reserve_callback())
++            .collect::<Vec<_>>();
++        let tickets = (0..2048).map(|_| calls.reserve()).collect::<Vec<_>>();
++        assert_eq!(calls.progress.receiver_count(), tickets.len());
++        assert_eq!(calls.state.lock().unwrap().callbacks.len(), callbacks.len());
++        for ticket in &tickets {
++            assert_eq!(ticket.callbacks.through, callbacks.len());
++        }
++        while let Some(mut callback) = callbacks.pop() {
++            callback.success = true;
++            drop(callback);
++        }
++        assert_eq!(calls.progress.borrow().settled, 2048);
++        assert!(calls.state.lock().unwrap().callbacks.is_empty());
++        assert_eq!(calls.progress.receiver_count(), tickets.len());
++    }
++
++    #[tokio::test]
++    async fn workspace_callback_barriers_preserve_prefix_and_failure() {
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let mut first = calls.reserve_callback();
++        let earlier = calls.reserve();
++        let second = calls.reserve_callback();
++        let later = calls.reserve();
++        drop(second);
++        assert_eq!(calls.progress.borrow().settled, 0);
++        first.success = true;
++        drop(first);
++        earlier.callbacks.wait().await.unwrap();
++        assert!(matches!(
++            later.callbacks.wait().await,
++            Err(FunctionCallError::Fatal(_))
++        ));
++        assert_eq!(calls.progress.borrow().settled, 2);
++    }
++
++    #[tokio::test]
++    async fn workspace_callback_barriers_preserve_early_failure() {
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let first = calls.reserve_callback();
++        let later = calls.reserve_callback();
++        let ticket = calls.reserve();
++        drop(first);
++        let result = tokio::time::timeout(Duration::from_secs(1), ticket.callbacks.wait())
++            .await
++            .unwrap();
++        assert!(matches!(result, Err(FunctionCallError::Fatal(_))));
++        drop(later);
++
++        let calls = Arc::new(OrderedWorkspaceCalls::default());
++        let first = calls.reserve_callback();
++        let later = calls.reserve_callback();
++        drop(later);
++        let ticket = calls.reserve();
++        let result = tokio::time::timeout(Duration::from_secs(1), ticket.callbacks.wait())
++            .await
++            .unwrap();
++        assert!(matches!(result, Err(FunctionCallError::Fatal(_))));
++        drop(first);
 +    }
 +
 +    struct DeferredFatalCallback {
