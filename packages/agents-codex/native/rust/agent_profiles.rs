@@ -1771,6 +1771,11 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
     fn supports_parallel_tool_calls(&self) -> bool {
         true
     }
+    fn is_automatic_function_callback(&self) -> bool {
+        self.callback
+            .as_ref()
+            .is_some_and(|callback| callback.is_automatic_function_callback())
+    }
     fn on_result_accepted(
         &self,
         turn_id: &str,

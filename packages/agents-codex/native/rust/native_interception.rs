@@ -6053,6 +6053,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for Executor {
     fn supports_parallel_tool_calls(&self) -> bool {
         self.inner.supports_parallel_tool_calls()
     }
+    fn is_automatic_function_callback(&self) -> bool {
+        self.inner.is_automatic_function_callback()
+    }
     fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
     where
         ToolCall<'call>: 'a,

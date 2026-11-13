@@ -1083,7 +1083,11 @@
     {
       "path": "sdk-websocket-provider-history.patch",
       "sha256": "60ef6cb324a92a08403ff47c6f522988e9c0bb14b513739787589ad9f8724e79"
+    },
+    {
+      "path": "sdk-ordered-workspace-callbacks.patch",
+      "sha256": "e1fc1611a0d92e19d3fb7adabab00c87135faefd1c5964c9a2ea2e0054252a3b"
     }
   ],
-  "result_tree": "b2d2ead2c30133afebfecbc0a063d317a94e7065"
+  "result_tree": "b4b793555a9af02af04f408f2a22f3204a0fb6ec"
 }
