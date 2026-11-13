@@ -168,6 +168,124 @@ test('native publication precedes all SDK execution, including other platforms a
   }
 });
 
+test('only exact unambiguous reusable qualification names qualify retained bundles', () => {
+  const asset = { created_at: at(2) };
+  for (const platform of Object.values(nativePlatforms)) {
+    const jobs = publicationJobs(platform);
+    const reusable = {
+      ...jobs[1],
+      name: `Qualify alpha (${platform}) / Package and test (${platform})`,
+    };
+    expect(
+      isNativePublication(asset, producer, [jobs[0], reusable], platform),
+    ).toBe(true);
+    for (const name of [
+      `unexpected / Package and test (${platform})`,
+      `Qualify alpha (${platform}) / unexpected / Package and test (${platform})`,
+      `Qualify alpha (other) / Package and test (${platform})`,
+    ]) {
+      expect(
+        isNativePublication(
+          asset,
+          producer,
+          [jobs[0], { ...reusable, name }],
+          platform,
+        ),
+      ).toBe(false);
+      expect(
+        isNativePublication(
+          asset,
+          producer,
+          [...jobs, { ...reusable, name, started_at: at(0) }],
+          platform,
+        ),
+      ).toBe(false);
+    }
+    expect(
+      isNativePublication(asset, producer, [...jobs, reusable], platform),
+    ).toBe(false);
+    expect(
+      isNativePublication(
+        asset,
+        producer,
+        [jobs[0], reusable, { ...reusable, id: 4 }],
+        platform,
+      ),
+    ).toBe(false);
+    expect(
+      isNativePublication(
+        asset,
+        producer,
+        [jobs[0], reusable, { ...reusable, id: 4, conclusion: 'skipped' }],
+        platform,
+      ),
+    ).toBe(true);
+    expect(
+      isNativePublication(
+        asset,
+        producer,
+        [jobs[0], reusable, { ...jobs[1], conclusion: 'skipped' }],
+        platform,
+      ),
+    ).toBe(true);
+    expect(
+      isNativePublication(
+        asset,
+        { ...producer, run_attempt: 2 },
+        [
+          jobs[0],
+          reusable,
+          { ...reusable, id: 4, run_attempt: 2, conclusion: 'skipped' },
+        ],
+        platform,
+      ),
+    ).toBe(false);
+    const skippedMatrix = {
+      ...jobs[1],
+      name: 'Package and test (${{ matrix.platform }})',
+      conclusion: 'skipped',
+    };
+    expect(
+      isNativePublication(
+        asset,
+        producer,
+        [jobs[0], reusable, skippedMatrix],
+        platform,
+      ),
+    ).toBe(true);
+    expect(
+      isNativePublication(
+        asset,
+        producer,
+        [jobs[0], reusable, { ...skippedMatrix, conclusion: 'success' }],
+        platform,
+      ),
+    ).toBe(false);
+    const other = platform === 'linux-arm64' ? 'linux-x64' : 'linux-arm64';
+    const earlier = {
+      ...reusable,
+      name: `Qualify alpha (${other}) / Package and test (${other})`,
+      started_at: at(2),
+    };
+    expect(
+      isNativePublication(
+        asset,
+        producer,
+        [jobs[0], reusable, earlier],
+        platform,
+      ),
+    ).toBe(false);
+    expect(
+      isNativePublication(
+        asset,
+        { ...producer, run_attempt: 2 },
+        [jobs[0], { ...reusable, run_attempt: 2 }, earlier],
+        platform,
+      ),
+    ).toBe(false);
+  }
+});
+
 test('Hyper license bytes invalidate native inputs without Cargo fallback', () => {
   const repo = mkdtempSync(join(tmpdir(), 'agents-native-license-'));
   onTestFinished(() => rmSync(repo, { recursive: true, force: true }));
@@ -221,6 +339,17 @@ process.stdout.write(JSON.stringify({
   const after = snapshot();
   expect(after.paths).toEqual(before.paths);
   expect(after.hash).not.toBe(before.hash);
+  const qualification = join(
+    repo,
+    '.github/workflows/platform-alpha-qualification.yml',
+  );
+  mkdirSync(dirname(qualification), { recursive: true });
+  writeFileSync(qualification, 'name: first qualification\n');
+  commit();
+  const qualified = snapshot();
+  writeFileSync(qualification, 'name: changed qualification\n');
+  commit();
+  expect(snapshot().hash).not.toBe(qualified.hash);
 });
 
 // Run the real CLI, Git fingerprint and selective extraction; replace only transport.
@@ -608,13 +737,31 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     workflow.indexOf('  select:'),
     workflow.indexOf('  produce-linux:'),
   );
-  const qualify = workflow.slice(workflow.indexOf('  package:'));
-  expect(qualify).toContain(
+  const packageCaller = workflow.slice(
+    workflow.indexOf('  package:'),
+    workflow.indexOf('  qualify-linux:'),
+  );
+  const qualify = readFileSync(
+    path('platform-alpha-qualification.yml'),
+    'utf8',
+  );
+  expect(packageCaller).toContain(
     'needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]',
   );
-  expect(qualify).toContain("!cancelled() && needs.select.result == 'success'");
+  expect(packageCaller).toContain(
+    "!cancelled() && needs.select.result == 'success'",
+  );
   for (const [key, platform] of Object.entries(nativePlatforms)) {
     expect(workflow).toContain('toJSON(steps.upload_' + key + '.outputs)');
+    const firstProducer = key === 'macos' ? 'linux' : key;
+    expect(workflow).toMatch(
+      new RegExp(
+        `qualify-${key}:\n    name: Qualify alpha \\(${platform}\\)\n` +
+          '(?:    #[^\n]*\n)*' +
+          `    needs: \\[select, produce-${firstProducer}\\]`,
+      ),
+    );
+    expect(select).toContain(`steps.select.outputs.${key}_hit == 'true'`);
     const hit = `needs.select.outputs.${key}_hit`;
     const result = `needs.produce-${key}.result`;
     expect(select).toContain(
@@ -623,10 +770,10 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     expect(workflow).toContain(
       `produce-${key}:\n    needs: select\n    if: ${hit} != 'true'\n    uses: ./.github/workflows/native-bundle.yml\n    with:\n      platform: ${platform}`,
     );
-    expect(qualify).toContain(
+    expect(packageCaller).toContain(
       `((${hit} == 'true' && ${result} == 'skipped') ||\n       (${hit} != 'true' && ${result} == 'success'))`,
     );
-    expect(qualify).toContain(
+    expect(packageCaller).toContain(
       'needs.select.outputs.' +
         key +
         '_artifact || needs.produce-' +
@@ -634,17 +781,24 @@ test('workflow keeps the publication barrier and qualification coverage on expli
         '.outputs.artifact',
     );
   }
+  expect(select).toContain('      any_hit: ${{ ');
+  expect(packageCaller).toContain(
+    "|| needs.select.outputs.any_hit == 'true') &&",
+  );
+  expect(
+    workflow.match(/needs\.select\.outputs\.any_hit != 'true'/g),
+  ).toHaveLength(4);
   expect(native).toContain('toJSON(steps.upload.outputs)');
   expect(native).toContain('name: Native bundle (${{ inputs.platform }})');
   expect(native).toContain('name: Publish native bundle\n');
   expect(native).toContain(
     `inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"'`,
   );
-  expect(qualify).toContain(
+  expect(packageCaller).toContain(
     'platform: linux-arm64\n            runner: ubuntu-24.04-arm\n',
   );
   expect(native).toContain('macos-15-xlarge');
-  expect(qualify).toContain('runner: macos-15\n');
+  expect(packageCaller).toContain('runner: macos-15\n');
   expect(qualify).not.toContain('macos-15-xlarge');
   expect(workflow + native).not.toContain('overwrite:');
   for (const source of [select, native]) {
@@ -652,8 +806,20 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     expect(source).not.toContain('pnpm build');
     expect(source).not.toContain('pnpm/action-setup');
   }
-  expect(qualify).toContain('name: Package and test (${{ matrix.platform }})');
-  expect(qualify).toContain('NATIVE_ARTIFACT: ${{ matrix.artifact }}');
+  expect(qualify).toContain('name: Package and test (${{ inputs.platform }})');
+  expect(workflow).toContain('wait_for_macos: true');
+  expect(native).toContain('name: Record native transfer identity');
+  expect(qualify).toContain(
+    'steps.native-transfer.outputs.artifact || inputs.artifact',
+  );
+  const sequence = [
+    'Wait for the macOS native transfer',
+    'Restore the current-run native transfer',
+    'Build the current SDK',
+    'Qualify native browser interactions, audio, and MCP Apps',
+  ].map((name) => qualify.indexOf('name: ' + name));
+  expect(sequence[0]).toBeGreaterThanOrEqual(0);
+  expect(sequence).toEqual([...new Set(sequence)].sort((a, b) => a - b));
   expect(qualify).toContain('Check runner platform');
   expect(qualify).toContain('apparmor-profiles bubblewrap');
   for (const step of [
