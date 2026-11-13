@@ -465,14 +465,15 @@ describe.skipIf(process.platform === 'win32')(
   'native helper build selection',
   () => {
     it.each([
-      ['x86_64-pc-windows-msvc', false, true],
-      ['aarch64-pc-windows-msvc', true, false],
-      ['x86_64-unknown-linux-gnu', false, false],
-      ['x86_64-unknown-linux-gnu', true, true],
-      ['aarch64-apple-darwin', false, false],
+      ['x86_64-pc-windows-msvc', false, true, false],
+      ['x86_64-pc-windows-msvc', false, false, true],
+      ['aarch64-pc-windows-msvc', true, false, false],
+      ['x86_64-unknown-linux-gnu', false, false, false],
+      ['x86_64-unknown-linux-gnu', true, true, false],
+      ['aarch64-apple-darwin', false, false, false],
     ] as const)(
-      'packages helpers and keeps the addon build independent (%s, configured target %s, timings %s)',
-      (host, configured, timings) => {
+      'packages helpers and keeps the addon build independent (%s, configured target %s, timings %s, parallel %s)',
+      (host, configured, timings, parallel) => {
         const dir = mkdtempSync(join(tmpdir(), 'agents-native-build-'));
         temporary.push(dir);
         const pkg = join(dir, 'agents');
@@ -605,8 +606,21 @@ const target = args.includes('--target') ? args[args.indexOf('--target') + 1] : 
 const output = path.join(process.env.CARGO_TARGET_DIR, ...(target ? [target] : []), args.includes('--release') ? 'release' : 'debug');
 const windows = process.env.TEST_RUST_HOST.endsWith('-windows-msvc');
 const darwin = process.env.TEST_RUST_HOST.includes('-apple-');
-fs.appendFileSync(process.env.TEST_CARGO_LOG, JSON.stringify({ args, output, jobs: process.env.CARGO_BUILD_JOBS, hasGithubToken: process.env.GITHUB_TOKEN !== undefined }) + '\\n');
+fs.appendFileSync(process.env.TEST_CARGO_LOG, JSON.stringify({ args, output, jobs: process.env.CARGO_BUILD_JOBS, v8Archive: process.env.RUSTY_V8_ARCHIVE, v8Binding: process.env.RUSTY_V8_SRC_BINDING_PATH, hasGithubToken: process.env.GITHUB_TOKEN !== undefined }) + '\\n');
 if (args[0] === 'test' && process.env.TEST_FAIL_HYPER_READINESS === '1') process.exit(1);
+if (args[0] === 'build' && process.env.TEST_REQUIRE_PARALLEL === '1') {
+  const kind = args.includes('--lib') ? 'addon' : 'helpers';
+  fs.writeFileSync(path.join(process.env.TEST_PARALLEL_ROOT, kind + '-started'), 'started');
+  const other = path.join(process.env.TEST_PARALLEL_ROOT, (kind === 'addon' ? 'helpers' : 'addon') + '-started');
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(other) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  if (!fs.existsSync(other)) process.exit(42);
+  if (kind === 'addon' && process.env.TEST_FAIL_ADDON === '1') process.exit(23);
+  if (kind === 'helpers') {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    fs.writeFileSync(path.join(process.env.TEST_PARALLEL_ROOT, 'helpers-finished'), 'finished');
+  }
+}
 fs.mkdirSync(output, { recursive: true });
 if (args.includes('--lib')) fs.writeFileSync(path.join(output, windows ? 'agents_codex.dll' : darwin ? 'libagents_codex.dylib' : 'libagents_codex.so'), 'addon without helper CRT flags');
 for (let i = 0; i < args.length; i++) {
@@ -630,6 +644,8 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           TEST_FETCH_LOG: fetchLog,
           TEST_CARGO_LOG: log,
           CARGO_TARGET_DIR: join(dir, 'target'),
+          TEST_REQUIRE_PARALLEL: parallel ? '1' : undefined,
+          TEST_PARALLEL_ROOT: dir,
         };
         delete env.GITHUB_TOKEN;
         delete env.CARGO_BUILD_TARGET;
@@ -655,6 +671,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           source,
           '--release',
           '--test-fixture',
+          ...(parallel ? ['--parallel-windows'] : []),
         ];
         for (const args of [
           ['prepare', '--source', source, '--rmcp-source', source],
@@ -690,12 +707,17 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         } else {
           expect(() => readFileSync(fetchLog)).toThrow();
         }
-        const builds: { args: string[]; output: string; jobs?: string }[] =
-          readFileSync(log, 'utf8')
-            .trim()
-            .split('\n')
-            .map((line) => JSON.parse(line))
-            .filter((entry) => entry.args[0] === 'build');
+        const builds: {
+          args: string[];
+          output: string;
+          jobs?: string;
+          v8Archive?: string;
+          v8Binding?: string;
+        }[] = readFileSync(log, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+          .filter((entry) => entry.args[0] === 'build');
         const commands = readFileSync(log, 'utf8')
           .trim()
           .split('\n')
@@ -721,6 +743,8 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           '--release',
         ]);
         for (const build of builds) {
+          expect(build.v8Archive).toBe(join(cache, names[0]));
+          expect(build.v8Binding).toBe(join(cache, names[1]));
           expect(build.args.includes('--timings')).toBe(timings);
           expect(build.jobs).toBe(timings ? '2' : undefined);
           expect(build.args).not.toContain('--jobs');
@@ -749,7 +773,15 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
               host,
             ]),
           );
-          expect(helpers.output).toBe(join(dir, 'target', host, 'release'));
+          expect(helpers.output).toBe(
+            join(
+              dir,
+              'target',
+              ...(parallel ? ['windows-helpers'] : []),
+              host,
+              'release',
+            ),
+          );
         } else {
           expect(builds).toHaveLength(1);
           expect(helpers).toBe(addon);
@@ -757,6 +789,23 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         expect(readFileSync(join(native, 'codex.node'), 'utf8')).toBe(
           'addon without helper CRT flags',
         );
+        if (parallel) {
+          expect(readFileSync(join(dir, 'helpers-finished'), 'utf8')).toBe(
+            'finished',
+          );
+          rmSync(join(dir, 'helpers-finished'));
+          const failed = invoke(build, { TEST_FAIL_ADDON: '1' });
+          expect(failed.status).not.toBe(0);
+          expect(failed.stderr).toContain('failed (23)');
+          expect(readFileSync(join(dir, 'helpers-finished'), 'utf8')).toBe(
+            'finished',
+          );
+          expect(() =>
+            readFileSync(join(native, 'build-receipt.json')),
+          ).toThrow();
+          const recovered = invoke(build);
+          expect(recovered.status, recovered.stderr).toBe(0);
+        }
         const platform = windows
           ? 'win32'
           : host.includes('-apple-')

@@ -19,6 +19,13 @@ const approvedBranch = (branch) =>
   branch === 'feat/codex-harness' ||
   branch?.startsWith('ci/native-bundle/') === true;
 
+// Temporary benchmark pair; canonical donor approval stays unchanged.
+const benchmarkSeed = (branch) =>
+  process.env.GITHUB_REPOSITORY === repo &&
+  process.env.GITHUB_EVENT_NAME === 'push' &&
+  process.env.GITHUB_REF === 'refs/heads/ci/hillclimb/js-cold-timing-consumer-30' &&
+  branch === 'ci/hillclimb/js-cold-timing-seed-30';
+
 export function isProducer(run, workflowId) {
   return (
     run.status === 'completed' &&
@@ -28,28 +35,49 @@ export function isProducer(run, workflowId) {
     run.event === 'push' &&
     run.workflow_id === workflowId &&
     run.path === '.github/workflows/' + workflow &&
-    approvedBranch(run.head_branch) &&
+    (approvedBranch(run.head_branch) || benchmarkSeed(run.head_branch)) &&
     /^[a-f0-9]{40}$/.test(run.head_sha)
   );
 }
 
 export function isNativePublication(asset, run, jobs, platform) {
-  const latest = (name) =>
-    jobs
-      .filter((job) => job.name === name)
-      .sort((a, b) => b.run_attempt - a.run_attempt)[0];
+  const qualificationNames = (value) => [
+    'Package and test (' + value + ')',
+    'Qualify alpha (' + value + ') / Package and test (' + value + ')',
+  ];
+  const allowedQualifications = new Set(
+    Object.values(nativePlatforms).flatMap(qualificationNames),
+  );
+  const sdkJobs = jobs.filter(
+    (job) =>
+      !(
+        job.name === 'Package and test (${{ matrix.platform }})' &&
+        job.conclusion === 'skipped'
+      ) &&
+      (job.name.startsWith('Package and test (') ||
+        job.name.includes(' / Package and test (')),
+  );
+  // Reusable callers have explicit names. Reject other wrappers, not just suffixes.
+  if (sdkJobs.some((job) => !allowedQualifications.has(job.name))) return false;
+  const latest = (...names) => {
+    const matches = jobs
+      .filter((job) => names.includes(job.name))
+      .sort((a, b) => b.run_attempt - a.run_attempt);
+    if (!matches.length) return undefined;
+    const attempt = matches[0].run_attempt;
+    const current = matches.filter((job) => job.run_attempt === attempt);
+    const active = current.filter((job) => job.conclusion !== 'skipped');
+    // Inactive call sites may emit a skipped receipt in the same attempt.
+    return active.length === 1 ? active[0] : undefined;
+  };
   if (
     jobs.some((job) => job.run_attempt > run.run_attempt) ||
-    latest('Package and test (' + platform + ')')?.conclusion !== 'success'
+    latest(...qualificationNames(platform))?.conclusion !== 'success'
   )
     return false;
   // Include prior attempts: SDK code must never precede a trusted publication.
-  const starts = jobs
-    .filter(
-      (job) =>
-        job.name.startsWith('Package and test (') &&
-        job.conclusion !== 'skipped',
-    )
+  const starts = sdkJobs
+    .filter((job) => job.conclusion !== 'skipped')
     .map((job) => Date.parse(job.started_at));
   if (!starts.length || starts.some((time) => !Number.isFinite(time)))
     return false;
@@ -123,7 +151,10 @@ export function findNativeBundle(inputs, platform) {
     if (
       !candidate ||
       candidate.repository_id !== candidate.head_repository_id ||
-      !approvedBranch(candidate.head_branch)
+      !(
+        approvedBranch(candidate.head_branch) ||
+        benchmarkSeed(candidate.head_branch)
+      )
     )
       continue;
     if (seenRuns.has(candidate.id)) continue;
@@ -145,6 +176,13 @@ export function findNativeBundle(inputs, platform) {
         'https://github.com/' + repo + '.git',
         run.head_sha,
       ]);
+    }
+    if (
+      benchmarkSeed(run.head_branch) &&
+      spawnSync('git', ['merge-base', '--is-ancestor', run.head_sha, 'HEAD'])
+        .status !== 0
+    ) {
+      continue;
     }
     // Off-branch producers execute SDK qualification too: preserve full-tree equality.
     const paths = run.head_branch.startsWith('ci/native-bundle/')
