@@ -1,10 +1,15 @@
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   Agent,
   NativeProvider,
   type RecordedTurn,
   type Session,
+  tool,
 } from '../../src';
+import { ModelServer, call, message } from './fixtures/model-server';
+
+afterEach(() => ModelServer.closeAll());
 async function records(session: Session) {
   const turns: RecordedTurn[] = [];
   for await (const turn of session.turns()) turns.push(turn);
@@ -132,4 +137,67 @@ it('retains a known zero-token native attempt independently of unknown failed us
   expect(record.requestUsageEntries).toMatchObject([
     { requestOrdinal: 1, tokenUsageKnown: true, totalTokens: 0 },
   ]);
+});
+
+it('retains available per-request cache writes across a native Responses run and restore', async () => {
+  const usage = (cacheWrite?: number) =>
+    JSON.stringify({
+      input_tokens: 10,
+      input_tokens_details: {
+        cached_tokens: 1,
+        ...(cacheWrite === undefined ? {} : { cache_write_tokens: cacheWrite }),
+      },
+      output_tokens: 2,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 12,
+    });
+  const server = new ModelServer(
+    [
+      [call('probe', {}, { callId: 'first' })],
+      [call('probe', {}, { callId: 'second' })],
+      [message('done')],
+    ],
+    [usage(), usage(0), usage(4)],
+  );
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    model: 'gpt-5.5',
+    instructions: 'Use probe and answer.',
+    provider,
+    tools: [
+      tool({ name: 'probe', parameters: z.object({}), execute: () => 'ok' }),
+    ],
+  });
+  const session = await agent.session();
+  let state;
+  let turnId: string;
+  const check = async (live: Session) => {
+    const record = (await records(live)).find((turn) => turn.id === turnId)!;
+    expect(record.requestUsageEntriesComplete).toBe(true);
+    expect(
+      record.requestUsageEntries?.map((entry) => entry.inputTokensDetails),
+    ).toEqual([
+      { cachedTokens: 1 },
+      { cachedTokens: 1, cacheWriteTokens: 0 },
+      { cachedTokens: 1, cacheWriteTokens: 4 },
+    ]);
+  };
+  try {
+    const turn = await session.submit('read');
+    turnId = turn.turnId;
+    await turn.wait();
+    await check(session);
+    state = await session.saveState();
+  } finally {
+    await session.close();
+  }
+  await using restored = await agent.session({ state });
+  await check(restored);
+  server.assertExhausted();
 });

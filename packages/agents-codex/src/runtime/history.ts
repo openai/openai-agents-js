@@ -1513,7 +1513,7 @@ export function projectHistory(
   const usage = new Map<string, RecordedTokenUsage>();
   const responses = new Map<string, RecordedResponse[]>();
   const responseFacts: RecordedResponseFact[] = [];
-  const observations = new Map<string, Set<string>>();
+  const observations = new Map<string, Map<string, RecordedResponse>>();
   function appendResponse(
     target: Map<string, RecordedResponse[]>,
     id: string,
@@ -1618,12 +1618,10 @@ export function projectHistory(
       typeof payload.turn_id === 'string' &&
       typeof payload.id === 'string'
     ) {
-      const ids = observations.get(payload.turn_id) ?? new Set<string>();
-      if (!ids.has(payload.id)) {
-        ids.add(payload.id);
-        observations.set(payload.turn_id, ids);
+      const received = observations.get(payload.turn_id) ?? new Map();
+      if (!received.has(payload.id)) {
         const reason = text(payload.incomplete_reason);
-        appendResponse(responses, payload.turn_id, {
+        const observation: RecordedResponse = {
           id: payload.id,
           threadId: String(payload.thread_id),
           turnId: payload.turn_id,
@@ -1642,7 +1640,10 @@ export function projectHistory(
           usage: object(payload.usage)
             ? receivedUsage(object(payload.usage)!)
             : null,
-        });
+        };
+        received.set(payload.id, observation);
+        observations.set(payload.turn_id, received);
+        appendResponse(responses, payload.turn_id, observation);
       }
     } else if (
       type === 'token_usage_record' &&
@@ -1650,6 +1651,21 @@ export function projectHistory(
     ) {
       const value = object(payload.turn_token_usage);
       if (value) usage.set(payload.turn_id, recordedUsage(value));
+      if (typeof payload.thread_id === 'string') {
+        const observationId = text(payload.response_observation_id);
+        const received =
+          observationId === null
+            ? undefined
+            : observations.get(payload.turn_id)?.get(observationId);
+        requestUsage
+          .get(payload.turn_id)
+          ?.recordCacheWrite(
+            payload.thread_id,
+            received?.threadId === payload.thread_id
+              ? received.usage?.inputTokensDetails?.cacheWriteTokens
+              : undefined,
+          );
+      }
       appendResponse(responses, payload.turn_id, {
         id: text(payload.response_observation_id),
         threadId: text(payload.thread_id) ?? sessionId,

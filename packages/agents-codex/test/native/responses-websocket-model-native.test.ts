@@ -98,6 +98,7 @@ it('borrows the real client through native handoff and reuses it in a fresh run'
   const f = await fixture((frame, socket) => {
     requests++;
     expect(frame.type).toBe('response.create');
+    expect(frame).not.toHaveProperty('stream');
     if (requests === 1) reply(socket, 'resp_first', [call]);
     else {
       if (requests === 2)

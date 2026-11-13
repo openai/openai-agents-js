@@ -110,7 +110,11 @@ export class ResponsesWebSocketModel implements NativeModel {
         headers: options.headers,
         query: options.query,
       });
-      if (owner.connection && owner.connection.key !== key) {
+      const readyState = owner.connection?.socket.socket.readyState;
+      if (
+        owner.connection &&
+        (owner.connection.key !== key || (readyState !== 0 && readyState !== 1))
+      ) {
         await closeConnection(owner.connection);
         owner.connection = undefined;
       }
@@ -145,8 +149,9 @@ export class ResponsesWebSocketModel implements NativeModel {
       request.signal.throwIfAborted();
       if (owner.retired) throw new TypeError('Responses socket owner retired');
       sent = true;
+      const { stream: _httpStream, ...frameBody } = body;
       connection.socket.send({
-        ...body,
+        ...frameBody,
         model: this.model ?? body.model,
         ...(this.#promptCacheKey === undefined
           ? {}

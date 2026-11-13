@@ -1,6 +1,11 @@
 import type { RecordedRequestUsage } from './history';
 import type { CapturedModelAttempt } from './model-attempts';
-import { parseTokenCount, runUsageSnapshot, type RunUsage } from './run-events';
+import {
+  parseTokenCount,
+  runUsageSnapshot,
+  type RunUsage,
+  type TokenCount,
+} from './run-events';
 
 /** Passive projection of settled SDK attempts; external client retries stay opaque. */
 export class RecordedRequestUsageProjection {
@@ -12,6 +17,17 @@ export class RecordedRequestUsageProjection {
     string,
     Map<string, { id: string; usage: RunUsage }>
   >();
+  private readonly active = new Map<
+    string,
+    { id: string; reports: number; cacheWriteTokens?: TokenCount } | null
+  >();
+
+  recordCacheWrite(threadId: string, value: TokenCount | undefined): void {
+    const active = this.active.get(threadId);
+    if (!active) return;
+    active.reports += 1;
+    active.cacheWriteTokens = value;
+  }
 
   observe(
     value: unknown,
@@ -19,14 +35,20 @@ export class RecordedRequestUsageProjection {
     threadId: unknown,
     turnId: unknown,
   ): void {
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      !('phase' in value) ||
-      value.phase !== 'finished'
-    )
-      return;
+    if (!value || typeof value !== 'object' || !('phase' in value)) return;
     const id = 'attempt_id' in value ? value.attempt_id : undefined;
+    if (
+      value.phase === 'started' &&
+      typeof id === 'string' &&
+      typeof threadId === 'string' &&
+      typeof turnId === 'string'
+    ) {
+      this.active.set(
+        threadId,
+        this.active.has(threadId) ? null : { id, reports: 0 },
+      );
+    }
+    if (value.phase !== 'finished') return;
     const owner = captured.ownerAttemptId;
     if (
       typeof id !== 'string' ||
@@ -40,6 +62,12 @@ export class RecordedRequestUsageProjection {
       this.complete = false;
       return;
     }
+    const active = this.active.get(threadId);
+    if (!active || active.id === id) this.active.delete(threadId);
+    const cacheWriteTokens =
+      active?.id === id && active.reports === 1
+        ? active.cacheWriteTokens
+        : undefined;
     const current = captured.usage;
     const ordinal = String(current.requests);
     const facts = this.settled.get(owner) ?? new Map();
@@ -94,6 +122,11 @@ export class RecordedRequestUsageProjection {
       this.complete = false;
       return;
     }
+    // Normalization can manufacture zero, but cannot manufacture a positive count.
+    const knownCacheWrite =
+      delta.cacheWriteInputTokens > 0n ||
+      cacheWriteTokens === 0 ||
+      cacheWriteTokens === 0n;
     this.entries.push({
       scope: 'sdk_model_attempt',
       threadId,
@@ -105,7 +138,9 @@ export class RecordedRequestUsageProjection {
       inputTokens: parseTokenCount(delta.inputTokens),
       inputTokensDetails: {
         cachedTokens: parseTokenCount(delta.cachedInputTokens),
-        cacheWriteTokens: parseTokenCount(delta.cacheWriteInputTokens),
+        ...(missing === 0n && knownCacheWrite
+          ? { cacheWriteTokens: parseTokenCount(delta.cacheWriteInputTokens) }
+          : {}),
       },
       outputTokens: parseTokenCount(delta.outputTokens),
       outputTokensDetails: {
