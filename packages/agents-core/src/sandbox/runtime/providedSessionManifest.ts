@@ -40,11 +40,17 @@ export async function applyManifestToProvidedSession(
   session: SandboxSessionLike<SandboxSessionState>,
   manifest: Manifest,
   runAs?: string,
+  resolveEnvironment?: (manifest: Manifest) => Promise<Record<string, string>>,
 ): Promise<void> {
   return await withExclusiveProvidedSessionManifestMutation(
     session.state,
     async () =>
-      applyManifestToProvidedSessionExclusive(session, manifest, runAs),
+      applyManifestToProvidedSessionExclusive(
+        session,
+        manifest,
+        runAs,
+        resolveEnvironment,
+      ),
   );
 }
 
@@ -52,6 +58,7 @@ async function applyManifestToProvidedSessionExclusive(
   session: SandboxSessionLike<SandboxSessionState>,
   manifest: Manifest,
   runAs?: string,
+  resolveEnvironment?: (manifest: Manifest) => Promise<Record<string, string>>,
 ): Promise<void> {
   assertSandboxSessionStateUsable(session.state);
   const currentManifest = session.state.manifest;
@@ -83,7 +90,9 @@ async function applyManifestToProvidedSessionExclusive(
       currentManifest,
       nextTrustedManifest,
     );
-    const trustedEnvironment = await nextTrustedManifest.resolveEnvironment();
+    const trustedEnvironment = resolveEnvironment
+      ? await resolveEnvironment(nextTrustedManifest)
+      : await nextTrustedManifest.resolveEnvironment();
     validateMountEnvironmentCredentialBoundaries(
       nextTrustedManifest,
       trustedEnvironment,

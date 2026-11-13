@@ -726,7 +726,15 @@ function createSandboxEnvironment<
           acquireResource,
         );
         // Provider mutation has been taking its own lock after authority inspection.
-        await runtime.applyManifestToProvidedSession(borrowed, manifest);
+        await runtime.applyManifestToProvidedSession(
+          borrowed,
+          manifest,
+          undefined,
+          client.resolveTrustedEnvironment
+            ? (candidate) =>
+                client.resolveTrustedEnvironment!(candidate, providerOptions)
+            : undefined,
+        );
         signal.throwIfAborted();
         return await withExclusiveSandboxStateInspection(
           borrowed.state,
