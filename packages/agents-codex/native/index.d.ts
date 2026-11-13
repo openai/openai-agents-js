@@ -182,6 +182,10 @@ export class NativeThread {
     keep: number,
     itemsJson: string,
   ): Promise<string>;
+  _pop_history(
+    expectedRevision: string,
+    allowRebuild: boolean,
+  ): Promise<string>;
   _begin_context_change(): Promise<_ContextChange>;
   _application_instructions(): string | null;
   private constructor();

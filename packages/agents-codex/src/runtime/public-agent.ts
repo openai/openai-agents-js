@@ -162,7 +162,9 @@ import {
   validateMaxModelSteps,
   validateModelOverride,
   captureToolNotFoundBehavior,
+  captureInputStoragePolicy,
   type OperationOptions,
+  type SubmitOptions,
 } from './session';
 import type {
   Session as CoreSession,
@@ -350,6 +352,8 @@ export interface RunOptions<Context = undefined> extends Omit<
   prepareRequest?: import('./session').OperationOptions<Context>['prepareRequest'];
   /** Select tools for each model step of a new run. */
   beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
+  /** Replace or omit new user input before native submission and storage. */
+  inputStoragePolicy?: SubmitOptions<Context>['inputStoragePolicy'];
   returnState?: boolean;
   /** Capture conversation records for replay through another Session's transactHistory.
    * History above 4,096 original records or 8 MiB causes a size error after completion. */
@@ -514,6 +518,7 @@ export type Session<Output = string, Context = any> = Pick<
   | 'historySnapshot'
   | 'flushMemory'
   | 'transactHistory'
+  | 'popHistory'
   | 'modelContext'
   | 'compact'
   | 'executeCommand'
@@ -949,17 +954,30 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError('Cannot add a run budget when resuming a run');
     if (input === null && options.prepareRequest !== undefined)
       throw new TypeError('Cannot add prepareRequest when resuming a run');
-    const preparedInput =
-      input === null ? null : nativeInput(input, audioBudget);
-    if (audioBudget.remaining !== MAX_AUDIO_INPUT_BYTES)
-      checkEncodedCapacity(
-        { input: preparedInput, initial_messages: initialMessages ?? [] },
-        MAX_AUDIO_INPUT_BYTES,
-      );
+    if (input === null && options.inputStoragePolicy !== undefined)
+      throw new TypeError('Cannot add inputStoragePolicy when resuming a run');
+    const initialAudioRemaining = audioBudget.remaining;
+    const captureRunInput = (value: UserInput) => {
+      const budget = { remaining: initialAudioRemaining };
+      const parts = nativeInput(value, budget);
+      if (budget.remaining !== MAX_AUDIO_INPUT_BYTES)
+        checkEncodedCapacity(
+          { input: parts, initial_messages: initialMessages ?? [] },
+          MAX_AUDIO_INPUT_BYTES,
+        );
+      return parts;
+    };
+    const inputStoragePolicy =
+      input === null
+        ? undefined
+        : captureInputStoragePolicy(input, options.inputStoragePolicy);
+    if (inputStoragePolicy) inputStoragePolicy.capture = captureRunInput;
+    const preparedInput = input === null ? null : captureRunInput(input);
     const factory = this.session;
     const factoryApply = factory.apply;
     const guardrailInput =
       input !== null &&
+      inputStoragePolicy === undefined &&
       (this.inputGuardrails.length > 0 ||
         (options.inputGuardrails?.length ?? 0) > 0 ||
         (options.state !== undefined && this.handoffs.length > 0) ||
@@ -968,7 +986,11 @@ export class Agent<Context = undefined, Output = string> {
         this.prepare !== Agent.#canonicalPrepare)
         ? structuredClone(input)
         : undefined;
-    const errorInput = captureErrorDetails ? structuredClone(input) : undefined;
+    const errorInput = captureErrorDetails
+      ? inputStoragePolicy
+        ? null
+        : structuredClone(input)
+      : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
       providerHistory: options.providerHistory,
       ...(initialMessages === undefined ? {} : { initialMessages }),
@@ -1028,6 +1050,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnItems !== true &&
       !captureErrorDetails &&
       options.prepareRequest === undefined &&
+      inputStoragePolicy === undefined &&
       modelOverride === undefined &&
       modelSettingsOverride === undefined &&
       options.providerHistory === undefined &&
@@ -1059,6 +1082,7 @@ export class Agent<Context = undefined, Output = string> {
       toolNotFoundBehavior: options.toolNotFoundBehavior,
       guardrailInput,
       errorInput,
+      inputStoragePolicy,
       maxModelSteps,
       budget,
       returnState: options.returnState,

@@ -359,6 +359,7 @@ import {
   type RepairTurnWire,
   type RepairItemWire,
   type RecordedTurn,
+  type CanonicalHistoryPop,
   type CanonicalHistorySnapshot,
   type HistoryItem,
 } from './history';
@@ -680,6 +681,31 @@ export interface SubmitOptions<
 > extends OperationOptions<Context> {
   outputType?: OutputSpec<Output>;
   ifBusy?: 'reject';
+  /** Replace this root's user input before Core records or samples it. Return null
+   * to sample existing history without adding user input. Queued roots receive
+   * the canonical history at admission, after their predecessors settle. */
+  inputStoragePolicy?: (
+    input: UserInput,
+    history: CanonicalHistorySnapshot,
+    signal: AbortSignal,
+  ) => UserInput | null | Promise<UserInput | null>;
+}
+
+export type CapturedInputStoragePolicy = {
+  project: NonNullable<SubmitOptions['inputStoragePolicy']>;
+  input: UserInput;
+  capture?: (input: UserInput) => ReturnType<typeof nativeInput>;
+};
+
+/** @internal */
+export function captureInputStoragePolicy(
+  input: UserInput,
+  project: SubmitOptions['inputStoragePolicy'],
+): CapturedInputStoragePolicy | undefined {
+  if (project === undefined) return;
+  if (typeof project !== 'function')
+    throw new TypeError('inputStoragePolicy must be callable');
+  return { project, input: structuredClone(input) };
 }
 /** @internal Validate before opening a provider or allocating a submission. */
 export function validateModelOverride(
@@ -1336,7 +1362,8 @@ const submissions = new WeakMap<
     realtimeTools?: { generation: string };
     review?: boolean;
     retirement?: Promise<never>;
-    tracingAdmissionFailed?: boolean;
+    preAdmissionFailed?: boolean;
+    inputStoragePolicy?: CapturedInputStoragePolicy;
     repair?: OutputRepair;
     repairAttemptsUsed?: number;
   }
@@ -2811,9 +2838,10 @@ export class Session<OutputT = string, Context = unknown> {
     NativeTurn,
     Turn<unknown, string | null>
   >();
-  private readonly pendingRoots = new QueuedRoots((run) =>
-    this.finishObservation(run),
-  );
+  private readonly pendingRoots = new QueuedRoots((run) => {
+    delete submissions.get(run)!.inputStoragePolicy;
+    this.finishObservation(run);
+  });
   private readonly decodedOutputs = new WeakMap<NativeTurn, unknown>();
   private readonly terminalProposals = new WeakMap<
     NativeTurn | ChildCallbackOwner,
@@ -4870,6 +4898,7 @@ export class Session<OutputT = string, Context = unknown> {
     modelOverride?: string,
     modelSettingsOverride?: ModelSettings,
     toolNotFoundBehavior?: OperationOptions['toolNotFoundBehavior'],
+    inputStoragePolicy?: CapturedInputStoragePolicy,
   ): Promise<NativeRunResult> {
     this.startTurn(
       input,
@@ -4894,6 +4923,8 @@ export class Session<OutputT = string, Context = unknown> {
       undefined,
       guardrailInput,
       originalInput,
+      undefined,
+      inputStoragePolicy,
     );
 
     return this.#waitResult();
@@ -4945,6 +4976,10 @@ export class Session<OutputT = string, Context = unknown> {
         'enqueue requires an open Session without a mutation, capture, or stop',
       );
     const parts = nativeInput(input);
+    const inputStoragePolicy = captureInputStoragePolicy(
+      input,
+      options?.inputStoragePolicy,
+    );
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
     const selection = this.captureSelection(options, output);
@@ -4961,13 +4996,15 @@ export class Session<OutputT = string, Context = unknown> {
     run.captureRequestAttempts = this.options.includeRequestAttempts === true;
     run.parentTrace = parentTrace;
     run.inputGuardrailsPassed = this.hasInputGuardrails ? false : undefined;
-    run.guardrailInput = this.hasInputGuardrails
-      ? structuredClone(input)
-      : undefined;
+    run.guardrailInput =
+      this.hasInputGuardrails && !inputStoragePolicy
+        ? structuredClone(input)
+        : undefined;
     run.selection = selection;
     run.raiseOnUnknownTool = raiseOnUnknownTool;
     run.writableRoots = writableRoots;
     run.tracing = this.captureRootTracing(options?.tracing);
+    submissions.get(run)!.inputStoragePolicy = inputStoragePolicy;
     submissions.get(run)!.observationAfter = -1;
     this.pendingRoots.register(run, parts);
     // This output was captured from the same schema or opening default.
@@ -5024,6 +5061,10 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Use Session.respond to deliver a reply');
     this.idle('submit');
     const parts = nativeInput(input);
+    const inputStoragePolicy = captureInputStoragePolicy(
+      input,
+      options?.inputStoragePolicy,
+    );
     const output =
       options?.outputType === undefined
         ? this.defaultOutput
@@ -5045,9 +5086,12 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tracing,
       options?.writableRoots,
       parentTrace,
-      this.hasInputGuardrails ? structuredClone(input) : undefined,
+      this.hasInputGuardrails && !inputStoragePolicy
+        ? structuredClone(input)
+        : undefined,
       undefined,
       this.options.includeRequestAttempts === true,
+      inputStoragePolicy,
     );
     await afterSubmissionRetirement(run, run.accepted.promise);
     return this.#turnFor(run);
@@ -5957,6 +6001,7 @@ export class Session<OutputT = string, Context = unknown> {
     originalInput?: UserInput,
     captureRequestAttempts = this.repairUsageParent?.captureRequestAttempts ??
       false,
+    inputStoragePolicy?: CapturedInputStoragePolicy,
   ): NativeTurn {
     this.idle('submit');
     if (
@@ -5972,6 +6017,7 @@ export class Session<OutputT = string, Context = unknown> {
         : this.captureExecutorRoots(writableRoots);
     const run = this.allocateRun(output, outputOverride);
     submissions.get(run)!.originalInput = originalInput;
+    submissions.get(run)!.inputStoragePolicy = inputStoragePolicy;
     run.captureRequestAttempts = captureRequestAttempts;
     run.guardrailInput = this.hasInputGuardrails ? guardrailInput : undefined;
     run.inputGuardrailsPassed = this.hasInputGuardrails ? false : undefined;
@@ -6003,13 +6049,15 @@ export class Session<OutputT = string, Context = unknown> {
     try {
       return await run.tracing!.context();
     } catch (error) {
-      submissions.get(run)!.tracingAdmissionFailed = true;
+      submissions.get(run)!.preAdmissionFailed = true;
       throw error;
     }
   }
 
   private dispatchStart(run: NativeTurn, parts: JsonValue[]): void {
-    const { output } = submissions.get(run)!;
+    const state = submissions.get(run)!;
+    const { output, inputStoragePolicy } = state;
+    delete state.inputStoragePolicy;
     const selection = run.selection;
     if (selection?.prepareRequest && output.repair)
       throw new TypeError(
@@ -6076,7 +6124,10 @@ export class Session<OutputT = string, Context = unknown> {
             },
           }),
     };
-    const wire = run.tracing ? undefined : encodeReceipt(receipt, byteLimit);
+    const wire =
+      run.tracing || inputStoragePolicy
+        ? undefined
+        : encodeReceipt(receipt, byteLimit);
     // Active-only state never changes when another root merely registers.
     this.manualCheckpointRun = run;
     const submit = (wire: string) => {
@@ -6090,30 +6141,79 @@ export class Session<OutputT = string, Context = unknown> {
       run,
       async () => {
         const tracing = run.tracing;
-        if (!tracing) return submit(wire!);
+        if (!tracing && !inputStoragePolicy) return submit(wire!);
         let submission: string;
         try {
-          const span = await tracing.ready;
-          const native = this.options.nativeAgents
-            ? await binding()
-            : undefined;
-          if (!this.owns(run) || !this.isOpen || run.controller.signal.aborted)
+          if (inputStoragePolicy) {
+            const preparation = new AbortController();
+            const signal = AbortSignal.any([
+              run.controller.signal,
+              preparation.signal,
+            ]);
+            run.preparation = preparation;
+            const check = () => {
+              signal.throwIfAborted();
+              if (!this.current(run) || !this.isOpen || this.graphStops.size)
+                throw new TurnAborted('Input storage preparation stopped');
+            };
+            try {
+              check();
+              const history = await this.#readCanonicalHistory(
+                undefined,
+                false,
+              );
+              const { project, input } = inputStoragePolicy;
+              await this.invokeCallback(
+                run,
+                async () => {
+                  check();
+                  const selected = await project(input, history, signal);
+                  check();
+                  const captured =
+                    selected === null ? null : structuredClone(selected);
+                  parts =
+                    captured === null
+                      ? []
+                      : (inputStoragePolicy.capture ?? nativeInput)(captured);
+                  check();
+                  state.originalInput = captured ?? undefined;
+                  if (this.hasInputGuardrails)
+                    run.guardrailInput = captured ?? '';
+                },
+                signal,
+              );
+              check();
+              receipt.input = output.prompt
+                ? [...parts, { type: 'text', text: output.prompt }]
+                : parts;
+            } finally {
+              if (run.preparation === preparation) run.preparation = undefined;
+            }
+          }
+          const traceAdmission = tracing && {
+            capture: tracing,
+            span: await tracing.ready,
+            native: this.options.nativeAgents ? await binding() : undefined,
+          };
+          if (!this.current(run) || !this.isOpen || this.graphStops.size)
             throw new TurnAborted(
-              'Tracing admission stopped before native submission',
+              'Turn preparation stopped before native submission',
             );
-          const context = tracing.dispatchContext(
-            span,
-            native && {
-              native,
+          const context = traceAdmission?.capture.dispatchContext(
+            traceAdmission.span,
+            traceAdmission.native && {
+              native: traceAdmission.native,
               storages: this.childObservationProducer.callbackTraceStorages,
             },
           );
           submission = encodeReceipt(
-            { ...receipt, tracing_context: context },
-            byteLimit,
+            context === undefined
+              ? receipt
+              : { ...receipt, tracing_context: context },
+            inputStoragePolicy ? audioInputByteLimit(parts) : byteLimit,
           );
         } catch (error) {
-          submissions.get(run)!.tracingAdmissionFailed = true;
+          state.preAdmissionFailed = true;
           throw error;
         }
         return submit(submission);
@@ -6268,7 +6368,7 @@ export class Session<OutputT = string, Context = unknown> {
           // _submit reserves InvalidArg for native guards before Core
           // dispatch. Receipt decoding failures require retiring the Session.
           rejectedBeforeAdmission =
-            submissions.get(run)!.tracingAdmissionFailed === true ||
+            submissions.get(run)!.preAdmissionFailed === true ||
             (error instanceof Error &&
               'code' in error &&
               error.code === 'InvalidArg' &&
@@ -15072,18 +15172,23 @@ export class Session<OutputT = string, Context = unknown> {
       (!Number.isSafeInteger(limit) || limit < 0 || limit > 0xffffffff)
     )
       throw new RangeError('limit must be a nonnegative 32-bit integer');
-    return this.mutate(async () => {
-      const snapshot: { revision: string; total: number; items: string[] } =
-        JSON.parse(
-          await this.#native._canonical_history(limit ?? null, forReplay),
-        );
-      return {
-        ...snapshot,
-        items: snapshot.items.map(
-          (item) => JSON.parse(item) as Record<string, unknown>,
-        ),
-      };
-    });
+    return this.mutate(() => this.#readCanonicalHistory(limit, forReplay));
+  }
+
+  async #readCanonicalHistory(
+    limit: number | undefined,
+    forReplay: boolean,
+  ): Promise<CanonicalHistorySnapshot> {
+    const snapshot: { revision: string; total: number; items: string[] } =
+      JSON.parse(
+        await this.#native._canonical_history(limit ?? null, forReplay),
+      );
+    return {
+      ...snapshot,
+      items: snapshot.items.map(
+        (item) => JSON.parse(item) as Record<string, unknown>,
+      ),
+    };
   }
 
   /** Core has been atomically replacing a suffix of original JSON object records.
@@ -15112,18 +15217,54 @@ export class Session<OutputT = string, Context = unknown> {
       (options.items ?? []).map((item) => JSON.stringify(item)),
     );
     return this.mutate(async () => {
-      const value = JSON.parse(
+      const value = this.historyMutationValue(
         await this.#native._transact_history(expectedRevision, keep, captured),
       );
-      if (value.outcome === 'uncertain') {
-        const error = new NativeError(
-          'Canonical history commit outcome is uncertain; close and restore the Session',
-        );
-        this.retire(error);
-        throw error;
-      }
       return value.revision;
     });
+  }
+
+  /** Remove the last original item from this idle Session. A removed tool
+   * output leaves its original call available for repair and removes the call
+   * from model context. Set rebuildModelContext to allow rebuilding from
+   * admitted originals when the compacted projection cannot be preserved. */
+  async popHistory(options: {
+    expectedRevision: string;
+    rebuildModelContext?: boolean;
+  }): Promise<CanonicalHistoryPop> {
+    this.checkCallbackOperation('edit canonical history in');
+    this.idle('popHistory');
+    const { expectedRevision, rebuildModelContext = false } = options;
+    if (typeof expectedRevision !== 'string' || !expectedRevision)
+      throw new TypeError('expectedRevision must be nonempty text');
+    if (typeof rebuildModelContext !== 'boolean')
+      throw new TypeError('rebuildModelContext must be a boolean');
+    return this.mutate(async () => {
+      const value = this.historyMutationValue(
+        await this.#native._pop_history(expectedRevision, rebuildModelContext),
+      );
+      return {
+        revision: value.revision,
+        item: value.item == null ? null : JSON.parse(value.item),
+        rebuiltModelContext: value.rebuilt_context === true,
+      };
+    });
+  }
+
+  private historyMutationValue(payload: string): {
+    revision: string;
+    item?: string | null;
+    rebuilt_context?: boolean;
+  } {
+    const value = JSON.parse(payload);
+    if (value.outcome === 'uncertain') {
+      const error = new NativeError(
+        'Canonical history commit outcome is uncertain; close and restore the Session',
+      );
+      this.retire(error);
+      throw error;
+    }
+    return value;
   }
 
   /** Read the settled root model context for use with supplied compaction. */
