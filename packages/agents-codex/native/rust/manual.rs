@@ -277,6 +277,12 @@ pub(crate) struct Continuation {
     pub(crate) reply_order: Vec<String>,
     accepted_replies: HashMap<String, Receipt>,
     pending_manual: Vec<ManualCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pending_mcp: Vec<codex_core::McpApprovalCheckpointData>,
+    #[serde(skip)]
+    pub(crate) native_mcp: Option<codex_core::NativeMcpRecovery>,
+    #[serde(skip)]
+    native_mcp_source: Option<Arc<crate::native_interception::ProfileMcpSource>>,
     #[serde(skip)]
     generation: Option<Arc<Generation>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -879,6 +885,20 @@ fn restored_profile_plan(
         ensure!(
             original.0 == source && original.1 == opening.fingerprint,
             "Pending call differs from the active admitted Agent source"
+        );
+    }
+    for call in &frame.pending_mcp {
+        ensure!(
+            pending_ids.insert(&call.call_id),
+            "Duplicate pending native MCP call"
+        );
+        let original = history
+            .sources
+            .get(&call.call_id)
+            .context("Pending native MCP call has no captured source")?;
+        ensure!(
+            original.0 == source && original.1 == opening.fingerprint,
+            "Pending native MCP call differs from the admitted Agent source"
         );
     }
     let settled_retry = frame.staged_retry
@@ -1530,6 +1550,16 @@ impl PythonTools {
                 key.clone(),
                 PendingCall {
                     configured: None,
+                    automatic_function: self.resolve_generation(key.reply.generation).is_some_and(
+                        |generation| {
+                            generation.entries.get(key.reply.slot).is_some_and(|entry| {
+                                matches!(
+                                    &entry.spec,
+                                    ToolSpec::Function(_) | ToolSpec::Namespace(_)
+                                )
+                            })
+                        },
+                    ),
                     executor_tools: None,
                     client_search: None,
                     original_payload: self.resolve_generation(key.reply.generation).and_then(
@@ -1555,6 +1585,13 @@ impl PythonTools {
                 .get_mut(key)
                 .context("Approval invocation expired")?;
             call.manual_request = None;
+            call.automatic_function =
+                self.resolve_generation(key.reply.generation)
+                    .is_some_and(|generation| {
+                        generation.entries.get(key.reply.slot).is_some_and(|entry| {
+                            matches!(&entry.spec, ToolSpec::Function(_) | ToolSpec::Namespace(_))
+                        })
+                    });
             call.callback = Some(callback);
         }
         drop(pending);
@@ -1729,6 +1766,9 @@ impl PythonTools {
                 .collect(),
             accepted_replies: history.outputs.clone(),
             pending_manual: Vec::new(),
+            pending_mcp: Vec::new(),
+            native_mcp: None,
+            native_mcp_source: None,
             generation: Some(generation.clone()),
             batch_completion: false,
             tool_outcomes: ToolOutcomes::capture(
@@ -1905,8 +1945,44 @@ impl PythonTools {
                 .all(|call| history.outputs.contains_key(&call.call_id)),
             "manual checkpoint outputs are not an original call prefix"
         );
+        let mut native_ids = HashSet::new();
+        for data in &frame.pending_mcp {
+            ensure!(
+                data.turn_id == history.turn
+                    && native_ids.insert(data.call_id.clone())
+                    && !frame.accepted_replies.contains_key(&data.call_id)
+                    && !history.outputs.contains_key(&data.call_id)
+                    && !frame
+                        .pending_manual
+                        .iter()
+                        .any(|call| call.call_id == data.call_id),
+                "Invalid pending native MCP ownership"
+            );
+            let original = history
+                .calls
+                .iter()
+                .find(|call| call.call_id == data.call_id)
+                .context("Native MCP approval has no canonical call")?;
+            let arguments = if original.arguments.trim().is_empty() {
+                None
+            } else {
+                Some(serde_json::from_str::<Value>(&original.arguments)?)
+            };
+            ensure!(
+                !original.custom
+                    && !original.shell
+                    && !original.patch
+                    && original.name == data.callable_name
+                    && original.namespace.as_deref() == Some(data.callable_namespace.as_str())
+                    && arguments == data.arguments,
+                "Native MCP approval differs from its accepted call"
+            );
+        }
         let mut expected = Vec::new();
         for call in &history.calls {
+            if native_ids.contains(&call.call_id) {
+                continue;
+            }
             if let Some(receipt) = frame.accepted_replies.get(&call.call_id) {
                 receipt.item(call, &history.turn)?;
                 if let Some(written) = history.outputs.get(&call.call_id) {
@@ -1940,7 +2016,7 @@ impl PythonTools {
                 .keys()
                 .all(|id| frame.reply_order.contains(id))
                 && !frame.reply_order.is_empty()
-                && expected.is_empty() == frame.staged_retry
+                && (expected.is_empty() && native_ids.is_empty()) == frame.staged_retry
                 && expected.len() == frame.pending_manual.len(),
             "manual checkpoint has invalid pending/result partition"
         );
@@ -2161,12 +2237,92 @@ impl PythonTools {
             );
         }
         frame.generation = Some(generation.clone());
+        let root_mcp_binding = if captured.is_none() && !frame.pending_mcp.is_empty() {
+            state
+                .thread
+                .accepted_root_mcp_binding(&frame.pending_mcp[0].server_name)
+                .await?
+        } else {
+            None
+        };
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         ensure!(
             manual.restored.is_none(),
             "manual continuation already installed"
         );
         self.validate_frame(&manual, &frame, &history)?;
+        if !frame.pending_mcp.is_empty() {
+            ensure!(
+                frame.pending_mcp.len() == 1
+                    && frame.pending_manual.is_empty()
+                    && frame.accepted_replies.is_empty()
+                    && frame.reply_order.len() == 1
+                    && frame.pending_input.is_empty()
+                    && plan
+                        .as_ref()
+                        .is_none_or(|(_, handoffs)| handoffs.is_empty()),
+                "Unsupported native MCP continuation shape"
+            );
+            let data = &frame.pending_mcp[0];
+            let (binding, admitted_source) = if let Some(source) = captured.as_ref() {
+                ensure!(
+                    crate::agent_profiles::native_mcp_checkpoint_source(source),
+                    "Native MCP continuation cannot replay host callbacks"
+                );
+                (
+                    source.profile.mcp.clone(),
+                    Arc::new(crate::native_interception::ProfileMcpSource {
+                        receipt: Some(source.receipt.clone()),
+                        policy: source
+                            .profile
+                            .data
+                            .get::<crate::native_interception::ProfileMcpPolicy>(),
+                        result_selection: source
+                            .profile
+                            .data
+                            .get::<crate::mcp_result_control::Selection>(),
+                    }),
+                )
+            } else {
+                let binding = root_mcp_binding
+                    .context("Native MCP restore requires an accepted current root binding")?;
+                let current = self.native_mcp_root_source(
+                    &state.thread.thread_extension_data(),
+                    &binding,
+                    &data.server_name,
+                    &data.tool_name,
+                )?;
+                let admitted = current
+                    .get::<crate::native_interception::ProfileMcpSource>()
+                    .context("Native MCP root has no immutable policy source")?;
+                (binding, admitted)
+            };
+            let prepared = data.prepare(&binding, state.id)?;
+            let raw: Vec<RolloutItem> = serde_json::from_value(raw.clone())?;
+            let call = raw
+                .iter()
+                .find_map(|row| match row {
+                    RolloutItem::ResponseItem(item) if data.matches_canonical_call(&item.item) => {
+                        Some(item.item.clone())
+                    }
+                    _ => None,
+                })
+                .context("Native MCP continuation lost its canonical call")?;
+            let observation = frame
+                .tool_outcomes
+                .as_ref()
+                .context("Native MCP continuation lacks its completed sample")?
+                .response_observation_id
+                .clone();
+            frame.native_mcp_source = Some(admitted_source);
+            frame.native_mcp = Some(codex_core::NativeMcpRecovery::new(
+                prepared,
+                call,
+                observation,
+            )?);
+            manual.restored = Some((frame, HashMap::new()));
+            return Ok(Value::Array(Vec::new()));
+        }
         if let Some((_, handoffs)) = &plan {
             let captured = captured.as_deref().context("Missing handoff source")?;
             for (name, handoff) in handoffs {
@@ -2239,6 +2395,7 @@ impl PythonTools {
                     .insert(
                         key.clone(),
                         PendingCall {
+                            automatic_function: false,
                             configured: Some(ConfiguredContinuation {
                                 state: value.clone(),
                                 parked: false,
@@ -2334,6 +2491,102 @@ impl PythonTools {
         Ok(())
     }
 
+    /// Called under the existing thread mutation gate immediately before admission.
+    pub(crate) async fn validate_native_mcp_resume(
+        &self,
+        state: &crate::engine::ThreadState,
+        frame: &Continuation,
+    ) -> Result<()> {
+        let Some(data) = frame.pending_mcp.first() else {
+            return Ok(());
+        };
+        let expected = frame
+            .native_mcp_source
+            .as_ref()
+            .context("Native MCP resume lacks its admitted policy source")?;
+        let binding = if let Some(receipt) = &expected.receipt {
+            let source = state
+                .thread
+                .captured_agent_profile()
+                .await?
+                .context("Native MCP source disappeared before admission")?;
+            ensure!(
+                &source.receipt == receipt
+                    && crate::agent_profiles::native_mcp_checkpoint_source(&source),
+                "Native MCP source changed before admission"
+            );
+            source.profile.mcp.clone()
+        } else {
+            let binding = state
+                .thread
+                .accepted_root_mcp_binding(&data.server_name)
+                .await?
+                .context("Native MCP root changed before admission")?;
+            self.native_mcp_root_source(
+                &state.thread.thread_extension_data(),
+                &binding,
+                &data.server_name,
+                &data.tool_name,
+            )?;
+            binding
+        };
+        data.prepare(&binding, state.id)?;
+        Ok(())
+    }
+
+    /// Build data only; native MCP requests never acquire a managed/manual grant.
+    pub(crate) fn native_mcp_continuation(
+        &self,
+        data: &codex_core::McpApprovalCheckpointData,
+        raw: &Value,
+    ) -> Result<Continuation> {
+        let history = history(raw)?;
+        ensure!(
+            history.turn == data.turn_id
+                && history.calls.len() == 1
+                && history.calls[0].call_id == data.call_id
+                && history.outputs.is_empty(),
+            "Unsupported native MCP checkpoint batch"
+        );
+        let rows: Vec<RolloutItem> = serde_json::from_value(raw.clone())?;
+        ensure!(
+            rows.iter()
+                .any(|row| matches!(row, RolloutItem::ResponseItem(item)
+            if data.matches_canonical_call(&item.item))),
+            "Native MCP checkpoint call changed"
+        );
+        let outcomes =
+            ToolOutcomes::capture(&rows, &data.source_thread_id.to_string(), &data.turn_id)?
+                .context("Native MCP checkpoint lacks its completed sample")?;
+        ensure!(
+            outcomes.call_ids == [data.call_id.clone()] && outcomes.outcomes.is_empty(),
+            "Native MCP checkpoint has an accepted result or unsettled sibling"
+        );
+        Ok(Continuation {
+            pending_input: Vec::new(),
+            staged_retry: false,
+            model_override: history
+                .context
+                .as_ref()
+                .and_then(|context| context.sdk_model_override.clone()),
+            model_settings_override: history
+                .context
+                .as_ref()
+                .and_then(|context| context.sdk_model_settings_override.clone()),
+            turn_id: data.turn_id.clone(),
+            reply_order: vec![data.call_id.clone()],
+            accepted_replies: HashMap::new(),
+            pending_manual: Vec::new(),
+            pending_mcp: vec![data.clone()],
+            native_mcp: None,
+            native_mcp_source: None,
+            generation: None,
+            tool_outcomes: Some(outcomes),
+            fresh: None,
+            batch_completion: false,
+        })
+    }
+
     pub(crate) fn manual_completion(
         &self,
         raw: &Value,
@@ -2349,7 +2602,9 @@ impl PythonTools {
         ensure!(
             keys.is_empty()
                 && frame.pending_manual.is_empty()
-                && frame.reply_order.len() == frame.accepted_replies.len()
+                && frame.reply_order.len()
+                    == frame.accepted_replies.len() + frame.pending_mcp.len()
+                && (frame.pending_mcp.is_empty() || frame.native_mcp.is_some())
                 && frame.turn_id == history.turn
                 && frame.reply_order
                     == history
@@ -2425,6 +2680,10 @@ impl PythonTools {
         let mut items = Vec::new();
         let mut canonical_call_ids = Vec::new();
         for (id, call) in frame.reply_order.iter().zip(&history.calls) {
+            if frame.pending_mcp.iter().any(|data| &data.call_id == id) {
+                canonical_call_ids.push(id.clone());
+                continue;
+            }
             let receipt = frame
                 .accepted_replies
                 .get(id)

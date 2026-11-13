@@ -175,3 +175,83 @@ it('keeps approval-gated declarations and pre-aborted calls from entering the bo
   ).rejects.toBe(reason);
   expect(execute).not.toHaveBeenCalled();
 });
+
+it.each([
+  ['error_as_result', 'return'],
+  ['error_as_result', 'reject'],
+  ['raise_exception', 'return'],
+  ['raise_exception', 'reject'],
+] as const)(
+  'has been joining unowned standalone deadline cleanup for %s with late %s',
+  async (timeoutBehavior, outcome) => {
+    const stopped = Promise.withResolvers<unknown>();
+    const release = Promise.withResolvers<void>();
+    const after = vi.fn((output: ToolOutput) => output);
+    const format = vi.fn(() => 'deadline result');
+    let finished = false;
+    let settled = false;
+    let validated = false;
+    const declaration = standaloneTool({
+      name: 'unowned_deadline',
+      description: 'Standalone cleanup ownership',
+      parameters: z.object({}),
+      callbackTimeout: 0.01,
+      timeoutSettlement: 'at_deadline',
+      timeoutBehavior,
+      timeoutErrorFunction: format,
+      after,
+      result: z.string().transform((value) => {
+        validated = true;
+        return value;
+      }),
+      async execute(_args, context) {
+        context.signal.addEventListener(
+          'abort',
+          () => stopped.resolve(context.signal.reason),
+          { once: true },
+        );
+        await release.promise;
+        finished = true;
+        if (outcome === 'reject') throw new Error('late standalone rejection');
+        return 'late standalone success';
+      },
+    });
+    const observed = declaration.invoke({}).then(
+      (value) => {
+        settled = true;
+        return { value };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      },
+    );
+    const reason = await stopped.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      expect(reason).toBeInstanceOf(ToolTimeoutError);
+      expect(settled).toBe(false);
+      expect(finished).toBe(false);
+      expect(format).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await observed;
+    }
+    const result = await observed;
+    expect(finished).toBe(true);
+    if (timeoutBehavior === 'error_as_result') {
+      expect(result).toEqual({
+        value: new ToolOutput(
+          [{ type: 'inputText', text: 'deadline result' }],
+          false,
+        ),
+      });
+      expect(format).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result).toEqual({ error: reason });
+      expect(format).not.toHaveBeenCalled();
+    }
+    expect(validated).toBe(false);
+    expect(after).not.toHaveBeenCalled();
+  },
+);

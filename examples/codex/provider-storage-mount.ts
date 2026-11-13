@@ -16,7 +16,9 @@ import {
 } from '@openai/agents/sandbox';
 import { DockerSandboxClient } from '@openai/agents/sandbox/local';
 
-export async function main(connect: SandboxEnvironmentOptions['connect']) {
+export async function main(
+  connect: NonNullable<SandboxEnvironmentOptions['connect']>,
+) {
   const bucket = process.env.STORAGE_BUCKET;
   if (!bucket) throw new Error('Set STORAGE_BUCKET to an existing S3 bucket.');
   const manifest = new Manifest({

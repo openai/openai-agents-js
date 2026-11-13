@@ -32,6 +32,7 @@ export type HostedToolChoice =
   | {
       readonly type:
         | 'web_search'
+        | 'web_search_preview'
         | 'file_search'
         | 'code_interpreter'
         | 'image_generation'
@@ -41,6 +42,11 @@ export type HostedToolChoice =
         | 'apply_patch'
         | 'tool_search'
         | 'programmatic_tool_calling';
+    }
+  | {
+      readonly type: 'mcp';
+      readonly serverLabel?: never;
+      readonly name?: never;
     }
   | {
       readonly type: 'mcp';
@@ -54,6 +60,7 @@ function captureHostedToolChoice(value: unknown): HostedToolChoice {
   const choice = value as Record<string, unknown>;
   const types = [
     'web_search',
+    'web_search_preview',
     'file_search',
     'code_interpreter',
     'image_generation',
@@ -79,11 +86,15 @@ function captureHostedToolChoice(value: unknown): HostedToolChoice {
       'Hosted tool choice must identify a supported provider tool',
     );
   if (choice.type === 'mcp') {
+    const hasServer = Object.hasOwn(choice, 'serverLabel');
+    const hasName = Object.hasOwn(choice, 'name');
+    if (!hasServer && !hasName) return Object.freeze({ type: 'mcp' });
     if (
+      !hasServer ||
       typeof choice.serverLabel !== 'string' ||
       !choice.serverLabel.trim() ||
       (choice.name !== undefined &&
-        (typeof choice.name !== 'string' || !choice.name.trim()))
+        (!hasName || typeof choice.name !== 'string' || !choice.name.trim()))
     )
       throw new TypeError(
         'Hosted MCP choice requires a captured server and tool identity',
@@ -569,7 +580,9 @@ export function modelOverrides(
         choice.type === 'mcp'
           ? {
               type: choice.type,
-              server_label: choice.serverLabel,
+              ...(choice.serverLabel === undefined
+                ? {}
+                : { server_label: choice.serverLabel }),
               ...(choice.name === undefined ? {} : { name: choice.name }),
             }
           : { type: choice.type };

@@ -58,9 +58,55 @@ struct ManualWriter {
     capture: Option<ManualCapture>,
 }
 
+fn native_mcp_prefix_matches(
+    history: &[RolloutItem],
+    data: &codex_core::McpApprovalCheckpointData,
+) -> bool {
+    let Some(start) = history.iter().rposition(|row| {
+        matches!(row,
+        RolloutItem::EventMsg(EventMsg::TurnStarted(turn)) if turn.turn_id == data.turn_id)
+    }) else {
+        return false;
+    };
+    let mut calls = 0;
+    for row in &history[start..] {
+        match row {
+            RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) => {
+                return false;
+            }
+            RolloutItem::ResponseItem(item) => match &item.item {
+                ResponseItem::FunctionCall { .. } => {
+                    if !data.matches_canonical_call(&item.item) {
+                        return false;
+                    }
+                    calls += 1;
+                }
+                ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCall { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
+                | ResponseItem::ComputerCall { .. }
+                | ResponseItem::ComputerCallOutput { .. }
+                | ResponseItem::ApplyPatchCall { .. }
+                | ResponseItem::ApplyPatchCallOutput { .. }
+                | ResponseItem::ShellCall { .. }
+                | ResponseItem::ShellCallOutput { .. } => return false,
+                ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {}
+                _ => return false,
+            },
+            _ => {}
+        }
+    }
+    calls == 1
+}
+
+struct SuspendedCall {
+    turn: String,
+    call: String,
+}
+
 struct ManualCapture {
     turn: String,
-    pending: Vec<crate::python_tools::PendingKey>,
+    pending: Vec<SuspendedCall>,
     prefix: Vec<RolloutItem>,
     sampled_calls: usize,
     suffix: Vec<Vec<RolloutItem>>,
@@ -193,6 +239,84 @@ impl MemoryThreadStore {
             }))
     }
 
+    pub(crate) async fn native_mcp_capture_ready(
+        &self,
+        id: ThreadId,
+        captured: &codex_core::CapturedMcpApproval,
+    ) -> anyhow::Result<bool> {
+        let writers = self.manual_writers.lock().await;
+        let Some(writer) = writers.get(&id) else {
+            return Ok(false);
+        };
+        Ok(self
+            .native_mcp_capture(id, writer, &captured.checkpoint_data())
+            .await?
+            .is_some())
+    }
+
+    pub(crate) async fn begin_native_mcp_capture(
+        &self,
+        id: ThreadId,
+        claim: &codex_core::ClaimedMcpApproval,
+    ) -> anyhow::Result<bool> {
+        let mut writers = self.manual_writers.lock().await;
+        let Some(writer) = writers.get_mut(&id) else {
+            return Ok(false);
+        };
+        if !claim.is_live() {
+            return Ok(false);
+        }
+        let Some(capture) = self
+            .native_mcp_capture(id, writer, &claim.checkpoint_data())
+            .await?
+        else {
+            return Ok(false);
+        };
+        if !claim.is_live() {
+            return Ok(false);
+        }
+        writer.capture = Some(capture);
+        Ok(true)
+    }
+
+    async fn native_mcp_capture(
+        &self,
+        id: ThreadId,
+        writer: &ManualWriter,
+        data: &codex_core::McpApprovalCheckpointData,
+    ) -> anyhow::Result<Option<ManualCapture>> {
+        if writer.capture.is_some()
+            || data.source_thread_id != id
+            || writer.turn.as_deref() != Some(data.turn_id.as_str())
+            || writer.calls != 1
+            || writer.sampled_calls != 1
+        {
+            return Ok(None);
+        }
+        self.inner.flush_thread(id).await?;
+        let history = self
+            .inner
+            .load_latest_model_context(LoadThreadHistoryParams {
+                thread_id: id,
+                include_archived: true,
+            })
+            .await?;
+        if !native_mcp_prefix_matches(&history.items, data) {
+            return Ok(None);
+        }
+        Ok(Some(ManualCapture {
+            turn: data.turn_id.clone(),
+            pending: vec![SuspendedCall {
+                turn: data.turn_id.clone(),
+                call: data.call_id.clone(),
+            }],
+            prefix: history.items,
+            sampled_calls: writer.sampled_calls,
+            suffix: Vec::new(),
+            shutdown: false,
+        }))
+    }
+
     pub(crate) async fn begin_manual_capture(
         &self,
         id: ThreadId,
@@ -228,7 +352,13 @@ impl MemoryThreadStore {
         let turn = writer.turn.clone().expect("keys matched the live turn");
         writer.capture = Some(ManualCapture {
             turn,
-            pending: keys,
+            pending: keys
+                .into_iter()
+                .map(|key| SuspendedCall {
+                    turn: key.turn,
+                    call: key.call,
+                })
+                .collect(),
             prefix,
             sampled_calls: writer.sampled_calls,
             suffix: Vec::new(),

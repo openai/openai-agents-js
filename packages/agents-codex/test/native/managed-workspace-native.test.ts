@@ -146,6 +146,42 @@ it('retains paired A while native continuation publishes B and then resumes orig
       'Checkpoint and Environment must agree on the network policy',
     );
     expect(server.requests).toHaveLength(modelRequests);
+    const defaultAgent = new Agent({
+      provider,
+      model: 'gpt-5',
+      instructions: 'Keep the workspace.',
+      environment: source(a, { trustedExpected: a }),
+    });
+    {
+      await using restoredDefault = await defaultAgent.session({
+        state: importedA,
+      });
+      expect(await readFile(join(workspace, 'value'), 'utf8')).toBe('A');
+      const restoredItems = [];
+      for await (const item of restoredDefault.items())
+        restoredItems.push(item);
+      expect(JSON.stringify(restoredItems)).toContain('A remembered');
+    }
+    await expect(
+      defaultAgent.session({
+        state: importedA,
+        environment: source(a, { readOnly: true, trustedExpected: a }),
+      }),
+    ).rejects.toThrow(/read-only/);
+    const mismatchedDefault = new Agent({
+      provider,
+      model: 'gpt-5',
+      instructions: 'Keep the workspace.',
+      environment: source(a, { readOnly: true, trustedExpected: a }),
+    });
+    {
+      await using _restoredOverride = await mismatchedDefault.session({
+        state: importedA,
+        environment: source(a, { trustedExpected: a }),
+      });
+      expect(await readFile(join(workspace, 'value'), 'utf8')).toBe('A');
+    }
+    expect(server.requests).toHaveLength(modelRequests);
     const second = await agent.session({
       state: importedA,
       environment: source(a, { trustedExpected: a }),

@@ -668,14 +668,22 @@ impl LocalChecklistStore {
                     result => result?,
                 };
             if expected.instructions.managed() {
-                let text = expected
-                    .instructions
-                    .text()
-                    .map_err(checklist_error)?
-                    .unwrap_or_default();
-                if let Some(accepted) = crate::application_instructions::validate(complete, &text)
-                    .map_err(checklist_error)?
-                {
+                let accepted = if let Some(opening) = executor_policy.agent_graph() {
+                    let source = crate::agent_profiles::restore_source(opening, complete)
+                        .map_err(checklist_error)?;
+                    opening.validate_pending_source(&source).map_err(checklist_error)?;
+                    Some(crate::agent_profiles::validate_restored(opening, complete)
+                        .map_err(checklist_error)?)
+                } else {
+                    let text = expected
+                        .instructions
+                        .text()
+                        .map_err(checklist_error)?
+                        .unwrap_or_default();
+                    crate::application_instructions::validate(complete, &text)
+                        .map_err(checklist_error)?
+                };
+                if let Some(accepted) = accepted {
                     expected
                         .instructions
                         .confirm(accepted)

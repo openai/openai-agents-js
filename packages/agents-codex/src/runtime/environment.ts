@@ -197,6 +197,15 @@ const remoteEnvironmentSchema = z
     network: networkPolicyWireSchema.optional(),
   })
   .strict();
+const stdioCommandSchema = z.object({
+  program: z.string(),
+  args: z.array(z.string()),
+  env: z.record(z.string(), z.string()),
+});
+type StdioCommand = z.infer<typeof stdioCommandSchema>;
+const dockerEnvironmentSchema = remoteEnvironmentSchema.extend({
+  stdio_command: stdioCommandSchema,
+});
 const localEnvironmentSchema = remoteEnvironmentSchema
   .omit({ url: true, headers: true, connect_timeout: true })
   .extend({
@@ -206,10 +215,13 @@ const localEnvironmentSchema = remoteEnvironmentSchema
     read_only_roots: z.array(capabilityDirectory).optional(),
   });
 const environmentSchema = z.union([
+  dockerEnvironmentSchema,
   remoteEnvironmentSchema,
   localEnvironmentSchema,
 ]);
 export type EnvironmentConfig = z.infer<typeof environmentSchema>;
+const dockerEnvironmentAuthority = new WeakMap<Environment, StdioCommand>();
+const dockerOptionsAuthority = new WeakMap<object, StdioCommand>();
 
 export function captureWritableRoots(roots: readonly string[]): string[] {
   return z.array(capabilityDirectory).parse(roots);
@@ -368,6 +380,7 @@ export class Environment<Context = any> {
       | EnvironmentOptions<Context>
       | (LocalEnvironmentOptions<Context> & { local: true }),
   ) {
+    const docker = dockerOptionsAuthority.get(options);
     this.kind = 'local' in options ? 'local' : 'remote';
     this.writePolicy =
       options.writePolicy === undefined ? 'strict' : options.writePolicy;
@@ -425,7 +438,8 @@ export class Environment<Context = any> {
         throw new TypeError('Invalid executor URL');
       }
       if (
-        url.protocol !== 'wss:' ||
+        (url.protocol !== 'wss:' &&
+          (url.protocol !== 'docker:' || docker === undefined)) ||
         url.username ||
         url.password ||
         url.search ||
@@ -437,6 +451,7 @@ export class Environment<Context = any> {
           'Executor URL must use wss:// without userinfo, query or fragment',
         );
       this.#remoteUrl = options.url;
+      if (docker !== undefined) dockerEnvironmentAuthority.set(this, docker);
     }
     const tools = [...(options.tools ?? [])];
     if (
@@ -572,12 +587,44 @@ export class Environment<Context = any> {
   }
 }
 
+/** @internal Bind an immutable launch receipt from the SDK-owned Docker source. */
+export function dockerStdioEnvironment<Context>(
+  options: EnvironmentOptions<Context>,
+  command: StdioCommand,
+): Environment<Context> {
+  const captured = { ...options };
+  dockerOptionsAuthority.set(captured, stdioCommandSchema.parse(command));
+  return new Environment(captured);
+}
+
+/** Configured projections have been retaining authority before constructor validation. */
+export function projectEnvironment<Context>(
+  source: Environment<Context>,
+  options:
+    | EnvironmentOptions<Context>
+    | (LocalEnvironmentOptions<Context> & { local: true }),
+): Environment<Context> {
+  const command = dockerEnvironmentAuthority.get(source);
+  if (command === undefined) return new Environment(options);
+  if (
+    source.kind !== 'remote' ||
+    'local' in options ||
+    source.url !== options.url
+  )
+    throw new TypeError(
+      'Environment projection has been changing its transport authority',
+    );
+  return dockerStdioEnvironment(options, command);
+}
+
 /** @internal Construct transport settings from the current immutable declaration. */
 export function environmentConfig(environment: Environment): EnvironmentConfig {
+  const command = dockerEnvironmentAuthority.get(environment);
   const native = environmentSchema.parse({
     ...(environment.kind === 'local'
       ? { local: true }
       : { url: environment.url, headers: environment.headers }),
+    ...(command === undefined ? {} : { stdio_command: command }),
     cwd: environment.cwd,
     ...(environment.writePolicy === 'trusted_workspace_write'
       ? { write_policy: environment.writePolicy }

@@ -157,6 +157,7 @@ struct CallbackRelease {
     cancelled: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
     cleanup_failed: std::sync::atomic::AtomicBool,
+    logical_timeout: std::sync::atomic::AtomicBool,
     changed: tokio::sync::Notify,
 }
 impl CallbackRelease {
@@ -174,6 +175,7 @@ impl CallbackRelease {
             cancelled: std::sync::atomic::AtomicBool::new(false),
             released: std::sync::atomic::AtomicBool::new(false),
             cleanup_failed: std::sync::atomic::AtomicBool::new(false),
+            logical_timeout: std::sync::atomic::AtomicBool::new(false),
             changed: tokio::sync::Notify::new(),
         })
     }
@@ -298,6 +300,7 @@ fn configured_executor_names<'a>(tools: impl IntoIterator<Item = &'a ToolName>) 
 
 struct PendingCall {
     configured: Option<ConfiguredContinuation>,
+    automatic_function: bool,
     executor_tools: Option<Vec<String>>,
     client_search: Option<Arc<ClientToolSearchWork>>,
     // Captured by native enqueue, never reconstructed from a host reply.
@@ -329,6 +332,7 @@ pub(crate) struct ChildStepSelection;
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ContextCallbacks {
+    pub(crate) tool_not_found: bool,
     pub(crate) model_producer: bool,
     pub(crate) before_compact: bool,
     pub(crate) transform_context: bool,
@@ -855,11 +859,28 @@ impl PythonTools {
         }
     }
     async fn finish_step_callbacks(&self, turn: Option<&str>, cancel: bool) {
+        self.finish_preparation_callbacks(turn, None, cancel).await;
+        self.finish_terminal_callbacks(turn, cancel).await;
+    }
+    async fn finish_preparation_callbacks(
+        &self,
+        turn: Option<&str>,
+        call: Option<&str>,
+        cancel: bool,
+    ) {
         let callbacks: Vec<_> = {
             let mut replies = self.step_replies.lock().expect("Step replies poisoned");
             replies
                 .iter_mut()
-                .filter(|(_, pending)| turn.is_none_or(|turn| pending.turn == turn))
+                .filter(|(_, pending)| {
+                    turn.is_none_or(|turn| pending.turn == turn)
+                        && call.is_none_or(|call| pending.tool_error_call.as_deref() == Some(call))
+                        // A duplicate call ID cannot cancel or join a live sibling receipt.
+                        && (call.is_none()
+                            || pending.reply.is_closed()
+                            || pending.source_cancellation.as_ref()
+                                .is_some_and(|token| token.is_cancelled()))
+                })
                 .filter_map(|(id, pending)| {
                     pending.callback.clone().map(|callback| {
                         if cancel {
@@ -885,7 +906,6 @@ impl PythonTools {
                 replies.remove(&id);
             }
         }
-        self.finish_terminal_callbacks(turn, cancel).await;
     }
 
     pub(crate) fn callback_operation(
@@ -929,6 +949,23 @@ impl PythonTools {
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             }
+            "defer_cleanup" => {
+                if !call.automatic_function
+                    || call._approval_receiver.is_some()
+                    || call.configured.is_some()
+                    || call.client_search.is_some()
+                    || call.retired
+                    || call.sender.is_closed()
+                    || !callback.entered.load(Ordering::Acquire)
+                    || !callback.admits_reply()
+                {
+                    return false;
+                }
+                callback
+                    .logical_timeout
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            }
             "cancelled" => callback.cancelled.load(Ordering::Acquire),
             "release" | "release_failed" => {
                 let released = if operation == "release_failed" {
@@ -938,7 +975,10 @@ impl PythonTools {
                 };
                 // A restored approval owns a synthetic waiter, not a live Core
                 // PendingReply. Retire it after receipt and physical callback release.
-                if call._approval_receiver.is_some() && call.sender.is_closed() {
+                if call.sender.is_closed()
+                    && (call._approval_receiver.is_some()
+                        || (call.retired && callback.logical_timeout.load(Ordering::Acquire)))
+                {
                     pending.remove(&key);
                 }
                 released
@@ -983,6 +1023,17 @@ impl PythonTools {
         }
     }
     async fn finish_callbacks(&self, turn: Option<&str>, call_id: Option<&str>, cancel: bool) {
+        self.finish_callback_owners(turn, call_id, cancel, false)
+            .await;
+    }
+
+    async fn finish_callback_owners(
+        &self,
+        turn: Option<&str>,
+        call_id: Option<&str>,
+        cancel: bool,
+        allow_logical_timeout: bool,
+    ) {
         let callbacks: Vec<_> = {
             let mut pending = self.pending.lock().expect("callback pending poisoned");
             pending
@@ -991,6 +1042,13 @@ impl PythonTools {
                     turn.is_none_or(|turn| key.turn == turn)
                         && call_id.is_none_or(|id| key.call == id)
                         && (cancel || call.retired)
+                        && !(allow_logical_timeout
+                            && !cancel
+                            && call.callback.as_ref().is_some_and(|callback| {
+                                callback.logical_timeout.load(Ordering::Acquire)
+                                    && !callback.cancelled.load(Ordering::Acquire)
+                                    && !callback.released.load(Ordering::Acquire)
+                            }))
                 })
                 .filter_map(|(key, call)| {
                     call.callback.clone().map(|callback| {
@@ -1354,6 +1412,44 @@ impl PythonTools {
             "Managed Agent callback requires its captured native step profile"
         );
         Ok(self.snapshot())
+    }
+
+    /// Restore authority comes only from the application's current root selection.
+    pub(crate) fn native_mcp_root_source(
+        &self,
+        thread: &ExtensionData,
+        binding: &codex_mcp::McpBinding,
+        server: &str,
+        raw_tool: &str,
+    ) -> Result<ExtensionData> {
+        ensure!(
+            !self.managed_profiles.load(Ordering::Acquire) && self.inherited_source.is_none(),
+            "Native MCP root restore requires an ordinary current root"
+        );
+        ensure!(
+            self.policy
+                .allowed_mcp_tools
+                .as_ref()
+                .is_none_or(
+                    |tools| tools
+                        .iter()
+                        .any(
+                            |(selected_server, selected_tool, _)| selected_server == server
+                                && selected_tool == raw_tool
+                        )
+                ),
+            "Native MCP tool is no longer selected by the current root"
+        );
+        let control = thread
+            .get::<crate::native_interception::Control>()
+            .context("Native MCP root has no current policy owner")?;
+        let source = ExtensionData::new(thread.level_id());
+        source.insert(control.capture_mcp_source_for_binding(binding, &self.policy));
+        ensure!(
+            crate::native_interception::native_mcp_checkpoint_source(&source),
+            "Native MCP continuation cannot replay host callbacks"
+        );
+        Ok(source)
     }
 
     pub(crate) fn inherits_children(&self) -> bool {
@@ -2563,6 +2659,8 @@ impl PythonTools {
                 key.clone(),
                 PendingCall {
                     configured: None,
+                    automatic_function: callback.is_some()
+                        && matches!(&entry.spec, ToolSpec::Function(_) | ToolSpec::Namespace(_)),
                     executor_tools,
                     client_search,
                     original_payload: match &entry.spec {
@@ -2780,6 +2878,7 @@ struct ActiveSelection {
     operation_declaration_source: Option<codex_extension_api::AgentProfileReceipt>,
 }
 struct PendingStep {
+    tool_error_call: Option<String>,
     source_cancellation: Option<tokio_util::sync::CancellationToken>,
     callback: Option<Arc<CallbackRelease>>,
     operation_generation: u64,
@@ -2799,6 +2898,7 @@ fn take_pending_step(replies: &mut HashMap<u64, PendingStep>, id: u64) -> Option
         replies.insert(
             id,
             PendingStep {
+                tool_error_call: pending.tool_error_call.clone(),
                 source_cancellation: pending.source_cancellation.clone(),
                 callback: Some(callback.clone()),
                 operation_generation: pending.operation_generation,
@@ -3945,6 +4045,7 @@ impl ToolContributor for PythonContributor {
                     .insert(
                         id,
                         PendingStep {
+                            tool_error_call: None,
                             source_cancellation: source_owned.then(|| {
                                 cancellation
                                     .as_ref()
@@ -4576,6 +4677,21 @@ impl<T: ToolOutput> ToolOutput for RealtimeToolOutput<T> {
 }
 
 impl ToolLifecycleContributor for PythonContributor {
+    fn on_tool_not_found<'a>(
+        &'a self,
+        input: codex_extension_api::ToolNotFoundInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<Option<String>, ()>> {
+        Box::pin(async move {
+            let Some(tools) = input.thread_store.get::<PythonTools>() else {
+                return Ok(None);
+            };
+            if tools.instance.is_some() || !tools.context_callbacks.tool_not_found {
+                return Ok(None);
+            }
+            tools.format_tool_not_found(input).await.map_err(|_| ())
+        })
+    }
+
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move { sandbox_events::on_start(&input) })
     }
@@ -4584,10 +4700,25 @@ impl ToolLifecycleContributor for PythonContributor {
         Box::pin(async move {
             sandbox_events::on_finish(&input);
             if let Some(tools) = input.thread_store.get::<PythonTools>() {
+                tools
+                    .finish_preparation_callbacks(
+                        Some(input.turn_id),
+                        Some(input.call_id),
+                        matches!(input.outcome, codex_extension_api::ToolCallOutcome::Aborted),
+                    )
+                    .await;
                 // A rejected duplicate shares a call ID, not the original invocation.
                 // PendingReply already retires and cancels its exact owner on drop.
                 tools
-                    .finish_callbacks(Some(input.turn_id), Some(input.call_id), false)
+                    .finish_callback_owners(
+                        Some(input.turn_id),
+                        Some(input.call_id),
+                        false,
+                        matches!(
+                            input.outcome,
+                            codex_extension_api::ToolCallOutcome::Completed { .. }
+                        ),
+                    )
                     .await;
             }
             if input.source == ToolCallSource::Direct
@@ -5262,6 +5393,57 @@ mod pending_tests {
     }
 
     #[tokio::test]
+    async fn logical_timeout_preserves_exact_receipt_and_physical_stop_ownership() {
+        let tools = tools();
+        tools.configure_manual(Vec::new()).unwrap();
+        let generation = tools.snapshot();
+        let (key, _receive) = tools
+            .enqueue(
+                "root",
+                &generation,
+                0,
+                "turn",
+                "call",
+                json!({}),
+                &ToolCallSource::Direct,
+                "model",
+                None,
+                None,
+            )
+            .unwrap();
+        let request = tools.next_request().await;
+        let receipt = request["msg"]["_sdk_callback"].clone();
+        assert!(!tools.callback_operation("root", &receipt, "defer_cleanup"));
+        assert!(tools.callback_operation("root", &receipt, "enter"));
+        let mut stale = receipt.clone();
+        stale["invocation"] = json!("wrong");
+        assert!(!tools.callback_operation("root", &stale, "defer_cleanup"));
+        assert!(tools.callback_operation("root", &receipt, "defer_cleanup"));
+        assert!(!tools.callback_operation("root", &receipt, "defer_cleanup"));
+        let invocation = tools.pending.lock().unwrap().get(&key).unwrap().invocation;
+        tools.retire_callback(&key, invocation, true);
+        tools
+            .finish_callback_owners(Some("turn"), Some("call"), false, true)
+            .await;
+        assert!(tools.pending.lock().unwrap().contains_key(&key));
+        let stopped = Arc::clone(&tools);
+        let mut stop = tokio::spawn(async move {
+            stopped
+                .finish_callbacks(Some("turn"), Some("call"), true)
+                .await;
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut stop)
+                .await
+                .is_err()
+        );
+        assert!(!tools.callback_operation("root", &receipt, "defer_cleanup"));
+        assert!(tools.callback_operation("root", &receipt, "release"));
+        stop.await.unwrap();
+        assert!(tools.pending.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn scoped_automatic_callback_waits_for_physical_release_and_keeps_sibling_live() {
         let tools = tools();
         tools.configure_manual(Vec::new()).unwrap();
@@ -5653,6 +5835,7 @@ mod pending_tests {
         tools.step_replies.lock().unwrap().insert(
             7,
             PendingStep {
+                tool_error_call: None,
                 source_cancellation: None,
                 callback: None,
                 operation_generation: 0,
@@ -5789,6 +5972,7 @@ mod pending_tests {
         child.step_replies.lock().unwrap().insert(
             7,
             PendingStep {
+                tool_error_call: None,
                 source_cancellation: None,
                 callback: None,
                 operation_generation: 0,
@@ -6496,6 +6680,7 @@ mod pending_tests {
             tools.step_replies.lock().unwrap().insert(
                 8,
                 PendingStep {
+                    tool_error_call: None,
                     source_cancellation: None,
                     callback: None,
                     operation_generation: 0,

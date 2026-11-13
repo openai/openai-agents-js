@@ -19,6 +19,44 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::time::Instant;
 
+pub(crate) fn transport_error_message(error: &(dyn std::error::Error + Send + Sync)) -> String {
+    use std::fmt::Write as _;
+    struct Diagnostic {
+        text: String,
+        truncated: bool,
+    }
+    impl std::fmt::Write for Diagnostic {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let mut end = text.len().min(16 * 1024 - self.text.len());
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            self.text.push_str(&text[..end]);
+            self.truncated |= end < text.len();
+            Ok(())
+        }
+    }
+    let mut diagnostic = Diagnostic {
+        text: String::new(),
+        truncated: false,
+    };
+    let mut current: Option<&dyn std::error::Error> = Some(error);
+    for index in 0..16 {
+        let Some(error) = current else {
+            break;
+        };
+        let _ = write!(diagnostic, "{}{error}", if index == 0 { "" } else { ": " });
+        current = error.source();
+        if diagnostic.truncated {
+            break;
+        }
+    }
+    if diagnostic.truncated || current.is_some() {
+        diagnostic.text.push_str(" [truncated]");
+    }
+    diagnostic.text
+}
+
 const MAX_REPLY: usize = 1024 * 1024;
 const MAX_PENDING: usize = 32;
 // Same private serialized bridge budget as native interception. A single
@@ -150,6 +188,7 @@ struct Pending {
     call_id: String,
     deadline: Instant,
     metadata: bool,
+    transport_error: Option<Arc<dyn std::error::Error + Send + Sync>>,
     is_cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     sender: Option<oneshot::Sender<Option<AcceptedReply>>>,
 }
@@ -195,6 +234,12 @@ pub(crate) struct Selection {
 }
 
 impl Selection {
+    pub(crate) fn has_callbacks(&self) -> bool {
+        !self.servers.is_empty()
+            || !self.metadata_servers.is_empty()
+            || !self.discovery_servers.is_empty()
+    }
+
     pub(crate) fn validate(&self, requested: &HashMap<String, McpServerConfig>) -> Result<()> {
         for (name, tools) in &self.pre_policy {
             ensure!(
@@ -700,6 +745,7 @@ impl McpResultControl {
                 call_id: notice.call_id.to_owned(),
                 deadline,
                 metadata: notice.phase == Some("metadata"),
+                transport_error: None,
                 is_cancelled: None,
                 sender: Some(tx),
             },
@@ -769,6 +815,36 @@ impl McpResultControl {
         }
         route.payload = Payload::Handed;
         true
+    }
+
+    // The diagnostic stays out of Notice and all serialized bridges. Only the
+    // current handed policy can take it, once, before its existing deadline.
+    pub(crate) fn take_transport_error(
+        &self,
+        nonce: u64,
+        turn_id: &str,
+        call_id: &str,
+    ) -> Option<Arc<dyn std::error::Error + Send + Sync>> {
+        let mut state = self.state.lock().expect("MCP result control poisoned");
+        if state.revoked
+            || !state.pending.get(&nonce).is_some_and(|item| {
+                item.turn_id == turn_id
+                    && item.call_id == call_id
+                    && !item.metadata
+                    && item.sender.is_some()
+                    && item.is_cancelled.as_ref().is_none_or(|probe| !probe())
+                    && Instant::now() < item.deadline
+                    && state
+                        .routes
+                        .lock()
+                        .expect("MCP routes poisoned")
+                        .get(&nonce)
+                        .is_some_and(|route| matches!(route.payload, Payload::Handed))
+            })
+        {
+            return None;
+        }
+        state.pending.get_mut(&nonce)?.transport_error.take()
     }
 
     pub fn release(&self, nonce: u64) -> bool {
@@ -1303,6 +1379,9 @@ impl ToolLifecycleContributor for McpResultContributor {
                     result: Some(&original),
                 };
                 let rx = control.enqueue_with_context(&mut state, &notice, deadline, tracing);
+                if let Some(pending) = state.pending.get_mut(&nonce) {
+                    pending.transport_error = input.transport_error.cloned();
+                }
                 (deadline, nonce, rx)
             };
             let mut reservation = Reservation {

@@ -475,7 +475,16 @@ pub async fn submit_replaceable(state: &crate::engine::ThreadState, value: Value
             .map_err(pre_admission)?;
     }
     let strict = thread.thread_extension_data().get::<StrictExecutorWrites>();
+    let agent_environments = thread
+        .thread_extension_data()
+        .get::<crate::agent_profiles::ProfileEnvironments>();
+    if agent_environments.is_some() && p.writable_roots.is_some() {
+        return Err(pre_admission(anyhow::anyhow!(
+            "Writable roots belong to the admitted Agent environment"
+        )));
+    }
     if (strict.is_some()
+        || agent_environments.is_some()
         || state.engine.local_checklist_store.is_some()
         || state.engine.saved_login_file.is_some())
         && p.thread_settings
@@ -821,9 +830,17 @@ pub async fn recover_prepared(
     staged_input: codex_extension_api::StagedInputBatch,
     raise_on_unknown_tool: bool,
     profile_output_override: bool,
+    native_mcp: Option<codex_core::NativeMcpRecovery>,
 ) -> Result<Value> {
     let thread = &state.thread;
     let mut init = thread.config_snapshot().await.turn_extension_init;
+    if let Some(native_mcp) = native_mcp {
+        anyhow::ensure!(
+            terminal.is_none(),
+            "Native MCP recovery cannot inherit function completion authority"
+        );
+        init.insert(native_mcp);
+    }
     if let Some(submission) = observation_submission_id {
         state
             .request_metadata
@@ -923,7 +940,8 @@ async fn start_with_params<'a>(
     };
     let mut prompt_cache_breakpoints = Vec::new();
     let input = if p.input.is_array() {
-        let captured = decode::<Vec<codex_protocol::prompt_cache::PromptCacheUserInput>>(p.input).map_err(pre_admission)?;
+        let captured = decode::<Vec<codex_protocol::prompt_cache::PromptCacheUserInput>>(p.input)
+            .map_err(pre_admission)?;
         let (content, breakpoints) = codex_protocol::prompt_cache::split_user_input(captured);
         prompt_cache_breakpoints = breakpoints;
         TurnInput::UserInput {

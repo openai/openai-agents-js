@@ -35,10 +35,13 @@ export interface NativeCallbackDelivery {
   retired: boolean;
   released: boolean;
   completion?: Promise<void>;
+  cleanup?: Promise<void>;
+  owner?: { readonly controller: AbortController };
 }
 
 /** Private receipt identity and lifetime for one Session's callback deliveries. */
 export class CallbackDeliveries {
+  constructor(private readonly cleanupFailed: (error: unknown) => void) {}
   private readonly callbackDeliveries = new Map<
     string,
     NativeCallbackDelivery
@@ -118,6 +121,21 @@ export class CallbackDeliveries {
     }
     throw error;
   }
+  async joinCleanup(owner?: {
+    readonly controller: AbortController;
+  }): Promise<void> {
+    await Promise.allSettled(
+      [...this.callbackDeliveries.values()]
+        .filter(
+          (delivery) =>
+            (!owner || delivery.owner === owner) && delivery.cleanup,
+        )
+        .map(async (delivery) => {
+          await delivery.completion?.catch(() => {});
+          await delivery.cleanup;
+        }),
+    );
+  }
   async own(
     event: NativeEvent,
     owner: { readonly controller: AbortController },
@@ -130,6 +148,7 @@ export class CallbackDeliveries {
     if (!delivery) return callback(owner.controller.signal);
     if (delivery.claimed || delivery.released) return;
     delivery.claimed = true;
+    delivery.owner = owner;
     const signal = AbortSignal.any([
       owner.controller.signal,
       delivery.controller.signal,
@@ -149,7 +168,13 @@ export class CallbackDeliveries {
         primary = { error };
     } finally {
       try {
-        this.release(delivery, primary !== undefined);
+        if (delivery.cleanup) {
+          const cleanup = delivery.cleanup.then(() =>
+            this.release(delivery, primary !== undefined),
+          );
+          delivery.cleanup = cleanup;
+          void cleanup.catch((error) => this.cleanupFailed(error));
+        } else this.release(delivery, primary !== undefined);
       } catch (error) {
         primary ??= { error };
       }

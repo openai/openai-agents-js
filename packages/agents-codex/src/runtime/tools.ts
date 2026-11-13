@@ -1,3 +1,4 @@
+import { inheritSandboxContext, type SandboxAccess } from './sandbox-context';
 import type { StandardSchemaWithJSON } from '@openai/agents-core';
 import type { SandboxSkillLease } from './sandbox-skills';
 import { isZodObject } from '@openai/agents-core/utils';
@@ -253,6 +254,8 @@ export interface ToolErrorContext<Context = unknown> {
   /** Cancellation of the owning invocation; formatting joins its cleanup. */
   readonly signal: AbortSignal;
   readonly phase: 'arguments' | 'execution';
+  /** Unknown execution routing; presentation cannot authorize a tool. */
+  readonly reason?: 'tool_not_found';
   readonly defaultMessage: string;
   readonly error: unknown;
 }
@@ -290,6 +293,8 @@ export interface ToolInvocationContext<
 export interface ToolCallContext<
   Context = unknown,
 > extends ToolInvocationInputContext<Context> {
+  /** Current provider resource; available only inside its admitted native callback. */
+  readonly sandbox?: SandboxAccess;
   /** Exact JSON text of an admitted direct function call, before input policy. */
   readonly rawArguments?: string;
   /** Provider conversation snapshot captured when this Realtime call was issued. */
@@ -324,6 +329,7 @@ const toolSessionOwners = new WeakMap<
     clientToolSearch?: ClientToolSearchInvocation;
     skillLease?: SandboxSkillLease;
     configuredAgent?: (input: string) => Promise<string>;
+    retainTimeoutBody?: (body: Promise<unknown>) => void;
   }
 >();
 
@@ -334,12 +340,14 @@ export function registerToolSessionOwner(
   clientToolSearch?: ClientToolSearchInvocation,
   skillLease?: SandboxSkillLease,
   configuredAgent?: (input: string) => Promise<string>,
+  retainTimeoutBody?: (body: Promise<unknown>) => void,
 ): void {
   toolSessionOwners.set(context, {
     owner,
     clientToolSearch,
     skillLease,
     configuredAgent,
+    retainTimeoutBody,
   });
 }
 
@@ -376,6 +384,7 @@ function inheritToolSessionOwner<T extends object>(
 ): T {
   const owner = toolSessionOwners.get(source);
   if (owner) toolSessionOwners.set(context, owner);
+  inheritSandboxContext(context, source);
   return context;
 }
 
@@ -448,6 +457,28 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
     !tool[shellDeclaration]
   );
 }
+/** @internal Capability declarations have been retaining ordinary workspace callback admission. */
+export function isSandboxCapabilityTool(tool: SessionTool): boolean {
+  if (isDirectFunctionTool(tool)) return true;
+  return (
+    tool.kind !== 'manual' &&
+    !tool.deferLoading &&
+    tool.allowedCallers?.includes('direct') !== false &&
+    (tool[shellDeclaration] !== undefined ||
+      tool[nativeCallbackDeclaration]?.type === 'applyPatch')
+  );
+}
+
+/** @internal Current eager direct callbacks only; native and manual identities stay strict. */
+export function isBareFunctionCollisionCandidate(tool: SessionTool): boolean {
+  const source = managedApproval(tool)?.function ?? tool;
+  return (
+    source.kind !== 'manual' &&
+    source.namespace === undefined &&
+    typeof source[prepareInvocation] === 'function' &&
+    isDirectFunctionTool(source)
+  );
+}
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,
@@ -509,6 +540,7 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly namespaceDescription?: string;
   readonly callbackTimeout?: number;
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
+  readonly timeoutSettlement?: 'after_cleanup' | 'at_deadline';
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly errorFunction?: ToolErrorFunction<Context> | null;
   readonly kind?: 'function';
@@ -899,11 +931,16 @@ type FunctionToolOptions<
   outputSchema?: JsonObject;
   /**
    * Callback-body deadline in seconds, at most 2_147_483.647.
-   * Aborts the callback signal and joins entered work; effects are not rolled back.
+   * Aborts the callback signal; effects are not rolled back.
+   * Joins entered work unless timeoutSettlement selects at_deadline.
    */
   callbackTimeout?: number;
   /** Fail the turn by default, or send a failed textual result after cleanup. */
   timeoutBehavior?: FunctionToolTimeoutBehavior;
+  /** Root application functions may settle at the deadline while the Session retains cleanup.
+   * Standalone calls have been retaining cleanup before settlement.
+   */
+  timeoutSettlement?: 'after_cleanup' | 'at_deadline';
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: (
     context: ErrorContext,
@@ -1111,10 +1148,13 @@ function createFunctionTool<
     after,
     callbackTimeout,
     timeoutBehavior = 'raise_exception',
+    timeoutSettlement = 'after_cleanup',
     timeoutErrorFunction,
     inputErrorFunction,
     errorFunction,
   } = options as FunctionToolOptions<T, Context, Result, true>;
+  if (!['after_cleanup', 'at_deadline'].includes(timeoutSettlement))
+    throw new TypeError('Invalid timeoutSettlement');
   if (
     inputErrorFunction !== undefined &&
     typeof inputErrorFunction !== 'function'
@@ -1214,6 +1254,8 @@ function createFunctionTool<
   const native = (
     options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
   )[nativeCallbackDeclaration];
+  if (timeoutSettlement === 'at_deadline' && (shell || native))
+    throw new TypeError('Deadline settlement requires an application function');
   if (standalone && (needsApproval || shell || native))
     throw new TypeError(
       'Standalone invocation requires an application function without approval',
@@ -1382,6 +1424,8 @@ function createFunctionTool<
           admit();
           onBodyEntry?.();
         },
+        timeoutSettlement,
+        toolSessionOwners.get(context)?.retainTimeoutBody,
       );
     } catch (error) {
       if (error instanceof FunctionBodyError) {
@@ -1464,6 +1508,7 @@ function createFunctionTool<
     description: options.description ?? '',
     callbackTimeout,
     timeoutBehavior,
+    timeoutSettlement,
     timeoutErrorFunction,
     errorFunction,
     deferLoading: options.deferLoading ?? false,
@@ -1935,7 +1980,7 @@ export async function invokeFunctionTool(
   );
 }
 
-/** @internal A callback deadline revokes publication; the caller still joins physical work. */
+/** @internal Callback deadline with retained cleanup or joined body settlement. */
 export async function invokeWithTimeout<T>(
   invoke: (signal: AbortSignal) => T | Promise<T>,
   parentSignal: AbortSignal,
@@ -1946,6 +1991,8 @@ export async function invokeWithTimeout<T>(
   timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
   wrapBodyError?: (error: unknown) => unknown,
   enterBody?: (signal: AbortSignal) => void,
+  settlement: 'after_cleanup' | 'at_deadline' = 'after_cleanup',
+  retainBody?: (body: Promise<unknown>) => void,
 ): Promise<T> {
   if (timeoutSeconds === undefined) {
     enterBody?.(parentSignal);
@@ -1962,8 +2009,22 @@ export async function invokeWithTimeout<T>(
     timeoutError ?? new Error(`Tool ${name} exceeded its callback timeout`);
   if (!timeoutError) timeout.name = 'TimeoutError';
   const deadline = performance.now() + timeoutSeconds * 1000;
+  const deadlineResult =
+    settlement === 'at_deadline' && retainBody !== undefined
+      ? Promise.withResolvers<never>()
+      : undefined;
+  void deadlineResult?.promise.catch(() => {});
+  let body: Promise<T> | undefined;
   const expire = () => {
     if (controller.signal.aborted || parentSignal.aborted) return;
+    try {
+      if (body && deadlineResult) retainBody?.(body);
+    } catch (error) {
+      deadlineResult?.reject(error);
+      controller.abort(error);
+      return;
+    }
+    deadlineResult?.reject(timeout);
     controller.abort(timeout);
     onTimeout(timeout);
   };
@@ -1976,7 +2037,10 @@ export async function invokeWithTimeout<T>(
       // Check synchronous completion before unrelated queued work can delay us.
       value =
         result && typeof (result as Promise<T>).then === 'function'
-          ? await result
+          ? await ((body = Promise.resolve(result)),
+            deadlineResult
+              ? Promise.race([body, deadlineResult.promise])
+              : body)
           : (result as T);
     } catch (error) {
       if (timeoutError) {

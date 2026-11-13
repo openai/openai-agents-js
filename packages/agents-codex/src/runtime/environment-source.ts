@@ -1,3 +1,5 @@
+import type { SandboxCapabilityLease } from './sandbox-capabilities';
+import type { SandboxProviderBinding } from './sandbox-context';
 import type { SandboxSkillLease } from './sandbox-skills';
 import type {
   SandboxMemoryOwner,
@@ -36,9 +38,12 @@ interface LeaseState {
   claimed: boolean;
   readonly managedWorkspace?: ManagedWorkspaceBinding;
   readonly workspaceInstructions?: string;
+  readonly profileWorkspaceInstructions?: string;
   readonly sandboxMemory?: SandboxMemoryOwner;
   readonly observeSandboxOperation?: SandboxOperationObserver;
   readonly skillLease?: SandboxSkillLease;
+  readonly sandboxProvider?: SandboxProviderBinding;
+  readonly sandboxCapabilities?: SandboxCapabilityLease;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -59,6 +64,9 @@ export function createEnvironmentLease<Context>(
   observeSandboxOperation?: SandboxOperationObserver,
   skillLease?: SandboxSkillLease,
   sandboxMemory?: SandboxMemoryOwner,
+  sandboxProvider?: SandboxProviderBinding,
+  sandboxCapabilities?: SandboxCapabilityLease,
+  profileWorkspaceInstructions?: string,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -69,9 +77,12 @@ export function createEnvironmentLease<Context>(
     signal: sourceSignal,
     managedWorkspace,
     workspaceInstructions,
+    profileWorkspaceInstructions,
     sandboxMemory,
     observeSandboxOperation,
     skillLease,
+    sandboxProvider,
+    sandboxCapabilities,
   };
   const close = () => {
     if (state.claimed)
@@ -106,6 +117,8 @@ export class EnvironmentAcquisition {
   #detachCaller: () => void;
   #detachSession?: () => void;
   #disposal?: Promise<void>;
+  readonly #profileAbort = new AbortController();
+  readonly #profileOwners = new Map<EnvironmentAcquisition, () => void>();
 
   constructor(
     readonly environment: Environment | undefined,
@@ -114,9 +127,27 @@ export class EnvironmentAcquisition {
     private readonly state?: LeaseState,
   ) {
     this.#detachCaller = detachCaller;
-    this.signal = state?.signal
-      ? AbortSignal.any([openingController.signal, state.signal])
-      : openingController.signal;
+    this.signal = AbortSignal.any([
+      openingController.signal,
+      this.#profileAbort.signal,
+      ...(state?.signal ? [state.signal] : []),
+    ]);
+  }
+
+  /** Captured graph resources have been joining the same opening and retirement. */
+  async adoptProfile(owner: EnvironmentAcquisition): Promise<void> {
+    if (owner === this || this.#profileOwners.has(owner)) return;
+    if (this.#disposal) {
+      await owner.dispose();
+      throw new Error('Environment acquisition has been retiring');
+    }
+    const abort = () => this.#profileAbort.abort(owner.signal.reason);
+    owner.signal.addEventListener('abort', abort, { once: true });
+    this.#profileOwners.set(owner, () =>
+      owner.signal.removeEventListener('abort', abort),
+    );
+    if (owner.signal.aborted) abort();
+    this.signal.throwIfAborted();
   }
 
   /** @internal Mutable capture state belongs to this exact acquired resource. */
@@ -129,6 +160,14 @@ export class EnvironmentAcquisition {
     return this.state?.workspaceInstructions;
   }
 
+  /** @internal Captured Agent profiles have been retaining their own capability text. */
+  get profileWorkspaceInstructions(): string | undefined {
+    return (
+      this.state?.profileWorkspaceInstructions ??
+      this.state?.workspaceInstructions
+    );
+  }
+
   /** @internal The exact provider lease supplies the sink namespace. */
   get observeSandboxOperation(): SandboxOperationObserver | undefined {
     return this.state?.observeSandboxOperation;
@@ -137,6 +176,16 @@ export class EnvironmentAcquisition {
   /** @internal Current resource authority, carried by this exact acquisition. */
   get skillLease(): SandboxSkillLease | undefined {
     return this.state?.skillLease;
+  }
+
+  /** @internal Exact acquired provider for admitted application callbacks. */
+  get sandboxProvider(): SandboxProviderBinding | undefined {
+    return this.state?.sandboxProvider;
+  }
+
+  /** @internal The current resource owns its bound capability contributions. */
+  get sandboxCapabilities(): SandboxCapabilityLease | undefined {
+    return this.state?.sandboxCapabilities;
   }
 
   /** @internal Fresh declaration presence; never restored from checkpoint data. */
@@ -182,6 +231,7 @@ export class EnvironmentAcquisition {
     // A Session opening signal ends at publication. The source's own signal
     // remains connected until retirement. Agent.run retains its caller separately.
     this.#detachCaller();
+    for (const owner of this.#profileOwners.keys()) owner.opened();
   }
 
   dispose(
@@ -192,7 +242,13 @@ export class EnvironmentAcquisition {
     return (this.#disposal ??= Promise.resolve().then(async () => {
       this.#detachCaller();
       this.#detachSession?.();
-      if (this.state) await disposeLease(this.state, guard);
+      for (const detach of this.#profileOwners.values()) detach();
+      const settled = await Promise.allSettled([
+        ...(this.state ? [disposeLease(this.state, guard)] : []),
+        ...[...this.#profileOwners.keys()].map((owner) => owner.dispose(guard)),
+      ]);
+      for (const result of settled)
+        if (result.status === 'rejected') throw result.reason;
     }));
   }
 }

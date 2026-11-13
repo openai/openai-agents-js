@@ -5,6 +5,8 @@ import {
   type RunFailure,
 } from './run-error-recovery';
 import type { HandoffInput } from './handoffs';
+import { SandboxWorkspaceCleanupError } from './sandbox-capabilities';
+import { bindSandboxContext } from './sandbox-context';
 import {
   bindModelProviderMetadata,
   captureModelProviderStreamFrame,
@@ -429,6 +431,7 @@ import {
 import { issueChildTurn, issueSubagent, subagentsSchema } from './subagents';
 import { nativeMcpResultInfoSchema } from './native-mcp';
 import {
+  projectEnvironment,
   captureWritableRoots,
   Environment,
   projectSearchRuntime,
@@ -1334,6 +1337,7 @@ interface ToolInvocation {
   child?: ChildCallbackOwner;
   active: boolean;
   realtimeAdapter?: object;
+  timeoutCleanup?: Promise<void>;
   parent?: ToolInvocation;
   invocation?: Promise<void>;
 }
@@ -1409,6 +1413,7 @@ const submissions = new WeakMap<
     readonly outputOverride: boolean;
     originalInput?: UserInput;
     profileSettlement?: Promise<void>;
+    workspaceSettlement?: Promise<void>;
     memoryAdmissionRecorded?: boolean;
     memoryAdmissionFailure?: { error: unknown };
     callerSignal?: AbortSignal;
@@ -1608,6 +1613,11 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly profileMcp = new Map<string, readonly McpTool[]>();
   private readonly profileStepMcp = new Map<string, readonly McpTool[]>();
   private profileCurrent?: AgentProfileReceipt;
+  private workspacePreparation?: {
+    source: AgentProfileReceipt;
+    target: string;
+    run: NativeTurn;
+  };
   private requestTransportDefaults: Pick<
     ModelSettings,
     'extraHeaders' | 'extraQuery' | 'requestTransport'
@@ -1671,6 +1681,10 @@ export class Session<OutputT = string, Context = unknown> {
   async buildRealtimeSipConfig(
     options: NativeRealtimeSipConfigOptions = {},
   ): Promise<JsonObject> {
+    if (this.options.agentGraph?.workspace)
+      throw new TypeError(
+        'Live sandbox capability manifests require text Agent activation',
+      );
     if (this.options.chatGPTPlan)
       throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('build Realtime SIP configuration on');
@@ -1795,6 +1809,10 @@ export class Session<OutputT = string, Context = unknown> {
   async realtime(
     options: NativeRealtimeOptions = {},
   ): Promise<NativeRealtimeSession> {
+    if (this.options.agentGraph?.workspace)
+      throw new TypeError(
+        'Live sandbox capability manifests require text Agent activation',
+      );
     if (this.options.chatGPTPlan)
       throw new TypeError('Sign in with ChatGPT does not support Realtime');
     this.checkCallbackOperation('open Realtime on');
@@ -2323,6 +2341,16 @@ export class Session<OutputT = string, Context = unknown> {
       this.options.realtimeDeclaration ?? this.options.applicationAgent;
     if (!opening)
       throw new NativeError('Session has no captured opening Agent');
+    const source =
+      expected === null
+        ? undefined
+        : checkProfileReceipt(expected, this.callbackProfileGraph(expected)!);
+    const environmentOwner = source
+      ? this.callbackEnvironmentOwner({
+          profile_id: source.profile_id,
+          profile_epoch: source.epoch,
+        })
+      : this.options.environmentOwner;
     const { captureRealtimeAgentGraph } = await import('./public-agent');
     const graph = captureRealtimeAgentGraph(
       opening,
@@ -2346,16 +2374,14 @@ export class Session<OutputT = string, Context = unknown> {
     const raw = parseProfileReceipt(
       await this.#native._admit_realtime_agent_graph(
         generation,
-        JSON.stringify(profileRoster(graph, this.options.environment)),
+        JSON.stringify(
+          profileRoster(
+            graph,
+            environmentOwner?.environment ?? this.options.environment,
+          ),
+        ),
         graph.rootId,
-        expected === null
-          ? 'null'
-          : encodeProfileReceipt(
-              checkProfileReceipt(
-                expected,
-                this.callbackProfileGraph(expected)!,
-              ),
-            ),
+        source === undefined ? 'null' : encodeProfileReceipt(source),
       ),
     );
     const allocated = allocatedProfileCatalogs(
@@ -2363,7 +2389,20 @@ export class Session<OutputT = string, Context = unknown> {
       raw,
       this.profileHighWater,
     );
-    const captured = { ...graph, profiles: allocated.profiles };
+    const captured: CapturedAgentGraph = {
+      ...graph,
+      profiles: allocated.profiles,
+      ...(environmentOwner
+        ? {
+            environments: new Map(
+              [...allocated.profiles.keys()].map((id) => [
+                id,
+                environmentOwner,
+              ]),
+            ),
+          }
+        : {}),
+    };
     this.profileHighWater = allocated.highWater;
     for (const [id, profile] of allocated.profiles) {
       this.voiceProfileGraphs.set(id, captured);
@@ -2422,6 +2461,20 @@ export class Session<OutputT = string, Context = unknown> {
     }
     this.voiceProfileGraphs.clear();
     this.voiceGraphGeneration = undefined;
+  }
+
+  private callbackEnvironmentOwner(message: Record<string, unknown>) {
+    const source = this.messageProfile(message);
+    const graph = source ? this.callbackProfileGraph(source) : undefined;
+    if (source && graph?.environments) {
+      const owner = graph.environments.get(source.profile_id);
+      if (!owner)
+        throw new NativeError(
+          'Callback resource is outside its captured Agent graph',
+        );
+      return owner;
+    }
+    return this.options.environmentOwner;
   }
 
   private messageProfile(
@@ -2796,6 +2849,45 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
+  private acknowledgeWorkspace(receipt: AgentProfileReceipt): void {
+    const pending = this.workspacePreparation;
+    if (
+      pending &&
+      receipt.profile_id === pending.target &&
+      receipt.epoch !== pending.source.epoch
+    )
+      this.workspacePreparation = undefined;
+  }
+  private async settleWorkspace(
+    run: NativeTurn,
+    failure?: unknown,
+  ): Promise<void> {
+    const pending = this.workspacePreparation;
+    if (!pending || pending.run !== run) return;
+    try {
+      const receipt = checkProfileReceipt(
+        parseProfileReceipt(await this.#native._active_agent_profile()),
+        this.options.agentGraph!,
+      );
+      this.acknowledgeWorkspace(receipt);
+      if (!this.workspacePreparation) return;
+    } catch (error) {
+      failure ??= error;
+    }
+    this.workspacePreparation = undefined;
+    const reason =
+      failure ??
+      new NativeError(
+        'Owned workspace preparation was not accepted by the native Agent',
+      );
+    try {
+      await this.options.agentGraph!.workspace!.failWorkspace(reason);
+    } catch (error) {
+      this.retire(error);
+      void this.close().catch(() => {});
+      throw error;
+    }
+  }
   private adoptProfile(
     receipt: AgentProfileReceipt,
     preserveCurrent = false,
@@ -3082,7 +3174,7 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly runs = new Set<WeakRef<NativeTurn>>();
   private readonly runFinalizer: FinalizationRegistry<WeakRef<NativeTurn>>;
   private readonly callbackDeliveries: CallbackDeliveries =
-    new CallbackDeliveries();
+    new CallbackDeliveries((error) => this.readerFailed(error));
   private readonly submissionIds = new WeakMap<NativeTurn, string>();
   private readonly requestObservationRoutes = new Map<string, NativeTurn>();
   private readonly allowedTools: Set<string>;
@@ -4361,7 +4453,9 @@ export class Session<OutputT = string, Context = unknown> {
           request.mode === 'openai/form' ||
           request.mode === 'openaiForm') &&
         callId === undefined &&
-        !(meta && typeof meta === 'object' && 'codex_approval_kind' in meta)
+        // Native Core assigns the public identity; peer metadata grants no approval authority.
+        typeof id === 'string' &&
+        id.startsWith('codex-mcp-elicitation-')
       ) {
         decline = this.declineQuestionWire(event);
         // Repeated delivery of a pending registration must not decline the
@@ -7062,6 +7156,22 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const profileSubmission = submissions.get(run)!;
     if (
+      this.workspacePreparation?.run === run &&
+      !profileSubmission.workspaceSettlement
+    ) {
+      profileSubmission.workspaceSettlement = this.settleWorkspace(
+        run,
+        run.failure ?? error,
+      );
+      this.track(
+        run,
+        profileSubmission.workspaceSettlement,
+        run.callbacks,
+        () => this.finish(run, run.failure ?? error, output, unsampledSteering),
+      );
+      return;
+    }
+    if (
       error === undefined &&
       this.options.agentGraph &&
       (!profileSubmission.outputOverride || profileSubmission.realtimeTools) &&
@@ -8352,6 +8462,8 @@ export class Session<OutputT = string, Context = unknown> {
     }
     if (
       kind === '_sdk_provider_response_span' ||
+      kind === '_sdk_agent_workspace' ||
+      kind === '_sdk_tool_not_found' ||
       kind === '_sdk_model_retry' ||
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
@@ -9483,8 +9595,10 @@ export class Session<OutputT = string, Context = unknown> {
             generation: msg.generation,
             request_id: msg.request_id,
           };
+          const workspace = msg.type === '_sdk_agent_workspace';
           const responseSpan = msg.type === '_sdk_provider_response_span';
           const handoffInput = msg.type === '_sdk_handoff_input';
+          const notFound = msg.type === '_sdk_tool_not_found';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
           const compact = compactPolicy || msg.type === '_sdk_before_compact';
@@ -9508,8 +9622,11 @@ export class Session<OutputT = string, Context = unknown> {
             const data = contextEdit
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
-            if (responseSpan) sourceNative._reply_provider_response_span(data);
+            if (workspace) sourceNative._reply_agent_workspace(data);
+            else if (responseSpan)
+              sourceNative._reply_provider_response_span(data);
             else if (handoffInput) sourceNative._reply_handoff_input(data);
+            else if (notFound) sourceNative._reply_tool_not_found(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
             else if (compact) sourceNative._reply_compaction(data);
@@ -9544,6 +9661,63 @@ export class Session<OutputT = string, Context = unknown> {
           signal.addEventListener('abort', reject, { once: true });
           try {
             check();
+            if (workspace) {
+              if (
+                child ||
+                !(owner instanceof NativeTurn) ||
+                !this.options.agentGraph?.workspace
+              )
+                throw new NativeError(
+                  'Workspace preparation has no captured root owner',
+                );
+              const source = this.messageProfile(msg);
+              const target = z.string().parse(msg.target_profile_id);
+              if (!source || !this.profileRuntimes.has(target))
+                throw new NativeError(
+                  'Workspace target is outside the captured graph',
+                );
+              this.acknowledgeWorkspace(source);
+              await this.callbackDeliveries.joinCleanup(owner);
+              check();
+              let prepared = false;
+              try {
+                const preparation =
+                  await this.options.agentGraph.workspace.prepareWorkspace(
+                    target,
+                    signal,
+                    check,
+                  );
+                prepared = true;
+                check();
+                this.workspacePreparation = { source, target, run: owner };
+                reply({ preparation });
+              } catch (error) {
+                let failure = error;
+                if (prepared) {
+                  try {
+                    await this.options.agentGraph.workspace.failWorkspace(
+                      error,
+                    );
+                  } catch (cleanupFailure) {
+                    failure = cleanupFailure;
+                  }
+                }
+                const reason =
+                  signal.aborted && Object.is(failure, signal.reason)
+                    ? new TurnAborted('Workspace preparation cancelled')
+                    : failure;
+                owner.failure ??= reason;
+                reject();
+                this.retire(reason);
+                toolInvocation.exit(() => {
+                  void this.close().catch(() => {});
+                });
+                if (failure instanceof SandboxWorkspaceCleanupError)
+                  throw failure;
+                return;
+              }
+              return;
+            }
             if (responseSpan) {
               const admitted = await providerResponseSpanAdmission(
                 z.string().min(1).parse(msg.parent_context),
@@ -9623,6 +9797,44 @@ export class Session<OutputT = string, Context = unknown> {
                 retryCaptured?.context.model ?? z.string().parse(msg.model),
               signal,
             };
+            if (notFound) {
+              if (child)
+                throw new NativeError(
+                  'Unknown tool formatting requires its root owner',
+                );
+              const defaultMessage = z.string().parse(msg.default_message);
+              const call = managedCallInfo(
+                { sessionId: this.id, childId: null, childIncarnation: null },
+                {
+                  ...msg,
+                  callId: z.string().parse(msg.call_id),
+                  turnId: receipt.turn_id,
+                  _sdk_code_origin: null,
+                  _sdk_model: msg.model,
+                },
+              );
+              let text: string | undefined;
+              try {
+                const formatted = await this.options.toolErrorFormatter?.(
+                  Object.freeze({
+                    context: this.options.context,
+                    call,
+                    signal,
+                    phase: 'execution',
+                    reason: 'tool_not_found',
+                    defaultMessage,
+                    error: new NativeError(defaultMessage),
+                  }),
+                );
+                if (typeof formatted === 'string') text = formatted;
+              } catch {
+                // User formatting failures retain the original authority rejection.
+                signal.throwIfAborted();
+              }
+              check();
+              reply(text === undefined ? {} : { text });
+              return;
+            }
             if (retry) {
               const captured = retryCaptured!;
               if (
@@ -10347,6 +10559,7 @@ export class Session<OutputT = string, Context = unknown> {
             }
           };
           assertActive();
+          if (sourceProfile) this.acknowledgeWorkspace(sourceProfile);
           selection.budget?.check(assertActive);
           const stagedPreparation = msg.staged_input_preparation === true;
           const stepIndex = stagedPreparation
@@ -11116,7 +11329,11 @@ export class Session<OutputT = string, Context = unknown> {
         throw error;
       })
       .finally(() => {
-        scope.active = false;
+        if (scope.timeoutCleanup)
+          void scope.timeoutCleanup.then(() => {
+            scope.active = false;
+          });
+        else scope.active = false;
         run.toolInvocations.delete(invocation);
       });
     scope.invocation = invocation;
@@ -12168,7 +12385,25 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn,
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
+    nativeMcp = false,
   ): Promise<SessionState> {
+    if (
+      nativeMcp &&
+      (this.configuredChildren.size ||
+        this.manualCalls.size ||
+        !this.nativeQuestions.size ||
+        !this.current(run) ||
+        run.failure !== undefined ||
+        run.callbacks.size ||
+        run.toolInvocations.size ||
+        run.manualReplies.size ||
+        this.graphStops.size ||
+        run.selection?.prepareRequest !== undefined ||
+        submissions.get(run)!.output.prompt)
+    )
+      return Promise.reject(
+        new NativeError('Native MCP boundary is not settled'),
+      );
     if (
       [...this.manualCalls.values()].some(
         (call) => call.run === run && hostedMcpBinding(call.tool),
@@ -12193,7 +12428,7 @@ export class Session<OutputT = string, Context = unknown> {
       );
     // Claim the single writer/waiter before inspecting any native grant.
     const pending = Promise.resolve().then(() =>
-      this.captureManualTurn(run, beforeSeal, signal),
+      this.captureManualTurn(run, beforeSeal, signal, nativeMcp),
     );
     this.manualSeal = pending;
     return pending
@@ -12346,8 +12581,18 @@ export class Session<OutputT = string, Context = unknown> {
     run: NativeTurn,
     beforeSeal?: (entries: readonly ManualCheckpointEntry[]) => void,
     signal?: AbortSignal,
+    nativeMcp = false,
   ): Promise<SessionState> {
     await this.refreshManualProfile(run);
+    if (nativeMcp) {
+      // Only the native raw record, sample and question owners authorize this path.
+      if (
+        !this.current(run) ||
+        !(await this.#native._manual_checkpoint_ready('[]'))
+      )
+        throw new NativeError('Native MCP boundary is not settled');
+      this.manualCheckpointRun = run;
+    }
     for (;;) {
       signal?.throwIfAborted();
       if (
@@ -12380,7 +12625,7 @@ export class Session<OutputT = string, Context = unknown> {
           child.sealing &&
           child.checkpoint !== undefined,
       );
-      if (!requests.length && !configured.length)
+      if (!requests.length && !configured.length && !nativeMcp)
         throw new NativeError('Original manual checkpoint requests expired');
       const keys =
         '[' +
@@ -12399,7 +12644,7 @@ export class Session<OutputT = string, Context = unknown> {
       let nativeProgress: Promise<void> | undefined;
       try {
         // A restored frame has a checked ledger, but no running native Turn.
-        if (!this.manualRestoring) {
+        if (!this.manualRestoring && !nativeMcp) {
           token = this.#native._begin_manual_checkpoint_wait(keys);
           nativeProgress = this.#native._wait_manual_checkpoint_progress(token);
           // Readiness can itself reject before Promise.race has been reached.
@@ -12439,6 +12684,8 @@ export class Session<OutputT = string, Context = unknown> {
         signal?.throwIfAborted();
         const settling = this.configuredCaptureWork(run);
         if (!ready || settling) {
+          if (nativeMcp)
+            throw new NativeError('Native MCP boundary changed before capture');
           // Both JS and native notifications were registered before ready().
           // Testing the epoch after registration covers a change during check.
           if (this.manualProgress === progress) {
@@ -12863,7 +13110,10 @@ export class Session<OutputT = string, Context = unknown> {
     for (const event of events) {
       this.publishManualRequest(run, event);
     }
-    if (state.manual_continuation.staged_retry)
+    if (
+      state.manual_continuation.staged_retry ||
+      (state.manual_continuation.pending_mcp?.length ?? 0) > 0
+    )
       await this.resumeManualIfReady(run);
   }
   /** @internal Recheck the declaration that owns the retained native source. */
@@ -13021,9 +13271,10 @@ export class Session<OutputT = string, Context = unknown> {
   private configuredExecutorTools(
     policy: readonly string[],
     owner?: NativeTurn | ChildCallbackOwner,
+    environment: Environment | null = this.environment,
   ) {
     const tools =
-      this.environment?.tools.filter((tool) => policy.includes(tool)) ?? [];
+      environment?.tools.filter((tool) => policy.includes(tool)) ?? [];
     const restored = this.restoredExecutorTurn;
     const restoredOwner =
       owner === undefined ||
@@ -13051,14 +13302,16 @@ export class Session<OutputT = string, Context = unknown> {
     declaration: ConfiguredAgentTool,
     input: string,
     request: JsonObject,
+    environmentOwner: EnvironmentAcquisition | undefined,
     delivery?: NativeCallbackDelivery,
     captureAllowed = false,
   ): Promise<string> {
     context.signal.throwIfAborted();
     if (!this.current(owner))
       throw new NativeError('Configured child parent is no longer active');
-    let environment = this.environment;
+    let environment = environmentOwner?.environment ?? null;
     if (environment) {
+      const inheritedEnvironment = environment;
       const policy = await this.configuredChildPolicy(request);
       context.signal.throwIfAborted();
       if (!this.current(owner))
@@ -13076,9 +13329,13 @@ export class Session<OutputT = string, Context = unknown> {
         transformResult,
         ...settings
       } = environment;
-      const tools = this.configuredExecutorTools(policy.tools, owner);
+      const tools = this.configuredExecutorTools(
+        policy.tools,
+        owner,
+        environment,
+      );
       const commands = tools.includes('exec_command');
-      environment = new Environment({
+      environment = projectEnvironment(inheritedEnvironment, {
         ...settings,
         network: commands ? environment.network : undefined,
         env,
@@ -13324,6 +13581,16 @@ export class Session<OutputT = string, Context = unknown> {
     )
       throw new NativeError('Invalid managed tool identity');
     if (tool.kind === 'manual') return;
+    if (
+      tool.timeoutSettlement === 'at_deadline' &&
+      (!root ||
+        configuredAgentTool(tool) ||
+        isClientToolSearchTool(tool) ||
+        (this.manualRestoring && msg._sdk_managed_approved === true))
+    )
+      throw new TypeError(
+        'Deadline settlement requires an application function on a root Session',
+      );
     if (typeof msg.callId !== 'string')
       throw new NativeError('Native tool invocation has no call identity');
     let admission = this.functionAdmissions.get(owner);
@@ -13393,7 +13660,12 @@ export class Session<OutputT = string, Context = unknown> {
         callId: msg.callId as string,
         signal,
       };
-      const skillLease = this.options.environmentOwner?.skillLease;
+      const environmentOwner = this.callbackEnvironmentOwner(msg);
+      const callbackEnvironment = environmentOwner?.environment ?? null;
+      const sandboxProvider = environmentOwner?.sandboxProvider;
+      if (sandboxProvider?.environment === callbackEnvironment)
+        bindSandboxContext(context, sandboxProvider, check);
+      const skillLease = environmentOwner?.skillLease;
       registerToolSessionOwner(
         context,
         this.toolSessionOwner,
@@ -13410,7 +13682,9 @@ export class Session<OutputT = string, Context = unknown> {
                 admit,
               )
           : undefined,
-        skillLease?.environment === this.environment ? skillLease : undefined,
+        skillLease?.environment === callbackEnvironment
+          ? skillLease
+          : undefined,
         configuredAgentTool(tool)
           ? (input) =>
               this.invokeConfiguredChild(
@@ -13429,10 +13703,27 @@ export class Session<OutputT = string, Context = unknown> {
                           msg._sdk_configured_continuation,
                       }),
                 },
+                environmentOwner,
                 delivery,
                 captured.kind !== 'manual',
               )
           : undefined,
+        (body) => {
+          if (!delivery)
+            throw new NativeError('Timed callback has no native cleanup owner');
+          const cleanup = body.then(
+            () => {},
+            () => {},
+          );
+          delivery.cleanup = cleanup;
+          const invocation = toolInvocation.getStore();
+          if (invocation?.session === this) invocation.timeoutCleanup = cleanup;
+          if (
+            tool.timeoutBehavior === 'error_as_result' &&
+            !delivery.native._defer_python_callback_cleanup(delivery.wire)
+          )
+            throw new NativeError('Timed callback cleanup was not admitted');
+        },
       );
       const identity: ToolIdentity = {
         callId: context.callId,
@@ -13492,13 +13783,15 @@ export class Session<OutputT = string, Context = unknown> {
           (error) => {
             owner.failure ??= error;
             admission?.seal(error);
-            if (root)
+            if (root) {
+              if (tool.timeoutSettlement === 'at_deadline')
+                owner.completion.reject(owner.failure);
               toolInvocation.exit(() => {
                 void this.#cancel(owner).catch((cause) =>
                   this.readerFailed(cause),
                 );
               });
-            else {
+            } else {
               owner.controller.abort(error);
               void this.#native
                 ._cancel_child_callback(encodeReceipt(msg))
@@ -13615,6 +13908,14 @@ export class Session<OutputT = string, Context = unknown> {
             : 'failed'
           : 'cancelled';
       } catch (error) {
+        if (
+          root &&
+          delivery?.cleanup &&
+          tool.timeoutSettlement === 'at_deadline'
+        ) {
+          owner.failure ??= error;
+          owner.completion.reject(owner.failure);
+        }
         if (error === admissionEnded) {
           status = 'cancelled';
           return;
@@ -13699,7 +14000,9 @@ export class Session<OutputT = string, Context = unknown> {
       }
       throw error;
     } finally {
-      release?.();
+      if (release && delivery?.cleanup)
+        delivery.cleanup = delivery.cleanup.finally(release);
+      else release?.();
     }
   }
 
@@ -13857,6 +14160,7 @@ export class Session<OutputT = string, Context = unknown> {
       cancelError = error;
     }
     await Promise.allSettled([...run.toolInvocations, ...run.manualReplies]);
+    await this.callbackDeliveries.joinCleanup(run);
     if (run.toolCleanupErrors.length) throw cleanupFailure(run, cancelError);
     if (failed) throw cancelError;
   }
@@ -13993,6 +14297,7 @@ export class Session<OutputT = string, Context = unknown> {
             ...run.toolInvocations,
             ...run.manualReplies,
           ]);
+          await this.callbackDeliveries.joinCleanup(run);
           failure = cleanupFailure(run, failure);
         }
         if (failure !== undefined) {
@@ -14003,6 +14308,7 @@ export class Session<OutputT = string, Context = unknown> {
             this.childCallbacks.stop(new TurnAborted('Session work stopped'));
         }
         if (options.scope === 'thread_tree') {
+          await this.callbackDeliveries.joinCleanup();
           try {
             await this.childCallbacks.drainEntered(enteredChildren);
           } catch (error) {
@@ -14197,24 +14503,88 @@ export class Session<OutputT = string, Context = unknown> {
         );
       return this.mutate(async () => {
         await this.refreshProfileBindings();
-        const receipt = checkProfileReceipt(
-          parseProfileReceipt(
-            await this.#native._activate_agent_profile(
-              target,
-              encodeProfileReceipt(this.profileCurrent!),
-            ),
-          ),
-          this.options.agentGraph!,
-        );
-        if (receipt.profile_id !== target) {
-          const error = new NativeError(
-            'Native Agent activation acknowledgement did not match',
+        const graph = this.options.agentGraph!;
+        const workspace = graph.roster.some(
+          (row) => row.id === target && row.workspace_preparation === true,
+        )
+          ? graph.workspace
+          : undefined;
+        const expected = this.profileCurrent!;
+        const check = () => {
+          if (
+            this.lifecycle.kind !== 'mutation' ||
+            this.graphStops.size ||
+            this.profileCurrent !== expected
+          )
+            throw new NativeError('Workspace activation owner was retired');
+        };
+        let prepared:
+          | import('./sandbox-capabilities').SandboxWorkspacePreparation
+          | undefined;
+        if (workspace) {
+          await this.callbackDeliveries.joinCleanup();
+          check();
+          await this.#native._check_agent_workspace_activation(
+            target,
+            encodeProfileReceipt(expected),
           );
+          check();
+          try {
+            prepared = await workspace.prepareWorkspace(
+              target,
+              this.options.environmentOwner!.signal,
+              check,
+            );
+          } catch (error) {
+            this.retire(error);
+            void this.close().catch(() => {});
+            throw error;
+          }
+        }
+        let receipt: AgentProfileReceipt;
+        try {
+          receipt = checkProfileReceipt(
+            parseProfileReceipt(
+              await this.#native._activate_agent_profile(
+                target,
+                encodeProfileReceipt(expected),
+                prepared === undefined ? undefined : encode(prepared),
+              ),
+            ),
+            this.options.agentGraph!,
+          );
+        } catch (error) {
+          if (workspace) {
+            try {
+              await workspace.failWorkspace(error);
+            } catch (failure) {
+              this.retire(failure);
+              void this.close().catch(() => {});
+              throw failure;
+            }
+          }
+          throw error;
+        }
+        try {
+          if (receipt.profile_id !== target)
+            throw new NativeError(
+              'Native Agent activation acknowledgement did not match',
+            );
+          await this.commitProfile(receipt, true);
+          await this.realtimeOwner?._syncProfile(true);
+        } catch (error) {
+          if (workspace) {
+            try {
+              await workspace.failWorkspace(error);
+            } catch (failure) {
+              this.retire(failure);
+              void this.close().catch(() => {});
+              throw failure;
+            }
+          }
           this.retire(error);
           throw error;
         }
-        await this.commitProfile(receipt, true);
-        await this.realtimeOwner?._syncProfile(true);
       });
     }
     const capturedSettings =
@@ -14749,6 +15119,7 @@ export class Session<OutputT = string, Context = unknown> {
         selected.approval ||
         selected.transformResult ||
         selected.extractApplicationData ||
+        selected.failureErrorFunction !== undefined ||
         (selected as { requestMetadata?: unknown }).requestMetadata ||
         (selected instanceof StdioMCP &&
           (selected.lifetime !== 'session' || selected.location !== 'host')) ||
@@ -17058,8 +17429,6 @@ export class Session<OutputT = string, Context = unknown> {
       throw new TypeError('Sign in with ChatGPT requires settled state');
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before suspend');
-    if (this.nativeQuestions.size)
-      throw new TypeError('Native questions cannot be suspended or serialized');
     if (this.options.localStorage)
       throw new TypeError(
         'Persistent storage does not support suspend; retain Session.id and reopen with the same storage backend',
@@ -17071,6 +17440,22 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('suspend');
     if (this.pendingRoots.size)
       throw new NativeError('Cannot suspend while roots are queued');
+    if (this.nativeQuestions.size) {
+      const [question] = this.nativeQuestions.values();
+      const run =
+        this.lifecycle.kind === 'turn' ? this.lifecycle.run : undefined;
+      if (
+        this.nativeQuestions.size !== 1 ||
+        !run ||
+        question?.run !== run ||
+        question.mcpCallId === undefined ||
+        !question.grant.current()
+      )
+        throw new TypeError(
+          'Native questions cannot be suspended or serialized',
+        );
+      return this.sealManualTurn(run, undefined, undefined, true);
+    }
     if (this.configuredChildren.size) return this.captureConfiguredParent();
     if (
       this.graphStops.size ||
@@ -17588,6 +17973,12 @@ export class Session<OutputT = string, Context = unknown> {
               (cause) => {
                 callbackFailure = { cause };
               },
+              () =>
+                native._take_native_mcp_transport_error(
+                  notice.nonce,
+                  notice.turn_id,
+                  notice.call_id,
+                ),
             );
             if (
               !requestExpired &&
@@ -17787,7 +18178,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.childCallbacks.track(
         owner,
         async () => {
-          const scope = {
+          const scope: ToolInvocation = {
             session: this,
             child: owner,
             active: true,
@@ -17808,7 +18199,11 @@ export class Session<OutputT = string, Context = unknown> {
             pending.reject(error);
             throw error;
           } finally {
-            scope.active = false;
+            if (scope.timeoutCleanup)
+              void scope.timeoutCleanup.then(() => {
+                scope.active = false;
+              });
+            else scope.active = false;
           }
         },
         async () => {

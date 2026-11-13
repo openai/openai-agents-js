@@ -103,12 +103,16 @@ impl ContextLease {
 }
 
 pub(super) enum PreparationReply {
+    Workspace(
+        oneshot::Sender<std::result::Result<crate::agent_profiles::WorkspacePreparation, ()>>,
+    ),
     ProviderResponseSpan(
         oneshot::Sender<
             std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>,
         >,
     ),
     HandoffInput(oneshot::Sender<std::result::Result<handoff_inputs::Groups, ()>>),
+    ToolNotFound(oneshot::Sender<std::result::Result<Option<String>, ()>>),
     Model(ModelDelivery),
     ModelRetry(
         oneshot::Sender<std::result::Result<codex_protocol::model_retry::ModelRetryResolution, ()>>,
@@ -132,8 +136,10 @@ pub(super) enum PreparationReply {
 impl PreparationReply {
     pub(super) fn is_closed(&self) -> bool {
         match self {
+            Self::Workspace(reply) => reply.is_closed(),
             Self::ProviderResponseSpan(reply) => reply.is_closed(),
             Self::HandoffInput(reply) => reply.is_closed(),
+            Self::ToolNotFound(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
             Self::ModelRetry(reply) => reply.is_closed(),
@@ -224,7 +230,143 @@ fn model_provider_metadata_item_matches(captured: &ResponseItem, wire: &Value) -
     projected == wire
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ToolNotFoundReply {
+    pub(crate) owner: StepReply,
+    text: Option<String>,
+    #[serde(default)]
+    failed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkspaceReply {
+    pub(crate) owner: StepReply,
+    preparation: Option<crate::agent_profiles::WorkspacePreparation>,
+    #[serde(default)]
+    failed: bool,
+}
+
 impl PythonTools {
+    pub(crate) async fn prepare_agent_workspace(
+        self: &Arc<Self>,
+        thread: &str,
+        turn: &str,
+        source: &codex_extension_api::CapturedAgentProfile,
+        target: &str,
+    ) -> Result<crate::agent_profiles::WorkspacePreparation> {
+        let stop = self.context_stop(turn)?;
+        let cancellation = stop
+            .callback_cancellation()
+            .context("Workspace preparation requires its captured root turn")?;
+        let data = ExtensionData::new_with_init(
+            format!("workspace:{turn}:{target}"),
+            source.profile.data.clone(),
+        );
+        data.insert(source.clone());
+        self.exchange_context(
+            Some(&data),
+            thread,
+            turn,
+            cancellation,
+            None,
+            json!({"type":"_sdk_agent_workspace", "target_profile_id":target}),
+            PreparationReply::Workspace,
+        )
+        .await
+    }
+
+    pub(crate) fn reply_agent_workspace(&self, response: WorkspaceReply) -> Result<()> {
+        ensure!(
+            !(response.failed && response.preparation.is_some()),
+            "Conflicting workspace preparation reply"
+        );
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+        let id = crate::native_id(&response.owner.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::Workspace(_)
+            )),
+            "Expired workspace preparation reply"
+        );
+        let pending = take_pending_step(&mut replies, id).expect("checked workspace reply");
+        let PreparationReply::Workspace(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                response.preparation.ok_or(())
+            })
+            .map_err(|_| anyhow::anyhow!("Expired workspace preparation receiver"))
+    }
+
+    pub(crate) async fn format_tool_not_found(
+        self: &Arc<Self>,
+        input: codex_extension_api::ToolNotFoundInput<'_>,
+    ) -> Result<Option<String>> {
+        self.exchange_context(
+            input.step_store,
+            input.thread_store.level_id(),
+            input.turn_id,
+            input.cancellation,
+            None,
+            json!({"type":"_sdk_tool_not_found", "tool":input.tool_name.name,
+                "namespace":input.tool_name.namespace, "call_id":input.call_id,
+                "model":input.model, "default_message":input.default_message}),
+            PreparationReply::ToolNotFound,
+        )
+        .await
+    }
+
+    pub(crate) fn reply_tool_not_found(&self, response: ToolNotFoundReply) -> Result<()> {
+        ensure!(
+            !(response.failed && response.text.is_some()),
+            "Conflicting tool error reply"
+        );
+        let active = self
+            .selection
+            .lock()
+            .expect("JavaScript selection poisoned");
+        let mut replies = self.step_replies.lock().expect("Step replies poisoned");
+        let id = crate::native_id(&response.owner.request_id)?;
+        ensure!(
+            replies.get(&id).is_some_and(|pending| self.step_matches(
+                &response.owner.thread,
+                &response.owner,
+                active.as_ref(),
+                pending
+            ) && matches!(
+                pending.reply,
+                PreparationReply::ToolNotFound(_)
+            )),
+            "Expired tool error reply"
+        );
+        let pending = take_pending_step(&mut replies, id).expect("checked tool error reply");
+        let PreparationReply::ToolNotFound(reply) = pending.reply else {
+            unreachable!()
+        };
+        reply
+            .send(if response.failed {
+                Err(())
+            } else {
+                Ok(response.text)
+            })
+            .map_err(|_| anyhow::anyhow!("Expired tool error reply"))
+    }
+
     pub(crate) fn publish_model_attempt(
         &self,
         input: codex_extension_api::ModelAttemptInput,
@@ -538,6 +680,14 @@ impl PythonTools {
                 .insert(
                     id,
                     PendingStep {
+                        tool_error_call: if matches!(
+                            message["type"].as_str(),
+                            Some("_sdk_tool_not_found")
+                        ) {
+                            message["call_id"].as_str().map(str::to_owned)
+                        } else {
+                            None
+                        },
                         source_cancellation: Some(cancellation.clone()),
                         callback: Some(callback.clone()),
                         operation_generation: active
@@ -937,6 +1087,7 @@ mod tests {
         tools.step_replies.lock().unwrap().insert(
             17,
             PendingStep {
+                tool_error_call: None,
                 source_cancellation: Some(CancellationToken::new()),
                 callback: None,
                 operation_generation: 0,
@@ -1191,6 +1342,7 @@ mod tests {
             tools.step_replies.lock().unwrap().insert(
                 17,
                 PendingStep {
+                    tool_error_call: None,
                     source_cancellation: stop.callback_cancellation(),
                     callback: None,
                     operation_generation: 0,

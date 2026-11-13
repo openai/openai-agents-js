@@ -405,6 +405,10 @@ pub(crate) struct ProfileMcpPolicy {
     rules: Rules,
 }
 impl ProfileMcpPolicy {
+    pub(crate) fn has_callbacks(&self) -> bool {
+        !self.rules.is_empty()
+    }
+
     fn identities(binding: &codex_mcp::McpBinding) -> HashMap<ToolName, (String, String)> {
         binding
             .tools()
@@ -543,6 +547,26 @@ impl ProfileMcpSource {
         self
     }
 }
+/// Use only the immutable policy captured for the admitted sampling step.
+pub(crate) fn native_mcp_checkpoint_source(step: &ExtensionData) -> bool {
+    let Some(source) = step.get::<ProfileMcpSource>() else {
+        return false;
+    };
+    let selection = if source.receipt.is_some() {
+        step.get::<crate::mcp_result_control::Selection>()
+    } else {
+        source.result_selection.clone()
+    };
+    source
+        .policy
+        .as_ref()
+        .is_some_and(|policy| !policy.has_callbacks())
+        && (source.receipt.is_none() || selection.is_some())
+        && selection
+            .as_ref()
+            .is_none_or(|selection| !selection.has_callbacks())
+}
+
 fn capture_mcp_source(
     step: Option<&ExtensionData>,
 ) -> Result<Option<Arc<ProfileMcpSource>>, String> {
@@ -1073,14 +1097,21 @@ impl Control {
         &self,
         driver: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-        let mut slot = self.websocket_drivers.lock().expect("websocket drivers poisoned");
+        let mut slot = self
+            .websocket_drivers
+            .lock()
+            .expect("websocket drivers poisoned");
         anyhow::ensure!(!self.is_stopped(), "Native thread ended");
         let tasks = slot.get_or_insert_with(tokio_util::task::TaskTracker::new);
         Ok(tasks.spawn(driver))
     }
 
     async fn join_websocket_drivers(&self) {
-        let tasks = self.websocket_drivers.lock().expect("websocket drivers poisoned").clone();
+        let tasks = self
+            .websocket_drivers
+            .lock()
+            .expect("websocket drivers poisoned")
+            .clone();
         if let Some(tasks) = tasks {
             tasks.close();
             tasks.wait().await;
@@ -2968,6 +2999,8 @@ impl ThreadLifecycleContributor<Config> for Boundary {
             // A child carries receipt provenance, and Core reads its cwd and
             // policy from the executor actually selected for each sample.
             let strict_executor_writes = input.thread_store.get::<StrictExecutorWrites>().is_some()
+                || input.thread_store.get::<crate::agent_profiles::ProfileEnvironments>()
+                    .is_some_and(|environments| environments.strict)
                 || (matches!(input.environments, [selection]
                     if matches!(selection.config, EnvironmentConfigState::Ready(_)))
                     && parent.as_ref().is_some_and(|owner| {
@@ -2996,6 +3029,12 @@ impl ThreadLifecycleContributor<Config> for Boundary {
                 control.enable_profile_policies();
             }
             if let Some(step) = input.spawning_step_store {
+                if let Some(environment) = step.get::<codex_extension_api::AgentProfileEnvironment>() {
+                    input.thread_store.insert((*environment).clone());
+                }
+                if let Some(tools) = step.get::<codex_extension_api::AgentProfileExecutorTools>() {
+                    input.thread_store.insert((*tools).clone());
+                }
                 match capture_mcp_source(Some(step)) {
                     Ok(Some(source)) => {
                         input.thread_store.insert((*source).clone());
@@ -3238,7 +3277,11 @@ impl ContextContributor for Boundary {
                             selection.environment_id.as_str(),
                             codex_exec_server::LOCAL_ENVIRONMENT_ID
                                 | codex_exec_server::REMOTE_ENVIRONMENT_ID
-                        ) =>
+                        ) || input.step_store
+                            .get::<codex_extension_api::AgentProfileEnvironment>()
+                            .or_else(|| input.thread_store.get::<codex_extension_api::AgentProfileEnvironment>())
+                            .and_then(|owner| owner.0.clone())
+                            .is_some_and(|owner| owner.environment_id == selection.environment_id) =>
                     {
                         match (&selection.config, control.command_tty.get()) {
                             (EnvironmentConfigState::Ready(environment), Some(tty)) => {
@@ -3459,7 +3502,13 @@ impl ModelRequestContributor for Boundary {
         >,
     > {
         let engine = self.engine.get()?.upgrade()?;
-        let base = engine.sentinel.read().expect("sentinel poisoned").as_ref()?.0.clone();
+        let base = engine
+            .sentinel
+            .read()
+            .expect("sentinel poisoned")
+            .as_ref()?
+            .0
+            .clone();
         if !url.starts_with(&format!("{}/p-", base.trim_end_matches('/'))) {
             return None;
         }
@@ -3547,13 +3596,19 @@ impl ModelRequestContributor for Boundary {
             if excluded.is_some() {
                 return None;
             }
-            base.strip_prefix("http://127.0.0.1:")?.trim_end_matches('/').to_owned()
+            base.strip_prefix("http://127.0.0.1:")?
+                .trim_end_matches('/')
+                .to_owned()
         };
         if !url.starts_with(&format!("ws://127.0.0.1:{private_origin}/p-")) {
             return None;
         }
-        let control = self.threads.lock().expect("interception index poisoned")
-            .get(thread_id)?.upgrade()?;
+        let control = self
+            .threads
+            .lock()
+            .expect("interception index poisoned")
+            .get(thread_id)?
+            .upgrade()?;
         control.sentinel_provider.get()?;
         let control = Arc::downgrade(&control);
         let engine = Arc::downgrade(&engine);

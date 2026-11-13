@@ -35,6 +35,7 @@ mod model_websocket_bridge;
 mod model_websocket_prefix;
 mod native_agents;
 mod native_interception;
+mod native_mcp_checkpoint;
 mod node_runtime;
 mod ops;
 mod options;
@@ -1945,6 +1946,23 @@ impl NativeThread {
         Ok(vec![true, receiver.await.is_ok()])
     }
 
+    #[napi(js_name = "_take_native_mcp_transport_error")]
+    pub fn _take_native_mcp_transport_error(
+        &self,
+        nonce: String,
+        turn_id: String,
+        call_id: String,
+    ) -> napi::Result<Option<String>> {
+        let state = self.current()?;
+        let _operation = state.engine.operation(false).map_err(native_error)?;
+        let nonce = crate::native_id(&nonce)?;
+        Ok(self
+            .mcp_result_control()?
+            .and_then(|control| control.owner(nonce))
+            .and_then(|owner| owner.take_transport_error(nonce, &turn_id, &call_id))
+            .map(|error| mcp_result_control::transport_error_message(error.as_ref())))
+    }
+
     #[napi(js_name = "_check_native_mcp_result")]
     pub fn _check_native_mcp_result(
         &self,
@@ -2123,6 +2141,10 @@ impl NativeThread {
     #[napi(js_name = "_enter_python_callback")]
     pub fn enter_python_callback(&self, receipt_json: String) -> bool {
         self.python_callback_operation(&receipt_json, "enter")
+    }
+    #[napi(js_name = "_defer_python_callback_cleanup")]
+    pub fn defer_python_callback_cleanup(&self, receipt_json: String) -> bool {
+        self.python_callback_operation(&receipt_json, "defer_cleanup")
     }
     #[napi(js_name = "_python_callback_cancelled")]
     pub fn python_callback_cancelled(&self, receipt_json: String) -> bool {
@@ -2916,18 +2938,39 @@ impl NativeThread {
         serde_json::to_string(&result).map_err(native_error)
     }
 
+    #[napi(js_name = "_check_agent_workspace_activation")]
+    pub async fn check_agent_workspace_activation(
+        &self,
+        target: String,
+        expected_json: String,
+    ) -> napi::Result<()> {
+        let expected = serde_json::from_str(&expected_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(input_error)?;
+        agent_profiles::check_workspace_activation(&inner, &target, &expected)
+            .await
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_activate_agent_profile")]
     pub async fn _activate_agent_profile(
         &self,
         target: String,
         expected_json: String,
+        workspace_json: Option<String>,
     ) -> napi::Result<String> {
         let expected = serde_json::from_str(&expected_json).map_err(input_error)?;
         let inner = self.current()?;
         let _operation = inner.engine.operation(false).map_err(native_error)?;
         let _mutation = inner.mutations.lock().await;
         graph_stop::check_mutation(&inner).map_err(input_error)?;
-        let receipt = agent_profiles::activate(&inner, &target, expected)
+        let workspace = workspace_json
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(input_error)?;
+        let receipt = agent_profiles::activate(&inner, &target, expected, workspace)
             .await
             .map_err(native_error)?;
         serde_json::to_string(&receipt).map_err(native_error)
@@ -3331,6 +3374,48 @@ impl NativeThread {
                 operation,
             )
             .map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_agent_workspace")]
+    pub fn reply_agent_workspace(&self, response_json: String) -> napi::Result<()> {
+        let response: python_tools::context_callbacks::WorkspaceReply =
+            serde_json::from_str(&response_json)
+                .map_err(|_| input_error("Invalid workspace preparation reply"))?;
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Workspace preparation requires a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired workspace preparation owner"))?;
+        owner.reply_agent_workspace(response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_reply_tool_not_found")]
+    pub fn reply_tool_not_found(&self, response_json: String) -> napi::Result<()> {
+        let response: python_tools::context_callbacks::ToolNotFoundReply =
+            serde_json::from_str(&response_json)
+                .map_err(|_| input_error("Invalid tool error reply"))?;
+        let inner = self.current()?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Tool errors require a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired tool error owner"))?;
+        owner.reply_tool_not_found(response).map_err(input_error)
     }
 
     #[napi(js_name = "_reply_model_retry")]
@@ -3887,10 +3972,15 @@ impl NativeThread {
             .configured_child_executor_tools(&key)
             .map_err(native_error)?;
         let restored = owner.check_restored_manual(&key.reply.thread, &key).is_ok();
-        let mut policy =
-            environment::configured_child_policy(&inner.thread, &thread, &key.turn, restored)
-                .await
-                .map_err(native_error)?;
+        let mut policy = environment::configured_child_policy(
+            &inner.thread,
+            &thread,
+            &inner.engine.manager.environment_manager(),
+            &key.turn,
+            restored,
+        )
+        .await
+        .map_err(native_error)?;
         owner
             .check_pending(&key.reply.thread, &key)
             .map_err(native_error)?;
@@ -4278,6 +4368,11 @@ impl NativeThread {
                 "manual checkpoint requires a portable uncontrolled native session",
             ));
         }
+        if keys.is_empty() {
+            return native_mcp_checkpoint::ready(&inner)
+                .await
+                .map_err(native_error);
+        }
         let tools = inner
             .thread
             .thread_extension_data()
@@ -4363,6 +4458,15 @@ impl NativeThread {
                 return Err(native_error(
                     "manual checkpoint requires a portable uncontrolled native session",
                 ));
+            }
+            if keys.is_empty() {
+                let saved = native_mcp_checkpoint::capture(&inner)
+                    .await
+                    .map_err(native_error)?;
+                return serde_json::to_string(
+                    &saved.unwrap_or_else(|| serde_json::json!({"status":"not_ready"})),
+                )
+                .map_err(native_error);
             }
             let tools = inner
                 .thread
@@ -4723,6 +4827,10 @@ impl NativeThread {
             let (mut frame, items, settings, canonical_call_ids) = tools
                 .manual_completion(&saved["history"])
                 .map_err(native_error)?;
+            tools
+                .validate_native_mcp_resume(&inner, &frame)
+                .await
+                .map_err(native_error)?;
             let staged_input = frame.staged_items().map_err(native_error)?;
             if let Some(selection) = &selection {
                 if selection.model_override != frame.model_override
@@ -4789,6 +4897,7 @@ impl NativeThread {
                 staged_input,
                 raise_on_unknown_tool,
                 profile_output_override.unwrap_or_default(),
+                frame.native_mcp.take(),
             )
             .await
             .map_err(native_error)?;

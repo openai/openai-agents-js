@@ -174,6 +174,8 @@ pub struct Checkpoint {
     root_turn_budget: Option<crate::response_control::BudgetSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     executor_policy_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_environment_policy_digest: Option<String>,
 }
 
 #[derive(Default)]
@@ -465,14 +467,55 @@ async fn capture_code_states_with_reader(
     Ok(snapshots)
 }
 
+enum ExportOwner<'a> {
+    Idle,
+    Managed(&'a Value),
+    NativeMcp(&'a codex_core::CapturedMcpApproval),
+}
+
+impl ExportOwner<'_> {
+    fn pending(&self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+    async fn check(&self, state: &ThreadState) -> anyhow::Result<()> {
+        match self {
+            Self::Idle => Ok(()),
+            Self::Managed(key) => check_capture(state, key),
+            Self::NativeMcp(captured) => {
+                ensure!(
+                    captured.checkpoint_data().source_thread_id == state.id
+                        && captured.is_pending().await,
+                    "Native MCP export owner expired"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+pub(crate) async fn export_native_mcp(
+    state: &ThreadState,
+    captured: &codex_core::CapturedMcpApproval,
+) -> anyhow::Result<Value> {
+    let owner = ExportOwner::NativeMcp(captured);
+    owner.check(state).await?;
+    export_inner(state, owner, false, false).await
+}
+
 pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<Value> {
     check_export_owner(state, pending).await?;
-    export_inner(state, pending, false, false).await
+    export_inner(
+        state,
+        pending.map_or(ExportOwner::Idle, ExportOwner::Managed),
+        false,
+        false,
+    )
+    .await
 }
 
 pub(crate) async fn export_idle(state: &ThreadState) -> anyhow::Result<Value> {
     check_export_owner(state, None).await?;
-    export_inner(state, None, false, true).await
+    export_inner(state, ExportOwner::Idle, false, true).await
 }
 
 async fn check_export_owner(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<()> {
@@ -497,7 +540,7 @@ pub(crate) async fn export_restored_manual(state: &ThreadState) -> anyhow::Resul
         .get::<crate::python_tools::PythonTools>()
         .context("restored manual snapshot requires managed tools")?;
     tools.check_restored_manual_idle(&state.thread).await?;
-    export_inner(state, None, false, false).await
+    export_inner(state, ExportOwner::Idle, false, false).await
 }
 
 pub(crate) fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
@@ -582,7 +625,7 @@ mod receipt_projection_tests {
 
 async fn export_inner(
     state: &ThreadState,
-    pending: Option<&Value>,
+    owner: ExportOwner<'_>,
     probe: bool,
     allow_local: bool,
 ) -> anyhow::Result<Value> {
@@ -614,7 +657,7 @@ async fn export_inner(
         .get::<crate::agent_profiles::OpeningProfiles>();
     if !probe
         && graph.is_none()
-        && pending.is_none()
+        && !owner.pending()
         && state.instructions.needs_publication(true)
         && tools
             .as_ref()
@@ -640,8 +683,8 @@ async fn export_inner(
     let code_graph = if !probe {
         Some(
             async {
-                let graph = ProbeGraph::observe(state, pending.is_some())?;
-                graph.check(state, pending.is_some()).await?;
+                let graph = ProbeGraph::observe(state, owner.pending())?;
+                graph.check(state, owner.pending()).await?;
                 Ok::<_, anyhow::Error>(graph)
             }
             .await,
@@ -749,12 +792,10 @@ async fn export_inner(
         "subagent graph changed during checkpoint; save again at a stable boundary"
     );
     if requires_code_graph && let Some(graph) = code_graph {
-        graph?.check(state, pending.is_some()).await?;
+        graph?.check(state, owner.pending()).await?;
     }
     // Native cancellation can retire a pending executor while history flushes.
-    if let Some(key) = pending {
-        check_capture(state, key)?;
-    }
+    owner.check(state).await?;
     let control = state
         .thread
         .thread_extension_data()
@@ -762,7 +803,7 @@ async fn export_inner(
     let root_turn_budget = control.and_then(|control| control.checkpoint_budget());
     let mut history = history;
     // Idle persistent exports detach settled decisions without changing source history.
-    if (reader.is_some() || state.engine.custom_store.is_some()) && allow_local && pending.is_none()
+    if (reader.is_some() || state.engine.custom_store.is_some()) && allow_local && !owner.pending()
     {
         archive_exported_mcp_approvals(&mut history)?;
         for child in &mut descendants {
@@ -777,6 +818,9 @@ async fn export_inner(
         Some(fork) => fork.executor_policy_digest.clone(),
         None => crate::environment::checkpoint_policy(&state.thread).await?,
     };
+    let agent_environment_policy_digest = state.thread.thread_extension_data()
+        .get::<crate::agent_profiles::ProfileEnvironments>()
+        .map(|environments| environments.digest.clone());
     let plan = codex_thread_store::is_chatgpt_plan_provider(&root_metadata.model_provider);
     let mut exported = serde_json::to_value(Checkpoint {
         format_version: if plan {
@@ -799,6 +843,7 @@ async fn export_inner(
         managed_tool_specs,
         root_turn_budget,
         executor_policy_digest,
+        agent_environment_policy_digest,
     })?;
     if let Some(metadata) = state.retained_metadata.get() {
         metadata.overlay(&mut exported, state.id)?;
@@ -969,7 +1014,7 @@ pub(crate) async fn probe(state: &ThreadState) -> anyhow::Result<Probe<Value>> {
         let before = ProbeGraph::observe(state, false)?;
         before.check(state, false).await?;
         check_export_owner(state, None).await?;
-        let captured = export_inner(state, None, true, true).await;
+        let captured = export_inner(state, ExportOwner::Idle, true, true).await;
         before.check(state, false).await?;
         captured
     }
@@ -1790,6 +1835,12 @@ pub async fn restore(
         checkpoint.executor_policy_digest.as_deref(),
         &startup,
     )?;
+    let environment = startup.thread_extension_init.get::<crate::agent_profiles::ProfileEnvironments>();
+    ensure!(
+        checkpoint.agent_environment_policy_digest.as_deref()
+            == environment.as_ref().map(|environments| environments.digest.as_str()),
+        "Restore requires the recorded Agent environment grants"
+    );
 
     if python_specs.is_some() {
         // An absent current environment is an explicit empty selection on restore.

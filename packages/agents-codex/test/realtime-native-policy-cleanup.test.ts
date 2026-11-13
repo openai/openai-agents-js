@@ -1872,3 +1872,65 @@ nativeIt(
   },
   30000,
 );
+
+nativeIt(
+  'has been dispatching the resolved opted-in Realtime update winner',
+  async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const model = new ModelServer([]);
+    const peer = new PolicyPeer(model);
+    const effects: string[] = [];
+    try {
+      await using provider = await providerFor(model);
+      const original = new Agent({ instructions: 'Opening source', provider });
+      await using session = await original.session();
+      const voice = await session.realtime({ model: 'fixture-realtime' });
+      const reading = (async () => {
+        for await (const event of voice.events()) {
+          void event;
+        }
+      })();
+      try {
+        const make = (label: string) =>
+          tool({
+            name: 'lookup',
+            description: label,
+            parameters: z.object({ value: z.string() }),
+            execute: ({ value }) => {
+              effects.push(label + ':' + value);
+              return label + ':' + value;
+            },
+          });
+        const target = new Agent({
+          instructions: 'Selected source',
+          provider,
+          tools: [make('loser'), make('winner')],
+          toolNameCollisionPolicy: 'warn',
+        });
+        await voice.updateAgent(target);
+        const roster = peer.frames
+          .filter((frame) => frame.type === 'session.update')
+          .at(-1)!.session.tools;
+        expect(
+          roster.filter((entry: Frame) => entry.name === 'lookup'),
+        ).toHaveLength(1);
+        expect(
+          roster.find((entry: Frame) => entry.name === 'lookup').description,
+        ).toBe('winner');
+        peer.call('lookup', { value: 'selected' }, 'selected-update');
+        expect(await peer.output('selected-update')).toContain(
+          'winner:selected',
+        );
+        expect(effects).toEqual(['winner:selected']);
+      } finally {
+        await voice.close();
+        await reading;
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  30000,
+);

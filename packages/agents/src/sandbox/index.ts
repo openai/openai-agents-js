@@ -6,8 +6,10 @@ export {
   ManagedWorkspaceCheckpoint,
 } from '@openai/agents-codex';
 export type {
+  SandboxCapability,
   SandboxEnvironmentSource,
   SandboxEnvironmentOptions,
+  DockerGatewayOptions,
   Skills,
   SkillsArgs,
   SkillDescriptor,

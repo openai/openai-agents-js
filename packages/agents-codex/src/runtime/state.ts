@@ -232,6 +232,10 @@ const rootState = {
     .string()
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
+  agent_environment_policy_digest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
   history: z.array(losslessJsonObjectSchema),
   pending_actions: z.array(losslessJsonObjectSchema).default([]),
   recovery: z
@@ -336,6 +340,27 @@ const manualContinuationSchema = z.object({
       manualNativeReceiptSchema,
     ]),
   ),
+  pending_mcp: z
+    .array(
+      z
+        .object({
+          source_thread_id: stringSchema,
+          turn_id: stringSchema,
+          call_id: stringSchema,
+          request_id: stringSchema,
+          receipt: stringSchema,
+          token: stringSchema,
+          version: z.literal(1),
+          server_name: stringSchema,
+          tool_name: stringSchema,
+          callable_namespace: stringSchema,
+          callable_name: stringSchema,
+          declaration_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+          arguments: jsonValue.nullable(),
+        })
+        .strict(),
+    )
+    .optional(),
   pending_manual: z.array(
     z.object({
       call_id: z.string().min(1),
@@ -943,7 +968,8 @@ export const sessionStateSchema = z
             'Staged input or retry state requires a staged checkpoint format',
         });
       if (
-        (continuation.pending_manual.length === 0) !==
+        (continuation.pending_manual.length === 0 &&
+          (continuation.pending_mcp?.length ?? 0) === 0) !==
         (continuation.staged_retry === true)
       )
         ctx.addIssue({
@@ -951,7 +977,20 @@ export const sessionStateSchema = z
           message:
             'Manual continuation requires a pending grant or a settled staged retry',
         });
-      const pending = continuation.pending_manual.map((call) => call.call_id);
+      for (const call of continuation.pending_mcp ?? []) {
+        if (
+          call.source_thread_id !== state.source_session_id ||
+          call.turn_id !== continuation.turn_id
+        )
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Native MCP continuation must match its original owner',
+          });
+      }
+      const pending = [
+        ...continuation.pending_manual.map((call) => call.call_id),
+        ...(continuation.pending_mcp ?? []).map((call) => call.call_id),
+      ];
       const keys = [...pending, ...Object.keys(continuation.accepted_replies)];
       if (
         new Set(keys).size !== keys.length ||
