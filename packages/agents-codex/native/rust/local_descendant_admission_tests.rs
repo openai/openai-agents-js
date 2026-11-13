@@ -850,6 +850,96 @@ async fn cold_recovery_checks_earlier_owned_commands_before_interruption() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_accepts_only_completed_inactive_provider_shell_history() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let edges = edges(&store, &ids).await;
+    let mut histories = snapshots(&store, &ids).await;
+    for (id, turn) in ids.into_iter().zip(["root", "child", "leaf"]) {
+        histories
+            .get_mut(&id)
+            .unwrap()
+            .extend([started(turn), completed(turn)]);
+    }
+    histories.get_mut(&ids[2]).unwrap().extend([
+        started("sampling"),
+        sampling_context(home.path(), ids[2], "sampling", Some(false)),
+    ]);
+    let original = histories.clone();
+    let row = |item| {
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+            serde_json::from_value(item).unwrap(),
+        ))
+    };
+    for case in [
+        "completed",
+        "no-environment",
+        "running-call",
+        "running-output",
+        "wrong-turn",
+        "wrong-call",
+        "active",
+        "local-environment",
+        "local-shell",
+        "aborted",
+    ] {
+        histories = original.clone();
+        let owner = if case == "active" { "sampling" } else { "root" };
+        let mut invocation = json!({"type":"shell_call","id":"sh_history","call_id":"shell","status":"completed",
+            "action":{"commands":["printf history"]},"environment":{"type":"container_reference","container_id":"cntr_history"},
+            "internal_chat_message_metadata_passthrough":{"turn_id":owner}});
+        let mut output = json!({"type":"shell_call_output","id":"sho_history","call_id":"shell","status":"completed",
+            "output":[{"stdout":"history","stderr":"","outcome":{"type":"exit","exit_code":0}}],
+            "internal_chat_message_metadata_passthrough":{"turn_id":owner}});
+        match case {
+            "no-environment" => {
+                invocation.as_object_mut().unwrap().remove("environment");
+            }
+            "running-call" => invocation["status"] = json!("in_progress"),
+            "running-output" => output["status"] = json!("in_progress"),
+            "wrong-turn" => {
+                output["internal_chat_message_metadata_passthrough"]["turn_id"] = json!("foreign")
+            }
+            "wrong-call" => output["call_id"] = json!("foreign"),
+            "local-environment" => invocation["environment"]["type"] = json!("local"),
+            "local-shell" => {
+                invocation = json!({"type":"local_shell_call","call_id":"shell","status":"completed",
+                    "action":{"type":"exec","command":["synthetic"]},"internal_chat_message_metadata_passthrough":{"turn_id":owner}});
+                output = json!({"type":"function_call_output","call_id":"shell","output":"history",
+                    "internal_chat_message_metadata_passthrough":{"turn_id":owner}});
+            }
+            _ => {}
+        }
+        let target = if case == "active" { ids[2] } else { ids[0] };
+        let history = histories.get_mut(&target).unwrap();
+        if case != "active" {
+            history.pop();
+        }
+        history.extend([row(invocation), row(output)]);
+        if case != "active" {
+            history.push(completed("root"));
+        }
+        if case == "aborted" {
+            history.push(RolloutItem::EventMsg(
+                serde_json::from_value(
+                    json!({"type":"turn_aborted","turn_id":"root","reason":"interrupted"}),
+                )
+                .unwrap(),
+            ));
+        }
+        let result = validate_local_tree(&store, ids, &edges, &histories).await;
+        assert_eq!(
+            result.is_ok(),
+            matches!(case, "completed" | "no-environment"),
+            "{case}: {result:?}"
+        );
+    }
+    for id in ids {
+        store.shutdown_thread(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_recovery_links_followups_to_the_retained_child_root_turn() {
     let home = tempfile::tempdir().unwrap();
     let (store, ids) = family(home.path()).await;
