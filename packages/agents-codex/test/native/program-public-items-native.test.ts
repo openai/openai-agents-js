@@ -47,7 +47,8 @@ it.each(['history', 'produced', 'observations'] as const)(
     if (view === 'produced') {
       const result = await agent.run('Run the program.', { returnItems: true });
       expect(result.finalOutput).toBe('done');
-      items.push(...result.items.map((entry) => entry.item));
+      expect(result.items).toBeDefined();
+      items.push(...(result.items ?? []).map((entry) => entry.item));
     } else {
       await using session = await agent.session({
         includeModelOutputItems: true,
@@ -88,6 +89,8 @@ it.each(['history', 'produced', 'observations'] as const)(
     const [call, result] = passive;
     if (call?.type !== 'program' || result?.type !== 'program_output')
       throw new Error('Missing typed provider program items');
+    if (!('code' in call) || !('result' in result))
+      throw new Error('Missing detailed provider program data');
     expect(call.code).toBe(program.code);
     expect(result.result).toBe(output.result);
     server.assertExhausted();
