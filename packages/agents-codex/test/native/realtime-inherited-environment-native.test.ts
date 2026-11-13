@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { Manifest, sandboxEnvironment } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import { Agent, Environment, NativeProvider, tool } from '../../src';
+import type { Session as CoreSession } from '../../src/runtime/session';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
 
@@ -202,15 +203,16 @@ it.each([false, true])(
       });
       const voice = await session.realtime({ model: 'fixture-realtime' });
       try {
-        const current = await session._realtimeCurrentProfile();
+        const internal = session as unknown as CoreSession<string, undefined>;
+        const current = await internal._realtimeCurrentProfile();
         expect(current).not.toBeNull();
-        const admit = session._admitRealtimeGraph.bind(session);
+        const admit = internal._admitRealtimeGraph.bind(internal);
         for (const invalid of [
           { profile_id: 'foreign-profile', epoch: '0' },
           { ...current!, epoch: '18446744073709551615' },
         ]) {
           const admission = vi
-            .spyOn(session, '_admitRealtimeGraph')
+            .spyOn(internal, '_admitRealtimeGraph')
             .mockImplementationOnce((generation, agent) =>
               admit(generation, agent, invalid),
             );
@@ -226,7 +228,7 @@ it.each([false, true])(
           } finally {
             admission.mockRestore();
           }
-          expect(await session._realtimeCurrentProfile()).toEqual(current);
+          expect(await internal._realtimeCurrentProfile()).toEqual(current);
         }
         for (const name of ['voice-one', 'voice-two']) {
           await voice.updateAgent(
