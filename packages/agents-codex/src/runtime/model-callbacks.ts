@@ -76,7 +76,7 @@ export interface ToolBatchResult {
   readonly output: ToolOutput;
 }
 
-/** Settled direct function results in their original model call order. */
+/** Live settled direct function results in their original model call order. */
 export interface ToolBatchCompletionContext<Context = unknown> {
   readonly context: Context;
   readonly results: readonly ToolBatchResult[];
@@ -92,7 +92,11 @@ export type ToolBatchCompletionDecision =
   | CompletionDecision
   | { readonly action: 'finish'; readonly output: JsonValue };
 
-/** Finish supplies JSON input for the output validator; undefined continues normally. */
+/**
+ * Finish supplies JSON input for the output validator; undefined continues normally.
+ * A restored batch reaches this callback only when every included tool result was
+ * supplied after restore. Newly sampled batches follow the usual rules.
+ */
 export type ToolBatchCompletion<Context = unknown> = (
   context: ToolBatchCompletionContext<Context>,
 ) =>

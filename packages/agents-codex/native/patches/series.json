@@ -1058,12 +1058,12 @@
     },
     {
       "path": "sdk-tool-batch-completion.patch",
-      "sha256": "590eb7b7cc4f500a6934c523b339ddc8adba206659d9206aa62b2089713498e0"
+      "sha256": "e7879a15af43006af524c46d2e89fd59946bf824011d9abb83838d54640d9c79"
     },
     {
       "path": "sdk-mcp-tool-name-overrides.patch",
       "sha256": "4f8d04fdc36efd7217e3aca643eb4ab90c930cacb3060bd469518f4af9bc6abd"
     }
   ],
-  "result_tree": "f7de4c926f7f3f996e9aa25c169cfded6c1bdec0"
+  "result_tree": "b78ffddfdcf28b791ea62ddbb8cbe19781a1c69f"
 }

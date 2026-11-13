@@ -775,6 +775,49 @@ pub(super) async fn propose_batch(
     let Some(catalog) = input.step_store.get::<StepCatalog>() else {
         return Ok(None);
     };
+    if input.recovered {
+        let Some(fresh) = input
+            .turn_store
+            .get::<super::recovered_completion::FreshTerminalReceipts>()
+        else {
+            return Ok(None);
+        };
+        fresh
+            .adopt(&tools, &catalog)
+            .map_err(|error| error.to_string())?;
+        let receipts = catalog
+            .receipts
+            .lock()
+            .expect("JavaScript completion receipts poisoned");
+        let all_fresh = input.results.iter().all(|result| {
+            let ResponseItem::FunctionCall {
+                call_id,
+                name,
+                namespace,
+                ..
+            } = result.call
+            else {
+                return false;
+            };
+            let name = ToolName::new(namespace.clone(), name.clone()).with_default_namespace();
+            receipts.iter().any(|key| {
+                key.reply.manual_grant.is_some()
+                    && key.reply.thread == input.thread_store.level_id()
+                    && key.reply.instance == tools.instance
+                    && key.reply.generation == catalog.generation.id
+                    && key.turn == input.turn_id
+                    && key.call == *call_id
+                    && catalog
+                        .generation
+                        .entries
+                        .get(key.reply.slot)
+                        .is_some_and(|entry| entry.name.clone().with_default_namespace() == name)
+            })
+        });
+        if !all_fresh {
+            return Ok(None);
+        }
+    }
     let first = input.results.first().ok_or("Empty settled tool batch")?;
     let mut results = Vec::with_capacity(input.results.len());
     for result in input.results {

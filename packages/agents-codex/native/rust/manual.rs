@@ -284,6 +284,15 @@ pub(crate) struct Continuation {
 }
 
 impl Continuation {
+    fn record_fresh_completion(&mut self, key: &PendingKey, success: bool) {
+        if let Some(generation) = &self.generation
+            && (self.batch_completion
+                || (success && generation.terminal_slots.contains(&key.reply.slot)))
+        {
+            FreshTerminalReceipts::record(&mut self.fresh, generation.clone(), key);
+        }
+    }
+
     pub(crate) fn staged_items(&self) -> Result<Vec<ResponseItem>> {
         let items = self
             .pending_input
@@ -341,12 +350,7 @@ impl Continuation {
             }
         }
         Ok(match self.tool_outcomes.clone() {
-            Some(outcomes)
-                if self.batch_completion
-                    || self.fresh.is_some()
-                    || !held.is_empty()
-                    || reset_tool_choice =>
-            {
+            Some(outcomes) if self.fresh.is_some() || !held.is_empty() || reset_tool_choice => {
                 Some(RecoveredToolCompletionSeed::new(
                     self.turn_id.clone(),
                     outcomes,
@@ -1213,11 +1217,7 @@ impl PythonTools {
                 if let Some(outcomes) = &mut frame.tool_outcomes {
                     outcomes.record(&key.call, response.success);
                 }
-                if response.success {
-                    if let Some(generation) = self.resolve_generation(key.reply.generation) {
-                        FreshTerminalReceipts::record(&mut frame.fresh, generation, key);
-                    }
-                }
+                frame.record_fresh_completion(key, response.success);
                 frame
                     .accepted_replies
                     .insert(key.call.clone(), Receipt::Native(item));
@@ -1981,7 +1981,6 @@ impl PythonTools {
                 "Staged input requires a model continuation after the manual replies"
             );
         }
-
         frame.generation = Some(generation.clone());
         let mut manual = self.manual.lock().expect("manual tools poisoned");
         ensure!(
@@ -2093,6 +2092,7 @@ impl PythonTools {
                 .is_none(),
             "manual result already present"
         );
+        frame.record_fresh_completion(&key, success);
         if let Some(outcomes) = &mut frame.tool_outcomes {
             outcomes.record(&key.call, success);
         }

@@ -171,9 +171,6 @@ pub(super) struct FreshTerminalReceipts {
 }
 impl FreshTerminalReceipts {
     pub(super) fn record(target: &mut Option<Self>, generation: Arc<Generation>, key: &PendingKey) {
-        if !generation.terminal_slots.contains(&key.reply.slot) {
-            return;
-        }
         let fresh = target.get_or_insert_with(|| Self {
             generation: generation.clone(),
             calls: Arc::new(Mutex::new(Some(HashSet::new()))),
@@ -194,22 +191,22 @@ impl FreshTerminalReceipts {
         Ok(())
     }
     pub(super) fn adopt(&self, tools: &PythonTools, step: &StepCatalog) -> Result<()> {
+        let mut pending = self
+            .calls
+            .lock()
+            .expect("recovered terminal receipts poisoned");
+        if pending.is_none() {
+            return Ok(());
+        }
         self.check(tools)?;
         ensure!(
             Arc::ptr_eq(&self.generation, &step.generation),
             "Recovered terminal step generation changed"
         );
-        if let Some(calls) = self
-            .calls
+        step.receipts
             .lock()
-            .expect("recovered terminal receipts poisoned")
-            .take()
-        {
-            step.receipts
-                .lock()
-                .expect("JavaScript completion receipts poisoned")
-                .extend(calls);
-        }
+            .expect("JavaScript completion receipts poisoned")
+            .extend(pending.take().expect("Fresh terminal receipts are pending"));
         Ok(())
     }
 }

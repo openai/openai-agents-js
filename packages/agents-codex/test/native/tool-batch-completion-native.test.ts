@@ -286,8 +286,8 @@ describe.skipIf(!native)('native direct tool batch completion', () => {
   );
 
   it.each([false, true])(
-    'restores ordered outcomes with a fresh reducer declaration (enabled: %s)',
-    async (enabled) => {
+    'reduces live manual results and skips checkpoint outcomes (restored: %s)',
+    async (restored) => {
       const { Agent, manualTool, InteractionRequired } =
         await import('../../src');
       const { server, provider: resource } = await fixture([
@@ -295,7 +295,7 @@ describe.skipIf(!native)('native direct tool batch completion', () => {
           call('record', {}, { callId: 'recorded' }),
           call('approve', {}, { callId: 'manual' }),
         ],
-        ...(!enabled ? [[message('RESTORED MODEL')]] : []),
+        ...(restored ? [[call('record', {}, { callId: 'new-call' })]] : []),
       ]);
       await using provider = resource;
       const effect = vi.fn(() => 'RECORDED');
@@ -315,49 +315,48 @@ describe.skipIf(!native)('native direct tool batch completion', () => {
         provider,
         tools,
       };
-      const oldReducer = vi.fn(() => ({
-        action: 'finish' as const,
-        output: 'WRONG OLD',
-      }));
-      const original = await new Agent({
-        ...options,
-        toolBatchCompletion: oldReducer,
-      }).session();
+      const reducer = vi.fn(({ results }: ToolBatchCompletionContext) => {
+        expect(results.map((item) => item.call.callId)).toEqual(
+          restored ? ['new-call'] : ['recorded', 'manual'],
+        );
+        expect(results.every((item) => item.output.success)).toBe(true);
+        return { action: 'finish' as const, output: 'LIVE REDUCED' };
+      });
+      const agent = new Agent({ ...options, toolBatchCompletion: reducer });
+      await using original = await agent.session();
       const turn = await original.submit('Run.');
+      for await (const event of original.events()) {
+        if (event.type !== 'action_requested') continue;
+        if (!restored) await original.respond(event.reply('APPROVED'));
+        break;
+      }
+      if (!restored) {
+        expect((await turn.wait()).finalOutput).toBe('LIVE REDUCED');
+        expect(effect).toHaveBeenCalledTimes(1);
+        expect(reducer).toHaveBeenCalledTimes(1);
+        expect(server.requests).toHaveLength(1);
+        return;
+      }
       const pending = turn.wait().catch((error: unknown) => error);
-      for await (const event of original.events())
-        if (event.type === 'action_requested') break;
       const state = await original.suspend();
       expect(await pending).toBeInstanceOf(InteractionRequired);
       await original.close();
-      const reducer = vi.fn(({ results }: ToolBatchCompletionContext) => {
-        expect(results.map((item) => item.call.callId)).toEqual([
-          'recorded',
-          'manual',
-        ]);
-        expect(results.map((item) => item.output.success)).toEqual([
-          true,
-          true,
-        ]);
-        return { action: 'finish' as const, output: 'RESTORED REDUCED' };
+      const checkpoint = JSON.stringify(state);
+      expect(checkpoint).toContain('"RECORDED"');
+      await using resumed = await agent.session({
+        state: JSON.parse(checkpoint.replaceAll('"RECORDED"', '"CHANGED"')),
       });
-      await using restored = await new Agent({
-        ...options,
-        ...(enabled ? { toolBatchCompletion: reducer } : {}),
-      }).session({ state: JSON.parse(JSON.stringify(state)) });
-      for await (const event of restored.events()) {
+      for await (const event of resumed.events()) {
         if (event.type !== 'action_requested') continue;
-        await restored.respond(event.reply('APPROVED'));
+        await resumed.respond(event.reply('APPROVED'));
         break;
       }
-      const result = await restored.restoredTurn!.wait();
-      expect(result.finalOutput).toBe(
-        enabled ? 'RESTORED REDUCED' : 'RESTORED MODEL',
+      expect((await resumed.restoredTurn!.wait()).finalOutput).toBe(
+        'LIVE REDUCED',
       );
-      expect(effect).toHaveBeenCalledTimes(1);
-      expect(oldReducer).not.toHaveBeenCalled();
-      expect(reducer).toHaveBeenCalledTimes(enabled ? 1 : 0);
-      expect(server.requests).toHaveLength(enabled ? 1 : 2);
+      expect(effect).toHaveBeenCalledTimes(2);
+      expect(reducer).toHaveBeenCalledTimes(1);
+      expect(server.requests).toHaveLength(2);
     },
   );
 
@@ -777,63 +776,149 @@ describe.skipIf(!native)('native direct tool batch completion', () => {
     expect(server.requests).toHaveLength(1);
   });
 
-  it('strict dispatch survives manual restore while the fresh reducer continues', async () => {
+  it('uses a later agent catalog after a fresh restored batch continues', async () => {
     const { Agent, manualTool, InteractionRequired } =
       await import('../../src');
     const { server, provider: resource } = await fixture([
-      [call('approve', {}, { callId: 'manual-strict' })],
-      [call('missing_function', {}, { callId: 'restored-missing' })],
+      [call('approve', {}, { callId: 'manual-before-handoff' })],
+      [call('transfer_to_worker', {}, { callId: 'handoff-after-restore' })],
+      [call('lookup', {}, { callId: 'worker-after-restore' })],
     ]);
     await using provider = resource;
-    const tools = [
-      manualTool({
-        name: 'approve',
-        description: 'Ask.',
-        parameters: z.object({}),
-        result: z.string(),
-      }),
-    ];
-    const options = {
-      name: 'Root',
-      instructions: 'Run.',
-      model: 'gpt-5.5',
-      provider,
-      tools,
-    };
-    const oldReducer = vi.fn(() => undefined);
-    const initial = await new Agent({
-      ...options,
-      toolBatchCompletion: oldReducer,
-    }).session();
-    const original = await initial.submit('Run.', {
-      toolNotFoundBehavior: 'raise_error',
-    });
-    const pending = original.wait().catch((error: unknown) => error);
-    for await (const event of initial.events())
-      if (event.type === 'action_requested') break;
-    const state = await initial.suspend();
-    expect(await pending).toBeInstanceOf(InteractionRequired);
-    await initial.close();
-    const fresh = vi.fn(({ results }: ToolBatchCompletionContext) => {
-      expect(results.map((item) => item.call.callId)).toEqual([
-        'manual-strict',
+    const rootReducer = vi.fn(({ results }: ToolBatchCompletionContext) => {
+      expect(results.map(({ call }) => call.callId)).toEqual([
+        'manual-before-handoff',
       ]);
       return undefined;
     });
-    await using restored = await new Agent({
-      ...options,
-      toolBatchCompletion: fresh,
-    }).session({ state: JSON.parse(JSON.stringify(state)) });
-    const result = restored.restoredTurn!.wait();
-    const rejected = expect(result).rejects.toThrow('unsupported call');
+    const workerReducer = vi.fn(({ results }: ToolBatchCompletionContext) => {
+      expect(results.map(({ call }) => call.callId)).toEqual([
+        'worker-after-restore',
+      ]);
+      return { action: 'finish' as const, output: 'WORKER REDUCED' };
+    });
+    const worker = new Agent({
+      name: 'Worker',
+      instructions: 'Look up the result.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [
+        tool({
+          name: 'lookup',
+          parameters: z.object({}),
+          execute: () => 'WORKER TOOL',
+        }),
+      ],
+      toolBatchCompletion: workerReducer,
+    });
+    const agent = new Agent({
+      name: 'Root',
+      instructions: 'Ask and then transfer.',
+      model: 'gpt-5.5',
+      provider,
+      tools: [
+        manualTool({
+          name: 'approve',
+          description: 'Ask.',
+          parameters: z.object({}),
+          result: z.string(),
+        }),
+      ],
+      handoffs: [worker],
+      toolBatchCompletion: rootReducer,
+    });
+    await using initial = await agent.session();
+    const original = await initial.submit('Run.');
+    const pending = original.wait().catch((error: unknown) => error);
+    for await (const event of initial.events()) {
+      if (event.type === 'action_requested') break;
+    }
+    const state = await initial.suspend();
+    expect(await pending).toBeInstanceOf(InteractionRequired);
+    await initial.close();
+    await using restored = await agent.session({
+      state: JSON.parse(JSON.stringify(state)),
+    });
     for await (const event of restored.events()) {
       if (event.type !== 'action_requested') continue;
       await restored.respond(event.reply('APPROVED'));
       break;
     }
-    await rejected;
-    expect(fresh).toHaveBeenCalledTimes(1);
-    expect(oldReducer).not.toHaveBeenCalled();
-    expect(server.requests).toHaveLength(2);
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+      'WORKER REDUCED',
+    );
+    expect(rootReducer).toHaveBeenCalledTimes(1);
+    expect(workerReducer).toHaveBeenCalledTimes(1);
+    expect(server.requests).toHaveLength(3);
   });
+
+  it.each([true, false])(
+    'reduces a fresh manual reply and preserves strict dispatch after restore (success: %s)',
+    async (succeeded) => {
+      const { Agent, manualTool, InteractionRequired, ToolOutput } =
+        await import('../../src');
+      const { server, provider: resource } = await fixture([
+        [call('approve', {}, { callId: 'manual-strict' })],
+        [call('missing_function', {}, { callId: 'restored-missing' })],
+      ]);
+      await using provider = resource;
+      const tools = [
+        manualTool({
+          name: 'approve',
+          description: 'Ask.',
+          parameters: z.object({}),
+          result: z
+            .string()
+            .transform(
+              (value) =>
+                new ToolOutput([{ type: 'inputText', text: value }], succeeded),
+            ),
+        }),
+      ];
+      const options = {
+        name: 'Root',
+        instructions: 'Run.',
+        model: 'gpt-5.5',
+        provider,
+        tools,
+        modelSettings: { resetToolChoice: true },
+      };
+      const oldReducer = vi.fn(() => undefined);
+      const initial = await new Agent({
+        ...options,
+        toolBatchCompletion: oldReducer,
+      }).session();
+      const original = await initial.submit('Run.', {
+        toolNotFoundBehavior: 'raise_error',
+      });
+      const pending = original.wait().catch((error: unknown) => error);
+      for await (const event of initial.events())
+        if (event.type === 'action_requested') break;
+      const state = await initial.suspend();
+      expect(await pending).toBeInstanceOf(InteractionRequired);
+      await initial.close();
+      const fresh = vi.fn(({ results }: ToolBatchCompletionContext) => {
+        expect(results.map((item) => item.call.callId)).toEqual([
+          'manual-strict',
+        ]);
+        expect(results[0]?.output.success).toBe(succeeded);
+        return undefined;
+      });
+      await using restored = await new Agent({
+        ...options,
+        toolBatchCompletion: fresh,
+      }).session({ state: JSON.parse(JSON.stringify(state)) });
+      const result = restored.restoredTurn!.wait();
+      const rejected = expect(result).rejects.toThrow('unsupported call');
+      for await (const event of restored.events()) {
+        if (event.type !== 'action_requested') continue;
+        await restored.respond(event.reply('APPROVED'));
+        break;
+      }
+      await rejected;
+      expect(fresh).toHaveBeenCalledTimes(1);
+      expect(oldReducer).not.toHaveBeenCalled();
+      expect(server.requests).toHaveLength(2);
+    },
+  );
 });
