@@ -581,7 +581,7 @@ it.each(['success', 'fatal'] as const)(
       ],
     });
     await using session = await agent.session({
-      maxFunctionConcurrency: 1,
+      maxFunctionConcurrency: 3,
       async onInteraction(action) {
         const request = decision.match(action);
         if (!request) throw new Error('Unexpected interaction');
