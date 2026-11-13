@@ -47,6 +47,7 @@ export interface GuardrailRecord {
   readonly turnId: string;
   readonly subagentId?: string;
   readonly toolCall?: ToolCallInfo;
+  readonly toolBatchCallIds?: readonly string[];
 }
 
 export class GuardrailTripwire extends Error {

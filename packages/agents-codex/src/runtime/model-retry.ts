@@ -34,6 +34,8 @@ export interface RetryContext {
   readonly threadId: string;
   readonly turnId: string;
   readonly transport: string;
+  /** Whether the failed request used streaming, when the request mode is known. */
+  readonly stream?: boolean;
   readonly signal: AbortSignal;
   readonly error: unknown;
   readonly normalizedError: RetryNormalizedError;
@@ -59,6 +61,8 @@ export interface ModelRetryAdviceRequest {
   readonly error: unknown;
   readonly attemptId: string;
   readonly attempt: number;
+  /** Whether the failed request selected a streaming producer. */
+  readonly stream?: boolean;
   /** The live logical owner, independent of the retired request's signal. */
   readonly signal: AbortSignal;
 }
@@ -524,6 +528,12 @@ export function retryContextFromNative(
       threadId: value.thread_id,
       turnId: value.turn_id,
       transport: value.transport,
+      ...(value.transport === 'responses_json'
+        ? { stream: false }
+        : value.transport === 'responses_sse' ||
+            value.transport === 'responses_ws'
+          ? { stream: true }
+          : {}),
       signal,
       error,
       normalizedError: {

@@ -6,6 +6,7 @@ import {
   captureTools,
   toolDeclarationIdentity,
   type ToolCatalog,
+  protocolToolSpecs,
 } from './tools';
 import { HttpMCP, StdioMCP, mcpConfig, mcpPolicies, type McpTool } from './mcp';
 import { splitToolDeclarations } from './tool-declarations';
@@ -259,6 +260,7 @@ export function captureProfileRuntimes(
       ...(declaration.compaction !== undefined
         ? { post_turn_compact: true }
         : {}),
+      tool_batch_completion: declaration.toolBatchCompletion !== undefined,
       before_complete:
         declaration.beforeComplete !== undefined ||
         declaration.outputGuardrails.length > 0 ||
@@ -408,7 +410,7 @@ export function projectProfileCatalog(
 ): ToolCatalog {
   if (!Array.isArray(specs))
     throw new TypeError('Invalid native active Agent tool layout');
-  const available: unknown[] = JSON.parse(template.specsJson);
+  const available: unknown[] = protocolToolSpecs(template);
   const used = new Set<number>();
   const tools = specs.map((spec) => {
     const index = available.findIndex((candidate) =>

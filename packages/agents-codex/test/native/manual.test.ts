@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   createManualRequest,
   manualResultSchema,
+  manualToolForSession,
   prepareManualResult,
   manualTool,
   type ManualTool,
@@ -20,6 +21,44 @@ const identity = {
 };
 
 describe('manual tool declarations and exact reply ownership', () => {
+  it('resolves only a current original grant retained by its issuing Session', () => {
+    const session = {};
+    const foreignSession = {};
+    const tool = manualTool({
+      name: 'value',
+      description: 'Read a value.',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    let current = true;
+    const retained = new Set<object>();
+    const grant = createManualRequest(
+      tool,
+      {
+        ...identity,
+        owner: { session, owns: (): boolean => retained.has(grant) },
+      },
+      {},
+      () => current,
+    );
+    retained.add(grant);
+    const request = grant.request()!;
+    expect(request).not.toHaveProperty('owner');
+    expect(manualToolForSession(session, request)).toBe(tool);
+    expect(manualToolForSession(foreignSession, request)).toBeUndefined();
+    expect(manualToolForSession(session, { ...request })).toBeUndefined();
+    retained.delete(grant);
+    expect(grant.request()).toBe(request);
+    expect(manualToolForSession(session, request)).toBeUndefined();
+    retained.add(grant);
+    current = false;
+    expect(manualToolForSession(session, request)).toBeUndefined();
+    current = true;
+    expect(manualToolForSession(session, request)).toBe(tool);
+    expect(grant.takeReply(request.reply('accepted'))?.success).toBe(true);
+    expect(manualToolForSession(session, request)).toBeUndefined();
+  });
+
   it('validates an invocation once and exposes isolated typed requests to later readers', () => {
     const validated = vi.fn(() => true);
     const lookup = manualTool({

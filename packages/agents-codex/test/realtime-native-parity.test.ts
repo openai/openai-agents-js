@@ -3640,3 +3640,62 @@ nativeIt(
   },
   15000,
 );
+
+nativeIt.each([false, true])(
+  'advertises only direct function callers in Realtime (explicit=%s)',
+  async (explicit) => {
+    const model = new ModelServer([]);
+    const peer = new RealtimePeer(model);
+    const declarations = [
+      tool({
+        name: 'direct_only',
+        parameters: z.object({}),
+        allowedCallers: ['direct'],
+        execute: () => 'direct',
+      }),
+      tool({
+        name: 'code_only',
+        parameters: z.object({}),
+        allowedCallers: ['code'],
+        execute: () => 'code',
+      }),
+      tool({
+        name: 'unrestricted',
+        parameters: z.object({}),
+        execute: () => 'default',
+      }),
+    ];
+    try {
+      await using provider = await providerFor(model);
+      await using session = await new Agent({
+        instructions: 'Run.',
+        provider,
+        tools: declarations,
+      }).session();
+      const voice = await session.realtime({
+        model: 'fixture-realtime',
+        ...(explicit ? { tools: declarations } : {}),
+      });
+      try {
+        const frame = await peer.frame(
+          (entry) => entry.type === 'session.update',
+        );
+        const names = frame.session.tools.map(
+          (entry: { name: string }) => entry.name,
+        );
+        expect(names).toContain('direct_only');
+        expect(names).toContain('unrestricted');
+        expect(names).not.toContain('code_only');
+        expect(JSON.stringify(frame.session.tools)).not.toContain(
+          'allowedCallers',
+        );
+      } finally {
+        await voice.close();
+      }
+    } finally {
+      await peer.close();
+      await ModelServer.closeAll();
+    }
+  },
+  15_000,
+);

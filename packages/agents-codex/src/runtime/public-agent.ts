@@ -35,6 +35,7 @@ import {
 import type {
   BeforeCompact,
   BeforeComplete,
+  ToolBatchCompletion,
   ContextTransform,
 } from './model-callbacks';
 import {
@@ -178,6 +179,11 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Cancellation and close join entered callbacks. Do not mutate this Session.
    */
   beforeComplete?: BeforeComplete<Context>;
+  /** Reduce settled direct function results before another model request.
+   * Finish proposals use the source Agent's output and completion policies.
+   * Accepted handoffs and CodeMode calls remain outside this hook.
+   */
+  toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails?: readonly InputGuardrail<Context>[];
   outputGuardrails?: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
@@ -402,6 +408,7 @@ interface CapturedOpening {
   readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
+  readonly toolBatchCompletion?: ToolBatchCompletion<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
   readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
   readonly inputGuardrails: readonly InputGuardrail<any>[];
@@ -418,6 +425,7 @@ type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
   [ownedRun]?: OneShotOptions & {
     decisions?: DecisionProvider;
     beforeComplete?: BeforeComplete<Context>;
+    toolBatchCompletion?: ToolBatchCompletion<Context>;
   };
   [deferredOpening]?: {
     readonly opening: CapturedOpening;
@@ -535,6 +543,7 @@ export class Agent<Context = undefined, Output = string> {
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
+  toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails: readonly InputGuardrail<Context>[];
   outputGuardrails: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
@@ -594,12 +603,14 @@ export class Agent<Context = undefined, Output = string> {
         : captureModelSettings(options.modelSettings);
     for (const name of [
       'beforeComplete',
+      'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
     ] as const)
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
+    this.toolBatchCompletion = options.toolBatchCompletion;
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
     this.beforeCompact = options.beforeCompact;
@@ -989,6 +1000,7 @@ export class Agent<Context = undefined, Output = string> {
         returnItems: options.returnItems || captureErrorDetails,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
+        toolBatchCompletion: this.toolBatchCompletion,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
         beforeStep,
@@ -1085,6 +1097,11 @@ export class Agent<Context = undefined, Output = string> {
       : owned
         ? owned.beforeComplete
         : this.beforeComplete;
+    const toolBatchCompletion = opening
+      ? opening.toolBatchCompletion
+      : owned
+        ? owned.toolBatchCompletion
+        : this.toolBatchCompletion;
     const inputGuardrails =
       opening?.inputGuardrails ?? captureGuardrails(options.inputGuardrails);
     const outputGuardrails =
@@ -1116,6 +1133,7 @@ export class Agent<Context = undefined, Output = string> {
         : 'turn');
     for (const [name, callback] of [
       ['beforeComplete', beforeComplete],
+      ['toolBatchCompletion', toolBatchCompletion],
       ['beforeCompact', beforeCompact],
       ['transformContext', transformContext],
     ] as const)
@@ -1329,6 +1347,7 @@ export class Agent<Context = undefined, Output = string> {
               realtime: this.realtime,
               decisions,
               beforeComplete,
+              toolBatchCompletion,
               inputGuardrails: agentInputGuardrails,
               outputGuardrails: agentOutputGuardrails,
               programmaticToolCalling,
@@ -1849,6 +1868,12 @@ export class Agent<Context = undefined, Output = string> {
                 (profile) => profile.post_turn_compact === true,
               ) ??
                 false),
+            tool_batch_completion:
+              toolBatchCompletion !== undefined ||
+              (completedGraph?.roster.some(
+                (profile) => profile.tool_batch_completion === true,
+              ) ??
+                false),
             before_complete:
               beforeComplete !== undefined ||
               agentOutputGuardrails.length > 0 ||
@@ -1963,6 +1988,7 @@ export class Agent<Context = undefined, Output = string> {
             } as AgentOptions<Context, Output>),
           ) as Agent<any, any>),
         beforeComplete,
+        toolBatchCompletion,
         inputGuardrails,
         outputGuardrails,
         agentInputGuardrails,
@@ -2043,6 +2069,7 @@ export class Agent<Context = undefined, Output = string> {
             profiles,
             decisions,
             beforeComplete,
+            toolBatchCompletion,
             inputGuardrails,
             outputGuardrails,
             agentInputGuardrails,
@@ -2234,6 +2261,7 @@ export function captureAgentProfiles<Context, Output>(
       handoffs: source.handoffs,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
+      toolBatchCompletion: source.toolBatchCompletion,
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
       beforeCompact: source.beforeCompact,
@@ -2514,6 +2542,7 @@ export function openOwnedHistorySession<Context, Output>(
       input,
       decisions: captureDecisionProvider(agent.decisions),
       beforeComplete: agent.beforeComplete,
+      toolBatchCompletion: agent.toolBatchCompletion,
     },
   } as OwnedSessionOptions<Context>;
   return agent.session(...([options] as SessionArguments<Context>)) as Promise<

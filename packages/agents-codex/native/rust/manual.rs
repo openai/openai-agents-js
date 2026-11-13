@@ -279,9 +279,20 @@ pub(crate) struct Continuation {
     tool_outcomes: Option<ToolOutcomes>,
     #[serde(skip)]
     fresh: Option<FreshTerminalReceipts>,
+    #[serde(skip)]
+    batch_completion: bool,
 }
 
 impl Continuation {
+    fn record_fresh_completion(&mut self, key: &PendingKey, success: bool) {
+        if let Some(generation) = &self.generation
+            && (self.batch_completion
+                || (success && generation.terminal_slots.contains(&key.reply.slot)))
+        {
+            FreshTerminalReceipts::record(&mut self.fresh, generation.clone(), key);
+        }
+    }
+
     pub(crate) fn staged_items(&self) -> Result<Vec<ResponseItem>> {
         let items = self
             .pending_input
@@ -1206,11 +1217,7 @@ impl PythonTools {
                 if let Some(outcomes) = &mut frame.tool_outcomes {
                     outcomes.record(&key.call, response.success);
                 }
-                if response.success {
-                    if let Some(generation) = self.resolve_generation(key.reply.generation) {
-                        FreshTerminalReceipts::record(&mut frame.fresh, generation, key);
-                    }
-                }
+                frame.record_fresh_completion(key, response.success);
                 frame
                     .accepted_replies
                     .insert(key.call.clone(), Receipt::Native(item));
@@ -1575,6 +1582,7 @@ impl PythonTools {
             accepted_replies: history.outputs.clone(),
             pending_manual: Vec::new(),
             generation: Some(generation.clone()),
+            batch_completion: false,
             tool_outcomes: ToolOutcomes::capture(
                 &serde_json::from_value::<Vec<RolloutItem>>(raw.clone())?,
                 &validated[0].reply.thread,
@@ -1761,7 +1769,17 @@ impl PythonTools {
                     !history.outputs.contains_key(&call.call_id),
                     "a pending grant has recorded output"
                 );
-                self.slot_for_catalog(manual, call, &generation)?;
+                let slot = self.slot_for_catalog(manual, call, &generation)?;
+                // Saved specs are descriptive. Only current catalog authority
+                // can allow an unanswered direct call to be reissued.
+                ensure!(
+                    generation
+                        .specs
+                        .caller_limits(slot)
+                        .is_none_or(|callers| callers.contains(codex_tools::ToolExposures::DIRECT)),
+                    "manual tool {} does not permit direct calls",
+                    generation.entries[slot].name
+                );
                 expected.push(call);
             }
         }
@@ -1950,6 +1968,12 @@ impl PythonTools {
         } else {
             self.snapshot()
         };
+        frame.batch_completion = captured
+            .as_ref()
+            .and_then(|source| source.profile.data.get::<ProfileCatalog>())
+            .map_or(self.context_callbacks.tool_batch_completion, |catalog| {
+                catalog.tool_batch_completion
+            });
         if !frame.pending_input.is_empty() {
             let terminal = history.calls.iter().any(|call| {
                 let name = ToolName::new(call.namespace.clone(), call.name.clone())
@@ -1963,7 +1987,7 @@ impl PythonTools {
                 })
             });
             ensure!(
-                !terminal,
+                !terminal && !frame.batch_completion,
                 "Staged input requires a model continuation after the manual replies"
             );
         }
@@ -2078,6 +2102,7 @@ impl PythonTools {
                 .is_none(),
             "manual result already present"
         );
+        frame.record_fresh_completion(&key, success);
         if let Some(outcomes) = &mut frame.tool_outcomes {
             outcomes.record(&key.call, success);
         }

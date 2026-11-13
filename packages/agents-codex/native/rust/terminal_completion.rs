@@ -27,11 +27,18 @@ pub(crate) struct CompletionReply {
 #[derive(Debug, PartialEq)]
 pub(super) enum ReplyValue {
     Accept(Value),
-    Continue(String),
+    Continue(Option<String>),
+}
+
+#[derive(Clone)]
+struct CompletionOwner {
+    thread: String,
+    instance: Option<String>,
+    turn: String,
 }
 
 pub(super) struct Pending {
-    key: PendingKey,
+    owner: CompletionOwner,
     generation: Arc<Generation>,
     step: String,
     sender: oneshot::Sender<std::result::Result<ReplyValue, String>>,
@@ -42,7 +49,7 @@ pub(super) struct Pending {
 #[derive(Clone)]
 pub(crate) struct TerminalProposal {
     generation: Arc<Generation>,
-    key: PendingKey,
+    owner: CompletionOwner,
     step: String,
     request_id: u64,
     failed: bool,
@@ -67,7 +74,7 @@ impl PythonTools {
             .expect("terminal proposal poisoned")
             .as_mut()
             && self.admits_generation(&proposal.generation)
-            && self.current_completion_owner(&proposal.key.reply.thread)
+            && self.current_completion_owner(&proposal.owner.thread)
         {
             proposal.failed = true;
         }
@@ -85,14 +92,14 @@ impl PythonTools {
         if !self.admits_generation(&proposal.generation) {
             return;
         }
-        let mut request = json!({"id":proposal.key.turn,"msg":{
-            "type":"_sdk_tool_completion_failed", "thread":proposal.key.reply.thread,
-            "instance":self.instance, "turn_id":proposal.key.turn,
+        let mut request = json!({"id":proposal.owner.turn,"msg":{
+            "type":"_sdk_tool_completion_failed", "thread":proposal.owner.thread,
+            "instance":self.instance, "turn_id":proposal.owner.turn,
             "generation":proposal.generation.id.to_string(),
             "request_id":proposal.request_id.to_string(), "native_step":proposal.step
         }});
         if let Some(instance) = &self.instance {
-            request["subagent_id"] = json!(proposal.key.reply.thread);
+            request["subagent_id"] = json!(proposal.owner.thread);
             request["subagent_incarnation"] = json!(instance);
             request["subagent_managed_tools"] = json!(true);
         }
@@ -116,14 +123,14 @@ impl PythonTools {
         let Some(proposal) = proposal.as_ref().filter(|proposal| proposal.failed) else {
             return false;
         };
-        self.current_completion_owner(&proposal.key.reply.thread)
+        self.current_completion_owner(&proposal.owner.thread)
             && self.admits_generation(&proposal.generation)
             && turn.tool_failure_ready()
             && request["msg"]["request_id"] == proposal.request_id.to_string()
             && proposal
                 .settlement
                 .upgrade()
-                .and_then(|owner| owner.matching(&proposal.key.turn))
+                .and_then(|owner| owner.matching(&proposal.owner.turn))
                 .is_some_and(|current| Arc::ptr_eq(&current, turn))
     }
 
@@ -196,12 +203,12 @@ impl PythonTools {
     }
 
     fn completion_matches(&self, response: &CompletionReply, pending: &Pending) -> bool {
-        self.current_completion_owner(&pending.key.reply.thread)
+        self.current_completion_owner(&pending.owner.thread)
             && !pending.sender.is_closed()
-            && response.thread == pending.key.reply.thread
+            && response.thread == pending.owner.thread
             && response.instance == self.instance
-            && response.instance == pending.key.reply.instance
-            && response.turn_id == pending.key.turn
+            && response.instance == pending.owner.instance
+            && response.turn_id == pending.owner.turn
             && response.generation == pending.generation.id.to_string()
             && response.native_step == pending.step
             && self.admits_generation(&pending.generation)
@@ -224,7 +231,7 @@ impl PythonTools {
             .expect("JavaScript completion replies poisoned")
             .get(&id)
             .is_some_and(|pending| {
-                self.current_completion_owner(&pending.key.reply.thread)
+                self.current_completion_owner(&pending.owner.thread)
                     && self.admits_generation(&pending.generation)
                     && !pending.sender.is_closed()
             })
@@ -249,11 +256,9 @@ impl PythonTools {
             );
             let valid = response.value.contains_key("final_output")
                 || response.value.get("error").is_some_and(Value::is_string)
-                || response
-                    .value
-                    .get("continue")
-                    .and_then(Value::as_str)
-                    .is_some_and(|text| !text.trim().is_empty())
+                || response.value.get("continue").is_some_and(|value| {
+                    value.is_null() || value.as_str().is_some_and(|text| !text.trim().is_empty())
+                })
                 || response.value.get("stop") == Some(&Value::Bool(true));
             ensure!(valid, "Invalid terminal conversion reply");
             ensure!(
@@ -270,7 +275,7 @@ impl PythonTools {
                 replies.insert(
                     id,
                     Pending {
-                        key: pending.key.clone(),
+                        owner: pending.owner.clone(),
                         generation: pending.generation.clone(),
                         step: pending.step.clone(),
                         sender,
@@ -283,8 +288,14 @@ impl PythonTools {
         };
         let value = if let Some(value) = response.value.get("final_output") {
             Ok(ReplyValue::Accept(value.clone()))
-        } else if let Some(feedback) = response.value.get("continue").and_then(Value::as_str) {
-            Ok(ReplyValue::Continue(feedback.to_owned()))
+        } else if response.value.contains_key("continue") {
+            Ok(ReplyValue::Continue(
+                response
+                    .value
+                    .get("continue")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            ))
         } else if response.value.contains_key("stop") {
             Err("Terminal completion stopped".into())
         } else {
@@ -352,7 +363,7 @@ impl PythonTools {
         let (sender, receive) = oneshot::channel();
         drop(receive);
         drop(std::mem::replace(&mut pending.sender, sender));
-        self.cancel_step_callback(&pending.key.turn, &callback);
+        self.cancel_step_callback(&pending.owner.turn, &callback);
         if !callback.entered.load(Ordering::Acquire) {
             replies.remove(&id);
         }
@@ -364,7 +375,7 @@ impl PythonTools {
             .lock()
             .expect("JavaScript completion replies poisoned")
             .iter()
-            .filter(|(_, pending)| turn.is_none_or(|turn| turn == pending.key.turn))
+            .filter(|(_, pending)| turn.is_none_or(|turn| turn == pending.owner.turn))
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
@@ -381,7 +392,7 @@ impl PythonTools {
             .lock()
             .expect("JavaScript completion replies poisoned")
             .iter()
-            .filter(|(_, pending)| turn.is_none_or(|turn| turn == pending.key.turn))
+            .filter(|(_, pending)| turn.is_none_or(|turn| turn == pending.owner.turn))
             .filter_map(|(id, pending)| pending.callback.clone().map(|callback| (*id, callback)))
             .collect();
         for (id, callback) in callbacks {
@@ -563,19 +574,57 @@ pub(super) async fn propose(
     if output_id.as_ref() != Some(call_id) {
         return Err("Mismatched terminal tool output".into());
     }
+    let entry = &generation.entries[slot];
+    let request = json!({
+        "type":"_sdk_tool_completion", "_sdk_python_tool":key.reply,
+        "slot":slot, "tool":{"name":entry.name.name,"namespace":entry.name.namespace},
+        "call_id":call_id, "output":output.body, "guard_only":guard_only
+    });
+    let decision = exchange(&input, tools, generation, guard_only, false, request).await?;
+    match decision {
+        ReplyValue::Accept(final_output) => {
+            if guard_only {
+                if !is_held() {
+                    return Err("Expired held terminal candidate".into());
+                }
+                Ok(None)
+            } else {
+                Ok(Some(ToolCompletionDecision::Accept { final_output }))
+            }
+        }
+        ReplyValue::Continue(feedback) => Ok(Some(ToolCompletionDecision::Continue { feedback })),
+    }
+}
+
+async fn exchange(
+    input: &ToolCompletionInput<'_>,
+    tools: Arc<PythonTools>,
+    generation: Arc<Generation>,
+    guard_only: bool,
+    batch: bool,
+    mut message: Value,
+) -> std::result::Result<ReplyValue, String> {
+    if !tools.current_completion_owner(input.thread_store.level_id())
+        || !tools.admits_generation(&generation)
+    {
+        return Err("Expired terminal completion generation".into());
+    }
+    let owner = CompletionOwner {
+        thread: input.thread_store.level_id().to_owned(),
+        instance: tools.instance.clone(),
+        turn: input.turn_id.to_owned(),
+    };
     let id = tools.family.next_step.fetch_add(1, Ordering::Relaxed);
     let (sender, receive) = oneshot::channel();
-    // These are data sent for host conversion. Only the owned nonce can reply.
-    let entry = &generation.entries[slot];
-    let mut request = json!({"id":input.turn_id,"msg":{
-        "type":"_sdk_tool_completion", "thread":input.thread_store.level_id(),
-        "_sdk_python_tool":key.reply,
-        "instance":tools.instance, "turn_id":input.turn_id,
-        "generation":generation.id.to_string(), "request_id":id.to_string(),
-        "native_step":input.step_store.level_id(), "slot":slot,
-        "tool":{"name":entry.name.name,"namespace":entry.name.namespace},
-        "call_id":call_id, "output":output.body, "model":input.model, "continuation_count":input.continuation_count, "guard_only":guard_only
-    }});
+    message["thread"] = json!(owner.thread);
+    message["instance"] = json!(owner.instance);
+    message["turn_id"] = json!(owner.turn);
+    message["generation"] = json!(generation.id.to_string());
+    message["request_id"] = json!(id.to_string());
+    message["native_step"] = json!(input.step_store.level_id());
+    message["model"] = json!(input.model);
+    message["continuation_count"] = json!(input.continuation_count);
+    let mut request = json!({"id":input.turn_id,"msg":message});
     if let Some(profile) = tools
         .source_profile(Some(input.step_store))
         .map_err(|error| error.to_string())?
@@ -594,7 +643,7 @@ pub(super) async fn propose(
             .lock()
             .expect("terminal proposal poisoned") = Some(TerminalProposal {
             generation: generation.clone(),
-            key: key.clone(),
+            owner: owner.clone(),
             step: input.step_store.level_id().to_owned(),
             request_id: id,
             failed: false,
@@ -612,7 +661,7 @@ pub(super) async fn propose(
         .insert(
             id,
             Pending {
-                key,
+                owner,
                 generation: generation.clone(),
                 step: input.step_store.level_id().to_owned(),
                 sender,
@@ -624,11 +673,12 @@ pub(super) async fn propose(
         tools: tools.clone(),
         id,
     };
-    let callback_enabled = tools.context_callbacks.before_complete
-        && tools
-            .source_catalog(Some(input.step_store))
-            .map_err(|error| error.to_string())?
-            .is_none_or(|source| source.before_complete);
+    let callback_enabled = batch
+        || (tools.context_callbacks.before_complete
+            && tools
+                .source_catalog(Some(input.step_store))
+                .map_err(|error| error.to_string())?
+                .is_none_or(|source| source.before_complete));
     let stop = tools.context_stop(input.turn_id).ok();
     if callback_enabled && stop.is_none() {
         return Err("Expired terminal completion owner".into());
@@ -690,35 +740,134 @@ pub(super) async fn propose(
     {
         return Err("Expired terminal tool generation".into());
     }
-    match decision {
-        ReplyValue::Accept(final_output) => {
-            if guard_only {
-                if !is_held() {
-                    return Err("Expired held terminal candidate".into());
-                }
-                Ok(None)
-            } else {
-                Ok(Some(ToolCompletionDecision::Accept { final_output }))
+    if matches!(decision, ReplyValue::Continue(_)) {
+        if let Some(turn) = input.turn_store.get::<crate::turn_settlement::Turn>() {
+            let mut proposal = turn
+                .tool_proposal
+                .lock()
+                .expect("terminal proposal poisoned");
+            if proposal
+                .as_ref()
+                .is_some_and(|proposal| proposal.request_id == id)
+            {
+                proposal.take();
             }
-        }
-        ReplyValue::Continue(feedback) => {
-            if let Some(turn) = input.turn_store.get::<crate::turn_settlement::Turn>() {
-                let mut proposal = turn
-                    .tool_proposal
-                    .lock()
-                    .expect("terminal proposal poisoned");
-                if proposal
-                    .as_ref()
-                    .is_some_and(|proposal| proposal.request_id == id)
-                {
-                    proposal.take();
-                }
-            }
-            Ok(Some(ToolCompletionDecision::Continue {
-                feedback: Some(feedback),
-            }))
         }
     }
+    Ok(decision)
+}
+
+pub(super) fn batch_enabled(thread: &ExtensionData, step: &ExtensionData) -> bool {
+    if let Some(catalog) = step.get::<ProfileCatalog>() {
+        return catalog.tool_batch_completion;
+    }
+    thread
+        .get::<PythonTools>()
+        .is_some_and(|tools| tools.context_callbacks.tool_batch_completion)
+}
+
+pub(super) async fn propose_batch(
+    input: codex_extension_api::ToolBatchCompletionInput<'_>,
+) -> std::result::Result<Option<ToolCompletionDecision>, String> {
+    let Some(tools) = input.thread_store.get::<PythonTools>() else {
+        return Ok(None);
+    };
+    let Some(catalog) = input.step_store.get::<StepCatalog>() else {
+        return Ok(None);
+    };
+    if input.recovered {
+        let Some(fresh) = input
+            .turn_store
+            .get::<super::recovered_completion::FreshTerminalReceipts>()
+        else {
+            return Ok(None);
+        };
+        fresh
+            .adopt(&tools, &catalog)
+            .map_err(|error| error.to_string())?;
+        let receipts = catalog
+            .receipts
+            .lock()
+            .expect("JavaScript completion receipts poisoned");
+        let all_fresh = input.results.iter().all(|result| {
+            let ResponseItem::FunctionCall {
+                call_id,
+                name,
+                namespace,
+                ..
+            } = result.call
+            else {
+                return false;
+            };
+            let name = ToolName::new(namespace.clone(), name.clone()).with_default_namespace();
+            receipts.iter().any(|key| {
+                key.reply.manual_grant.is_some()
+                    && key.reply.thread == input.thread_store.level_id()
+                    && key.reply.instance == tools.instance
+                    && key.reply.generation == catalog.generation.id
+                    && key.turn == input.turn_id
+                    && key.call == *call_id
+                    && catalog
+                        .generation
+                        .entries
+                        .get(key.reply.slot)
+                        .is_some_and(|entry| entry.name.clone().with_default_namespace() == name)
+            })
+        });
+        if !all_fresh {
+            return Ok(None);
+        }
+    }
+    let first = input.results.first().ok_or("Empty settled tool batch")?;
+    let mut results = Vec::with_capacity(input.results.len());
+    for result in input.results {
+        let (
+            ResponseItem::FunctionCall {
+                call_id,
+                name,
+                namespace,
+                arguments,
+                ..
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: Some(output_id),
+                output,
+                ..
+            },
+        ) = (result.call, result.output)
+        else {
+            return Err("Invalid settled tool batch".into());
+        };
+        if call_id != output_id {
+            return Err("Mismatched settled tool batch output".into());
+        }
+        results.push(json!({"call_id":call_id,"name":name,"namespace":namespace,
+            "arguments":arguments,"output":output.body,"succeeded":result.succeeded}));
+    }
+    let direct = ToolCompletionInput {
+        guard_only: false,
+        continuation_count: input.continuation_count,
+        turn_id: input.turn_id,
+        model: input.model,
+        call: first.call,
+        output: first.output,
+        thread_store: input.thread_store,
+        turn_store: input.turn_store,
+        step_store: input.step_store,
+    };
+    let decision = exchange(
+        &direct,
+        tools,
+        catalog.generation.clone(),
+        false,
+        true,
+        json!({"type":"_sdk_tool_batch_completion","results":results}),
+    )
+    .await?;
+    Ok(Some(match decision {
+        ReplyValue::Accept(final_output) => ToolCompletionDecision::Accept { final_output },
+        ReplyValue::Continue(feedback) => ToolCompletionDecision::Continue { feedback },
+    }))
 }
 
 #[cfg(test)]
@@ -737,16 +886,10 @@ mod tests {
         tools.completion_replies.lock().unwrap().insert(
             17,
             Pending {
-                key: PendingKey {
-                    reply: ReplyKey {
-                        thread: "root".into(),
-                        instance: None,
-                        generation: 0,
-                        slot: 0,
-                        manual_grant: None,
-                    },
+                owner: CompletionOwner {
+                    thread: "root".into(),
+                    instance: None,
                     turn: "turn".into(),
-                    call: "call".into(),
                 },
                 generation: tools.snapshot(),
                 step: "step".into(),
@@ -768,7 +911,7 @@ mod tests {
                 &[0],
                 &[],
                 None,
-                [false; 5],
+                [false; 6],
                 false,
             )
             .unwrap();
@@ -780,7 +923,6 @@ mod tests {
             let mut pending = tools.completion_replies.lock().unwrap();
             let captured = pending.get_mut(&17).unwrap();
             captured.generation = source.generation.clone();
-            captured.key.reply.generation = source.generation.id;
         }
         assert!(tools.completion_queued(17));
         assert!(tools.check_tool_completion(&reply(value.clone())).unwrap());
@@ -839,7 +981,7 @@ mod tests {
                     &[0],
                     &[],
                     None,
-                    [false; 5],
+                    [false; 6],
                     false,
                 )
                 .unwrap();
@@ -940,7 +1082,7 @@ mod tests {
                     &[0],
                     &[],
                     None,
-                    [false; 5],
+                    [false; 6],
                     false,
                 )
                 .unwrap()
@@ -950,16 +1092,10 @@ mod tests {
         };
         *turn.tool_proposal.lock().unwrap() = Some(TerminalProposal {
             generation: generation.clone(),
-            key: PendingKey {
-                reply: ReplyKey {
-                    thread: "root".into(),
-                    instance: None,
-                    generation: generation.id,
-                    slot: 0,
-                    manual_grant: None,
-                },
+            owner: CompletionOwner {
+                thread: "root".into(),
+                instance: None,
                 turn: "turn".into(),
-                call: "call".into(),
             },
             step: "step".into(),
             request_id: 17,

@@ -90,6 +90,7 @@ export const toolCompletionSchema = z.object({
   name: z.string(),
   namespace: z.string().nullable().optional(),
   final_output: z.unknown(),
+  batch_call_ids: z.array(z.string()).nonempty().optional(),
 });
 
 /** @internal Use only after the exact runtime and terminal proposal match. */

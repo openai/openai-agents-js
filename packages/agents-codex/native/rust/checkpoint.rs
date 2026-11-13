@@ -20,6 +20,7 @@ use codex_thread_store::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::tool_callers::ToolDeclarations;
 use crate::{
     NativeThread,
     engine::{EngineState, ThreadState},
@@ -38,8 +39,8 @@ pub(crate) struct ForkMetadata {
 pub(crate) fn restore_specs(
     payload: &Value,
     options: &mut options::ThreadOptions,
-    specs: Option<Vec<DynamicToolSpec>>,
-) -> anyhow::Result<Option<Vec<DynamicToolSpec>>> {
+    specs: Option<ToolDeclarations>,
+) -> anyhow::Result<Option<ToolDeclarations>> {
     let Some(opening) = &options.agent_profiles else {
         return Ok(specs);
     };
@@ -575,7 +576,7 @@ async fn export_inner(
     let managed_tool_specs = if let Some(tools) = &tools {
         Some(
             match crate::agent_profiles::active_specs(&state.thread).await? {
-                Some(specs) => specs,
+                Some(specs) => crate::python_tools::checkpoint_specs(&specs)?,
                 None => tools.current_specs()?,
             },
         )
@@ -1472,7 +1473,7 @@ pub async fn restore(
     engine: &Arc<EngineState>,
     mut checkpoint: Checkpoint,
     options: options::ThreadOptions,
-    python_specs: Option<Vec<DynamicToolSpec>>,
+    python_specs: Option<ToolDeclarations>,
     fresh_manual: bool,
     source: Option<&crate::context::Change>,
 ) -> anyhow::Result<NativeThread> {
@@ -1643,7 +1644,8 @@ pub async fn restore(
             startup.config.service_tier = settings.service_tier.clone();
             startup.config.sdk_tool_choice = settings.tool_choice;
             let mut controls = settings.request_controls.clone();
-            controls.request_transport = startup.config.sdk_request_controls.request_transport.take();
+            controls.request_transport =
+                startup.config.sdk_request_controls.request_transport.take();
             startup.config.sdk_request_controls = controls;
         }
     }

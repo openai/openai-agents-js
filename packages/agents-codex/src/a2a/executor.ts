@@ -11,11 +11,11 @@ import {
   type TaskStore,
 } from '@a2a-js/sdk/server';
 import { type Agent, type Session } from '../runtime/public-agent';
-import { Session as CoreSession } from '../runtime/session';
 import type { Environment } from '../runtime/environment';
 import type { EnvironmentSource } from '../runtime/environment-source';
 import {
   manualResultSchema,
+  manualToolForSession,
   prepareManualResult,
   type ManualTool,
 } from '../runtime/manual';
@@ -323,9 +323,7 @@ export class NativeA2AExecutor<
                 pending[0].callId !== oldCall
               )
                 throw new A2AError('authorization');
-              manual = (session as CoreSession<Output, Context>)._manualTool(
-                pending[0],
-              );
+              manual = manualToolForSession(session, pending[0]);
               if (
                 !manual ||
                 declaration(manual) !== record!.pending!.declaration
@@ -353,9 +351,7 @@ export class NativeA2AExecutor<
             )
               throw new A2AError('unsupported');
             const request = outcome.requests[0];
-            const tool = (session as CoreSession<Output, Context>)._manualTool(
-              request,
-            );
+            const tool = manualToolForSession(session, request);
             if (!tool) throw new A2AError('unsupported');
             const saved = await session.suspend();
             await current();
