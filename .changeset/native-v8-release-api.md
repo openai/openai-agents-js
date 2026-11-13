@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-fix: Recover pinned V8 build downloads through the official release API after repeated gateway timeouts.
+fix: Native builds have been recovering verified V8 downloads through the release API and overlapping isolated Windows addon and helper compilation on request.
