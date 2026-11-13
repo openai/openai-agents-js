@@ -2925,7 +2925,6 @@ export class Session<OutputT = string, Context = unknown> {
   >();
   private readonly observedChildTurns = new WeakSet<ChildCallbackOwner>();
   private forkCopy: NativeThread | undefined;
-  private readonly childContinuations = new Set<Promise<void>>();
   private readonly manualCalls = new Map<string, ManualCallRecord>();
   private readonly manualAdmissions = new Map<
     string,
@@ -3526,8 +3525,7 @@ export class Session<OutputT = string, Context = unknown> {
       matches,
     );
     if (!pending) return;
-    this.childContinuations.add(pending);
-    void pending.finally(() => this.childContinuations.delete(pending));
+    this.childCallbacks.trackSettlement(pending);
   }
 
   /**
@@ -7542,12 +7540,9 @@ export class Session<OutputT = string, Context = unknown> {
         const next = await current._continue();
         if (next) this.publicChildTurn(next, producer);
       })();
-      this.childContinuations.add(continuation);
-      void continuation
-        .catch((error) => {
-          if (this.isOpen) this.readerFailed(error);
-        })
-        .finally(() => this.childContinuations.delete(continuation));
+      this.childCallbacks.trackSettlement(continuation, (error) => {
+        if (this.isOpen) this.readerFailed(error);
+      });
       return;
     }
     if (
@@ -8490,8 +8485,7 @@ export class Session<OutputT = string, Context = unknown> {
             owner.observationPhase = 'ended';
             this.observations.notify();
           });
-        this.childContinuations.add(settled);
-        void settled.finally(() => this.childContinuations.delete(settled));
+        this.childCallbacks.trackSettlement(settled);
       }
     }
     return true;
@@ -14628,7 +14622,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before a stored fork');
     this.requireCompleteRepairReceipts();
-    if (this.graphStops.size || this.childContinuations.size)
+    if (this.graphStops.size || this.childCallbacks.hasPendingSettlements())
       throw new NativeError('Stored fork requires a settled Session');
     const request: Record<string, string> = {};
     for (const [name, value] of [
@@ -15241,7 +15235,10 @@ export class Session<OutputT = string, Context = unknown> {
         throw new TypeError(
           'Supplied compaction does not support a goal store',
         );
-      if (this.childCallbacks.entered().length || this.childContinuations.size)
+      if (
+        this.childCallbacks.entered().length ||
+        this.childCallbacks.hasPendingSettlements()
+      )
         throw new NativeError(
           'Supplied compaction requires settled child callbacks',
         );
@@ -15569,7 +15566,7 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('fork');
     if (this.options.providerHistory !== undefined)
       throw new NativeError('Fork is unavailable for provider-managed history');
-    if (this.graphStops.size || this.childContinuations.size)
+    if (this.graphStops.size || this.childCallbacks.hasPendingSettlements())
       throw new NativeError('fork requires a settled Session');
     return this.mutate(async () => {
       // Native ownership retains the copy even if delivery of this handle fails.
@@ -17695,7 +17692,7 @@ export class Session<OutputT = string, Context = unknown> {
       // Native close escalates any graceful stop. Join its callback/native
       // owners before releasing the engine, without waiting before closeNative.
       await joinGraphStops();
-      await Promise.allSettled([...this.childContinuations]);
+      await this.childCallbacks.drainSettlements();
       if (phase === 'engine') {
         if (!privateRuntime(this)) {
           acknowledgmentFailure = await engineCloseFailure(
