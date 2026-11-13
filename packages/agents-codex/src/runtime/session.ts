@@ -3256,6 +3256,7 @@ export class Session<OutputT = string, Context = unknown> {
           providerHistorySettings(
             this.options.providerHistory,
             this.options.initialModelSettings,
+            this.options.websocketsAllowed === true,
           ),
           this.options.hostedPromptControls,
         );
@@ -3464,6 +3465,7 @@ export class Session<OutputT = string, Context = unknown> {
     const historySettings = providerHistorySettings(
       this.options.providerHistory,
       settings,
+      this.options.websocketsAllowed === true,
     );
     if (this.options.providerHistory !== undefined) {
       if (
@@ -9329,6 +9331,14 @@ export class Session<OutputT = string, Context = unknown> {
               check();
               if (advice !== undefined)
                 context = withModelRetryAdvice(context, advice);
+              // A borrowed stream owns its exact mode. Core omits the
+              // original failure identity when its attempt deadline expires.
+              const unsafeStream =
+                context.transport === 'model_producer' &&
+                context.stream &&
+                context.providerAdvice?.replaySafety === 'unsafe';
+              const ownedDeadline =
+                originalId == null && context.normalizedError.isTimeout;
               const policy = failed
                 ? failed.policy
                 : this.capturedRetryPolicy(
@@ -9340,7 +9350,9 @@ export class Session<OutputT = string, Context = unknown> {
                   'Retry policy has no captured authorized declaration',
                 );
               const decision = captured.policyEnabled
-                ? retryDecisionToNative(await policy!(context))
+                ? unsafeStream && !ownedDeadline
+                  ? { retry: false }
+                  : retryDecisionToNative(await policy!(context))
                 : null;
               check();
               reply({
@@ -13576,7 +13588,8 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       capturedSettings?.store !== undefined &&
       this.options.providerHistory?.type === 'previous_response' &&
-      capturedSettings.store !== true
+      capturedSettings.store !== true &&
+      this.options.websocketsAllowed !== true
     )
       throw new TypeError(
         'Previous-response HTTP continuation requires store=true',

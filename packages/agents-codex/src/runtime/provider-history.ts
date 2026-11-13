@@ -28,9 +28,14 @@ export function captureProviderHistory(
 export function providerHistorySettings(
   history: ProviderHistory | undefined,
   settings: ModelSettings | undefined,
+  websocketsAllowed = false,
 ): ModelSettings | undefined {
   if (history === undefined) return settings;
-  if (history.type === 'previous_response' && settings?.store !== true)
+  if (
+    history.type === 'previous_response' &&
+    settings?.store !== true &&
+    !websocketsAllowed
+  )
     throw new TypeError(
       'Previous-response HTTP continuation requires store=true',
     );

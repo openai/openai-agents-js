@@ -1079,7 +1079,11 @@
     {
       "path": "sdk-model-provider-metadata.patch",
       "sha256": "303ee193d99370161f6ba3505a1bc8d23c390e9e14f6cf1715eb99da7565158a"
+    },
+    {
+      "path": "sdk-websocket-provider-history.patch",
+      "sha256": "60ef6cb324a92a08403ff47c6f522988e9c0bb14b513739787589ad9f8724e79"
     }
   ],
-  "result_tree": "e28179f42a246987879a079d9c314e3d9c29330a"
+  "result_tree": "b2d2ead2c30133afebfecbc0a063d317a94e7065"
 }
