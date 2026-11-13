@@ -7,6 +7,7 @@ import {
   fileSearch,
   codeInterpreter,
   hostedShell,
+  hostedTool,
   imageGeneration,
   toolSearch,
   tool,
@@ -477,11 +478,19 @@ it.each([
       apiKey: 'synthetic-callers',
       supportsWebsockets: false,
     });
+    const programmaticOnly =
+      options.allowedCallers?.includes('programmatic') &&
+      !options.allowedCallers.includes('direct');
     await using session = await new Agent({
       provider,
       model: 'gpt-5.5',
       instructions: 'Use the configured provider tools.',
-      tools: [codeInterpreter(options)],
+      tools: [
+        codeInterpreter(options),
+        ...(programmaticOnly
+          ? [hostedTool({ type: 'programmatic_tool_calling' })]
+          : []),
+      ],
     }).session();
     expect(
       (await (await session.submit('Confirm the configuration.')).wait())
@@ -489,6 +498,10 @@ it.each([
     ).toBe('Code Interpreter is configured.');
     expect(model.requests).toHaveLength(1);
     expect(model.requests[0].tools).toContainEqual(expected);
+    if (programmaticOnly)
+      expect(model.requests[0].tools).toContainEqual({
+        type: 'programmatic_tool_calling',
+      });
     expect(model.requests[0].include).toContain(
       'code_interpreter_call.outputs',
     );
