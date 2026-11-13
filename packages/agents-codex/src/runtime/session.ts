@@ -555,6 +555,16 @@ export interface ManualCheckpointEntry {
   readonly arguments: JsonValue;
 }
 
+interface ManualCallRecord {
+  run: NativeTurn | ChildCallbackOwner;
+  event: NativeEvent;
+  tool: ManualTool;
+  grant: ReturnType<typeof createManualRequest>;
+  tracing?: ReturnType<typeof captureTraceValidation>;
+  ready: boolean;
+  identity: ToolIdentity;
+}
+
 /** Options used by an owned Agent.run Session to drive manual replies. */
 export type OneShotOptions = {
   returnItems?: boolean;
@@ -2915,18 +2925,7 @@ export class Session<OutputT = string, Context = unknown> {
   private readonly observedChildTurns = new WeakSet<ChildCallbackOwner>();
   private forkCopy: NativeThread | undefined;
   private readonly childContinuations = new Set<Promise<void>>();
-  private readonly manualCalls = new Map<
-    string,
-    {
-      run: NativeTurn | ChildCallbackOwner;
-      event: NativeEvent;
-      tool: ManualTool;
-      grant: ReturnType<typeof createManualRequest>;
-      tracing?: ReturnType<typeof captureTraceValidation>;
-      ready: boolean;
-      identity: ToolIdentity;
-    }
-  >();
+  private readonly manualCalls = new Map<string, ManualCallRecord>();
   private readonly manualAdmissions = new Map<
     string,
     { promise: Promise<void>; publishOnAdmission: boolean }
@@ -3598,18 +3597,7 @@ export class Session<OutputT = string, Context = unknown> {
       if (!this.canReturnRequests(owner)) continue;
       for (const event of this.pendingManual(owner)) {
         const admission = this.admitManualCall(owner, event, true);
-        const key = this.manualCallKey(event);
-        const call = key === undefined ? undefined : this.manualCalls.get(key);
-        // Admission can register the grant before its approval policy finishes.
-        if (
-          !call ||
-          call.run !== owner ||
-          (!call.ready && admission) ||
-          !this.manualCurrent(event)
-        )
-          continue;
-        this.publishManualRequest(owner, event);
-        const request = call.grant.request();
+        const request = this.currentManualRequest(owner, event, admission);
         if (request) requests.push(request);
       }
     }
@@ -5779,20 +5767,12 @@ export class Session<OutputT = string, Context = unknown> {
             for (const [key, call] of this.manualCalls) {
               if (call.run !== current) continue;
               if (keys.has(key) && this.manualCurrent(call.event)) continue;
-              call.grant.deactivate();
-              call.tracing = undefined;
-              this.manualCalls.delete(key);
+              this.retireManualCall(key, call);
               removed = true;
             }
             if (removed) this.notifyManualProgress();
             const requests: Interaction[] = events.flatMap((event) => {
-              const key = this.manualCallKey(event);
-              const call =
-                key === undefined ? undefined : this.manualCalls.get(key);
-              if (!call || call.run !== current || !this.manualCurrent(event))
-                return [];
-              this.publishManualRequest(current, event);
-              const request = call.grant.request();
+              const request = this.currentManualRequest(current, event);
               return request ? [request] : [];
             });
             if (until === 'interaction') {
@@ -10811,13 +10791,17 @@ export class Session<OutputT = string, Context = unknown> {
     else this.observations.append({ ...event, type });
   }
 
+  private retireManualCall(key: string, call: ManualCallRecord): void {
+    call.grant.deactivate();
+    call.tracing = undefined;
+    this.manualCalls.delete(key);
+  }
+
   private clearManualCalls(run?: NativeTurn | ChildCallbackOwner): void {
     let removed = false;
     for (const [key, call] of this.manualCalls) {
       if (run ? call.run !== run : this.current(call.run)) continue;
-      call.grant.deactivate();
-      call.tracing = undefined;
-      this.manualCalls.delete(key);
+      this.retireManualCall(key, call);
       removed = true;
     }
     if (removed) this.notifyManualProgress();
@@ -11249,6 +11233,25 @@ export class Session<OutputT = string, Context = unknown> {
       .finally(() => this.observations.notify())
       .catch((error) => this.readerFailed(error));
     return reservation.promise;
+  }
+
+  private currentManualRequest(
+    owner: NativeTurn | ChildCallbackOwner,
+    event: NativeEvent,
+    pendingAdmission?: Promise<void>,
+  ): ManualToolRequest | undefined {
+    const key = this.manualCallKey(event);
+    const call = key === undefined ? undefined : this.manualCalls.get(key);
+    // Admission can register the grant before its approval policy finishes.
+    if (
+      !call ||
+      call.run !== owner ||
+      (!call.ready && pendingAdmission) ||
+      !this.manualCurrent(event)
+    )
+      return;
+    this.publishManualRequest(owner, event);
+    return call.grant.request();
   }
 
   private publishManualRequest(
