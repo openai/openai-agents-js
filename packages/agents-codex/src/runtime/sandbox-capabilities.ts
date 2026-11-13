@@ -17,7 +17,9 @@ export interface SandboxCapability {
   /** Fresh root function declarations, captured after binding. */
   tools?():
     readonly FunctionTool<any>[] | Promise<readonly FunctionTool<any>[]>;
-  /** Typed overrides over detached current settings, in declaration order. */
+  /** Typed opening defaults over detached settings, in declaration order.
+   * Restored native run settings have been retaining precedence.
+   */
   samplingSettings?(
     settings: ModelSettings,
   ): ModelSettings | Promise<ModelSettings>;

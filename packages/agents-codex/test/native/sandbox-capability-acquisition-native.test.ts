@@ -2,7 +2,7 @@ import type { JsonObject } from '../../src/runtime/binding';
 import { z } from 'zod';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { readFile, writeFile, mkdtemp, rm, stat } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -17,8 +17,10 @@ import {
   Environment,
   NativeProvider,
   tool,
+  manualTool,
   type ModelSettings,
   type ModelRequestContext,
+  type SandboxAccess,
 } from '../../src';
 import { ModelServer, message, call } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
@@ -636,19 +638,32 @@ it.each(['duplicate', 'deferred'] as const)(
   },
 );
 
-it.each(['graph', 'restore'] as const)(
+it.each(['graph', 'manual-restore'] as const)(
   'has been rejecting capability callback replay outside a fresh root: %s',
   async (kind) => {
     let state;
-    if (kind === 'restore') {
-      const seedModel = new ModelServer([[message('saved root')]]);
+    if (kind === 'manual-restore') {
+      const seedModel = new ModelServer([
+        [call('pending', {}, { callId: 'pending-capability-restore' })],
+      ]);
       await using seedProvider = await providerFor(seedModel);
       await using seed = await new Agent({
-        instructions: 'Save an idle root',
+        instructions: 'Request a manual decision',
         provider: seedProvider,
+        tools: [
+          manualTool({
+            name: 'pending',
+            description: 'Pending decision',
+            parameters: z.object({}),
+            result: z.string(),
+          }),
+        ],
       }).session();
-      await (await seed.submit('save')).wait();
-      state = await seed.saveState();
+      const turn = await seed.submit('pause');
+      const completion = turn.wait().catch((error) => error);
+      await turn.wait({ until: 'manual_tool' });
+      state = await seed.suspend();
+      await completion;
     }
     const factories = vi.fn(() => [
       tool({
@@ -843,3 +858,140 @@ it('has been joining a cancelled capability tool factory before retiring its res
   expect(execute).not.toHaveBeenCalled();
   expect(server.requests).toEqual([]);
 });
+
+it.each(['retained-resource', 'changed-policy'] as const)(
+  'has been restoring idle capability callbacks only under the recorded executor authority: %s',
+  async (kind) => {
+    const bindings: Bound[] = [];
+    let allocated = 0;
+    const executions: string[] = [];
+    let firstAccess: SandboxAccess | undefined;
+    class Rebound extends ProbeCapability {
+      serial = 0;
+      clone() {
+        return new Rebound(this.bindings);
+      }
+      bind(sandbox: SandboxSessionLike, user?: string) {
+        this.serial = ++allocated;
+        writeFileSync(
+          join(sandbox.state.workspaceRootPath as string, 'capability.txt'),
+          'resource-' + this.serial,
+        );
+        return super.bind(sandbox, user);
+      }
+      tools() {
+        return [
+          tool({
+            name: 'current_resource',
+            description: 'Read the current bound resource',
+            parameters: z.object({}),
+            execute: async (_args, context) => {
+              firstAccess ??= context.sandbox;
+              const value = (
+                await context.sandbox!.exec({ cmd: 'cat capability.txt' })
+              ).stdout;
+              executions.push(this.serial + ':' + value);
+              return value;
+            },
+          }),
+        ];
+      }
+      samplingSettings(settings: ModelSettings): ModelSettings {
+        return {
+          metadata: { ...settings.metadata, opening: String(this.serial) },
+        };
+      }
+      transformContext(context: ModelRequestContext) {
+        return [
+          ...context.items,
+          {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'opening-' + this.serial }],
+          },
+        ];
+      }
+    }
+    const server = new ModelServer([
+      [call('current_resource', {}, { callId: 'first-resource' })],
+      [message('first complete')],
+      ...(kind === 'retained-resource'
+        ? [
+            [call('current_resource', {}, { callId: 'second-resource' })],
+            [message('restored complete')],
+          ]
+        : []),
+    ]);
+    await using provider = await providerFor(server);
+    const client = new UnixLocalSandboxClient();
+    const borrowed =
+      kind === 'retained-resource'
+        ? await client.create({ manifest: new Manifest() })
+        : undefined;
+    const source = borrowed
+      ? sandboxEnvironment({
+          client,
+          session: borrowed,
+          manifest: new Manifest(),
+          capabilities: [new Rebound(bindings)],
+          connect: async (sandbox) =>
+            Environment.lease(
+              new Environment({
+                url: peer.url,
+                headers: peer.headers,
+                cwd: sandbox.state.workspaceRootPath as string,
+                tools: [],
+              }),
+              () => {},
+            ),
+        })
+      : sourceFor([new Rebound(bindings)]);
+    try {
+      const agent = new Agent({
+        instructions: 'Read the bound resource',
+        model: 'fixture-capability-restore',
+        provider,
+      });
+      const first = await agent.session({ environment: source });
+      let state;
+      try {
+        expect((await (await first.submit('first')).wait()).finalOutput).toBe(
+          'first complete',
+        );
+        state = await first.saveState();
+      } finally {
+        await first.close();
+      }
+      await expect(
+        firstAccess!.exec({ cmd: 'printf stale > capability.txt' }),
+      ).rejects.toThrow();
+      if (kind === 'changed-policy') {
+        await expect(
+          agent.session({ environment: source, state }),
+        ).rejects.toThrow(
+          'Restore requires the recorded executor write and network policy',
+        );
+        expect(executions).toEqual(['1:resource-1']);
+        expect(server.requests).toHaveLength(2);
+        server.assertExhausted();
+        return;
+      }
+      await using restored = await agent.session({
+        environment: source,
+        state,
+      });
+      expect((await (await restored.submit('second')).wait()).finalOutput).toBe(
+        'restored complete',
+      );
+      expect(executions).toEqual(['1:resource-1', '2:resource-2']);
+      expect(bindings[0].sandbox).toBe(bindings[1].sandbox);
+      expect(bindings[0].capability).not.toBe(bindings[1].capability);
+      expect(server.requests[2].metadata).toMatchObject({ opening: '1' });
+      expect(JSON.stringify(server.requests[2].input)).toContain('opening-2');
+      expect(JSON.stringify(server.requests[3].input)).toContain('resource-2');
+      server.assertExhausted();
+    } finally {
+      await borrowed?.close();
+    }
+  },
+);

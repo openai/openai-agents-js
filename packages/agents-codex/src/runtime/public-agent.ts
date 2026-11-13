@@ -1532,9 +1532,10 @@ export class Agent<Context = undefined, Output = string> {
     acquiredEnvironment(environmentOwner);
     const capabilityLease = environmentOwner.sandboxCapabilities;
     if (capabilityLease?.hasContributions) {
+      if (stateResult && !stateResult.success) throw stateResult.error;
       if (
         opening ||
-        suppliedState != null ||
+        isManualSessionState(stateResult?.data) ||
         options.resume !== undefined ||
         persistent ||
         profiles ||
@@ -1553,7 +1554,7 @@ export class Agent<Context = undefined, Output = string> {
         )
       )
         throw new TypeError(
-          'Sandbox capability contributions require a fresh root with eager direct function tools',
+          'Sandbox capability contributions require a fresh root or idle restore with eager direct function tools',
         );
       const contributed = await capabilityLease.contributions(
         settings,
