@@ -3049,12 +3049,13 @@ it
             (item) =>
               item.type === 'function_call_output' && item.callId === operation,
           );
-          expect(
-            command?.output,
-            response?.type === 'function_call_output'
-              ? JSON.stringify(response.output)
-              : undefined,
-          ).toMatch(new RegExp(`^${operation} exit [1-9]\\d*$`, 'm'));
+          // The shell can print a denial before its supervisor finishes cleanup.
+          expect
+            .soft(command, JSON.stringify({ operation, command, response }))
+            .toMatchObject({ status: 'completed', exitCode: 0 });
+          expect(command?.output).toMatch(
+            new RegExp(`^${operation} exit [1-9]\\d*$`, 'm'),
+          );
         };
         await tryDelegation('bootstrap');
         expect(launchctl('print', service).status).not.toBe(0);
