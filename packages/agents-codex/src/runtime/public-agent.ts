@@ -812,15 +812,19 @@ export class Agent<Context = undefined, Output = string> {
   ): Promise<
     { session: CoreSession<Output, Context> } | { plainRun: PreparedPlainRun }
   > {
+    const openingEnvironment = suppliedOptions?.environment;
+    const effectiveEnvironment =
+      openingEnvironment === undefined ? this.environment : openingEnvironment;
     const managedOpening =
       suppliedOptions?.state instanceof ManagedWorkspaceCheckpoint
         ? validateManagedWorkspaceOpening(
             suppliedOptions.state,
-            suppliedOptions.environment,
+            effectiveEnvironment,
           )
         : undefined;
     const options = {
       ...(suppliedOptions ?? {}),
+      environment: effectiveEnvironment,
       ...(managedOpening
         ? { state: managedOpening.state, [managedWorkspaceRestore]: true }
         : {}),

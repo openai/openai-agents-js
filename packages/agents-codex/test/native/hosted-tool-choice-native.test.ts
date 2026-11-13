@@ -9,6 +9,7 @@ import {
   hostedMcp,
   toolSearch,
   toolRef,
+  webSearch,
   parseSessionState,
   tool,
 } from '../../src';
@@ -473,4 +474,107 @@ it('does not dispatch a provider-program-owned call through a direct host functi
   expect(calls).toBe(1);
   expect(server.requests).toHaveLength(3);
   server.assertExhausted();
+});
+
+it.each(['web_search', 'web_search_preview'] as const)(
+  'preserves the hosted search catalog and forces the exact %s selector',
+  async (type) => {
+    const server = new ModelServer([[message('done')]]);
+    await using provider = await providerFor(server);
+    let effects = 0;
+    const agent = new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Use the offered hosted search.',
+      tools: [
+        webSearch({ route: 'hosted' }),
+        tool({
+          name: 'web_search_preview',
+          parameters: z.object({}),
+          execute: () => {
+            effects++;
+            return 'unselected';
+          },
+        }),
+      ],
+      modelSettings: { toolChoice: { type } },
+    });
+    await agent.run('Search.');
+    expect(server.requests[0]?.tool_choice).toEqual({ type });
+    expect(server.requests[0]?.tools).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'web_search' })]),
+    );
+    expect(effects).toBe(0);
+  },
+);
+
+it('preserves both offered MCP servers for category and restored named selection', async () => {
+  const server = new ModelServer(
+    Array.from({ length: 4 }, () => [message('done')]),
+  );
+  await using provider = await providerFor(server);
+  const category = { type: 'mcp' } as const;
+  const selected = {
+    type: 'mcp',
+    serverLabel: 'alpha',
+    name: 'lookup',
+  } as const;
+  const agent = new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Use the offered server.',
+    tools: [
+      hostedMcp({
+        serverLabel: 'alpha',
+        serverUrl: 'https://alpha.invalid/mcp',
+        requireApproval: 'never',
+      }),
+      hostedMcp({
+        serverLabel: 'beta',
+        serverUrl: 'https://beta.invalid/mcp',
+        requireApproval: 'never',
+      }),
+    ],
+    modelSettings: { toolChoice: category },
+  });
+  const saved = await (async () => {
+    await using session = await agent.session();
+    await (await session.submit('Choose an offered server.')).wait();
+    await session.update({ modelSettings: { toolChoice: selected } });
+    await (await session.submit('Choose alpha.lookup.')).wait();
+    const state = parseSessionState(JSON.stringify(await session.saveState()));
+    await session.update({ modelSettings: { toolChoice: category } });
+    await (await session.submit('Choose any server again.')).wait();
+    return state;
+  })();
+  await using restored = await agent.session({ state: saved });
+  await (await restored.submit('Retain the saved selection.')).wait();
+  const wire = { type: 'mcp', server_label: 'alpha', name: 'lookup' };
+  expect(server.requests.map((request) => request.tool_choice)).toEqual([
+    category,
+    wire,
+    category,
+    wire,
+  ]);
+  for (const request of server.requests) {
+    expect(request.tools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'mcp', server_label: 'alpha' }),
+        expect.objectContaining({ type: 'mcp', server_label: 'beta' }),
+      ]),
+    );
+  }
+});
+
+it('refuses an MCP name without a server before opening resources', () => {
+  expect(
+    () =>
+      new Agent({
+        instructions: 'Inspect.',
+        modelSettings: {
+          // @ts-expect-error A bare MCP selector cannot supply a name.
+          toolChoice: { type: 'mcp', name: 'lookup' },
+        },
+      }),
+  ).toThrow(/hosted MCP choice/i);
 });

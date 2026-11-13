@@ -1335,7 +1335,15 @@
     {
       "path": "sdk-scoped-local-and-durable-agent-executors.patch",
       "sha256": "6f477e87c5eb956aa708a318d552c477ad94e8a9fac95893640cee66096e943e"
+    },
+    {
+      "path": "sdk-provider-hosted-selector-completion.patch",
+      "sha256": "603c562185ff239ac4b89d9b37a739e9eb4530af868b97a309f796a52dc8f4dc"
+    },
+    {
+      "path": "sdk-destination-output-strictness.patch",
+      "sha256": "92a7c2e0ed5e7dd2ae78424698cd6e99e45fdcbe690ee79cda0f99d9210c5ec7"
     }
   ],
-  "result_tree": "e5fe5b0df037569f01d729bdd51fe7b12067c866"
+  "result_tree": "6bf0382016a32a94efa106cbb0d6b44e3f56522c"
 }

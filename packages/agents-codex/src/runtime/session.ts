@@ -2341,6 +2341,16 @@ export class Session<OutputT = string, Context = unknown> {
       this.options.realtimeDeclaration ?? this.options.applicationAgent;
     if (!opening)
       throw new NativeError('Session has no captured opening Agent');
+    const source =
+      expected === null
+        ? undefined
+        : checkProfileReceipt(expected, this.callbackProfileGraph(expected)!);
+    const environmentOwner = source
+      ? this.callbackEnvironmentOwner({
+          profile_id: source.profile_id,
+          profile_epoch: source.epoch,
+        })
+      : this.options.environmentOwner;
     const { captureRealtimeAgentGraph } = await import('./public-agent');
     const graph = captureRealtimeAgentGraph(
       opening,
@@ -2364,16 +2374,14 @@ export class Session<OutputT = string, Context = unknown> {
     const raw = parseProfileReceipt(
       await this.#native._admit_realtime_agent_graph(
         generation,
-        JSON.stringify(profileRoster(graph, this.options.environment)),
+        JSON.stringify(
+          profileRoster(
+            graph,
+            environmentOwner?.environment ?? this.options.environment,
+          ),
+        ),
         graph.rootId,
-        expected === null
-          ? 'null'
-          : encodeProfileReceipt(
-              checkProfileReceipt(
-                expected,
-                this.callbackProfileGraph(expected)!,
-              ),
-            ),
+        source === undefined ? 'null' : encodeProfileReceipt(source),
       ),
     );
     const allocated = allocatedProfileCatalogs(
@@ -2381,7 +2389,20 @@ export class Session<OutputT = string, Context = unknown> {
       raw,
       this.profileHighWater,
     );
-    const captured = { ...graph, profiles: allocated.profiles };
+    const captured: CapturedAgentGraph = {
+      ...graph,
+      profiles: allocated.profiles,
+      ...(environmentOwner
+        ? {
+            environments: new Map(
+              [...allocated.profiles.keys()].map((id) => [
+                id,
+                environmentOwner,
+              ]),
+            ),
+          }
+        : {}),
+    };
     this.profileHighWater = allocated.highWater;
     for (const [id, profile] of allocated.profiles) {
       this.voiceProfileGraphs.set(id, captured);

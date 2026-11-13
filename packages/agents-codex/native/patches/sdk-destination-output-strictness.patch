@@ -1,0 +1,28 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index be2d25f33f91e900a4dd42a3c0005e7b69d5f612..7081bcec122280eca87eac3656124eff0e697da3 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2294,6 +2294,23 @@ async fn run_sampling_request(
+                     .output_schema_strict
+                     .unwrap_or(prompt.output_schema_strict);
+             }
++            // The SDK profile owns both its schema and strictness. Source-turn
++            // defaults must not override the newly selected destination contract.
++            if let Some(profile) = step_context.settings.agent_profile.as_ref()
++                && output_control.as_deref().is_some_and(|control| {
++                    control.thread_id == sess.thread_id.to_string()
++                        && !control.preserve_turn_output
++                })
++            {
++                let strict = profile
++                    .profile
++                    .model
++                    .request_controls
++                    .output_schema_strict
++                    .unwrap_or(true);
++                prompt.output_schema_strict = strict;
++                prompt.request_controls.output_schema_strict = Some(strict);
++            }
+             if prompt.tool_choice == codex_protocol::config_types::ToolChoice::Required
+                 && tool_choice_reset_applies(&step_context.settings, &turn_context.extension_data)
+             {

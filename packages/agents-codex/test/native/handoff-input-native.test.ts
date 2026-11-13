@@ -144,7 +144,9 @@ it('prepares settled sibling presentation and restores it while canonical effect
     .filter(Boolean);
   expect(admitted).toHaveLength(1);
   expect(JSON.stringify(admitted[0])).toContain('settled sibling summary');
-  state = withoutPendingInput(withPendingInput(state, 'temporary pending input'));
+  state = withoutPendingInput(
+    withPendingInput(state, 'temporary pending input'),
+  );
   await using restored = await source.session({ context: application, state });
   const pending = await restored.pendingInteractions();
   const request = confirm.match(pending[0]);
@@ -221,7 +223,11 @@ it.each(['prepared', 'old-filter', 'old-plain'])(
     }
     expect(removed).toBeGreaterThan(0);
     const declaration = makeSource(prepareEnabled);
-    await using restored = await declaration.session({ state: stripped });
+    const serialized = JSON.stringify(stripped);
+    const checkpoint = parseSessionState(serialized, {
+      expectedSha256: createHash('sha256').update(serialized).digest('hex'),
+    });
+    await using restored = await declaration.session({ state: checkpoint });
     const pending = await restored.pendingInteractions();
     const request = gate.match(pending[0]);
     if (!request) throw new Error('Expected restored sibling gate');
