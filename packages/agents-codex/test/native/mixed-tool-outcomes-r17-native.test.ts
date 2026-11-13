@@ -521,3 +521,107 @@ it('keeps mutations behind a held automatic handoff callback', async () => {
   expect(effects).toEqual([]);
   expect(server.requests).toHaveLength(1);
 }, 15000);
+
+it.each(['success', 'fatal'] as const)(
+  'settles a held namespaced automatic callback before mutations (%s)',
+  async (outcome) => {
+    const entered = Promise.withResolvers<void>();
+    const answered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const effects: string[] = [];
+    const original = new Error('fatal namespaced callback');
+    const decision = manualTool({
+      name: 'decision',
+      parameters: z.object({}),
+      result: z.string(),
+    });
+    const server = new ModelServer([
+      [
+        shell('first'),
+        patch('second'),
+        call('hold', {}, { namespace: 'records', callId: 'held-function' }),
+        call('decision', {}, { callId: 'manual' }),
+      ],
+      [message('done')],
+    ]);
+    await using selected = await providerFor(server);
+    const edit = () => {
+      effects.push('patch');
+      return { output: 'done' };
+    };
+    const agent = new Agent({
+      instructions: 'Use the supplied tools.',
+      model: 'gpt-5',
+      provider: selected,
+      tools: [
+        decision,
+        tool({
+          namespace: 'records',
+          name: 'hold',
+          parameters: z.object({}),
+          errorFunction: null,
+          async execute() {
+            entered.resolve();
+            await release.promise;
+            if (outcome === 'fatal') throw original;
+            effects.push('function');
+            return 'done';
+          },
+        }),
+        shellTool({
+          execute() {
+            effects.push('shell');
+            return shellOutput();
+          },
+        }),
+        applyPatchTool({
+          editor: { createFile: edit, updateFile: edit, deleteFile: edit },
+        }),
+      ],
+    });
+    await using session = await agent.session({
+      maxFunctionConcurrency: 1,
+      async onInteraction(action) {
+        const request = decision.match(action);
+        if (!request) throw new Error('Unexpected interaction');
+        await entered.promise;
+        answered.resolve();
+        return request.reply('yes');
+      },
+    });
+    const result = (await session.submit('Run the mixed batch.')).wait().then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let whileHeld: string[] = [];
+    try {
+      await Promise.race([
+        Promise.all([entered.promise, answered.promise]),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('Manual sibling blocked')),
+            1500,
+          );
+        }),
+      ]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      whileHeld = [...effects];
+    } finally {
+      if (timer) clearTimeout(timer);
+      release.resolve();
+    }
+    const settled = await result;
+    expect(whileHeld).toEqual([]);
+    if (outcome === 'fatal') {
+      expect('error' in settled && settled.error).toBe(original);
+      expect(effects).toEqual([]);
+      expect(server.requests).toHaveLength(1);
+    } else {
+      expect('value' in settled && settled.value.finalOutput).toBe('done');
+      expect(effects).toEqual(['function', 'shell', 'patch']);
+      server.assertExhausted();
+    }
+  },
+  15000,
+);

@@ -4117,7 +4117,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
     fn is_automatic_function_callback(&self) -> bool {
         matches!(
             &self.generation.entries[self.slot].spec,
-            ToolSpec::Function(_)
+            ToolSpec::Function(_) | ToolSpec::Namespace(_)
         ) && !self.manual_call()
     }
 
