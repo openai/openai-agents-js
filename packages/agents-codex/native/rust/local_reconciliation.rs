@@ -895,9 +895,41 @@ pub(crate) fn validate_native_effects(
         }),
         "local history contains unfinished native execution; automatic interruption is unsupported"
     );
+    let mut completed_turns = HashSet::new();
+    for row in history {
+        match row {
+            RolloutItem::EventMsg(EventMsg::TurnStarted(event)) => {
+                completed_turns.remove(&event.turn_id);
+            }
+            RolloutItem::EventMsg(EventMsg::TurnComplete(event)) => {
+                completed_turns.insert(event.turn_id.clone());
+            }
+            RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => {
+                if let Some(turn) = &event.turn_id {
+                    completed_turns.remove(turn);
+                }
+            }
+            _ => {}
+        }
+    }
     ensure!(
         index_calls(history, true)?.iter().all(|(key, call)| {
+            let completed_provider_shell = matches!(
+                (call.invocation, call.output),
+                (ResponseItem::ShellCall { status, provider_fields, .. },
+                    Some(ResponseItem::ShellCallOutput { status: output_status, .. }))
+                    if status.as_deref() == Some("completed") && output_status.as_deref() == Some("completed")
+                        && !key.1.is_empty()
+                        && provider_fields.get("environment").is_none_or(|environment|
+                            matches!(environment.get("type").and_then(serde_json::Value::as_str),
+                                Some("container_auto" | "container_reference")))
+            );
             application.contains_key(key)
+                || (key
+                    .0
+                    .as_ref()
+                    .is_some_and(|turn| !turns.contains(turn) && completed_turns.contains(turn))
+                    && completed_provider_shell)
                 || (!matches!(
                     call.invocation,
                     ResponseItem::ShellCall { .. } | ResponseItem::LocalShellCall { .. }
