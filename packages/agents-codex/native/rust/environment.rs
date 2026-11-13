@@ -2597,20 +2597,24 @@ enum LocalSandboxOutcome {
 
 const PRIVATE_AUTH_READABLE: i32 = 42;
 
-const BWRAP_APPARMOR_STDERR: &[u8] =
-    b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n";
+const BWRAP_APPARMOR_MESSAGES: [&[u8]; 3] = [
+    b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n",
+    b"bwrap: loopback: Failed RTM_NEWLINK: Operation not permitted\n",
+    b"bwrap: setting up uid map: Permission denied\n",
+];
 
 struct LocalSandboxReadiness {
-    // Match the complete stock Ubuntu Bubblewrap message across chunks without
+    // Match complete Ubuntu Bubblewrap messages across chunks without
     // retaining or surfacing any process output.
-    remaining_stderr: Option<&'static [u8]>,
+    remaining_stderr: [Option<&'static [u8]>; BWRAP_APPARMOR_MESSAGES.len()],
     exited_nonzero: bool,
 }
 
 impl LocalSandboxReadiness {
     fn new(check_apparmor: bool) -> Self {
         Self {
-            remaining_stderr: check_apparmor.then_some(BWRAP_APPARMOR_STDERR),
+            remaining_stderr: BWRAP_APPARMOR_MESSAGES
+                .map(|message| check_apparmor.then_some(message)),
             exited_nonzero: false,
         }
     }
@@ -2618,10 +2622,11 @@ impl LocalSandboxReadiness {
     fn observe(&mut self, event: ExecProcessEvent) -> Option<LocalSandboxOutcome> {
         match event {
             ExecProcessEvent::Output(chunk) if chunk.stream == ExecOutputStream::Stderr => {
-                self.remaining_stderr = self
-                    .remaining_stderr
-                    .and_then(|remaining| remaining.strip_prefix(chunk.chunk.0.as_slice()));
-                if self.exited_nonzero && self.remaining_stderr.is_none() {
+                for candidate in &mut self.remaining_stderr {
+                    *candidate = candidate
+                        .and_then(|remaining| remaining.strip_prefix(chunk.chunk.0.as_slice()));
+                }
+                if self.exited_nonzero && self.remaining_stderr.iter().all(Option::is_none) {
                     return Some(LocalSandboxOutcome::Failed);
                 }
             }
@@ -2629,13 +2634,15 @@ impl LocalSandboxReadiness {
             ExecProcessEvent::Exited { exit_code: 0, .. } => {
                 return Some(LocalSandboxOutcome::Ready);
             }
-            ExecProcessEvent::Exited { .. } if self.remaining_stderr.is_some() => {
+            ExecProcessEvent::Exited { .. }
+                if self.remaining_stderr.iter().any(Option::is_some) =>
+            {
                 self.exited_nonzero = true;
             }
             // Exit can arrive before the final output chunk. Closed marks the
             // end of the stream and rules out a match against a partial prefix.
             ExecProcessEvent::Closed { .. }
-                if self.exited_nonzero && self.remaining_stderr == Some(&[]) =>
+                if self.exited_nonzero && self.remaining_stderr.contains(&Some(&[])) =>
             {
                 return Some(LocalSandboxOutcome::PossibleAppArmorDenial);
             }
@@ -2923,24 +2930,29 @@ mod tests {
 
     #[test]
     fn sandbox_readiness_matches_stderr_that_completes_after_exit() {
-        let events = [
-            readiness_output(0, ExecOutputStream::Stderr, b"bwrap: loopback: Failed "),
-            ExecProcessEvent::Exited {
-                seq: 1,
-                exit_code: 1,
-                sandbox_denied: None,
-            },
-            readiness_output(
-                2,
-                ExecOutputStream::Stderr,
-                b"RTM_NEWADDR: Operation not permitted\n",
-            ),
-            ExecProcessEvent::Closed { seq: 3 },
-        ];
-        assert_eq!(
-            readiness_outcome(events),
-            LocalSandboxOutcome::PossibleAppArmorDenial
-        );
+        for message in [
+            b"bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted\n".as_slice(),
+            b"bwrap: loopback: Failed RTM_NEWLINK: Operation not permitted\n",
+            b"bwrap: setting up uid map: Permission denied\n",
+        ] {
+            let (prefix, suffix) = message.split_at(24);
+            let events = [
+                readiness_output(0, ExecOutputStream::Stderr, prefix),
+                ExecProcessEvent::Exited {
+                    seq: 1,
+                    exit_code: 1,
+                    sandbox_denied: None,
+                },
+                readiness_output(2, ExecOutputStream::Stderr, suffix),
+                ExecProcessEvent::Closed { seq: 3 },
+            ];
+            assert_eq!(
+                readiness_outcome(events),
+                LocalSandboxOutcome::PossibleAppArmorDenial,
+                "{}",
+                String::from_utf8_lossy(message)
+            );
+        }
     }
 
     #[test]
@@ -2951,11 +2963,11 @@ mod tests {
             sandbox_denied: None,
         };
         let closed = ExecProcessEvent::Closed { seq: 2 };
-        let matching = readiness_output(0, ExecOutputStream::Stderr, BWRAP_APPARMOR_STDERR);
+        let matching = readiness_output(0, ExecOutputStream::Stderr, BWRAP_APPARMOR_MESSAGES[0]);
         for events in [
             vec![matching.clone(), failure.clone()],
             vec![
-                readiness_output(0, ExecOutputStream::Stdout, BWRAP_APPARMOR_STDERR),
+                readiness_output(0, ExecOutputStream::Stdout, BWRAP_APPARMOR_MESSAGES[0]),
                 failure.clone(),
                 closed.clone(),
             ],

@@ -191,15 +191,24 @@ async fn open_edges_accept_settled_own_turns_but_not_only_inherited_turns() {
         .get_mut(&ids[2])
         .unwrap()
         .push(started("unfinished-without-tool"));
-    for _ in 0..2 {
-        assert!(
-            validate_local_tree(&store, ids, &edges, &histories)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("active descendant")
-        );
-    }
+    let error = validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("cannot exclude provider effects"),
+        "{error}"
+    );
+    histories.get_mut(&ids[2]).unwrap().push(sampling_context(
+        home.path(),
+        ids[2],
+        "unfinished-without-tool",
+        Some(false),
+    ));
+    validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap();
     for id in ids {
         store.shutdown_thread(id).await.unwrap();
     }
@@ -264,7 +273,11 @@ async fn stored_unknown_grandchild_below_closed_ancestor_fails_complete_tree_adm
     append(
         &store,
         ids[1],
-        vec![started("child-own"), completed("child-own")],
+        vec![
+            started("child-own"),
+            completed("child-own"),
+            started("safe-current-child"),
+        ],
     )
     .await;
     append(
@@ -640,6 +653,23 @@ fn legacy_context(home: &Path, turn: &str) -> RolloutItem {
     .unwrap()
 }
 
+fn sampling_context(
+    home: &Path,
+    thread: ThreadId,
+    turn: &str,
+    possible: Option<bool>,
+) -> RolloutItem {
+    let RolloutItem::TurnContext(mut context) = legacy_context(home, turn) else {
+        unreachable!()
+    };
+    let mut receipt = json!({"version":1,"thread_id":thread,"model":RECOVERY_FIXTURE_MODEL,"approval_policy":"never"});
+    if let Some(possible) = possible {
+        receipt["provider_effects_possible"] = json!(possible);
+    }
+    context.sdk_receipt = Some(receipt);
+    RolloutItem::TurnContext(context)
+}
+
 async fn prepare_recovery<'a>(
     store: &'a Arc<LocalChecklistStore>,
     home: &Path,
@@ -680,6 +710,731 @@ async fn bytes(paths: &[PathBuf]) -> Vec<Vec<u8>> {
         result.push(tokio::fs::read(path).await.unwrap());
     }
     result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_safe_descendant_interruption_survives_partial_publication_and_reopen() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let [root, child, leaf] = ids;
+    let paths = rollout_paths(&store, &ids).await;
+    append(
+        &store,
+        root,
+        [
+            vec![
+                started("root"),
+                sampling_context(home.path(), root, "root", Some(false)),
+            ],
+            spawn("spawn-child", child),
+        ]
+        .concat(),
+    )
+    .await;
+    append(
+        &store,
+        child,
+        [
+            vec![
+                started("child"),
+                sampling_context(home.path(), child, "child", Some(false)),
+            ],
+            spawn("spawn-leaf", leaf),
+        ]
+        .concat(),
+    )
+    .await;
+    append(
+        &store,
+        leaf,
+        vec![
+            started("leaf"),
+            sampling_context(home.path(), leaf, "leaf", Some(false)),
+        ],
+    )
+    .await;
+    for id in ids.into_iter().rev() {
+        store.shutdown_thread(id).await.unwrap();
+    }
+    let store = Arc::new(store);
+    let original = bytes(&paths).await;
+    for _ in 0..2 {
+        *store.fail_recovery_write.lock().unwrap() =
+            Some((child, RecoveryWritePoint::BeforeDirectorySync));
+        let error = prepare_recovery(&store, home.path(), root, Vec::new())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("injected failure"), "{error}");
+        assert_eq!(bytes(&paths).await[2], original[2]);
+    }
+    // Retry must sync an already visible leaf abort after directory sync fails.
+    for _ in 0..2 {
+        *store.fail_recovery_write.lock().unwrap() =
+            Some((leaf, RecoveryWritePoint::BeforeDirectorySync));
+        let error = prepare_recovery(&store, home.path(), root, Vec::new())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("injected failure"), "{error}");
+    }
+    let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+        .await
+        .unwrap();
+    let prepared = admitted.prepared_params().unwrap().clone();
+    store.resume_thread(prepared).await.unwrap();
+    drop(admitted);
+    store.shutdown_thread(root).await.unwrap();
+    let recovered = bytes(&paths).await;
+    for (index, bytes) in recovered.iter().enumerate() {
+        assert!(bytes.starts_with(&original[index]));
+        assert_eq!(
+            String::from_utf8_lossy(bytes)
+                .matches("\"turn_aborted\"")
+                .count(),
+            1
+        );
+        assert!(String::from_utf8_lossy(bytes).contains("interrupted"));
+    }
+    let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+        .await
+        .unwrap();
+    drop(admitted);
+    assert_eq!(bytes(&paths).await, recovered);
+    store.close_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_earlier_owned_commands_before_interruption() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let edges = edges(&store, &ids).await;
+    let mut histories = snapshots(&store, &ids).await;
+    for (id, turn) in ids
+        .into_iter()
+        .zip(["settled-root", "settled-child", "settled-leaf"])
+    {
+        histories
+            .get_mut(&id)
+            .unwrap()
+            .extend([started(turn), completed(turn)]);
+    }
+    let leaf = ids[2];
+    let command = |item| {
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+            serde_json::from_value(item).unwrap(),
+        ))
+    };
+    histories.get_mut(&leaf).unwrap().extend([
+        started("older"),
+        command(json!({"type": "function_call", "name": "exec_command", "call_id": "command", "arguments": "{}"})),
+        command(json!({"type": "function_call_output", "call_id": "command", "output": "Process running with session ID 42"})),
+        completed("older"),
+        started("sampling"),
+        sampling_context(home.path(), leaf, "sampling", Some(false)),
+    ]);
+    let error = validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("unfinished native execution"),
+        "{error}"
+    );
+    histories.get_mut(&leaf).unwrap().push(RolloutItem::EventMsg(serde_json::from_value(json!({"type": "item_completed", "thread_id": leaf, "turn_id": "older", "item": {"type": "CommandExecution", "id": "command", "command": ["synthetic"], "cwd": "file:///synthetic", "parsed_cmd": [], "source": "unified_exec_startup", "status": "completed"}})).unwrap()));
+    validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap();
+    for id in ids {
+        store.shutdown_thread(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_links_followups_to_the_retained_child_root_turn() {
+    let home = tempfile::tempdir().unwrap();
+    let (store, ids) = family(home.path()).await;
+    let edges = edges(&store, &ids).await;
+    let mut histories = snapshots(&store, &ids).await;
+    let [root, child, leaf] = ids;
+    histories.get_mut(&root).unwrap().extend([
+        started("root-current"),
+        sampling_context(home.path(), root, "root-current", Some(false)),
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","namespace":"collaboration","name":"followup_task","call_id":"follow","arguments":"{}"})).unwrap())),
+        RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call_output","call_id":"follow","output":"accepted"})).unwrap())),
+        RolloutItem::EventMsg(serde_json::from_value(json!({"type":"item_completed","thread_id":root,"turn_id":"root-current","item":{"type":"SubAgentActivity","id":"follow","kind":"interacted","agent_thread_id":child,"agent_path":"/root/child"}})).unwrap()),
+    ]);
+    let child_start = |root_turn| {
+        RolloutItem::EventMsg(
+            serde_json::from_value(
+                json!({"type":"task_started","turn_id":"child","root_turn_id":root_turn}),
+            )
+            .unwrap(),
+        )
+    };
+    histories.get_mut(&child).unwrap().extend([
+        child_start("root-older"),
+        sampling_context(home.path(), child, "child", Some(false)),
+    ]);
+    histories
+        .get_mut(&leaf)
+        .unwrap()
+        .extend([started("leaf"), completed("leaf")]);
+    let error = validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unrelated active"), "{error}");
+    *histories
+        .get_mut(&child)
+        .unwrap()
+        .iter_mut()
+        .find(|row| matches!(row, RolloutItem::EventMsg(EventMsg::TurnStarted(_))))
+        .unwrap() = child_start("root-current");
+    validate_local_tree(&store, ids, &edges, &histories)
+        .await
+        .unwrap();
+    for id in ids {
+        store.shutdown_thread(id).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_preserves_exact_command_receipts_with_automatic_children() {
+    for child_has_receipt in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        append(&store, root, [vec![started("root"), legacy_context(home.path(), "root"), RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call","name":"exec_command","call_id":"effect","arguments":"{}"})).unwrap()))], spawn("spawn-child", child)].concat()).await;
+        let mut child_rows = vec![
+            started("child"),
+            sampling_context(home.path(), child, "child", Some(false)),
+        ];
+        if child_has_receipt {
+            child_rows.push(call("effect"));
+        }
+        append(&store, child, child_rows).await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let mut receipts = vec![recovery_receipt(root, "root")];
+        if child_has_receipt {
+            receipts.push(recovery_receipt(child, "child"));
+        }
+        let admitted = prepare_recovery(&store, home.path(), root, receipts)
+            .await
+            .unwrap();
+        assert!(admitted.protected_call_ids().contains("effect"));
+        let prepared = admitted.prepared_params().unwrap().clone();
+        store.resume_thread(prepared).await.unwrap();
+        drop(admitted);
+        store.shutdown_thread(root).await.unwrap();
+        let admitted = prepare_recovery(&store, home.path(), root, Vec::new())
+            .await
+            .unwrap();
+        drop(admitted);
+        store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_prior_commands_when_every_active_turn_has_a_receipt() {
+    for terminal_command in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        let response = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let mut root_rows = vec![
+            started("older"),
+            response(
+                json!({"type":"function_call","name":"exec_command","call_id":"stale","arguments":"{}"}),
+            ),
+            response(
+                json!({"type":"function_call_output","call_id":"stale","output":"Process running with session ID 42"}),
+            ),
+            completed("older"),
+        ];
+        if terminal_command {
+            root_rows.push(RolloutItem::EventMsg(serde_json::from_value(json!({"type":"item_completed","thread_id":root,"turn_id":"older","item":{"type":"CommandExecution","id":"stale","command":["synthetic"],"cwd":"file:///synthetic","parsed_cmd":[],"source":"unified_exec_startup","status":"completed"}})).unwrap()));
+        }
+        root_rows.extend([started("root"), legacy_context(home.path(), "root")]);
+        root_rows.extend(spawn("spawn-child", child));
+        root_rows.push(completed("root"));
+        append(&store, root, root_rows).await;
+        append(
+            &store,
+            child,
+            vec![
+                started("child"),
+                legacy_context(home.path(), "child"),
+                call("effect"),
+            ],
+        )
+        .await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(
+            &store,
+            home.path(),
+            root,
+            vec![recovery_receipt(child, "child")],
+        )
+        .await;
+        if terminal_command {
+            drop(result.unwrap());
+        } else {
+            let error = result.err().unwrap();
+            assert!(
+                error.to_string().contains("unfinished native execution"),
+                "{error}"
+            );
+        }
+        store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_requires_owned_effect_free_sampling_evidence() {
+    for marker in ["absent", "unknown", "possible", "foreign", "mixed", "safe"] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        append(
+            &store,
+            root,
+            [
+                vec![started("root"), legacy_context(home.path(), "root")],
+                spawn("spawn-child", child),
+                vec![completed("root")],
+            ]
+            .concat(),
+        )
+        .await;
+        let mut rows = vec![started("child")];
+        if marker != "absent" {
+            rows.push(sampling_context(
+                home.path(),
+                if marker == "foreign" { root } else { child },
+                "child",
+                if marker == "unknown" {
+                    None
+                } else {
+                    Some(marker == "possible")
+                },
+            ));
+        }
+        if marker == "mixed" {
+            rows.push(sampling_context(home.path(), child, "child", Some(true)));
+        }
+        append(&store, child, rows).await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(&store, home.path(), root, Vec::new()).await;
+        if marker == "safe" {
+            drop(result.unwrap());
+        } else {
+            let error = result.err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot exclude provider effects"),
+                "{marker}: {error}"
+            );
+        }
+        store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_keeps_durable_receipt_lineage_bound_to_the_active_turn() {
+    for (old_receipt, root_possible, accepted) in [
+        (true, Some(true), false),
+        (true, Some(false), true),
+        (false, None, true),
+        (false, Some(false), true),
+        (false, Some(true), false),
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        append(
+            &store,
+            root,
+            [
+                vec![
+                    started("root"),
+                    sampling_context(home.path(), root, "root", root_possible),
+                ],
+                spawn("spawn-child", child),
+            ]
+            .concat(),
+        )
+        .await;
+        let turn = if old_receipt { "older" } else { "child" };
+        let mut rows = vec![started(turn), legacy_context(home.path(), turn), call("prior"), RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call_output","call_id":"prior","output":"confirmed absent","internal_chat_message_metadata_passthrough":{"turn_id":turn,"content_item_kinds":["sdk_reconciliation.not_applied"]}})).unwrap()))];
+        if old_receipt {
+            rows.extend([completed("older"), started("child")]);
+        }
+        rows.push(sampling_context(home.path(), child, "child", Some(false)));
+        append(&store, child, rows).await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(&store, home.path(), root, Vec::new()).await;
+        if accepted {
+            drop(result.unwrap());
+        } else {
+            let error = result.err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot exclude provider effects"),
+                "{error}"
+            );
+        }
+        store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_exact_receipts_cannot_override_known_provider_uncertainty() {
+    for recorded in [false, true] {
+        for marker in [
+            "legacy", "false", "true", "invalid", "mixed", "foreign", "version",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let (store, [root, child]) = recovery_family(home.path()).await;
+            append(
+                &store,
+                root,
+                [
+                    vec![started("root"), legacy_context(home.path(), "root")],
+                    spawn("spawn-child", child),
+                    vec![completed("root")],
+                ]
+                .concat(),
+            )
+            .await;
+            let mut context = sampling_context(
+                home.path(),
+                if marker == "foreign" { root } else { child },
+                "child",
+                if marker == "legacy" {
+                    None
+                } else {
+                    Some(matches!(marker, "true" | "mixed"))
+                },
+            );
+            if let RolloutItem::TurnContext(context) = &mut context {
+                if marker == "invalid" {
+                    context.sdk_receipt.as_mut().unwrap()["provider_effects_possible"] =
+                        json!("false");
+                }
+                if marker == "version" {
+                    context.sdk_receipt.as_mut().unwrap()["version"] = json!(2);
+                }
+            }
+            let mut rows = vec![started("child"), context, call("effect")];
+            if marker == "mixed" {
+                rows.push(sampling_context(home.path(), child, "child", Some(false)));
+            }
+            if recorded {
+                rows.push(RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":"function_call_output","call_id":"effect","output":"confirmed absent","internal_chat_message_metadata_passthrough":{"turn_id":"child","content_item_kinds":["sdk_reconciliation.not_applied"]}})).unwrap())));
+            }
+            append(&store, child, rows).await;
+            for id in [child, root] {
+                store.shutdown_thread(id).await.unwrap();
+            }
+            let store = Arc::new(store);
+            let result = prepare_recovery(
+                &store,
+                home.path(),
+                root,
+                if recorded {
+                    Vec::new()
+                } else {
+                    vec![recovery_receipt(child, "child")]
+                },
+            )
+            .await;
+            if matches!(marker, "legacy" | "false") {
+                drop(result.unwrap());
+            } else {
+                let error = result.err().unwrap();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("cannot exclude provider effects"),
+                    "{marker}, recorded={recorded}: {error}"
+                );
+            }
+            store.close_database().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_does_not_let_a_sibling_receipt_clear_provider_uncertainty() {
+    for possible in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let store = tests::store(home.path()).await;
+        let [root, receipted, automatic] = std::array::from_fn(|_| ThreadId::new());
+        for id in [root, receipted, automatic] {
+            let mut params = tests::create_params(id, home.path());
+            if id != root {
+                params.parent_thread_id = Some(root);
+                params.source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: root,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: None,
+                    agent_role: None,
+                });
+            }
+            store.create_thread(params).await.unwrap();
+            store
+                .persist_thread(id, PersistContext::Standard)
+                .await
+                .unwrap();
+        }
+        append(
+            &store,
+            root,
+            [
+                vec![started("root"), legacy_context(home.path(), "root")],
+                spawn("spawn-receipted", receipted),
+                spawn("spawn-automatic", automatic),
+            ]
+            .concat(),
+        )
+        .await;
+        append(
+            &store,
+            receipted,
+            vec![
+                started("receipted"),
+                legacy_context(home.path(), "receipted"),
+                call("effect"),
+            ],
+        )
+        .await;
+        append(
+            &store,
+            automatic,
+            vec![
+                started("automatic"),
+                sampling_context(home.path(), automatic, "automatic", Some(possible)),
+            ],
+        )
+        .await;
+        for id in [automatic, receipted, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(
+            &store,
+            home.path(),
+            root,
+            vec![recovery_receipt(receipted, "receipted")],
+        )
+        .await;
+        if possible {
+            let error = result.err().unwrap();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot exclude provider effects"),
+                "{error}"
+            );
+        } else {
+            drop(result.unwrap());
+        }
+        store.close_database().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_native_patch_completion_despite_an_application_receipt() {
+    for automatic_leaf in [false, true] {
+        for completion in ["missing", "foreign", "matched"] {
+            let home = tempfile::tempdir().unwrap();
+            let (store, [root, child, leaf]) = recovery_family(home.path()).await;
+            append(
+                &store,
+                root,
+                [
+                    vec![started("root"), legacy_context(home.path(), "root")],
+                    spawn("spawn-child", child),
+                    vec![completed("root")],
+                ]
+                .concat(),
+            )
+            .await;
+            let response = |item| {
+                RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                    serde_json::from_value(item).unwrap(),
+                ))
+            };
+            let mut rows = vec![
+                started("child"),
+                sampling_context(home.path(), child, "child", Some(false)),
+            ];
+            rows.extend(spawn("spawn-leaf", leaf));
+            rows.extend([call("effect"), response(json!({"type":"apply_patch_call","call_id":"native-patch","operation":{"type":"create_file","path":"synthetic","diff":"+content\n"}}))]);
+            if completion != "missing" {
+                rows.push(response(json!({"type":"apply_patch_call_output","call_id":"native-patch","status":"completed","output":"created","internal_chat_message_metadata_passthrough":{"turn_id":if completion == "foreign" { "other" } else { "child" }}})));
+            }
+            append(&store, child, rows).await;
+            let mut leaf_rows = vec![
+                started("leaf"),
+                sampling_context(home.path(), leaf, "leaf", Some(false)),
+            ];
+            if !automatic_leaf {
+                leaf_rows.push(completed("leaf"));
+            }
+            append(&store, leaf, leaf_rows).await;
+            for id in [leaf, child, root] {
+                store.shutdown_thread(id).await.unwrap();
+            }
+            let store = Arc::new(store);
+            let result = prepare_recovery(
+                &store,
+                home.path(),
+                root,
+                vec![recovery_receipt(child, "child")],
+            )
+            .await;
+            if completion == "matched" {
+                drop(result.unwrap());
+            } else {
+                let error = result.err().unwrap();
+                assert!(
+                    error.to_string().contains("unfinished native patch"),
+                    "{completion}, automatic_leaf={automatic_leaf}: {error}"
+                );
+            }
+            store.close_database().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_durable_hosted_effects_despite_an_application_receipt() {
+    for kind in [
+        "code_interpreter_call",
+        "image_generation_call",
+        "shell_call",
+    ] {
+        for status in ["in_progress", "completed"] {
+            let home = tempfile::tempdir().unwrap();
+            let (store, [root, child]) = recovery_family(home.path()).await;
+            append(
+                &store,
+                root,
+                [
+                    vec![started("root"), legacy_context(home.path(), "root")],
+                    spawn("spawn-child", child),
+                    vec![completed("root")],
+                ]
+                .concat(),
+            )
+            .await;
+            let hosted = RolloutItem::ResponseItem(ResponseItemEnvelope::new(serde_json::from_value(json!({"type":kind,"id":"hosted","status":status,"outputs":null,"result":null,"call_id":"hosted-shell","environment":{"type":"container_reference","container_id":"synthetic"}})).unwrap()));
+            append(
+                &store,
+                child,
+                vec![
+                    started("child"),
+                    legacy_context(home.path(), "child"),
+                    call("effect"),
+                    hosted,
+                ],
+            )
+            .await;
+            for id in [child, root] {
+                store.shutdown_thread(id).await.unwrap();
+            }
+            let store = Arc::new(store);
+            let result = prepare_recovery(
+                &store,
+                home.path(),
+                root,
+                vec![recovery_receipt(child, "child")],
+            )
+            .await;
+            if kind != "shell_call" && status == "completed" {
+                drop(result.unwrap());
+            } else {
+                let error = result.err().unwrap();
+                assert!(
+                    error.to_string().contains("hosted"),
+                    "{kind}/{status}: {error}"
+                );
+            }
+            store.close_database().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_recovery_checks_hosted_mcp_alongside_application_receipts() {
+    for completed_mcp in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (store, [root, child]) = recovery_family(home.path()).await;
+        append(
+            &store,
+            root,
+            [
+                vec![started("root"), legacy_context(home.path(), "root")],
+                spawn("spawn-child", child),
+                vec![completed("root")],
+            ]
+            .concat(),
+        )
+        .await;
+        let response = |item| {
+            RolloutItem::ResponseItem(ResponseItemEnvelope::new(
+                serde_json::from_value(item).unwrap(),
+            ))
+        };
+        let mut child_rows = vec![
+            started("child"),
+            legacy_context(home.path(), "child"),
+            call("effect"),
+            response(
+                json!({"type":"mcp_approval_request","id":"approval","server_label":"crm","name":"save","arguments":"{}"}),
+            ),
+            response(
+                json!({"type":"mcp_approval_response","approval_request_id":"approval","approve":true}),
+            ),
+        ];
+        if completed_mcp {
+            child_rows.push(response(json!({"type":"mcp_call","id":"provider-call","server_label":"crm","name":"save","arguments":"{}","approval_request_id":"approval","status":"completed","output":"done"})));
+        }
+        append(&store, child, child_rows).await;
+        for id in [child, root] {
+            store.shutdown_thread(id).await.unwrap();
+        }
+        let store = Arc::new(store);
+        let result = prepare_recovery(
+            &store,
+            home.path(),
+            root,
+            vec![recovery_receipt(child, "child")],
+        )
+        .await;
+        if completed_mcp {
+            drop(result.unwrap());
+        } else {
+            let error = result.err().unwrap();
+            assert!(error.to_string().contains("approved hosted MCP"), "{error}");
+        }
+        store.close_database().await.unwrap();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

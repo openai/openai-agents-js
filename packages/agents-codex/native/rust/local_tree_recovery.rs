@@ -182,6 +182,10 @@ pub(super) async fn plan_recovery_tree(
     root_model: &[RolloutItem],
     receipts: Vec<Receipt>,
 ) -> anyhow::Result<TreeRecoveryPlan> {
+    let own_turns: Vec<_> = sources
+        .iter()
+        .map(|source| recorded_turns(source.own()))
+        .collect();
     let supplied = !receipts.is_empty();
     let mut by_source = HashMap::<_, Vec<_>>::new();
     for receipt in receipts {
@@ -204,6 +208,7 @@ pub(super) async fn plan_recovery_tree(
     let mut missing = Vec::new();
     let mut descendant_histories = Vec::new();
     let mut affected_turns = Vec::with_capacity(sources.len());
+    let mut receipt_lineage = Vec::with_capacity(sources.len());
     for (index, source) in sources.iter().enumerate() {
         let receipts = by_source.remove(&source.id).unwrap_or_default();
         let model;
@@ -243,7 +248,22 @@ pub(super) async fn plan_recovery_tree(
                     (local_reconciliation::Plan::default(), turns)
                 }
             };
+        let mut turns = turns;
+        let mut receipt_turns = turns.clone();
+        receipt_turns.extend(
+            local_reconciliation::reconciled_turns(source.own(), &plan.protected_ids)?
+                .into_iter()
+                .filter(|turn| own_turns[index].get(turn) == Some(&true)),
+        );
+        if index != 0 && own_turns[index].values().any(|active| *active) {
+            turns.extend(
+                own_turns[index]
+                    .iter()
+                    .filter_map(|(turn, active)| (*active).then_some(turn.clone())),
+            );
+        }
         affected_turns.push(turns);
+        receipt_lineage.push(receipt_turns);
         if index == 0 {
             root = plan;
             root_receipts = receipts;
@@ -261,7 +281,7 @@ pub(super) async fn plan_recovery_tree(
         .map(|turns| !turns.is_empty())
         .collect();
     for (index, source) in sources.iter().enumerate().rev() {
-        let own = recorded_turns(source.own());
+        let own = &own_turns[index];
         // A root-only receipt can leave an older start without an abort.
         // Only the latest root start can represent unrelated current work.
         let current_root_turn = if index == 0 && recovering_descendants {
@@ -279,12 +299,12 @@ pub(super) async fn plan_recovery_tree(
             );
         }
         for (turn, active) in own {
-            if !active {
+            if !*active {
                 continue;
             }
-            if affected_turns[index].contains(&turn) {
+            if affected_turns[index].contains(turn) {
                 if index != 0 || recovering_descendants {
-                    writes[index].rows.push(interruption(turn));
+                    writes[index].rows.push(interruption(turn.clone()));
                 }
             } else if source.edge == Some(ThreadSpawnEdgeStatus::Open)
                 || current_root_turn == Some(turn.as_str())
@@ -297,11 +317,52 @@ pub(super) async fn plan_recovery_tree(
         {
             affected[parent] = true;
             let parent_source = &sources[parent];
-            let spawn_turns = local_reconciliation::completed_spawn_turns(
+            let child_roots: HashSet<_> = source
+                .own()
+                .iter()
+                .filter_map(|row| match row {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                        if affected_turns[index].contains(&event.turn_id) =>
+                    {
+                        event.root_turn_id.clone()
+                    }
+                    _ => None,
+                })
+                .collect();
+            let followup_turns = parent_source
+                .own()
+                .iter()
+                .filter_map(|row| match row {
+                    RolloutItem::EventMsg(EventMsg::TurnStarted(event))
+                        if child_roots.contains(if parent == 0 {
+                            &event.turn_id
+                        } else {
+                            event.root_turn_id.as_ref()?
+                        }) =>
+                    {
+                        Some(event.turn_id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let spawn_turns = local_reconciliation::completed_child_turns(
                 parent_source.id,
                 source.id,
                 parent_source.own(),
+                &followup_turns,
             )?;
+            if !receipt_lineage[index].is_empty()
+                && own_turns[index]
+                    .iter()
+                    .all(|(turn, active)| !*active || receipt_lineage[index].contains(turn))
+            {
+                receipt_lineage[parent].extend(local_reconciliation::completed_child_turns(
+                    parent_source.id,
+                    source.id,
+                    parent_source.own(),
+                    &HashSet::new(),
+                )?);
+            }
             // An earlier attempt can replace an abort-only ancestor and fail
             // before syncing its directory. Confirm it before the leaf write.
             writes[parent].acknowledged |= parent_source.own().iter().any(|row| {
@@ -321,6 +382,66 @@ pub(super) async fn plan_recovery_tree(
         .into());
     }
 
+    for (source, write) in sources.iter().zip(&mut writes) {
+        write.acknowledged |= source.own().iter().any(|row| matches!(row,
+            RolloutItem::EventMsg(EventMsg::TurnAborted(event))
+                if event.reason == TurnAbortReason::Interrupted && event.turn_id.is_some()
+                    && event.model_attempt.is_none() && event.error.is_none()
+                    && event.started_at.is_none() && event.completed_at.is_none() && event.duration_ms.is_none()));
+    }
+    if recovering_descendants {
+        let automatic_turns: Vec<HashSet<_>> = own_turns
+            .iter()
+            .enumerate()
+            .map(|(index, turns)| {
+                turns
+                    .iter()
+                    .filter_map(|(turn, active)| {
+                        (*active
+                            && affected_turns[index].contains(turn)
+                            && !receipt_lineage[index].contains(turn))
+                        .then_some(turn.clone())
+                    })
+                    .collect()
+            })
+            .collect();
+        let automatic = automatic_turns.iter().any(|turns| !turns.is_empty());
+        for (index, source) in sources.iter().enumerate() {
+            let active: HashSet<_> = own_turns[index]
+                .iter()
+                .filter_map(|(turn, active)| {
+                    (*active && affected_turns[index].contains(turn)).then_some(turn.clone())
+                })
+                .collect();
+            let mut history = source.own().to_vec();
+            history.extend(
+                if index == 0 {
+                    &root.append
+                } else {
+                    &writes[index].rows
+                }
+                .iter()
+                .cloned(),
+            );
+            local_reconciliation::validate_hosted_effects(&history, &active)?;
+            local_reconciliation::validate_native_patch_effects(&history, &active)?;
+            local_reconciliation::validate_sampling_effects(
+                source.id,
+                &history,
+                &active,
+                &automatic_turns[index],
+            )?;
+            if automatic {
+                let automatic_active = active
+                    .intersection(&automatic_turns[index])
+                    .cloned()
+                    .collect();
+                local_reconciliation::validate_native_effects(&history, &automatic_active)?;
+            } else {
+                local_reconciliation::validate_command_lifetimes(&history)?;
+            }
+        }
+    }
     if recovering_descendants {
         let aborts = std::mem::take(&mut writes[0].rows);
         writes[0].rows = std::mem::take(&mut root.append);

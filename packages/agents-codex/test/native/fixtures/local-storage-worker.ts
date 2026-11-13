@@ -6,6 +6,8 @@ import {
   Agent,
   LocalRecoveryRequired,
   NativeProvider,
+  NativeAgents,
+  Environment,
   localStorage,
   selectMcpTools,
   shellTool,
@@ -25,6 +27,9 @@ const config = JSON.parse(process.argv[2]) as {
   apiKey?: string;
   selectedMcp?: boolean;
   applicationShell?: boolean;
+  nativeChildren?: boolean;
+  inspectChildren?: boolean;
+  environment?: { url: string; cwd: string; headers: Record<string, string> };
 };
 const provider = new NativeProvider({
   baseUrl: config.url,
@@ -102,9 +107,12 @@ async function main() {
     const agent = new Agent<{ label: string }>({
       instructions:
         'Use the current managed record tool. Preserve conversation history.',
-      model: config.selectedMcp ? 'gpt-5.5' : 'gpt-5',
+      model: config.selectedMcp || config.nativeChildren ? 'gpt-5.5' : 'gpt-5',
       provider,
-      tools: [...(await recordTools())],
+      tools: [
+        ...(await recordTools()),
+        ...(config.nativeChildren ? [new NativeAgents()] : []),
+      ],
     });
     if (config.reconciledCalls !== undefined && config.resume === undefined)
       throw new TypeError('reconciledCalls requires local storage and resume');
@@ -119,13 +127,34 @@ async function main() {
     const session = await agent.session({
       ...persistence,
       context,
+      ...(config.environment
+        ? {
+            environment: new Environment({
+              ...config.environment,
+              tools: ['exec_command', 'write_stdin', 'apply_patch'],
+            }),
+          }
+        : {}),
     });
     const history = async () => {
       const items = [];
       const turns = [];
       for await (const item of session.items()) items.push(item);
       for await (const turn of session.turns()) turns.push(turn);
-      return { items, turns };
+      const descendants = [];
+      if (config.inspectChildren) {
+        for await (const child of session.subagents()) {
+          const turns = [];
+          for await (const turn of session.turns({ subagentId: child.id }))
+            turns.push(turn);
+          descendants.push({ id: child.id, isLive: child.isLive, turns });
+        }
+      }
+      return {
+        items,
+        turns,
+        ...(config.inspectChildren ? { descendants } : {}),
+      };
     };
     process.send?.({
       type: 'opened',
