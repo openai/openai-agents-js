@@ -294,14 +294,20 @@ export async function selectMcpTools<Context = unknown>(
     const model = projected.get(JSON.stringify([name, rawName]))!;
     const schema = jsonObject.parse(declaration.inputSchema);
     if (
-      schema.type !== 'object' ||
+      (schema.type !== undefined && schema.type !== 'object') ||
       (declaration.description !== undefined &&
         typeof declaration.description !== 'string')
     )
       throw new TypeError(
         'MCP declarations require an object input schema and optional string description',
       );
-    const parameters = freezeJson(jsonValue.parse(schema));
+    const parameters = freezeJson(
+      jsonValue.parse(
+        schema.type === undefined
+          ? { properties: {}, ...schema, type: 'object' }
+          : schema,
+      ),
+    );
     selectedRawNames.add(rawName);
     tools.push(
       createNamespacedFunctionTool<Context>({

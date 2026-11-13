@@ -100,6 +100,39 @@ function wireTools(
   return result;
 }
 
+it('defaults an omitted borrowed MCP schema type to object', async () => {
+  const peer = new BorrowedPeer();
+  const inputSchema = {};
+  Object.assign(peer.declarations[0]!, { inputSchema });
+  const selected = await selectMcpTools(
+    { name: 'crm', server: peer },
+    { context: undefined },
+  );
+  const model = new ModelServer([
+    [call('lookup', {}, { namespace: 'crm', callId: 'empty-schema' })],
+    [message('done')],
+  ]);
+  const session = await new Agent({
+    instructions: 'Use the selected tool.',
+    model: 'gpt-5.5',
+    provider: await providerFor(model),
+    tools: selected,
+  }).session();
+  sessions.push(session);
+  expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+    'done',
+  );
+  expect(wireTools(model.requests[0]!)).toContainEqual({
+    namespace: 'crm',
+    name: 'lookup',
+    parameters: expect.objectContaining({ type: 'object', properties: {} }),
+  });
+  expect(inputSchema).toEqual({});
+  expect(peer.callTool.mock.calls.map(([name, args]) => [name, args])).toEqual([
+    ['lookup', {}],
+  ]);
+});
+
 it.each(['gpt-5.5', 'gpt-6-astra'])(
   'dispatches two raw-schema tools in one namespace alongside an ordinary same-name function (%s)',
   async (modelName) => {
