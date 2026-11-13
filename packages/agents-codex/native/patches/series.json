@@ -1082,12 +1082,12 @@
     },
     {
       "path": "sdk-websocket-provider-history.patch",
-      "sha256": "60ef6cb324a92a08403ff47c6f522988e9c0bb14b513739787589ad9f8724e79"
+      "sha256": "fbdddc2418c8638b5f5ea9051cd80b9a7159147ec6be48e86b918617316b02be"
     },
     {
       "path": "sdk-ordered-workspace-callbacks.patch",
       "sha256": "d2355e27e5e22e2b5426058559c6cc9ddb9b68465c671a6e68309fa65a449931"
     }
   ],
-  "result_tree": "6d05dfe13b2788641989027bf49615a1d55615cf"
+  "result_tree": "64645aab0073753304d80c6cb090d8104efa172e"
 }

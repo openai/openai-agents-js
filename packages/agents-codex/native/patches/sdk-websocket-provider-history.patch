@@ -1,8 +1,8 @@
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index c74c5c9b..88686325 100644
+index c74c5c9b..894b0835 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
-@@ -361,6 +361,7 @@ struct WebsocketContinuation {
+@@ -361,6 +361,7 @@
  #[derive(Debug, Default)]
  struct WebsocketSession {
      connection: Option<ApiWebSocketConnection>,
@@ -10,7 +10,7 @@ index c74c5c9b..88686325 100644
      responses_headers: ApiHeaderMap,
      /// Owner of the cached state, including before a connection is opened.
      auth_owner_generation: Option<u64>,
-@@ -2130,9 +2131,8 @@ impl ModelClientSession {
+@@ -2130,9 +2131,8 @@
              return Ok(());
          }
          if self.client.provider_history.is_some() {
@@ -22,7 +22,7 @@ index c74c5c9b..88686325 100644
          }
          let provider = Arc::clone(&self.client.state.provider);
          let auth_manager = provider.auth_manager();
-@@ -2177,6 +2177,7 @@ impl ModelClientSession {
+@@ -2177,6 +2177,7 @@
                      request_route_telemetry: RequestRouteTelemetry::for_endpoint("/responses"),
                      responses_headers: &responses_headers,
                      request_transport: None,
@@ -30,7 +30,7 @@ index c74c5c9b..88686325 100644
                  })
                  .await
              {
-@@ -2248,6 +2249,7 @@ impl ModelClientSession {
+@@ -2248,6 +2249,7 @@
              request_route_telemetry,
              responses_headers,
              request_transport,
@@ -38,7 +38,7 @@ index c74c5c9b..88686325 100644
          } = params;
          let api_auth = codex_model_provider::prepare_websocket_auth(
              self.client.state.provider.info(),
-@@ -2278,6 +2280,11 @@ impl ModelClientSession {
+@@ -2278,6 +2280,11 @@
          }
  
          if needs_new || owner_changed {
@@ -50,7 +50,7 @@ index c74c5c9b..88686325 100644
              self.websocket_session.reset(if owner_changed {
                  Some("other")
              } else {
-@@ -2297,6 +2304,7 @@ impl ModelClientSession {
+@@ -2297,6 +2304,7 @@
                  )
                  .await?;
              self.websocket_session.connection = Some(new_conn);
@@ -58,7 +58,7 @@ index c74c5c9b..88686325 100644
              self.websocket_session.responses_headers = responses_headers.clone();
              self.websocket_session.auth_owner_generation = auth_owner_generation;
              self.websocket_session.connection_key = Some(connection_key);
-@@ -2586,6 +2594,7 @@ impl ModelClientSession {
+@@ -2586,6 +2594,7 @@
                      &mut request, &client_setup, history_route.transport,
                      history_route.headers, &history_route.provider,
                      prompt.request_controls.request_transport.as_ref().and_then(Option::as_ref),
@@ -66,7 +66,7 @@ index c74c5c9b..88686325 100644
                  ).await?;
                  client_setup.api_provider.retry.max_attempts = 0;
                  if let Some(attempt) = prompt.tool_admission.as_ref().and_then(|admission| admission.model_attempt()) {
-@@ -2831,9 +2840,6 @@ impl ModelClientSession {
+@@ -2831,9 +2840,6 @@
          inference_trace: &InferenceTraceContext,
          auth_recovery: &mut RequestAuthRecovery,
      ) -> Result<WebsocketStreamOutcome> {
@@ -76,30 +76,48 @@ index c74c5c9b..88686325 100644
          let after_prewarm = !warmup && self.websocket_session.last_response_from_untraced_warmup;
          let provider = Arc::clone(&self.client.state.provider);
          loop {
-@@ -2886,6 +2892,47 @@ impl ModelClientSession {
+@@ -2886,6 +2892,65 @@
                  self.client.api_key_cyber_access_programs,
              )?;
              let mut websocket_metadata = responses_metadata.clone();
++            let prepare_interceptors =
++                |client: &ModelClient,
++                 model_omitted,
++                 metadata: &mut Option<HashMap<String, String>>| {
++                    crate::model_request::prepare_with_attempts(
++                        &client.request_contributors,
++                        &client.state.thread_id.to_string(),
++                        &model_info.slug,
++                        model_omitted,
++                        if warmup {
++                            codex_extension_api::ModelRequestKind::Warmup
++                        } else {
++                            codex_extension_api::ModelRequestKind::Generation
++                        },
++                        metadata,
++                        prompt.tool_admission.clone(),
++                        responses_metadata
++                            .sdk_request_attempts
++                            .clone()
++                            .map(|route| {
++                                Arc::new(route)
++                                    as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
++                            }),
++                    )
++                };
 +            let mut interceptor_metadata = None;
-+            let interceptors = crate::model_request::prepare_with_attempts(
-+                &self.client.request_contributors,
-+                &self.client.state.thread_id.to_string(),
-+                &model_info.slug,
-+                request.model.is_none(),
-+                if warmup {
-+                    codex_extension_api::ModelRequestKind::Warmup
-+                } else {
-+                    codex_extension_api::ModelRequestKind::Generation
-+                },
-+                &mut interceptor_metadata,
-+                prompt.tool_admission.clone(),
-+                responses_metadata.sdk_request_attempts.clone().map(|route| {
-+                    Arc::new(route) as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
-+                }),
-+            );
++            let history_interceptors = self.client.provider_history.as_ref().map(|_| {
++                prepare_interceptors(
++                    &self.client,
++                    request.model.is_none(),
++                    &mut interceptor_metadata,
++                )
++            });
 +            let mut logical_history_input = None;
 +            let require_existing = if let Some(cursor) = &self.client.provider_history {
-+                if interceptors.iter().any(|interceptor| interceptor.produces_response()) {
++                if history_interceptors.as_ref().is_some_and(|interceptors| {
++                    interceptors.iter().any(|interceptor| interceptor.produces_response())
++                }) {
 +                    return Err(CodexErr::InvalidRequest("Provider history requires a supported owning Responses transport".into()));
 +                }
 +                let url = client_setup.api_provider.websocket_url_for_path("/responses")
@@ -124,7 +142,7 @@ index c74c5c9b..88686325 100644
              websocket_metadata.routing_hint = self.client.build_routing_hint_header(
                  client_setup.auth.as_ref(),
                  &responses_headers,
-@@ -2904,7 +2951,7 @@ impl ModelClientSession {
+@@ -2904,7 +2969,7 @@
                          .http_stream(&client_setup.api_provider.url_for_path("/responses"))
                          .is_some()
                  });
@@ -133,7 +151,7 @@ index c74c5c9b..88686325 100644
                  .websocket_connection(WebsocketConnectParams {
                      session_telemetry,
                      api_provider: client_setup.api_provider,
-@@ -2921,9 +2968,17 @@ impl ModelClientSession {
+@@ -2921,9 +2986,17 @@
                          .request_transport
                          .as_ref()
                          .and_then(Option::as_ref),
@@ -151,7 +169,7 @@ index c74c5c9b..88686325 100644
                  Ok(_) => {}
                  Err(ApiError::Transport(TransportError::Http { status, .. }))
                      if status == StatusCode::UPGRADE_REQUIRED =>
-@@ -2972,6 +3027,11 @@ impl ModelClientSession {
+@@ -2972,6 +3045,11 @@
                  include_internal,
                  model_info.use_responses_lite,
              );
@@ -163,7 +181,7 @@ index c74c5c9b..88686325 100644
              if let Some(turn_state) = self.turn_state.get() {
                  client_metadata.insert(X_CODEX_TURN_STATE_HEADER.to_string(), turn_state.clone());
              }
-@@ -3041,47 +3101,12 @@ impl ModelClientSession {
+@@ -3041,47 +3119,21 @@
                  ),
                  ..ResponseCreateWsRequest::from(&request)
              };
@@ -208,14 +226,31 @@ index c74c5c9b..88686325 100644
 -                            as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
 -                    }),
 -            );
++            // The plain route installs its dispatch guard when the socket connects.
++            // Provider history has already checked its interceptors before acquiring that connection.
++            let interceptors = history_interceptors.unwrap_or_else(|| {
++                prepare_interceptors(
++                    &self.client,
++                    ws_payload.model.is_none(),
++                    &mut ws_payload.client_metadata,
++                )
++            });
              let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
              stamp_ws_stream_request_start_ms(&mut ws_request);
              let ResponsesWsRequest::ResponseCreate(payload) = &ws_request;
-@@ -3094,15 +3119,17 @@ impl ModelClientSession {
+@@ -3094,15 +3146,17 @@
                  payload.input = input;
              }
              if !previous_response_id_from_untraced_warmup {
 -                inference_trace_attempt.record_started(&ws_request);
+-            }
+-
+-            let websocket_connection =
+-                self.websocket_session.connection.as_ref().ok_or_else(|| {
+-                    self.client.state.provider.map_api_error(ApiError::Stream(
+-                        "websocket connection is unavailable".to_string(),
+-                    ))
+-                })?;
 +                if let Some(logical) = logical_history_input.as_deref() {
 +                    let ResponsesWsRequest::ResponseCreate(payload) = &mut ws_request;
 +                    let wire = std::mem::replace(&mut payload.input, logical);
@@ -225,18 +260,12 @@ index c74c5c9b..88686325 100644
 +                } else {
 +                    inference_trace_attempt.record_started(&ws_request);
 +                }
-             }
- 
--            let websocket_connection =
--                self.websocket_session.connection.as_ref().ok_or_else(|| {
--                    self.client.state.provider.map_api_error(ApiError::Stream(
--                        "websocket connection is unavailable".to_string(),
--                    ))
--                })?;
++            }
++
              request_session_telemetry.counter(
                  WEBSOCKET_CONTINUATION_COUNT_METRIC,
                  /*inc*/ 1,
-@@ -3117,6 +3144,48 @@ impl ModelClientSession {
+@@ -3117,6 +3171,48 @@
                  ],
              );
              crate::model_request::wait_if_sampling_stopped(prompt.sampling_stop.as_deref()).await;
@@ -285,7 +314,7 @@ index c74c5c9b..88686325 100644
              let request_observation = if warmup || is_guardian_reviewer(&responses_headers) {
                  None
              } else {
-@@ -3148,6 +3217,13 @@ impl ModelClientSession {
+@@ -3148,6 +3244,13 @@
                      observer,
                  )
                  .await;
@@ -299,7 +328,7 @@ index c74c5c9b..88686325 100644
              if let Some(original_item_ids) = original_item_ids {
                  for (item, original_item_id) in request.input.iter_mut().zip(original_item_ids) {
                      item.set_id(original_item_id);
-@@ -3171,6 +3247,7 @@ impl ModelClientSession {
+@@ -3171,6 +3274,7 @@
                  inference_trace_attempt,
                  Arc::clone(&self.client.state.provider),
                  interceptors,
@@ -307,7 +336,7 @@ index c74c5c9b..88686325 100644
                  prompt
                      .request_controls
                      .max_output_tokens
-@@ -3178,7 +3255,11 @@ impl ModelClientSession {
+@@ -3178,7 +3282,11 @@
                      .is_some(),
              );
              stream.request_observation = request_observation;
@@ -320,7 +349,7 @@ index c74c5c9b..88686325 100644
              return Ok(WebsocketStreamOutcome::Stream(stream));
          }
      }
-@@ -3577,15 +3658,27 @@ fn map_response_stream(
+@@ -3577,15 +3685,27 @@
      inference_trace_attempt: InferenceTraceAttempt,
      provider: SharedModelProvider,
      interceptors: Vec<Box<dyn codex_extension_api::ModelResponseInterceptor>>,
@@ -349,7 +378,7 @@ index c74c5c9b..88686325 100644
          session_telemetry,
          inference_trace_attempt,
          provider,
-@@ -3905,6 +3998,7 @@ struct WebsocketConnectParams<'a> {
+@@ -3905,6 +4025,7 @@
      responses_headers: &'a ApiHeaderMap,
      request_transport:
          Option<&'a codex_protocol::model_request_transport::RequestTransportOverrides>,
