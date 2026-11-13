@@ -695,3 +695,50 @@ it('settles an exact failed terminal attempt after the active profile changes', 
     await f.session.close();
   }
 });
+
+it('keeps the previous catalog usable after idle candidate capture fails', async () => {
+  const f = fixture({ graphEnabled: false });
+  await f.session._start();
+  try {
+    const replacement = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      execute: () => 'replacement',
+    });
+    await expect(
+      f.session.update({ tools: [replacement, replacement] }),
+    ).rejects.toThrow('Duplicate tool');
+    expect(f.native._replace_tools).not.toHaveBeenCalled();
+    expect(() =>
+      f.controlled.captureSelection({ tools: [f.first] }),
+    ).not.toThrow();
+    const turn = await f.session.submit('previous catalog', {
+      tools: [f.first],
+    });
+    f.emit('ordinary', 'task_complete', { last_agent_message: 'accepted' });
+    expect((await turn.wait()).finalOutput).toBe('accepted');
+  } finally {
+    await f.session.close();
+  }
+});
+
+it('retains omitted current bindings while publishing empty idle defaults', async () => {
+  const f = fixture({ graphEnabled: false });
+  await f.session._start();
+  try {
+    await f.session.update({ tools: [] });
+    const publication = f.native._replace_tools.mock
+      .calls[0] as unknown as string[];
+    expect(JSON.parse(publication[1])).toEqual(
+      JSON.parse(captureTools([f.first]).specsJson),
+    );
+    expect(JSON.parse(publication[2])).toEqual([]);
+    const turn = await f.session.submit('explicit retained capability', {
+      tools: [f.first],
+    });
+    f.emit('ordinary', 'task_complete', { last_agent_message: 'accepted' });
+    expect((await turn.wait()).finalOutput).toBe('accepted');
+  } finally {
+    await f.session.close();
+  }
+});

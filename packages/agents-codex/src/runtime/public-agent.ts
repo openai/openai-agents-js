@@ -798,7 +798,7 @@ export class Agent<Context = undefined, Output = string> {
           (options as OwnedSessionOptions<Context>)[ownedRun]
             ?.privateEngineGrant,
         );
-      const { setup, session, lease, environmentOwner, privateRun } =
+      const { setup, session, lease, environmentOwner, privateRun, catalog } =
         await Reflect.apply(prepare, this, [
           options,
           (owner: EnvironmentAcquisition) => {
@@ -846,6 +846,7 @@ export class Agent<Context = undefined, Output = string> {
           session,
           lease,
           (options as OwnedSessionOptions<Context>)[ownedRun],
+          prepare === Agent.#canonicalPrepare ? catalog : undefined,
         );
         environmentOwner.opened();
         (options as OwnedSessionOptions<Context>)[deferredOpening]?.opened(
@@ -2159,7 +2160,7 @@ export class Agent<Context = undefined, Output = string> {
           }
         };
       }
-      return { setup, session, lease, environmentOwner, privateRun };
+      return { setup, session, lease, environmentOwner, privateRun, catalog };
     } catch (error) {
       return lease.failOpening(error);
     }
