@@ -2021,3 +2021,11 @@ it('captures reused projected JSON before concurrent starts return', async () =>
     await Promise.all(starts);
   }
 });
+
+it('keeps A2A manual grants outside private Session fields', async () => {
+  const source = await readFile(
+    new URL('../src/a2a/executor.ts', import.meta.url),
+    'utf8',
+  );
+  expect(source).not.toContain('_manualTool');
+});

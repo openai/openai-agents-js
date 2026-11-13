@@ -458,8 +458,12 @@ describe('native Twilio media bridge', () => {
 
   it('closes both media connections on input overflow', async () => {
     const { client, media, running } = await connect();
+    const closed = once(client, 'close');
     client.send(' '.repeat(2 * 1024 * 1024 + 1));
-    await expect(running).rejects.toThrow('input buffer overflow');
+    await Promise.all([
+      expect(running).rejects.toThrow('input buffer overflow'),
+      closed,
+    ]);
     expect(client.readyState).toBe(WebSocket.CLOSED);
     expect(media.close).toHaveBeenCalledOnce();
   });
