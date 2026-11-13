@@ -123,7 +123,11 @@ export async function openSession(
         throw new TypeError(
           'Use null input to resume a pending manual checkpoint',
         );
-      if (!options.onInteraction) throw new InteractionRequired(saved);
+      if (!options.onInteraction) {
+        if (options.state && hasSessionStateAuthority(options.state))
+          captureSessionState(saved);
+        throw new InteractionRequired(saved);
+      }
     } else if (oneShot.input == null) {
       throw new TypeError(
         'Input is required unless resuming a pending manual checkpoint',
