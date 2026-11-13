@@ -1,4 +1,4 @@
-import { projectMcpToolNames } from './mcp-names';
+import { captureToolNameOverrides, projectMcpToolNames } from './mcp-names';
 import type {
   MCPToolStartObservation,
   MCPToolEndObservation,
@@ -38,6 +38,8 @@ export interface SelectMcpToolsOptions<Context = unknown> {
   ) => boolean | Promise<boolean>;
   /** Omit to select every discovered tool that passes the server's filter. */
   readonly toolNames?: readonly string[];
+  /** Model-visible leaf names keyed by raw peer tool names. */
+  readonly toolNameOverrides?: Readonly<Record<string, string>>;
   /** Required for callable classic filters; supply the actual classic objects. */
   readonly filterContext?: Pick<
     MCPToolFilterContext<Context>,
@@ -235,6 +237,7 @@ export async function selectMcpTools<Context = unknown>(
       new Set(requested).size !== requested.length)
   )
     throw new TypeError('MCP toolNames must contain unique nonempty names');
+  const toolNameOverrides = captureToolNameOverrides(options.toolNameOverrides);
   const list = server.listTools.bind(server);
   const invalidate = server.invalidateToolsCache.bind(server);
   const fullCall = server.callToolResult?.bind(server);
@@ -272,7 +275,10 @@ export async function selectMcpTools<Context = unknown>(
     names.add(declaration.name);
   }
   const discovered = structuredClone(listed);
-  const projected = projectMcpToolNames([{ name, tools: [...names] }], false);
+  const projected = projectMcpToolNames(
+    [{ name, tools: [...names], toolNameOverrides }],
+    false,
+  );
   const selectedRawNames = new Set<string>();
   const tools: FunctionTool<Context>[] = [];
   for (const declaration of discovered) {

@@ -1,0 +1,70 @@
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -92,9 +92,10 @@
+     pub(crate) fn sdk_sampling_receipt(
+         &self,
+         thread_id: ThreadId,
+-        input: &[ResponseItem],
++        prompt: &crate::client_common::Prompt,
+         effort: Option<&ReasoningEffort>,
+     ) -> Option<serde_json::Value> {
++        let input = &prompt.input;
+         let seed = self.extension_data.get::<SdkTurnReceiptSeed>()?;
+         let has_developer_fragment = |expected: &str| {
+             input.iter().rev().any(|item| {
+@@ -163,8 +164,32 @@
+             .config_layer_stack
+             .effective_user_config()
+             .is_some_and(|config| config.as_table().is_some_and(|table| !table.is_empty()));
++        // A request can start hosted work before the provider publishes an item.
++        // Include the full catalog because incremental requests can omit tools.
++        let provider_effects_possible = prompt.canonical_history_input.is_some()
++            || prompt
++                .request_controls
++                .hosted_prompt
++                .as_ref()
++                .and_then(Option::as_ref)
++                .is_some()
++            || prompt
++                .tools
++                .iter()
++                .chain(self.tool_router.model_visible_specs().iter())
++                .any(|tool| {
++                    matches!(
++                        tool,
++                        codex_tools::ToolSpec::Mcp(_)
++                            | codex_tools::ToolSpec::CodeInterpreter(_)
++                            | codex_tools::ToolSpec::Shell(_)
++                            | codex_tools::ToolSpec::ImageGeneration(_)
++                            | codex_tools::ToolSpec::ProviderOnly(_)
++                    )
++                });
+         let mut receipt = serde_json::json!({
+             "version": 1,
++            "provider_effects_possible": provider_effects_possible,
+             "thread_id": thread_id,
+             "model": model.slug,
+             "reasoning_effort": reasoning_effort,
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -4116,7 +4116,7 @@
+     // A later request in the same turn may select different live settings.
+     struct LastSdkReceipt(serde_json::Value);
+     if let Some(receipt) =
+-        step_context.sdk_sampling_receipt(sess.thread_id(), &prompt.input, effort.as_ref())
++        step_context.sdk_sampling_receipt(sess.thread_id(), prompt, effort.as_ref())
+         && turn_context
+             .extension_data
+             .get::<LastSdkReceipt>()
+@@ -4131,6 +4131,11 @@
+             .await
+         {
+             turn_context.extension_data.insert(LastSdkReceipt(receipt));
++        } else {
++            return Err(CodexErr::Fatal(
++                "Canonical thread persistence failed; execution stopped pending recovery"
++                    .to_owned(),
++            ));
+         }
+     }
+     // Every request, including a stream retry, depends on accepted durable history.

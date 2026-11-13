@@ -103,7 +103,7 @@ New Environments default to `writePolicy: 'strict'`. Reopening a local profile i
 
 ### Reopen with descendant history
 
-Reopen through the original root Session ID. Before model or callback work, the SDK checks the root and all recorded descendants, including closed branches. A live writer or an unrelated unfinished turn on an open descendant branch blocks reopening. An abandoned child or grandchild call with no saved result can require a receipt, even when the current Agent declares no NativeAgents.
+Reopen through the original root Session ID. Before model or callback work, the SDK checks the root and all recorded descendants, including closed branches. The SDK has been interrupting abandoned descendant turns when retained history accounts for every tool effect and identifies any unfinished spawning turn. It has been refusing live writers, open descendants without their own recorded turn, unknown effects, and ambiguous or incomplete history. Automatic recovery has also been refusing `write_stdin` activity and commands without durable completion evidence. An abandoned child or grandchild call with no saved result can require a receipt, even when the current Agent declares no NativeAgents.
 
 Read descendant history through `session.subagents()` or the `subagentId` options on `session.items()` and `session.turns()`. Historical descendants stay stopped. New work uses the current Agent's declarations, credentials, callbacks, and Environment.
 

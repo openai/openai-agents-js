@@ -1069,6 +1069,10 @@
       "sha256": "2690c02531c737dd80c360138ccac0eb1664597bacc6283006b797634e6f6d6a"
     },
     {
+      "path": "sdk-cold-recovery-sampling-fence.patch",
+      "sha256": "1162ef20546f973d00989ceecad8cd4f0ce8c4bba08e30b15ce3368d1def90de"
+    },
+    {
       "path": "sdk-segmented-terminal-text.patch",
       "sha256": "300f6ac888f04a0c15eeaf3a36448c20eb85b4e6bf28096b105dc96b503a1436"
     },
@@ -1077,5 +1081,5 @@
       "sha256": "303ee193d99370161f6ba3505a1bc8d23c390e9e14f6cf1715eb99da7565158a"
     }
   ],
-  "result_tree": "48955cec50ded9785fe72c93f0fa62ba7de8d747"
+  "result_tree": "e28179f42a246987879a079d9c314e3d9c29330a"
 }

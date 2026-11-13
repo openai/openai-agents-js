@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { projectMcpToolNames } from './mcp-names';
+import { captureToolNameOverrides, projectMcpToolNames } from './mcp-names';
 /** @internal */
 export { projectMcpToolNames } from './mcp-names';
 import {
@@ -279,6 +279,10 @@ export interface MCPOptions<Context = unknown> {
   cacheToolsList?: boolean;
   /** Follow native rules (default), or preapprove selected tools. Application approval still applies. */
   approvalMode?: 'native' | 'preapproved';
+  /** Native rules, a prompt or preapproval for selected raw names. Core evaluates prompts under the active permission policy. Application approval still applies. */
+  toolApprovalOverrides?: Readonly<
+    Record<string, 'native' | 'prompt' | 'preapproved'>
+  >;
   /** Inspect or replace arguments before native dispatch; has a 30-second deadline. */
   before?: (
     context: MCPCallContext<Context>,
@@ -314,6 +318,9 @@ abstract class MCP<Context> {
   readonly toolFilter?: MCPOptions<Context>['toolFilter'];
   readonly cacheToolsList?: boolean;
   readonly approvalMode: 'native' | 'preapproved';
+  readonly toolApprovalOverrides: NonNullable<
+    MCPOptions<Context>['toolApprovalOverrides']
+  >;
   readonly startupTimeout: number;
   readonly executionTimeout: number;
   readonly before?: MCPOptions<Context>['before'];
@@ -360,37 +367,44 @@ abstract class MCP<Context> {
     this.deferLoading = options.deferLoading ?? false;
     this.name = options.name;
     this.tools = Object.freeze([...options.tools]);
-    const overrides = options.toolNameOverrides;
+    this.toolNameOverrides = captureToolNameOverrides(
+      options.toolNameOverrides,
+    );
     if (
-      overrides !== undefined &&
-      (overrides === null ||
-        typeof overrides !== 'object' ||
-        Array.isArray(overrides) ||
-        ![null, Object.prototype].includes(Object.getPrototypeOf(overrides)) ||
-        Object.getOwnPropertySymbols(overrides).length > 0)
+      Object.keys(this.toolNameOverrides).length &&
+      options.name === 'codex_apps'
     )
-      throw new TypeError(
-        'MCP toolNameOverrides must map raw names to public names',
-      );
-    const entries = Object.entries(overrides ?? {});
-    for (const entry of entries)
-      for (const value of entry) {
-        if (
-          typeof value !== 'string' ||
-          !value ||
-          value.includes('\0') ||
-          Buffer.from(value, 'utf8').toString('utf8') !== value
-        )
-          throw new TypeError(
-            'MCP name overrides require nonempty valid Unicode without NUL',
-          );
-      }
-    if (entries.length && options.name === 'codex_apps')
       throw new TypeError('MCP name overrides require an ordinary server');
-    this.toolNameOverrides = Object.freeze(Object.fromEntries(entries));
     this.approvalMode = options.approvalMode ?? 'native';
     if (!['native', 'preapproved'].includes(this.approvalMode))
       throw new TypeError('Invalid MCP approvalMode');
+    const approvals = options.toolApprovalOverrides;
+    if (
+      approvals !== undefined &&
+      (approvals === null ||
+        typeof approvals !== 'object' ||
+        ![null, Object.prototype].includes(Object.getPrototypeOf(approvals)) ||
+        Object.getOwnPropertySymbols(approvals).length > 0)
+    )
+      throw new TypeError(
+        'MCP toolApprovalOverrides must map raw names to approval modes',
+      );
+    const approvalEntries = Object.entries(approvals ?? {});
+    if (approvalEntries.length && options.name === 'codex_apps')
+      throw new TypeError(
+        'MCP tool approval overrides require an ordinary server',
+      );
+    for (const [raw, mode] of approvalEntries)
+      if (
+        !raw ||
+        raw.includes('\0') ||
+        Buffer.from(raw, 'utf8').toString('utf8') !== raw ||
+        !['native', 'prompt', 'preapproved'].includes(mode)
+      )
+        throw new TypeError('Invalid MCP raw tool name or approval mode');
+    this.toolApprovalOverrides = Object.freeze(
+      Object.fromEntries(approvalEntries),
+    );
     this.startupTimeout = positive(options.startupTimeout ?? 10);
     this.executionTimeout = positive(options.executionTimeout ?? 60);
     if (
@@ -685,6 +699,13 @@ export function isHostedRegistration(
   );
 }
 
+/** @internal Resolve a selected raw tool's policy from its declaration. */
+export function mcpToolApprovalMode(server: McpTool, raw: string) {
+  return Object.hasOwn(server.toolApprovalOverrides, raw)
+    ? server.toolApprovalOverrides[raw]!
+    : server.approvalMode;
+}
+
 /** @internal Native settings are assembled only by the Session owner. */
 function mcpServerConfig(
   server: McpTool,
@@ -700,23 +721,17 @@ function mcpServerConfig(
       ? {}
       : { sdk_cache_tools_list: server.cacheToolsList }),
   };
-  const approved = server.approvalMode === 'preapproved' ? server.tools : [];
-  const configured = new Set([
-    ...approved,
-    ...Object.keys(server.toolNameOverrides),
-  ]);
-  if (configured.size)
-    config.tools = Object.fromEntries(
-      [...configured].map((raw) => [
-        raw,
-        {
-          ...(approved.includes(raw) ? { approval_mode: 'approve' } : {}),
-          ...(Object.hasOwn(server.toolNameOverrides, raw)
-            ? { name_override: server.toolNameOverrides[raw]! }
-            : {}),
-        },
-      ]),
-    );
+  const toolSettings = new Map<string, JsonObject>();
+  for (const raw of server.tools) {
+    const mode = mcpToolApprovalMode(server, raw);
+    if (mode !== 'native')
+      toolSettings.set(raw, {
+        approval_mode: mode === 'preapproved' ? 'approve' : mode,
+      });
+  }
+  for (const [raw, alias] of Object.entries(server.toolNameOverrides))
+    toolSettings.set(raw, { ...toolSettings.get(raw), name_override: alias });
+  if (toolSettings.size) config.tools = Object.fromEntries(toolSettings);
   if (server instanceof HttpMCP) {
     config.url = server.url;
     if (server instanceof ChatGPTAppsMCP) config.auth = 'chatgpt';
@@ -757,6 +772,7 @@ export function selectHttpLeaves(
   const selected = new HttpMCP({
     name: server.name,
     toolNameOverrides: server.toolNameOverrides,
+    toolApprovalOverrides: server.toolApprovalOverrides,
     url: server.url,
     bearerToken: server.bearerToken,
     headers: server.headers,
@@ -823,6 +839,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
   return new StdioMCP({
     name: server.name,
     toolNameOverrides: server.toolNameOverrides,
+    toolApprovalOverrides: server.toolApprovalOverrides,
     tools: [],
     toolFilter: server.toolFilter,
     cacheToolsList: server.cacheToolsList,

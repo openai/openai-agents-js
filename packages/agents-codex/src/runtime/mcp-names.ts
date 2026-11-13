@@ -1,5 +1,36 @@
 import { createHash } from 'node:crypto';
 
+/** @internal Capture trusted aliases before asynchronous MCP discovery. */
+export function captureToolNameOverrides(
+  overrides: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> {
+  if (
+    overrides !== undefined &&
+    (overrides === null ||
+      typeof overrides !== 'object' ||
+      Array.isArray(overrides) ||
+      ![null, Object.prototype].includes(Object.getPrototypeOf(overrides)) ||
+      Object.getOwnPropertySymbols(overrides).length > 0)
+  )
+    throw new TypeError(
+      'MCP toolNameOverrides must map raw names to public names',
+    );
+  const entries = Object.entries(overrides ?? {});
+  for (const entry of entries)
+    for (const value of entry) {
+      if (
+        typeof value !== 'string' ||
+        !value ||
+        value.includes('\0') ||
+        Buffer.from(value, 'utf8').toString('utf8') !== value
+      )
+        throw new TypeError(
+          'MCP name overrides require nonempty valid Unicode without NUL',
+        );
+    }
+  return Object.freeze(Object.fromEntries(entries));
+}
+
 /** @internal Synchronous projection of the existing native catalog name owner. */
 export function projectMcpToolNames(
   servers: readonly {

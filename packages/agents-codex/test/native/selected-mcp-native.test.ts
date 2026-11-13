@@ -100,16 +100,23 @@ function wireTools(
   return result;
 }
 
-it('defaults an omitted borrowed MCP schema type to object', async () => {
+it('dispatches a borrowed MCP alias and defaults an omitted schema type to object', async () => {
   const peer = new BorrowedPeer();
   const inputSchema = {};
+  const aliases = { lookup: 'catalog_lookup' };
   Object.assign(peer.declarations[0]!, { inputSchema });
   const selected = await selectMcpTools(
-    { name: 'crm', server: peer },
-    { context: undefined },
+    {
+      name: 'crm',
+      server: peer,
+      authenticate() {
+        aliases.lookup = 'changed_after_capture';
+      },
+    },
+    { context: undefined, toolNameOverrides: aliases },
   );
   const model = new ModelServer([
-    [call('lookup', {}, { namespace: 'crm', callId: 'empty-schema' })],
+    [call('catalog_lookup', {}, { namespace: 'crm', callId: 'empty-schema' })],
     [message('done')],
   ]);
   const session = await new Agent({
@@ -124,7 +131,7 @@ it('defaults an omitted borrowed MCP schema type to object', async () => {
   );
   expect(wireTools(model.requests[0]!)).toContainEqual({
     namespace: 'crm',
-    name: 'lookup',
+    name: 'catalog_lookup',
     parameters: expect.objectContaining({ type: 'object', properties: {} }),
   });
   expect(inputSchema).toEqual({});

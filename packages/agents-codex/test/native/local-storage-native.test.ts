@@ -120,6 +120,105 @@ const exists = (path: string) =>
   );
 
 describe('public native local profiles', () => {
+  it('interrupts a dead child turn without tools and reopens the root twice', async () => {
+    const p = await profile();
+    const executor = await startPublicExecutor();
+    const childSampling = Promise.withResolvers<void>();
+    const rootSampling = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    try {
+      const environment = {
+        url: executor.url,
+        cwd: executor.cwd,
+        headers: executor.headers,
+      };
+      let rootId = '';
+      let rootTurnId = '';
+      let childId = '';
+      let childTurnId = '';
+      const hold = async (request: Record<string, any>) => {
+        const metadata = request.client_metadata as Record<string, string>;
+        const turnMetadata = JSON.parse(metadata['x-codex-turn-metadata']);
+        const id = turnMetadata.thread_id;
+        if (id !== rootId) {
+          childId = id;
+          childTurnId = turnMetadata.turn_id;
+          childSampling.resolve();
+        } else {
+          rootTurnId = turnMetadata.turn_id;
+          rootSampling.resolve();
+        }
+        await release.promise;
+        return [message('unpublished')];
+      };
+      const original = new ModelServer([
+        [
+          call(
+            'spawn_agent',
+            { task_name: 'worker', message: 'Wait for a reply.' },
+            { namespace: 'collaboration', callId: 'spawn-child' },
+          ),
+        ],
+        hold,
+        hold,
+      ]);
+      const first = await worker(original, {
+        profile: p.storage.path,
+        effects: p.effects,
+        label: 'source',
+        mode: 'run',
+        nativeChildren: true,
+        environment,
+      });
+      rootId = (await first.wait('opened')).id;
+      await Promise.race([
+        Promise.all([childSampling.promise, rootSampling.promise]),
+        first.exited.then(() => {
+          throw new Error('Worker exited before child sampling');
+        }),
+      ]);
+      first.child.kill('SIGKILL');
+      expect((await first.exited).signal).toBe('SIGKILL');
+      release.resolve();
+      const resumed = new ModelServer([
+        [message('recovered')],
+        [message('again')],
+      ]);
+      for (const output of ['recovered', 'again']) {
+        const next = await worker(resumed, {
+          profile: p.storage.path,
+          effects: p.effects,
+          label: 'destination',
+          mode: 'run',
+          resume: rootId,
+          environment,
+          inspectChildren: true,
+        });
+        const opened = await next.wait('opened');
+        expect(opened.id).toBe(rootId);
+        expect(opened.history.turns).toContainEqual(
+          expect.objectContaining({ id: rootTurnId, status: 'cancelled' }),
+        );
+        expect(opened.history.descendants).toEqual([
+          expect.objectContaining({
+            id: childId,
+            isLive: false,
+            turns: expect.arrayContaining([
+              expect.objectContaining({ id: childTurnId, status: 'cancelled' }),
+            ]),
+          }),
+        ]);
+        expect((await next.wait('result')).output).toBe(output);
+        expect((await next.exited).code).toBe(0);
+      }
+      expect(await exists(p.effects)).toBe(false);
+      resumed.assertExhausted();
+    } finally {
+      release.resolve();
+      await executor.close();
+    }
+  }, 60000);
+
   it('fences repeated application Shell calls after confirmed local reconciliation', async () => {
     const p = await profile();
     const original = {
