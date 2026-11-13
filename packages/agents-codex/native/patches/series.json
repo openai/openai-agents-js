@@ -1163,7 +1163,11 @@
     {
       "path": "sdk-seed-cache-and-program-observations.patch",
       "sha256": "401e4ac78b6d1a4bdf4313effe86177b5fea9791b5890e0f991292ec0326842b"
+    },
+    {
+      "path": "sdk-provider-output-strictness.patch",
+      "sha256": "98fccbf09d93fc65910e8fe7f829b011d1912e23cd851438878fa870e4bd3661"
     }
   ],
-  "result_tree": "009e7161481504c1d1a194164fe18e31eff23377"
+  "result_tree": "ce7965633e4bc01a5e46b8197172e6d09db8bf33"
 }

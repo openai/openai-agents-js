@@ -239,6 +239,7 @@ import {
   type ClientToolSearchExecutor,
 } from './hosted-tools';
 import {
+  outputModelSettings,
   assertOutputRepairSupported,
   OutputValidationError,
   prepareOutput,
@@ -6224,6 +6225,10 @@ export class Session<OutputT = string, Context = unknown> {
     const { output, inputStoragePolicy } = state;
     delete state.inputStoragePolicy;
     const selection = run.selection;
+    const modelSettingsOverride = outputModelSettings(
+      output,
+      selection?.modelSettingsOverride,
+    );
     if (selection?.prepareRequest && output.repair)
       throw new TypeError(
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
@@ -6238,9 +6243,9 @@ export class Session<OutputT = string, Context = unknown> {
               ...(selection.modelOverride === undefined
                 ? {}
                 : { model_override: selection.modelOverride }),
-              ...(selection?.modelSettingsOverride === undefined
+              ...(modelSettingsOverride === undefined
                 ? {}
-                : { model_settings_override: selection.modelSettingsOverride }),
+                : { model_settings_override: modelSettingsOverride }),
               ...(selection.operationDeclarationSource
                 ? {
                     operation_declaration_source:
@@ -6273,7 +6278,7 @@ export class Session<OutputT = string, Context = unknown> {
         : parts,
       ...(output.schema === undefined &&
       selection?.modelOverride === undefined &&
-      selection?.modelSettingsOverride === undefined
+      modelSettingsOverride === undefined
         ? {}
         : {
             start: {
@@ -6283,9 +6288,9 @@ export class Session<OutputT = string, Context = unknown> {
               ...(selection?.modelOverride === undefined
                 ? {}
                 : { model_override: selection.modelOverride }),
-              ...(selection?.modelSettingsOverride === undefined
+              ...(modelSettingsOverride === undefined
                 ? {}
-                : { model_settings_override: selection.modelSettingsOverride }),
+                : { model_settings_override: modelSettingsOverride }),
             },
           }),
     };
@@ -7151,6 +7156,10 @@ export class Session<OutputT = string, Context = unknown> {
                   : {
                       start: {
                         final_output_json_schema: submission.output.schema,
+                        model_settings_override: outputModelSettings(
+                          submission.output,
+                          run.selection?.modelSettingsOverride,
+                        ),
                       },
                     }),
               }),

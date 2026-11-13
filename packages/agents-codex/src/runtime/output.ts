@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   decode,
   losslessJsonValueSchema,
+  losslessJsonObjectSchema,
   jsonObject,
   type JsonObject,
   type JsonValue,
@@ -13,6 +14,8 @@ export type OutputSpec<Output> =
   | z.ZodType<Output>
   | {
       readonly mode: 'native';
+      /** Provider schema enforcement; local validation always runs. */
+      readonly strict?: boolean;
       readonly schema: z.ZodType<Output>;
     }
   | {
@@ -107,6 +110,7 @@ function captureOutputIdentity(
 export interface PreparedOutput<Output = unknown> {
   readonly identity: OutputIdentity;
   readonly schema?: JsonObject;
+  readonly strict?: boolean;
   /** Private native non-object response wrapper. */
   readonly wrapped?: boolean;
   readonly prompt?: string;
@@ -160,6 +164,16 @@ export function prepareOutput<Output>(
       }
     }
   }
+  const strict =
+    !explicit || output.mode !== 'native' || output.strict !== false;
+  if (explicit && 'strict' in output && output.strict !== undefined) {
+    if (output.mode !== 'native' || typeof output.strict !== 'boolean')
+      throw new TypeError('Output strict must be a boolean on native output');
+    if (options.applicationValue && !strict)
+      throw new TypeError(
+        'Application decision output requires strict schemas',
+      );
+  }
   const schema = explicit ? output.schema : output;
   const validate =
     (parse: (text: string) => Output, wrapped = false) =>
@@ -196,7 +210,7 @@ export function prepareOutput<Output>(
     JSON.stringify(
       z.toJSONSchema(
         schema,
-        options.applicationValue ? { io: 'input' } : undefined,
+        options.applicationValue || !strict ? { io: 'input' } : undefined,
       ),
     ),
   );
@@ -210,11 +224,20 @@ export function prepareOutput<Output>(
       parse: validate((text) => schema.parse(text)),
     };
   const wrapped = !options.applicationValue && native.type !== 'object';
-  const identity = captureOutputIdentity('native', { schema: native, wrapped });
+  const identity = captureOutputIdentity('native', {
+    schema: native,
+    wrapped,
+    ...(strict ? {} : { strict: false }),
+  });
   if (wrapped)
     native = decode(
       jsonObject,
-      JSON.stringify(z.toJSONSchema(z.object({ response: schema }))),
+      JSON.stringify(
+        z.toJSONSchema(
+          z.object({ response: schema }),
+          strict ? undefined : { io: 'input' },
+        ),
+      ),
     );
 
   const close = (node: JsonObject): void => {
@@ -252,10 +275,11 @@ export function prepareOutput<Output>(
     if (Array.isArray(node.anyOf))
       for (const child of node.anyOf) close(child as JsonObject);
   };
-  close(native);
+  if (strict) close(native);
   return {
     identity,
     schema: native,
+    ...(strict ? {} : { strict: false }),
     wrapped,
     parse: validate((text) => {
       const value = JSON.parse(text);
@@ -313,4 +337,27 @@ export function parseToolCompletion(
     if (error instanceof OutputValidationError) throw error;
     throw new OutputValidationError(text, outputValidationIssues(error));
   }
+}
+
+/** @internal Bind provider strictness to the captured output rather than ambient settings. */
+export function outputModelSettings(
+  output: PreparedOutput,
+  settings?: JsonObject,
+): JsonObject | undefined {
+  if (output.schema === undefined) return settings;
+  const controls = losslessJsonObjectSchema.parse(
+    settings?.request_controls === undefined ? {} : settings.request_controls,
+  );
+  if (
+    'output_schema_strict' in controls &&
+    typeof controls.output_schema_strict !== 'boolean'
+  )
+    throw new TypeError('Invalid captured output schema strictness');
+  return {
+    ...settings,
+    request_controls: {
+      ...controls,
+      output_schema_strict: output.strict ?? true,
+    },
+  };
 }
