@@ -3,6 +3,7 @@ import type { TokenUsage } from './run-events';
 
 export type ProviderRequestAccounting =
   | { readonly operation: 'manage' | 'create' }
+  | { readonly operation: 'dispatch'; readonly lineage: string }
   | {
       readonly operation: 'terminal';
       readonly lineage: string;

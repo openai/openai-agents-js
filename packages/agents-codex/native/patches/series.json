@@ -1171,7 +1171,11 @@
     {
       "path": "sdk-hosted-provider-request-accounting.patch",
       "sha256": "bbc0c4195954f4c6e458cd21f8923445ba5762a8c0a1c1a755d7b732216a375f"
+    },
+    {
+      "path": "sdk-hosted-provider-dispatch-fence.patch",
+      "sha256": "229ffa64282829572c164c9b5244e46b4acebe56c4ca4ee4b2de7f2ba34a15b2"
     }
   ],
-  "result_tree": "cf8a1a6f022ae31fda28095e24419dc8d9000dae"
+  "result_tree": "17838061e54b03e6defaf08b03f8cb1fd979c7e7"
 }

@@ -9,6 +9,7 @@ import {
   captureRequestOptionsSource,
   clientRequestOptions,
   hasRawProviderEvents,
+  isRawModelPart,
   markRawModelPart,
   markResponsesWebSocketStream,
   projectResponsesResponse,
@@ -94,6 +95,7 @@ export class ResponsesWebSocketModel implements NativeModel {
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
     for await (const event of this.stream(request)) {
+      if (isRawModelPart(event)) continue;
       if (
         [
           'response.completed',

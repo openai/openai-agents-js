@@ -186,6 +186,7 @@ function hostedSocket(
       queued: [],
       bytes,
     };
+    accountProviderRequest(request(), { operation: 'dispatch', lineage });
     socket.send({
       ...frame,
       type: 'response.create',
@@ -266,6 +267,10 @@ function hostedSocket(
       active.continuation = frame;
       active.injectionInput = outputs;
       active.injecting = ids;
+      accountProviderRequest(request(), {
+        operation: 'dispatch',
+        lineage: active.lineage,
+      });
       socket.send({
         type: 'response.inject',
         response_id: active.responseId,

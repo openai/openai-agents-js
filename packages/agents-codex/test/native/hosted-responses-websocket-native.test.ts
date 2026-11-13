@@ -479,3 +479,179 @@ it.each([
     }
   },
 );
+
+it.each(['failed', 'incomplete'] as const)(
+  'reports a hosted provider %s terminal without running or replaying a tool',
+  async (status) => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    let creates = 0;
+    let effects = 0;
+    server.on('connection', (socket) => {
+      socket.on('message', (wire) => {
+        expect(JSON.parse(wire.toString()).type).toBe('response.create');
+        creates++;
+        socket.send(
+          JSON.stringify({
+            type: 'response.created',
+            response: { id: 'resp_failure', output: [] },
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: `response.${status}`,
+            response: {
+              id: 'resp_failure',
+              status,
+              output: [],
+              ...(status === 'failed'
+                ? {
+                    error: {
+                      code: 'server_error',
+                      message: 'Synthetic hosted failure',
+                    },
+                  }
+                : { incomplete_details: { reason: 'content_filter' } }),
+            },
+          }),
+        );
+      });
+    });
+    const client = new OpenAI({
+      apiKey: 'synthetic-hosted',
+      baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+    });
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: new HostedResponsesWebSocketModel(
+          (_request, options) =>
+            new ResponsesWS(client, { headers: options.headers as any }),
+        ),
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'synthetic-provider',
+      });
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5.5',
+        instructions: 'Use lookup.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Read the synthetic record.',
+            parameters: z.object({}),
+            execute() {
+              effects++;
+              return 'synthetic record';
+            },
+          }),
+        ],
+        programmaticToolCalling: false,
+      });
+      await using session = await agent.session({
+        includeRawProviderEvents: true,
+        observationRetention: 'all',
+      });
+      const turn = await session.submit('start');
+      const observed: unknown[] = [];
+      for await (const event of turn.events({
+        includeExecutionDetails: true,
+      })) {
+        if (event.type === 'raw_provider_event')
+          observed.push(event.payload.type);
+      }
+      await expect(turn.wait()).rejects.toThrow();
+      expect(observed).toEqual(['response.created', `response.${status}`]);
+      expect(creates).toBe(1);
+      expect(effects).toBe(0);
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+  20_000,
+);
+
+it.each(['response.create', 'response.inject'] as const)(
+  'keeps a hosted %s send failure on its admitted attempt',
+  async (failOn) => {
+    const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+    await once(server, 'listening');
+    const sends: string[] = [];
+    let effects = 0;
+    server.on('connection', (socket) => {
+      socket.on('message', () => {
+        socket.send(
+          JSON.stringify({
+            type: 'response.created',
+            response: { id: 'resp_send_error', output: [] },
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: 'response.output_item.done',
+            output_index: 0,
+            item: {
+              type: 'function_call',
+              id: 'fc_send_error',
+              name: 'lookup',
+              call_id: 'call_send_error',
+              arguments: '{}',
+            },
+          }),
+        );
+      });
+    });
+    const client = new OpenAI({
+      apiKey: 'synthetic-hosted',
+      baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+    });
+    try {
+      await using provider = new NativeProvider({
+        modelBackend: new HostedResponsesWebSocketModel((_request, options) => {
+          const ws = new ResponsesWS(client, {
+            headers: options.headers as any,
+          });
+          return {
+            socket: ws.socket,
+            close: () => ws.close(),
+            send(frame) {
+              sends.push(frame.type);
+              if (frame.type === failOn)
+                throw new Error('synthetic send failure');
+              ws.send(frame);
+            },
+            [Symbol.asyncIterator]: () => ws[Symbol.asyncIterator](),
+          };
+        }),
+        baseUrl: 'https://example.invalid/v1',
+        apiKey: 'synthetic-provider',
+      });
+      const agent = new Agent({
+        provider,
+        model: 'gpt-5.5',
+        instructions: 'Use lookup.',
+        tools: [
+          tool({
+            name: 'lookup',
+            description: 'Read the synthetic record.',
+            parameters: z.object({}),
+            execute() {
+              effects++;
+              return 'synthetic record';
+            },
+          }),
+        ],
+        programmaticToolCalling: false,
+      });
+      await expect(agent.run('start')).rejects.toThrow();
+      expect(sends).toEqual(
+        failOn === 'response.create' ? [failOn] : ['response.create', failOn],
+      );
+      expect(effects).toBe(failOn === 'response.create' ? 0 : 1);
+    } finally {
+      for (const socket of server.clients) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  },
+  20_000,
+);
