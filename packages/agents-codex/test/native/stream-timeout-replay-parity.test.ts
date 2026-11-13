@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import { Agent, NativeProvider, type RetryContext } from '../../src';
+import type { JsonObject } from '../../src/runtime/binding';
 
 it.each([
   { failure: 'provider', approve: true, replays: false },
@@ -24,7 +25,7 @@ it.each([
         complete() {
           throw new Error('Expected native producer streaming');
         },
-        async *stream(request) {
+        async *stream(request): AsyncGenerator<JsonObject> {
           if (++attempts === 1) {
             if (timeout)
               await delay(10_000, undefined, { signal: request.signal });
