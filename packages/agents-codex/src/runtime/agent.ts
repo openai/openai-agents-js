@@ -43,6 +43,7 @@ import {
   type SessionOptions,
   type OneShotOptions,
   type Completed,
+  type CapturedInputStoragePolicy,
 } from './session';
 import {
   sessionStateSchema,
@@ -542,6 +543,7 @@ interface OwnedRunOptions {
   toolNotFoundBehavior?: 'raise_error' | 'return_error_to_model';
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
+  inputStoragePolicy?: CapturedInputStoragePolicy;
   returnState?: boolean;
   returnHistory?: boolean;
   returnRawUsage?: boolean;
@@ -630,6 +632,7 @@ async function completeOwnedSession<Output>(
         options.modelOverride,
         options.modelSettingsOverride,
         options.toolNotFoundBehavior,
+        options.inputStoragePolicy,
       );
     }
     return session.wait();

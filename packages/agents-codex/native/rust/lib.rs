@@ -4815,6 +4815,19 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_pop_history")]
+    pub async fn pop_history(
+        &self,
+        expected_revision: String,
+        allow_rebuild: bool,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::pop(&inner, expected_revision, allow_rebuild)
+            .await
+            .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
     #[napi(js_name = "_start_request_attempts")]
     pub fn start_request_attempts(&self) -> napi::Result<()> {
         let inner = self.current()?;

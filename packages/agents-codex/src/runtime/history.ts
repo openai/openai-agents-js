@@ -2120,3 +2120,10 @@ export interface CanonicalHistorySnapshot {
   readonly total: number;
   readonly items: readonly Record<string, unknown>[];
 }
+
+/** The removed original, resulting revision, and any model context rebuild. */
+export interface CanonicalHistoryPop {
+  readonly revision: string;
+  readonly item: Record<string, unknown> | null;
+  readonly rebuiltModelContext: boolean;
+}
