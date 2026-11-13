@@ -1,0 +1,14 @@
+name: Alpha release artifacts warm control
+
+on:
+  push:
+    branches: ['ci/hillclimb/js-warm-control-22']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  warm:
+    name: Warm control
+    uses: ./.github/workflows/alpha-release-artifacts.yml
