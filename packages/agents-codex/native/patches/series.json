@@ -1147,7 +1147,23 @@
     {
       "path": "sdk-handoff-compaction-frontier.patch",
       "sha256": "cfefa704d42b70f763482358bad152d849190d17f428fe33fb7c0a2f20fc67d1"
+    },
+    {
+      "path": "sdk-handoff-compaction-anchor-retirement.patch",
+      "sha256": "d9b53598e7c8178e7c286c2feae010ab242503306ada8c75191a3682b0ba790d"
+    },
+    {
+      "path": "sdk-handoff-compaction-privacy.patch",
+      "sha256": "1085e20658228e1a86477bde851e63f4db99e49cbb97daf826b7908ac9b742a4"
+    },
+    {
+      "path": "sdk-handoff-compaction-anchor-durability.patch",
+      "sha256": "062ec52a0dbaefda68ae044c0bb938ab0e2b47d1ec1b8b1a42e8ca2ad2671b24"
+    },
+    {
+      "path": "sdk-handoff-restored-model-identity.patch",
+      "sha256": "1f8f148c0710c400812a533c94b801fe5636bd9f6eac71c7db51424c168c45f9"
     }
   ],
-  "result_tree": "ea7ae7cc502e3c0368fb00ca903244792b2fbb34"
+  "result_tree": "d95212ad77d8d03df2732d02f19f421353f069f5"
 }
