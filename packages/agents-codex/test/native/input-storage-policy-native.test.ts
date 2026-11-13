@@ -5,6 +5,34 @@ import { text, withScriptedResponses } from '../../src/testing';
 const nativeIt = it.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1');
 
 nativeIt(
+  'rejects an oversized input storage view before admission',
+  async () => {
+    await withScriptedResponses([], async (peer) => {
+      const project = vi.fn(() => 'should never be submitted');
+      const initialMessages = Array.from({ length: 4097 }, (_, index) => ({
+        role: 'user' as const,
+        content: `Earlier item ${index}`,
+      }));
+      const agent = new Agent({
+        instructions: 'Answer.',
+        provider: peer.provider,
+      });
+      await using session = await agent.session({ initialMessages });
+      await expect(
+        session.submit('new input', { inputStoragePolicy: project }),
+      ).rejects.toThrow(
+        /Input storage policy history exceeds 4096 records or 8 MiB/,
+      );
+      expect(project).not.toHaveBeenCalled();
+      expect(peer.requests).toHaveLength(0);
+      const history = await session.historySnapshot({ limit: 0 });
+      expect(history.total).toBeGreaterThanOrEqual(4097);
+      expect(history.items).toEqual([]);
+    });
+  },
+);
+
+nativeIt(
   'keeps request-only projection separate from durable input after restore',
   async () => {
     await withScriptedResponses([[text('separate views')]], async (peer) => {
