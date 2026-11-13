@@ -186,3 +186,78 @@ it.each([
     expect(requests).toBe(2);
   },
 );
+
+it.each([false, true])(
+  'awaits an output transform while keeping streamed provider deltas (stream=%s)',
+  async (stream) => {
+    const rawText = 'provider draft';
+    const finalText = 'normalized answer';
+    let transformCalls = 0;
+    const model = new AiSdkModel(
+      {
+        specificationVersion: 'v3',
+        provider: 'fixture.model',
+        modelId: 'fixture-transform',
+        doGenerate() {
+          return {
+            content: [{ type: 'text', text: rawText }],
+            finishReason: 'stop',
+          };
+        },
+        doStream() {
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({
+                  type: 'text-delta',
+                  id: 'one',
+                  delta: rawText,
+                });
+                controller.enqueue({ type: 'finish', finishReason: 'stop' });
+                controller.close();
+              },
+            }),
+          };
+        },
+      },
+      {},
+      {
+        stream,
+        async transformOutputText(text, context) {
+          expect(text).toBe(rawText);
+          expect(context).toMatchObject({
+            provider: 'fixture.model',
+            modelId: 'fixture-transform',
+            specificationVersion: 'v3',
+            stream,
+          });
+          expect(context.request.turnId).toBeTruthy();
+          await Promise.resolve();
+          transformCalls++;
+          return finalText;
+        },
+      },
+    );
+    await using provider = new NativeProvider({
+      apiKey: 'synthetic',
+      modelBackend: model,
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      model: 'fixture-transform',
+      provider,
+    });
+    await using session = await agent.session({ observationRetention: 'all' });
+    const turn = await session.submit('Begin.');
+    const deltas = [];
+    for await (const event of turn.events()) {
+      if (event.type === 'output_text_delta') deltas.push(event.delta);
+    }
+    expect((await turn.wait()).finalOutput).toBe(finalText);
+    expect(transformCalls).toBe(1);
+    if (stream) expect(deltas.join('')).toBe(rawText);
+    expect(JSON.stringify(await session.historySnapshot())).toContain(
+      finalText,
+    );
+  },
+);

@@ -1715,6 +1715,38 @@ function aiSdkToolArguments(input: unknown, schema: any): string | undefined {
   return typeof input === 'string' ? input : JSON.stringify(input);
 }
 
+function aiSdkUsage(usage: any): NonNullable<ModelResponse['usage']> {
+  const input =
+    typeof usage.inputTokens === 'number'
+      ? usage.inputTokens
+      : (usage.inputTokens?.total ?? 0);
+  const output =
+    typeof usage.outputTokens === 'number'
+      ? usage.outputTokens
+      : (usage.outputTokens?.total ?? 0);
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: input + output,
+    cached_input_tokens:
+      usage.inputTokens?.cacheRead ?? usage.cachedInputTokens ?? 0,
+    cache_write_input_tokens: usage.inputTokens?.cacheWrite ?? 0,
+    reasoning_output_tokens:
+      usage.outputTokens?.reasoning ?? usage.reasoningTokens ?? 0,
+  };
+}
+
+export type AiSdkOutputTextTransform = (
+  text: string,
+  context: {
+    readonly request: ModelRequest;
+    readonly provider: string;
+    readonly modelId: string;
+    readonly specificationVersion: AiSdkLanguageModel['specificationVersion'];
+    readonly stream: boolean;
+  },
+) => string | Promise<string>;
+
 /** AI SDK generation within the native Core turn and tool loop.
  * Streaming: new AiSdkModel(model, {}, {stream: true}).
  * Renamed OpenAI factories: new AiSdkModel(model, {}, {providerFamily: 'openai'}).
@@ -1726,6 +1758,7 @@ export class AiSdkModel implements NativeModel {
   readonly #openaiChat: boolean;
   readonly #openaiResponses: boolean;
   readonly #resolveFileOptions: AiSdkFileOptionsResolver | undefined;
+  readonly #transformOutputText?: AiSdkOutputTextTransform;
 
   constructor(
     readonly model: AiSdkLanguageModel,
@@ -1735,6 +1768,8 @@ export class AiSdkModel implements NativeModel {
       readonly stream?: boolean;
       /** Supply media type hints and provider options for an admitted file. */
       readonly resolveFileOptions?: AiSdkFileOptionsResolver;
+      /** Normalize finalized assistant text. Stream deltas retain provider text. */
+      readonly transformOutputText?: AiSdkOutputTextTransform;
     } = {},
   ) {
     if (!['v2', 'v3', 'v4'].includes(model.specificationVersion))
@@ -1755,6 +1790,7 @@ export class AiSdkModel implements NativeModel {
     }
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
     this.#resolveFileOptions = adapterOptions.resolveFileOptions;
+    this.#transformOutputText = adapterOptions.transformOutputText;
     this.#openai =
       adapterOptions.providerFamily === 'openai' ||
       model.provider.startsWith('openai.');
@@ -2284,7 +2320,7 @@ export class AiSdkModel implements NativeModel {
       }
       throw error;
     }
-    return this.#projectResponse(result, tools, applyPatchWire);
+    return this.#projectResponse(result, tools, applyPatchWire, request, false);
   }
 
   async *#streamResponse(request: ModelRequest): AsyncIterable<JsonObject> {
@@ -2554,11 +2590,7 @@ export class AiSdkModel implements NativeModel {
             finishReason = part.finishReason;
             usage = part.usage;
             if (usage) {
-              const measured = this.#projectResponse(
-                { content: [], finishReason: 'stop', usage },
-                tools,
-                applyPatchWire,
-              ).usage!;
+              const measured = aiSdkUsage(usage);
               request.reportUsage?.({
                 inputTokens: measured.input_tokens ?? 0,
                 cachedInputTokens: measured.cached_input_tokens ?? 0,
@@ -2623,7 +2655,7 @@ export class AiSdkModel implements NativeModel {
         throw new TypeError(
           'AiSdkModel stream ended without a completed response',
         );
-      const result = this.#projectResponse(
+      const result = await this.#projectResponse(
         {
           content,
           finishReason,
@@ -2633,6 +2665,8 @@ export class AiSdkModel implements NativeModel {
         },
         tools,
         applyPatchWire,
+        request,
+        true,
       );
       const output = result.output.map((item, index) => ({
         ...item,
@@ -2687,11 +2721,66 @@ export class AiSdkModel implements NativeModel {
     }
   }
 
-  #projectResponse(
+  async #normalizeOutputText(
+    response: ModelResponse,
+    request: ModelRequest,
+    stream: boolean,
+  ): Promise<ModelResponse> {
+    const transform = this.#transformOutputText;
+    if (!transform) return response;
+    const output = copyJsonValue(response.output) as JsonObject[];
+    const context = {
+      request,
+      provider: this.model.provider,
+      modelId: this.model.modelId,
+      specificationVersion: this.model.specificationVersion,
+      stream,
+    };
+    let parts: (JsonObject & { text: string })[] = [];
+    const flush = async () => {
+      if (!parts.length) return;
+      request.signal.throwIfAborted();
+      const normalized = await transform(
+        parts.map((part) => part.text).join(''),
+        context,
+      );
+      request.signal.throwIfAborted();
+      if (typeof normalized !== 'string')
+        throw new TypeError(
+          'AiSdkModel transformOutputText must return a string',
+        );
+      let offset = 0;
+      for (const [index, part] of parts.entries()) {
+        const end =
+          index === parts.length - 1
+            ? normalized.length
+            : offset + part.text.length;
+        part.text = normalized.slice(offset, end);
+        offset = end;
+      }
+      parts = [];
+    };
+    for (const item of output) {
+      if (item.type === 'message' && item.role === 'assistant') {
+        for (const part of item.content as JsonObject[]) {
+          if (part.type === 'output_text' && typeof part.text === 'string')
+            parts.push(part as JsonObject & { text: string });
+        }
+      } else if (item.type !== 'reasoning') {
+        await flush();
+      }
+    }
+    await flush();
+    return { ...response, output };
+  }
+
+  async #projectResponse(
     result: any,
     tools: any[],
     applyPatchWire: ApplyPatchWire | undefined,
-  ): ModelResponse {
+    request: ModelRequest,
+    stream: boolean,
+  ): Promise<ModelResponse> {
     const finishReason =
       typeof result.finishReason === 'string'
         ? result.finishReason
@@ -2766,13 +2855,18 @@ export class AiSdkModel implements NativeModel {
         );
         return value === undefined ? [] : [{ outputIndex, value }];
       });
-      retainModelProviderMetadata(
+      const normalized = await this.#normalizeOutputText(
         projected,
+        request,
+        stream,
+      );
+      retainModelProviderMetadata(
+        normalized,
         this.model.provider,
         this.model.modelId,
         values,
       );
-      return projected;
+      return normalized;
     }
     const output: JsonObject[] = [];
     const providerMetadata = new Map<number, JsonObject>();
@@ -2925,35 +3019,18 @@ export class AiSdkModel implements NativeModel {
         role: 'assistant',
         content: [{ type: 'refusal', refusal }],
       });
-    const usage = result.usage;
-    const input =
-      typeof usage?.inputTokens === 'number'
-        ? usage.inputTokens
-        : (usage?.inputTokens?.total ?? 0);
-    const out =
-      typeof usage?.outputTokens === 'number'
-        ? usage.outputTokens
-        : (usage?.outputTokens?.total ?? 0);
     const projected: ModelResponse = {
       output,
       ...(result.response?.id ? { responseId: result.response.id } : {}),
-      ...(usage
-        ? {
-            usage: {
-              input_tokens: input,
-              output_tokens: out,
-              total_tokens: input + out,
-              cached_input_tokens:
-                usage.inputTokens?.cacheRead ?? usage.cachedInputTokens ?? 0,
-              cache_write_input_tokens: usage.inputTokens?.cacheWrite ?? 0,
-              reasoning_output_tokens:
-                usage.outputTokens?.reasoning ?? usage.reasoningTokens ?? 0,
-            },
-          }
-        : {}),
+      ...(result.usage ? { usage: aiSdkUsage(result.usage) } : {}),
     };
-    retainModelProviderMetadata(
+    const normalized = await this.#normalizeOutputText(
       projected,
+      request,
+      stream,
+    );
+    retainModelProviderMetadata(
+      normalized,
       this.model.provider,
       this.model.modelId,
       [...providerMetadata].map(([outputIndex, value]) => ({
@@ -2961,6 +3038,6 @@ export class AiSdkModel implements NativeModel {
         value,
       })),
     );
-    return projected;
+    return normalized;
   }
 }

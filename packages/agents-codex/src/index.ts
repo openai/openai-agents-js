@@ -510,6 +510,7 @@ export {
 export type {
   NativeModel,
   AiSdkLanguageModel,
+  AiSdkOutputTextTransform,
   ModelAdapterOptions,
   ResponsesModelOptions,
   ChatCompletionsModelOptions,
