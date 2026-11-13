@@ -1,0 +1,116 @@
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index 4430c706..214bb397 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -1232,6 +1232,7 @@ pub enum ResponseItem {
+         #[ts(optional)]
+         internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
+     },
++    #[serde(deserialize_with = "deserialize_direct_function_call")]
+     FunctionCall {
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         #[ts(optional)]
+@@ -1503,6 +1504,61 @@ pub enum ResponseItem {
+     Other,
+ }
+ 
++// Preserve the existing FunctionCall constructor while checking ownership on every wire route.
++type DirectFunctionCallFields = (
++    Option<ResponseItemId>,
++    String,
++    Option<String>,
++    String,
++    Option<Vec<String>>,
++    Option<bool>,
++    Option<String>,
++    String,
++    Option<InternalChatMessageMetadataPassthrough>,
++);
++
++fn deserialize_direct_function_call<'de, D>(
++    deserializer: D,
++) -> Result<DirectFunctionCallFields, D::Error>
++where
++    D: Deserializer<'de>,
++{
++    #[derive(Deserialize)]
++    struct WireCall {
++        id: Option<ResponseItemId>,
++        name: String,
++        namespace: Option<String>,
++        arguments: String,
++        encrypted_function_args: Option<Vec<String>>,
++        #[serde(rename = "async")]
++        asynchronous: Option<bool>,
++        status: Option<String>,
++        call_id: String,
++        internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
++        caller: Option<serde_json::Value>,
++    }
++
++    let call = WireCall::deserialize(deserializer)?;
++    if call.caller.as_ref().is_some_and(|caller| {
++        caller.get("type").and_then(serde_json::Value::as_str) != Some("direct")
++    }) {
++        return Err(serde::de::Error::custom(
++            "Only direct function callers are supported by the native runtime",
++        ));
++    }
++    Ok((
++        call.id,
++        call.name,
++        call.namespace,
++        call.arguments,
++        call.encrypted_function_args,
++        call.asynchronous,
++        call.status,
++        call.call_id,
++        call.internal_chat_message_metadata_passthrough,
++    ))
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+ #[serde(rename_all = "snake_case")]
+ pub enum ProgramOutputStatus {
+@@ -2976,6 +3032,41 @@ impl std::fmt::Display for FunctionCallOutputPayload {
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn function_call_caller_cannot_widen_direct_dispatch() {
++        let plain = serde_json::json!({
++            "type": "function_call",
++            "id": "fc_native_call",
++            "name": "lookup",
++            "namespace": "functions",
++            "arguments": "{}",
++            "encrypted_function_args": ["opaque"],
++            "async": true,
++            "status": "completed",
++            "call_id": "call_lookup"
++        });
++        let absent: super::ResponseItem = serde_json::from_value(plain.clone()).unwrap();
++        let mut direct = plain.clone();
++        direct["caller"] = serde_json::json!({"type": "direct"});
++        let direct: super::ResponseItem = serde_json::from_value(direct).unwrap();
++        assert_eq!(absent, direct);
++        let mut null = plain.clone();
++        null["caller"] = serde_json::Value::Null;
++        assert_eq!(absent, serde_json::from_value::<super::ResponseItem>(null).unwrap());
++        assert_eq!(serde_json::to_value(absent).unwrap(), plain);
++
++        for caller in [
++            serde_json::json!({"type": "program", "caller_id": "pc_provider"}),
++            serde_json::json!({"type": "programmatic", "program_call_id": "pc_provider"}),
++            serde_json::json!({"type": "unknown"}),
++            serde_json::json!(false),
++        ] {
++            let mut owned = plain.clone();
++            owned["caller"] = caller;
++            let error = serde_json::from_value::<super::ResponseItem>(owned).unwrap_err();
++            assert!(error.to_string().contains("Only direct function callers"));
++        }
++    }
+ 
+     #[test]
+     fn hosted_mcp_items_round_trip_provider_data_and_approval_reference() {

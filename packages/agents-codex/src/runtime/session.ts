@@ -88,7 +88,8 @@ import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
   isChatModelStream,
-  isRawChatChunk,
+  isAiSdkModelStream,
+  isRawModelPart,
   markModelRequestTransport,
   markRawProviderRequest,
   pumpModelStream,
@@ -7575,7 +7576,9 @@ export class Session<OutputT = string, Context = unknown> {
         (!owner.instanceId ||
           owner.instanceId === event.subagent_instance_id) &&
         event.id === turnId &&
-        (msg.source === 'responses' || msg.source === 'chat_completions') &&
+        (msg.source === 'responses' ||
+          msg.source === 'chat_completions' ||
+          msg.source === 'ai_sdk') &&
         (msg.transport === 'sse' ||
           msg.transport === 'websocket' ||
           msg.transport === 'json') &&
@@ -8375,7 +8378,9 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       kind === 'sdk_raw_provider_event' &&
       eventTurn === run.id &&
-      (msg.source === 'responses' || msg.source === 'chat_completions') &&
+      (msg.source === 'responses' ||
+        msg.source === 'chat_completions' ||
+        msg.source === 'ai_sdk') &&
       (msg.transport === 'sse' ||
         msg.transport === 'websocket' ||
         msg.transport === 'json') &&
@@ -9656,13 +9661,14 @@ export class Session<OutputT = string, Context = unknown> {
                         streamOwner,
                         isChatModelStream(stream),
                         borrowedResponsesRequestId(stream),
+                        isAiSdkModelStream(stream),
                       );
                     },
                     push: (event, original) =>
                       sourceNative._push_model_producer(
                         streamOwner,
                         captureModelProviderStreamFrame(event, original),
-                        isRawChatChunk(original),
+                        isRawModelPart(original),
                       ),
                     finish: () => {
                       check();

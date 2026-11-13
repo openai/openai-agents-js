@@ -1,3 +1,4 @@
+import { capturePromptCacheBreakpoint } from './input';
 import {
   captureModelProviderMetadata,
   replayModelProviderMetadata,
@@ -84,7 +85,8 @@ const receivedCacheWriteUsage = Symbol('received cache-write usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
 const chatModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
-const rawChatChunks = new WeakSet<JsonObject>();
+const aiSdkModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
+const rawModelParts = new WeakSet<JsonObject>();
 // The adapter assembles items before Core sees them, including tool-only chunks.
 const maxChatStreamBytes = 8 * 1024 * 1024;
 
@@ -97,8 +99,12 @@ export function isChatModelStream(stream: AsyncIterable<JsonObject>): boolean {
   return chatModelStreams.has(stream);
 }
 
-export function isRawChatChunk(event: JsonObject): boolean {
-  return rawChatChunks.has(event);
+export function isAiSdkModelStream(stream: AsyncIterable<JsonObject>): boolean {
+  return aiSdkModelStreams.has(stream);
+}
+
+export function isRawModelPart(event: JsonObject): boolean {
+  return rawModelParts.has(event);
 }
 
 type OriginalResponsesUsage = {
@@ -690,41 +696,54 @@ export class ChatCompletionsModel implements NativeModel {
         continue;
       }
       if (raw.type === 'message') {
-        const content = (raw.content as JsonObject[]).map((part) => {
-          if (part.type === 'input_text' || part.type === 'output_text')
-            return { type: 'text', text: part.text };
-          if (part.type === 'input_audio') {
-            const audio = inlineAudioSource(part.audio_url);
-            const mediaType = audio.mediaType.split(';', 1)[0].toLowerCase();
-            const format = [
-              'audio/wav',
-              'audio/x-wav',
-              'audio/wave',
-              'audio/vnd.wave',
-            ].includes(mediaType)
-              ? 'wav'
-              : ['audio/mpeg', 'audio/mp3'].includes(mediaType)
-                ? 'mp3'
-                : undefined;
-            if (!format)
-              throw new TypeError('Chat audio requires WAV or MP3 input');
-            return {
-              type: 'input_audio',
-              input_audio: { data: audio.data, format },
-            };
-          }
-          if (part.type === 'input_image' && part.image_url)
-            return {
-              type: 'image_url',
-              image_url: {
-                url: part.image_url,
-                ...(part.detail ? { detail: part.detail } : {}),
-              },
-            };
-          throw new TypeError(
-            'ChatCompletionsModel received unsupported message content',
-          );
-        });
+        const content = (raw.content as JsonObject[])
+          .map((part) => {
+            if (part.type === 'input_text' || part.type === 'output_text')
+              return { type: 'text', text: part.text };
+            if (part.type === 'input_audio') {
+              const audio = inlineAudioSource(part.audio_url);
+              const mediaType = audio.mediaType.split(';', 1)[0].toLowerCase();
+              const format = [
+                'audio/wav',
+                'audio/x-wav',
+                'audio/wave',
+                'audio/vnd.wave',
+              ].includes(mediaType)
+                ? 'wav'
+                : ['audio/mpeg', 'audio/mp3'].includes(mediaType)
+                  ? 'mp3'
+                  : undefined;
+              if (!format)
+                throw new TypeError('Chat audio requires WAV or MP3 input');
+              return {
+                type: 'input_audio',
+                input_audio: { data: audio.data, format },
+              };
+            }
+            if (part.type === 'input_image' && part.image_url)
+              return {
+                type: 'image_url',
+                image_url: {
+                  url: part.image_url,
+                  ...(part.detail ? { detail: part.detail } : {}),
+                },
+              };
+            throw new TypeError(
+              'ChatCompletionsModel received unsupported message content',
+            );
+          })
+          .map((converted, index) => {
+            const original = (raw.content as JsonObject[])[index];
+            return original &&
+              Object.hasOwn(original, 'prompt_cache_breakpoint')
+              ? {
+                  ...converted,
+                  prompt_cache_breakpoint: capturePromptCacheBreakpoint(
+                    original.prompt_cache_breakpoint,
+                  ),
+                }
+              : converted;
+          });
         const previous = messages.at(-1);
         if (raw.role === 'assistant' && previous?.role === 'assistant')
           previous.content = [
@@ -1028,7 +1047,7 @@ export class ChatCompletionsModel implements NativeModel {
       request.signal.throwIfAborted();
       if (observeRaw) {
         const original = copyJsonValue(chunk) as JsonObject;
-        rawChatChunks.add(original);
+        rawModelParts.add(original);
         yield original;
       }
       if (opening)
@@ -1568,7 +1587,16 @@ export class AiSdkModel implements NativeModel {
     if (adapterOptions.stream === true) {
       if (typeof model.doStream !== 'function')
         throw new TypeError('AiSdkModel streaming requires doStream');
-      this.stream = (request) => this.#streamResponse(request);
+      this.stream = (request) => {
+        const stream = this.#streamResponse(request);
+        if (
+          (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+            rawProviderRequest
+          ]
+        )
+          aiSdkModelStreams.add(stream);
+        return stream;
+      };
     }
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
     this.#resolveFileOptions = adapterOptions.resolveFileOptions;
@@ -2062,9 +2090,19 @@ export class AiSdkModel implements NativeModel {
         request.signal.throwIfAborted();
         if (next.done) break;
         const part = next.value;
-        bytes += Buffer.byteLength(JSON.stringify(part));
+        const encoded = JSON.stringify(part);
+        bytes += Buffer.byteLength(encoded);
         if (bytes > maxChatStreamBytes)
           throw new TypeError('AiSdkModel stream exceeded its buffer limit');
+        if (
+          (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+            rawProviderRequest
+          ]
+        ) {
+          const original = JSON.parse(encoded) as JsonObject;
+          rawModelParts.add(original);
+          yield original;
+        }
         if (part.type === 'error') throw part.error;
         if (finished && part.type !== 'response-metadata')
           throw new TypeError('AiSdkModel stream continued after finish');

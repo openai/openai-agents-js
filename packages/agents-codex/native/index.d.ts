@@ -313,11 +313,12 @@ export class NativeThread {
     owner_json: string,
     chat_stream?: boolean,
     upstream_request_id?: string,
+    ai_sdk_stream?: boolean,
   ): void;
   _push_model_producer(
     owner_json: string,
     event_json: string,
-    raw_chat_chunk?: boolean,
+    raw_part?: boolean,
   ): Promise<boolean>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;

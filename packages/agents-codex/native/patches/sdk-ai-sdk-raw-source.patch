@@ -1,0 +1,11 @@
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -1957,6 +1957,7 @@
+ pub enum SdkRawProviderSource {
+     Responses,
+     ChatCompletions,
++    AiSdk,
+ }
+ 
+ #[derive(Clone)]

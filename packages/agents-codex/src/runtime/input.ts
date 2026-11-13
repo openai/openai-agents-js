@@ -14,28 +14,43 @@ import {
 } from './media';
 import type { FileReference, ImageDetail, NativeToolContent } from './media';
 
-export interface InputText {
+interface CacheablePart {
+  readonly promptCacheBreakpoint?: Readonly<{ mode: 'explicit' }>;
+}
+
+export function capturePromptCacheBreakpoint(
+  value: unknown,
+): Readonly<{ mode: 'explicit' }> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('promptCacheBreakpoint requires mode explicit');
+  const captured = mediaRecord(value);
+  if (Object.keys(captured).length !== 1 || captured.mode !== 'explicit')
+    throw new TypeError('promptCacheBreakpoint requires mode explicit');
+  return Object.freeze({ mode: 'explicit' });
+}
+
+export interface InputText extends CacheablePart {
   type: 'input_text';
   text: string;
 }
 /** Core-owned audio reference; no local file or transport access. */
-export interface InputAudio {
+export interface InputAudio extends CacheablePart {
   type: 'input_audio';
   audio_url: string;
 }
 /** URL/data URL image. Core owns current-model preparation. */
-export interface InputImage {
+export interface InputImage extends CacheablePart {
   type: 'input_image';
   image_url: string;
   detail?: ImageDetail | null;
 }
 /** An opaque provider image ID, never a host path. */
-export interface InputImageFile {
+export interface InputImageFile extends CacheablePart {
   type: 'input_image';
   file_id: string;
   detail?: ImageDetail | null;
 }
-export type InputFile = { type: 'input_file' } & FileReference;
+export type InputFile = { type: 'input_file' } & FileReference & CacheablePart;
 export interface UserMessage {
   role: 'user';
   content:
@@ -77,20 +92,27 @@ export function nativeInput(
     const part = mediaRecord(value);
     const kind = part.type;
     delete part.type;
+    const breakpoint = Object.hasOwn(part, 'promptCacheBreakpoint')
+      ? capturePromptCacheBreakpoint(part.promptCacheBreakpoint)
+      : undefined;
+    delete part.promptCacheBreakpoint;
+    const cache =
+      breakpoint === undefined ? {} : { prompt_cache_breakpoint: breakpoint };
     if (kind === 'input_text') {
       if (Object.keys(part).length !== 1 || typeof part.text !== 'string')
         throw new TypeError('input_text requires a text string');
-      return { type: 'text', text: part.text };
+      return copyJsonValue({ type: 'text', text: part.text, ...cache });
     }
     if (kind === 'input_audio')
       return copyJsonValue({
         type: 'audio',
         ...captureAudio(part, audioBudget),
+        ...cache,
       });
     if (kind === 'input_image')
-      return copyJsonValue({ type: 'image', ...captureImage(part) });
+      return copyJsonValue({ type: 'image', ...captureImage(part), ...cache });
     if (kind === 'input_file')
-      return copyJsonValue({ type: 'file', ...captureFile(part) });
+      return copyJsonValue({ type: 'file', ...captureFile(part), ...cache });
     throw new TypeError('Unsupported user content type');
   });
 }
@@ -145,7 +167,10 @@ export function responseContent(
     return {
       type: tag,
       ...Object.fromEntries(
-        Object.entries(content).filter(([key]) => fields[tag].includes(key)),
+        Object.entries(content).filter(
+          ([key]) =>
+            key === 'prompt_cache_breakpoint' || fields[tag].includes(key),
+        ),
       ),
     } as JsonValue;
   });
@@ -172,7 +197,17 @@ export function stagedGuardrailInput(items: readonly JsonObject[]): UserInput {
       )
     )
       return JSON.stringify(items);
-    content.push(...item.content);
+    content.push(
+      ...item.content.map((part) => {
+        const captured = part as JsonObject;
+        if (!Object.hasOwn(captured, 'prompt_cache_breakpoint')) return part;
+        const { prompt_cache_breakpoint, ...body } = captured;
+        return {
+          ...body,
+          promptCacheBreakpoint: copyJsonValue(prompt_cache_breakpoint),
+        };
+      }),
+    );
   }
   return {
     type: 'message',

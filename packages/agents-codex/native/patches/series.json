@@ -1131,7 +1131,39 @@
     {
       "path": "sdk-hosted-program-replay.patch",
       "sha256": "b295123c21785268fbeeef3031705ab21a6e1120475a01aed39e1b48adee34e3"
+    },
+    {
+      "path": "sdk-ai-sdk-raw-source.patch",
+      "sha256": "8adc8ec2d0a5cdd2a54c346992cf2ab3debddab58849e1b039b8f2dcaa931b68"
+    },
+    {
+      "path": "sdk-explicit-prompt-cache-breakpoints.patch",
+      "sha256": "6f8c6664e089c76e850ea328d932016b4c08ca946287d2b187ba45bedbe1e4cd"
+    },
+    {
+      "path": "sdk-programmatic-tool-catalog.patch",
+      "sha256": "e4fe41e46c642f5f2ac3dbb3bb2f30a9a67cb7333b7ec29a361fa0c3f080c455"
+    },
+    {
+      "path": "sdk-programmatic-prompt-history.patch",
+      "sha256": "6eea3760a9a4b27d58cdbe3d77bfc60f339ff1a7cfa1428d9fb010833473dbca"
+    },
+    {
+      "path": "sdk-cache-provider-history-projection.patch",
+      "sha256": "ac6d9c77509fd98d237d4e6b15946b7091c62a4a7291a330bbf5bad7e6841b5d"
+    },
+    {
+      "path": "sdk-cache-owned-input.patch",
+      "sha256": "3866538296d170a4314a8deaf396d0d95f906b48e3284ce0bd310236685f6bae"
+    },
+    {
+      "path": "sdk-program-caller-containment.patch",
+      "sha256": "c3facdb55982561a39c53e4414a968c03f2c63ccd748718e1c027db4113f4040"
+    },
+    {
+      "path": "sdk-seed-cache-and-program-observations.patch",
+      "sha256": "401e4ac78b6d1a4bdf4313effe86177b5fea9791b5890e0f991292ec0326842b"
     }
   ],
-  "result_tree": "03755da909b53bc40b22f01cc1371829be725e00"
+  "result_tree": "009e7161481504c1d1a194164fe18e31eff23377"
 }

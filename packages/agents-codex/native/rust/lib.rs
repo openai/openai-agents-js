@@ -3310,6 +3310,7 @@ impl NativeThread {
         owner_json: String,
         chat_stream: Option<bool>,
         upstream_request_id: Option<String>,
+        ai_sdk_stream: Option<bool>,
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
@@ -3330,6 +3331,7 @@ impl NativeThread {
                 observe_raw,
                 chat_stream.unwrap_or(false),
                 upstream_request_id,
+                ai_sdk_stream.unwrap_or(false),
             )
             .map_err(input_error)
     }
@@ -3339,7 +3341,7 @@ impl NativeThread {
         &self,
         owner_json: String,
         event_json: String,
-        raw_chat_chunk: Option<bool>,
+        raw_part: Option<bool>,
     ) -> napi::Result<bool> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
@@ -3353,7 +3355,7 @@ impl NativeThread {
             .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
             .ok_or_else(|| input_error("Expired model callback owner"))?;
         owner
-            .push_model_producer_event(&response, &event_json, raw_chat_chunk.unwrap_or(false))
+            .push_model_producer_event(&response, &event_json, raw_part.unwrap_or(false))
             .await
             .map_err(input_error)
     }

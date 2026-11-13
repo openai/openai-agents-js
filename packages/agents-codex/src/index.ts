@@ -266,6 +266,7 @@ export type {
   CanonicalHistorySnapshot,
   Failure,
   RecordedTokenUsage,
+  RecordedRequestUsage,
   ReceivedTokenUsage,
   RecordedResponse,
   OutputTextPart,

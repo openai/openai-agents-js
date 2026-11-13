@@ -190,7 +190,7 @@ export type ResponseFactReceived = SubmissionEvent &
 export type RawProviderEvent = SubmissionEvent &
   Readonly<{
     type: 'raw_provider_event';
-    source: 'responses' | 'chat_completions';
+    source: 'responses' | 'chat_completions' | 'ai_sdk';
     transport: 'sse' | 'websocket' | 'json';
     payload: JsonObject;
   }>;

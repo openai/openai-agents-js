@@ -260,9 +260,19 @@ it('publishes Responses reasoning before the borrowed stream can finish', async 
     delta: 'Checking the record.',
   });
   expect(reasoning).toEqual([
-    { type: 'reasoning-start', id: 'summary' },
+    {
+      type: 'reasoning-start',
+      id: 'summary',
+      providerMetadata: { openai: { itemId: 'rs_live' } },
+    },
     { type: 'reasoning-delta', id: 'summary', delta: 'Checking the record.' },
-    { type: 'reasoning-end', id: 'summary' },
+    {
+      type: 'reasoning-end',
+      id: 'summary',
+      providerMetadata: {
+        openai: { reasoningEncryptedContent: 'private-ciphertext' },
+      },
+    },
   ]);
 }, 20_000);
 

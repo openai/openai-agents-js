@@ -1,3 +1,4 @@
+import { RecordedRequestUsageProjection } from './request-usage';
 import { projectWebSearchCall, webSearchSourcesSchema } from './web-search';
 import type { WebSearchAction } from './web-search';
 export type { WebSearchAction, WebSearchSource } from './web-search';
@@ -77,6 +78,22 @@ export interface RecordedTokenUsageWire {
   totalTokens: TokenCountWire;
 }
 
+/** One settled SDK model attempt; opaque client retries are not separate entries. */
+export interface RecordedRequestUsage extends RecordedTokenUsage {
+  scope: 'sdk_model_attempt';
+  threadId: string;
+  turnId: string;
+  ownerAttemptId: string;
+  attemptId: string;
+  requestOrdinal: TokenCount;
+  tokenUsageKnown: boolean;
+}
+export type RecordedRequestUsageWire = Omit<
+  RecordedRequestUsage,
+  keyof RecordedTokenUsage | 'requestOrdinal'
+> &
+  RecordedTokenUsageWire & { requestOrdinal: TokenCountWire };
+
 /** Counters received from the provider; absent fields remain unknown. */
 export interface ReceivedTokenUsage {
   inputTokens?: TokenCount;
@@ -139,6 +156,11 @@ export type HistoryTurn = {
   usage: RecordedTokenUsage | null;
   /** Retained native-attempt totals; unavailable without native attempt records. */
   runUsage?: RunUsage;
+  /** Settled native attempts, without enumerating opaque external retries. */
+  requestUsageEntries?: RecordedRequestUsage[];
+  /** Covers retained SDK attempts only; never attests opaque external client attempts or charges.
+   * False when durable settled facts or legacy request measurements are missing. */
+  requestUsageEntriesComplete?: boolean;
   /** Retained observations, not complete provider-attempt or charge coverage. */
   responses?: RecordedResponse[];
   responseFacts?: RecordedResponseFact[];
@@ -151,11 +173,12 @@ export type RecordedTurn = HistoryTurn & {
 /** JSON-safe observational turn data for history/receipt owners, not Core checkpoints. */
 export type RecordedTurnWire = Omit<
   RecordedTurn,
-  'usage' | 'responses' | 'receipt' | 'runUsage'
+  'usage' | 'responses' | 'receipt' | 'runUsage' | 'requestUsageEntries'
 > & {
   usage: RecordedTokenUsageWire | null;
   runUsage?: { readonly [Key in keyof RunUsage]: TokenCountWire };
   responses?: RecordedResponseWire[];
+  requestUsageEntries?: RecordedRequestUsageWire[];
   receipt?: z.infer<typeof repairTurnReceiptSchema>;
 };
 
@@ -195,6 +218,27 @@ const recordedResponseWireSchema = z.strictObject({
   usageSource: z.enum(['received', 'native_normalized']),
   usage: receivedUsageWireSchema.nullable(),
 });
+const recordedUsageWireSchema = z.strictObject({
+  inputTokens: nonnegativeTokenCountWireSchema,
+  inputTokensDetails: z.strictObject({
+    cachedTokens: nonnegativeTokenCountWireSchema,
+    cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
+  }),
+  outputTokens: nonnegativeTokenCountWireSchema,
+  outputTokensDetails: z.strictObject({
+    reasoningTokens: nonnegativeTokenCountWireSchema,
+  }),
+  totalTokens: nonnegativeTokenCountWireSchema,
+});
+const recordedRequestUsageWireSchema = recordedUsageWireSchema.extend({
+  scope: z.literal('sdk_model_attempt'),
+  threadId: z.string().min(1),
+  turnId: z.string().min(1),
+  ownerAttemptId: z.string().min(1),
+  attemptId: z.string().min(1),
+  requestOrdinal: nonnegativeTokenCountWireSchema,
+  tokenUsageKnown: z.boolean(),
+});
 export const repairTurnWireSchema = z
   .strictObject({
     id: z.string().min(1),
@@ -212,20 +256,7 @@ export const repairTurnWireSchema = z
         httpStatusCode: z.number().optional(),
       })
       .nullable(),
-    usage: z
-      .strictObject({
-        inputTokens: nonnegativeTokenCountWireSchema,
-        inputTokensDetails: z.strictObject({
-          cachedTokens: nonnegativeTokenCountWireSchema,
-          cacheWriteTokens: nonnegativeTokenCountWireSchema.optional(),
-        }),
-        outputTokens: nonnegativeTokenCountWireSchema,
-        outputTokensDetails: z.strictObject({
-          reasoningTokens: nonnegativeTokenCountWireSchema,
-        }),
-        totalTokens: nonnegativeTokenCountWireSchema,
-      })
-      .nullable(),
+    usage: recordedUsageWireSchema.nullable(),
     runUsage: z
       .strictObject({
         requests: nonnegativeTokenCountWireSchema,
@@ -239,6 +270,8 @@ export const repairTurnWireSchema = z
       })
       .optional(),
     responses: z.array(recordedResponseWireSchema).optional(),
+    requestUsageEntries: z.array(recordedRequestUsageWireSchema).optional(),
+    requestUsageEntriesComplete: z.boolean().optional(),
     responseFacts: z.array(responseFactRecordSchema).optional(),
     receipt: repairTurnReceiptSchema.optional(),
     parentSessionId: z.string().min(1),
@@ -344,9 +377,21 @@ function mapReceivedUsage<T>(
 }
 
 export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
-  const { responses, receipt, runUsage, ...rest } = turn;
+  const { responses, receipt, runUsage, requestUsageEntries, ...rest } = turn;
+
   return {
     ...rest,
+    ...(requestUsageEntries === undefined
+      ? {}
+      : {
+          requestUsageEntries: requestUsageEntries.map((entry) => ({
+            ...entry,
+            ...mapRecordedUsage(entry, (value) =>
+              tokenCountToWire(parseTokenCount(value)),
+            ),
+            requestOrdinal: tokenCountToWire(entry.requestOrdinal),
+          })),
+        }),
     ...(runUsage === undefined
       ? {}
       : {
@@ -389,9 +434,18 @@ export function recordedTurnToWire(turn: RecordedTurn): RecordedTurnWire {
 }
 
 export function recordedTurnFromWire(turn: RecordedTurnWire): RecordedTurn {
-  const { responses, runUsage, ...rest } = turn;
+  const { responses, runUsage, requestUsageEntries, ...rest } = turn;
   return {
     ...rest,
+    ...(requestUsageEntries === undefined
+      ? {}
+      : {
+          requestUsageEntries: requestUsageEntries.map((entry) => ({
+            ...entry,
+            ...mapRecordedUsage(entry, parseTokenCount),
+            requestOrdinal: parseTokenCount(entry.requestOrdinal),
+          })),
+        }),
     ...(runUsage === undefined
       ? {}
       : {
@@ -1003,6 +1057,8 @@ function reconciliationOutcome(raw: JsonObject) {
 }
 
 function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
+  const hosted = projectHostedToolItem(raw, turnId);
+  if (hosted) return { ...hosted, data: raw };
   const output =
     raw.type === 'function_call_output' ||
     raw.type === 'custom_tool_call_output' ||
@@ -1025,8 +1081,6 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       : null);
   if (!id) return null;
   const common = { id, turnId, data: raw };
-  const hosted = projectHostedToolItem(raw, turnId);
-  if (hosted) return { ...hosted, data: raw };
   if (
     raw.type === 'message' &&
     (raw.role === 'user' || raw.role === 'assistant')
@@ -1482,6 +1536,7 @@ export function projectHistory(
     string,
     Map<string | null, CapturedModelAttempt>
   >();
+  const requestUsage = new Map<string, RecordedRequestUsageProjection>();
   const failures = new Map<string, Failure>();
   let items: HistoryOccurrence[] = [];
   const identities = new Map<string, HistoryOccurrence>();
@@ -1687,6 +1742,7 @@ export function projectHistory(
           responseUsage.delete(id);
           incompleteCacheWriteUsage.delete(id);
           modelAttemptUsage.delete(id);
+          requestUsage.delete(id);
           failures.delete(id);
         }
         items = items.filter(({ item }) => !removed.has(item.turnId));
@@ -1739,6 +1795,16 @@ export function projectHistory(
         const owners = modelAttemptUsage.get(id) ?? new Map();
         owners.set(captured.ownerAttemptId, captured);
         modelAttemptUsage.set(id, owners);
+        const entries =
+          requestUsage.get(id) ?? new RecordedRequestUsageProjection();
+        requestUsage.set(id, entries);
+        if (payload.type === '_sdk_model_attempt')
+          entries.observe(
+            payload.data,
+            captured,
+            payload.thread,
+            payload.turn_id === id ? id : undefined,
+          );
       }
       if (
         payload.type === 'raw_response_completed' &&
@@ -1852,6 +1918,12 @@ export function projectHistory(
     const observed = responseUsage.get(id);
     const total = observed?.tokens ?? undefined;
     const nativeOwners = modelAttemptUsage.get(id);
+    const requestEntries = requestUsage.get(id);
+    turn.requestUsageEntries = requestEntries?.entries ?? [];
+    turn.requestUsageEntriesComplete =
+      nativeOwners !== undefined &&
+      requestEntries !== undefined &&
+      requestEntries.isComplete(nativeOwners.values(), observed?.requests ?? 0);
     if (nativeOwners) {
       // A restored ledger can retain the turn ID; only its own latest snapshot replaces it.
       let measured: JsonObject | null = total ? { ...total } : null;
@@ -1987,10 +2059,14 @@ export function projectHostedToolItem(
   const raw = object(value);
   if (!raw) return;
   const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
+  const program = raw.type === 'program' || raw.type === 'program_output';
   const id =
     text(raw.id) ??
-    (shell && typeof raw.call_id === 'string'
-      ? raw.call_id + (raw.type === 'shell_call_output' ? ':output' : '')
+    ((shell || program) && typeof raw.call_id === 'string'
+      ? raw.call_id +
+        (raw.type === 'shell_call_output' || raw.type === 'program_output'
+          ? ':output'
+          : '')
       : null);
   if (!id) return;
   const identity = {
@@ -1998,6 +2074,32 @@ export function projectHostedToolItem(
     turnId,
     turn_id: turnId,
   };
+  if (program) {
+    if (typeof raw.call_id !== 'string') return;
+    const {
+      internal_chat_message_metadata_passthrough: _coreMetadata,
+      ...provider
+    } = raw;
+    const common = {
+      ...identity,
+      call_id: raw.call_id,
+      provider_data: structuredClone(provider),
+    };
+    if (raw.type === 'program' && typeof raw.code === 'string')
+      return { ...common, type: 'program', status: 'unknown', code: raw.code };
+    if (
+      raw.type === 'program_output' &&
+      (raw.status === 'completed' || raw.status === 'incomplete') &&
+      typeof raw.result === 'string'
+    )
+      return {
+        ...common,
+        type: 'program_output',
+        status: raw.status,
+        result: raw.result,
+      };
+    return;
+  }
   if (shell) {
     const status = shellToolStatusSchema.safeParse(raw.status ?? 'unknown');
     if (!status.success || typeof raw.call_id !== 'string') return;
