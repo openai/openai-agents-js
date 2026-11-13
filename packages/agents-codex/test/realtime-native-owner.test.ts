@@ -2338,17 +2338,26 @@ it.each([
       },
     ],
   },
-  {
+  ...[
+    'type',
+    'id',
+    'event_id',
+    'image_url',
+    'image',
+    'file_id',
+    'detail',
+    'status',
+  ].map((key) => ({
     type: 'message',
     role: 'user',
     content: [
       {
         type: 'input_image',
         image: 'data:image/png;base64,aW1hZ2U=',
-        providerData: { type: 'function_call_output' },
+        providerData: { [key]: 'reserved' },
       },
     ],
-  },
+  })),
 ])(
   'rejects unsupported structured input before native effects: %j',
   async (message) => {

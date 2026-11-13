@@ -1751,6 +1751,23 @@ class NativeRealtimeOwner {
           remaining -= userInputBytes(image, remaining);
           let extension: JsonObject | undefined;
           if (providerData !== undefined) {
+            if (
+              Object.keys(providerData).some((key) =>
+                [
+                  'type',
+                  'id',
+                  'event_id',
+                  'image_url',
+                  'image',
+                  'file_id',
+                  'detail',
+                  'status',
+                ].includes(key),
+              )
+            )
+              throw new TypeError(
+                'Realtime image provider data cannot override image fields',
+              );
             remaining -= jsonAllocationBytes(
               providerData,
               remaining,
@@ -2708,6 +2725,7 @@ class NativeRealtimeOwner {
         this.usageReports++;
       }
       if (name === 'ResponseDone') this.finishedResponses++;
+      if (name === 'ResponseDone' && !outOfBand) this.startFunctionBatch(value);
       this.emit({
         type: 'response',
         usage: reportedUsage,
@@ -2723,7 +2741,6 @@ class NativeRealtimeOwner {
         runContext: this.eventContext(value.profile_receipt),
         ...(outOfBand ? { outOfBand: true } : {}),
       });
-      if (name === 'ResponseDone' && !outOfBand) this.startFunctionBatch(value);
     } else if (
       [
         'InputTranscriptDelta',
