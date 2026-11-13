@@ -1,4 +1,4 @@
-import { checkEncodedCapacity } from './binding';
+import { checkEncodedCapacity, type JsonObject } from './binding';
 import { MAX_AUDIO_INPUT_BYTES, type AudioInputBudget } from './media';
 import { nativeInput, responseContent, type UserMessage } from './input';
 
@@ -33,6 +33,7 @@ export function captureInitialMessages(
   state?: unknown,
   resume?: unknown,
   audioBudget: AudioInputBudget = { remaining: MAX_AUDIO_INPUT_BYTES },
+  forNative = false,
 ): InitialMessage[] | undefined {
   if (messages === undefined) return undefined;
   if (state != null || resume !== undefined)
@@ -48,6 +49,14 @@ export function captureInitialMessages(
       );
     if (message.role === 'user') {
       const content = responseContent(nativeInput(message, audioBudget));
+      if (!forNative) {
+        for (const part of content as JsonObject[]) {
+          if (part.prompt_cache_breakpoint !== undefined) {
+            part.promptCacheBreakpoint = part.prompt_cache_breakpoint;
+            delete part.prompt_cache_breakpoint;
+          }
+        }
+      }
       for (const part of content) {
         if (part && typeof part === 'object')
           for (const value of Object.values(part))

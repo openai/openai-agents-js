@@ -384,14 +384,21 @@ nativeIt.each([false, true])(
           (frame) => frame.item?.call_id === 'usage-tool',
         );
         expect(contexts, JSON.stringify(usageOutput)).toHaveLength(1);
+        await vi.waitFor(() =>
+          expect(session.realtimeUsageAccounting).toEqual({
+            finishedResponses: 3,
+            usageReports: 2,
+          }),
+        );
         if (managed) {
           expect(policyContexts).toHaveLength(1);
           expect(policyContexts[0].realtimeUsage).toEqual(
             session.realtimeUsage,
           );
-          expect(policyContexts[0].realtimeUsageAccounting).toEqual(
-            session.realtimeUsageAccounting,
-          );
+          expect(policyContexts[0].realtimeUsageAccounting).toEqual({
+            finishedResponses: 2,
+            usageReports: 2,
+          });
         }
         const snapshot = contexts[0].realtimeUsage!;
         expect(snapshot.total_tokens).toBe(15);

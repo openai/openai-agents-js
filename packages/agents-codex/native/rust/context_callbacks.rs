@@ -1380,6 +1380,8 @@ pub(super) enum ModelDelivery {
         finish: oneshot::Sender<ModelStreamFinish>,
         projection: codex_api::ApplicationModelStream,
         observe_raw_chat: bool,
+        observe_raw_ai_sdk: bool,
+        observe_raw_responses_websocket: bool,
         chat_stream: bool,
         provider_metadata: Option<codex_extension_api::CapturedModelProviderOutput>,
     },
@@ -1397,9 +1399,12 @@ fn model_stream_error(error: impl std::fmt::Display) -> codex_api::ApiError {
         message: error.to_string(),
     }
 }
-fn raw_chat_provider_event(payload: serde_json::Map<String, Value>) -> codex_api::ResponseEvent {
+fn raw_model_provider_event(
+    payload: serde_json::Map<String, Value>,
+    source: codex_protocol::protocol::SdkRawProviderSource,
+) -> codex_api::ResponseEvent {
     codex_api::ResponseEvent::RawProvider(codex_protocol::protocol::SdkRawProviderEvent {
-        source: codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+        source,
         transport: codex_protocol::protocol::ResponsesEventTransport::Json,
         payload: Value::Object(payload),
     })
@@ -1727,7 +1732,13 @@ impl PythonTools {
                     );
                 }
                 if let Some(raw) = reply.raw_chat_completion {
-                    events.insert(events.len() - 1, Ok(raw_chat_provider_event(raw)));
+                    events.insert(
+                        events.len() - 1,
+                        Ok(raw_model_provider_event(
+                            raw,
+                            codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+                        )),
+                    );
                 }
                 Ok(futures_util::stream::iter(events).boxed())
             }
@@ -1754,7 +1765,14 @@ impl PythonTools {
         observe_raw: bool,
         chat_stream: bool,
         upstream_request_id: Option<String>,
+        ai_sdk_stream: bool,
+        responses_websocket_stream: bool,
     ) -> Result<()> {
+        ensure!(
+            u8::from(chat_stream) + u8::from(ai_sdk_stream) + u8::from(responses_websocket_stream)
+                <= 1,
+            "Ambiguous model adapter source"
+        );
         let active = self
             .selection
             .lock()
@@ -1788,8 +1806,12 @@ impl PythonTools {
             PreparationReply::Model(ModelDelivery::Streaming {
                 events,
                 finish,
-                projection: codex_api::ApplicationModelStream::new(observe_raw && !chat_stream),
+                projection: codex_api::ApplicationModelStream::new(
+                    observe_raw && !chat_stream && !ai_sdk_stream && !responses_websocket_stream,
+                ),
                 observe_raw_chat: observe_raw && chat_stream,
+                observe_raw_ai_sdk: observe_raw && ai_sdk_stream,
+                observe_raw_responses_websocket: observe_raw && responses_websocket_stream,
                 chat_stream,
                 provider_metadata,
             }),
@@ -1808,7 +1830,7 @@ impl PythonTools {
         &self,
         response: &StepReply,
         data: &str,
-        raw_chat_chunk: bool,
+        raw_part: bool,
     ) -> Result<bool> {
         let id = crate::native_id(&response.request_id)?;
         let (projected, sender, continuing) = {
@@ -1839,23 +1861,48 @@ impl PythonTools {
                 events,
                 projection,
                 observe_raw_chat,
+                observe_raw_ai_sdk,
+                observe_raw_responses_websocket,
                 provider_metadata,
                 ..
             }) = &mut pending.reply
             else {
                 anyhow::bail!("Model stream has not started")
             };
-            let (projected, continuing) = if raw_chat_chunk {
+            let (projected, continuing) = if raw_part {
                 ensure!(
-                    *observe_raw_chat,
-                    "Raw Chat chunks require an opted-in Chat stream"
+                    *observe_raw_chat || *observe_raw_ai_sdk || *observe_raw_responses_websocket,
+                    "Raw model parts require an opted-in adapter stream"
                 );
                 ensure!(
                     data.len() <= 8 * 1024 * 1024,
-                    "Raw Chat chunk exceeds the stream frame limit"
+                    "Raw model part exceeds the stream frame limit"
                 );
-                let raw = serde_json::from_str(data).context("Invalid raw Chat chunk")?;
-                (vec![raw_chat_provider_event(raw)], true)
+                let raw = serde_json::from_str(data).context("Invalid raw model part")?;
+                use codex_protocol::protocol::{
+                    ResponsesEventTransport, SdkRawProviderEvent, SdkRawProviderSource,
+                };
+                let (source, transport) = if *observe_raw_responses_websocket {
+                    (
+                        SdkRawProviderSource::Responses,
+                        ResponsesEventTransport::Websocket,
+                    )
+                } else if *observe_raw_ai_sdk {
+                    (SdkRawProviderSource::AiSdk, ResponsesEventTransport::Json)
+                } else {
+                    (
+                        SdkRawProviderSource::ChatCompletions,
+                        ResponsesEventTransport::Json,
+                    )
+                };
+                (
+                    vec![codex_api::ResponseEvent::RawProvider(SdkRawProviderEvent {
+                        source,
+                        transport,
+                        payload: Value::Object(raw),
+                    })],
+                    true,
+                )
             } else {
                 let cleaned;
                 let data = if data.contains("__sdk_model_provider_metadata") {

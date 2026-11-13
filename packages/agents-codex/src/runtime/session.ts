@@ -54,6 +54,7 @@ import {
   releaseModelAttemptPayload,
   restoreModelUsageOffset,
 } from './model-attempts';
+import { bindProviderRequestAccounting } from './provider-request-accounting';
 import {
   mergeRequestAttempts,
   parseRequestAttempts,
@@ -78,6 +79,7 @@ import {
 } from './realtime-agent-config';
 import { resolveRealtimePolicy } from './realtime-policy';
 import type { ChildBeforeStepContext } from './native-agents';
+import { ModelRun } from './model-run';
 import {
   GuardrailTripwire,
   captureGuardrailResult,
@@ -90,7 +92,9 @@ import { closeComputerResources } from './computer';
 import {
   captureModelResponse,
   isChatModelStream,
-  isRawChatChunk,
+  isAiSdkModelStream,
+  isRawModelPart,
+  isResponsesWebSocketStream,
   markModelRequestTransport,
   markRawProviderRequest,
   pumpModelStream,
@@ -239,6 +243,7 @@ import {
   type ClientToolSearchExecutor,
 } from './hosted-tools';
 import {
+  outputModelSettings,
   assertOutputRepairSupported,
   OutputValidationError,
   prepareOutput,
@@ -1305,10 +1310,13 @@ interface ToolInvocation {
 const toolInvocation = new AsyncLocalStorage<ToolInvocation>();
 
 function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
-  if (!run.toolCleanupErrors.length) return primary;
+  const errors = [...run.toolCleanupErrors, ...(run.modelRun?.errors ?? [])];
+  if (!errors.length) return primary;
   return new AggregateError(
-    [...(primary === undefined ? [] : [primary]), ...run.toolCleanupErrors],
-    'Native tool callback cleanup failed',
+    [...(primary === undefined ? [] : [primary]), ...errors],
+    run.modelRun?.errors.length
+      ? 'Native model cleanup failed'
+      : 'Native tool callback cleanup failed',
     primary === undefined ? undefined : { cause: primary },
   );
 }
@@ -5089,16 +5097,18 @@ export class Session<OutputT = string, Context = unknown> {
 
       this.retireNativeQuestions(run);
       this.clearManualCalls(run);
+      const modelCleanup = run.modelRun?.close();
       run.controller.abort(cause);
       const settle = () => {
         const error = cleanupFailure(run, cause);
         run.accepted.reject(error);
         run.completion.reject(error);
       };
-      if (run.toolInvocations.size || run.manualReplies.size)
+      if (run.toolInvocations.size || run.manualReplies.size || modelCleanup)
         void Promise.allSettled([
           ...run.toolInvocations,
           ...run.manualReplies,
+          ...(modelCleanup ? [modelCleanup] : []),
         ]).then(settle);
       else settle();
       this.retireObservation(run);
@@ -6275,6 +6285,10 @@ export class Session<OutputT = string, Context = unknown> {
     const { output, inputStoragePolicy } = state;
     delete state.inputStoragePolicy;
     const selection = run.selection;
+    const modelSettingsOverride = outputModelSettings(
+      output,
+      selection?.modelSettingsOverride,
+    );
     if (selection?.prepareRequest && output.repair)
       throw new TypeError(
         'prepareRequest does not support output correction attempts; use native output or prompted maxRetries: 0',
@@ -6289,9 +6303,9 @@ export class Session<OutputT = string, Context = unknown> {
               ...(selection.modelOverride === undefined
                 ? {}
                 : { model_override: selection.modelOverride }),
-              ...(selection?.modelSettingsOverride === undefined
+              ...(modelSettingsOverride === undefined
                 ? {}
-                : { model_settings_override: selection.modelSettingsOverride }),
+                : { model_settings_override: modelSettingsOverride }),
               ...(selection.operationDeclarationSource
                 ? {
                     operation_declaration_source:
@@ -6324,7 +6338,7 @@ export class Session<OutputT = string, Context = unknown> {
         : parts,
       ...(output.schema === undefined &&
       selection?.modelOverride === undefined &&
-      selection?.modelSettingsOverride === undefined
+      modelSettingsOverride === undefined
         ? {}
         : {
             start: {
@@ -6334,9 +6348,9 @@ export class Session<OutputT = string, Context = unknown> {
               ...(selection?.modelOverride === undefined
                 ? {}
                 : { model_override: selection.modelOverride }),
-              ...(selection?.modelSettingsOverride === undefined
+              ...(modelSettingsOverride === undefined
                 ? {}
-                : { model_settings_override: selection.modelSettingsOverride }),
+                : { model_settings_override: modelSettingsOverride }),
             },
           }),
     };
@@ -7022,6 +7036,8 @@ export class Session<OutputT = string, Context = unknown> {
   ): void {
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     submissions.get(run)!.observation = 'finishing';
+    if (error !== undefined || run.failure !== undefined)
+      void run.modelRun?.close();
     this.retireNativeQuestions(run);
     if (run.manualReplies.size > 0) {
       void Promise.allSettled([...run.manualReplies]).then(() =>
@@ -7091,7 +7107,7 @@ export class Session<OutputT = string, Context = unknown> {
     error = cleanupFailure(run, error);
     this.flushTerminalObservations(run);
     if (error !== undefined) this.clearTerminalProposal(run);
-    if (run.toolCleanupErrors.length) {
+    if (run.toolCleanupErrors.length || run.modelRun?.errors.length) {
       this.retire(error);
       void this.close().catch(() => {});
       return;
@@ -7178,6 +7194,12 @@ export class Session<OutputT = string, Context = unknown> {
     if (submission?.previous && continuationWasSuperseded(error))
       this.lastRun = submission.previous;
 
+    if (!continueRetained && run.modelRun && !run.modelRun.closed) {
+      this.track(run, run.modelRun.close(), run.callbacks, () =>
+        this.finish(run, run.failure ?? error, output, unsampledSteering),
+      );
+      return;
+    }
     this.clearManualCalls(run);
     run.controller.abort(error);
     if (!this.owns(run)) return;
@@ -7210,6 +7232,10 @@ export class Session<OutputT = string, Context = unknown> {
                   : {
                       start: {
                         final_output_json_schema: submission.output.schema,
+                        model_settings_override: outputModelSettings(
+                          submission.output,
+                          run.selection?.modelSettingsOverride,
+                        ),
                       },
                     }),
               }),
@@ -7221,6 +7247,7 @@ export class Session<OutputT = string, Context = unknown> {
           run,
         );
         next.parentTrace = run.parentTrace;
+        next.modelRun = run.modelRun;
         submission.next = next;
         const successor = submissions.get(next)!;
         successor.previous = run;
@@ -7649,7 +7676,9 @@ export class Session<OutputT = string, Context = unknown> {
         (!owner.instanceId ||
           owner.instanceId === event.subagent_instance_id) &&
         event.id === turnId &&
-        (msg.source === 'responses' || msg.source === 'chat_completions') &&
+        (msg.source === 'responses' ||
+          msg.source === 'chat_completions' ||
+          msg.source === 'ai_sdk') &&
         (msg.transport === 'sse' ||
           msg.transport === 'websocket' ||
           msg.transport === 'json') &&
@@ -8421,12 +8450,22 @@ export class Session<OutputT = string, Context = unknown> {
             ? [part.text]
             : [],
         );
+        const hasTerminalAudio =
+          item.phase !== 'commentary' &&
+          item.content.some(
+            (part) =>
+              part !== null &&
+              typeof part === 'object' &&
+              !Array.isArray(part) &&
+              part.type === 'output_audio' &&
+              typeof part.audio === 'string',
+          );
         // Rust char::is_whitespace uses Unicode White_Space, unlike JS trim
         // (which also strips BOM and omits U+0085).
         const blank =
-          texts.length > 0 &&
+          (texts.length > 0 || hasTerminalAudio) &&
           texts.every((text) => /^\p{White_Space}*$/u.test(text));
-        if (!blank || item.phase === 'final_answer')
+        if (!blank || item.phase === 'final_answer' || hasTerminalAudio)
           submission.blankFinal = blank;
       }
     }
@@ -8451,7 +8490,9 @@ export class Session<OutputT = string, Context = unknown> {
     if (
       kind === 'sdk_raw_provider_event' &&
       eventTurn === run.id &&
-      (msg.source === 'responses' || msg.source === 'chat_completions') &&
+      (msg.source === 'responses' ||
+        msg.source === 'chat_completions' ||
+        msg.source === 'ai_sdk') &&
       (msg.transport === 'sse' ||
         msg.transport === 'websocket' ||
         msg.transport === 'json') &&
@@ -9725,8 +9766,29 @@ export class Session<OutputT = string, Context = unknown> {
                       callback: parseNative(delivery.wire),
                     })
                   : undefined;
+              const cleanup = backend.cleanupOnRunEnd;
+              if (cleanup !== undefined && typeof cleanup !== 'function')
+                throw new TypeError(
+                  'NativeModel.cleanupOnRunEnd must be callable',
+                );
+              let runOwner;
+              if (cleanup) {
+                const root =
+                  owner instanceof NativeTurn ? this.rootRun(owner) : owner;
+                const modelRun = (root.modelRun ??= new ModelRun(
+                  this.id,
+                  base.turnId,
+                ));
+                owner.modelRun = modelRun;
+                runOwner = modelRun.admit(backend, (resourceOwner) =>
+                  this._runVoiceCallback(() =>
+                    cleanup.call(backend, resourceOwner),
+                  ),
+                );
+              }
               const request: ModelRequest = {
                 ...base,
+                ...(runOwner === undefined ? {} : { runOwner }),
                 body: losslessJsonObjectSchema.parse(msg.data),
                 ...(attemptId === undefined
                   ? {}
@@ -9758,6 +9820,15 @@ export class Session<OutputT = string, Context = unknown> {
                           }),
                     }),
               };
+              if (usageOwner !== undefined)
+                bindProviderRequestAccounting(request, (operation) =>
+                  sourceNative._account_provider_request(
+                    usageOwner,
+                    operation.operation === 'terminal' && operation.usage
+                      ? `{"operation":"terminal","lineage":${JSON.stringify(operation.lineage)},"usage":${modelAttemptUsageJson(operation.usage)}}`
+                      : encode(operation),
+                  ),
+                );
               bindModelProviderMetadata(request, msg.provider_metadata);
               markModelRequestTransport(request, msg.request_transport);
               if (this.options.includeRawProviderEvents)
@@ -9832,13 +9903,15 @@ export class Session<OutputT = string, Context = unknown> {
                         streamOwner,
                         isChatModelStream(stream),
                         borrowedResponsesRequestId(stream),
+                        isAiSdkModelStream(stream),
+                        isResponsesWebSocketStream(stream),
                       );
                     },
                     push: (event, original) =>
                       sourceNative._push_model_producer(
                         streamOwner,
                         captureModelProviderStreamFrame(event, original),
-                        isRawChatChunk(original),
+                        isRawModelPart(original),
                       ),
                     finish: () => {
                       check();
@@ -13973,6 +14046,7 @@ export class Session<OutputT = string, Context = unknown> {
         submission.cancelled = true;
       if (options.mode === 'force') {
         run.failure ??= new TurnAborted('Turn interrupted');
+        void run.modelRun?.close();
         run.controller.abort(new TurnAborted('Session work stopped'));
 
         this.clearManualCalls(run);
@@ -18491,6 +18565,7 @@ export class Session<OutputT = string, Context = unknown> {
 
         this.retireNativeQuestions(run);
         this.clearManualCalls(run);
+        const modelCleanup = run.modelRun?.close();
         run.controller.abort(closed);
         try {
           acknowledgmentFailure =
@@ -18501,6 +18576,7 @@ export class Session<OutputT = string, Context = unknown> {
           await Promise.allSettled([
             ...run.toolInvocations,
             ...run.manualReplies,
+            ...(modelCleanup ? [modelCleanup] : []),
           ]);
           const error = cleanupFailure(run, run.failure ?? closed);
           if (

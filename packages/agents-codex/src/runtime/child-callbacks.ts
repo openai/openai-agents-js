@@ -1,3 +1,4 @@
+import type { ModelRun } from './model-run';
 import {
   modelAttemptTerminalError,
   releaseModelAttemptPayload,
@@ -20,6 +21,7 @@ export interface ChildObservationProducer {
 
 /** Internal callback ownership for independently running native child turns. */
 export interface ChildCallbackOwner {
+  modelRun?: ModelRun;
   clientSearchCatalogKeys?: Set<string>;
   readonly guardrailResults: GuardrailRecord[];
   guardrailInput?: readonly JsonObject[];
@@ -156,6 +158,7 @@ export class ChildCallbacks {
         )
           return;
         if (owner.failure === undefined) owner.failure = error;
+        void owner.modelRun?.close();
         owner.controller.abort(error);
         await failed().catch(() => {});
       })
@@ -174,6 +177,7 @@ export class ChildCallbacks {
         (turnId === undefined || owner.turnId === turnId)
       ) {
         owner.terminal = true;
+        void owner.modelRun?.close();
         owner.controller.abort(new Error('Native child turn ended'));
         if (owner.tasks.size === 0) owner.runRetryPolicyOverride = undefined;
       }
@@ -187,8 +191,18 @@ export class ChildCallbacks {
     const owner = this.owners.get(this.key(childId, incarnation, turnId));
     if (!owner) return;
     while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
+    if (owner.terminal) await owner.modelRun?.close();
     const terminal = modelAttemptTerminalError(owner);
     try {
+      if (owner.modelRun?.errors.length)
+        throw new AggregateError(
+          [
+            ...(owner.failure === undefined ? [] : [owner.failure]),
+            ...owner.modelRun.errors,
+          ],
+          'Native model cleanup failed',
+          owner.failure === undefined ? undefined : { cause: owner.failure },
+        );
       if (
         terminal &&
         (owner.failure === terminal || owner.failure === terminal.error)
@@ -236,6 +250,7 @@ export class ChildCallbacks {
   stop(reason: Error = new Error('Session closed')): void {
     for (const owner of this.owners.values()) {
       owner.terminal = true;
+      void owner.modelRun?.close();
       owner.controller.abort(reason);
       if (owner.tasks.size === 0) owner.runRetryPolicyOverride = undefined;
     }
@@ -245,6 +260,7 @@ export class ChildCallbacks {
     await Promise.all(
       [...this.owners.values()].map(async (owner) => {
         while (owner.tasks.size) await Promise.allSettled([...owner.tasks]);
+        await owner.modelRun?.close();
         owner.runRetryPolicyOverride = undefined;
       }),
     );

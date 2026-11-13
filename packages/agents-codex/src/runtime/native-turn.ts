@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue } from './binding';
+import type { ModelRun } from './model-run';
 import type { NativeEvent } from './events';
 import type { GuardrailRecord } from './guardrails';
 import type { UserInput } from './input';
@@ -22,6 +23,7 @@ export interface NativeRunResult {
 
 /** @internal */
 export class NativeTurn {
+  modelRun?: ModelRun;
   captureRequestAttempts = false;
   requestAttemptsStarted = false;
   borrowedRequestAttempts = false;

@@ -321,16 +321,19 @@ export class NativeThread {
   _reply_tool_not_found(responseJson: string): void;
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
+  _account_provider_request(ownerJson: string, operationJson: string): string | null;
   _reply_model_producer(response_json: string): void;
   _start_model_producer(
     owner_json: string,
     chat_stream?: boolean,
     upstream_request_id?: string,
+    ai_sdk_stream?: boolean,
+    responses_websocket_stream?: boolean,
   ): void;
   _push_model_producer(
     owner_json: string,
     event_json: string,
-    raw_chat_chunk?: boolean,
+    raw_part?: boolean,
   ): Promise<boolean>;
   _reply_prepared_request(responseJson: string): void;
   _reply_step(response_json: string): void;

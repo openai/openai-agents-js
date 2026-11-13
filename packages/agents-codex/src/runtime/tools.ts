@@ -231,7 +231,7 @@ export class ToolTimeoutError extends Error {
   }
 }
 
-type FunctionToolCaller = ToolCallInfo['route'];
+type FunctionToolCaller = 'direct' | 'code' | 'programmatic';
 
 export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
 
@@ -1089,21 +1089,22 @@ function createFunctionTool<
     (!Array.isArray(allowedCallers) ||
       allowedCallers.length === 0 ||
       [...allowedCallers].some(
-        (route) => route !== 'direct' && route !== 'code',
+        (route) =>
+          route !== 'direct' && route !== 'code' && route !== 'programmatic',
       ) ||
       new Set(allowedCallers).size !== allowedCallers.length)
   ) {
     throw new TypeError(
-      'allowedCallers must select distinct direct or code routes',
+      'allowedCallers must select distinct direct, code, or programmatic callers',
     );
   }
   const capturedCallers =
     allowedCallers === undefined
       ? undefined
       : Object.freeze<FunctionToolCaller[]>(
-          allowedCallers.length === 2
-            ? ['direct', 'code']
-            : [...allowedCallers],
+          (['direct', 'code', 'programmatic'] as const).filter((value) =>
+            allowedCallers.includes(value),
+          ),
         );
   if (
     options.callbackTimeout !== undefined &&

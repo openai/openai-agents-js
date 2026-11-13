@@ -47,6 +47,7 @@ export const modelAttemptSnapshotSchema = z.object({
   owner_attempt_id: z.string().min(1).nullable(),
   usage: nativeUsage,
   terminal_attempt_id: z.string().min(1).nullable(),
+  provider_managed: z.literal(true).optional(),
 });
 export interface CapturedModelAttempt {
   readonly ownerAttemptId: string | null;
@@ -69,7 +70,9 @@ export function captureModelAttemptSnapshot(
     throw new TypeError('Native missing-usage count exceeds model requests');
   if (
     wire.owner_attempt_id === null &&
-    (BigInt(usage.requests) !== 0n || wire.terminal_attempt_id !== null)
+    (BigInt(usage.requests) !== 0n ||
+      wire.terminal_attempt_id !== null ||
+      wire.provider_managed === true)
   )
     throw new TypeError('Native model usage is missing its ledger owner');
   const raw = captureUsageReport(usage, 0).raw;

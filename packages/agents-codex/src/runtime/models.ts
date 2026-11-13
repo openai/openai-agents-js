@@ -1,3 +1,4 @@
+import { capturePromptCacheBreakpoint } from './input';
 import {
   captureModelProviderMetadata,
   replayModelProviderMetadata,
@@ -84,7 +85,36 @@ const receivedCacheWriteUsage = Symbol('received cache-write usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
 const chatModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
-const rawChatChunks = new WeakSet<JsonObject>();
+const aiSdkModelStreams = new WeakSet<AsyncIterable<JsonObject>>();
+const rawModelParts = new WeakSet<JsonObject>();
+const responsesWebSocketStreams = new WeakSet<AsyncIterable<JsonObject>>();
+
+/** @internal Real Responses WebSocket events are separate from projected items. */
+export function hasRawProviderEvents(request: ModelRequest): boolean {
+  return (
+    (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+      rawProviderRequest
+    ] === true
+  );
+}
+
+export function markRawModelPart(event: JsonObject): JsonObject {
+  rawModelParts.add(event);
+  return event;
+}
+
+export function markResponsesWebSocketStream(
+  stream: AsyncIterable<JsonObject>,
+): AsyncIterable<JsonObject> {
+  responsesWebSocketStreams.add(stream);
+  return stream;
+}
+
+export function isResponsesWebSocketStream(
+  stream: AsyncIterable<JsonObject>,
+): boolean {
+  return responsesWebSocketStreams.has(stream);
+}
 // The adapter assembles items before Core sees them, including tool-only chunks.
 const maxChatStreamBytes = 8 * 1024 * 1024;
 
@@ -97,8 +127,12 @@ export function isChatModelStream(stream: AsyncIterable<JsonObject>): boolean {
   return chatModelStreams.has(stream);
 }
 
-export function isRawChatChunk(event: JsonObject): boolean {
-  return rawChatChunks.has(event);
+export function isAiSdkModelStream(stream: AsyncIterable<JsonObject>): boolean {
+  return aiSdkModelStreams.has(stream);
+}
+
+export function isRawModelPart(event: JsonObject): boolean {
+  return rawModelParts.has(event);
 }
 
 type OriginalResponsesUsage = {
@@ -107,6 +141,11 @@ type OriginalResponsesUsage = {
   upstreamRequestId: unknown;
 };
 
+/** Stable identity for optional resources owned by one application run. */
+export interface ModelRunOwner {
+  readonly sessionId: string;
+  readonly turnId: string;
+}
 /** Detached native provider input; Core retains canonical history and tool execution. */
 export interface ModelRequest {
   readonly body: JsonObject;
@@ -114,6 +153,8 @@ export interface ModelRequest {
   readonly sessionId: string;
   readonly turnId: string;
   readonly signal: AbortSignal;
+  /** Present for models with cleanupOnRunEnd; stable through retained continuation. */
+  readonly runOwner?: ModelRunOwner;
   /** Opaque native logical-attempt identity, when the route negotiates attempts. */
   readonly attemptId?: string;
   readonly attempt?: number;
@@ -142,6 +183,8 @@ export interface ModelResponse {
 }
 /** Application-owned producer. Cancellation joins admitted work and discards late output. */
 export interface NativeModel {
+  /** Release only this run's resources; native settlement awaits cleanup once. */
+  cleanupOnRunEnd?(owner: ModelRunOwner): void | Promise<void>;
   getRetryAdvice?(
     request: ModelRetryAdviceRequest,
   ): ModelRetryAdvice | undefined | Promise<ModelRetryAdvice | undefined>;
@@ -376,7 +419,7 @@ function captureRequestOptions(value: unknown): ModelRequestOptions {
   return options as unknown as ModelRequestOptions;
 }
 
-function captureRequestOptionsSource(
+export function captureRequestOptionsSource(
   options: ModelAdapterOptions,
 ): CapturedRequestOptions {
   const value = options.requestOptions;
@@ -405,7 +448,7 @@ export function markModelRequestTransport(
   );
 }
 
-async function clientRequestOptions(
+export async function clientRequestOptions(
   source: CapturedRequestOptions,
   request: ModelRequest,
 ) {
@@ -460,7 +503,7 @@ async function clientRequestOptions(
   };
 }
 
-function capturePromptCacheKey(
+export function capturePromptCacheKey(
   options: ModelAdapterOptions,
 ): string | undefined {
   const key = options.promptCacheKey;
@@ -693,48 +736,89 @@ export class ChatCompletionsModel implements NativeModel {
         continue;
       }
       if (raw.type === 'message') {
-        const content = (raw.content as JsonObject[]).map((part) => {
-          if (part.type === 'input_text' || part.type === 'output_text')
-            return { type: 'text', text: part.text };
-          if (part.type === 'input_audio') {
-            const audio = inlineAudioSource(part.audio_url);
-            const mediaType = audio.mediaType.split(';', 1)[0].toLowerCase();
-            const format = [
-              'audio/wav',
-              'audio/x-wav',
-              'audio/wave',
-              'audio/vnd.wave',
-            ].includes(mediaType)
-              ? 'wav'
-              : ['audio/mpeg', 'audio/mp3'].includes(mediaType)
-                ? 'mp3'
-                : undefined;
-            if (!format)
-              throw new TypeError('Chat audio requires WAV or MP3 input');
-            return {
-              type: 'input_audio',
-              input_audio: { data: audio.data, format },
-            };
-          }
-          if (part.type === 'input_image' && part.image_url)
-            return {
-              type: 'image_url',
-              image_url: {
-                url: part.image_url,
-                ...(part.detail ? { detail: part.detail } : {}),
-              },
-            };
-          throw new TypeError(
-            'ChatCompletionsModel received unsupported message content',
-          );
-        });
+        let audio: JsonObject | undefined;
+        const content = (raw.content as JsonObject[]).flatMap<JsonObject>(
+          (part) => {
+            const withCacheBreakpoint = (converted: JsonObject) => [
+              Object.hasOwn(part, 'prompt_cache_breakpoint')
+                ? {
+                    ...converted,
+                    prompt_cache_breakpoint: capturePromptCacheBreakpoint(
+                      part.prompt_cache_breakpoint,
+                    ),
+                  }
+                : converted,
+            ];
+            if (part.type === 'output_audio' && raw.role === 'assistant') {
+              const metadata = part.provider_data;
+              if (
+                audio !== undefined ||
+                metadata == null ||
+                typeof metadata !== 'object' ||
+                Array.isArray(metadata) ||
+                typeof metadata.id !== 'string' ||
+                !metadata.id.trim()
+              )
+                throw new TypeError(
+                  'Chat assistant audio requires one provider audio reference',
+                );
+              audio = { ...metadata };
+              delete audio.data;
+              return [];
+            }
+            if (part.type === 'input_text' || part.type === 'output_text')
+              return withCacheBreakpoint({ type: 'text', text: part.text });
+            if (part.type === 'input_audio') {
+              const audio = inlineAudioSource(part.audio_url);
+              const mediaType = audio.mediaType.split(';', 1)[0].toLowerCase();
+              const format = [
+                'audio/wav',
+                'audio/x-wav',
+                'audio/wave',
+                'audio/vnd.wave',
+              ].includes(mediaType)
+                ? 'wav'
+                : ['audio/mpeg', 'audio/mp3'].includes(mediaType)
+                  ? 'mp3'
+                  : undefined;
+              if (!format)
+                throw new TypeError('Chat audio requires WAV or MP3 input');
+              return withCacheBreakpoint({
+                type: 'input_audio',
+                input_audio: { data: audio.data, format },
+              });
+            }
+            if (part.type === 'input_image' && part.image_url)
+              return withCacheBreakpoint({
+                type: 'image_url',
+                image_url: {
+                  url: part.image_url,
+                  ...(part.detail ? { detail: part.detail } : {}),
+                },
+              });
+            throw new TypeError(
+              'ChatCompletionsModel received unsupported message content',
+            );
+          },
+        );
         const previous = messages.at(-1);
-        if (raw.role === 'assistant' && previous?.role === 'assistant')
+        if (
+          raw.role === 'assistant' &&
+          previous?.role === 'assistant' &&
+          (audio === undefined || previous.audio === undefined)
+        ) {
           previous.content = [
             ...((previous.content as unknown[]) ?? []),
             ...content,
           ];
-        else messages.push({ role: raw.role, content });
+          if (audio !== undefined) previous.audio = audio;
+        } else {
+          messages.push({
+            role: raw.role,
+            content,
+            ...(audio === undefined ? {} : { audio }),
+          });
+        }
       } else if (raw.type === 'function_call' || patchCall) {
         if (raw.namespace != null && raw.namespace !== 'functions')
           throw new TypeError(
@@ -855,6 +939,8 @@ export class ChatCompletionsModel implements NativeModel {
         'safety_identifier',
         'prediction',
         'logprobs',
+        'modalities',
+        'audio',
         'response_format',
         'prompt_cache_key',
       ]
@@ -991,6 +1077,7 @@ export class ChatCompletionsModel implements NativeModel {
       | undefined;
     let text: string | undefined;
     let refusal: string | undefined;
+    let audio: JsonObject | undefined;
     let usage: ChatCompletion['usage'];
     let bufferedBytes = 0;
     let logprobs:
@@ -1031,7 +1118,7 @@ export class ChatCompletionsModel implements NativeModel {
       request.signal.throwIfAborted();
       if (observeRaw) {
         const original = copyJsonValue(chunk) as JsonObject;
-        rawChatChunks.add(original);
+        rawModelParts.add(original);
         yield original;
       }
       if (opening)
@@ -1047,10 +1134,12 @@ export class ChatCompletionsModel implements NativeModel {
           'ChatCompletionsModel stream continued after its final choice',
         );
       const { delta } = choice;
+      const audioDelta = (delta as typeof delta & { audio?: unknown }).audio;
       bufferedBytes += Buffer.byteLength(
         JSON.stringify({
           content: delta.content,
           refusal: delta.refusal,
+          audio: audioDelta,
           toolCalls: delta.tool_calls,
           logprobs: choice.logprobs?.content,
         }),
@@ -1084,6 +1173,10 @@ export class ChatCompletionsModel implements NativeModel {
         };
       }
       if (delta.refusal != null) refusal = (refusal ?? '') + delta.refusal;
+      if (audioDelta != null) {
+        audio ??= Object.create(null) as JsonObject;
+        appendChatAudioDelta(audio, audioDelta);
+      }
       if (choice.logprobs?.content != null)
         (logprobs ??= []).push(...choice.logprobs.content);
       for (const fragment of delta.tool_calls ?? []) {
@@ -1155,6 +1248,7 @@ export class ChatCompletionsModel implements NativeModel {
         ],
       },
       applyPatchWire,
+      audio,
     );
     const output = result.output.map((item) => ({
       ...item,
@@ -1199,9 +1293,28 @@ function chatCompletionUsage(usage: NonNullable<ChatCompletion['usage']>) {
   };
 }
 
+function appendChatAudioDelta(audio: JsonObject, fragment: unknown): void {
+  const delta = copyJsonValue(fragment);
+  if (delta === null || typeof delta !== 'object' || Array.isArray(delta))
+    throw new TypeError('ChatCompletionsModel received malformed audio');
+  for (const [key, value] of Object.entries(delta)) {
+    if (value == null) continue;
+    if (key === 'data' || key === 'transcript') {
+      if (typeof value !== 'string')
+        throw new TypeError('ChatCompletionsModel received malformed audio');
+      audio[key] = (audio[key] ?? '') + value;
+    } else {
+      if (key === 'id' && audio.id !== undefined && audio.id !== value)
+        throw new TypeError('ChatCompletionsModel stream changed audio ID');
+      audio[key] = value;
+    }
+  }
+}
+
 function chatCompletionResult(
   value: Pick<ChatCompletion, 'id' | 'choices' | 'usage'>,
   applyPatchWire: ApplyPatchWire | undefined,
+  streamedAudio?: JsonObject,
 ): ModelResponse {
   if (!Array.isArray(value.choices) || value.choices.length !== 1)
     throw new TypeError(
@@ -1233,6 +1346,23 @@ function chatCompletionResult(
   }
   if (message.refusal != null)
     content.push({ type: 'refusal', refusal: message.refusal });
+  const audio = streamedAudio ?? message.audio;
+  if (audio != null) {
+    const captured = copyJsonValue(audio);
+    if (
+      captured === null ||
+      typeof captured !== 'object' ||
+      Array.isArray(captured) ||
+      typeof captured.data !== 'string'
+    )
+      throw new TypeError('ChatCompletionsModel received malformed audio');
+    const { data, ...providerData } = captured;
+    content.push({
+      type: 'output_audio',
+      audio: data,
+      provider_data: providerData,
+    });
+  }
   if (content.length)
     output.push({ type: 'message', role: 'assistant', content });
   for (const call of message.tool_calls ?? []) {
@@ -1282,6 +1412,22 @@ export class ResponsesModel implements NativeModel {
     return openAIRetryAdvice(request);
   }
   async #create(request: ModelRequest, stream: boolean): Promise<any> {
+    const input = request.body.input;
+    if (
+      Array.isArray(input) &&
+      input.some((item) => {
+        const parts = (item as JsonObject | null)?.content;
+        return (
+          Array.isArray(parts) &&
+          parts.some(
+            (part) => (part as JsonObject | null)?.type === 'output_audio',
+          )
+        );
+      })
+    )
+      throw new TypeError(
+        'Chat assistant audio requires a compatible Chat Completions provider',
+      );
     try {
       const pending = this.client.responses.create(
         {
@@ -1343,7 +1489,20 @@ function hasResponsesRefusal(output: readonly JsonObject[]): boolean {
   );
 }
 
-function projectResponsesResponse(response: any): ModelResponse {
+export function projectResponsesUsage(usage: any): ModelResponse['usage'] {
+  if (!usage) return undefined;
+  const cacheWrite = usage.input_tokens_details?.cache_write_tokens;
+  return {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    total_tokens: usage.total_tokens ?? 0,
+    cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
+    cache_write_input_tokens: cacheWrite ?? 0,
+    reasoning_output_tokens: usage.output_tokens_details?.reasoning_tokens ?? 0,
+  };
+}
+
+export function projectResponsesResponse(response: any): ModelResponse {
   const output = (response.output ?? []) as JsonObject[];
   const refusal = hasResponsesRefusal(output);
   if (response.status !== 'completed' && !refusal)
@@ -1356,15 +1515,7 @@ function projectResponsesResponse(response: any): ModelResponse {
     ...(response.id ? { responseId: response.id } : {}),
     ...(usage
       ? {
-          usage: {
-            input_tokens: usage.input_tokens ?? 0,
-            output_tokens: usage.output_tokens ?? 0,
-            total_tokens: usage.total_tokens ?? 0,
-            cached_input_tokens: usage.input_tokens_details?.cached_tokens ?? 0,
-            cache_write_input_tokens: cacheWrite ?? 0,
-            reasoning_output_tokens:
-              usage.output_tokens_details?.reasoning_tokens ?? 0,
-          },
+          usage: projectResponsesUsage(usage),
         }
       : {}),
   };
@@ -1510,6 +1661,25 @@ type AiSdkStreamTextBlock = {
 
 const googleThoughtSignatureOptions = ['google', 'googleVertex', 'vertex'];
 
+function redactAiSdkThoughtSignatures(event: JsonObject): void {
+  const metadata = event.providerMetadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+    return;
+  for (const provider of googleThoughtSignatureOptions) {
+    const value = metadata?.[provider];
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.hasOwn(value, 'thoughtSignature')
+    ) {
+      delete value.thoughtSignature;
+      if (Object.keys(value).length === 0) delete metadata[provider];
+    }
+  }
+  if (Object.keys(metadata).length === 0) delete event.providerMetadata;
+}
+
 function hasAiSdkThoughtSignature(metadata: JsonObject | undefined): boolean {
   return googleThoughtSignatureOptions.some(
     (provider) =>
@@ -1571,7 +1741,16 @@ export class AiSdkModel implements NativeModel {
     if (adapterOptions.stream === true) {
       if (typeof model.doStream !== 'function')
         throw new TypeError('AiSdkModel streaming requires doStream');
-      this.stream = (request) => this.#streamResponse(request);
+      this.stream = (request) => {
+        const stream = this.#streamResponse(request);
+        if (
+          (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+            rawProviderRequest
+          ]
+        )
+          aiSdkModelStreams.add(stream);
+        return stream;
+      };
     }
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
     this.#resolveFileOptions = adapterOptions.resolveFileOptions;
@@ -2065,9 +2244,20 @@ export class AiSdkModel implements NativeModel {
         request.signal.throwIfAborted();
         if (next.done) break;
         const part = next.value;
-        bytes += Buffer.byteLength(JSON.stringify(part));
+        const encoded = JSON.stringify(part);
+        bytes += Buffer.byteLength(encoded);
         if (bytes > maxChatStreamBytes)
           throw new TypeError('AiSdkModel stream exceeded its buffer limit');
+        if (
+          (request as ModelRequest & { [rawProviderRequest]?: boolean })[
+            rawProviderRequest
+          ]
+        ) {
+          const original = JSON.parse(encoded) as JsonObject;
+          redactAiSdkThoughtSignatures(original);
+          rawModelParts.add(original);
+          yield original;
+        }
         if (part.type === 'error') throw part.error;
         if (finished && part.type !== 'response-metadata')
           throw new TypeError('AiSdkModel stream continued after finish');

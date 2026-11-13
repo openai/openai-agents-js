@@ -3326,6 +3326,51 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_account_provider_request")]
+    pub fn account_provider_request(
+        &self,
+        owner_json: String,
+        operation_json: String,
+    ) -> napi::Result<Option<String>> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Owner {
+            attempt_id: String,
+            callback: Value,
+        }
+        let owner: Owner = serde_json::from_str(&owner_json)
+            .map_err(|_| input_error("Invalid model usage owner"))?;
+        if operation_json.len() > 65_536 {
+            return Err(input_error(
+                "Native provider request accounting exceeds capacity",
+            ));
+        }
+        let operation = serde_json::from_str(&operation_json)
+            .map_err(|_| input_error("Invalid native provider request accounting"))?;
+        let Some(inner) = self.live()? else {
+            return Err(input_error(
+                "Native provider request accounting receipt expired",
+            ));
+        };
+        let Some(tools) = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+        else {
+            return Err(input_error(
+                "Native provider request accounting receipt expired",
+            ));
+        };
+        tools
+            .account_provider_request(
+                &inner.id.to_string(),
+                &owner.attempt_id,
+                &owner.callback,
+                operation,
+            )
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_agent_workspace")]
     pub fn reply_agent_workspace(&self, response_json: String) -> napi::Result<()> {
         let response: python_tools::context_callbacks::WorkspaceReply =
@@ -3395,6 +3440,8 @@ impl NativeThread {
         owner_json: String,
         chat_stream: Option<bool>,
         upstream_request_id: Option<String>,
+        ai_sdk_stream: Option<bool>,
+        responses_websocket_stream: Option<bool>,
     ) -> napi::Result<()> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
@@ -3415,6 +3462,8 @@ impl NativeThread {
                 observe_raw,
                 chat_stream.unwrap_or(false),
                 upstream_request_id,
+                ai_sdk_stream.unwrap_or(false),
+                responses_websocket_stream.unwrap_or(false),
             )
             .map_err(input_error)
     }
@@ -3424,7 +3473,7 @@ impl NativeThread {
         &self,
         owner_json: String,
         event_json: String,
-        raw_chat_chunk: Option<bool>,
+        raw_part: Option<bool>,
     ) -> napi::Result<bool> {
         let inner = self.current()?;
         let response: python_tools::StepReply =
@@ -3438,7 +3487,7 @@ impl NativeThread {
             .exact_owner(&inner.id.to_string(), &response.thread, &response.instance)
             .ok_or_else(|| input_error("Expired model callback owner"))?;
         owner
-            .push_model_producer_event(&response, &event_json, raw_chat_chunk.unwrap_or(false))
+            .push_model_producer_event(&response, &event_json, raw_part.unwrap_or(false))
             .await
             .map_err(input_error)
     }
