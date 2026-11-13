@@ -2,7 +2,7 @@
   "private": true,
   "name": "docs-code",
   "dependencies": {
-    "@ai-sdk/openai": "^4.0.106",
+    "@ai-sdk/openai": "^4.0.109",
     "@modelcontextprotocol/server-filesystem": "^2026.8.31",
     "@openai/agents": "workspace:*",
     "@openai/agents-core": "workspace:*",
@@ -10,7 +10,7 @@
     "@openai/agents-openai": "workspace:*",
     "@openai/agents-realtime": "workspace:*",
     "@valibot/to-json-schema": "^1.8.0",
-    "openai": "^7.45.1",
+    "openai": "^7.56.0",
     "server-only": "^0.0.1",
     "valibot": "^1.5.0",
     "zod": "^4.6.7"
