@@ -2,7 +2,7 @@
 use crate::engine::ThreadState;
 use anyhow::{Context, ensure};
 use codex_history::RolloutItem;
-use codex_history::sdk_originals::input_projection;
+use codex_history::sdk_originals::input_projections;
 use codex_protocol::protocol::AgentStatus;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -124,14 +124,11 @@ async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyho
             ensure!(keep <= total, "history keep exceeds snapshot length");
             let originals = state.thread.sdk_history_projection(None).await?;
             let retained = state.thread.sdk_history_projection(Some(keep)).await?.len();
-            let mut appended = Vec::with_capacity(items.len());
-            for item in &items {
-                if let Some(projection) = input_projection(item)
-                    .map_err(|_| anyhow::anyhow!("Invalid canonical history item"))?
-                {
-                    appended.push(projection);
-                }
-            }
+            let appended = input_projections(&items)
+                .map_err(|_| anyhow::anyhow!("Invalid canonical history item"))?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
             crate::context::check_pairs(&originals, &(0..retained).collect::<Vec<_>>())
                 .context("canonical history requires complete tool call/result pairs")?;
             crate::context::check_pairs(&appended, &(0..appended.len()).collect::<Vec<_>>())

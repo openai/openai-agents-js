@@ -559,6 +559,7 @@ export type {
 export { ManagedWorkspaceCheckpoint } from './runtime/managed-workspace';
 
 export { Handoff, DecisionHandoff } from './runtime/handoffs';
+export type { HandoffInput } from './runtime/handoffs';
 export {
   ResponsesCompaction,
   responsesCompaction,

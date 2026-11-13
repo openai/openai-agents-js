@@ -323,6 +323,7 @@ export class NativeThread {
   _reply_step(response_json: string): void;
   _reply_compaction(response_json: string): void;
   _reply_provider_response_span(responseJson: string): void;
+  _reply_handoff_input(response_json: string): void;
   _reply_model_context(response_json: string): void;
   _reply_natural_completion(response_json: string): void;
   _load_client_tool_search(request_json: string, paths_json?: string): string;

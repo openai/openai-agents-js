@@ -1,3 +1,6 @@
+#[path = "handoff_inputs.rs"]
+pub(crate) mod handoff_inputs;
+
 use crate::tool_callers::ToolDeclarations;
 #[path = "sandbox_events.rs"]
 mod sandbox_events;

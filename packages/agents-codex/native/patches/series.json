@@ -1123,7 +1123,23 @@
     {
       "path": "sdk-provider-websocket-frame-cap.patch",
       "sha256": "e260e7b46598b5656ec0ff77813b1460c012bf016293f49af4ece3a975ae6ddb"
+    },
+    {
+      "path": "sdk-handoff-input-presentation.patch",
+      "sha256": "1d047fef449ec8575c698fc6abaeb324bf6809e21afda47ddd49ffa52860d414"
+    },
+    {
+      "path": "sdk-historical-mcp-archive.patch",
+      "sha256": "8c20fc080d5b050a91428d036b1e27ae5d9619cde6987ed8ea73ab0a03477412"
+    },
+    {
+      "path": "sdk-handoff-presentation-authority.patch",
+      "sha256": "9579698168208bc0723ce8070db7c61d068221e31208c800323cb1ddb1d30a04"
+    },
+    {
+      "path": "sdk-handoff-restored-runtime-controls.patch",
+      "sha256": "38ece9b77708c02aab4ae05afef8f4070e06b1ebdb80dc709c684e14202a9d41"
     }
   ],
-  "result_tree": "b2d0e6fe3ef271fa3bda1ef319ace4410796f675"
+  "result_tree": "d63cf8d3f0792b78e94c60df5029024344d0964b"
 }

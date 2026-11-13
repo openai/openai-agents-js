@@ -7,7 +7,12 @@ import {
   privateOpeningContribution,
   sdkMemoryPhase,
 } from './private-opening-contribution';
-import { Handoff, DecisionHandoff, decisionHandoffTool } from './handoffs';
+import {
+  type HandoffInput,
+  Handoff,
+  DecisionHandoff,
+  decisionHandoffTool,
+} from './handoffs';
 import {
   ResponsesCompaction,
   responsesCompaction,
@@ -197,6 +202,9 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Transport retries reuse its result; canonical history and tool authority stay intact.
    */
   transformContext?: ContextTransform<Context>;
+  prepareHandoffInput?: (
+    input: HandoffInput<Context>,
+  ) => HandoffInput<Context> | Promise<HandoffInput<Context>>;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
@@ -432,6 +440,7 @@ interface CapturedOpening {
   readonly beforeCompact?: BeforeCompact<any>;
   readonly compaction?: ResponsesCompaction<any>;
   readonly transformContext?: ContextTransform<any>;
+  readonly prepareHandoffInput?: AgentOptions<any, any>['prepareHandoffInput'];
   readonly hostedPrompt?: HostedPromptSource<any>;
   readonly hostedPromptControls?: JsonObject;
 }
@@ -568,6 +577,9 @@ export class Agent<Context = undefined, Output = string> {
   outputGuardrails: readonly OutputGuardrail<Context>[];
   beforeCompact?: BeforeCompact<Context>;
   transformContext?: ContextTransform<Context>;
+  prepareHandoffInput?: (
+    input: HandoffInput<Context>,
+  ) => HandoffInput<Context> | Promise<HandoffInput<Context>>;
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
@@ -626,6 +638,7 @@ export class Agent<Context = undefined, Output = string> {
       'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
+      'prepareHandoffInput',
     ] as const)
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
@@ -645,6 +658,7 @@ export class Agent<Context = undefined, Output = string> {
         'compaction and beforeCompact are mutually exclusive',
       );
     this.transformContext = options.transformContext;
+    this.prepareHandoffInput = options.prepareHandoffInput;
     this.provider = options.provider ?? new NativeProvider();
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
@@ -1191,6 +1205,9 @@ export class Agent<Context = undefined, Output = string> {
     const transformContext = opening
       ? opening.transformContext
       : this.transformContext;
+    const prepareHandoffInput = opening
+      ? opening.prepareHandoffInput
+      : this.prepareHandoffInput;
     const contextTransformPurpose =
       opening?.contextTransformPurpose ??
       ((options as OwnedSessionOptions<Context>)[correctionOpening]
@@ -1201,6 +1218,7 @@ export class Agent<Context = undefined, Output = string> {
       ['toolBatchCompletion', toolBatchCompletion],
       ['beforeCompact', beforeCompact],
       ['transformContext', transformContext],
+      ['prepareHandoffInput', prepareHandoffInput],
     ] as const)
       if (callback !== undefined && typeof callback !== 'function')
         throw new TypeError(`${name} must be a function`);
@@ -1444,6 +1462,7 @@ export class Agent<Context = undefined, Output = string> {
               beforeCompact,
               compaction,
               transformContext,
+              prepareHandoffInput,
               hostedPrompt,
             } as AgentOptions<Context, Output>),
             true,
@@ -1945,6 +1964,20 @@ export class Agent<Context = undefined, Output = string> {
                   root_id: completedGraph.rootId,
                   roster: [...completedGraph.roster],
                   fingerprint: completedGraph.fingerprint,
+                  input_preparations: Object.fromEntries(
+                    [...completedGraph.profiles].map(([id, runtime]) => [
+                      id,
+                      runtime.profile.declaration.prepareHandoffInput ===
+                      undefined
+                        ? []
+                        : [
+                            ...Object.keys(runtime.profile.handoffs),
+                            ...Object.keys(
+                              runtime.profile.decisionHandoffs ?? {},
+                            ),
+                          ],
+                    ]),
+                  ),
                 },
               }
             : {}),
@@ -2197,6 +2230,7 @@ export class Agent<Context = undefined, Output = string> {
             beforeCompact,
             compaction,
             transformContext,
+            prepareHandoffInput,
             hostedPrompt,
             hostedPromptControls: promptControls,
           });
@@ -2364,6 +2398,7 @@ export function captureAgentProfiles<Context, Output>(
       beforeCompact: source.beforeCompact,
       compaction: source.compaction,
       transformContext: source.transformContext,
+      prepareHandoffInput: source.prepareHandoffInput,
       hostedPrompt: source.hostedPrompt,
     } as AgentOptions<Context, Output>);
     if (wireIdentity(declaration) !== output)

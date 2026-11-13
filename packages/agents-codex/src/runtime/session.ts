@@ -1,3 +1,4 @@
+import type { HandoffInput } from './handoffs';
 import {
   bindModelProviderMetadata,
   captureModelProviderStreamFrame,
@@ -3566,6 +3567,7 @@ export class Session<OutputT = string, Context = unknown> {
       }
       if (
         this.options.agentGraph &&
+        !this.options.agentGraph.restoredSource &&
         (this.restored ||
           this.threadOptions._sdk_resume_thread_id !== undefined) &&
         (!this.restored || !isManualSessionState(this.restored))
@@ -7877,6 +7879,7 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === '_sdk_model_produce' ||
       msg.type === '_sdk_before_compact' ||
       msg.type === '_sdk_before_compact_policy' ||
+      msg.type === '_sdk_handoff_input' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -8258,6 +8261,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === '_sdk_model_produce' ||
       kind === '_sdk_before_compact' ||
       kind === '_sdk_before_compact_policy' ||
+      kind === '_sdk_handoff_input' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -9373,6 +9377,7 @@ export class Session<OutputT = string, Context = unknown> {
             request_id: msg.request_id,
           };
           const responseSpan = msg.type === '_sdk_provider_response_span';
+          const handoffInput = msg.type === '_sdk_handoff_input';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
           const compact = compactPolicy || msg.type === '_sdk_before_compact';
@@ -9397,6 +9402,7 @@ export class Session<OutputT = string, Context = unknown> {
               ? JSON.stringify(losslessJsonValueSchema.parse(envelope))
               : encode(envelope);
             if (responseSpan) sourceNative._reply_provider_response_span(data);
+            else if (handoffInput) sourceNative._reply_handoff_input(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
             else if (compact) sourceNative._reply_compaction(data);
@@ -9438,6 +9444,53 @@ export class Session<OutputT = string, Context = unknown> {
               );
               check();
               reply({ data: admitted });
+              return;
+            }
+            if (handoffInput) {
+              const source = this.messageProfile(msg);
+              if (!source)
+                throw new NativeError(
+                  'Handoff input lacks its captured source',
+                );
+              const runtime = this.profileRuntimes.get(source.profile_id)!;
+              const callback = runtime.profile.declaration.prepareHandoffInput;
+              if (!callback)
+                throw new NativeError(
+                  'Missing exact captured handoff input callback',
+                );
+              const name = z.string().parse(msg.tool_name);
+              const targetId = z.string().parse(msg.target_profile_id);
+              const target = this.profileRuntimes.get(targetId);
+              const declared =
+                runtime.profile.handoffs[name] === targetId ||
+                runtime.profile.decisionHandoffs?.[name]?.targets.includes(
+                  targetId,
+                );
+              if (!target || !declared)
+                throw new NativeError(
+                  'Handoff input destination differs from its captured target',
+                );
+              const items = z.array(losslessJsonObjectSchema);
+              const request: HandoffInput<Context> = Object.freeze({
+                input: Object.freeze(structuredClone(items.parse(msg.input))),
+                previous: Object.freeze(
+                  structuredClone(items.parse(msg.previous)),
+                ),
+                generated: Object.freeze(
+                  structuredClone(items.parse(msg.generated)),
+                ),
+                context: this.options.context as Context,
+                target: target.profile.agent,
+              });
+              const projected = await callback(request);
+              check();
+              reply({
+                groups: {
+                  input: items.parse(projected.input),
+                  previous: items.parse(projected.previous),
+                  generated: items.parse(projected.generated),
+                },
+              });
               return;
             }
             this.bindRunRetryPolicy(owner, msg);
@@ -15936,7 +15989,7 @@ export class Session<OutputT = string, Context = unknown> {
       checklist: !!this.options.checklist,
     });
   }
-  private checkpointRefusal(): string | undefined {
+  private checkpointRefusal(allowLocal = false): string | undefined {
     if (this.repairReceiptsIncomplete)
       return 'Output repair receipts are incomplete';
     if (
@@ -15946,7 +15999,7 @@ export class Session<OutputT = string, Context = unknown> {
       this.manualSeal
     )
       return 'Session is not available for checkpoint inspection';
-    if (this.options.localStorage)
+    if (this.options.localStorage && (!allowLocal || this.options.customStore))
       return 'Persistent storage cannot export SessionState';
     if (this.pendingRoots.size) return 'Session has queued root work';
     if (this.graphStops.size) return 'Session graph is stopping';
@@ -15961,11 +16014,11 @@ export class Session<OutputT = string, Context = unknown> {
     this.checkCallbackOperation('inspect checkpoints of');
     if (options?.kind !== 'idle' && options?.kind !== 'manualWait')
       throw new TypeError('kind must be idle or manualWait');
-    const refusal = this.checkpointRefusal();
+    const refusal = this.checkpointRefusal(options.kind === 'idle');
     if (refusal) return checkpointStatus('notReady', refusal);
     if (options.kind === 'idle') {
       const idleRefusal = () =>
-        this.checkpointRefusal() ??
+        this.checkpointRefusal(true) ??
         (this.lifecycle.kind !== 'idle' ||
         this.lastRun?.callbacks.size ||
         this.lastRun?.toolInvocations.size ||
@@ -16483,6 +16536,11 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
 
+  /**
+   * Copy an idle native Session, including its LocalStorage graph and sidecars.
+   * Restore without storage into isolated memory using the current Agent.
+   * CustomStorage export and persistent manual suspension/fork remain unsupported.
+   */
   async saveState(): Promise<SessionState> {
     return this.captureIdleState(false);
   }
@@ -16493,7 +16551,7 @@ export class Session<OutputT = string, Context = unknown> {
     if (this.realtimeOwner)
       throw new NativeError('Close native Realtime before save');
     this.requireCompleteRepairReceipts();
-    if (this.options.localStorage)
+    if (this.options.localStorage && (retire || this.options.customStore))
       throw new TypeError(
         'Persistent storage does not support saveState; retain Session.id and reopen with the same storage backend',
       );

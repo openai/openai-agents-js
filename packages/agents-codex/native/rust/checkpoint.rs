@@ -372,6 +372,8 @@ fn validate_code_states<'a>(
     Ok(())
 }
 
+type LocalCheckpointReader<'a> = crate::local_storage::CheckpointReader<'a>;
+
 pub(crate) type CodeStates = std::collections::HashMap<ThreadId, codex_code_mode::CodeModeSnapshot>;
 
 pub(crate) async fn code_state(
@@ -384,6 +386,14 @@ pub(crate) async fn code_state(
 pub(crate) async fn code_state_for_thread(
     engine: &EngineState,
     id: ThreadId,
+) -> anyhow::Result<Option<codex_code_mode::CodeModeSnapshot>> {
+    code_state_for_thread_with_reader(engine, id, None).await
+}
+
+async fn code_state_for_thread_with_reader(
+    engine: &EngineState,
+    id: ThreadId,
+    reader: Option<&LocalCheckpointReader<'_>>,
 ) -> anyhow::Result<Option<codex_code_mode::CodeModeSnapshot>> {
     if let Some(snapshot) = engine.interception.pending_code_state(id) {
         snapshot.validate().map_err(anyhow::Error::msg)?;
@@ -422,7 +432,7 @@ pub(crate) async fn code_state_for_thread(
         return Ok(snapshot);
     }
     // Missing runtime state alone cannot prove that a used namespace is empty.
-    let history = engine.load_checkpoint_history(id).await?;
+    let history = capture_history(engine, id, reader).await?;
     check_unused_code(id, &history)?;
     Ok(Some(codex_code_mode::CodeModeSnapshot {
         format_version: 1,
@@ -433,6 +443,13 @@ pub(crate) async fn code_state_for_thread(
 }
 
 pub(crate) async fn capture_code_states(state: &ThreadState) -> anyhow::Result<CodeStates> {
+    capture_code_states_with_reader(state, None).await
+}
+
+async fn capture_code_states_with_reader(
+    state: &ThreadState,
+    reader: Option<&LocalCheckpointReader<'_>>,
+) -> anyhow::Result<CodeStates> {
     let mut snapshots = CodeStates::new();
     for id in std::iter::once(state.id).chain(
         crate::subagents::list(state)
@@ -440,7 +457,8 @@ pub(crate) async fn capture_code_states(state: &ThreadState) -> anyhow::Result<C
             .into_iter()
             .map(|child| child.id),
     ) {
-        if let Some(snapshot) = code_state(state, id).await? {
+        if let Some(snapshot) = code_state_for_thread_with_reader(&state.engine, id, reader).await?
+        {
             snapshots.insert(id, snapshot);
         }
     }
@@ -449,7 +467,12 @@ pub(crate) async fn capture_code_states(state: &ThreadState) -> anyhow::Result<C
 
 pub async fn export(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<Value> {
     check_export_owner(state, pending).await?;
-    export_inner(state, pending, false).await
+    export_inner(state, pending, false, false).await
+}
+
+pub(crate) async fn export_idle(state: &ThreadState) -> anyhow::Result<Value> {
+    check_export_owner(state, None).await?;
+    export_inner(state, None, false, true).await
 }
 
 async fn check_export_owner(state: &ThreadState, pending: Option<&Value>) -> anyhow::Result<()> {
@@ -474,7 +497,7 @@ pub(crate) async fn export_restored_manual(state: &ThreadState) -> anyhow::Resul
         .get::<crate::python_tools::PythonTools>()
         .context("restored manual snapshot requires managed tools")?;
     tools.check_restored_manual_idle(&state.thread).await?;
-    export_inner(state, None, false).await
+    export_inner(state, None, false, false).await
 }
 
 pub(crate) fn redact_executor_observations(history: &mut [codex_history::RolloutItem]) {
@@ -561,9 +584,11 @@ async fn export_inner(
     state: &ThreadState,
     pending: Option<&Value>,
     probe: bool,
+    allow_local: bool,
 ) -> anyhow::Result<Value> {
     ensure!(
-        state.engine.local_checklist_store.is_none(),
+        state.engine.local_checklist_store.is_none()
+            || (allow_local && state.engine.custom_store.is_none()),
         "local storage cannot export portable checkpoints"
     );
     let tools = state
@@ -625,7 +650,20 @@ async fn export_inner(
         None
     };
     let before = crate::subagents::list(state).await?;
-    let code_states = capture_code_states(state).await?;
+    let reader = if let Some(store) = &state.engine.local_checklist_store {
+        Some(
+            store
+                .checkpoint_reader(
+                    std::iter::once(state.id)
+                        .chain(before.iter().map(|child| child.id))
+                        .collect(),
+                )
+                .await?,
+        )
+    } else {
+        None
+    };
+    let code_states = capture_code_states_with_reader(state, reader.as_ref()).await?;
     // Model metadata can select CodeMode without the feature flag. Retain the
     // pre-export receipt for every actual or retained VM snapshot, but preserve
     // legacy running-child exports that contain no VM state.
@@ -640,8 +678,13 @@ async fn export_inner(
             .get()
             .is_some_and(|metadata| metadata.code_state().is_some());
     let mut interrupted_thread_ids = Vec::new();
-    let (history, root_metadata) =
-        capture(&state.engine, state.id, &mut interrupted_thread_ids).await?;
+    let (history, root_metadata) = capture_with_reader(
+        &state.engine,
+        state.id,
+        &mut interrupted_thread_ids,
+        reader.as_ref(),
+    )
+    .await?;
     if probe && graph.is_none() {
         // Validate actual evidence before a temporary new revision could shadow it.
         state.instructions.check_usable()?;
@@ -664,12 +707,18 @@ async fn export_inner(
         crate::agent_profiles::validate_restored(graph, &history)?;
     }
     let root_memory_mode = memory_mode(state, state.id).await?;
-    let root_checklist = checklist(state, state.id).await?;
+    let root_checklist = capture_checklist(state, state.id, &history, reader.as_ref()).await?;
     let root_goal = goal(state, state.id).await?;
     let mut descendants = Vec::new();
     for child in &before {
-        let (history, metadata) =
-            capture(&state.engine, child.id, &mut interrupted_thread_ids).await?;
+        let (history, metadata) = capture_with_reader(
+            &state.engine,
+            child.id,
+            &mut interrupted_thread_ids,
+            reader.as_ref(),
+        )
+        .await?;
+        let checklist = capture_checklist(state, child.id, &history, reader.as_ref()).await?;
         descendants.push(Descendant {
             thread_id: child.id,
             parent_thread_id: child.parent_agent_id,
@@ -678,7 +727,7 @@ async fn export_inner(
             history,
             metadata,
             memory_mode: memory_mode(state, child.id).await?,
-            checklist: checklist(state, child.id).await?,
+            checklist,
             goal: goal(state, child.id).await?,
             code_mode: code_states.get(&child.id).cloned(),
         });
@@ -686,8 +735,11 @@ async fn export_inner(
     // A metadata-selected VM may first appear while history is read. Use the
     // original graph receipt if that happens; never substitute a later snapshot
     // for the namespace state captured before these histories.
-    let requires_code_graph =
-        requires_code_graph || (!probe && !capture_code_states(state).await?.is_empty());
+    let requires_code_graph = requires_code_graph
+        || (!probe
+            && !capture_code_states_with_reader(state, reader.as_ref())
+                .await?
+                .is_empty());
     ensure!(
         graph_edges(&before) == graph_edges(&crate::subagents::list(state).await?),
         "subagent graph changed during checkpoint; save again at a stable boundary"
@@ -905,7 +957,7 @@ pub(crate) async fn probe(state: &ThreadState) -> anyhow::Result<Probe<Value>> {
         let before = ProbeGraph::observe(state, false)?;
         before.check(state, false).await?;
         check_export_owner(state, None).await?;
-        let captured = export_inner(state, None, true).await;
+        let captured = export_inner(state, None, true, true).await;
         before.check(state, false).await?;
         captured
     }
@@ -1245,6 +1297,10 @@ async fn memory_mode(
     state: &ThreadState,
     id: ThreadId,
 ) -> anyhow::Result<Option<ThreadMemoryMode>> {
+    if state.engine.local_checklist_store.is_some() {
+        // The resolved canonical headers retain the local thread's memory mode.
+        return Ok(None);
+    }
     let store = state
         .engine
         .store
@@ -1298,10 +1354,42 @@ fn graph_edges(
         .collect()
 }
 
+async fn capture_history(
+    engine: &EngineState,
+    id: ThreadId,
+    reader: Option<&LocalCheckpointReader<'_>>,
+) -> anyhow::Result<Vec<RolloutItem>> {
+    match reader {
+        Some(reader) => Ok(reader.history(id).await?),
+        None => Ok(engine.load_checkpoint_history(id).await?),
+    }
+}
+
+async fn capture_checklist(
+    state: &ThreadState,
+    id: ThreadId,
+    history: &[RolloutItem],
+    reader: Option<&LocalCheckpointReader<'_>>,
+) -> anyhow::Result<Option<crate::storage::ChecklistState>> {
+    match reader {
+        Some(reader) => Ok(reader.checklist(id, history).await?),
+        None => checklist(state, id).await,
+    }
+}
+
 pub(crate) async fn capture(
     engine: &EngineState,
     id: ThreadId,
     interrupted: &mut Vec<ThreadId>,
+) -> anyhow::Result<(Vec<RolloutItem>, StoredThread)> {
+    capture_with_reader(engine, id, interrupted, None).await
+}
+
+async fn capture_with_reader(
+    engine: &EngineState,
+    id: ThreadId,
+    interrupted: &mut Vec<ThreadId>,
+    reader: Option<&LocalCheckpointReader<'_>>,
 ) -> anyhow::Result<(Vec<RolloutItem>, StoredThread)> {
     if let Ok(thread) = engine.manager.get_thread(id).await {
         ensure!(
@@ -1318,7 +1406,7 @@ pub(crate) async fn capture(
         }
     }
     let mut metadata = engine.read_stored_thread(id).await?;
-    let mut history = engine.load_checkpoint_history(id).await?;
+    let mut history = capture_history(engine, id, reader).await?;
     if let Ok(thread) = engine.manager.get_thread(id).await
         && let Some(tools) = thread
             .thread_extension_data()
