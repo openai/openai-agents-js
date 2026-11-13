@@ -592,3 +592,5 @@ export type { SandboxMemoryOptions } from './runtime/sandbox-memory';
 export type { PendingInput, PendingInputItem } from './runtime/state';
 
 export type { SandboxAccess } from './runtime/sandbox-context';
+
+export type { SandboxCapability } from './runtime/sandbox-capabilities';

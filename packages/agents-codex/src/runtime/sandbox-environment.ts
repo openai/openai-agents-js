@@ -1,3 +1,7 @@
+import {
+  captureSandboxCapabilities,
+  type SandboxCapability,
+} from './sandbox-capabilities';
 import { SandboxProviderBinding } from './sandbox-context';
 import {
   SandboxSkillBinding,
@@ -62,6 +66,8 @@ export interface SandboxEnvironmentOptions<
 > {
   /** A trusted client; provider ownership and cleanup rules apply. */
   client: SandboxClient<Options, State>;
+  capabilities?: readonly SandboxCapability[];
+  capabilityUser?: string;
   /** Application-authorized manifest; validate untrusted data before constructing it. */
   manifest: Manifest;
   /** Resource declarations; select source.skillTools in each intended Agent catalog. */
@@ -400,6 +406,14 @@ function createSandboxEnvironment<
   const deleteResource = client.delete?.bind(client);
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
+  const capabilityConfiguration = captureSandboxCapabilities(
+    options.capabilities,
+    options.capabilityUser,
+  );
+  if (capabilityConfiguration && managedAuthorization)
+    throw new TypeError(
+      'Sandbox capabilities require an ordinary provider acquisition',
+    );
   const capturedManifest = cloneManifest(
     requireManifest(options.manifest, Manifest),
   );
@@ -460,7 +474,15 @@ function createSandboxEnvironment<
   }
 
   let resumeConsumed = false;
+  const capabilityManifest = manifest;
   const source: EnvironmentSource<Context> = async ({ signal }) => {
+    const capabilityLease = capabilityConfiguration?.open(
+      capabilityManifest,
+      cloneManifest,
+      (value) => requireManifest(value, Manifest),
+      signal,
+    );
+    const manifest = capabilityLease?.manifest ?? capabilityManifest;
     const managed: ManagedWorkspaceBinding | undefined = managedAuthorization
       ? { ...managedAuthorization, captureRequested: false }
       : undefined;
@@ -488,6 +510,7 @@ function createSandboxEnvironment<
       (disposal ??= Promise.resolve().then(() => {
         const sandbox = ownedSandbox;
         sandboxProvider?.retire();
+        capabilityLease?.retire();
         skillLease?.retire();
         if (!gateway && !sandbox) return;
         return observe('sandbox.cleanup', async () => {
@@ -664,6 +687,7 @@ function createSandboxEnvironment<
       };
       const connectAndPublish = async (sandbox: SandboxSessionLike<State>) => {
         const created = sandbox;
+        capabilityLease?.bind(sandbox);
         gateway = await acquireEnvironment(
           ({ signal }) => connect(created, { signal }),
           signal,
@@ -683,6 +707,9 @@ function createSandboxEnvironment<
             )
           : undefined;
         const skillInstructions = await skillLease?.activate();
+        const capabilityInstructions = await capabilityLease?.instructions(
+          sandbox.state.manifest,
+        );
         gateway.opened();
         signal.throwIfAborted();
         return createEnvironmentLease(
@@ -696,7 +723,9 @@ function createSandboxEnvironment<
               gateway.environment! as Environment<Context>,
               runtime,
             ),
-            skillInstructions,
+            [skillInstructions, capabilityInstructions]
+              .filter(Boolean)
+              .join('\n\n') || undefined,
           ),
           (message) =>
             observeNativeSandboxOperation(runtime, client.backendId, message),
