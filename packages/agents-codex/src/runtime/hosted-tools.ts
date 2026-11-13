@@ -436,6 +436,16 @@ type HostedItemIdentity<Status extends string = HostedToolStatus> = {
   provider_data: JsonObject;
 };
 export type HostedToolItem =
+  | (HostedItemIdentity<'unknown'> & {
+      type: 'program';
+      call_id: string;
+      code: string;
+    })
+  | (HostedItemIdentity<'completed' | 'incomplete'> & {
+      type: 'program_output';
+      call_id: string;
+      result: string;
+    })
   | (HostedItemIdentity &
       (
         | {

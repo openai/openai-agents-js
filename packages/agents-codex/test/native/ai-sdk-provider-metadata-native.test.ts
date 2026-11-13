@@ -483,7 +483,10 @@ it('replays a streamed thought signature on the next request without public raw 
                 ...(first
                   ? {
                       providerMetadata: {
-                        google: { thoughtSignature: signature },
+                        google: {
+                          thoughtSignature: signature,
+                          serviceTier: 'fixture-tier',
+                        },
                       },
                     }
                   : {}),
@@ -528,14 +531,27 @@ it('replays a streamed thought signature on the next request without public raw 
         {
           type: 'text',
           text: 'first answer',
-          providerOptions: { google: { thoughtSignature: signature } },
+          providerOptions: {
+            google: {
+              thoughtSignature: signature,
+              serviceTier: 'fixture-tier',
+            },
+          },
         },
       ],
-      providerOptions: { google: { thoughtSignature: signature } },
+      providerOptions: {
+        google: { thoughtSignature: signature, serviceTier: 'fixture-tier' },
+      },
     },
   ]);
-  expect(events.some((event) => event.type === 'raw_provider_event')).toBe(
-    true,
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      type: 'raw_provider_event',
+      payload: expect.objectContaining({
+        type: 'text-delta',
+        providerMetadata: { google: { serviceTier: 'fixture-tier' } },
+      }),
+    }),
   );
   expect(JSON.stringify(events)).not.toContain(signature);
   expect(JSON.stringify(await session.historySnapshot())).not.toContain(

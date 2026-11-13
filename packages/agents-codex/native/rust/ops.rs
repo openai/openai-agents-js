@@ -921,9 +921,13 @@ async fn start_with_params<'a>(
     } else {
         turn_init
     };
+    let mut prompt_cache_breakpoints = Vec::new();
     let input = if p.input.is_array() {
+        let captured = decode::<Vec<codex_protocol::prompt_cache::PromptCacheUserInput>>(p.input).map_err(pre_admission)?;
+        let (content, breakpoints) = codex_protocol::prompt_cache::split_user_input(captured);
+        prompt_cache_breakpoints = breakpoints;
         TurnInput::UserInput {
-            content: decode::<Vec<UserInput>>(p.input).map_err(pre_admission)?,
+            content,
             client_id: p.client_id,
         }
     } else {
@@ -936,6 +940,7 @@ async fn start_with_params<'a>(
     };
     let mut request = TurnInputRequest {
         input,
+        prompt_cache_breakpoints,
         thread_settings: p.thread_settings,
         start: p.start,
         additional_context: p

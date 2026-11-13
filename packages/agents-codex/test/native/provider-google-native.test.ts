@@ -6,9 +6,9 @@ import { z } from 'zod';
 import { Agent, AiSdkModel, NativeProvider, tool } from '../../src';
 
 it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
-  'fences unsupported Google signed calls before native effects: %s',
+  'round-trips Google thought signatures on their original parts: %s',
   async (signaturePart) => {
-    const signed = signaturePart !== 'none';
+    const signature = 'opaque-google-signature';
     const requests: any[] = [];
     const effects: number[] = [];
     const server = createServer(async (request, response) => {
@@ -19,7 +19,18 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
       const final = body.contents.some((message: any) =>
         message.parts.some((part: any) => part.functionResponse),
       );
-      if (signed && final) {
+      const signedParts = body.contents
+        .filter((message: any) => message.role === 'model')
+        .flatMap((message: any) => message.parts)
+        .filter((part: any) => part.thoughtSignature === signature);
+      const matches =
+        signaturePart === 'none'
+          ? signedParts.length === 0
+          : signedParts.length === 1 &&
+            (signaturePart === 'text'
+              ? signedParts[0].text === 'Use double.'
+              : signedParts[0].functionCall?.name === 'double');
+      if (final && !matches) {
         response.writeHead(400, { 'content-type': 'application/json' });
         response.end(
           JSON.stringify({
@@ -45,7 +56,7 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
                         ? [
                             {
                               text: 'Use double.',
-                              thoughtSignature: 'opaque-google-signature',
+                              thoughtSignature: signature,
                             },
                           ]
                         : []),
@@ -56,7 +67,7 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
                           args: { value: 21 },
                         },
                         ...(signaturePart.endsWith('tool')
-                          ? { thoughtSignature: 'opaque-google-signature' }
+                          ? { thoughtSignature: signature }
                           : {}),
                       },
                     ],
@@ -108,25 +119,12 @@ it.each(['tool', 'text', 'vertex-tool', 'none'] as const)(
         provider,
       }).session();
       const turn = await session.submit('Double21.');
-      if (signed) {
-        const failure = await turn.wait().then(
-          () => undefined,
-          (error: Error) => error,
-        );
-        expect({
-          error: failure?.message,
-          effects,
-          requests: requests.length,
-        }).toEqual({
-          error: 'AiSdkModel does not support Google thought signatures',
-          effects: [],
-          requests: 1,
-        });
-      } else {
-        expect((await turn.wait()).finalOutput).toBe('42');
-        expect(effects).toEqual([21]);
-        expect(requests).toHaveLength(2);
-      }
+      expect((await turn.wait()).finalOutput).toBe('42');
+      expect(effects).toEqual([21]);
+      expect(requests).toHaveLength(2);
+      expect(JSON.stringify(await session.historySnapshot())).not.toContain(
+        signature,
+      );
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

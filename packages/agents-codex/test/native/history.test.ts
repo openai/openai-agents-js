@@ -170,6 +170,26 @@ describe('native history projection', () => {
     expect(repairItemFromWire(item)).toEqual(item);
   });
 
+  it('retains assistant audio in the repaired public message schema', () => {
+    const item: Parameters<typeof repairItemFromWire>[0] = {
+      id: 'audio',
+      turnId: 'turn',
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      phase: 'final_answer',
+      content: [
+        { type: 'output_text', text: 'Here it is.' },
+        {
+          type: 'output_audio',
+          audio: 'AA==',
+          provider_data: { id: 'provider-audio', transcript: 'Here it is.' },
+        },
+      ],
+    };
+    expect(repairItemFromWire(item)).toEqual(item);
+  });
+
   it('keeps canonical command, patch and MCP completions without a start record', () => {
     const rawItems: JsonObject[] = [
       {

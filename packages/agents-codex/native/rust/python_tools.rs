@@ -285,7 +285,9 @@ fn configured_executor_names<'a>(tools: impl IntoIterator<Item = &'a ToolName>) 
         .filter(|tool| tool.is_default_namespace())
         .filter_map(|tool| match tool.name.as_str() {
             "exec_command" | "shell_command" => Some("exec_command".to_string()),
-            "write_stdin" | "apply_patch" | "project_glob" | "project_grep" => Some(tool.name.clone()),
+            "write_stdin" | "apply_patch" | "project_glob" | "project_grep" => {
+                Some(tool.name.clone())
+            }
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -664,11 +666,38 @@ impl PythonTools {
         receipt: &Value,
         usage: codex_protocol::protocol::TokenUsage,
     ) -> Result<bool> {
+        Ok(self
+            .with_model_attempt_receipt(root, attempt_id, receipt, |attempt| {
+                attempt.report_usage(usage)
+            })?
+            .is_some())
+    }
+
+    pub(crate) fn account_provider_request(
+        self: &Arc<Self>,
+        root: &str,
+        attempt_id: &str,
+        receipt: &Value,
+        operation: codex_extension_api::ProviderRequestAccounting,
+    ) -> Result<Option<String>> {
+        self.with_model_attempt_receipt(root, attempt_id, receipt, |attempt| {
+            attempt.account_provider_request(operation)
+        })?
+        .ok_or_else(|| anyhow::anyhow!("Native provider request accounting receipt expired"))
+    }
+
+    fn with_model_attempt_receipt<T>(
+        self: &Arc<Self>,
+        root: &str,
+        attempt_id: &str,
+        receipt: &Value,
+        apply: impl FnOnce(&dyn codex_extension_api::ModelAttemptAdmission) -> Result<T, String>,
+    ) -> Result<Option<T>> {
         if receipt.get("kind").and_then(Value::as_str) != Some("preparation") {
-            return Ok(false);
+            return Ok(None);
         }
         let Some(thread) = receipt.get("thread").and_then(Value::as_str) else {
-            return Ok(false);
+            return Ok(None);
         };
         let instance = receipt
             .get("instance")
@@ -679,32 +708,33 @@ impl PythonTools {
             .and_then(Value::as_str)
             .and_then(|id| id.parse::<u64>().ok())
         else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(owner) = self.exact_owner(root, thread, &instance) else {
-            return Ok(false);
+            return Ok(None);
         };
         let replies = owner.step_replies.lock().expect("Step replies poisoned");
         let Some(callback) = replies
             .get(&id)
             .and_then(|pending| pending.callback.as_ref())
         else {
-            return Ok(false);
+            return Ok(None);
         };
         if callback.receipt != *receipt
             || !callback.entered.load(Ordering::Acquire)
             || callback.released.load(Ordering::Acquire)
         {
-            return Ok(false);
+            return Ok(None);
         }
         let Some(attempt) = &callback.model_attempt else {
-            return Ok(false);
+            return Ok(None);
         };
         if attempt.id() != attempt_id {
-            return Ok(false);
+            return Ok(None);
         }
-        attempt.report_usage(usage).map_err(anyhow::Error::msg)?;
-        Ok(true)
+        apply(attempt.as_ref())
+            .map(Some)
+            .map_err(anyhow::Error::msg)
     }
 
     pub(crate) async fn retire_model_attempt_callbacks(
@@ -1759,7 +1789,9 @@ impl PythonTools {
             .preserve_schemas
             .then(|| codex_protocol::ThreadId::new().to_string());
         validate_declarations(&specs)?;
-        for (declaration, (namespace, tool)) in specs.iter().zip(functions(&specs)) {
+        for (slot, (declaration, (namespace, tool))) in
+            specs.iter().zip(functions(&specs)).enumerate()
+        {
             let name = ToolName::new(
                 namespace.as_ref().map(|ns| ns.name.clone()),
                 tool.name.clone(),
@@ -1784,6 +1816,17 @@ impl PythonTools {
             }
             let mut function = dynamic_tool_to_responses_api_tool(&tool)?;
             function.defer_loading = None;
+            if let Some(callers) = specs.provider_callers(slot) {
+                use codex_tools::{ProviderToolCaller, ProviderToolCallers};
+                let mut values = Vec::new();
+                if callers.contains(ProviderToolCallers::DIRECT) {
+                    values.push(ProviderToolCaller::Direct);
+                }
+                if callers.contains(ProviderToolCallers::PROGRAMMATIC) {
+                    values.push(ProviderToolCaller::Programmatic);
+                }
+                function.allowed_callers = Some(values);
+            }
             if let Some(token) = &schema_token {
                 function.description =
                     schema_fidelity::Receipts::description(&tool.description, token, entries.len());
@@ -2403,7 +2446,7 @@ impl PythonTools {
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         self.enqueue_profile(
             thread, generation, slot, turn, call, arguments, None, None, source, model, media,
-            admission, None, None, None, None, None,
+            admission, None, None, None, None, None, None,
         )
     }
 
@@ -2426,6 +2469,7 @@ impl PythonTools {
         realtime_tool_call: Option<Value>,
         client_search: Option<Arc<ClientToolSearchWork>>,
         executor_tools: Option<Vec<String>>,
+        provider_agent_metadata: Option<Value>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -2483,6 +2527,11 @@ impl PythonTools {
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
+        if matches!(source, ToolCallSource::Direct) {
+            if let Some(metadata) = provider_agent_metadata {
+                request["msg"]["_sdk_hosted_agent_metadata"] = metadata;
+            }
+        }
         if let Some(error) = argument_error {
             request["msg"]["_sdk_argument_error"] = json!(error);
         }
@@ -3297,6 +3346,7 @@ impl ToolContributor for PythonContributor {
                 .specs
                 .caller_limits(slot)
                 .is_some_and(|callers| !callers.contains(codex_tools::ToolExposures::DIRECT))
+                && (voice || catalog.generation.specs.provider_callers(slot).is_none())
                 || !catalog.generation.defaults.contains(&slot)
                 || catalog
                     .defaults
@@ -4119,8 +4169,12 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
         self.generation.entries[self.slot].spec.clone()
     }
 
+    fn allowed_provider_callers(&self) -> Option<codex_tools::ProviderToolCallers> {
+        self.generation.specs.provider_callers(self.slot)
+    }
+
     fn allowed_callers(&self) -> Option<codex_tools::ToolExposures> {
-        self.generation.specs.caller_limits(self.slot)
+        self.generation.specs.model_surfaces(self.slot)
     }
 
     fn exposure(&self) -> ToolExposure {
@@ -4323,6 +4377,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .as_ref()
                         .and_then(|selection| selection.names())
                         .map(configured_executor_names),
+                    call.conversation_history.provider_agent_metadata().cloned(),
                 )
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
@@ -4943,6 +4998,7 @@ mod pending_tests {
                 None,
                 None,
                 Some(manual.slots.contains(&0)),
+                None,
                 None,
                 None,
                 None,

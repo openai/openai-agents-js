@@ -50,7 +50,7 @@ impl ModelResponseInterceptor for Interceptor {
 #[derive(Default)]
 pub(crate) struct SupportedOutput {
     pending_assistant: bool,
-    last_assistant_has_text: bool,
+    last_assistant_has_supported_content: bool,
     completed_native_item: bool,
 }
 
@@ -101,12 +101,14 @@ impl SupportedOutput {
                 match item {
                     ResponseItem::Message { role, content, .. } if role == "assistant" => {
                         self.pending_assistant = false;
-                        // Blank text is supported; missing text cannot inherit
-                        // a completed commentary message from earlier.
-                        self.last_assistant_has_text = content.iter().any(|part| {
+                        // Blank text and assistant audio are both supported.
+                        // An empty message cannot inherit earlier commentary.
+                        self.last_assistant_has_supported_content = content.iter().any(|part| {
                             matches!(
                                 part,
-                                ContentItem::InputText { .. } | ContentItem::OutputText { .. }
+                                ContentItem::InputText { .. }
+                                    | ContentItem::OutputText { .. }
+                                    | ContentItem::OutputAudio { .. }
                             )
                         });
                     }
@@ -143,7 +145,7 @@ impl SupportedOutput {
             }
             ResponseEvent::Completed { end_turn, .. } => {
                 if *end_turn != Some(false)
-                    && ((!self.last_assistant_has_text && !self.completed_native_item)
+                    && ((!self.last_assistant_has_supported_content && !self.completed_native_item)
                         || self.pending_assistant)
                 {
                     Some(if self.pending_assistant {

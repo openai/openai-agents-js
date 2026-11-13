@@ -103,12 +103,14 @@ impl PlainWebSocket {
     }
 
     pub(crate) fn interceptor(&self) -> Option<Box<dyn ModelResponseInterceptor>> {
-        let dispatch = self
+        let mut state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .dispatch
-            .clone()?;
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Core prepares interception before dialing. Retain the same receipt
+        // for the connection driver, including later sends on a reused socket.
+        let dispatch = state.dispatch.get_or_insert_with(Dispatch::default).clone();
+        dispatch.mark(DispatchState::NotStarted);
         Some(Box::new(dispatch))
     }
 
@@ -140,8 +142,7 @@ impl PlainWebSocket {
             if slot.closing || slot.cleanup_error.is_some() || cancel.is_cancelled() {
                 return Err(unavailable());
             }
-            let dispatch = Dispatch::default();
-            slot.dispatch = Some(dispatch.clone());
+            let dispatch = slot.dispatch.get_or_insert_with(Dispatch::default).clone();
             // Enroll before spawning, including cancellation before the first poll.
             let tracked = slot.tasks.track_future(async move {
                 // Keep the endpoints alive until a panic fences the next attempt.
@@ -357,4 +358,66 @@ fn unavailable() -> ApiError {
 
 fn operation_failed() -> WsError {
     WsError::Io(std::io::Error::other("Native WebSocket operation failed"))
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn failure() -> ModelResponseStream {
+        Box::pin(futures_util::stream::iter([Err(ApiError::Stream(
+            "disconnect".into(),
+        ))]))
+    }
+
+    fn driver(owner: &PlainWebSocket) -> Dispatch {
+        owner
+            .state
+            .lock()
+            .unwrap()
+            .dispatch
+            .clone()
+            .expect("prepared dispatch")
+    }
+
+    #[tokio::test]
+    async fn fences_a_first_send_after_preparing_before_dial() {
+        let owner = PlainWebSocket::new(false);
+        let interceptor = owner.interceptor().expect("pre-dial interception");
+        driver(&owner).mark(DispatchState::Started);
+        let mut stream = interceptor.intercept(failure());
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(ApiError::InvalidRequest { .. }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn preserves_retry_before_a_send() {
+        let owner = PlainWebSocket::new(false);
+        let mut stream = owner.interceptor().unwrap().intercept(failure());
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(ApiError::Stream(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn tracks_the_same_driver_after_preparing_a_reused_socket() {
+        let owner = PlainWebSocket::new(false);
+        drop(owner.interceptor());
+        let driver = driver(&owner);
+        driver.mark(DispatchState::Started);
+        let interceptor = owner.interceptor().unwrap();
+        assert!(matches!(
+            *driver.0.lock().unwrap(),
+            DispatchState::NotStarted
+        ));
+        driver.mark(DispatchState::Started);
+        let mut stream = interceptor.intercept(failure());
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(ApiError::InvalidRequest { .. }))
+        ));
+    }
 }

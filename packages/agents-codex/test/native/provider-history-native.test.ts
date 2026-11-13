@@ -324,6 +324,51 @@ nativeIt(
 );
 
 nativeIt(
+  'keeps explicit cache markers on only the unsent conversation input',
+  async () => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider(remote.options);
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-5.5',
+      provider,
+      modelSettings: { store: false, promptCacheMode: 'explicit' },
+    });
+    await using session = await agent.session({
+      providerHistory: { type: 'conversation', id: 'conv_current' },
+    });
+    for (const text of ['Before.', 'After.']) {
+      await (
+        await session.submit({
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text,
+              promptCacheBreakpoint: { mode: 'explicit' },
+            },
+          ],
+        })
+      ).wait();
+    }
+    expect(model.requests).toHaveLength(2);
+    expect(model.requests[1]!.input).toEqual([
+      expect.objectContaining({
+        role: 'user',
+        content: [
+          expect.objectContaining({
+            text: 'After.',
+            prompt_cache_breakpoint: { mode: 'explicit' },
+          }),
+        ],
+      }),
+    ]);
+  },
+  30_000,
+);
+
+nativeIt(
   'requires the current anchor and account on portable restore',
   async () => {
     const model = new ModelServer([[message('Before.')], [message('After.')]]);

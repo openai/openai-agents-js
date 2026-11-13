@@ -1,0 +1,67 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index fa8cd0b5d39..70c5e8eff58 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -3193,9 +3193,9 @@ impl ModelClientSession {
+                 payload.input = payload.input.borrow_with(input);
+             }
+             if !previous_response_id_from_untraced_warmup {
+-                if let Some(logical) = logical_history_input.as_deref() {
++                if let Some(logical) = logical_history_input.as_ref() {
+                     let ResponsesWsRequest::ResponseCreate(payload) = &mut ws_request;
+-                    let logical = payload.input.borrow_with(logical);
++                    let logical = logical.borrow_with(logical.as_ref());
+                     let wire = std::mem::replace(&mut payload.input, logical);
+                     inference_trace_attempt.record_started(&ws_request);
+                     let ResponsesWsRequest::ResponseCreate(payload) = &mut ws_request;
+diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
+index a856dd006a3..5dd79feacef 100644
+--- a/codex-rs/core/src/client/provider_history.rs
++++ b/codex-rs/core/src/client/provider_history.rs
+@@ -465,7 +465,7 @@ impl Cursor {
+             &codex_protocol::model_request_transport::RequestTransportOverrides,
+         >,
+         history_transport: HistoryTransport<'_>,
+-    ) -> Result<Option<Vec<ResponseItem>>> {
++    ) -> Result<Option<codex_api::CacheAnnotatedInput<Vec<ResponseItem>>>> {
+         let canonical_input = request
+             .request_controls
+             .canonical_history_input
+@@ -520,7 +520,7 @@ impl Cursor {
+             )
+         };
+         let full_len = request.input.len();
+-        let full_digest = input_digest(&request.input)?;
++        let full_digest = input_digest(request.input.as_ref())?;
+         let unsent = if let Some(window) = &saved.window {
+             let canonical = if let Some(canonical) = canonical_window(window) {
+                 if canonical_input.prefix_len + canonical_input.wire_input_indices.len() != full_len
+@@ -617,10 +617,12 @@ impl Cursor {
+         self.persist().await?;
+         let logical = unsent.map(|indices| {
+             let full = std::mem::take(&mut request.input);
+-            request.input = indices
+-                .into_iter()
+-                .map(|index| full[index].clone())
+-                .collect();
++            request.input = full.with_items(
++                indices
++                    .into_iter()
++                    .map(|index| full[index].clone())
++                    .collect(),
++            );
+             full
+         });
+         request.request_controls.provider_history = Some(saved.selection);
+diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
+index c99b265f296..3c3bb5ae061 100644
+--- a/codex-rs/core/src/compact_remote_v2_attempt.rs
++++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
+@@ -106,6 +106,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
+         sampling_stop: crate::model_request::turn_sampling_stop(&turn_context.extension_data),
+         prepared_request_admission: None,
+         canonical_history_input: None,
++        prompt_cache_annotations: Vec::new(),
+         parallel_tool_calls: true,
+         tool_choice: Default::default(),
+         base_instructions,

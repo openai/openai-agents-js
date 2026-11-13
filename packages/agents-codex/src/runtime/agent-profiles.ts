@@ -295,6 +295,7 @@ export function captureProfileRuntimes(
       index === 0 ? rootModelSettings : declaration.modelSettings
     )?.retry?.policy;
     const controls = (model.request_controls ??= {}) as JsonObject;
+    if (output.strict === false) controls.output_schema_strict = false;
     if (controls.retry !== null)
       controls.retry = {
         ...((controls.retry ?? {}) as JsonObject),

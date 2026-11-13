@@ -392,10 +392,7 @@ impl OpeningProfiles {
             if manual.contains(&original) {
                 slots.push(slot);
             }
-            rebound.push(
-                declarations[original].clone(),
-                declarations.caller_limits(original),
-            );
+            rebound.append_captured(&declarations, original);
         }
         Ok((rebound, slots))
     }

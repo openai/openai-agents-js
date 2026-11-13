@@ -1,3 +1,4 @@
+import { bindHostedAgentMetadata } from './hosted-agent-metadata';
 import { z } from 'zod';
 import { jsonObject, type JsonObject } from './binding';
 import type { ToolCallContext } from './tools';
@@ -38,21 +39,24 @@ export function managedCallInfo(
   // Live and restored requests explicitly project source. Never treat a missing
   // source as proof that an invocation ID came from the provider.
   const source = codeOrigin.parse(message._sdk_code_origin);
-  return freezeCall({
-    ...owner,
-    tool: {
-      name: message.tool as string,
-      namespace: (message.namespace as string | null) ?? null,
-    },
-    turnId: message.turnId as string,
-    callId: source === null ? (message.callId as string) : null,
-    role: null,
-    model: (message._sdk_model as string | null) ?? null,
-    route: source === null ? 'direct' : 'code',
-    outerCallId: null,
-    cellId: source?.cell_id ?? null,
-    nestedCallId: source?.nested_call_id ?? null,
-  });
+  return bindHostedAgentMetadata(
+    freezeCall({
+      ...owner,
+      tool: {
+        name: message.tool as string,
+        namespace: (message.namespace as string | null) ?? null,
+      },
+      turnId: message.turnId as string,
+      callId: source === null ? (message.callId as string) : null,
+      role: null,
+      model: (message._sdk_model as string | null) ?? null,
+      route: source === null ? 'direct' : 'code',
+      outerCallId: null,
+      cellId: source?.cell_id ?? null,
+      nestedCallId: source?.nested_call_id ?? null,
+    }),
+    source === null ? message._sdk_hosted_agent_metadata : undefined,
+  );
 }
 
 /** @internal The dispatcher supplies the already matched callback submission. */

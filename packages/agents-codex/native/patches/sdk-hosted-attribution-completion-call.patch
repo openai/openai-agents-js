@@ -1,0 +1,11 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -4876,6 +4876,7 @@
+                         &mut ctx,
+                         item,
+                         previously_streamed_item,
++                        provider_agent_metadata,
+                         provider_metadata,
+                     )
+                     .instrument(handle_responses)

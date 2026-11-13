@@ -950,7 +950,9 @@ mod tests {
     }
     fn pending_response_span(
         tools: &PythonTools,
-    ) -> oneshot::Receiver<std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>> {
+    ) -> oneshot::Receiver<
+        std::result::Result<Option<codex_extension_api::SdkProviderResponseSpanAdmission>, ()>,
+    > {
         let (reply, receive) = oneshot::channel();
         tools.step_replies.lock().unwrap().insert(
             17,
@@ -1219,13 +1221,17 @@ pub(super) enum ProducedResponse {
     },
 }
 pub(super) enum ModelDelivery {
-    Waiting(oneshot::Sender<std::result::Result<ProducedResponse, ()>>,
-        Option<codex_extension_api::CapturedModelProviderOutput>),
+    Waiting(
+        oneshot::Sender<std::result::Result<ProducedResponse, ()>>,
+        Option<codex_extension_api::CapturedModelProviderOutput>,
+    ),
     Streaming {
         events: tokio::sync::mpsc::Sender<codex_api::ResponseEvent>,
         finish: oneshot::Sender<ModelStreamFinish>,
         projection: codex_api::ApplicationModelStream,
         observe_raw_chat: bool,
+        observe_raw_ai_sdk: bool,
+        observe_raw_responses_websocket: bool,
         chat_stream: bool,
         provider_metadata: Option<codex_extension_api::CapturedModelProviderOutput>,
     },
@@ -1243,9 +1249,12 @@ fn model_stream_error(error: impl std::fmt::Display) -> codex_api::ApiError {
         message: error.to_string(),
     }
 }
-fn raw_chat_provider_event(payload: serde_json::Map<String, Value>) -> codex_api::ResponseEvent {
+fn raw_model_provider_event(
+    payload: serde_json::Map<String, Value>,
+    source: codex_protocol::protocol::SdkRawProviderSource,
+) -> codex_api::ResponseEvent {
     codex_api::ResponseEvent::RawProvider(codex_protocol::protocol::SdkRawProviderEvent {
-        source: codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+        source,
         transport: codex_protocol::protocol::ResponsesEventTransport::Json,
         payload: Value::Object(payload),
     })
@@ -1397,7 +1406,10 @@ impl PythonTools {
             let mut by_id = std::collections::HashMap::new();
             for envelope in retained {
                 if let Some(id) = envelope.item.id() {
-                    by_id.entry(id.as_str()).or_insert_with(Vec::new).push(envelope);
+                    by_id
+                        .entry(id.as_str())
+                        .or_insert_with(Vec::new)
+                        .push(envelope);
                 }
             }
             if let Some(input) = message["data"]["input"].as_array() {
@@ -1408,18 +1420,30 @@ impl PythonTools {
                     }
                 }
                 for (input_index, item) in input.iter().enumerate() {
-                    let Some(id) = item.get("id").and_then(Value::as_str) else { continue; };
-                    let Some(matching) = by_id.get(id) else { continue; };
-                    ensure!(matching.len() == 1 && counts.get(id) == Some(&1),
-                        "Ambiguous model provider metadata occurrence");
+                    let Some(id) = item.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let Some(matching) = by_id.get(id) else {
+                        continue;
+                    };
+                    ensure!(
+                        matching.len() == 1 && counts.get(id) == Some(&1),
+                        "Ambiguous model provider metadata occurrence"
+                    );
                     let captured = matching[0];
                     if !model_provider_metadata_item_matches(&captured.item, item) {
                         continue;
                     }
-                    if let Some(metadata) = captured.metadata.as_ref()
+                    if let Some(metadata) = captured
+                        .metadata
+                        .as_ref()
                         .and_then(|metadata| metadata.sdk_model_provider_metadata.as_ref())
                     {
-                        let row = InputMetadata { input_index, item, metadata };
+                        let row = InputMetadata {
+                            input_index,
+                            item,
+                            metadata,
+                        };
                         budget.charge(&row).map_err(anyhow::Error::msg)?;
                         provider_metadata.push(serde_json::to_value(row)?);
                     }
@@ -1446,7 +1470,12 @@ impl PythonTools {
                 cancellation,
                 attempt.clone(),
                 message,
-                |reply| PreparationReply::Model(ModelDelivery::Waiting(reply, admission.provider_output_metadata().cloned())),
+                |reply| {
+                    PreparationReply::Model(ModelDelivery::Waiting(
+                        reply,
+                        admission.provider_output_metadata().cloned(),
+                    ))
+                },
             )
             .await?;
         match reply {
@@ -1469,9 +1498,11 @@ impl PythonTools {
                     "Native model response requires an identifier"
                 );
                 if !reply.provider_metadata.is_empty() {
-                    let output: Vec<ResponseItem> = serde_json::from_value(Value::Array(reply.output.clone()))
-                        .context("Invalid model provider metadata output")?;
-                    admission.provider_output_metadata()
+                    let output: Vec<ResponseItem> =
+                        serde_json::from_value(Value::Array(reply.output.clone()))
+                            .context("Invalid model provider metadata output")?;
+                    admission
+                        .provider_output_metadata()
                         .context("Model provider metadata has no captured admission")?
                         .capture(output, reply.provider_metadata)
                         .map_err(anyhow::Error::msg)?;
@@ -1551,7 +1582,13 @@ impl PythonTools {
                     );
                 }
                 if let Some(raw) = reply.raw_chat_completion {
-                    events.insert(events.len() - 1, Ok(raw_chat_provider_event(raw)));
+                    events.insert(
+                        events.len() - 1,
+                        Ok(raw_model_provider_event(
+                            raw,
+                            codex_protocol::protocol::SdkRawProviderSource::ChatCompletions,
+                        )),
+                    );
                 }
                 Ok(futures_util::stream::iter(events).boxed())
             }
@@ -1578,7 +1615,14 @@ impl PythonTools {
         observe_raw: bool,
         chat_stream: bool,
         upstream_request_id: Option<String>,
+        ai_sdk_stream: bool,
+        responses_websocket_stream: bool,
     ) -> Result<()> {
+        ensure!(
+            u8::from(chat_stream) + u8::from(ai_sdk_stream) + u8::from(responses_websocket_stream)
+                <= 1,
+            "Ambiguous model adapter source"
+        );
         let active = self
             .selection
             .lock()
@@ -1612,8 +1656,12 @@ impl PythonTools {
             PreparationReply::Model(ModelDelivery::Streaming {
                 events,
                 finish,
-                projection: codex_api::ApplicationModelStream::new(observe_raw && !chat_stream),
+                projection: codex_api::ApplicationModelStream::new(
+                    observe_raw && !chat_stream && !ai_sdk_stream && !responses_websocket_stream,
+                ),
                 observe_raw_chat: observe_raw && chat_stream,
+                observe_raw_ai_sdk: observe_raw && ai_sdk_stream,
+                observe_raw_responses_websocket: observe_raw && responses_websocket_stream,
                 chat_stream,
                 provider_metadata,
             }),
@@ -1632,7 +1680,7 @@ impl PythonTools {
         &self,
         response: &StepReply,
         data: &str,
-        raw_chat_chunk: bool,
+        raw_part: bool,
     ) -> Result<bool> {
         let id = crate::native_id(&response.request_id)?;
         let (projected, sender, continuing) = {
@@ -1663,45 +1711,95 @@ impl PythonTools {
                 events,
                 projection,
                 observe_raw_chat,
+                observe_raw_ai_sdk,
+                observe_raw_responses_websocket,
                 provider_metadata,
                 ..
             }) = &mut pending.reply
             else {
                 anyhow::bail!("Model stream has not started")
             };
-            let (projected, continuing) = if raw_chat_chunk {
+            let (projected, continuing) = if raw_part {
                 ensure!(
-                    *observe_raw_chat,
-                    "Raw Chat chunks require an opted-in Chat stream"
+                    *observe_raw_chat || *observe_raw_ai_sdk || *observe_raw_responses_websocket,
+                    "Raw model parts require an opted-in adapter stream"
                 );
                 ensure!(
                     data.len() <= 8 * 1024 * 1024,
-                    "Raw Chat chunk exceeds the stream frame limit"
+                    "Raw model part exceeds the stream frame limit"
                 );
-                let raw = serde_json::from_str(data).context("Invalid raw Chat chunk")?;
-                (vec![raw_chat_provider_event(raw)], true)
+                let raw = serde_json::from_str(data).context("Invalid raw model part")?;
+                use codex_protocol::protocol::{
+                    ResponsesEventTransport, SdkRawProviderEvent, SdkRawProviderSource,
+                };
+                let (source, transport) = if *observe_raw_responses_websocket {
+                    (
+                        SdkRawProviderSource::Responses,
+                        ResponsesEventTransport::Websocket,
+                    )
+                } else if *observe_raw_ai_sdk {
+                    (SdkRawProviderSource::AiSdk, ResponsesEventTransport::Json)
+                } else {
+                    (
+                        SdkRawProviderSource::ChatCompletions,
+                        ResponsesEventTransport::Json,
+                    )
+                };
+                (
+                    vec![codex_api::ResponseEvent::RawProvider(SdkRawProviderEvent {
+                        source,
+                        transport,
+                        payload: Value::Object(raw),
+                    })],
+                    true,
+                )
             } else {
                 let cleaned;
                 let data = if data.contains("__sdk_model_provider_metadata") {
-                    ensure!(data.len() <= 16 * 1024 * 1024, "Model metadata stream frame exceeds its limit");
-                    let mut frame: Value = serde_json::from_str(data).context("Invalid model metadata stream frame")?;
-                    let annotation = frame.as_object_mut()
+                    ensure!(
+                        data.len() <= 16 * 1024 * 1024,
+                        "Model metadata stream frame exceeds its limit"
+                    );
+                    let mut frame: Value = serde_json::from_str(data)
+                        .context("Invalid model metadata stream frame")?;
+                    let annotation = frame
+                        .as_object_mut()
                         .and_then(|frame| frame.remove("__sdk_model_provider_metadata"));
                     if let Some(annotation) = annotation {
-                        let annotation: codex_extension_api::ModelOutputProviderMetadata = serde_json::from_value(annotation)
-                            .context("Invalid model stream provider metadata")?;
-                        ensure!(frame.get("type").and_then(Value::as_str) == Some("response.output_item.done")
-                            && frame.get("output_index").and_then(Value::as_u64) == Some(annotation.output_index as u64),
-                            "Model stream metadata has no matching output occurrence");
-                        let item: ResponseItem = serde_json::from_value(frame.get("item").cloned()
-                            .context("Missing model metadata output item")?).context("Invalid model metadata output item")?;
-                        provider_metadata.as_ref().context("Model stream metadata has no captured admission")?
-                            .append_stream_output(annotation.output_index, item, annotation.metadata)
+                        let annotation: codex_extension_api::ModelOutputProviderMetadata =
+                            serde_json::from_value(annotation)
+                                .context("Invalid model stream provider metadata")?;
+                        ensure!(
+                            frame.get("type").and_then(Value::as_str)
+                                == Some("response.output_item.done")
+                                && frame.get("output_index").and_then(Value::as_u64)
+                                    == Some(annotation.output_index as u64),
+                            "Model stream metadata has no matching output occurrence"
+                        );
+                        let item: ResponseItem = serde_json::from_value(
+                            frame
+                                .get("item")
+                                .cloned()
+                                .context("Missing model metadata output item")?,
+                        )
+                        .context("Invalid model metadata output item")?;
+                        provider_metadata
+                            .as_ref()
+                            .context("Model stream metadata has no captured admission")?
+                            .append_stream_output(
+                                annotation.output_index,
+                                item,
+                                annotation.metadata,
+                            )
                             .map_err(anyhow::Error::msg)?;
                         cleaned = serde_json::to_string(&frame)?;
                         cleaned.as_str()
-                    } else { data }
-                } else { data };
+                    } else {
+                        data
+                    }
+                } else {
+                    data
+                };
                 let had_usage = projection.completed_usage().is_some();
                 let (projected, continuing) = projection.push(data);
                 if !had_usage {
@@ -1881,8 +1979,12 @@ mod model_provider_metadata_occurrence_tests {
         captured.set_turn_id_if_missing("native-private-turn");
         assert!(model_provider_metadata_item_matches(&captured, &wire));
         let mut changed_internal = wire.clone();
-        changed_internal["internal_chat_message_metadata_passthrough"] = json!({"turn_id":"different-turn"});
-        assert!(!model_provider_metadata_item_matches(&captured, &changed_internal));
+        changed_internal["internal_chat_message_metadata_passthrough"] =
+            json!({"turn_id":"different-turn"});
+        assert!(!model_provider_metadata_item_matches(
+            &captured,
+            &changed_internal
+        ));
     }
 
     #[test]
@@ -1899,7 +2001,10 @@ mod model_provider_metadata_occurrence_tests {
         ] {
             let mut changed_wire = wire.clone();
             changed_wire[field] = json!(changed);
-            assert!(!model_provider_metadata_item_matches(&captured, &changed_wire), "{field}");
+            assert!(
+                !model_provider_metadata_item_matches(&captured, &changed_wire),
+                "{field}"
+            );
         }
     }
 }

@@ -105,6 +105,7 @@ export async function openSession(
     options.state,
     setup.threadOptions._sdk_resume_thread_id,
     audioBudget,
+    true,
   );
   options = liveOptions;
   const { model, config, apiKey } = setup;
