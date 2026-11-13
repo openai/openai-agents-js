@@ -207,6 +207,12 @@ export interface NativeRealtimeHistoryItem {
   readonly outcome?: string;
   readonly presentation?: string;
   readonly presentationIndex?: number;
+  readonly callId?: string;
+  readonly name?: string;
+  readonly arguments?: string;
+  readonly output?: string;
+  /** Native result status; interruption alone has not been establishing completion. */
+  readonly status?: 'in_progress' | 'completed' | 'failed';
 }
 /** An issued, one-shot hosted MCP approval capability belonging to this media owner. */
 export interface NativeRealtimeHostedMcpApprovalRequest {
@@ -550,6 +556,7 @@ class NativeRealtimeOwner {
   private readonly seen = new Set<string>();
   private readonly delegations = new Map<string, Delegation>();
   private readonly canonical = new Map<string, NativeRealtimeHistoryItem>();
+  private realtimeSessionId?: string;
   private readonly conversation: VoiceConversationHistory;
   private outputAudioBytesPerMillisecond = 48;
   private readonly observers = new VoiceEventObservers<NativeRealtimeEvent>(
@@ -879,9 +886,12 @@ class NativeRealtimeOwner {
       ? undefined
       : (structuredClone(this.usageTotals) as NativeRealtimeUsage);
   }
+  /** Local audit; provider deletion has not been removing accepted call facts. */
   get history(): readonly NativeRealtimeHistoryItem[] {
     return Object.freeze(
-      [...this.canonical.values()].map((item) => Object.freeze({ ...item })),
+      [...this.canonical.values()]
+        .filter((item) => item.realtimeSessionId)
+        .map((item) => Object.freeze({ ...item })),
     );
   }
   /** Detached local provider view; retained observations remain readable after close. */
@@ -2535,6 +2545,7 @@ class NativeRealtimeOwner {
         responseId:
           typeof value.response_id === 'string' ? value.response_id : undefined,
       });
+      this.recordFunctionHistory(id, 'in_progress');
     } else if (name === 'FunctionCallRejected') {
       if (typeof value.call_id !== 'string' || typeof value.name !== 'string')
         throw new TypeError('Native unavailable function lacks identity');
@@ -2551,6 +2562,11 @@ class NativeRealtimeOwner {
         if (this.seen.has(value.call_id)) return;
         throw new Error('Native Realtime result has no registered function');
       }
+      this.recordFunctionHistory(
+        value.call_id,
+        value.succeeded ? 'completed' : 'failed',
+        value.output ?? undefined,
+      );
       this.emit(
         this.functionEvent(
           value.call_id,
@@ -2713,15 +2729,7 @@ class NativeRealtimeOwner {
         presentation: value.presentation?.type,
         presentationIndex: value.presentation?.index,
       });
-      const old = this.canonical.get(item.id);
-      const bytes =
-        this.historyBytes +
-        historyAllocationBytes(item) -
-        (old ? historyAllocationBytes(old) : 0);
-      if (bytes > HISTORY_LIMIT)
-        throw new Error('Native Realtime history capacity exceeded');
-      this.historyBytes = bytes;
-      this.canonical.set(item.id, item);
+      this.recordHistory(item);
       this.emit({
         type: 'history',
         item,
@@ -2753,6 +2761,50 @@ class NativeRealtimeOwner {
       });
       this.canonical.set(item.id, item);
       this.emit({ type: 'history', item, completed: false });
+    }
+  }
+  private recordFunctionHistory(
+    callId: string,
+    status: 'in_progress' | 'completed' | 'failed',
+    output?: string,
+  ): void {
+    const call = this.functions.get(callId)!;
+    this.recordHistory(
+      Object.freeze({
+        id: `function_call:${callId}`,
+        realtimeSessionId: this.realtimeSessionId ?? '',
+        kind: 'function_call',
+        itemId: call.itemId,
+        providerItemId: call.itemId,
+        callId,
+        name: call.name,
+        arguments: call.arguments,
+        output,
+        status,
+      }),
+    );
+  }
+  private recordHistory(item: NativeRealtimeHistoryItem): void {
+    const old = this.canonical.get(item.id);
+    const bytes =
+      this.historyBytes +
+      historyAllocationBytes(item) -
+      (old ? historyAllocationBytes(old) : 0);
+    if (bytes > HISTORY_LIMIT)
+      throw new Error('Native Realtime history capacity exceeded');
+    this.historyBytes = bytes;
+    this.canonical.set(item.id, item);
+    if (!this.realtimeSessionId && item.realtimeSessionId) {
+      this.realtimeSessionId = item.realtimeSessionId;
+      // Keep early function facts bounded and private until Core supplies identity.
+      for (const pending of this.canonical.values())
+        if (!pending.realtimeSessionId)
+          this.recordHistory(
+            Object.freeze({
+              ...pending,
+              realtimeSessionId: item.realtimeSessionId,
+            }),
+          );
     }
   }
   private reclaimRequestId(): void {

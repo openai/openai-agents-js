@@ -3264,3 +3264,43 @@ it('closes a staged replacement after native publication errors without discardi
   expect(discard).not.toHaveBeenCalled();
   expect(release).toHaveBeenCalledWith(peer.generation);
 });
+
+it('retains early call facts without a startup ID until canonical history supplies identity', async () => {
+  const peer = fixture();
+  await peer.owner._start();
+  peer.payload({
+    FunctionCallRequested: {
+      call_id: 'early-call',
+      item_id: 'provider-item',
+      name: 'lookup',
+      arguments: '{"key":"retained"}',
+    },
+  });
+  peer.payload({
+    FunctionCallFinished: {
+      call_id: 'early-call',
+      succeeded: true,
+      output: 'accepted output',
+    },
+  });
+  expect(peer.owner.history).toEqual([]);
+  peer.payload({
+    HistoryItemStarted: {
+      id: 'native-start',
+      realtime_session_id: 'canonical-native-id',
+      type: 'realtime_session_started',
+    },
+  });
+  expect(
+    peer.owner.history.find((item) => item.callId === 'early-call'),
+  ).toMatchObject({
+    realtimeSessionId: 'canonical-native-id',
+    itemId: 'provider-item',
+    providerItemId: 'provider-item',
+    name: 'lookup',
+    arguments: '{"key":"retained"}',
+    output: 'accepted output',
+    status: 'completed',
+  });
+  await peer.owner.close();
+});
