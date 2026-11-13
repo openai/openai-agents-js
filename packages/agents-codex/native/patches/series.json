@@ -1143,7 +1143,11 @@
     {
       "path": "sdk-handoff-idle-update.patch",
       "sha256": "6c7a4cf95a6f045702b808428f4ad7a6d5be508a52f902ccb4fa00cc27630d6f"
+    },
+    {
+      "path": "sdk-handoff-compaction-frontier.patch",
+      "sha256": "cfefa704d42b70f763482358bad152d849190d17f428fe33fb7c0a2f20fc67d1"
     }
   ],
-  "result_tree": "fe25c5eb6305f2177763717eb4911c8df171cad3"
+  "result_tree": "ea7ae7cc502e3c0368fb00ca903244792b2fbb34"
 }
