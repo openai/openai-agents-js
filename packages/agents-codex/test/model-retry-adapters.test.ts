@@ -10,6 +10,8 @@ import {
   retryContextFromNative,
   retryDecisionToNative,
   captureModelRetryAdvice,
+  withModelRetryAdvice,
+  retryAdviceToNative,
 } from '../src/runtime/model-retry';
 function request(): ModelRequest {
   return {
@@ -181,3 +183,57 @@ it('keeps malformed error metadata from replacing an original failure', () => {
     is_timeout: false,
   });
 });
+
+// Missing provider evidence is distinct from an affirmative observation of no response.
+it.each([undefined, false, true])(
+  'preserves provider response-start evidence %s without clearing native facts',
+  (responseStarted) => {
+    const wire = {
+      attempt_id: 'id',
+      attempt: 1,
+      request_attempt: 1,
+      max_retries: 1,
+      thread_id: 'thread',
+      turn_id: 'turn',
+      model: 'model',
+      transport: 'model_producer',
+      policy_enabled: true,
+      normalized: {
+        message: 'failure',
+        is_abort: false,
+        is_network_error: false,
+        is_timeout: false,
+      },
+      provider_advice: {},
+      response_started: false,
+      retry_unsafe_output: true,
+      local_effects: true,
+      stateful: false,
+    };
+    const advice = captureModelRetryAdvice({ responseStarted })!;
+    const base = retryContextFromNative(
+      wire,
+      new AbortController().signal,
+      new Error('original'),
+    ).context;
+    const context = withModelRetryAdvice(base, advice);
+    const policy = (value: typeof context) => ({
+      retry: true,
+      approveUnsafeReplay:
+        !value.responseStarted &&
+        value.providerAdvice?.responseStarted === false,
+    });
+    expect(context.responseStarted).toBe(responseStarted === true);
+    expect(context.providerAdvice?.responseStarted).toBe(responseStarted);
+    expect(policy(context).approveUnsafeReplay).toBe(responseStarted === false);
+    expect(context.retryUnsafeOutput).toBe(true);
+    expect(context.localEffects).toBe(true);
+    expect(retryAdviceToNative(advice)).not.toHaveProperty('response_started');
+    const known = retryContextFromNative(
+      { ...wire, response_started: true },
+      new AbortController().signal,
+      undefined,
+    ).context;
+    expect(withModelRetryAdvice(known, advice).responseStarted).toBe(true);
+  },
+);
