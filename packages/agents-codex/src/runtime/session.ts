@@ -9941,7 +9941,9 @@ export class Session<OutputT = string, Context = unknown> {
             if (!replied) reject();
           }
         }),
-      typeof event.msg.tracing_context === 'string'
+      // Response-span admission borrows parent_context without a host callback span.
+      event.msg.type !== '_sdk_provider_response_span' &&
+        typeof event.msg.tracing_context === 'string'
         ? event.msg.tracing_context
         : undefined,
     );

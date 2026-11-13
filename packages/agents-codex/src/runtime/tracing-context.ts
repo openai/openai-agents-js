@@ -150,10 +150,13 @@ export async function providerResponseSpanAdmission(
   signal: AbortSignal,
 ): Promise<{ span_id: string | null } | null> {
   const generator = tracingIdGenerator;
+  signal.throwIfAborted();
   const policy = admissionPolicy();
+  const current = ambient.getStore();
+  if (policy.disabled || current?.context.disabled) return null;
+  if (generator.generateSpanId === undefined) return { span_id: null };
   const native = await binding();
   signal.throwIfAborted();
-  const current = ambient.getStore();
   const restriction = current?.retain();
   let handle: string | undefined;
   try {
