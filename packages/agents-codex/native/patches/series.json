@@ -1151,7 +1151,11 @@
     {
       "path": "sdk-portable-mcp-step-source.patch",
       "sha256": "1700aa909d51162454a31fb2e78a9f68b64498cdd2e6addc774c0c97a3a723c6"
+    },
+    {
+      "path": "sdk-portable-mcp-peer-elicitation.patch",
+      "sha256": "e1d6a2f21652d7f4fcd906394f1e06b9e90253fb8fc01b308974e4e5d5e1d440"
     }
   ],
-  "result_tree": "ee4647e1ef8b7e8f03673e89aab4145597b08869"
+  "result_tree": "21a6c0638a2321252ca64ee469d1e397b0107978"
 }

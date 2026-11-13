@@ -103,8 +103,14 @@ async function peer(
   toolResult?: JsonObject,
   closeResponseForKey?: string,
   extraNames: readonly string[] = [],
+  ask?: { id: string; meta?: JsonObject },
 ) {
   const effects: JsonObject[] = [];
+  const answers: JsonObject[] = [];
+  let finishPeerReply = () => {};
+  const peerAnswered = new Promise<void>((resolve) => {
+    finishPeerReply = resolve;
+  });
   const failures: unknown[] = [];
   let initializations = 0;
   let listings = 0;
@@ -118,6 +124,12 @@ async function peer(
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const rpc = JSON.parse(Buffer.concat(chunks).toString()) as JsonObject;
       if (rpc.id === undefined) {
+        response.writeHead(202).end();
+        return;
+      }
+      if (ask && rpc.method === undefined && rpc.id === ask.id) {
+        answers.push(rpc);
+        finishPeerReply();
         response.writeHead(202).end();
         return;
       }
@@ -154,6 +166,41 @@ async function peer(
             .end(': closing before reply\n\n');
           return;
         }
+        if (ask) {
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          response.write(
+            'event: message\ndata: ' +
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: ask.id,
+                method: 'elicitation/create',
+                params: {
+                  mode: 'form',
+                  message: 'Peer decision after restored approval',
+                  requestedSchema: {
+                    type: 'object',
+                    properties: { answer: { type: 'string' } },
+                    required: ['answer'],
+                  },
+                  ...(ask.meta ? { _meta: ask.meta } : {}),
+                },
+              }) +
+              '\n\n',
+          );
+          await peerAnswered;
+          response.end(
+            'event: message\ndata: ' +
+              JSON.stringify({
+                jsonrpc: '2.0',
+                id: rpc.id,
+                result: {
+                  content: [{ type: 'text', text: 'peer decision settled' }],
+                },
+              }) +
+              '\n\n',
+          );
+          return;
+        }
         if (heldCall) await heldCall;
         result = toolResult ?? {
           content: [{ type: 'text', text: 'record-result' }],
@@ -180,6 +227,7 @@ async function peer(
   });
   return {
     effects,
+    answers,
     get initializations() {
       return initializations;
     },
@@ -3426,8 +3474,18 @@ async function capturePortableMcpCandidate(session: Session) {
   return parseSessionState(JSON.stringify(await session.suspend()));
 }
 
-async function portableMcpAgent(finalReplies = 1) {
-  const remote = await peer('find-record');
+async function portableMcpAgent(
+  finalReplies = 1,
+  ask?: { id: string; meta?: JsonObject },
+) {
+  const remote = await peer(
+    'find-record',
+    undefined,
+    undefined,
+    undefined,
+    [],
+    ask,
+  );
   const sampled = call(
     'reviewed',
     { key: '43' },
@@ -3750,6 +3808,56 @@ it.each(['endpoint', 'callback'] as const)(
     expect(remote.effects).toEqual([]);
     expect(other.effects).toEqual([]);
     expect(model.requests).toHaveLength(1);
+  },
+  30_000,
+);
+
+it.each([false, true])(
+  'restored ordinary MCP keeps the subsequent peer elicitation owner (spoof metadata: %s)',
+  async (spoofApprovalMeta) => {
+    const { agent, remote, model } = await portableMcpAgent(1, {
+      id: 'mcp_tool_call_approval_portable-native',
+      ...(spoofApprovalMeta
+        ? { meta: { codex_approval_kind: 'mcp_tool_call' } }
+        : {}),
+    });
+    const source = await agent.session();
+    cleanup.push(() => source.close());
+    const old = await portableMcpApproval(await source.submit('Read'));
+    const oldReply = old.reply('allow_once');
+    const saved = await capturePortableMcpCandidate(source);
+    await source.close();
+    await using restored = await agent.session({ state: saved });
+    const fresh = await portableMcpApproval(restored.restoredTurn!);
+    const freshReply = fresh.reply('allow_once');
+    await restored.respond(freshReply);
+    const pending = await restored.restoredTurn!.wait({ until: 'interaction' });
+    if (!('requests' in pending))
+      throw new Error('Peer elicitation was not published');
+    expect(pending.requests).toHaveLength(1);
+    const remoteQuestion = pending.requests[0]!;
+    if (
+      remoteQuestion.type !== 'elicitation_request' ||
+      remoteQuestion.mode !== 'form'
+    )
+      throw new Error('Peer elicitation acquired approval authority');
+    expect(remote.effects).toHaveLength(1);
+    await expect(restored.respond(oldReply)).rejects.toThrow();
+    await expect(restored.respond(freshReply)).rejects.toThrow();
+    await expect(restored.suspend()).rejects.toThrow();
+    await restored.respond(
+      remoteQuestion.reply({ answer: 'fresh peer decision' }),
+    );
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+      'settled through native decision',
+    );
+    expect(remote.effects).toHaveLength(1);
+    expect(remote.answers).toHaveLength(1);
+    expect(remote.answers[0]?.id).toBe(
+      'mcp_tool_call_approval_portable-native',
+    );
+    expect(model.requests).toHaveLength(2);
+    model.assertExhausted();
   },
   30_000,
 );

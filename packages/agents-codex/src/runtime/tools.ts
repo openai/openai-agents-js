@@ -457,6 +457,16 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
     !tool[shellDeclaration]
   );
 }
+/** @internal Current eager direct callbacks only; native and manual identities stay strict. */
+export function isBareFunctionCollisionCandidate(tool: SessionTool): boolean {
+  const source = managedApproval(tool)?.function ?? tool;
+  return (
+    source.kind !== 'manual' &&
+    source.namespace === undefined &&
+    typeof source[prepareInvocation] === 'function' &&
+    isDirectFunctionTool(source)
+  );
+}
 type Invocation<Context> = (
   args: JsonValue,
   context: ToolCallContext<Context>,

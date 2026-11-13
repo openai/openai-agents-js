@@ -153,6 +153,7 @@ import {
   captureTools,
   toolDeclarationIdentity,
   isDirectFunctionTool,
+  isBareFunctionCollisionCandidate,
   toolIdentity,
   isClientToolSearchTool,
   type Tool,
@@ -199,6 +200,8 @@ export type AgentOptions<Context = undefined, Output = string> = {
   transformContext?: ContextTransform<Context>;
   provider?: NativeProvider;
   tools?: readonly Tool<Context>[];
+  /** Strict by default; warn has been retaining the final eager direct function or handoff. */
+  toolNameCollisionPolicy?: 'error' | 'warn';
   /** Named native targets; synchronous resolvers allow immutable cyclic graphs.
    * Restore verifies graph/schema provenance and binds fresh caller-supplied tools.
    * An operation ceiling retains its original source Agent; cross-Agent object
@@ -571,6 +574,7 @@ export class Agent<Context = undefined, Output = string> {
   provider: NativeProvider;
   outputType: AgentOptions<Context, Output>['outputType'];
   tools: readonly Tool<Context>[];
+  toolNameCollisionPolicy: 'error' | 'warn';
   handoffs: readonly (
     | Agent<Context, Output>
     | Handoff<Context, Output>
@@ -649,6 +653,15 @@ export class Agent<Context = undefined, Output = string> {
     if (options.provider === undefined)
       implicitProviders.set(this.provider, new WeakSet([this]));
     this.outputType = options.outputType;
+    this.toolNameCollisionPolicy =
+      options.toolNameCollisionPolicy === undefined
+        ? 'error'
+        : options.toolNameCollisionPolicy;
+    if (
+      this.toolNameCollisionPolicy !== 'error' &&
+      this.toolNameCollisionPolicy !== 'warn'
+    )
+      throw new TypeError('toolNameCollisionPolicy must be error or warn');
     this.tools = [...(options.tools ?? [])];
     this[implicitTools] = options.tools === undefined ? this.tools : undefined;
     this.handoffs = Object.freeze([...(options.handoffs ?? [])]);
@@ -1337,7 +1350,13 @@ export class Agent<Context = undefined, Output = string> {
         'Private opening contributions require a fresh root with eager direct function tools',
       );
     const search = declarations.webSearch;
-    const catalog = captureTools(declarations.tools);
+    let catalog = captureTools(
+      resolveToolNameCollisions(
+        declarations.tools,
+        [],
+        this.toolNameCollisionPolicy,
+      ).tools,
+    );
     declarations.tools = [...catalog.tools];
     const {
       environment: environmentInput,
@@ -1434,6 +1453,7 @@ export class Agent<Context = undefined, Output = string> {
               outputType: outputType as OutputSpec<Output> | undefined,
               tools: options.tools ?? this.tools,
               handoffs: this.handoffs,
+              toolNameCollisionPolicy: this.toolNameCollisionPolicy,
               realtime: this.realtime,
               decisions,
               beforeComplete,
@@ -1451,6 +1471,19 @@ export class Agent<Context = undefined, Output = string> {
             promptControls,
           )
         : undefined;
+    if (profiles) {
+      const owners = new Set(
+        splitToolDeclarations(profiles[0].declaration.tools).tools.map(
+          toolDeclarationIdentity,
+        ),
+      );
+      catalog = captureTools(
+        catalog.tools.filter((tool) =>
+          owners.has(toolDeclarationIdentity(tool)),
+        ),
+      );
+      declarations.tools = [...catalog.tools];
+    }
 
     if (
       (options as OwnedSessionOptions<Context>)[ownedRun]?.prepareRequest !==
@@ -2265,6 +2298,61 @@ export class Agent<Context = undefined, Output = string> {
   }
 }
 
+function resolveToolNameCollisions<T extends Tool<any>>(
+  tools: readonly T[],
+  handoffNames: readonly string[],
+  policy: 'error' | 'warn',
+): { tools: T[]; handoffIndices: number[] } {
+  if (policy !== 'error' && policy !== 'warn')
+    throw new TypeError('Invalid toolNameCollisionPolicy');
+  const retainedTools = new Set(tools.map((_, index) => index));
+  const retainedHandoffs = new Set(handoffNames.map((_, index) => index));
+  if (policy === 'error')
+    return { tools: [...tools], handoffIndices: [...retainedHandoffs] };
+  const plain = new Set(splitToolDeclarations(tools).tools);
+  const groups = new Map<string, { tools: number[]; handoffs: number[] }>();
+  const group = (key: string) => {
+    let value = groups.get(key);
+    if (!value) groups.set(key, (value = { tools: [], handoffs: [] }));
+    return value;
+  };
+  tools.forEach((tool, index) => {
+    if (!plain.has(tool as SessionTool)) return;
+    const identity = toolIdentity(tool as SessionTool);
+    group(JSON.stringify([identity.namespace, identity.name])).tools.push(
+      index,
+    );
+  });
+  handoffNames.forEach((name, index) =>
+    group(JSON.stringify(['functions', name])).handoffs.push(index),
+  );
+  for (const entries of groups.values()) {
+    if (entries.tools.length + entries.handoffs.length < 2) continue;
+    if (
+      entries.tools.some((index) => {
+        const tool = tools[index] as SessionTool;
+        return !isBareFunctionCollisionCandidate(tool);
+      })
+    )
+      throw new TypeError(
+        'Namespaced, deferred and native tool names require unique identities',
+      );
+    const handoff = entries.handoffs.at(-1);
+    const tool = handoff === undefined ? entries.tools.at(-1) : undefined;
+    for (const index of entries.tools)
+      if (index !== tool) retainedTools.delete(index);
+    for (const index of entries.handoffs)
+      if (index !== handoff) retainedHandoffs.delete(index);
+    console.warn(
+      'Duplicate function or handoff name; keeping the final declaration.',
+    );
+  }
+  return {
+    tools: tools.filter((_, index) => retainedTools.has(index)),
+    handoffIndices: [...retainedHandoffs],
+  };
+}
+
 function assertUniqueToolIdentities(
   identities: readonly { namespace: string; name: string }[],
 ): void {
@@ -2323,10 +2411,53 @@ export function captureAgentProfiles<Context, Output>(
         .filter((reference) => reference instanceof Handoff)
         .map((reference) => toolDeclarationIdentity(reference.callback)),
     );
-    const sourceTools = source.tools.filter(
+    let sourceTools = source.tools.filter(
       (tool) =>
         !handoffBindings.has(toolDeclarationIdentity(tool as SessionTool)),
     );
+    let selectedHandoffs = source.handoffs;
+    if (source.toolNameCollisionPolicy === 'warn') {
+      const references = source.handoffs.map((reference) => {
+        if (typeof reference !== 'function') return reference;
+        const cached = resolved.get(reference);
+        if (cached) return cached;
+        const target: unknown = reference();
+        if (!(target instanceof Agent)) {
+          if (target instanceof Promise) void target.catch(() => {});
+          throw new TypeError(
+            'A synchronous handoff target resolver must return a native Agent',
+          );
+        }
+        resolved.set(reference, target);
+        return target;
+      });
+      const names = references.map((reference) => {
+        if (reference instanceof DecisionHandoff) return reference.name;
+        if (reference instanceof Handoff) return reference.callback.name;
+        const target = isRealtimeHandoff(reference)
+          ? reference.agent
+          : reference;
+        if (isRealtimeHandoff(reference) && reference.name !== undefined)
+          return reference.name;
+        if (!target.name?.trim())
+          throw new TypeError(
+            'A handoff target requires a nonempty Agent.name',
+          );
+        return `transfer_to_${target.name}`
+          .replace(/[^a-zA-Z0-9_-]/g, '_')
+          .toLowerCase()
+          .slice(0, 64);
+      });
+      const selection = resolveToolNameCollisions(
+        sourceTools,
+        names,
+        source.toolNameCollisionPolicy,
+      );
+      sourceTools = selection.tools;
+      selectedHandoffs = selection.handoffIndices.map(
+        (index) => references[index],
+      );
+    }
     const declarations = splitToolDeclarations(sourceTools);
     const plain = declarations.tools;
     const capturedTools = captureTools(plain).tools;
@@ -2356,7 +2487,8 @@ export function captureAgentProfiles<Context, Output>(
           : sourceTools.map(
               (tool) => replacements.get(tool as SessionTool) ?? tool,
             ),
-      handoffs: source.handoffs,
+      handoffs: selectedHandoffs,
+      toolNameCollisionPolicy: source.toolNameCollisionPolicy,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
       toolBatchCompletion: source.toolBatchCompletion,

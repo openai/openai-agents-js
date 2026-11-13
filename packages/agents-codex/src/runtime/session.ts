@@ -4308,7 +4308,9 @@ export class Session<OutputT = string, Context = unknown> {
           request.mode === 'openai/form' ||
           request.mode === 'openaiForm') &&
         callId === undefined &&
-        !(meta && typeof meta === 'object' && 'codex_approval_kind' in meta)
+        // Native Core assigns the public identity; peer metadata grants no approval authority.
+        typeof id === 'string' &&
+        id.startsWith('codex-mcp-elicitation-')
       ) {
         decline = this.declineQuestionWire(event);
         // Repeated delivery of a pending registration must not decline the
