@@ -269,6 +269,7 @@ export type {
   RecordedRequestUsage,
   ReceivedTokenUsage,
   RecordedResponse,
+  OutputAudioPart,
   OutputTextPart,
   SearchItem,
   WebSearchAction,

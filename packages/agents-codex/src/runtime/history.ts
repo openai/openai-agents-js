@@ -489,6 +489,13 @@ const outputTextPartSchema = z.object({
 });
 /** Provider annotations use offsets into this part's original text. */
 export type OutputTextPart = z.infer<typeof outputTextPartSchema>;
+const outputAudioPartSchema = z.object({
+  type: z.literal('output_audio'),
+  audio: stringSchema,
+  provider_data: jsonObject,
+});
+/** Assistant audio as base64 bytes plus the provider's replay reference. */
+export type OutputAudioPart = z.infer<typeof outputAudioPartSchema>;
 type InputTextPart = { type: 'input_text'; text: string };
 // History is passive canonical JSON, not a new user-input capability. Preserve
 // provider fields without requiring callers to construct these observed DTOs.
@@ -525,7 +532,12 @@ export type SessionItem = ItemIdentity &
         status: ItemStatus;
         phase: string | null;
         content: (
-          InputTextPart | OutputTextPart | ImagePart | FilePart | AudioPart
+          | InputTextPart
+          | OutputTextPart
+          | OutputAudioPart
+          | ImagePart
+          | FilePart
+          | AudioPart
         )[];
         /** Visible assistant text when Core removed markup from the original parts. */
         displayText?: string;
@@ -707,6 +719,7 @@ const repairItemProjectionSchema = z.intersection(
             text: stringSchema,
           }),
           outputTextPartSchema,
+          outputAudioPartSchema,
           historyAudioPartSchema,
           historyImagePartSchema,
           historyFilePartSchema,
@@ -1088,7 +1101,7 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
     const accepted =
       raw.role === 'user'
         ? ['input_text', 'input_image', 'input_file', 'input_audio']
-        : ['output_text'];
+        : ['output_text', 'output_audio'];
     return {
       ...common,
       type: 'message',
@@ -1098,7 +1111,12 @@ function responseItem(raw: JsonObject, turnId: string): HistoryItem | null {
       content: objects(raw.content).filter((part) =>
         accepted.includes(String(part.type)),
       ) as (
-        InputTextPart | OutputTextPart | ImagePart | FilePart | AudioPart
+        | InputTextPart
+        | OutputTextPart
+        | OutputAudioPart
+        | ImagePart
+        | FilePart
+        | AudioPart
       )[],
     };
   }
@@ -1546,6 +1564,20 @@ export function projectHistory(
   let aborted: string | null = null;
   let pendingUser: HistoryOccurrence | undefined;
   const userAliases = new Set<HistoryOccurrence>();
+  function retainAssistantAudio(item: HistoryItem, raw: HistoryItem) {
+    if (
+      item.type !== 'message' ||
+      item.role !== 'assistant' ||
+      raw.type !== 'message' ||
+      raw.role !== 'assistant'
+    )
+      return;
+    // Native item events own lifecycle and display. The response item retains
+    // audio alongside the exact original text parts.
+    if (raw.content.some((part) => part.type === 'output_audio')) {
+      item.content = raw.content;
+    }
+  }
   function remember(item: HistoryItem, native: boolean, recordedId = true) {
     const output =
       item.type === 'function_call_output' ||
@@ -1572,11 +1604,15 @@ export function projectHistory(
       occurrence = { item, native, recordedId };
       items.push(occurrence);
     } else if (native || !occurrence.native) {
-      if (native && !occurrence.native) item.data = occurrence.item.data;
+      if (native) {
+        retainAssistantAudio(item, occurrence.item);
+        if (!occurrence.native) item.data = occurrence.item.data;
+      }
       occurrence.item = item;
       occurrence.native = native;
       occurrence.recordedId = recordedId;
     } else {
+      retainAssistantAudio(occurrence.item, item);
       occurrence.item.data = item.data;
     }
     identities.set(key, occurrence);

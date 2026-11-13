@@ -120,6 +120,28 @@ it.each([
     const first = await session.submit('Give an audio reply.');
     const result = await first.wait();
     expect(result.finalOutput).toBe(audioOnly ? '' : 'done');
+    async function assertPublicAudio(
+      current: typeof session,
+      restored = false,
+    ) {
+      const replies = (await Array.fromAsync(current.items())).filter(
+        (item) => item.type === 'message' && item.role === 'assistant',
+      );
+      const projected = replies.flatMap((item) =>
+        item.type === 'message' ? item.content : [],
+      );
+      const part = projected.find((entry) => entry.type === 'output_audio');
+      expect(part).toEqual({
+        type: 'output_audio',
+        audio: audio.data,
+        provider_data: audioMetadata,
+      });
+      if (!restored)
+        expect(projected.some((entry) => entry.type === 'output_text')).toBe(
+          !audioOnly,
+        );
+    }
+    await assertPublicAudio(session);
     const snapshot = await session.historySnapshot();
     const second = await session.submit('Refer to the previous reply.');
     expect((await second.wait()).finalOutput).toBe('done');
@@ -127,6 +149,7 @@ it.each([
     const checkpoint = await session.saveState();
     await session.close();
     await using reopened = await agent.session({ state: checkpoint });
+    await assertPublicAudio(reopened, true);
     const third = await reopened.submit(
       'Refer to the audio reply after restore.',
     );
