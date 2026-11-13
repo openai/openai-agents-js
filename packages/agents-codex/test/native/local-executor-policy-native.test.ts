@@ -2948,6 +2948,7 @@ it
     const quote = (arg: string) => `'${arg.replaceAll("'", "'\\''")}'`;
 
     const directory = await mkdtemp(join(tmpdir(), 'agents-launchd-'));
+    let stage = 'fixture setup';
     try {
       const root = await realpath(directory);
       const cwd = join(root, 'workspace');
@@ -3026,6 +3027,7 @@ it
       expect(launchctl('print', service).status).not.toBe(0);
       expect(existsSync(marker)).toBe(false);
       {
+        stage = 'session startup';
         await using session = await agent.session({
           environment: Environment.local({
             cwd,
@@ -3036,19 +3038,29 @@ it
         const tryDelegation = async (
           operation: (typeof attempts)[number][0],
         ) => {
+          stage = operation;
           const turn = await session.submit(`Try launchctl ${operation}.`);
           expect((await turn.wait()).finalOutput).toBe('checked');
-          const command = (await Array.fromAsync(session.items()))
+          const items = await Array.fromAsync(session.items());
+          const command = items
             .filter((item) => item.type === 'command_execution')
             .find((item) => item.callId === operation);
-          expect(command?.output).toMatch(
-            new RegExp(`^${operation} exit [1-9]\\d*$`, 'm'),
+          const response = items.find(
+            (item) =>
+              item.type === 'function_call_output' && item.callId === operation,
           );
+          expect(
+            command?.output,
+            response?.type === 'function_call_output'
+              ? JSON.stringify(response.output)
+              : undefined,
+          ).toMatch(new RegExp(`^${operation} exit [1-9]\\d*$`, 'm'));
         };
         await tryDelegation('bootstrap');
         expect(launchctl('print', service).status).not.toBe(0);
         expect(existsSync(marker)).toBe(false);
 
+        stage = 'host bootstrap';
         const bootstrapped = launchctl('bootstrap', domain, plist);
         expect(bootstrapped.status, bootstrapped.stderr).toBe(0);
         expect(runCount()).toBe(0);
@@ -3067,20 +3079,27 @@ it
         expect(launchctl('list', submitLabel).status).not.toBe(0);
         expect(launchctl('print', submitService).status).not.toBe(0);
         expect(existsSync(submitMarker)).toBe(false);
+        stage = 'session shutdown after all delegation checks';
       }
 
+      stage = 'host kickstart';
       const kicked = launchctl('kickstart', service);
       expect(kicked.status, kicked.stderr).toBe(0);
       await vi.waitFor(() => expect(existsSync(marker)).toBe(true), {
         timeout: 5_000,
       });
       expect(runCount()).toBe(1);
+      stage = 'host submit';
       const submitted = launchctl('submit', ...submitArgs);
       expect(submitted.status, submitted.stderr).toBe(0);
       await vi.waitFor(() => expect(existsSync(submitMarker)).toBe(true), {
         timeout: 5_000,
       });
       server.assertExhausted();
+    } catch (cause) {
+      throw new Error(`Launchd ${writePolicy} failed during ${stage}`, {
+        cause,
+      });
     } finally {
       try {
         try {
