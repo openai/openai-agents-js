@@ -704,6 +704,9 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
         .iter()
         .map(|profile| {
             let mut descriptor = serde_json::to_value(profile)?;
+            descriptor["tools"] = serde_json::to_value(
+                profile.tools.without_configured_agent_roles(),
+            )?;
             descriptor["model"] = serde_json::to_value(profile.model.for_persistence())?;
             // Endpoint credentials, process configuration and refreshed policies are not
             // declaration compatibility. Their fresh native owners remain authority.

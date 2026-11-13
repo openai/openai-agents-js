@@ -4262,6 +4262,10 @@ impl PythonExecutor {
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
+    fn configured_agent_tool_role(&self) -> Option<&str> {
+        self.generation.specs.configured_agent_role(self.slot)
+    }
+
     fn tool_name(&self) -> ToolName {
         self.generation.entries[self.slot].name.clone()
     }

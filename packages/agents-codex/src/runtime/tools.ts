@@ -415,6 +415,12 @@ export function toolRef(name: string, namespace?: string | null): ToolRef {
 export type ToolSelector<Context = any> = SessionTool<Context> | ToolRef;
 
 const declarationOwners = new WeakMap<object, object>();
+const configuredAgentRoles = new WeakMap<object, string>();
+
+/** @internal Attribute a configured child without exposing its identity in the provider schema. */
+export function bindConfiguredAgentRole(tool: SessionTool, role: string): void {
+  configuredAgentRoles.set(toolDeclarationIdentity(tool), role);
+}
 /** @internal Compare an admitted declaration without trusting caller schemas. */
 export function toolDeclarationIdentity(tool: SessionTool): object {
   return declarationOwners.get(tool) ?? tool;
@@ -1730,7 +1736,10 @@ export interface ToolCatalog<T extends SessionTool = SessionTool> {
 /** @internal Protocol schemas never carry current application caller authority. */
 export function protocolToolSpecs(catalog: ToolCatalog): JsonObject[] {
   const specs = decode(z.array(losslessJsonObjectSchema), catalog.specsJson);
-  for (const spec of specs) delete spec.allowedCallers;
+  for (const spec of specs) {
+    delete spec.allowedCallers;
+    delete spec.configuredAgentRole;
+  }
   return specs;
 }
 
@@ -1896,9 +1905,14 @@ export function captureTools(
           }
         : spec;
     const source = managedApproval(tool)?.function ?? tool;
-    return source.kind === 'manual' || source.allowedCallers === undefined
-      ? declaration
-      : { ...declaration, allowedCallers: [...source.allowedCallers] };
+    const role = configuredAgentRoles.get(toolDeclarationIdentity(source));
+    return {
+      ...declaration,
+      ...(source.kind === 'manual' || source.allowedCallers === undefined
+        ? {}
+        : { allowedCallers: [...source.allowedCallers] }),
+      ...(role === undefined ? {} : { configuredAgentRole: role }),
+    };
   });
   return Object.freeze({
     generation,

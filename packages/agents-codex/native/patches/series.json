@@ -1347,7 +1347,11 @@
     {
       "path": "sdk-bind-declaration-output-strictness.patch",
       "sha256": "88425d1fe0e451e9ba1134382c9aacbfaca34a75bf8917fc2d81ec3b439eaaf7"
+    },
+    {
+      "path": "sdk-configured-agent-tool-origin.patch",
+      "sha256": "afa40f722d663ade8af2b18c84b13847a91d67c96be128dd9e06d0500ae202a1"
     }
   ],
-  "result_tree": "25425d07fd9396b412dadf4265e35bdb6cccc56b"
+  "result_tree": "09cdd2f516d3c463f65755eb2de8f137081cd8b8"
 }

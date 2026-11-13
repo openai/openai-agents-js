@@ -5,6 +5,7 @@ import type { Completed } from './session';
 import type { SessionState } from './state';
 import { encode, jsonValue } from './binding';
 import {
+  bindConfiguredAgentRole,
   invokeConfiguredAgentTool,
   tool,
   toolDeclarationIdentity,
@@ -53,6 +54,7 @@ export function createAgentTool<Context, Output>(
     parameters: z.object({ input: z.string() }),
     execute: ({ input }, context) => invokeConfiguredAgentTool(context, input),
   });
+  bindConfiguredAgentRole(declaration, agent.name ?? options.toolName);
   declarations.set(declaration, {
     resultSchema: Object.freeze({ type: 'string' }),
     open: (context, environment, signal, state, verifiedExecutorCheckpoint) => {
