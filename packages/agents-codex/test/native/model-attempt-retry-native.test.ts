@@ -178,7 +178,7 @@ it('uses Core retries with captured callback identity, new logical advice signal
     expect(args.request.body).toEqual(requests[0].body);
     expect(args.signal).not.toBe(requests[0].signal);
     expect(args.signal.aborted).toBe(false);
-    return { suggested: true };
+    return { suggested: true, replaySafety: 'safe' as const };
   });
   const laterPolicy = vi.fn(() => ({ retry: false }));
   const backend = {
@@ -209,6 +209,8 @@ it('uses Core retries with captured callback identity, new logical advice signal
           expect(context.error).toBe(error);
           expect(context.normalizedError.statusCode).toBe(503);
           expect(context.providerAdvice?.suggested).toBe(true);
+          expect(context.replaySafety).toBe('safe');
+          expect(context.stateful).toBe(false);
           expect(context.signal.aborted).toBe(false);
           return { retry: true, delayMs: 0 };
         },

@@ -47,6 +47,8 @@ export interface RetryContext {
   readonly retryUnsafeOutput: boolean;
   readonly localEffects: boolean;
   readonly stateful: boolean;
+  /** Provider replay classification for this captured attempt. */
+  readonly replaySafety?: 'safe' | 'unsafe' | 'unknown';
   readonly previousResponseId?: string;
   readonly conversationId?: string;
 }
@@ -167,6 +169,7 @@ function snapshot(context: RetryContext): RetryContext {
   return Object.freeze({
     ...context,
     normalizedError: Object.freeze({ ...context.normalizedError }),
+    replaySafety: context.providerAdvice?.replaySafety ?? 'unknown',
     providerAdvice:
       context.providerAdvice === undefined
         ? undefined
@@ -225,6 +228,7 @@ function shared(context: RetryContext): SharedContext {
     previousResponseId: context.previousResponseId,
     conversationId: context.conversationId,
     statefulRequest: context.stateful,
+    replaySafety: context.replaySafety,
     responseStarted: context.responseStarted,
   };
 }
