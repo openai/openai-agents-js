@@ -4,7 +4,7 @@ import type { MaterializeEntryArgs } from '../../session';
 type CreateFile = (args: MaterializeEntryArgs) => Promise<void>;
 const creators = new WeakMap<object, CreateFile>();
 
-/** @internal The owning backend has been supplying its protected create-only primitive. */
+/** Register the resource owner's exclusive file creator. */
 export function registerExclusiveWorkspaceCreate(
   session: object,
   create: CreateFile,
@@ -14,12 +14,12 @@ export function registerExclusiveWorkspaceCreate(
   return previous;
 }
 
-/** @internal Unsupported backends have been rejecting live additions before IO. */
+/** Check whether the resource supports exclusive file creation. */
 export function hasExclusiveWorkspaceCreate(session: object): boolean {
   return creators.has(session);
 }
 
-/** @internal Existing files have been retaining their identity at the write boundary. */
+/** Create a file without replacing a current workspace entry. */
 export function createWorkspaceFileNoFollow(
   session: object,
   args: MaterializeEntryArgs,
