@@ -3,6 +3,7 @@ import {
   getLogger,
   MemorySession,
   RequestUsage,
+  protocol,
   Usage,
   UserError,
 } from '@openai/agents-core';
@@ -711,7 +712,9 @@ function toRequestUsage(
     inputTokens: usage?.input_tokens ?? 0,
     outputTokens: usage?.output_tokens ?? 0,
     totalTokens: usage?.total_tokens ?? 0,
-    inputTokensDetails: { ...usage?.input_tokens_details },
+    inputTokensDetails: protocol.TokenDetails.parse(
+      usage?.input_tokens_details ?? {},
+    ),
     outputTokensDetails: { ...usage?.output_tokens_details },
     endpoint: 'responses.compact',
   });

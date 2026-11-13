@@ -128,7 +128,7 @@
   ],
   "license": "MIT",
   "optionalDependencies": {
-    "@modelcontextprotocol/client": "^2.4.0"
+    "@modelcontextprotocol/client": "^2.0.0"
   },
   "dependencies": {
     "@standard-schema/spec": "^1.1.0",

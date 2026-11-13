@@ -19,7 +19,7 @@
     "start:image-tool-output": "node image-tool-output.ts"
   },
   "devDependencies": {
-    "ai": "^7.0.158"
+    "ai": "^7.0.163"
   },
   "engines": {
     "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
