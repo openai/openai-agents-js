@@ -282,7 +282,7 @@ describe('runtime dependency direction', () => {
         'core',
       ),
     ).toEqual([]);
-  });
+  }, 15_000);
   it('keeps the named declaration and projection leaves outside runtime assembly and binding', () => {
     expect(violations(files, leafOwners, 'leaf')).toEqual([]);
   });

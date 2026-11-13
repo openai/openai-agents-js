@@ -55,7 +55,7 @@ it.each([
   },
 );
 
-it('retains the existing graph output wire requirement', () => {
+it('captures a mixed text output callback handoff', () => {
   const route = tool({
     name: 'route',
     parameters: z.object({}),
@@ -66,7 +66,9 @@ it('retains the existing graph output wire requirement', () => {
     instructions: 'Text',
     handoffs: [new Handoff(target, route) as never],
   });
-  expect(() => captureAgentProfiles(source)).toThrow('share output mode');
+  const profiles = captureAgentProfiles(source);
+  expect(profiles[0].handoffs).toEqual({ route: 'agent_1' });
+  expect(profiles[1].declaration.outputType).toBe(target.outputType);
 });
 
 it('retains the generated plain handoff name without a callback', () => {

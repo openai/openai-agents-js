@@ -28,12 +28,15 @@ it('keeps persistent manual capture outside the idle opt-in', () => {
   expect(refusal(false, { localStorage: true })).toContain(
     'Persistent storage',
   );
+  expect(
+    refusal(false, { localStorage: true, customStore: () => {} }),
+  ).toContain('Persistent storage');
 });
 
-it('keeps CustomStorage capture separate from the LocalStorage opt-in', () => {
+it('admits idle CustomStorage inspection to the native checkpoint owner', () => {
   expect(
     refusal(true, { localStorage: true, customStore: () => {} }),
-  ).toContain('Persistent storage');
+  ).toBeUndefined();
 });
 
 it('keeps queued root work outside idle LocalStorage capture', () => {
