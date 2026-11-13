@@ -152,6 +152,73 @@ it('checks converted output once and retains declaration order despite reversed 
   server.assertExhausted();
 });
 
+it('joins output siblings and prefers the first declared rejection over a tripwire', async () => {
+  const { provider } = await fixture([[message('candidate')]]);
+  await using _resource = provider;
+  const firstError = new Error('first declared rejection');
+  const laterError = new Error('later declared rejection');
+  const laterRejected = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const marker = Symbol('host-only');
+  const agent = new Agent({
+    instructions: 'Answer.',
+    model: 'gpt-5',
+    provider,
+    outputGuardrails: [
+      {
+        name: 'tripwire',
+        callback: () => ({ tripwireTriggered: true, outputInfo: marker }),
+      },
+      {
+        name: 'first-rejection',
+        async callback() {
+          await laterRejected.promise;
+          throw firstError;
+        },
+      },
+      {
+        name: 'later-rejection',
+        callback() {
+          laterRejected.resolve();
+          throw laterError;
+        },
+      },
+      {
+        name: 'held-sibling',
+        async callback() {
+          entered.resolve();
+          await release.promise;
+          return { tripwireTriggered: false };
+        },
+      },
+    ],
+  });
+  await using session = await agent.session();
+  const turn = await session.submit('begin');
+  let settled = false;
+  const completion = turn.wait().catch((error: unknown) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await entered.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(turn.guardrailResults).toEqual([]);
+    release.resolve();
+    expect(await completion).toBe(firstError);
+    expect(turn.guardrailResults.map((record) => record.name)).toEqual([
+      'tripwire',
+      'held-sibling',
+    ]);
+    expect(turn.guardrailResults[0].result.outputInfo).toBe(marker);
+  } finally {
+    release.resolve();
+    await completion;
+  }
+});
+
 it('retains arbitrary host diagnostics on a typed tripwire', async () => {
   const { provider } = await fixture([[message('candidate')]]);
   await using _resource = provider;
