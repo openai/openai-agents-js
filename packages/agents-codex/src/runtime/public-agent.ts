@@ -1095,6 +1095,7 @@ export class Agent<Context = undefined, Output = string> {
         : this.beforeComplete;
     const contribution =
       opening ||
+      (options as OwnedSessionOptions<Context>)[correctionOpening] ||
       (options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
         ? undefined
         : privateOpeningContribution<Context>();

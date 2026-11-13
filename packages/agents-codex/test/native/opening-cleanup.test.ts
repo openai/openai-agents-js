@@ -785,6 +785,61 @@ describe('private configured opening values before first effects', () => {
     },
   );
 
+  it('omits private contributions from the real correction opening', async () => {
+    const connection = provider();
+    let closed = 0;
+    fixture.sessionClose.mockImplementation(async (options) => {
+      await options.onClose?.();
+      closed++;
+    });
+    const policy = vi.fn(() => undefined);
+    const privatePolicy = vi.fn(() => undefined);
+    fixture.contribution.mockReturnValue({
+      tools: [
+        tools.tool({
+          name: 'private_tool',
+          description: 'Private.',
+          parameters: z.object({}),
+          execute: () => 'private',
+        }),
+      ],
+      beforeComplete: privatePolicy,
+    });
+    const agent = new Agent({
+      instructions: 'Answer.',
+      provider: connection,
+      beforeComplete: policy,
+    });
+    try {
+      const session = await agent.session({ tools: [] });
+      try {
+        const [catalog, options] = fixture.constructed.mock.lastCall!;
+        expect(catalog.tools).toHaveLength(0);
+        expect(options.beforeComplete).toBe(policy);
+        const correction = await options.openCorrection(
+          undefined,
+          undefined,
+          () => undefined,
+        );
+        try {
+          expect(fixture.contribution).toHaveBeenCalledTimes(1);
+          const [correctionCatalog, correctionOptions] =
+            fixture.constructed.mock.lastCall!;
+          expect(correctionCatalog.tools).toHaveLength(0);
+          expect(correctionOptions.beforeComplete).toBeUndefined();
+        } finally {
+          await correction.close();
+        }
+      } finally {
+        await session.close();
+      }
+    } finally {
+      await connection.close();
+    }
+    expect(fixture.sessionClose).toHaveBeenCalledTimes(2);
+    expect(closed).toBe(2);
+  });
+
   it('omits overridden private fields, including explicit empty tools', async () => {
     const connection = provider();
     const policy = vi.fn(() => undefined);
