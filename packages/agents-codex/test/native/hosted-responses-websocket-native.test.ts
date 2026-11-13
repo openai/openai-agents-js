@@ -781,3 +781,54 @@ it.each([false, true])(
   },
   20_000,
 );
+
+it('rejects a compact hosted terminal above the native item count limit', async () => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(server, 'listening');
+  server.on('connection', (socket) => {
+    socket.on('message', () => {
+      socket.send(
+        JSON.stringify({
+          type: 'response.created',
+          response: { id: 'oversized-output', output: [] },
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          type: 'response.completed',
+          response: {
+            id: 'oversized-output',
+            status: 'completed',
+            output: Array.from({ length: 4097 }, () => ({})),
+          },
+        }),
+      );
+    });
+  });
+  const client = new OpenAI({
+    apiKey: 'synthetic-hosted',
+    baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
+  });
+  try {
+    await using provider = new NativeProvider({
+      modelBackend: new HostedResponsesWebSocketModel(
+        (_request, options) =>
+          new ResponsesWS(client, { headers: options.headers as any }),
+      ),
+      baseUrl: 'https://example.invalid/v1',
+      apiKey: 'synthetic-provider',
+    });
+    const agent = new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Answer once.',
+      programmaticToolCalling: false,
+    });
+    await expect(agent.run('Start.')).rejects.toThrow(
+      'native output-item limit',
+    );
+  } finally {
+    for (const socket of server.clients) socket.terminate();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}, 20_000);

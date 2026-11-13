@@ -34,6 +34,14 @@ export const responseFactSchema = z.discriminatedUnion('kind', [
       captureComplete: z.boolean(),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal('hosted_agent_attribution'),
+      itemFingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+      agentName: z.string().min(1),
+      phase: z.string().nullable(),
+    })
+    .strict(),
   z.object({ kind: z.literal('capture_truncated') }).strict(),
   z.object({ kind: z.literal('malformed_probabilities') }).strict(),
 ]);
@@ -117,6 +125,14 @@ export function projectResponseFactRecord(
         captureComplete: source.capture_complete,
       };
       break;
+    case 'hosted_agent_attribution':
+      fact = {
+        kind: source.kind,
+        itemFingerprint: source.item_fingerprint,
+        agentName: source.agent_name,
+        phase: source.phase,
+      };
+      break;
     case 'capture_truncated':
     case 'malformed_probabilities':
       fact = { kind: source.kind };
@@ -139,7 +155,11 @@ export function projectResponseFactRecord(
 }
 
 export type ResponseFactSummary =
-  | Exclude<ResponseFact, { kind: 'refusal' | 'text_probabilities' }>
+  | Exclude<
+      ResponseFact,
+      { kind: 'refusal' | 'text_probabilities' | 'hosted_agent_attribution' }
+    >
+  | { kind: 'hosted_agent_attribution' }
   | { kind: 'refusal' | 'text_probabilities'; captureComplete: boolean };
 export type RecordedResponseFactSummary = Omit<RecordedResponseFact, 'fact'> & {
   fact: ResponseFactSummary;
@@ -154,6 +174,8 @@ export function summarizeResponseFactRecord(
     fact:
       fact.kind === 'refusal' || fact.kind === 'text_probabilities'
         ? { kind: fact.kind, captureComplete: fact.captureComplete }
-        : fact,
+        : fact.kind === 'hosted_agent_attribution'
+          ? { kind: fact.kind }
+          : fact,
   });
 }

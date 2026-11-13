@@ -2429,7 +2429,9 @@ impl PythonTools {
         self.enqueue_profile(
             thread, generation, slot, turn, call, arguments, None, None, source, model, media,
             admission, None, None, None, None, None,
-        )
+
+                    None,
+)
     }
 
     fn enqueue_profile(
@@ -2451,6 +2453,7 @@ impl PythonTools {
         realtime_tool_call: Option<Value>,
         client_search: Option<Arc<ClientToolSearchWork>>,
         executor_tools: Option<Vec<String>>,
+        provider_agent_metadata: Option<Value>,
     ) -> Result<(PendingKey, oneshot::Receiver<ToolReply>)> {
         let entry = &generation.entries[slot];
         let key = PendingKey {
@@ -2508,6 +2511,11 @@ impl PythonTools {
                 "_sdk_trace_context": codex_otel::current_span_w3c_trace_context()
             }
         });
+        if matches!(source, ToolCallSource::Direct) {
+            if let Some(metadata) = provider_agent_metadata {
+                request["msg"]["_sdk_hosted_agent_metadata"] = metadata;
+            }
+        }
         if let Some(error) = argument_error {
             request["msg"]["_sdk_argument_error"] = json!(error);
         }
@@ -4348,7 +4356,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                         .as_ref()
                         .and_then(|selection| selection.names())
                         .map(configured_executor_names),
-                )
+
+                    call.conversation_history.provider_agent_metadata().cloned(),
+)
                 .map_err(|error| FunctionCallError::RespondToModel(error.to_string()))?;
             let mut reply_guard = PendingReply {
                 tools: &self.tools,
@@ -4971,7 +4981,9 @@ mod pending_tests {
                 None,
                 None,
                 None,
-            )
+
+                    None,
+)
             .unwrap();
         assert!(key.reply.manual_grant.is_some());
         assert!(tools.manual_tool_current("root", &key));

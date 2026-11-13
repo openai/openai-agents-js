@@ -603,3 +603,6 @@ export type {
 
 export { HostedResponsesWebSocketModel } from './runtime/hosted-responses-websocket-model';
 export type { HostedResponsesWebSocketModelOptions } from './runtime/hosted-responses-websocket-model';
+
+export { getHostedAgentMetadata } from './runtime/hosted-agent-metadata';
+export type { HostedAgentMetadata } from './runtime/hosted-agent-metadata';

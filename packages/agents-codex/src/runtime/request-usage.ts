@@ -36,6 +36,11 @@ export class RecordedRequestUsageProjection {
     turnId: unknown,
   ): void {
     if (!value || typeof value !== 'object' || !('phase' in value)) return;
+    if (captured.wire.provider_managed === true) {
+      if (typeof threadId === 'string') this.active.delete(threadId);
+      this.complete = false;
+      return;
+    }
     const id = 'attempt_id' in value ? value.attempt_id : undefined;
     if (
       value.phase === 'started' &&
@@ -157,6 +162,7 @@ export class RecordedRequestUsageProjection {
     if (!this.complete || BigInt(legacyRequests) !== 0n) return false;
     let requests = 0n;
     for (const captured of owners) {
+      if (captured.wire.provider_managed === true) return false;
       const settled =
         captured.ownerAttemptId === null
           ? undefined

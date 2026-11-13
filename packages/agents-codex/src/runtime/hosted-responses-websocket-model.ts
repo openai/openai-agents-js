@@ -54,6 +54,7 @@ const terminal = new Set([
   'response.incomplete',
 ]);
 const maxResponseBytes = 8 * 1024 * 1024;
+const maxResponseItems = 4096;
 
 /** Provider beta transport; native Core retains local function execution. */
 export class HostedResponsesWebSocketModel implements NativeModel {
@@ -332,8 +333,15 @@ function hostedSocket(
               item?.type === 'function_call' &&
               typeof item.call_id === 'string' &&
               !active.emitted.has(item.call_id) &&
-              !active.queued.some((known) => known.call_id === item.call_id)
+              !active.pending.has(item.call_id)
             ) {
+              if (
+                active.emitted.size + active.queued.length >=
+                maxResponseItems
+              )
+                throw new RangeError(
+                  'Hosted response exceeds the native output-item limit',
+                );
               active.pending.add(item.call_id);
               active.queued.push(copyJsonValue(item) as JsonObject);
             }
@@ -367,6 +375,13 @@ function hostedSocket(
             if (active.terminalReported)
               throw new TypeError(
                 'Hosted response received more than one terminal',
+              );
+            if (
+              Array.isArray(response?.output) &&
+              response.output.length > maxResponseItems
+            )
+              throw new RangeError(
+                'Hosted response exceeds the native output-item limit',
               );
             const measured = projectResponsesUsage(response?.usage);
             accountProviderRequest(request(), {

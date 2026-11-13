@@ -1179,7 +1179,27 @@
     {
       "path": "sdk-chat-output-audio.patch",
       "sha256": "50a27d673f3276c68fcb5c010dd9d827c787a54e161df6b6c026913ff3fcf0b3"
+    },
+    {
+      "path": "sdk-linear-prompt-cache-breakpoints.patch",
+      "sha256": "e01afc641b34792f1e1619e93651f5cc7fbaa2860530a6dd89df8372f7a7d7fd"
+    },
+    {
+      "path": "sdk-managed-history-attempts.patch",
+      "sha256": "c6630843af2aa01b6a059404d91aa72084c741f2750bc57e321082ffb8008e21"
+    },
+    {
+      "path": "sdk-hosted-provider-tool-attribution.patch",
+      "sha256": "e7dd024824520ab4a9d801b71a553a0987fb800fd778eeef15ff3946f094a1c7"
+    },
+    {
+      "path": "sdk-hosted-attribution-completion-call.patch",
+      "sha256": "86ec4b704dd88fcb2c6918569160c327a805e610391d42e45bd7b4c10de8aee6"
+    },
+    {
+      "path": "sdk-bounded-hosted-program-replay.patch",
+      "sha256": "9c5e1e12c80d5b41b8dad5de245db2edca295b839c4af1c1321766dd877715c7"
     }
   ],
-  "result_tree": "9b708e7a0c745983002d1d48d577fcc589dae01f"
+  "result_tree": "0b02be7196ef14377df2758511d6dfd793923294"
 }
