@@ -266,6 +266,8 @@ describe('Python data API parity', () => {
           message: 'busy',
           httpStatusCode: 503,
         },
+        requestUsageEntries: [],
+        requestUsageEntriesComplete: false,
         responses: [
           {
             id: null,
