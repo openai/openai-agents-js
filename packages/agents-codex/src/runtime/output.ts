@@ -266,6 +266,24 @@ export function prepareOutput<Output>(
   };
 }
 
+/** Convert an application proposal through the captured final-output validator. */
+export function parseApplicationToolCompletion(
+  output: PreparedOutput,
+  value: unknown,
+): { value: unknown; json: JsonValue } {
+  let captured: JsonValue;
+  try {
+    captured = losslessJsonValueSchema.parse(value);
+  } catch {
+    throw new OutputValidationError('');
+  }
+  if (!output.schema && !output.prompt) {
+    if (typeof captured !== 'string') throw new OutputValidationError('');
+    return parseToolCompletion(output, captured);
+  }
+  return parseToolCompletion(output, JSON.stringify(captured));
+}
+
 /** Convert the final settled body once. This path never invokes output repair. */
 export function parseToolCompletion(
   output: PreparedOutput,

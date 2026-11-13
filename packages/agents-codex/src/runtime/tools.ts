@@ -41,7 +41,8 @@ import {
   type ManualTool,
 } from './manual';
 import type { NativeGoals } from './goals';
-import type { ToolCallInfo } from './call-metadata';
+import { terminalCallInfo, type ToolCallInfo } from './call-metadata';
+import type { ToolBatchResult } from './model-callbacks';
 import {
   assertHostedMcpConfigurations,
   hostedMcpBinding,
@@ -104,6 +105,82 @@ export class ToolOutput {
   }
 }
 
+/** @internal Detached canonical results; call metadata grants no tool authority. */
+export function captureToolBatchResults(
+  owner: Pick<
+    ToolCallInfo,
+    'sessionId' | 'turnId' | 'childId' | 'childIncarnation'
+  >,
+  model: string,
+  value: unknown,
+): readonly ToolBatchResult[] {
+  try {
+    const results = z
+      .array(
+        z.object({
+          call_id: z.string(),
+          name: z.string(),
+          namespace: z.string().nullable().optional(),
+          arguments: z.string(),
+          output: z.unknown(),
+          succeeded: z.boolean(),
+        }),
+      )
+      .nonempty()
+      .parse(value);
+    if (
+      new Set(results.map((result) => result.call_id)).size !== results.length
+    )
+      throw new TypeError('Duplicate settled tool identity');
+    return Object.freeze(
+      results.map((result) => {
+        const content =
+          typeof result.output === 'string'
+            ? [{ type: 'inputText' as const, text: result.output }]
+            : z
+                .array(z.record(z.string(), z.unknown()))
+                .parse(result.output)
+                .map((part) => {
+                  if (part.type === 'input_text')
+                    return captureToolPart({
+                      type: 'inputText',
+                      text: part.text,
+                    });
+                  if (part.type === 'input_image')
+                    return captureToolPart({
+                      type: 'inputImage',
+                      ...(part.image_url != null
+                        ? { imageUrl: part.image_url }
+                        : {}),
+                      ...(part.file_id != null ? { fileId: part.file_id } : {}),
+                      ...(part.detail != null ? { detail: part.detail } : {}),
+                    });
+                  if (part.type === 'input_file') {
+                    const { type: _type, ...file } = part;
+                    return captureToolPart({ type: 'inputFile', ...file });
+                  }
+                  if (part.type === 'input_audio')
+                    return captureToolPart({
+                      type: 'inputAudio',
+                      audioUrl: part.audio_url,
+                    });
+                  throw new TypeError('Unsupported settled tool content');
+                });
+        return Object.freeze({
+          call: Object.freeze({
+            ...terminalCallInfo(owner, { ...result, final_output: null }),
+            model,
+          }),
+          arguments: result.arguments,
+          output: new ToolOutput(content, result.succeeded),
+        });
+      }),
+    );
+  } catch {
+    throw new TypeError('Invalid settled tool batch');
+  }
+}
+
 // This transient carrier never survives JSON or structuredClone into native replies.
 const applicationDataBinding = Symbol('application tool output');
 type ApplicationToolResponse = ToolResponse & {
@@ -152,6 +229,8 @@ export class ToolTimeoutError extends Error {
     this.name = 'ToolTimeoutError';
   }
 }
+
+type FunctionToolCaller = ToolCallInfo['route'];
 
 export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
 
@@ -361,6 +440,7 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
     tool.kind !== 'manual' &&
     !tool.deferLoading &&
+    tool.allowedCallers?.includes('direct') !== false &&
     !tool[nativeCallbackDeclaration] &&
     !tool[clientToolSearchDeclaration] &&
     !hostedMcpBinding(tool) &&
@@ -420,6 +500,8 @@ export function managedApproval(
 }
 
 export interface FunctionTool<Context = unknown> extends ToolDeclaration {
+  /** Restrict this tool to direct model calls, Code Mode calls, or both. */
+  readonly allowedCallers?: readonly FunctionToolCaller[];
   /** Complete the turn from an accepted direct result; captured outside the schema. */
   readonly finishTurn?: boolean;
   readonly namespace?: string;
@@ -808,6 +890,8 @@ type FunctionToolOptions<
   finishTurn?: boolean;
   /** Defer selected schema presentation; does not change execution admission. */
   deferLoading?: boolean;
+  /** Restrict this tool to direct model calls, Code Mode calls, or both. */
+  allowedCallers?: readonly FunctionToolCaller[];
   /** Opt into strict Responses input schema generation. */
   strict?: boolean;
   /** Describe the JSON object encoded in string results for a native Responses request or ResponsesModel. */
@@ -961,6 +1045,28 @@ function createFunctionTool<
     typeof options.deferLoading !== 'boolean'
   )
     throw new TypeError('deferLoading must be a boolean');
+  const allowedCallers = options.allowedCallers;
+  if (
+    allowedCallers !== undefined &&
+    (!Array.isArray(allowedCallers) ||
+      allowedCallers.length === 0 ||
+      [...allowedCallers].some(
+        (route) => route !== 'direct' && route !== 'code',
+      ) ||
+      new Set(allowedCallers).size !== allowedCallers.length)
+  ) {
+    throw new TypeError(
+      'allowedCallers must select distinct direct or code routes',
+    );
+  }
+  const capturedCallers =
+    allowedCallers === undefined
+      ? undefined
+      : Object.freeze<FunctionToolCaller[]>(
+          allowedCallers.length === 2
+            ? ['direct', 'code']
+            : [...allowedCallers],
+        );
   if (
     options.callbackTimeout !== undefined &&
     (!Number.isFinite(options.callbackTimeout) ||
@@ -1359,6 +1465,9 @@ function createFunctionTool<
     timeoutErrorFunction,
     errorFunction,
     deferLoading: options.deferLoading ?? false,
+    ...(capturedCallers === undefined
+      ? {}
+      : { allowedCallers: capturedCallers }),
     ...(strict ? { strict } : {}),
     ...(outputSchema === undefined ? {} : { outputSchema }),
     parameters: decode(losslessJsonValueSchema, JSON.stringify(inputSchema)),
@@ -1571,6 +1680,13 @@ export interface ToolCatalog<T extends SessionTool = SessionTool> {
   readonly tools: readonly T[];
   readonly specsJson: string;
 }
+/** @internal Protocol schemas never carry current application caller authority. */
+export function protocolToolSpecs(catalog: ToolCatalog): JsonObject[] {
+  const specs = decode(z.array(losslessJsonObjectSchema), catalog.specsJson);
+  for (const spec of specs) delete spec.allowedCallers;
+  return specs;
+}
+
 export function captureTools(
   tools: readonly FunctionTool[],
   generation?: bigint,
@@ -1722,15 +1838,20 @@ export function captureTools(
         : { outputSchema: tool.outputSchema }),
     };
     const namespace = tool.kind === 'manual' ? undefined : tool.namespace;
-    return namespace !== undefined
-      ? {
-          type: 'namespace',
-          name: namespace,
-          description:
-            tool.kind === 'manual' ? '' : (tool.namespaceDescription ?? ''),
-          tools: [spec],
-        }
-      : spec;
+    const declaration =
+      namespace !== undefined
+        ? {
+            type: 'namespace',
+            name: namespace,
+            description:
+              tool.kind === 'manual' ? '' : (tool.namespaceDescription ?? ''),
+            tools: [spec],
+          }
+        : spec;
+    const source = managedApproval(tool)?.function ?? tool;
+    return source.kind === 'manual' || source.allowedCallers === undefined
+      ? declaration
+      : { ...declaration, allowedCallers: [...source.allowedCallers] };
   });
   return Object.freeze({
     generation,

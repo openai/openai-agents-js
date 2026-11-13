@@ -55,7 +55,7 @@ async fn current_search_only_extends_local_policy_by_its_exact_identity() {
         crate::config::validate_local_tool_config(&start.config).unwrap();
         PythonTools::install(
             &mut start,
-            vec![],
+            vec![].into(),
             ToolInstallOptions {
                 preserve_schemas: false,
                 allow_local_goals: false,
@@ -66,7 +66,7 @@ async fn current_search_only_extends_local_policy_by_its_exact_identity() {
     let (_home, mut start) = startup("live", true, vec![named(Some("web"), "run")]).await;
     PythonTools::install(
         &mut start,
-        vec![],
+        vec![].into(),
         ToolInstallOptions {
             preserve_schemas: false,
             allow_local_goals: false,
@@ -90,7 +90,7 @@ async fn current_search_and_checklist_require_both_current_policy_grants() {
         assert_eq!(
             PythonTools::install(
                 &mut start,
-                vec![],
+                vec![].into(),
                 ToolInstallOptions {
                     preserve_schemas: false,
                     allow_local_goals: false
@@ -109,7 +109,7 @@ async fn enabled_search_requires_its_current_policy_grant() {
         assert!(
             PythonTools::install(
                 &mut start,
-                vec![],
+                vec![].into(),
                 ToolInstallOptions {
                     preserve_schemas: false,
                     allow_local_goals: false
@@ -126,7 +126,7 @@ async fn disabled_search_does_not_admit_plain_search_policy_name() {
     assert!(
         PythonTools::install(
             &mut start,
-            vec![],
+            vec![].into(),
             ToolInstallOptions {
                 preserve_schemas: false,
                 allow_local_goals: false
@@ -142,7 +142,7 @@ async fn hosted_grant_cannot_alias_a_managed_callback() {
     assert!(
         PythonTools::install(
             &mut start,
-            vec![callback()],
+            vec![callback()].into(),
             ToolInstallOptions {
                 preserve_schemas: false,
                 allow_local_goals: false
@@ -153,7 +153,7 @@ async fn hosted_grant_cannot_alias_a_managed_callback() {
     let (_home, mut disabled) = startup("disabled", false, vec![named(None, "web_search")]).await;
     PythonTools::install(
         &mut disabled,
-        vec![callback()],
+        vec![callback()].into(),
         ToolInstallOptions {
             preserve_schemas: false,
             allow_local_goals: false,
@@ -175,7 +175,7 @@ async fn unrelated_policy_and_alternate_route_are_rejected() {
         assert!(
             PythonTools::install(
                 &mut start,
-                vec![],
+                vec![].into(),
                 ToolInstallOptions {
                     preserve_schemas: false,
                     allow_local_goals: false

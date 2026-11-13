@@ -217,6 +217,9 @@ async function cancellationFixture() {
   };
   let current = native;
   const closeNative = vi.fn(async (): Promise<string | null> => null);
+  const forkNative = vi.fn(async () => {
+    throw new Error('controlled native fork boundary');
+  });
   const closeEngine = vi.fn(async (): Promise<string | null> => null);
   const thread = {
     id: 'root',
@@ -236,6 +239,7 @@ async function cancellationFixture() {
     _child_instance: async () => ['7', current],
     _stop_sampling_for_close: () => {},
     _close_report: closeNative,
+    _fork_settled: forkNative,
   };
   const session = new Session(
     {
@@ -257,6 +261,8 @@ async function cancellationFixture() {
     callbacks,
     owner,
     closeEngine,
+    closeNative,
+    forkNative,
     successor: async () => {
       current = { ...native, turn_id: 'successor' };
       const [next] = await Array.fromAsync(session.subagents());
@@ -458,4 +464,66 @@ it('retries confirmed cleanup on the original child receipt after a successor is
   expect(f.native.cancel.mock.contexts).toEqual([f.native, f.native]);
   expect(successorOwner.controller.signal.aborted).toBe(false);
   await f.session.close();
+});
+
+it('does not join native-dependent settlements while closing entered callbacks', async () => {
+  const callbacks = new ChildCallbacks();
+  const settlement = Promise.withResolvers<void>();
+  callbacks.trackSettlement(settlement.promise);
+  let closed = false;
+  const closing = callbacks.close().then(() => {
+    closed = true;
+  });
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closed).toBe(true);
+    expect(callbacks.hasPendingSettlements()).toBe(true);
+  } finally {
+    settlement.resolve();
+    await closing;
+    await callbacks.drainSettlements();
+  }
+});
+
+it('keeps a pending child settlement behind the public fork fence', async () => {
+  const f = await cancellationFixture();
+  const settlement = Promise.withResolvers<void>();
+  f.callbacks.trackSettlement(settlement.promise);
+  try {
+    const outcome = await f.session.fork().catch((error) => error as Error);
+    expect(f.forkNative).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({
+      message: 'fork requires a settled Session',
+    });
+    expect(f.callbacks.hasPendingSettlements()).toBe(true);
+  } finally {
+    settlement.resolve();
+    await f.session.close();
+  }
+  expect(f.callbacks.hasPendingSettlements()).toBe(false);
+});
+
+it('retains post-native settlements across incomplete close and joins them on retry', async () => {
+  const f = await cancellationFixture();
+  const settlement = Promise.withResolvers<void>();
+  const failure = new Error('controlled incomplete native close');
+  f.callbacks.trackSettlement(settlement.promise);
+  f.closeNative
+    .mockRejectedValueOnce(failure)
+    .mockImplementationOnce(async () => {
+      settlement.resolve();
+      return null;
+    });
+  try {
+    await expect(f.session.close()).rejects.toBe(failure);
+    expect(f.callbacks.hasPendingSettlements()).toBe(true);
+    expect(f.closeEngine).not.toHaveBeenCalled();
+    await f.session.close();
+    expect(f.closeNative).toHaveBeenCalledTimes(2);
+    expect(f.closeEngine).toHaveBeenCalledOnce();
+    expect(f.callbacks.hasPendingSettlements()).toBe(false);
+  } finally {
+    settlement.resolve();
+    await f.session.close();
+  }
 });

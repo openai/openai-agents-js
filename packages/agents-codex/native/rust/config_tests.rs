@@ -214,7 +214,7 @@ async fn native_connection_failures_terminate_with_configured_budgets() {
                     "_managed_instructions":true, "instructions":"Fail the controlled connection.",
                     "session_source":SessionSource::Custom("finite-retry-fixture".into()),
                 }))?,
-                Vec::new(),
+                Vec::new().into(),
             ).await?);
             let native = native.as_ref().unwrap();
             let receipt: Value = serde_json::from_str(

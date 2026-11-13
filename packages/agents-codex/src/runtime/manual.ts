@@ -149,10 +149,25 @@ export interface ManualTool<
 interface RequestAuthority {
   replyIdentity: object;
   definition: Definition;
+  tool: ManualTool;
+  owner?: { session: object; owns(): boolean };
   current(): boolean;
   approvalInput?: unknown;
 }
 const requests = new WeakMap<object, RequestAuthority>();
+
+/** @internal Resolve only an original request retained by its issuing Session. */
+export function manualToolForSession(
+  session: object,
+  request: ManualToolRequest,
+): ManualTool | undefined {
+  const authority = requests.get(request);
+  return authority?.owner?.session === session &&
+    authority.owner.owns() &&
+    authority.current()
+    ? authority.tool
+    : undefined;
+}
 
 function copyApprovalJson(
   value: unknown,
@@ -353,6 +368,7 @@ export function prepareManualResult(tool: ManualTool, value: unknown): unknown {
 export function createManualRequest<Input, Result>(
   tool: ManualTool<Input, Result>,
   identity: {
+    owner?: { session: object; owns(): boolean };
     sessionId: string;
     submissionId: string;
     subagentId: string | null;
@@ -373,6 +389,8 @@ export function createManualRequest<Input, Result>(
   const authority: RequestAuthority = {
     replyIdentity,
     definition,
+    tool,
+    owner: identity.owner,
     current: () => active && isCurrent(),
   };
   const checkCurrent = () => {
