@@ -76,6 +76,7 @@ import {
 } from './realtime-agent-config';
 import { resolveRealtimePolicy } from './realtime-policy';
 import type { ChildBeforeStepContext } from './native-agents';
+import { ModelRun } from './model-run';
 import {
   GuardrailTripwire,
   captureGuardrailResult,
@@ -1303,10 +1304,13 @@ interface ToolInvocation {
 const toolInvocation = new AsyncLocalStorage<ToolInvocation>();
 
 function cleanupFailure(run: NativeTurn, primary?: unknown): unknown {
-  if (!run.toolCleanupErrors.length) return primary;
+  const errors = [...run.toolCleanupErrors, ...(run.modelRun?.errors ?? [])];
+  if (!errors.length) return primary;
   return new AggregateError(
-    [...(primary === undefined ? [] : [primary]), ...run.toolCleanupErrors],
-    'Native tool callback cleanup failed',
+    [...(primary === undefined ? [] : [primary]), ...errors],
+    run.modelRun?.errors.length
+      ? 'Native model cleanup failed'
+      : 'Native tool callback cleanup failed',
     primary === undefined ? undefined : { cause: primary },
   );
 }
@@ -5032,16 +5036,18 @@ export class Session<OutputT = string, Context = unknown> {
 
       this.retireNativeQuestions(run);
       this.clearManualCalls(run);
+      const modelCleanup = run.modelRun?.close();
       run.controller.abort(cause);
       const settle = () => {
         const error = cleanupFailure(run, cause);
         run.accepted.reject(error);
         run.completion.reject(error);
       };
-      if (run.toolInvocations.size || run.manualReplies.size)
+      if (run.toolInvocations.size || run.manualReplies.size || modelCleanup)
         void Promise.allSettled([
           ...run.toolInvocations,
           ...run.manualReplies,
+          ...(modelCleanup ? [modelCleanup] : []),
         ]).then(settle);
       else settle();
       this.retireObservation(run);
@@ -6965,6 +6971,8 @@ export class Session<OutputT = string, Context = unknown> {
   ): void {
     if (this.lifecycle.kind !== 'turn' || this.lifecycle.run !== run) return;
     submissions.get(run)!.observation = 'finishing';
+    if (error !== undefined || run.failure !== undefined)
+      void run.modelRun?.close();
     this.retireNativeQuestions(run);
     if (run.manualReplies.size > 0) {
       void Promise.allSettled([...run.manualReplies]).then(() =>
@@ -7018,7 +7026,7 @@ export class Session<OutputT = string, Context = unknown> {
     error = cleanupFailure(run, error);
     this.flushTerminalObservations(run);
     if (error !== undefined) this.clearTerminalProposal(run);
-    if (run.toolCleanupErrors.length) {
+    if (run.toolCleanupErrors.length || run.modelRun?.errors.length) {
       this.retire(error);
       void this.close().catch(() => {});
       return;
@@ -7105,6 +7113,12 @@ export class Session<OutputT = string, Context = unknown> {
     if (submission?.previous && continuationWasSuperseded(error))
       this.lastRun = submission.previous;
 
+    if (!continueRetained && run.modelRun && !run.modelRun.closed) {
+      this.track(run, run.modelRun.close(), run.callbacks, () =>
+        this.finish(run, run.failure ?? error, output, unsampledSteering),
+      );
+      return;
+    }
     this.clearManualCalls(run);
     run.controller.abort(error);
     if (!this.owns(run)) return;
@@ -7148,6 +7162,7 @@ export class Session<OutputT = string, Context = unknown> {
           run,
         );
         next.parentTrace = run.parentTrace;
+        next.modelRun = run.modelRun;
         submission.next = next;
         const successor = submissions.get(next)!;
         successor.previous = run;
@@ -9554,8 +9569,29 @@ export class Session<OutputT = string, Context = unknown> {
                       callback: parseNative(delivery.wire),
                     })
                   : undefined;
+              const cleanup = backend.cleanupOnRunEnd;
+              if (cleanup !== undefined && typeof cleanup !== 'function')
+                throw new TypeError(
+                  'NativeModel.cleanupOnRunEnd must be callable',
+                );
+              let runOwner;
+              if (cleanup) {
+                const root =
+                  owner instanceof NativeTurn ? this.rootRun(owner) : owner;
+                const modelRun = (root.modelRun ??= new ModelRun(
+                  this.id,
+                  base.turnId,
+                ));
+                owner.modelRun = modelRun;
+                runOwner = modelRun.admit(backend, (resourceOwner) =>
+                  this._runVoiceCallback(() =>
+                    cleanup.call(backend, resourceOwner),
+                  ),
+                );
+              }
               const request: ModelRequest = {
                 ...base,
+                ...(runOwner === undefined ? {} : { runOwner }),
                 body: losslessJsonObjectSchema.parse(msg.data),
                 ...(attemptId === undefined
                   ? {}
@@ -13723,6 +13759,7 @@ export class Session<OutputT = string, Context = unknown> {
         submission.cancelled = true;
       if (options.mode === 'force') {
         run.failure ??= new TurnAborted('Turn interrupted');
+        void run.modelRun?.close();
         run.controller.abort(new TurnAborted('Session work stopped'));
 
         this.clearManualCalls(run);
@@ -18155,6 +18192,7 @@ export class Session<OutputT = string, Context = unknown> {
 
         this.retireNativeQuestions(run);
         this.clearManualCalls(run);
+        const modelCleanup = run.modelRun?.close();
         run.controller.abort(closed);
         try {
           acknowledgmentFailure =
@@ -18165,6 +18203,7 @@ export class Session<OutputT = string, Context = unknown> {
           await Promise.allSettled([
             ...run.toolInvocations,
             ...run.manualReplies,
+            ...(modelCleanup ? [modelCleanup] : []),
           ]);
           const error = cleanupFailure(run, run.failure ?? closed);
           if (

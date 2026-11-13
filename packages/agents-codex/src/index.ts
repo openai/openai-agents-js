@@ -509,6 +509,7 @@ export type {
   ModelRequestOptions,
   ModelRequestOptionsFactory,
   ModelProvider,
+  ModelRunOwner,
   ModelRequest,
   ModelResponse,
 } from './runtime/models';
@@ -591,3 +592,10 @@ export type {
 export type { SandboxMemoryOptions } from './runtime/sandbox-memory';
 
 export type { PendingInput, PendingInputItem } from './runtime/state';
+
+export { ResponsesWebSocketModel } from './runtime/responses-websocket-model';
+export type {
+  ResponsesSocket,
+  ResponsesSocketOptions,
+  ResponsesSocketFactory,
+} from './runtime/responses-websocket-model';

@@ -113,6 +113,11 @@ type OriginalResponsesUsage = {
   upstreamRequestId: unknown;
 };
 
+/** Stable identity for optional resources owned by one application run. */
+export interface ModelRunOwner {
+  readonly sessionId: string;
+  readonly turnId: string;
+}
 /** Detached native provider input; Core retains canonical history and tool execution. */
 export interface ModelRequest {
   readonly body: JsonObject;
@@ -120,6 +125,8 @@ export interface ModelRequest {
   readonly sessionId: string;
   readonly turnId: string;
   readonly signal: AbortSignal;
+  /** Present for models with cleanupOnRunEnd; stable through retained continuation. */
+  readonly runOwner?: ModelRunOwner;
   /** Opaque native logical-attempt identity, when the route negotiates attempts. */
   readonly attemptId?: string;
   readonly attempt?: number;
@@ -148,6 +155,8 @@ export interface ModelResponse {
 }
 /** Application-owned producer. Cancellation joins admitted work and discards late output. */
 export interface NativeModel {
+  /** Release only this run's resources; native settlement awaits cleanup once. */
+  cleanupOnRunEnd?(owner: ModelRunOwner): void | Promise<void>;
   getRetryAdvice?(
     request: ModelRetryAdviceRequest,
   ): ModelRetryAdvice | undefined | Promise<ModelRetryAdvice | undefined>;
@@ -379,7 +388,7 @@ function captureRequestOptions(value: unknown): ModelRequestOptions {
   return options as unknown as ModelRequestOptions;
 }
 
-function captureRequestOptionsSource(
+export function captureRequestOptionsSource(
   options: ModelAdapterOptions,
 ): CapturedRequestOptions {
   const value = options.requestOptions;
@@ -408,7 +417,7 @@ export function markModelRequestTransport(
   );
 }
 
-async function clientRequestOptions(
+export async function clientRequestOptions(
   source: CapturedRequestOptions,
   request: ModelRequest,
 ) {
@@ -463,7 +472,7 @@ async function clientRequestOptions(
   };
 }
 
-function capturePromptCacheKey(
+export function capturePromptCacheKey(
   options: ModelAdapterOptions,
 ): string | undefined {
   const key = options.promptCacheKey;
@@ -1359,7 +1368,7 @@ function hasResponsesRefusal(output: readonly JsonObject[]): boolean {
   );
 }
 
-function projectResponsesResponse(response: any): ModelResponse {
+export function projectResponsesResponse(response: any): ModelResponse {
   const output = (response.output ?? []) as JsonObject[];
   const refusal = hasResponsesRefusal(output);
   if (response.status !== 'completed' && !refusal)
