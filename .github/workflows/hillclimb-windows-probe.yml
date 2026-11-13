@@ -1,0 +1,25 @@
+name: CI hillclimb Windows runner probe
+on:
+  push:
+    branches: [ci/hillclimb/js-windows-probe-01]
+permissions: {}
+jobs:
+  probe:
+    name: Probe ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [codex-windows-x64, codex-windows-x64-xl]
+    runs-on:
+      group: codex-runners
+      labels: ${{ matrix.label }}
+    timeout-minutes: 5
+    steps:
+      - name: Report Windows runner resources
+        shell: pwsh
+        run: |
+          $system = Get-CimInstance Win32_ComputerSystem
+          "Available logical processors: $([Environment]::ProcessorCount)"
+          "System logical processors: $($system.NumberOfLogicalProcessors)"
+          "Physical memory GiB: $([Math]::Round($system.TotalPhysicalMemory / 1GB))"
+          Get-CimInstance Win32_Processor | ForEach-Object { "CPU model: $($_.Name)" }
