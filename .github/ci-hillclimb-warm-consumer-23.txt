@@ -1,0 +1,1 @@
+Temporary warm CI benchmark. Native inputs and SDK source match the verified seed.
