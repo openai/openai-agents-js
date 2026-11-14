@@ -13,7 +13,7 @@ import type {
   Editor,
   PatchFormat,
 } from '../../editor';
-import { applyPatchFormat } from '../../editor';
+import { applyPatchFormat } from '../internal/patchFormat';
 import { UserError } from '../../errors';
 import { registerExclusiveWorkspaceCreate } from './shared/exclusiveWorkspaceFiles';
 import type { ToolOutputImage } from '../../tool';

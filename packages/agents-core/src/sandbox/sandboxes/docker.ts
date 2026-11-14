@@ -21,7 +21,7 @@ import type {
   Editor,
   PatchFormat,
 } from '../../editor';
-import { applyPatchFormat } from '../../editor';
+import { applyPatchFormat } from '../internal/patchFormat';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
 import {

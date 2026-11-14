@@ -205,4 +205,4 @@ export {
   registerExclusiveWorkspaceCreate,
 } from './sandboxes/shared/exclusiveWorkspaceFiles';
 
-export { applyPatchFormat } from '../editor';
+export { applyPatchFormat } from './internal/patchFormat';
