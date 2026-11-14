@@ -215,13 +215,6 @@ it.each([
       expect(server.requests).toHaveLength(
         mode === 'allow' || mode === 'deny' ? 2 : 1,
       );
-      console.log({
-        allowed,
-        beforeApproval,
-        seen,
-        peerCalls: effects.length,
-        nativeFamily: 'mcp',
-      });
       expect(beforeApproval).toEqual([]);
       expect(seen).toEqual(
         mode === 'deny'
