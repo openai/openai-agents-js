@@ -9,6 +9,7 @@ import {
   type NativeModel,
 } from '../src/runtime/workerd';
 import type { AiSdkLanguageModel } from '../src/runtime/models';
+import type { JsonObject } from '../src/runtime/binding';
 
 const wasm = new URL('../native/codex-turn-control.wasm', import.meta.url);
 const portableTest = it.skipIf(!existsSync(wasm));
@@ -129,5 +130,88 @@ portableTest(
     ).rejects.toBe(cancelled);
     expect(tool.execute).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalledTimes(2);
+  },
+);
+
+portableTest(
+  'observes live stream events and waits for a complete stream before dispatch',
+  async () => {
+    const tool = lookup();
+    const order: string[] = [];
+    const completed = (id: string, output: JsonObject[]) => ({
+      type: 'response.completed',
+      response: { id, status: 'completed', output },
+    });
+    let requests = 0;
+    const provider: NativeModel = {
+      complete() {
+        throw new Error('Expected the stream adapter');
+      },
+      async *stream({ body }) {
+        requests++;
+        if (requests === 1) {
+          yield { type: 'response.output_text.delta', delta: 'working' };
+          expect(order).toContain('response.output_text.delta');
+          yield completed('one', [call]);
+          expect(tool.execute).not.toHaveBeenCalled();
+          order.push('first stream closed');
+        } else {
+          expect(order).toContain('first stream closed');
+          expect(JSON.stringify(body.input)).toContain('observed:local');
+          yield completed('two', [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'done' }],
+            },
+          ]);
+        }
+      },
+    };
+    await expect(
+      runWorkerText('Find the value.', {
+        control,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool.declaration],
+        provider,
+        observe(event) {
+          order.push(String(event.type));
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(requests).toBe(2);
+    expect(tool.execute).toHaveBeenCalledTimes(1);
+  },
+);
+
+portableTest(
+  'rejects terminal stream contradictions before running a local function',
+  async () => {
+    const tool = lookup();
+    const provider: NativeModel = {
+      complete() {
+        throw new Error('Expected the stream adapter');
+      },
+      async *stream() {
+        const event = {
+          type: 'response.completed',
+          response: { id: 'duplicate', status: 'completed', output: [call] },
+        };
+        yield event;
+        yield event;
+      },
+    };
+    await expect(
+      runWorkerText('Find the value.', {
+        control,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool.declaration],
+        provider,
+        observe() {},
+      }),
+    ).rejects.toThrow('emitted data after completion');
+    expect(tool.execute).not.toHaveBeenCalled();
   },
 );

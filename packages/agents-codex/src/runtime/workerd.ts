@@ -1,6 +1,9 @@
 import { encode, type JsonObject, type JsonValue } from './binding';
 import {
   captureModelResponse,
+  isRawModelPart,
+  projectResponsesResponse,
+  pumpModelStream,
   type ModelRequest,
   type ModelResponse,
   type NativeModel,
@@ -87,6 +90,48 @@ export interface WorkerTextOptions<Context> {
   context?: Context;
   signal?: AbortSignal;
   maxTurns?: number;
+  /** Receive normalized model events in order while the provider stream is open. */
+  observe?: (event: Readonly<JsonObject>) => void | Promise<void>;
+}
+
+async function completeModel(
+  provider: NativeModel,
+  request: ModelRequest,
+  observe: WorkerTextOptions<unknown>['observe'],
+): Promise<ModelResponse> {
+  if (!observe || !provider.stream) return provider.complete(request);
+  const stream = await provider.stream(request);
+  let completion: ModelResponse | undefined;
+  let bytes = 0;
+  const encoder = new TextEncoder();
+  await pumpModelStream(stream, {
+    check: () => request.signal.throwIfAborted(),
+    start() {},
+    async push(encoded, original) {
+      bytes += encoder.encode(encoded).length;
+      if (bytes > frameLimit)
+        throw new RangeError('Portable model stream exceeds capacity');
+      if (isRawModelPart(original)) return true;
+      const event = JSON.parse(encoded) as JsonObject;
+      if (completion)
+        throw new Error('Portable model stream emitted data after completion');
+      if (
+        event.type === 'response.failed' ||
+        event.type === 'response.incomplete' ||
+        event.type === 'error'
+      )
+        throw new Error('Portable model stream failed');
+      if (event.type === 'response.completed') {
+        completion = projectResponsesResponse(event.response);
+      }
+      await observe(event);
+      return true;
+    },
+    finish() {},
+  });
+  if (!completion)
+    throw new Error('Portable model stream ended without completion');
+  return completion;
 }
 
 function wireToolOutput(value: unknown): JsonValue {
@@ -136,7 +181,7 @@ async function runTools<Context>(
   }
 }
 
-/** Run a buffered text turn and its local functions inside a Worker isolate. */
+/** Run a text turn and its local functions inside a Worker isolate. */
 export async function runWorkerText<Context = undefined>(
   input: string,
   {
@@ -148,9 +193,12 @@ export async function runWorkerText<Context = undefined>(
     context,
     signal = new AbortController().signal,
     maxTurns = 10,
+    observe,
   }: WorkerTextOptions<Context>,
 ): Promise<string> {
   signal.throwIfAborted();
+  if (observe !== undefined && typeof observe !== 'function')
+    throw new TypeError('observe must be a callback');
   if (typeof input !== 'string' || typeof instructions !== 'string')
     throw new TypeError('Portable text requires string input and instructions');
   const toolsByName = new Map<
@@ -204,7 +252,11 @@ export async function runWorkerText<Context = undefined>(
             body: effect.body,
           };
           entered = true;
-          const response: ModelResponse = await provider.complete(request);
+          const response: ModelResponse = await completeModel(
+            provider,
+            request,
+            observe,
+          );
           signal.throwIfAborted();
           effect = control.apply({
             type: 'model',
