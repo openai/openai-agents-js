@@ -27,6 +27,7 @@ export {
   ApplyPatchResult,
   Editor,
   EditorInvocationContext,
+  PatchFormat,
 } from './editor';
 export {
   AgentsError,

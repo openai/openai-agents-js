@@ -5784,7 +5784,8 @@ export class Session<OutputT = string, Context = unknown> {
       originMcp: this.mcpBindings,
       originProfileId: this.profileCurrent?.profile_id,
       operationDeclarationSource:
-        ((options?.tools !== undefined && options.tools.length) || this.options.agentGraph)
+        (options?.tools !== undefined && options.tools.length) ||
+        this.options.agentGraph
           ? this.profileCurrent
           : undefined,
       prepareRequest: options?.prepareRequest,
@@ -7318,7 +7319,8 @@ export class Session<OutputT = string, Context = unknown> {
     const continueRetained = error === undefined && retained;
     run.failure = error;
     if (
-      this.options.environmentOwner?.hasAnySandboxMemory &&
+      (this.options.agentGraph !== undefined ||
+        this.options.environmentOwner?.hasAnySandboxMemory) &&
       run.id !== null &&
       this.rootRun(run).inputGuardrailsPassed !== false &&
       (!this.restoredRoot ||
@@ -9555,9 +9557,17 @@ export class Session<OutputT = string, Context = unknown> {
     const callback = this.sourceModelCallbacks(message).onLifecycle;
     if (callback !== undefined) {
       check();
-      callback(Object.freeze({ kind: 'end', context: this.options.context,
-        agent, sessionId: this.id, turnId: request.turnId,
-        subagentId: request.subagentId, output: request.finalOutput }));
+      callback(
+        Object.freeze({
+          kind: 'end',
+          context: this.options.context,
+          agent,
+          sessionId: this.id,
+          turnId: request.turnId,
+          subagentId: request.subagentId,
+          output: request.finalOutput,
+        }),
+      );
       check();
     }
   }
@@ -9808,15 +9818,31 @@ export class Session<OutputT = string, Context = unknown> {
               if (callback !== undefined) {
                 const kind = z.enum(['start', 'handoff']).parse(msg.phase);
                 const agent = this.sourceApplicationAgent(msg);
-                if (!agent) throw new NativeError('Lifecycle callback has no application Agent');
-                const target = kind === 'handoff'
-                  ? this.profileRuntimes.get(z.string().parse(msg.target_profile_id))?.profile.agent
-                  : undefined;
+                if (!agent)
+                  throw new NativeError(
+                    'Lifecycle callback has no application Agent',
+                  );
+                const target =
+                  kind === 'handoff'
+                    ? this.profileRuntimes.get(
+                        z.string().parse(msg.target_profile_id),
+                      )?.profile.agent
+                    : undefined;
                 if (kind === 'handoff' && target === undefined)
-                  throw new NativeError('Lifecycle target is outside the captured graph');
-                callback(Object.freeze({ kind, context: this.options.context,
-                  agent, target, sessionId: this.id, turnId: z.string().parse(msg.turn_id),
-                  subagentId: child ? owner.childId : undefined }));
+                  throw new NativeError(
+                    'Lifecycle target is outside the captured graph',
+                  );
+                callback(
+                  Object.freeze({
+                    kind,
+                    context: this.options.context,
+                    agent,
+                    target,
+                    sessionId: this.id,
+                    turnId: z.string().parse(msg.turn_id),
+                    subagentId: child ? owner.childId : undefined,
+                  }),
+                );
               }
               check();
               reply({});
@@ -10392,7 +10418,8 @@ export class Session<OutputT = string, Context = unknown> {
                     (source
                       ? (agent?.outputGuardrails.length ?? 0)
                       : (this.options.agentOutputGuardrails?.length ?? 0)) >
-                  0 || this.sourceModelCallbacks(msg).onLifecycle !== undefined
+                    0 ||
+                  this.sourceModelCallbacks(msg).onLifecycle !== undefined
                 ) {
                   let value: unknown = text ?? '';
                   if (!child) {

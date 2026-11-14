@@ -204,3 +204,5 @@ export {
   hasExclusiveWorkspaceCreate,
   registerExclusiveWorkspaceCreate,
 } from './sandboxes/shared/exclusiveWorkspaceFiles';
+
+export { applyPatchFormat } from '../editor';

@@ -13,4 +13,6 @@ export interface AgentLifecycleEvent<Context = unknown> {
 }
 
 /** The native boundary waits for the synchronous body; listener promises remain unawaited. */
-export type AgentLifecycleCallback<Context = unknown> = (event: AgentLifecycleEvent<Context>) => void;
+export type AgentLifecycleCallback<Context = unknown> = (
+  event: AgentLifecycleEvent<Context>,
+) => void;

@@ -1,3 +1,5 @@
+import type { PatchFormat } from '@openai/agents-core';
+export type { PatchFormat } from '@openai/agents-core';
 import type {
   ExecCommandArgs,
   SandboxExecResult,
@@ -10,11 +12,17 @@ import type { Environment } from './environment';
 /** Application operations on the provider resource acquired for this Session.
  * These calls use provider permissions, independently of native executor policy.
  */
+export interface SandboxEditorOptions {
+  runAs?: string;
+  format?: PatchFormat;
+}
+
 export interface SandboxAccess {
   exec(args: ExecCommandArgs): Promise<SandboxExecResult>;
   execCommand(args: ExecCommandArgs): Promise<string>;
   writeStdin(args: WriteStdinArgs): Promise<string>;
   createEditor(runAs?: string): ApplyPatchEditor;
+  createEditor(options: SandboxEditorOptions): ApplyPatchEditor;
 }
 
 /** @internal Non-owning authority; the Environment lease retains resource cleanup. */
@@ -111,11 +119,71 @@ function sandboxAccess(
           );
         return sandbox.writeStdin(args);
       }),
-    createEditor: (runAs?: string): ApplyPatchEditor => {
+    createEditor: (
+      options?: string | SandboxEditorOptions,
+    ): ApplyPatchEditor => {
       check();
+      if (
+        options !== undefined &&
+        typeof options !== 'string' &&
+        (options === null ||
+          typeof options !== 'object' ||
+          Array.isArray(options))
+      )
+        throw new TypeError('Invalid sandbox editor options');
+      const runAs = typeof options === 'string' ? options : options?.runAs;
+      const requestedFormat =
+        typeof options === 'object' ? options?.format : undefined;
+      if (runAs !== undefined && typeof runAs !== 'string')
+        throw new TypeError('Sandbox editor runAs must be a string');
+      const apply = requestedFormat?.applyDiff;
+      if (requestedFormat !== undefined && typeof apply !== 'function')
+        throw new TypeError('Sandbox editor format requires applyDiff');
+      if (requestedFormat !== undefined && binding.environment.readOnly)
+        throw new TypeError(
+          'A read-only Environment cannot use a managed patch format',
+        );
       if (!sandbox.createEditor)
         throw new TypeError('Sandbox provider does not support editors');
-      const editor = binding.run(() => sandbox.createEditor!(runAs));
+      let editor = binding.run(() => sandbox.createEditor!(runAs));
+      if (requestedFormat !== undefined) {
+        const withFormat = editor.withPatchFormat;
+        if (typeof withFormat !== 'function')
+          throw new TypeError(
+            'Sandbox provider does not support managed patch formats',
+          );
+        editor = binding.run(() =>
+          withFormat.call(
+            editor,
+            Object.freeze({
+              applyDiff(
+                input: string,
+                diff: string,
+                mode: 'create' | 'default' = 'default',
+              ): string {
+                check();
+                if (Buffer.byteLength(input) > 10 * 1024 * 1024)
+                  throw new RangeError(
+                    'Managed editor input exceeds its text limit',
+                  );
+                const result = apply!.call(requestedFormat, input, diff, mode);
+                check();
+                if (typeof result !== 'string') {
+                  void Promise.resolve(result).catch(() => {});
+                  throw new TypeError(
+                    'PatchFormat.applyDiff must return a string',
+                  );
+                }
+                if (Buffer.byteLength(result) > 10 * 1024 * 1024)
+                  throw new RangeError(
+                    'Managed editor output exceeds its text limit',
+                  );
+                return result;
+              },
+            }),
+          ),
+        );
+      }
       return Object.freeze({
         createFile: (operation: ApplyPatchOperation) =>
           invoke(() => {

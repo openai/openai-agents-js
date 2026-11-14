@@ -45,6 +45,7 @@ async function observeProjection(edit?: Edit, rejected = false) {
       },
     };
     const agent = new Agent({
+      model: 'gpt-5.5',
       instructions: 'Answer.',
       provider,
       tools: [
@@ -88,7 +89,7 @@ async function observeProjection(edit?: Edit, rejected = false) {
     if (rejected)
       await expect(turn.wait()).rejects.toThrow(/Projected input storage/);
     else expect((await turn.wait()).finalOutput).toBe('new answer');
-    const modelInput = JSON.stringify(server.requests[2]?.input);
+    const modelInput = JSON.stringify(server.requests[2]?.input ?? null);
     const canonical = JSON.stringify(await Array.fromAsync(session.items()));
     const observed = {
       modelSecret: modelInput.includes('NEW_SECRET'),
@@ -246,6 +247,7 @@ nativeIt(
         },
       };
       await using session = await new Agent({
+        model: 'gpt-5.5',
         instructions: 'Answer.',
         provider,
         transformContext: async (context) => {

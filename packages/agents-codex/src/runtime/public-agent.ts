@@ -1133,7 +1133,7 @@ export class Agent<Context = undefined, Output = string> {
         returnItems: options.returnItems || observeFailure,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
-      onLifecycle: this.onLifecycle,
+        onLifecycle: this.onLifecycle,
         toolBatchCompletion: this.toolBatchCompletion,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
@@ -1232,9 +1232,15 @@ export class Agent<Context = undefined, Output = string> {
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
     );
-    const onLifecycle = (options as OwnedSessionOptions<Context>)[correctionOpening]
+    const onLifecycle = (options as OwnedSessionOptions<Context>)[
+      correctionOpening
+    ]
       ? undefined
-      : opening ? opening.onLifecycle : owned ? owned.onLifecycle : this.onLifecycle;
+      : opening
+        ? opening.onLifecycle
+        : owned
+          ? owned.onLifecycle
+          : this.onLifecycle;
     const declaredBeforeComplete = opening
       ? opening.beforeComplete
       : owned
@@ -1908,7 +1914,9 @@ export class Agent<Context = undefined, Output = string> {
             inputGuardrails.length + agentInputGuardrails.length > 0,
             settings,
           );
-          const row = captured.roster.find((entry) => entry.id === id)!;
+          const row = profileRoster(captured, owner.environment).find(
+            (entry) => entry.id === id,
+          )!;
           const runtime = captured.profiles.get(id)!;
           return {
             runtime,
@@ -2453,8 +2461,15 @@ export class Agent<Context = undefined, Output = string> {
               }
             : {}),
           _agent_lifecycle: completedGraph
-            ? [...completedGraph.profiles].filter(([, value]) => value.profile.declaration.onLifecycle !== undefined).map(([id]) => id)
-            : onLifecycle === undefined ? [] : [''],
+            ? [...completedGraph.profiles]
+                .filter(
+                  ([, value]) =>
+                    value.profile.declaration.onLifecycle !== undefined,
+                )
+                .map(([id]) => id)
+            : onLifecycle === undefined
+              ? []
+              : [''],
           _context_callbacks: {
             tool_not_found: toolErrorFormatter !== undefined,
             model_producer: provider.modelBackend !== undefined,
@@ -2479,7 +2494,11 @@ export class Agent<Context = undefined, Output = string> {
                 false),
             before_complete:
               onLifecycle !== undefined ||
-              (completedGraph && [...completedGraph.profiles.values()].some(value => value.profile.declaration.onLifecycle !== undefined)) ||
+              (completedGraph &&
+                [...completedGraph.profiles.values()].some(
+                  (value) =>
+                    value.profile.declaration.onLifecycle !== undefined,
+                )) ||
               beforeComplete !== undefined ||
               agentOutputGuardrails.length > 0 ||
               outputGuardrails.length > 0 ||

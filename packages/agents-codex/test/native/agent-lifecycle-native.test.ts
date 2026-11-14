@@ -7,8 +7,6 @@ afterEach(() => ModelServer.closeAll());
 it('runs synchronous start, accepted source handoff, destination start and end in owner order', async () => {
   const events: string[] = [];
   const context = { owner: 'application' };
-  let source: Agent<typeof context>;
-  let target: Agent<typeof context>;
   const lifecycle = (event: AgentLifecycleEvent<typeof context>) => {
     expect(event.context).toBe(context);
     events.push(`${event.kind}:${event.agent.name}`);
@@ -38,12 +36,12 @@ it('runs synchronous start, accepted source handoff, destination start and end i
     apiKey: 'synthetic-lifecycle',
     supportsWebsockets: false,
   });
-  target = new Agent({
+  const target = new Agent<typeof context>({
     name: 'B',
     instructions: 'Complete.',
     onLifecycle: lifecycle,
   });
-  source = new Agent({
+  const source = new Agent<typeof context>({
     name: 'A',
     instructions: 'Transfer.',
     model: 'gpt-5.5',
