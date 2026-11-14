@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import OpenAI from 'openai';
 import * as openAIEntrypoint from '../../node/openai-entrypoint.js';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -114,6 +115,8 @@ nativeIt.each([false, true])(
       instructions: 'ORIGINAL_APPLICATION',
     });
     let saved;
+    let serialized;
+    let expectedSha256;
     {
       await using session = await agent.session();
       await (await session.submit('OLD_USER_SENTINEL')).wait();
@@ -123,13 +126,18 @@ nativeIt.each([false, true])(
       expect(predicate).toHaveBeenCalledTimes(count);
       saved = await session.saveState();
       expect(text(saved)).toContain('OLD_USER_SENTINEL');
+      // Retain the digest at the trusted application save boundary.
+      serialized = text(saved);
+      expectedSha256 = createHash('sha256').update(serialized).digest('hex');
     }
     {
       const currentAgent = profiled
         ? agent
         : new Agent({ ...options, instructions: 'CURRENT_APPLICATION' });
       await using restored = await currentAgent.session({
-        state: parseSessionState(text(saved)),
+        state: profiled
+          ? parseSessionState(serialized, { expectedSha256 })
+          : parseSessionState(text(saved)),
       });
       await (await restored.submit('followup')).wait();
     }
