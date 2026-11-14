@@ -131,6 +131,7 @@ nativeIt.each([
     let requests = 0;
     const server = createServer(async (request, response) => {
       for await (const _chunk of request) {
+        // Read the request body before sending the fixture response.
       }
       requests++;
       response.setHeader('content-type', 'text/event-stream');

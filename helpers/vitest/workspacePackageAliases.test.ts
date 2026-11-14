@@ -13,16 +13,12 @@ const aliases = createWorkspacePackageAliases(workspacePackages);
 
 describe('workspace package aliases', () => {
   it('maps public code to sources and portable control assets to native products', () => {
-    const expectedAliases = workspacePackages
-      .flatMap((workspacePackage) =>
-        Object.keys(workspacePackage.exports).map((exportPath) => {
-          const subpath = exportPath === '.' ? '' : exportPath.slice(1);
-          return `${workspacePackage.name}${subpath}`;
-        }),
-      )
-      .filter(
-        (name) => name !== '@openai/agents-codex/internal/browser-primitives',
-      );
+    const expectedAliases = workspacePackages.flatMap((workspacePackage) =>
+      Object.keys(workspacePackage.exports).map((exportPath) => {
+        const subpath = exportPath === '.' ? '' : exportPath.slice(1);
+        return `${workspacePackage.name}${subpath}`;
+      }),
+    );
 
     expect(Object.keys(aliases)).toEqual(
       expect.arrayContaining(expectedAliases),
@@ -35,11 +31,10 @@ describe('workspace package aliases', () => {
       expect(relativePath).not.toMatch(/^\.\./u);
       if (
         sourcePath.endsWith('.wasm') ||
-        sourcePath.endsWith('codex-realtime-control.mjs') ||
-        sourcePath.endsWith('codex-turn-control.mjs')
+        sourcePath.endsWith('codex-realtime-control.mjs')
       ) {
         expect(relativePath.split(sep).join('/')).toMatch(
-          /^agents(?:-codex)?\/native\/codex-(?:realtime-control\.(?:wasm|mjs)|turn-control\.(?:wasm|mjs))$/u,
+          /^agents(?:-codex)?\/native\/codex-(?:realtime-control\.(?:wasm|mjs)|turn-control\.wasm)$/u,
         );
       } else {
         expect(pathSegments).toContain('src');
@@ -109,36 +104,6 @@ describe('workspace package aliases', () => {
         resolve(rootDir, `packages/${name}/native/codex-turn-control.wasm`),
       );
     }
-  });
-
-  it.each<{ label: string; target: WorkspacePackage['exports'][string] }>([
-    {
-      label: 'browser and React Native only',
-      target: {
-        browser: './dist/runtime/browser-primitives.mjs',
-        'react-native': './dist/runtime/browser-primitives.mjs',
-        default: null,
-      },
-    },
-    { label: 'blocked', target: null },
-    { label: 'types only', target: { types: './dist/index.d.ts' } },
-  ])('skips $label exports without widening Node access', ({ target }) => {
-    const isolated = createWorkspacePackageAliases([
-      {
-        name: '@openai/agents-codex',
-        root: resolve(rootDir, 'packages/agents-codex'),
-        exports: {
-          '.': { import: './dist/index.mjs' },
-          './unavailable': target,
-        },
-      },
-    ]);
-    expect(isolated).toEqual({
-      '@openai/agents-codex': resolve(
-        rootDir,
-        'packages/agents-codex/src/index.ts',
-      ),
-    });
   });
 
   it('fails fast when a published export has no source entrypoint', () => {

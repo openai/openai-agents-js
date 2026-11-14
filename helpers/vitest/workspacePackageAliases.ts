@@ -60,10 +60,12 @@ function sourcePathForExport(
   workspacePackage: WorkspacePackage,
   exportPath: string,
   target: PackageExportTarget,
-): string | undefined {
+): string {
   let distTarget = selectNodeImportTarget(target);
   if (distTarget === undefined) {
-    return undefined;
+    throw new Error(
+      `Package export ${workspacePackage.name}${exportPath.slice(1)} has no Node-compatible import target.`,
+    );
   }
   if (
     workspacePackage.name === '@openai/agents-codex' &&
@@ -92,12 +94,10 @@ function sourcePathForExport(
     ['@openai/agents', '@openai/agents-codex'].includes(
       workspacePackage.name,
     ) &&
-    ((exportPath === './voice/control.hermes' &&
-      distTarget === './native/codex-realtime-control.mjs') ||
-      (exportPath === './worker/control.hermes' &&
-        distTarget === './native/codex-turn-control.mjs'))
+    exportPath === './voice/control.hermes' &&
+    distTarget === './native/codex-realtime-control.mjs'
   ) {
-    return resolve(workspacePackage.root, distTarget);
+    return resolve(workspacePackage.root, 'native/codex-realtime-control.mjs');
   }
   if (!distTarget.startsWith('./dist/')) {
     throw new Error(
@@ -147,18 +147,13 @@ export function createWorkspacePackageAliases(
   workspacePackages: WorkspacePackage[],
 ): Record<string, string> {
   const aliases = workspacePackages.flatMap((workspacePackage) =>
-    Object.entries(workspacePackage.exports).flatMap(([exportPath, target]) => {
-      const sourcePath = sourcePathForExport(
-        workspacePackage,
-        exportPath,
-        target,
-      );
-      if (sourcePath === undefined) {
-        return [];
-      }
+    Object.entries(workspacePackage.exports).map(([exportPath, target]) => {
       const subpath = exportPath === '.' ? '' : exportPath.slice(1);
       const aliasName = `${workspacePackage.name}${subpath}`;
-      return [[aliasName, sourcePath] as const];
+      return [
+        aliasName,
+        sourcePathForExport(workspacePackage, exportPath, target),
+      ] as const;
     }),
   );
 

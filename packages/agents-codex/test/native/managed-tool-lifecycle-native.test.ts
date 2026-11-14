@@ -50,7 +50,6 @@ async function providerFor(server: ModelServer, borrowed = false) {
 it('orders run and source Agent callbacks around the admitted body with detached payloads', async () => {
   const events: string[] = [];
   const context = { owner: 'application' };
-  let source: Agent<typeof context>;
   const agentHook = (event: ToolLifecycleEvent<typeof context>) => {
     expect(event.context).toBe(context);
     expect(event.agent).toBe(source);
@@ -89,7 +88,7 @@ it('orders run and source Agent callbacks around the admitted body with detached
       return 'effect-result';
     },
   });
-  source = new Agent({
+  const source: Agent<typeof context> = new Agent({
     name: 'source',
     provider,
     model: 'gpt-5.5',
@@ -243,7 +242,6 @@ it('keeps the issuing Agent snapshot across body mutation and subsequent handoff
     [message('done')],
   ]);
   await using provider = await providerFor(server);
-  let source: Agent<typeof context>;
   let effects = 0;
   const lookup = tool({
     name: 'lookup',
@@ -268,7 +266,7 @@ it('keeps the issuing Agent snapshot across body mutation and subsequent handoff
       events.push('target:' + event.kind);
     },
   });
-  source = new Agent<typeof context>({
+  const source: Agent<typeof context> = new Agent<typeof context>({
     name: 'source',
     provider,
     model: 'gpt-5.5',

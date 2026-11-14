@@ -78,14 +78,13 @@ it('scopes hosted search to its destination, revokes it on return and keeps loca
     },
   ]);
   await using provider = await providerFor(server);
-  let source: Agent<undefined, unknown>;
   const target = new Agent({
     name: 'target',
     instructions: 'Search only in this target.',
     tools: [webSearch(searchOptions)],
     handoffs: [() => source],
   });
-  source = new Agent({
+  const source: Agent<undefined, unknown> = new Agent({
     name: 'source',
     instructions: 'Model-only search authority.',
     provider,

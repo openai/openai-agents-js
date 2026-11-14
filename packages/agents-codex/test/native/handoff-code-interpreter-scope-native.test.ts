@@ -49,7 +49,6 @@ it('keeps CodeInterpreter container and output settings with the exact profile a
     apiKey: 'synthetic-code-scope',
     supportsWebsockets: false,
   });
-  let source: Agent<undefined, unknown>;
   const target = new Agent({
     name: 'target',
     instructions: 'Target owns provider code.',
@@ -61,7 +60,7 @@ it('keeps CodeInterpreter container and output settings with the exact profile a
     ],
     handoffs: [() => source],
   });
-  source = new Agent({
+  const source: Agent<undefined, unknown> = new Agent({
     name: 'source',
     instructions: 'Source has no provider code.',
     provider,
@@ -81,7 +80,6 @@ it('keeps CodeInterpreter container and output settings with the exact profile a
       expectedSha256: createHash('sha256').update(serialized).digest('hex'),
     });
   }
-  let changedSource: Agent<undefined, unknown>;
   const changedTarget = new Agent({
     name: 'target',
     instructions: 'Target owns provider code.',
@@ -93,7 +91,7 @@ it('keeps CodeInterpreter container and output settings with the exact profile a
     ],
     handoffs: [() => changedSource],
   });
-  changedSource = new Agent({
+  const changedSource: Agent<undefined, unknown> = new Agent({
     name: 'source',
     instructions: 'Source has no provider code.',
     provider,

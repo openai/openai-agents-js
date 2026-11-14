@@ -46,14 +46,13 @@ it('offers exact destination file-search settings once and revokes them on retur
     },
   ]);
   await using provider = await providerFor(server);
-  let source: Agent<undefined, unknown>;
   const target = new Agent({
     name: 'target',
     instructions: 'Target owns vector search.',
     tools: [grant()],
     handoffs: [() => source],
   });
-  source = new Agent({
+  const source: Agent<undefined, unknown> = new Agent({
     name: 'source',
     instructions: 'No vector search.',
     provider,

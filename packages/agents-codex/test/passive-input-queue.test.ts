@@ -1,5 +1,4 @@
 import { expect, it } from 'vitest';
-import type { JsonObject } from '../src/runtime/binding';
 import {
   CODEX_REVISION,
   parseSessionState,
