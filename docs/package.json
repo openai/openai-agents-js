@@ -16,7 +16,7 @@
     "@astrojs/starlight-tailwind": "^5.0.0",
     "@openai/agents": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
-    "astro": "^7.3.5",
+    "astro": "^7.4.7",
     "cookie": "^2.0.1",
     "sharp": "^0.35.5",
     "starlight-llms-txt": "^0.12.0",
