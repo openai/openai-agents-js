@@ -60,12 +60,10 @@ function sourcePathForExport(
   workspacePackage: WorkspacePackage,
   exportPath: string,
   target: PackageExportTarget,
-): string {
+): string | undefined {
   let distTarget = selectNodeImportTarget(target);
   if (distTarget === undefined) {
-    throw new Error(
-      `Package export ${workspacePackage.name}${exportPath.slice(1)} has no Node-compatible import target.`,
-    );
+    return undefined;
   }
   if (
     workspacePackage.name === '@openai/agents-codex' &&
@@ -149,13 +147,18 @@ export function createWorkspacePackageAliases(
   workspacePackages: WorkspacePackage[],
 ): Record<string, string> {
   const aliases = workspacePackages.flatMap((workspacePackage) =>
-    Object.entries(workspacePackage.exports).map(([exportPath, target]) => {
+    Object.entries(workspacePackage.exports).flatMap(([exportPath, target]) => {
+      const sourcePath = sourcePathForExport(
+        workspacePackage,
+        exportPath,
+        target,
+      );
+      if (sourcePath === undefined) {
+        return [];
+      }
       const subpath = exportPath === '.' ? '' : exportPath.slice(1);
       const aliasName = `${workspacePackage.name}${subpath}`;
-      return [
-        aliasName,
-        sourcePathForExport(workspacePackage, exportPath, target),
-      ] as const;
+      return [[aliasName, sourcePath] as const];
     }),
   );
 
