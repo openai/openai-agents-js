@@ -2219,17 +2219,23 @@ pub(crate) async fn configure(
             .get(&receipt.profile_id)
             .context("Restored Agent is outside the captured graph")?;
         let accepted = validate_restored(&profiles.opening, &history.items)?;
-        let catalog = profiles.tools.startup_profile_catalog(
-            [
-                prepared.catalog.selecting_steps,
-                prepared.catalog.transform_context,
-                prepared.catalog.before_compact,
-                prepared.catalog.before_complete,
-                prepared.catalog.post_turn_compact,
-                prepared.catalog.tool_batch_completion,
-            ],
-            &prepared.catalog,
-        )?;
+        let catalog = if crate::config::sdk_resume_thread_id(&state.engine.runtime_json)?
+            == Some(state.id)
+        {
+            prepared.catalog.clone()
+        } else {
+            profiles.tools.startup_profile_catalog(
+                [
+                    prepared.catalog.selecting_steps,
+                    prepared.catalog.transform_context,
+                    prepared.catalog.before_compact,
+                    prepared.catalog.before_complete,
+                    prepared.catalog.post_turn_compact,
+                    prepared.catalog.tool_batch_completion,
+                ],
+                &prepared.catalog,
+            )?
+        };
         let generation = catalog.generation.id;
         let mut data = ExtensionDataInit::new();
         data.insert(codex_extension_api::AgentProfileOutputStrict(

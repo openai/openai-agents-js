@@ -1,0 +1,151 @@
+diff --git a/codex-rs/core/src/unified_exec/process.rs b/codex-rs/core/src/unified_exec/process.rs
+--- a/codex-rs/core/src/unified_exec/process.rs
++++ b/codex-rs/core/src/unified_exec/process.rs
+@@ -133,6 +133,8 @@
+         }
+     }
+ }
++
++const REMOTE_TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
+ 
+ type RemoteTermination = Shared<BoxFuture<'static, Result<(), String>>>;
+ 
+@@ -330,7 +332,15 @@
+                     _request: Some(request),
+                 };
+                 let task = tokio::spawn(async move {
+-                    let result = process.terminate().await.map_err(|error| error.to_string());
++                    let result =
++                        match tokio::time::timeout(REMOTE_TERMINATION_TIMEOUT, process.terminate())
++                            .await
++                        {
++                            Ok(result) => result.map_err(|error| error.to_string()),
++                            Err(_) => {
++                                Err("remote command termination was not acknowledged".to_owned())
++                            }
++                        };
+                     acknowledgment.acknowledged = result.is_ok();
+                     drop(acknowledgment);
+                     result
+@@ -483,6 +493,15 @@
+                 }
+             }
+         }
++    }
++
++    #[cfg(test)]
++    pub(super) fn enable_remote_turn_cleanup_for_test(
++        &mut self,
++        policy: crate::agent::control::RemoteProcessTerminationPolicy,
++    ) {
++        self.confirm_remote_termination(policy);
++        self.owns_remote_turn_cleanup = true;
+     }
+ 
+     pub(super) fn owns_remote_termination(&self) -> bool {
+@@ -529,7 +548,7 @@
+             };
+             let process = Arc::clone(process);
+             tokio::spawn(async move {
+-                let confirmed = tokio::time::timeout(Duration::from_secs(5), async {
++                let confirmed = tokio::time::timeout(REMOTE_TERMINATION_TIMEOUT, async {
+                     if let Some(ack) = ack
+                         && ack.await.is_err()
+                     {
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -2562,16 +2562,13 @@
+                         }),
+                 });
+         let mut remote_acknowledged = true;
+-        let mut unreturned_remote = Vec::new();
++        let mut owned_remote = Vec::new();
+         for entry in entries {
+             unregister_network_approval_for_entry(&entry).await;
+             if entry.process.uses_managed_local_sandbox() {
+                 starting.push((None, entry.process));
+-            } else if entry.process.owns_remote_termination()
+-                && (!entry.initial_exec_command_returned.load(Ordering::Acquire)
+-                    || entry.process.has_remote_exit_join())
+-            {
+-                unreturned_remote.push((None, entry.process));
++            } else if entry.process.owns_remote_termination() {
++                owned_remote.push((None, entry.process));
+             } else if let Some(failed) = &remote_failure {
+                 // Match terminate_process: an already exited remote process needs no new attempt.
+                 if (!entry.process.has_exited() || entry.process.needs_remote_cleanup())
+@@ -2588,7 +2585,7 @@
+         }
+         let (local, registered, launching) = tokio::join!(
+             self.join_owned_processes(starting),
+-            self.join_owned_processes(unreturned_remote),
++            self.join_owned_processes(owned_remote),
+             self.join_starting_remote_processes(starting_remote, true),
+         );
+         let remote = registered && launching;
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -1231,6 +1231,61 @@
+             .remote_process_termination_failed(),
+         "first uncertain close remains failed"
+     );
++}
++
++#[tokio::test]
++async fn checked_shutdown_rejects_ack_without_exit_for_returned_remote_process() {
++    tokio::time::pause();
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    let manager = &session.services.unified_exec_manager;
++    let policy = manager.remote_confirmation_policy(&session.services.local_agent_runtime);
++    let mut process = crate::unified_exec::process_tests::remote_process(
++        codex_exec_server::WriteStatus::Accepted,
++        /*terminate_error*/ None,
++        codex_sandboxing::SandboxType::None,
++    )
++    .await;
++    process.enable_remote_turn_cleanup_for_test(policy.clone());
++    // The fixture records the handle as delivered and never reports an exit.
++    insert_remote_shutdown_process_instance(&session, &turn, Arc::new(process)).await;
++    assert_eq!(
++        manager.terminate_all_processes_checked().await,
++        (true, false)
++    );
++    assert!(policy.failed());
++}
++
++#[tokio::test]
++async fn checked_shutdown_returns_failure_when_remote_never_acknowledges() {
++    tokio::time::pause();
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    let manager = &session.services.unified_exec_manager;
++    let policy = manager.remote_confirmation_policy(&session.services.local_agent_runtime);
++    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let mut process = crate::unified_exec::process_tests::remote_process_with_termination_controls(
++        codex_exec_server::WriteStatus::Accepted,
++        /*terminate_error*/ None,
++        codex_sandboxing::SandboxType::None,
++        Arc::clone(&calls),
++        /*terminate_entered*/ None,
++        /*terminate_release*/ Some(Arc::new(Notify::new())),
++    )
++    .await;
++    process.enable_remote_turn_cleanup_for_test(policy.clone());
++    insert_remote_shutdown_process_instance(&session, &turn, Arc::new(process)).await;
++    let result = tokio::time::timeout(
++        Duration::from_secs(6),
++        manager.terminate_all_processes_checked(),
++    )
++    .await
++    .expect("checked close must finish even if the peer holds the stop reply");
++    assert_eq!(result, (true, false));
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    assert!(policy.failed());
+ }
+ 
+ #[test]
