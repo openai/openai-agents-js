@@ -1371,7 +1371,11 @@
     {
       "path": "sdk-portable-text-session.patch",
       "sha256": "3f44e8aa976e2a9aa99402ad87f65b7c0ba4b47fa8e26cd7db1bf6147d4109a6"
+    },
+    {
+      "path": "sdk-portable-text-handoff.patch",
+      "sha256": "94b04226c8becb08b9830c64dbe3dc7b2c6b39ce0e0a1636fc47872aae93a108"
     }
   ],
-  "result_tree": "16f9a37c2f53123d710f0164c280216a1f8593ca"
+  "result_tree": "8962e923527414fff804f9b423a8b1004da2c041"
 }

@@ -412,3 +412,99 @@ portableTest(
     expect(tool.execute.mock.calls[0][0]).toEqual({ value: 'local' });
   },
 );
+
+portableTest(
+  'transfers to the captured Worker profile and restores it on the next turn',
+  async () => {
+    const tool = lookup();
+    const requests: JsonObject[] = [];
+    const transfer = {
+      type: 'function_call',
+      name: 'transfer_to_destination',
+      call_id: 'transfer',
+      arguments: '{}',
+    };
+    const assistant = {
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'handoff accepted' }],
+    };
+    let stored: string | null = null;
+    const session = {
+      id: 'handoff-history',
+      store: {
+        acquire: async () => 'fence',
+        read: async () => stored,
+        commit: async (
+          _id: string,
+          _fence: string,
+          _writeId: string,
+          _revision: number,
+          next: string,
+        ) => {
+          stored = next;
+        },
+        release: async () => {},
+      },
+    };
+    const root: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return { output: [transfer] };
+      },
+    };
+    const destination: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return { output: requests.length === 2 ? [call] : [assistant] };
+      },
+    };
+    const agents = {
+      root: 'root',
+      profiles: {
+        root: {
+          model: 'root',
+          instructions: 'Transfer to destination.',
+          handoffs: { transfer_to_destination: 'destination' },
+        },
+        destination: {
+          model: 'destination',
+          instructions: 'Use lookup.',
+          provider: destination,
+          tools: [tool.declaration],
+        },
+      },
+    };
+    const options = {
+      control,
+      model: 'root',
+      instructions: '',
+      provider: root,
+      session,
+      agents,
+    };
+    await expect(runWorkerText('Transfer.', options)).resolves.toBe(
+      'handoff accepted',
+    );
+    await expect(runWorkerText('Continue.', options)).resolves.toBe(
+      'handoff accepted',
+    );
+    expect(requests.map((body) => body.model)).toEqual([
+      'root',
+      'destination',
+      'destination',
+      'destination',
+    ]);
+    expect(requests[0].tools).toEqual([
+      expect.objectContaining({ name: 'transfer_to_destination' }),
+    ]);
+    expect(requests[1].tools).toEqual([
+      expect.objectContaining({ name: 'lookup' }),
+    ]);
+    expect(JSON.stringify(requests[1].input)).not.toContain(
+      'Transfer to destination.',
+    );
+    expect(JSON.stringify(requests[3].input)).toContain('observed:local');
+    expect(tool.execute).toHaveBeenCalledTimes(1);
+  },
+);

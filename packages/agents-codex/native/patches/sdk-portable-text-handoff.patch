@@ -1,0 +1,305 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index a41ecc4c9e6f4ba9d5308921344175887aaf09d7..71a0480e8cc9fb7a433045bd9d23f91d282c6da1 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -1,7 +1,7 @@
+ use super::ResponseContinuation;
+ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+-use std::collections::HashSet;
++use std::collections::{BTreeMap, HashSet};
+
+ pub(crate) const MAX_FRAME: usize = 8 * 1024 * 1024;
+ const MAX_CALLS: usize = 256;
+@@ -17,6 +17,7 @@ enum Command {
+         tools: Vec<Declaration>,
+         max_turns: u32,
+         snapshot: Option<Snapshot>,
++        profiles: Option<Profiles>,
+     },
+     Model {
+         request_id: u32,
+@@ -36,6 +37,24 @@ struct Snapshot {
+     version: u32,
+     revision: u32,
+     history: Vec<Value>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    active_profile: Option<String>,
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Profiles {
++    root: String,
++    declarations: BTreeMap<String, Profile>,
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct Profile {
++    model: String,
++    instructions: String,
++    tools: Vec<Declaration>,
++    handoffs: BTreeMap<String, String>,
+ }
+
+ #[derive(Deserialize, Serialize)]
+@@ -57,9 +76,20 @@ struct Call {
+ #[derive(Serialize)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+ enum Effect {
+-    Model { request_id: u32, body: Value },
+-    Tools { request_id: u32, calls: Vec<Call> },
+-    Done { text: String, snapshot: Snapshot },
++    Model {
++        request_id: u32,
++        body: Value,
++        profile: Option<String>,
++    },
++    Tools {
++        request_id: u32,
++        calls: Vec<Call>,
++        profile: Option<String>,
++    },
++    Done {
++        text: String,
++        snapshot: Snapshot,
++    },
+ }
+
+ enum Phase {
+@@ -77,6 +107,8 @@ pub(crate) struct PortableTurn {
+     instructions: Option<Value>,
+     model: String,
+     tools: Vec<Declaration>,
++    profiles: Option<Profiles>,
++    profile: Option<String>,
+     history: Vec<Value>,
+     seen_calls: HashSet<String>,
+ }
+@@ -91,6 +123,8 @@ impl Default for PortableTurn {
+             instructions: None,
+             model: String::new(),
+             tools: Vec::new(),
++            profiles: None,
++            profile: None,
+             history: Vec::new(),
+             seen_calls: HashSet::new(),
+         }
+@@ -126,21 +160,35 @@ impl PortableTurn {
+                 tools,
+                 max_turns,
+                 snapshot,
++                profiles,
+             } if matches!(self.phase, Phase::New) => {
+-                if model.trim().is_empty()
+-                    || !(1..=MAX_ROUNDS).contains(&max_turns)
+-                    || tools.len() > MAX_CALLS
+-                {
++                if model.trim().is_empty() || !(1..=MAX_ROUNDS).contains(&max_turns) {
+                     return Err("Invalid portable turn configuration");
+                 }
+-                let mut names = HashSet::new();
+-                if tools.iter().any(|tool| {
+-                    tool.name.is_empty()
+-                        || !tool.parameters.is_object()
+-                        || !names.insert(&tool.name)
+-                }) {
+-                    return Err("Invalid or duplicate portable function declaration");
++                Self::validate_tools(&tools)?;
++                if let Some(graph) = &profiles {
++                    if !graph.declarations.contains_key(&graph.root)
++                        || graph.declarations.len() > MAX_CALLS
++                    {
++                        return Err("Invalid portable Agent graph");
++                    }
++                    for (id, profile) in &graph.declarations {
++                        Self::validate_tools(&profile.tools)?;
++                        if id.trim().is_empty()
++                            || profile.model.trim().is_empty()
++                            || profile.tools.len() + profile.handoffs.len() > MAX_CALLS
++                            || profile.handoffs.iter().any(|(name, target)| {
++                                name.trim().is_empty()
++                                    || !graph.declarations.contains_key(target)
++                                    || profile.tools.iter().any(|tool| &tool.name == name)
++                            })
++                        {
++                            return Err("Invalid portable Agent profile");
++                        }
++                    }
++                    self.profile = Some(graph.root.clone());
+                 }
++                self.profiles = profiles;
+                 self.model = model;
+                 self.tools = tools;
+                 self.max_turns = max_turns;
+@@ -193,6 +241,25 @@ impl PortableTurn {
+         }
+     }
+
++    fn validate_tools(tools: &[Declaration]) -> Result<(), &'static str> {
++        let mut names = HashSet::new();
++        if tools.len() > MAX_CALLS
++            || tools.iter().any(|tool| {
++                tool.name.is_empty() || !tool.parameters.is_object() || !names.insert(&tool.name)
++            })
++        {
++            return Err("Invalid or duplicate portable function declaration");
++        }
++        Ok(())
++    }
++
++    fn current_profile(&self) -> Option<&Profile> {
++        self.profiles
++            .as_ref()?
++            .declarations
++            .get(self.profile.as_ref()?)
++    }
++
+     fn restore(&mut self, snapshot: Snapshot) -> Result<(), &'static str> {
+         if snapshot.version != 1 || snapshot.revision == 0 {
+             return Err("Unsupported portable session snapshot");
+@@ -239,6 +306,16 @@ impl PortableTurn {
+         if !pending.is_empty() {
+             return Err("Portable session has unresolved calls");
+         }
++        if let Some(profile) = snapshot.active_profile {
++            if !self
++                .profiles
++                .as_ref()
++                .is_some_and(|graph| graph.declarations.contains_key(&profile))
++            {
++                return Err("Portable session requires its current Agent profile");
++            }
++            self.profile = Some(profile);
++        }
+         self.revision = snapshot.revision;
+         self.history = snapshot.history;
+         Ok(())
+@@ -250,8 +327,9 @@ impl PortableTurn {
+         }
+         self.request_id += 1;
+         self.phase = Phase::Model;
+-        let tools: Vec<_> = self
+-            .tools
++        let profile = self.current_profile();
++        let active_tools = profile.map_or(&self.tools, |active| &active.tools);
++        let mut tools: Vec<_> = active_tools
+             .iter()
+             .map(|tool| {
+                 json!({
+@@ -260,11 +338,27 @@ impl PortableTurn {
+                 })
+             })
+             .collect();
++        let active_instructions = profile.and_then(|active| {
++            (!active.instructions.is_empty()).then(|| json!({"type":"message","role":"developer","content":[{"type":"input_text","text":active.instructions}]}))
++        });
++        if let Some(profile) = profile {
++            tools.extend(profile.handoffs.keys().map(|name| {
++                json!({"type":"function","name":name,"description":"Transfer to another Agent.",
++                    "parameters":{"type":"object","properties":{},"additionalProperties":false},
++                    "strict":true})
++            }));
++        }
++        let instructions = if profile.is_some() {
++            active_instructions.as_ref()
++        } else {
++            self.instructions.as_ref()
++        };
+         Ok(Effect::Model {
+             request_id: self.request_id,
++            profile: self.profile.clone(),
+             body: json!({
+-                "model": self.model,
+-                "input": self.instructions.iter().chain(&self.history).collect::<Vec<_>>(),
++                "model": profile.map_or(self.model.as_str(), |active| active.model.as_str()),
++                "input": instructions.into_iter().chain(&self.history).collect::<Vec<_>>(),
+                 "tools":tools, "parallel_tool_calls":true,
+                 "tool_choice":"auto", "store":false,
+             }),
+@@ -273,6 +367,7 @@ impl PortableTurn {
+
+     fn admit_response(&mut self, output: Vec<Value>) -> Result<Effect, &'static str> {
+         let mut calls = Vec::new();
++        let mut transfer = None;
+         let mut text = String::new();
+         for item in &output {
+             match item["type"].as_str() {
+@@ -302,12 +397,17 @@ impl PortableTurn {
+                     let arguments = item["arguments"]
+                         .as_str()
+                         .ok_or("Missing function arguments")?;
++                    let profile = self.current_profile();
++                    let target = profile
++                        .and_then(|active| active.handoffs.get(name))
++                        .cloned();
++                    let active_tools = profile.map_or(&self.tools, |active| &active.tools);
+                     if calls.len() >= MAX_CALLS
+                         || !(item["namespace"].is_null() || item["namespace"] == "functions")
+                         || !(item["caller"].is_null() || item["caller"] == json!({"type":"direct"}))
+                         || !item["encrypted_function_args"].is_null()
+                         || !(item["async"].is_null() || item["async"] == false)
+-                        || !self.tools.iter().any(|tool| tool.name == name)
++                        || (target.is_none() && !active_tools.iter().any(|tool| tool.name == name))
+                         || !self.seen_calls.insert(id.to_owned())
+                         || item
+                             .get("status")
+@@ -317,6 +417,15 @@ impl PortableTurn {
+                             "Unadvertised, duplicate or unsupported portable function call",
+                         );
+                     }
++                    if let Some(target) = target {
++                        if transfer.is_some()
++                            || serde_json::from_str::<Value>(arguments).ok() != Some(json!({}))
++                        {
++                            return Err("Invalid or competing portable Agent handoff");
++                        }
++                        transfer = Some((id.to_owned(), target));
++                        continue;
++                    }
+                     calls.push(Call {
+                         call_id: id.to_owned(),
+                         name: name.to_owned(),
+@@ -327,7 +436,7 @@ impl PortableTurn {
+             }
+         }
+         let mut continuation = ResponseContinuation::default();
+-        continuation.require_follow_up(!calls.is_empty());
++        continuation.require_follow_up(!calls.is_empty() || transfer.is_some());
+         if !continuation.complete(None) {
+             self.phase = Phase::Finished;
+             self.history.extend(output);
+@@ -341,12 +450,24 @@ impl PortableTurn {
+                     version: 1,
+                     revision,
+                     history: std::mem::take(&mut self.history),
++                    active_profile: self.profile.clone(),
+                 },
+             });
+         }
+         if self.request_id >= self.max_turns {
+             return Err("Portable turn reached its model request limit");
+         }
++        if let Some((call_id, target)) = transfer {
++            if !calls.is_empty() {
++                return Err("Portable handoffs require a dedicated response");
++            }
++            self.history.extend(output);
++            self.history.push(
++                json!({"type":"function_call_output","call_id":call_id,"output":"Transferred."}),
++            );
++            self.profile = Some(target);
++            return self.next_request();
++        }
+         self.history.extend(output);
+         self.phase = Phase::Tools(
+             calls
+@@ -357,6 +478,7 @@ impl PortableTurn {
+         Ok(Effect::Tools {
+             request_id: self.request_id,
+             calls,
++            profile: self.profile.clone(),
+         })
+     }
+ }

@@ -33,9 +33,15 @@ interface TurnExports extends WebAssembly.Exports {
 }
 
 type Effect =
-  | { type: 'model'; request_id: number; body: JsonObject }
+  | {
+      type: 'model';
+      request_id: number;
+      body: JsonObject;
+      profile: string | null;
+    }
   | {
       type: 'tools';
+      profile: string | null;
       request_id: number;
       calls: { call_id: string; name: string; arguments: string }[];
     }
@@ -82,6 +88,15 @@ class TurnControl {
   }
 }
 
+export interface WorkerAgentProfile<Context> {
+  model: string;
+  instructions: string;
+  provider?: NativeModel;
+  tools?: readonly StandaloneFunctionTool<Context, unknown>[];
+  /** Current function names and their captured destination profile IDs. */
+  handoffs?: Readonly<Record<string, string>>;
+}
+
 export interface WorkerTextOptions<Context> {
   /** Precompiled module from `@openai/agents-codex/worker/control.wasm`. */
   control: WebAssembly.Module;
@@ -95,6 +110,11 @@ export interface WorkerTextOptions<Context> {
   maxTurns?: number;
   /** The store must grant an exclusive writer lease and atomically commit the revision. */
   session?: { id: string; store: SessionStore };
+  /** The current Agent declarations own all handoff and tool authority. */
+  agents?: {
+    root: string;
+    profiles: Readonly<Record<string, WorkerAgentProfile<Context>>>;
+  };
   /** Receive normalized model events in order while the provider stream is open. */
   observe?: (event: Readonly<JsonObject>) => void | Promise<void>;
 }
@@ -237,27 +257,9 @@ async function runTools<Context>(
   }
 }
 
-/** Run a text turn and its local functions inside a Worker isolate. */
-export async function runWorkerText<Context = undefined>(
-  input: string,
-  {
-    control: module,
-    provider,
-    model,
-    instructions,
-    tools = [],
-    context,
-    signal = new AbortController().signal,
-    maxTurns = 10,
-    observe,
-    session,
-  }: WorkerTextOptions<Context>,
-): Promise<string> {
-  signal.throwIfAborted();
-  if (observe !== undefined && typeof observe !== 'function')
-    throw new TypeError('observe must be a callback');
-  if (typeof input !== 'string' || typeof instructions !== 'string')
-    throw new TypeError('Portable text requires string input and instructions');
+function captureTools<Context>(
+  tools: readonly StandaloneFunctionTool<Context, unknown>[],
+) {
   const toolsByName = new Map<
     string,
     StandaloneFunctionTool<Context, unknown>
@@ -276,6 +278,63 @@ export async function runWorkerText<Context = undefined>(
       );
     toolsByName.set(tool.name, tool);
   }
+  return toolsByName;
+}
+
+function wireTools<Context>(
+  tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
+) {
+  return [...tools.values()].map(
+    ({ name, description, parameters, strict }) => ({
+      name,
+      description,
+      parameters,
+      strict: strict ?? false,
+    }),
+  );
+}
+
+/** Run a text turn and its local functions inside a Worker isolate. */
+export async function runWorkerText<Context = undefined>(
+  input: string,
+  {
+    control: module,
+    provider,
+    model,
+    instructions,
+    tools = [],
+    context,
+    signal = new AbortController().signal,
+    maxTurns = 10,
+    observe,
+    session,
+    agents,
+  }: WorkerTextOptions<Context>,
+): Promise<string> {
+  signal.throwIfAborted();
+  if (observe !== undefined && typeof observe !== 'function')
+    throw new TypeError('observe must be a callback');
+  if (typeof input !== 'string' || typeof instructions !== 'string')
+    throw new TypeError('Portable text requires string input and instructions');
+  const toolsByName = captureTools(tools);
+  const profiles = new Map(
+    Object.entries(agents?.profiles ?? {}).map(([id, profile]) => [
+      id,
+      {
+        provider: profile.provider ?? provider,
+        model: profile.model,
+        instructions: profile.instructions,
+        tools: captureTools(profile.tools ?? []),
+        handoffs: Object.fromEntries(Object.entries(profile.handoffs ?? {})),
+      },
+    ]),
+  );
+  const currentProfile = (id: string | null) => {
+    if (id === null) return undefined;
+    const profile = profiles.get(id);
+    if (!profile) throw new Error('Native text issued an unavailable profile');
+    return profile;
+  };
   if (session && (typeof session.id !== 'string' || !session.id))
     throw new TypeError('A Worker session requires a nonempty string ID');
   const control = new TurnControl(module);
@@ -283,7 +342,7 @@ export async function runWorkerText<Context = undefined>(
     sessionId: session?.id ?? crypto.randomUUID(),
     turnId: crypto.randomUUID(),
   };
-  let entered = false;
+  const usedProviders = new Set<NativeModel>();
   const execute = async (
     snapshot: JsonValue,
   ): Promise<Extract<Effect, { type: 'done' }>> => {
@@ -292,14 +351,23 @@ export async function runWorkerText<Context = undefined>(
       model,
       instructions,
       input,
-      tools: [...toolsByName.values()].map(
-        ({ name, description, parameters, strict }) => ({
-          name,
-          description,
-          parameters,
-          strict: strict ?? false,
-        }),
-      ),
+      tools: wireTools(toolsByName),
+      profiles: agents
+        ? {
+            root: agents.root,
+            declarations: Object.fromEntries(
+              [...profiles].map(([id, profile]) => [
+                id,
+                {
+                  model: profile.model,
+                  instructions: profile.instructions,
+                  tools: wireTools(profile.tools),
+                  handoffs: profile.handoffs,
+                },
+              ]),
+            ),
+          }
+        : null,
       max_turns: maxTurns,
       snapshot,
     });
@@ -316,9 +384,11 @@ export async function runWorkerText<Context = undefined>(
             signal,
             body: effect.body,
           };
-          entered = true;
+          const modelProvider =
+            currentProfile(effect.profile)?.provider ?? provider;
+          usedProviders.add(modelProvider);
           const response: ModelResponse = await completeModel(
-            provider,
+            modelProvider,
             request,
             observe,
           );
@@ -332,7 +402,12 @@ export async function runWorkerText<Context = undefined>(
         }
         case 'tools': {
           const { request_id, calls } = effect;
-          const outputs = await runTools(effect, toolsByName, context, signal);
+          const outputs = await runTools(
+            effect,
+            currentProfile(effect.profile)?.tools ?? toolsByName,
+            context,
+            signal,
+          );
           signal.throwIfAborted();
           effect = null;
           for (const [index, output] of outputs.entries()) {
@@ -350,11 +425,19 @@ export async function runWorkerText<Context = undefined>(
     throw new Error('Portable text control ended without a result');
   };
   const close = async () => {
+    const failures: unknown[] = [];
     try {
       control.apply({ type: 'cancel' });
-    } finally {
-      if (entered) await provider.cleanupOnRunEnd?.(owner);
+    } catch (error) {
+      failures.push(error);
     }
+    for (const outcome of await Promise.allSettled(
+      [...usedProviders].map(async (used) => used.cleanupOnRunEnd?.(owner)),
+    )) {
+      if (outcome.status === 'rejected') failures.push(outcome.reason);
+    }
+    if (failures.length)
+      throw new AggregateError(failures, 'Worker turn cleanup failed');
   };
   const run = async (snapshot: JsonValue) => {
     let result;
