@@ -20,6 +20,7 @@ beforeAll(async () => telemetry.configure());
 
 it.each([
   'before-start-reply',
+  'rejected-start-reply',
   'missing-start-reply',
   'missing-scoped-start-reply',
   'live-result-before-delivery',
@@ -28,10 +29,12 @@ it.each([
 ] as const)(
   'preserves remote terminal ownership at %s',
   async (phase) => {
+    const rejectedStart = phase === 'rejected-start-reply';
     const closeWithoutDrain = phase === 'close-without-stream-close';
     const scoped = phase === 'missing-scoped-start-reply';
     const missingStart = phase === 'missing-start-reply' || scoped;
-    const holdStart = phase === 'before-start-reply' || missingStart;
+    const holdStart =
+      phase === 'before-start-reply' || missingStart || rejectedStart;
     const transportClosed = Promise.withResolvers<void>();
     const startReply = Promise.withResolvers<void>();
     const stopReply = Promise.withResolvers<void>();
@@ -69,8 +72,24 @@ it.each([
         });
         const requests = new Map<number | string, string>();
         const lastOutput = new Map<string, number>();
-        downstream.on('message', (data) => {
+        downstream.on('message', async (data) => {
           const frame = JSON.parse(data.toString());
+          if (rejectedStart && frame.method === 'process/start') {
+            startReply.resolve();
+            await releaseStart.promise;
+            if (downstream.readyState === WebSocket.OPEN) {
+              downstream.send(
+                JSON.stringify({
+                  id: frame.id,
+                  error: {
+                    code: -32602,
+                    message: 'Synthetic process start rejection',
+                  },
+                }),
+              );
+            }
+            return;
+          }
           if (frame.id !== undefined) requests.set(frame.id, frame.method);
           if (upstream.readyState === WebSocket.OPEN)
             upstream.send(data.toString());
@@ -193,7 +212,7 @@ it.each([
               return [message('retained terminal is usable')];
             },
           ]
-        : closeWithoutDrain || missingStart
+        : closeWithoutDrain || missingStart || rejectedStart
           ? []
           : [[message('successor completed')]]),
     ]);
@@ -274,11 +293,22 @@ it.each([
         ]),
         'phase barrier',
       );
-      assert.equal(executor.syntheticStarts.length, 1);
+      assert.equal(executor.syntheticStarts.length, rejectedStart ? 0 : 1);
       assert.equal(
         model.requests.length,
         phase === 'delivered' || scoped ? 2 : 1,
       );
+      if (rejectedStart) {
+        const closing = session.close();
+        void closing.catch(() => {});
+        await stillPending(closing, 'process start rejection held');
+        releaseStart.resolve();
+        await bounded(closing, 'close after explicit start rejection', 18_000);
+        assert.equal(terminations().length, 0);
+        assert.equal(executor.syntheticStarts.length, 0);
+        model.assertExhausted();
+        return;
+      }
       if (missingStart) {
         await assert.rejects(
           bounded(session.close(), 'close with no start reply', 18_000),
