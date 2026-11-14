@@ -885,6 +885,7 @@ export function createNamespacedFunctionTool<Context>(options: {
     context: ToolCallContext<Context>,
     admit: () => void,
     recover: (error: unknown) => Promise<ToolOutput>,
+    enterBody: () => void,
   ) => Promise<ToolOutput>;
 }): FunctionTool<Context> {
   const { namespace, name, description, parameters, execute } = options;
@@ -901,6 +902,11 @@ export function createNamespacedFunctionTool<Context>(options: {
       context: ToolCallContext<Context>,
       onTimeout: (error: Error) => void,
       admit: () => void,
+      _effectiveArgs?: JsonValue,
+      _approved?: ApprovedArguments,
+      _argumentError?: string,
+      _beforeExecute?: () => Promise<boolean>,
+      onBodyEntry?: () => void,
     ) {
       admit();
       if (
@@ -936,6 +942,13 @@ export function createNamespacedFunctionTool<Context>(options: {
                 this.errorFunction,
               );
               return new ToolOutput([{ type: 'inputText', text }], false);
+            },
+            () => {
+              signal.throwIfAborted();
+              admit();
+              onBodyEntry?.();
+              signal.throwIfAborted();
+              admit();
             },
           );
         },

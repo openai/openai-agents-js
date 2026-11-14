@@ -350,7 +350,7 @@ export async function selectMcpTools<Context = unknown>(
         description: declaration.description ?? '',
         parameters,
         ...(parseArguments ? { strict: true, parseArguments } : {}),
-        async execute(args, callContext, admit, recover) {
+        async execute(args, callContext, admit, recover, enterBody) {
           const event: MCPToolStartObservation = {
             serverName,
             toolName: rawName,
@@ -366,7 +366,7 @@ export async function selectMcpTools<Context = unknown>(
               throw new Error('Selected MCP call was not approved');
           }
           await observers.onToolStart?.(detachedMcpObservation(event));
-          admit();
+          enterBody();
           let raw;
           try {
             raw = fullCall
