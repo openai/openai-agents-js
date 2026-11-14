@@ -96,7 +96,7 @@ it.runIf(
             {
               cmd: 'set -e; test "$(pwd)" = /data-write; cat /tools/marker.txt; printf native-retained > native-output.txt; if (printf unsafe > /tools/native-denied.txt) 2>/dev/null; then exit 33; fi; printf native-mapped-ro-denied',
               workdir: '/data-write',
-              shell: '/bin/sh',
+              shell: '/bin/bash',
               login: false,
               yield_time_ms: 1000,
               max_output_tokens: 2048,
@@ -111,7 +111,7 @@ it.runIf(
             {
               cmd: 'set -e; test "$(pwd)" = /data-write; test "$(cat /tools/marker.txt)" = "current restored input"; printf restored-retained > native-output.txt; if (printf unsafe > /tools/native-denied.txt) 2>/dev/null; then exit 34; fi; printf native-restored-ro-denied',
               workdir: '/data-write',
-              shell: '/bin/sh',
+              shell: '/bin/bash',
               login: false,
               yield_time_ms: 1000,
               max_output_tokens: 2048,
