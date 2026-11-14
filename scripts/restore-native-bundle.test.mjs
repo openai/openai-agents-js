@@ -639,6 +639,18 @@ test('restores only regular Windows parts from the specified artifact outputs', 
       2: validHelpers.toString('base64'),
     });
     const preload = `
+      import assert from 'node:assert/strict';
+      import cp from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const original = cp.execFileSync;
+      cp.execFileSync = (command, args, options) => {
+        if (command === 'tar' && args[0] === '-xzf') {
+          assert.ok(!args.includes('-C'), 'tar must not receive a native drive path');
+          assert.ok(options.cwd, 'tar must extract in its staging directory');
+        }
+        return original(command, args, options);
+      };
+      syncBuiltinESMExports();
       const archives = ${sources};
       globalThis.fetch = async (url) => {
         const id = new URL(url).pathname.split('/').at(-2);

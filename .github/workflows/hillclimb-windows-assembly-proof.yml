@@ -1,0 +1,48 @@
+name: Windows assembly replay
+
+on:
+  push:
+    branches: [ci/hillclimb/js-windows-assembly-proof]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  assemble:
+    if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/ci/hillclimb/js-windows-assembly-proof'
+    runs-on:
+      group: codex-runners
+      labels: codex-windows-x64
+    timeout-minutes: 8
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Replay the Windows assembly on the two exact PR transfers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WINDOWS_ADDON: '{"artifact-id":"14137175683","artifact-digest":"61460780cf0e6282995d1884c946cf2d99c272143b5a40c7c4965e2248983a5e"}'
+          WINDOWS_HELPERS: '{"artifact-id":"14135288819","artifact-digest":"bcf02189a850886f31502a80b18b79486b14b8b8da428ba0c8b2b8da2d386f94"}'
+          WINDOWS_PARTS: ${{ runner.temp }}/windows-native-parts
+        run: |
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "win32-x64")'
+          NATIVE_INPUTS="$(node --input-type=module -e 'import { nativeInputs } from "./scripts/native-bundle-inputs.mjs"; console.log(nativeInputs())')"
+          test "$NATIVE_INPUTS" = 3813b84c05beb93189c45ae3af88c3547beb2195d1fe434693ed167a8123d22e
+          export NATIVE_INPUTS
+          node scripts/restore-windows-native-parts.mjs
+          node packages/agents-codex/scripts/native.mjs assemble-windows --windows-parts "$WINDOWS_PARTS"
+      - name: Verify the final archive can be written and read
+        working-directory: packages/agents-codex
+        run: |
+          tar -czf - native/codex.node native/build-receipt.json bin native/test-bin/exec-server-fixture.exe > "$RUNNER_TEMP/replay.tar.gz"
+          tar -tzf - < "$RUNNER_TEMP/replay.tar.gz"
+          sha256sum "$RUNNER_TEMP/replay.tar.gz"

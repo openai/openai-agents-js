@@ -60,7 +60,10 @@ try {
     );
     const directory = join(staging, part);
     mkdirSync(directory);
-    execFileSync('tar', ['-xzf', '-', '-C', directory, ...files], {
+    // Let Node set the working directory so Git for Windows tar does not
+    // interpret a native drive path passed through its -C option.
+    execFileSync('tar', ['-xzf', '-', ...files], {
+      cwd: directory,
       input: bytes,
     });
   }
