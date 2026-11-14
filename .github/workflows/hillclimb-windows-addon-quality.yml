@@ -1,0 +1,89 @@
+name: Windows addon release quality comparison
+
+on:
+  push:
+    branches: [ci/hillclimb/js-windows-cgu-quality]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    if: github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/ci/hillclimb/js-windows-cgu-quality'
+    runs-on:
+      group: codex-runners
+      labels: codex-windows-x64
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24.22.2'
+          package-manager-cache: false
+      - name: Verify and extract the historical Windows artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, "win32-x64")'
+          mkdir "$RUNNER_TEMP/quality"
+          cd "$RUNNER_TEMP/quality"
+          gh api --allow-escape-sequences repos/openai/openai-agents-js/actions/artifacts/14014101122/zip > control.zip
+          gh api --allow-escape-sequences repos/openai/openai-agents-js/actions/artifacts/14012099168/zip > candidate.tar.gz
+          sha256sum -c <<'HASHES'
+          b5c0de88560330f8aa37aab7ea7f8ef22ab4a2628568e432516a0b772019323f  control.zip
+          6ed0a013e798b5086deab157539979ac45131352ac67cae1616bf132f7a813ad  candidate.tar.gz
+          HASHES
+          unzip -q control.zip 'agents-starter-*.tar.gz'
+          tar -xzf agents-starter-0.22.0-alpha.2-win32-x64.tar.gz
+          mkdir candidate
+          tar -xzf candidate.tar.gz -C candidate native/codex.node
+      - name: Install one copy of the exact same SDK for both variants
+        run: |
+          cd "$RUNNER_TEMP/quality"
+          cd agents-starter
+          npm ci --ignore-scripts --no-audit --no-fund
+          cd ..
+          cp -R agents-starter modified-copy
+          control='agents-starter/node_modules/@openai/agents-codex/native/codex.node'
+          add_on='candidate/native/codex.node'
+          sha256sum -c <<HASHES
+          1fa1cbb48e83bb33f5bd0f04ac1ad83e249e99b36949d03b1b03ff2b05363b6b  $control
+          138b318b0a94f251a793a37f536802cd6d7d3a8c07eefa2f76fa01c7ae15b9ff  $add_on
+          HASHES
+          cp "$add_on" "modified-copy/${control#agents-starter/}"
+      - name: Compare paired fresh processes and local turns
+        env:
+          BENCH_NATIVE_COMPARE: '1'
+          BENCH_TRACE: 'off'
+          BENCH_MODEL_DELAY_MS: '0'
+          BENCH_TIMEOUT_MS: '15000'
+          V0_VERSION: '0.22.0-alpha.2'
+          V1_VERSION: '0.22.0-alpha.2'
+          V0_REVISION: 'windows-addon-one-unit'
+          V1_REVISION: 'windows-addon-two-units'
+          NO_PROXY: '127.0.0.1,localhost'
+        run: |
+          cd "$RUNNER_TEMP/quality"
+          export V0_ENTRY="$(cygpath -aw agents-starter/node_modules/@openai/agents/dist/index.mjs)"
+          export V1_ENTRY="$(cygpath -aw modified-copy/node_modules/@openai/agents/dist/index.mjs)"
+          benchmark="$GITHUB_WORKSPACE/scripts/benchmarks/agents-parity"
+          BENCH_CASES=cold-import,cold-first BENCH_ROUNDS=30 BENCH_TURNS=1 node "$benchmark/run.mjs" > startup.jsonl 2> startup.stderr
+          BENCH_CASES=warm-session,tool1 BENCH_ROUNDS=10 BENCH_TURNS=20 node "$benchmark/run.mjs" > turns.jsonl 2> turns.stderr
+          python "$benchmark/analyze.py" results --min-rounds 30 startup.jsonl > startup-summary.json
+          python "$benchmark/analyze.py" results --min-rounds 10 turns.jsonl > turns-summary.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: paired-windows-addon-quality
+          path: |
+            ${{ runner.temp }}/quality/*.jsonl
+            ${{ runner.temp }}/quality/*-summary.json
+            ${{ runner.temp }}/quality/*.stderr
+          if-no-files-found: ignore
+          retention-days: 14

@@ -103,10 +103,10 @@ def results(paths, allow_unpaired=False, min_rounds=5):
                     'completed': sum(row.get('completed', 0) for row in side_rows),
                     'requests': sum(row.get('serverRequests', 0) for row in side_rows),
                 }
-            metrics = ('importMs', 'firstUsefulFromProcessStartMs', 'firstUsefulAfterConstructionMs',
+            metrics = ('importMs', 'facadeImportedFromProcessStartMs', 'firstUsefulFromProcessStartMs', 'firstUsefulAfterConstructionMs',
                        'p50Ms', 'p95Ms', 'firstTextP50Ms', 'turnsPerSecond', 'cpuMsPerTurn',
                        'serverUtilization', 'wallMs', 'lifecycleMs', 'traceFlushMs',
-                       'processWallMs', 'rssBytes', 'peakRssBytes')
+                       'processWallMs', 'rssBytes', 'idleRssBytes', 'peakRssBytes')
             for metric in metrics:
                 if any(metric_value(row, metric) is None for row in observations):
                     continue

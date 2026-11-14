@@ -7,9 +7,11 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { get as httpGet, Agent as HttpAgent } from 'node:http';
 
-const [side, workload] = process.argv.slice(2);
-const entry = process.env[side === 'v0' ? 'V0_ENTRY' : 'V1_ENTRY'];
-assert(entry, `Set ${side === 'v0' ? 'V0_ENTRY' : 'V1_ENTRY'}`);
+const [label, workload] = process.argv.slice(2);
+const entry = process.env[label === 'v0' ? 'V0_ENTRY' : 'V1_ENTRY'];
+assert(entry, `Set ${label === 'v0' ? 'V0_ENTRY' : 'V1_ENTRY'}`);
+const compareNative = process.env.BENCH_NATIVE_COMPARE === '1';
+const side = compareNative ? 'v1' : label;
 const tImport = performance.now();
 const sdk = await import(pathToFileURL(entry).href);
 const importMs = performance.now() - tImport;
@@ -20,7 +22,7 @@ const facadeImportedFromProcessStartMs =
 if (workload === 'cold-import') {
   console.log(
     JSON.stringify({
-      side,
+      side: label,
       workload,
       importMs,
       facadeImportedFromProcessStartMs,
@@ -149,7 +151,8 @@ let fixtureBefore,
   fixtureControlBeforeMs,
   fixtureControlAfterMs,
   firstUsefulFromProcessStartMs,
-  firstUsefulAfterConstructionMs;
+  firstUsefulAfterConstructionMs,
+  idleRssBytes;
 const fixtureControlAgent = new HttpAgent({ keepAlive: false });
 const fixtureStats = (phase) =>
   new Promise((resolve, reject) => {
@@ -284,6 +287,10 @@ async function lane(index) {
     if (workload === 'history100')
       for (let i = 0; i < 100; i++) await turn(i, false);
     if (workload !== 'cold-first') await turn(1000, false);
+    if (compareNative && workload === 'tool1') {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      idleRssBytes = process.memoryUsage.rss();
+    }
     if (++readyLanes === lanes) {
       const controlStart = performance.now();
       fixtureBefore = await fixtureStats('begin');
@@ -370,7 +377,7 @@ const quantile = (values, q) => {
 const resources = process.resourceUsage();
 console.log(
   JSON.stringify({
-    side,
+    side: label,
     workload,
     trace: tracing,
     traceProcessorInstalled: side === 'v0' || tracing,
@@ -438,6 +445,7 @@ console.log(
     traceRecords,
     cpu: process.cpuUsage(cpuStart),
     rssBytes: process.memoryUsage().rss,
+    idleRssBytes,
     peakRssBytes: resources.maxRSS * 1024,
     voluntaryContextSwitches: resources.voluntaryContextSwitches,
     involuntaryContextSwitches: resources.involuntaryContextSwitches,
