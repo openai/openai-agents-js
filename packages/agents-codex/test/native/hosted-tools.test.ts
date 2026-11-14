@@ -172,8 +172,22 @@ describe('native provider-hosted declarations', () => {
     ]);
   });
 
+  it('captures File Search separately from a same-named function', () => {
+    const hosted = fileSearch('vs_synthetic');
+    const callback = tool({
+      name: 'file_search',
+      parameters: z.object({}),
+      execute: async () => 'local result',
+    });
+    expect(() => splitToolDeclarations([hosted, hosted])).toThrow('only once');
+    const declarations = splitToolDeclarations([hosted, callback]);
+    expect(declarations.tools).toEqual([callback]);
+    expect(hostedToolSpecs(declarations.hostedTools)).toEqual([
+      { type: 'file_search', vector_store_ids: ['vs_synthetic'] },
+    ]);
+  });
+
   it.each([
-    fileSearch('vs_synthetic'),
     codeInterpreter({ container: { type: 'auto' } }),
     hostedShell({
       environment: { type: 'container_reference', container_id: 'cntr_shell' },
