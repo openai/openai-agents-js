@@ -37,8 +37,9 @@ impl ToolOutcomes {
         else {
             return Ok(None);
         };
-        if record.observation.status
-            != codex_protocol::protocol::ResponseObservationStatus::Completed
+        if record.compaction == Some(true)
+            || record.observation.status
+                != codex_protocol::protocol::ResponseObservationStatus::Completed
         {
             return Ok(None);
         }

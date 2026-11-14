@@ -486,6 +486,7 @@ function createSandboxEnvironment<
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
   const capabilityUser = options.capabilityUser;
+  const defaultProviderCompaction = options.capabilities === undefined;
   const capabilityConfiguration = captureSandboxCapabilities(
     options.capabilities,
     capabilityUser,
@@ -968,6 +969,7 @@ function createSandboxEnvironment<
             ),
             skillInstructions,
           ),
+          defaultProviderCompaction,
         );
       };
       // Resume inspection protects the old state. The owned provider mutation

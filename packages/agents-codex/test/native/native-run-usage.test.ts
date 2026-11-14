@@ -508,12 +508,55 @@ it.each([false, true])(
       usage.map((record) => JSON.stringify(record)),
     );
     await using provider = await providerFor(server);
-    const result = await new Agent({
+    const agent = new Agent({
       instructions: 'Use lookup once.',
       provider,
       tools: [lookup],
-    }).run('look up A', { returnRawUsage: capture });
-    expect(result.finalOutput).toBe('done');
+    });
+    if (capture) {
+      const result = await agent.run('look up A', { returnRawUsage: true });
+      expect(result.finalOutput).toBe('done');
+      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
+        'response-1',
+        'response-2',
+        'response-3',
+      ]);
+      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
+    } else {
+      let state;
+      {
+        await using session = await agent.session();
+        const turn = await session.submit('look up A');
+        const result = await turn.wait();
+        const retained = [];
+        for await (const entry of session.turns()) retained.push(entry);
+        const record = retained.find((entry) => entry.id === turn.turnId)!;
+        expect(record.requestUsageEntries?.map(({ scope }) => scope)).toEqual([
+          'sdk_model_attempt',
+          'compaction',
+          'sdk_model_attempt',
+        ]);
+        expect(record.requestUsageEntries?.[1]).toMatchObject({
+          requestOrdinal: 1,
+          tokenUsageKnown: true,
+          totalTokens: 14,
+        });
+        // Observed terminals cannot count failed requests that never reached a terminal.
+        expect(record.requestUsageEntriesComplete).toBe(false);
+        state = await session.saveState();
+        expect(result.finalOutput).toBe('done');
+        expect(result).not.toHaveProperty('rawUsage');
+      }
+      await using restored = await agent.session({
+        state: parseSessionState(JSON.stringify(state)),
+      });
+      const restoredEntries = [];
+      for await (const entry of restored.turns())
+        restoredEntries.push(...(entry.requestUsageEntries ?? []));
+      expect(
+        restoredEntries.filter(({ scope }) => scope === 'compaction'),
+      ).toHaveLength(1);
+    }
     expect(effects).toBe(1);
     expect(server.requests).toHaveLength(3);
     const metadata = server.requests.map(
@@ -525,16 +568,6 @@ it.each([false, true])(
         ) as { request_kind: string },
     );
     expect(metadata[1]!.request_kind).toBe('compaction');
-    if (capture) {
-      expect(result.rawUsage?.map((record) => record.responseId)).toEqual([
-        'response-1',
-        'response-2',
-        'response-3',
-      ]);
-      expect(result.rawUsage?.map((record) => record.usage)).toEqual(usage);
-    } else {
-      expect(result).not.toHaveProperty('rawUsage');
-    }
   },
 );
 

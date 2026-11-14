@@ -1439,7 +1439,23 @@
     {
       "path": "sdk-portable-text-output-contract.patch",
       "sha256": "022614abb190179f95551aa31b9856048ac6e3a59f23a43235db49590f9b2d8b"
+    },
+    {
+      "path": "sdk-profile-default-provider-compaction.patch",
+      "sha256": "841e4269d813a54a180f16af6d482f540af37f3642fe3bee65e3b1c1e03ee664"
+    },
+    {
+      "path": "sdk-profile-interactive-terminal-ownership.patch",
+      "sha256": "3656e1d432b25e3ffdf6fbb6c33dc4c4084525a3073cd9719a30d41e0e6a40ef"
+    },
+    {
+      "path": "sdk-compaction-request-usage.patch",
+      "sha256": "59df12322ea183bba71973918cf8226a0a3585180c6678195c42529fc19fccd7"
+    },
+    {
+      "path": "sdk-portable-text-tool-finalization.patch",
+      "sha256": "fead081483217dd25cbee8ff5ffe2ac77ca90493fd523c9b88a36c14e91c2f02"
     }
   ],
-  "result_tree": "5c988e6ae1aa954c18fbbe6333044e837a0775d4"
+  "result_tree": "acaf5423eded2ace2d428e62331eed9194c47e9a"
 }

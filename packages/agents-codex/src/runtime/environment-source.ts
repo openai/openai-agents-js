@@ -44,6 +44,7 @@ interface LeaseState {
   readonly skillLease?: SandboxSkillLease;
   readonly sandboxProvider?: SandboxProviderBinding;
   readonly sandboxCapabilities?: SandboxCapabilityLease;
+  readonly defaultProviderCompaction?: boolean;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -67,6 +68,7 @@ export function createEnvironmentLease<Context>(
   sandboxProvider?: SandboxProviderBinding,
   sandboxCapabilities?: SandboxCapabilityLease,
   profileWorkspaceInstructions?: string,
+  defaultProviderCompaction?: boolean,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -83,6 +85,7 @@ export function createEnvironmentLease<Context>(
     skillLease,
     sandboxProvider,
     sandboxCapabilities,
+    defaultProviderCompaction,
   };
   const close = () => {
     if (state.claimed)
@@ -184,6 +187,11 @@ export class EnvironmentAcquisition {
   }
 
   /** @internal The current resource owns its bound capability contributions. */
+  /** Current source declaration; saved state never supplies this policy. */
+  get defaultProviderCompaction(): boolean | undefined {
+    return this.state?.defaultProviderCompaction;
+  }
+
   get sandboxCapabilities(): SandboxCapabilityLease | undefined {
     return this.state?.sandboxCapabilities;
   }

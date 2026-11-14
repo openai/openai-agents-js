@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import type { JsonObject } from '../../src/runtime/binding';
 import { z } from 'zod';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
@@ -16,6 +17,7 @@ import {
   Agent,
   Environment,
   NativeProvider,
+  ChatCompletionsModel,
   tool,
   manualTool,
   shellTool,
@@ -97,7 +99,7 @@ class ProbeCapability implements SandboxCapability {
   }
 }
 function sourceFor(
-  capabilities: readonly SandboxCapability[],
+  capabilities: readonly SandboxCapability[] | undefined,
   options: { client?: UnixLocalSandboxClient; cleanup?: () => void } = {},
 ) {
   return sandboxEnvironment({
@@ -1228,3 +1230,250 @@ it('has been preserving private opening direct-function admission after capabili
   expect(effects).toEqual([]);
   expect(server.requests).toEqual([]);
 });
+
+it('has been preserving the default provider compaction policy with omitted capabilities', async () => {
+  const server = new ModelServer([[message('Default policy completed.')]]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    provider,
+    model: 'fixture-default-capability-policy',
+    instructions: 'Root',
+  }).session({ environment: sourceFor(undefined) });
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Default policy completed.',
+  );
+  expect(server.requests[0].context_management).toEqual([
+    { type: 'compaction', compact_threshold: 240000 },
+  ]);
+  server.assertExhausted();
+});
+
+it.each([
+  ['empty capabilities', [], undefined, undefined],
+  ['explicit clear', undefined, { providerCompaction: null }, undefined],
+  [
+    'explicit static policy',
+    undefined,
+    { providerCompaction: { type: 'static', threshold: 1234 } },
+    [{ type: 'compaction', compact_threshold: 1234 }],
+  ],
+  [
+    'explicit context management',
+    undefined,
+    { contextManagement: [{ type: 'compaction', compact_threshold: 5678 }] },
+    [{ type: 'compaction', compact_threshold: 5678 }],
+  ],
+] as const)(
+  'has been respecting %s before default capability policy',
+  async (_mode, capabilities, modelSettings, expected) => {
+    const server = new ModelServer([[message('Policy completed.')]]);
+    await using provider = await providerFor(server);
+    await using session = await new Agent({
+      provider,
+      model: 'fixture-default-capability-policy',
+      instructions: 'Root',
+      modelSettings,
+    }).session({ environment: sourceFor(capabilities) });
+    expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+      'Policy completed.',
+    );
+    expect(server.requests[0].context_management).toEqual(expected);
+    server.assertExhausted();
+  },
+);
+
+it('has been trimming actual provider compaction history under the omitted default', async () => {
+  const server = new ModelServer([
+    [message('OLD_DEFAULT_HISTORY_SENTINEL')],
+    [
+      { type: 'compaction', encrypted_content: 'OPAQUE_DEFAULT_COMPACTION' },
+      message('CURRENT_DEFAULT_HISTORY_SENTINEL'),
+    ],
+    [message('Default history completed.')],
+  ]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    provider,
+    model: 'fixture-default-capability-policy',
+    instructions: 'Root',
+  }).session({ environment: sourceFor(undefined) });
+  await (await session.submit('First.')).wait();
+  await (await session.submit('Compact.')).wait();
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Default history completed.',
+  );
+  const input = JSON.stringify(server.requests[2].input);
+  expect(input).toContain('OPAQUE_DEFAULT_COMPACTION');
+  expect(input).toContain('CURRENT_DEFAULT_HISTORY_SENTINEL');
+  expect(input).not.toContain('OLD_DEFAULT_HISTORY_SENTINEL');
+  server.assertExhausted();
+});
+
+it.each([
+  ['default root to empty destination', undefined, [], undefined],
+  [
+    'empty root to default destination',
+    [],
+    undefined,
+    [{ type: 'compaction', compact_threshold: expect.any(Number) }],
+  ],
+] as const)(
+  'has been rebinding %s without inheriting another capability policy',
+  async (_mode, rootCapabilities, targetCapabilities, expected) => {
+    const server = new ModelServer([
+      [
+        call(
+          'transfer_to_default_worker',
+          {},
+          { callId: 'default-policy-transfer' },
+        ),
+      ],
+      [message('Destination policy completed.')],
+    ]);
+    await using provider = await providerFor(server);
+    const worker = new Agent({
+      name: 'default_worker',
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Worker',
+      environment: sourceFor(targetCapabilities),
+    });
+    const root = new Agent({
+      provider,
+      model: 'gpt-5.5',
+      instructions: 'Root',
+      handoffs: [worker],
+    });
+    await using session = await root.session({
+      environment: sourceFor(rootCapabilities),
+    });
+    expect((await (await session.submit('Transfer.')).wait()).finalOutput).toBe(
+      'Destination policy completed.',
+    );
+    expect(server.requests[1].context_management).toEqual(expected);
+    if (expected !== undefined) {
+      const [policy] = server.requests[1].context_management as {
+        compact_threshold: number;
+      }[];
+      expect(policy.compact_threshold).toBeGreaterThan(0);
+    }
+    server.assertExhausted();
+  },
+);
+
+it('has been skipping only implicit default compaction on native Lite', async () => {
+  const server = new ModelServer([[message('Lite default completed.')]]);
+  await using provider = await providerFor(server);
+  await using session = await new Agent({
+    provider,
+    model: 'gpt-5.6-sol',
+    instructions: 'Root',
+  }).session({ environment: sourceFor(undefined) });
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Lite default completed.',
+  );
+  expect(server.requests[0].context_management).toBeUndefined();
+  server.assertExhausted();
+});
+
+it('has been keeping opaque Chat producers outside implicit Responses controls', async () => {
+  let requests = 0;
+  const client = new OpenAI({
+    apiKey: 'fixture',
+    maxRetries: 0,
+    fetch: async (_url, init) => {
+      requests++;
+      const body = JSON.parse(String(init?.body)) as JsonObject;
+      expect(body.context_management).toBeUndefined();
+      expect(body.sdk_default_provider_compaction).toBeUndefined();
+      return Response.json({
+        id: 'chat-default',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { role: 'assistant', content: 'Chat default completed.' },
+          },
+        ],
+      });
+    },
+  });
+  await using provider = new NativeProvider({
+    modelBackend: new ChatCompletionsModel(client, 'fixture-default-chat'),
+    responseMode: 'buffered',
+    supportsWebsockets: false,
+  });
+  await using session = await new Agent({
+    provider,
+    model: 'fixture-default-chat',
+    instructions: 'Root',
+  }).session({ environment: sourceFor(undefined) });
+  expect((await (await session.submit('Continue.')).wait()).finalOutput).toBe(
+    'Chat default completed.',
+  );
+  expect(requests).toBe(1);
+});
+
+it.each([
+  [
+    'omitted defaults',
+    undefined,
+    undefined,
+    [{ type: 'compaction', compact_threshold: 240000 }],
+  ],
+  ['explicit empty parent', [], undefined, undefined],
+  [
+    'explicit disabled child',
+    undefined,
+    { providerCompaction: null },
+    undefined,
+  ],
+] as const)(
+  'has been retaining %s through the captured configured-child opening',
+  async (_mode, capabilities, childSettings, expected) => {
+    const server = new ModelServer([
+      [
+        call(
+          'default_delegate',
+          { input: 'Child task.' },
+          { callId: 'default-child-call' },
+        ),
+      ],
+      [message('Child default completed.')],
+      [message('Parent default completed.')],
+    ]);
+    await using provider = await providerFor(server);
+    const child = new Agent({
+      provider,
+      model: 'fixture-default-child',
+      instructions: 'Child',
+      modelSettings: childSettings,
+    });
+    const root = new Agent({
+      provider,
+      model: 'fixture-default-parent',
+      instructions: 'Parent',
+      tools: [
+        child.asTool({
+          toolName: 'default_delegate',
+          toolDescription: 'Run the captured child.',
+        }),
+      ],
+    });
+    await using session = await root.session({
+      environment: sourceFor(capabilities),
+    });
+    expect((await (await session.submit('Delegate.')).wait()).finalOutput).toBe(
+      'Parent default completed.',
+    );
+    expect(server.requests).toHaveLength(3);
+    expect(server.requests[1].model).toBe('fixture-default-child');
+    expect(server.requests[1].context_management).toEqual(expected);
+    const rootDefault =
+      capabilities === undefined
+        ? [{ type: 'compaction', compact_threshold: 240000 }]
+        : undefined;
+    expect(server.requests[0].context_management).toEqual(rootDefault);
+    expect(server.requests[2].context_management).toEqual(rootDefault);
+    server.assertExhausted();
+  },
+);

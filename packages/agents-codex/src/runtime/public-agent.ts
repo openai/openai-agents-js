@@ -1,3 +1,9 @@
+import {
+  bindConfiguredChildSandboxDefault,
+  consumeConfiguredChildSandboxDefault,
+  sandboxDefaultCompaction,
+  sandboxDefaultModel,
+} from './sandbox-defaults';
 import { z } from 'zod';
 import type { AgentLifecycleCallback } from './agent-lifecycle';
 import type { RunErrorHandler } from './run-error-recovery';
@@ -846,6 +852,10 @@ export class Agent<Context = undefined, Output = string> {
       providerHistory: captureProviderHistory(suppliedOptions?.providerHistory),
       parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
     } as OwnedSessionOptions<Context>;
+    bindConfiguredChildSandboxDefault(
+      options,
+      consumeConfiguredChildSandboxDefault(suppliedOptions),
+    );
     if (
       options.observationRetention !== undefined &&
       options.observationRetention !== 'bounded' &&
@@ -1206,6 +1216,8 @@ export class Agent<Context = undefined, Output = string> {
     acquiredEnvironment: (owner: EnvironmentAcquisition) => void,
     cleanupAcquired: () => void,
   ) {
+    const inheritedSandboxDefault =
+      consumeConfiguredChildSandboxDefault(options);
     const privateOwned = consumePrivateOwnedGrant(
       (options as OwnedSessionOptions<Context>)[ownedRun]?.privateEngineGrant,
     );
@@ -1884,6 +1896,28 @@ export class Agent<Context = undefined, Output = string> {
           }),
         ),
       });
+    if (graph && profileEnvironments)
+      graph = Object.freeze({
+        ...graph,
+        roster: Object.freeze(
+          graph.roster.map((row) => {
+            const id = row.id as string;
+            if (profileEnvironments.deferred.has(id)) return row;
+            const declaration = graph!.profiles.get(id)!.profile.declaration;
+            return Object.freeze({
+              ...row,
+              model: sandboxDefaultModel(
+                row.model as JsonObject,
+                profileEnvironments.get(id),
+                declaration.provider ?? provider,
+                profileEnvironments.get(id) === environmentOwner
+                  ? inheritedSandboxDefault
+                  : undefined,
+              ),
+            });
+          }),
+        ),
+      });
     if (graph && profiles && profileEnvironments?.deferred.size) {
       const recipe = graph;
       const declarations = profiles;
@@ -1922,6 +1956,11 @@ export class Agent<Context = undefined, Output = string> {
             runtime,
             declaration: {
               ...row,
+              model: sandboxDefaultModel(
+                row.model as JsonObject,
+                owner,
+                profile.declaration.provider ?? provider,
+              ),
               workspace_preparation: true,
               environment: environmentConfig(owner.environment!),
               environment_tools: [...owner.environment!.tools],
@@ -2633,6 +2672,11 @@ export class Agent<Context = undefined, Output = string> {
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
+        defaultProviderCompaction: sandboxDefaultCompaction(
+          environmentOwner,
+          provider,
+          inheritedSandboxDefault,
+        ),
         providerHistory: options.providerHistory,
         hostedPrompt,
         hostedPromptControls: promptControls,

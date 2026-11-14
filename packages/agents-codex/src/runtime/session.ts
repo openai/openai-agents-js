@@ -568,6 +568,8 @@ export interface SessionOptions {
   agentGraph?: CapturedAgentGraph & { readonly fingerprint: string };
   context?: unknown;
   initialModelSettings?: ModelSettings;
+  /** Fresh acquisition policy; excluded from public model settings and saved state. */
+  defaultProviderCompaction?: boolean;
   providerHistory?: ProviderHistory;
   /** @internal Captured authorized prompt source; never serialized as a callback. */
   hostedPrompt?: HostedPromptSource<any>;
@@ -3614,6 +3616,18 @@ export class Session<OutputT = string, Context = unknown> {
             : this.options.initialModelSettings;
         await this.restoreModelControls(settings);
       }
+      if (
+        this.options.defaultProviderCompaction !== undefined &&
+        (await this.#native._update_model_settings(
+          encode({
+            request_controls: {
+              sdk_default_provider_compaction:
+                this.options.defaultProviderCompaction,
+            },
+          }),
+        )) !== true
+      )
+        throw new NativeError('Native sandbox defaults were not acknowledged');
       this.configureNative(this.#native);
       if (
         this.restored &&
@@ -13507,6 +13521,10 @@ export class Session<OutputT = string, Context = unknown> {
       context.signal,
       restoredChild,
       this.verifiedConfiguredExecutorCheckpoint,
+      environmentOwner?.defaultProviderCompaction ??
+        (environmentOwner === this.options.environmentOwner
+          ? this.options.defaultProviderCompaction
+          : undefined),
     );
     const child: ConfiguredChild = {
       session,
@@ -13535,6 +13553,27 @@ export class Session<OutputT = string, Context = unknown> {
     let relay = Promise.resolve();
     let relayFailure: { error: unknown } | undefined;
     let output: string | undefined;
+    let streamAgent: import('./public-agent').Agent<any, any> | undefined;
+    const streamReaders: Promise<void>[] = [];
+    const streamErrors: unknown[] = [];
+    const observe = (turn: Turn<unknown>) => {
+      if (!declaration.observe) return;
+      if (!(session instanceof Session))
+        throw new NativeError('Configured child requires its native Session');
+      const reader = declaration.observe(
+        turn,
+        session,
+        streamAgent!,
+        context.callId,
+        context.call,
+        context.signal,
+        (error) => {
+          streamErrors.push(error);
+          void close().catch(() => {});
+        },
+      );
+      if (reader) streamReaders.push(reader);
+    };
     const errors: unknown[] = [];
     try {
       context.signal.throwIfAborted();
@@ -13588,12 +13627,14 @@ export class Session<OutputT = string, Context = unknown> {
           abort();
         });
       };
+      if (declaration.observe) streamAgent = await session.getActiveAgent();
       startRelay();
       child.recover = async () => {
         try {
           if (!child.checkpoint || !child.recoveryReady)
             throw new NativeError('Configured recovery has no saved child');
           await close();
+          await Promise.all(streamReaders);
           await reader?.return?.();
           await relay;
           session = await declaration.open(
@@ -13613,11 +13654,13 @@ export class Session<OutputT = string, Context = unknown> {
           child.checkpoint = undefined;
           child.sealing = false;
           closing = undefined;
+          if (declaration.observe) streamAgent = await session.getActiveAgent();
           startRelay();
           if (!session.restoredTurn)
             throw new NativeError('Configured recovery has no original turn');
           child.recoveryReady.resolve();
           this.observations.notify();
+          observe(session.restoredTurn);
           return await session.restoredTurn.wait();
         } catch (error) {
           child.recoveryReady?.reject(error);
@@ -13631,6 +13674,7 @@ export class Session<OutputT = string, Context = unknown> {
         throw new NativeError(
           'Configured continuation has no original child turn',
         );
+      observe(turn);
       const result = await turn.wait().catch(async (error) => {
         if (child.sealing && child.sealOutcome)
           return await child.sealOutcome.promise;
@@ -13656,10 +13700,12 @@ export class Session<OutputT = string, Context = unknown> {
         close(),
         reader?.return?.(),
         relay,
+        ...streamReaders,
       ]);
       for (const result of cleanup)
         if (result.status === 'rejected') errors.push(result.reason);
     }
+    errors.push(...streamErrors);
     if (relayFailure) errors.push(relayFailure.error);
     const unexpected = errors.filter(
       (error) =>

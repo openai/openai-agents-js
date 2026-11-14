@@ -817,9 +817,8 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
         .iter()
         .map(|profile| {
             let mut descriptor = serde_json::to_value(profile)?;
-            descriptor["tools"] = serde_json::to_value(
-                profile.tools.without_configured_agent_roles(),
-            )?;
+            descriptor["tools"] =
+                serde_json::to_value(profile.tools.without_configured_agent_roles())?;
             descriptor["model"] = serde_json::to_value(profile.model.for_persistence())?;
             // Endpoint credentials, process configuration and refreshed policies are not
             // declaration compatibility. Their fresh native owners remain authority.
@@ -1412,6 +1411,8 @@ fn rebind_restored_controls(
     model: &mut AgentProfileModelSettings,
     current: &AgentProfileModelSettings,
 ) {
+    model.request_controls.sdk_default_provider_compaction =
+        current.request_controls.sdk_default_provider_compaction;
     model.invocation_timeout_ms = current.invocation_timeout_ms;
     model.request_controls.retry = current.request_controls.retry.clone();
     model.request_controls.attempt_timeout_ms = current.request_controls.attempt_timeout_ms;

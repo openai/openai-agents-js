@@ -1,0 +1,221 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index 114e75c61b3d8f2f4a9d228eb8fbd967f533c685..6d7f7708a8652cc0649b06b95b055004ada57568 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -120,6 +120,8 @@ struct ApprovalCheckpoint {
+     remaining: Vec<(String, Declaration)>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     results: Vec<(String, String)>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    finish_calls: Vec<(String, Declaration)>,
+ }
+ 
+ #[derive(Clone, Deserialize, PartialEq, Serialize)]
+@@ -131,6 +133,8 @@ struct Declaration {
+     strict: bool,
+     #[serde(default)]
+     requires_approval: bool,
++    #[serde(default)]
++    finish_turn: bool,
+ }
+ 
+ #[derive(Clone, Serialize)]
+@@ -140,6 +144,8 @@ struct Call {
+     arguments: String,
+     #[serde(skip)]
+     requires_approval: bool,
++    #[serde(skip)]
++    finish_turn: bool,
+ }
+ 
+ #[derive(Serialize)]
+@@ -172,6 +178,7 @@ enum Effect {
+         text: String,
+         profile: Option<String>,
+         snapshot: Snapshot,
++        tool_output: bool,
+     },
+ }
+ 
+@@ -188,6 +195,7 @@ struct Batch {
+     effective_arguments: Option<Value>,
+     remaining: Vec<Call>,
+     results: Vec<(String, Option<String>)>,
++    finish_calls: Vec<String>,
+ }
+ 
+ impl Batch {
+@@ -196,6 +204,11 @@ impl Batch {
+             issued: HashSet::new(),
+             effective_arguments: None,
+             remaining: Vec::new(),
++            finish_calls: calls
++                .iter()
++                .filter(|call| call.finish_turn)
++                .map(|call| call.call_id.clone())
++                .collect(),
+             results: calls
+                 .iter()
+                 .map(|call| (call.call_id.clone(), None))
+@@ -398,6 +411,19 @@ impl PortableTurn {
+                         result.as_ref().map(|result| (id.clone(), result.clone()))
+                     })
+                     .collect();
++                let finish_calls = batch
++                    .finish_calls
++                    .iter()
++                    .map(|id| {
++                        let name = self
++                            .history
++                            .iter()
++                            .find(|item| item["type"] == "function_call" && item["call_id"] == *id)
++                            .and_then(|item| item["name"].as_str())
++                            .ok_or("Missing portable finishing call")?;
++                        Ok((id.clone(), self.finishing_declaration(name)?.clone()))
++                    })
++                    .collect::<Result<_, &'static str>>()?;
+                 let mut snapshot = self.snapshot(Some(ApprovalCheckpoint {
+                     request_id,
+                     call_id,
+@@ -407,6 +433,7 @@ impl PortableTurn {
+                     output_contract: self.output_contract.clone(),
+                     remaining,
+                     results,
++                    finish_calls,
+                 }))?;
+                 snapshot.history = self.history.clone();
+                 self.revision = snapshot.revision;
+@@ -494,6 +521,14 @@ impl PortableTurn {
+             .ok_or("Portable approval requires its original tool declaration")
+     }
+ 
++    fn finishing_declaration(&self, name: &str) -> Result<&Declaration, &'static str> {
++        self.current_profile()
++            .map_or(self.tools.as_slice(), |profile| &profile.tools)
++            .iter()
++            .find(|tool| tool.name == name && tool.finish_turn)
++            .ok_or("Portable finishing call requires its original tool declaration")
++    }
++
+     fn snapshot(&self, approval: Option<ApprovalCheckpoint>) -> Result<Snapshot, &'static str> {
+         Ok(Snapshot {
+             version: 1,
+@@ -532,11 +567,29 @@ impl PortableTurn {
+                 profile: self.profile.clone(),
+             });
+         }
++        let text = batch.finish_calls.iter().find_map(|id| {
++            batch
++                .results
++                .iter()
++                .find(|(call_id, _)| call_id == id)
++                .and_then(|(_, result)| result.clone())
++        });
+         for (id, result) in batch.results {
+             let output = result.ok_or("Incomplete portable tool batch")?;
+             self.history
+                 .push(json!({"type":"function_call_output","call_id":id,"output":output}));
+         }
++        if let Some(text) = text {
++            self.phase = Phase::Finished;
++            let mut snapshot = self.snapshot(None)?;
++            snapshot.history = std::mem::take(&mut self.history);
++            return Ok(Effect::Done {
++                tool_output: true,
++                text,
++                profile: self.profile.clone(),
++                snapshot,
++            });
++        }
+         self.next_request()
+     }
+ 
+@@ -547,7 +600,10 @@ impl PortableTurn {
+         if approval.output_contract != self.output_contract {
+             return Err("Portable approval requires its original output contract");
+         }
+-        if !(1..self.max_turns).contains(&approval.request_id) {
++        if approval.request_id == 0
++            || approval.request_id > self.max_turns
++            || (approval.request_id == self.max_turns && approval.finish_calls.is_empty())
++        {
+             return Err("Portable approval exceeds the current request limit");
+         }
+         let effective_arguments = approval
+@@ -588,6 +644,7 @@ impl PortableTurn {
+                     name: name.to_owned(),
+                     arguments: arguments.to_owned(),
+                     requires_approval: true,
++                    finish_turn: declaration.finish_turn,
+                 });
+                 batch.results.push((id.to_owned(), None));
+             }
+@@ -602,6 +659,35 @@ impl PortableTurn {
+             return Err("Portable session has no matching approval call");
+         }
+         batch.effective_arguments = Some(effective_arguments);
++        let mut finishing_ids = HashSet::new();
++        for (id, declaration) in approval.finish_calls {
++            if !finishing_ids.insert(id.clone())
++                || !batch.results.iter().any(|(call_id, _)| call_id == &id)
++            {
++                return Err("Invalid portable finishing call occurrence");
++            }
++            let name = self
++                .history
++                .iter()
++                .find(|item| item["type"] == "function_call" && item["call_id"] == id)
++                .and_then(|item| item["name"].as_str())
++                .ok_or("Missing portable finishing call")?;
++            if self.finishing_declaration(name)? != &declaration {
++                return Err("Portable finishing call requires its original tool declaration");
++            }
++        }
++        for (id, _) in &batch.results {
++            if finishing_ids.contains(id) {
++                batch.finish_calls.push(id.clone());
++            }
++        }
++        if batch
++            .remaining
++            .iter()
++            .any(|call| call.finish_turn && !finishing_ids.contains(&call.call_id))
++        {
++            return Err("Missing portable finishing call ownership");
++        }
+         self.request_id = approval.request_id;
+         Ok(batch)
+     }
+@@ -822,6 +908,9 @@ impl PortableTurn {
+                     let requires_approval = active_tools
+                         .iter()
+                         .any(|tool| tool.name == name && tool.requires_approval);
++                    let finish_turn = active_tools
++                        .iter()
++                        .any(|tool| tool.name == name && tool.finish_turn);
+                     if calls.len() >= MAX_CALLS
+                         || !(item["namespace"].is_null() || item["namespace"] == "functions")
+                         || !(item["caller"].is_null() || item["caller"] == json!({"type":"direct"}))
+@@ -851,6 +940,7 @@ impl PortableTurn {
+                         name: name.to_owned(),
+                         arguments: arguments.to_owned(),
+                         requires_approval,
++                        finish_turn,
+                     });
+                 }
+                 _ => return Err("Unsupported portable model output"),
+@@ -864,12 +954,13 @@ impl PortableTurn {
+             let mut snapshot = self.snapshot(None)?;
+             snapshot.history = std::mem::take(&mut self.history);
+             return Ok(Effect::Done {
++                tool_output: false,
+                 text,
+                 profile: self.profile.clone(),
+                 snapshot,
+             });
+         }
+-        if self.request_id >= self.max_turns {
++        if self.request_id >= self.max_turns && !calls.iter().any(|call| call.finish_turn) {
+             return Err("Portable turn reached its model request limit");
+         }
+         if let Some((call_id, target)) = transfer {
