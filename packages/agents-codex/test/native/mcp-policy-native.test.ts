@@ -104,6 +104,7 @@ async function peer(
   closeResponseForKey?: string,
   extraNames: readonly string[] = [],
   ask?: { id: string; meta?: JsonObject },
+  inputSchemas?: Readonly<Record<string, JsonObject>>,
 ) {
   const effects: JsonObject[] = [];
   const answers: JsonObject[] = [];
@@ -145,7 +146,13 @@ async function peer(
       if (rpc.method === 'tools/list') {
         listings++;
         result = {
-          tools: [raw, ...extraNames].map((name) => ({ ...recordTool, name })),
+          tools: [raw, ...extraNames].map((name) => ({
+            ...recordTool,
+            name,
+            ...(inputSchemas?.[name]
+              ? { inputSchema: inputSchemas[name] }
+              : {}),
+          })),
         };
       }
       if (rpc.method === 'tools/call') {
@@ -3959,4 +3966,60 @@ it.each([false, true])(
     model.assertExhausted();
   },
   30_000,
+);
+
+it.each([false, true])(
+  'uses opt-in best-effort strict managed MCP schemas (%s)',
+  async (strictToolSchemas) => {
+    const openSchema = {
+      type: 'object',
+      properties: { key: { type: 'string' } },
+      required: [],
+      additionalProperties: true,
+    };
+    const remote = await peer(
+      'lookup',
+      undefined,
+      undefined,
+      undefined,
+      ['open_tool'],
+      undefined,
+      {
+        lookup: {
+          type: 'object',
+          properties: { key: { type: 'string' }, optional: { type: 'string' } },
+          required: ['key'],
+          additionalProperties: false,
+        },
+        open_tool: openSchema,
+      },
+    );
+    const { session, model } = await open(
+      new HttpMCP({
+        ...reconnectOptions,
+        url: remote.url,
+        tools: ['lookup', 'open_tool'],
+        strictToolSchemas,
+      }),
+      [[message('done')]],
+    );
+    expect(
+      (await (await session.submit('Review tool schemas.')).wait()).finalOutput,
+    ).toBe('done');
+    const namespace = (model.requests[0]!.tools as JsonObject[]).find(
+      (tool) => tool.name === 'mcp__fixture',
+    );
+    const tools = namespace?.tools as JsonObject[] | undefined;
+    expect(tools?.find((tool) => tool.name === 'lookup')).toMatchObject({
+      strict: strictToolSchemas,
+      parameters: {
+        required: strictToolSchemas ? ['key', 'optional'] : ['key'],
+      },
+    });
+    expect(tools?.find((tool) => tool.name === 'open_tool')).toMatchObject({
+      strict: false,
+      parameters: { additionalProperties: true },
+    });
+    expect(remote.effects).toEqual([]);
+  },
 );

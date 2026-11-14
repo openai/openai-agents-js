@@ -1351,7 +1351,15 @@
     {
       "path": "sdk-configured-agent-tool-origin.patch",
       "sha256": "afa40f722d663ade8af2b18c84b13847a91d67c96be128dd9e06d0500ae202a1"
+    },
+    {
+      "path": "sdk-managed-mcp-strict-tool-schemas.patch",
+      "sha256": "f1c7d33f257f87cee3e77283844b1e7721915d30a50f4eaee1ecd9a77cc4890f"
+    },
+    {
+      "path": "sdk-managed-mcp-schema-budget.patch",
+      "sha256": "49db34ae509b0a24d157a88b9882c5e227a497529d1af71573d4e11602cd29bf"
     }
   ],
-  "result_tree": "09cdd2f516d3c463f65755eb2de8f137081cd8b8"
+  "result_tree": "b0c7959bdf8cacf1a070ee2015eda99767fe06fb"
 }
