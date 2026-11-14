@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { ResponsesWS } from 'openai/resources/responses/ws';
+import type {
+  ResponsesWS,
+  ResponsesWSClientOptions,
+} from 'openai/resources/responses/ws';
+import type OpenAI from 'openai';
 import {
   copyJsonValue,
   losslessJsonObjectSchema,
@@ -41,6 +45,52 @@ type SocketEnvelope =
     ? Envelope
     : never;
 const socketFrameKinds = new WeakMap<object, 'raw' | 'projected'>();
+const ownedSocketOpenings = new WeakSet<ResponsesSocket>();
+
+/** @internal Create each physical writer privately; never use the SDK send queue. */
+export function ownedResponsesSocketFactory(
+  client: OpenAI,
+): ResponsesSocketFactory {
+  return async (request, options) => {
+    const { ResponsesWS } = await import('openai/resources/responses/ws');
+    request.signal.throwIfAborted();
+    const scoped =
+      options.query === undefined ? client : client.withOptions({});
+    if (options.query !== undefined) {
+      const buildURL = scoped.buildURL.bind(scoped);
+      scoped.buildURL = (path, query, defaultBaseURL) =>
+        buildURL(path, { ...query, ...options.query }, defaultBaseURL);
+    }
+    const connection = new ResponsesWS(scoped, {
+      // OpenAI applies null as header deletion; ws's header type omits it.
+      headers: options.headers as ResponsesWSClientOptions['headers'],
+      reconnect: null,
+    });
+    const physical = connection.socket;
+    const socket: ResponsesSocket = Object.freeze({
+      socket: physical,
+      send: (frame: Parameters<ResponsesSocket['send']>[0]) => {
+        // The owning model waits for this actual socket to open. No automatic
+        // queue or reconnect can write this frame after a failed attempt.
+        if (physical.readyState !== 1)
+          throw new Error('Owned Responses WebSocket is not open');
+        physical.send(JSON.stringify(frame));
+      },
+      close: () => connection.close(),
+      [Symbol.asyncIterator]: () => connection[Symbol.asyncIterator](),
+    });
+    ownedSocketOpenings.add(socket);
+    return socket;
+  };
+}
+
+/** @internal Propagate only the identity of a privately constructed writer. */
+export function retainOwnedResponsesSocketOpening(
+  source: ResponsesSocket,
+  target: ResponsesSocket,
+): void {
+  if (ownedSocketOpenings.has(source)) ownedSocketOpenings.add(target);
+}
 const socketReplacementChecks = new WeakMap<
   ResponsesSocket,
   (frame: JsonObject, scopeChanged: boolean) => boolean
@@ -170,6 +220,7 @@ export class ResponsesWebSocketModel implements NativeModel {
     let connection: Connection | undefined;
     let sent = false;
     let opening = false;
+    let unownedOpening = false;
     let terminal = false;
     try {
       const body = copyJsonValue(request.body) as JsonObject;
@@ -236,7 +287,8 @@ export class ResponsesWebSocketModel implements NativeModel {
         socketReplacementChecks.has(connection.socket) &&
         connection.socket.socket.readyState === 0
       ) {
-        opening = true;
+        opening = ownedSocketOpenings.has(connection.socket);
+        unownedOpening = !opening;
         while (connection.socket.socket.readyState === 0) {
           const next = await readNext(connection, request.signal, deadline);
           if (next.done || next.value.type === 'close')
@@ -257,6 +309,7 @@ export class ResponsesWebSocketModel implements NativeModel {
         if (owner.retired)
           throw new TypeError('Responses socket owner retired');
         opening = false;
+        unownedOpening = false;
       }
       sent = true;
       connection.socket.send(frame as Parameters<ResponsesSocket['send']>[0]);
@@ -330,7 +383,7 @@ export class ResponsesWebSocketModel implements NativeModel {
         }
       }
       if (failure && typeof failure === 'object') {
-        if (sent) this.#unsafe.add(failure);
+        if (sent || unownedOpening) this.#unsafe.add(failure);
         else if (opening && !request.signal.aborted) this.#unsent.add(failure);
       }
       throw failure;

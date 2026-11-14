@@ -110,6 +110,8 @@ import {
   markModelRequestTransport,
   markNativeReasoningContext,
   markRawProviderRequest,
+  markRawUsageRequest,
+  captureAiSdkOriginalUsageFrame,
   pumpModelStream,
   borrowedResponsesRequestId,
   type NativeModel,
@@ -10504,6 +10506,7 @@ export class Session<OutputT = string, Context = unknown> {
                 throw new TypeError(
                   'NativeModel.getRetryAdvice must be callable',
                 );
+              if (msg.capture_raw_usage === true) markRawUsageRequest(request);
               const policy = this.capturedRetryPolicy(
                 this.messageProfile(msg)?.profile_id,
                 owner,
@@ -10575,7 +10578,10 @@ export class Session<OutputT = string, Context = unknown> {
                     push: (event, original) =>
                       sourceNative._push_model_producer(
                         streamOwner,
-                        captureModelProviderStreamFrame(event, original),
+                        captureAiSdkOriginalUsageFrame(
+                          captureModelProviderStreamFrame(event, original),
+                          original,
+                        ),
                         isRawModelPart(original),
                       ),
                     finish: () => {

@@ -366,6 +366,16 @@ export async function validatePublicSpecifiers(
       errors.push(...results.identityErrors);
       for (const specifier of specifiers) {
         const result = results.results[specifier];
+        const entry = entriesBySpecifier.get(specifier);
+        const resolved = resolveConditionalTarget(
+          entry.exportNode,
+          format,
+          conditions,
+        );
+        // Platform-specific exports can deliberately omit a Node fallback.
+        if (!resolved && result?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+          continue;
+        }
         const conditionLabel =
           conditions.length > 0 ? ` conditions ${conditions.join(',')}` : '';
         if (!result || result.error) {
@@ -388,12 +398,6 @@ export async function validatePublicSpecifiers(
           );
           continue;
         }
-        const entry = entriesBySpecifier.get(specifier);
-        const resolved = resolveConditionalTarget(
-          entry.exportNode,
-          format,
-          conditions,
-        );
         if (!resolved) {
           errors.push(
             `${specifier} ${format} public specifier${conditionLabel} has no matching runtime target`,

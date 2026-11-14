@@ -165,3 +165,5 @@ packages/agents/native/portable-build-receipt.json
 # Generated Hermes lowering of reviewed Rust control.
 packages/*/native/codex-realtime-control.mjs
 packages/*/native/codex-realtime-control.cjs
+packages/*/native/codex-turn-control.mjs
+packages/*/native/codex-turn-control.cjs

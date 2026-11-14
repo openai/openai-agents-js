@@ -6,12 +6,14 @@ import {
   AiSdkModel,
   runWorkerText,
   runWorkerTurn,
+  ToolOutput,
   WorkerGuardrailTripwire,
   standaloneTool,
   type NativeModel,
 } from '../src/runtime/workerd';
 import type { AiSdkLanguageModel } from '../src/runtime/models';
 import type { JsonObject } from '../src/runtime/binding';
+import { HermesTextControl } from '../src/runtime/turn-control-binding';
 
 const wasm = new URL('../native/codex-turn-control.wasm', import.meta.url);
 const portableTest = it.skipIf(!existsSync(wasm));
@@ -21,6 +23,147 @@ beforeAll(async () => {
   if (!existsSync(wasm)) return;
   const bytes = await readFile(wasm);
   control = new WebAssembly.Module(bytes);
+});
+
+portableTest(
+  'runs with the lowered host contract and missing Hermes globals',
+  async () => {
+    // Use actual Rust exports to exercise the same host ABI in the regular suite.
+    const instantiate = vi.fn(
+      () =>
+        new WebAssembly.Instance(control).exports as unknown as ReturnType<
+          HermesTextControl['instantiate']
+        >,
+    );
+    const module = new HermesTextControl(instantiate);
+    const previousRawCheck = JSON.isRawJSON;
+    vi.stubGlobal('TextDecoder', undefined);
+    vi.stubGlobal('structuredClone', undefined);
+    Object.defineProperty(JSON, 'isRawJSON', {
+      configurable: true,
+      value: undefined,
+    });
+    try {
+      async function run(input: string) {
+        const tool = lookup();
+        let calls = 0;
+        const result = await runWorkerText(input, {
+          control: module,
+          model: 'fixture',
+          instructions: 'Use lookup.',
+          tools: [tool.declaration],
+          inputGuardrails: [
+            {
+              name: 'input view',
+              callback(view) {
+                expect(view.input).toBe(input);
+                return { tripwireTriggered: false };
+              },
+            },
+          ],
+          provider: {
+            async complete({ body }) {
+              if (++calls === 1) {
+                expect(JSON.stringify(body.input)).toContain(input);
+                return { output: [call] };
+              }
+              expect(JSON.stringify(body.input)).toContain('observed:local');
+              return {
+                output: [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: input }],
+                  },
+                ],
+              };
+            },
+          },
+        });
+        expect(tool.execute).toHaveBeenCalledTimes(1);
+        return result;
+      }
+      await expect(
+        Promise.all([run('海豚 🐬'), run('separate')]),
+      ).resolves.toEqual(['海豚 🐬', 'separate']);
+      expect(instantiate).toHaveBeenCalledTimes(2);
+    } finally {
+      Object.defineProperty(JSON, 'isRawJSON', {
+        configurable: true,
+        value: previousRawCheck,
+      });
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+portableTest('detaches media tool output for a Hermes guardrail', async () => {
+  const module = new HermesTextControl(
+    () =>
+      new WebAssembly.Instance(control).exports as unknown as ReturnType<
+        HermesTextControl['instantiate']
+      >,
+  );
+  vi.stubGlobal('structuredClone', undefined);
+  try {
+    const media = ToolOutput.image({ fileId: 'guardrail-image' });
+    const after = vi.fn(({ response }) => {
+      expect(response?.contentItems).toEqual(media.contentItems);
+      response.contentItems.pop();
+      return { action: 'allow' } as const;
+    });
+    let requests = 0;
+    await expect(
+      runWorkerText('Get an image.', {
+        control: module,
+        model: 'fixture',
+        instructions: 'Use the image tool.',
+        tools: [
+          standaloneTool({
+            name: 'image',
+            parameters: z.object({}),
+            execute: () => media,
+          }),
+        ],
+        toolGuardrails: { image: [{ name: 'media view', after }] },
+        provider: {
+          complete({ body }) {
+            if (++requests === 1) {
+              return {
+                output: [
+                  {
+                    type: 'function_call',
+                    name: 'image',
+                    arguments: '{}',
+                    call_id: 'media-result',
+                  },
+                ],
+              };
+            }
+            expect(body.input).toContainEqual(
+              expect.objectContaining({
+                type: 'function_call_output',
+                output: [{ type: 'input_image', file_id: 'guardrail-image' }],
+              }),
+            );
+            return {
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'done' }],
+                },
+              ],
+            };
+          },
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(media.contentItems).toHaveLength(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });
 
 function lookup() {

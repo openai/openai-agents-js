@@ -207,6 +207,16 @@
       }
     },
     "./worker/control.wasm": "./native/codex-turn-control.wasm",
+    "./worker/control.hermes": {
+      "import": {
+        "types": "./dist/runtime/turn-control.hermes.d.mts",
+        "default": "./native/codex-turn-control.mjs"
+      },
+      "require": {
+        "types": "./dist/runtime/turn-control.hermes.d.ts",
+        "default": "./native/codex-turn-control.cjs"
+      }
+    },
     "./voice/control.wasm": "./native/codex-realtime-control.wasm",
     "./memory": {
       "node": {
@@ -277,6 +287,28 @@
         "types": "./dist/voice/control.hermes.d.ts",
         "default": "./native/codex-realtime-control.cjs"
       }
+    },
+    "./internal/browser-primitives": {
+      "browser": {
+        "import": {
+          "types": "./dist/runtime/browser-primitives.d.mts",
+          "default": "./dist/runtime/browser-primitives.mjs"
+        },
+        "require": {
+          "types": "./dist/runtime/browser-primitives.d.ts",
+          "default": "./dist/runtime/browser-primitives.js"
+        }
+      },
+      "react-native": {
+        "import": {
+          "types": "./dist/runtime/browser-primitives.d.mts",
+          "default": "./dist/runtime/browser-primitives.mjs"
+        },
+        "require": {
+          "types": "./dist/runtime/browser-primitives.d.ts",
+          "default": "./dist/runtime/browser-primitives.js"
+        }
+      }
     }
   },
   "scripts": {
@@ -334,6 +366,8 @@
     "a2a",
     "A2A.md",
     "native/codex-turn-control.wasm",
+    "native/codex-turn-control.mjs",
+    "native/codex-turn-control.cjs",
     "native/codex-realtime-control.wasm",
     "native/portable-build-receipt.json",
     "PORTABLE_CONTROL.md",
@@ -393,6 +427,9 @@
       ],
       "voice/control.hermes": [
         "dist/voice/control.hermes.d.ts"
+      ],
+      "worker/control.hermes": [
+        "dist/runtime/turn-control.hermes.d.ts"
       ]
     }
   },
@@ -402,8 +439,9 @@
     "@modelcontextprotocol/core": "2.4.0"
   },
   "browser": {
-    "node:crypto": "./dist/runtime/browser-primitives.mjs",
-    "node:util": "./dist/runtime/browser-primitives.mjs",
-    "node:buffer": "./dist/runtime/browser-primitives.mjs"
+    "node:crypto": "@openai/agents-codex/internal/browser-primitives",
+    "node:util": "@openai/agents-codex/internal/browser-primitives",
+    "node:buffer": "@openai/agents-codex/internal/browser-primitives",
+    "./native/index.js": false
   }
 }

@@ -2789,6 +2789,73 @@ describe('release-specific package membership', () => {
   });
 });
 
+test('checks platform-only exports in their supported conditions and requires their files', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'api-platform-only-'));
+  try {
+    const name = '@openai/agents';
+    const roots = {};
+    for (const [packageName] of PUBLIC_PACKAGES) {
+      const packageRoot = path.join(root, 'node_modules', packageName);
+      roots[packageName] = packageRoot;
+      await mkdir(packageRoot, { recursive: true });
+      await writeFile(
+        path.join(packageRoot, 'package.json'),
+        JSON.stringify({ name: packageName }),
+      );
+    }
+    const packageRoot = roots[name];
+    await writeFile(
+      path.join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name,
+        exports: {
+          './portable': {
+            browser: {
+              types: './portable.d.ts',
+              import: './portable.mjs',
+              require: './portable.cjs',
+            },
+          },
+        },
+      }),
+    );
+    await writeFile(
+      path.join(packageRoot, 'portable.d.ts'),
+      'export declare const portable: boolean;',
+    );
+    const runtime = path.join(packageRoot, 'portable.mjs');
+    await writeFile(runtime, 'export const portable = true;');
+    await writeFile(
+      path.join(packageRoot, 'portable.cjs'),
+      'exports.portable = true;',
+    );
+    const packages = await contractSurface.loadPackageSet(roots, 'dist');
+    const surfaces = await inspectPackageSet(packages, 'dist');
+    expect(await contractSurface.assertAllTargetsExist(packages)).toEqual([]);
+    expect(
+      await contractExecution.validatePublicSpecifiers(
+        packages,
+        surfaces,
+        root,
+      ),
+    ).toEqual([]);
+    await rm(runtime);
+    expect(
+      await contractExecution.validatePublicSpecifiers(
+        packages,
+        surfaces,
+        root,
+      ),
+    ).toEqual([
+      expect.stringContaining(
+        'import public specifier conditions browser failed to load',
+      ),
+    ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 describe('raw WebAssembly asset exports', () => {
   test('checks source shape, built bytes and installed public resolution without inventing JS declarations', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'api-wasm-asset-'));
