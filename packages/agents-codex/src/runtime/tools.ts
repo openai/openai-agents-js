@@ -11,7 +11,7 @@ import {
   decisionBinding,
   withDecisionSignal,
   type BoundDecide,
-} from './decisions';
+} from './decision-context';
 import { captureToolPart, mediaRecord } from './media';
 import type { FileReference, ImageDetail } from './media';
 import { isDeepStrictEqual } from 'node:util';
