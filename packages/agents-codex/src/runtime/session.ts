@@ -3399,6 +3399,7 @@ export class Session<OutputT = string, Context = unknown> {
   private defaultOutput: PreparedOutput;
   private issuedRunGeneration = 0;
   private configurationGeneration = 0;
+  private recoveryHistoryMutation?: Promise<void>;
   private readonly recoveryOwners = new WeakMap<
     RunErrorDetails,
     {
@@ -8418,12 +8419,27 @@ export class Session<OutputT = string, Context = unknown> {
           owner.observationPhase = 'ended';
           this.observations.notify();
         }
-        if (!this.isOpen || !this.options.nativeAgents) return;
+        if (this.recoveryHistoryMutation)
+          await this.recoveryHistoryMutation.catch(() => {});
+        if (
+          !this.isOpen ||
+          this.#native !== native ||
+          !this.options.nativeAgents
+        )
+          return;
         const current = await native._child_turn(id);
         if (
           !current ||
           current.incarnation !== incarnation ||
           current.turn_id !== turnId
+        )
+          return;
+        if (this.recoveryHistoryMutation)
+          await this.recoveryHistoryMutation.catch(() => {});
+        if (
+          !this.isOpen ||
+          this.#native !== native ||
+          !this.options.nativeAgents
         )
           return;
         const next = await current._continue();
@@ -17001,6 +17017,13 @@ export class Session<OutputT = string, Context = unknown> {
     }
     let items = details.items;
     if (recovery.includeInHistory) {
+      // A settled native child can still be finishing its host continuation.
+      // Join that reader before taking the native history mutation gate.
+      do {
+        const settlements = this.childCallbacks.drainSettlements();
+        await (signal ? abortable(settlements, signal) : settlements);
+        await checkHistory();
+      } while (this.childCallbacks.hasPendingSettlements());
       const text = this.defaultOutput.wrapped
         ? JSON.stringify({ response: parsed.json })
         : this.defaultOutput.schema || this.defaultOutput.prompt
@@ -17012,7 +17035,7 @@ export class Session<OutputT = string, Context = unknown> {
         role: 'assistant',
         content: [{ type: 'output_text', text }],
       };
-      await this.mutate(async () => {
+      const mutation = this.mutate(async () => {
         signal?.throwIfAborted();
         this.historyMutationValue(
           await this.#native._append_recovered_output(
@@ -17022,6 +17045,13 @@ export class Session<OutputT = string, Context = unknown> {
           ),
         );
       });
+      this.recoveryHistoryMutation = mutation;
+      try {
+        await mutation;
+      } finally {
+        if (this.recoveryHistoryMutation === mutation)
+          this.recoveryHistoryMutation = undefined;
+      }
       // The private typed append acknowledges this exact assistant record.
       const projected = projectHistory(
         [
