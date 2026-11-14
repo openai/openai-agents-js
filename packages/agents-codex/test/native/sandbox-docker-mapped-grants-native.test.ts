@@ -63,25 +63,18 @@ it.runIf(
       const launcher = join(readonly, 'launch');
       await writeFile(
         launcher,
-        '#!/bin/sh\nexec /tools/loader --library-path /tools/libs /tools/exec-server "$@"\n',
+        [
+          '#!/bin/sh',
+          'set -eu',
+          'export CODEX_HOME="$(mktemp -d /dev/shm/sdk-docker-exec.XXXXXXXX)"',
+          'exec /tools/exec-server "$@"',
+          '',
+        ].join('\n'),
         { mode: 0o755 },
       );
-      await mkdir(join(readonly, 'libs'));
-      await copyFile('/lib64/ld-linux-x86-64.so.2', join(readonly, 'loader'));
+      // The executor uses /proc/self/exe to create its sandbox-helper alias.
       await copyFile(fixture!, join(readonly, 'exec-server'));
-      await chmod(join(readonly, 'loader'), 0o755);
       await chmod(join(readonly, 'exec-server'), 0o755);
-      for (const name of [
-        'libssl.so.3',
-        'libcrypto.so.3',
-        'libgcc_s.so.1',
-        'libm.so.6',
-        'libc.so.6',
-      ])
-        await copyFile(
-          '/lib/x86_64-linux-gnu/' + name,
-          join(readonly, 'libs', name),
-        );
       const server = new ModelServer([
         [
           call(
