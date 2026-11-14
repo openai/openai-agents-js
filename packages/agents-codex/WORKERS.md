@@ -72,3 +72,9 @@ if (pending.type === 'approval') {
 ```
 
 Pass the same session ID and tool declarations when resuming from another request. The call ID and revision tie the decision to the pending request. Each approval currently requires its own model response. The SDK records an approved call before dispatch. If the tool result cannot be saved after dispatch, the SDK refuses to repeat the call because it cannot know whether the original side effect occurred.
+
+## Guard input and output
+
+Use `inputGuardrails` to check a new text prompt before the first model request. Use `outputGuardrails` to check final text before the SDK returns it or commits the completed turn. Each check declares a `name` and a `callback` that receives the text, context, signal, and current profile. Return `{ tripwireTriggered: true, outputInfo }` to stop the turn. Catch `WorkerGuardrailTripwire` to inspect the check and its result.
+
+You can attach checks to the run or to an Agent profile. Input checks use the profile active at submission. Output checks use the profile that finishes the turn. A streaming observer can receive model events before the output checks finish, so display accepted text from the run result.

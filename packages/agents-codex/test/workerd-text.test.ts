@@ -6,6 +6,7 @@ import {
   AiSdkModel,
   runWorkerText,
   runWorkerTurn,
+  WorkerGuardrailTripwire,
   standaloneTool,
   type NativeModel,
 } from '../src/runtime/workerd';
@@ -740,5 +741,83 @@ portableTest(
     ).resolves.toBe('done');
     expect(sideEffects).toHaveBeenCalledTimes(1);
     expect(JSON.parse(stored ?? 'null')).toMatchObject({ revision: 2 });
+  },
+);
+
+portableTest.each(['input', 'output', 'none'] as const)(
+  'guards Worker text at the native request and acceptance boundaries (%s)',
+  async (block) => {
+    const events: string[] = [];
+    const provider: NativeModel = {
+      complete: vi.fn(async () => ({
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'draft' }],
+          },
+        ],
+      })),
+    };
+    const owner = { id: 'guardrail-test' };
+    const store = {
+      acquire: vi.fn(async () => 'fence'),
+      read: vi.fn(async () => null),
+      commit: vi.fn(async () => {}),
+      release: vi.fn(async () => {}),
+    };
+    const run = runWorkerText('Start.', {
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Complete.',
+      context: owner,
+      session: { id: 'worker-guarded', store },
+      inputGuardrails: [
+        {
+          name: 'check input',
+          async callback({ text, context, sessionId }) {
+            expect(context).toBe(owner);
+            expect(sessionId).toBe('worker-guarded');
+            events.push(text);
+            return {
+              tripwireTriggered: block === 'input',
+              outputInfo: 'input receipt',
+            };
+          },
+        },
+      ],
+      outputGuardrails: [
+        {
+          name: 'check output',
+          async callback({ text, context }) {
+            expect(context).toBe(owner);
+            events.push(text);
+            return {
+              tripwireTriggered: block === 'output',
+              outputInfo: 'output receipt',
+            };
+          },
+        },
+      ],
+    });
+    if (block === 'none') {
+      await expect(run).resolves.toBe('draft');
+      expect(store.commit).toHaveBeenCalledOnce();
+    } else {
+      const error = await run.catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(WorkerGuardrailTripwire);
+      expect(error).toMatchObject({
+        kind: block,
+        guardrail: 'check ' + block,
+        result: { tripwireTriggered: true, outputInfo: block + ' receipt' },
+      });
+      expect(store.commit).not.toHaveBeenCalled();
+    }
+    expect(events).toEqual(
+      block === 'input' ? ['Start.'] : ['Start.', 'draft'],
+    );
+    expect(provider.complete).toHaveBeenCalledTimes(block === 'input' ? 0 : 1);
+    expect(store.release).toHaveBeenCalledOnce();
   },
 );

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { encode, type JsonObject, type JsonValue } from './binding';
 import type { SessionStore } from './custom-thread-store';
+import { captureGuardrailResult, type GuardrailResult } from './guardrails';
 import {
   captureModelResponse,
   isRawModelPart,
@@ -53,7 +54,12 @@ type Effect =
       call: { call_id: string; name: string; arguments: string };
     }
   | { type: 'checkpoint'; snapshot: { revision: number } }
-  | { type: 'done'; text: string; snapshot: { revision: number } };
+  | {
+      type: 'done';
+      text: string;
+      profile: string | null;
+      snapshot: { revision: number };
+    };
 
 class TurnControl {
   readonly #exports: TurnExports;
@@ -105,6 +111,29 @@ export interface WorkerToolApproval<Context> {
   readonly signal: AbortSignal;
 }
 
+export interface WorkerGuardrail<Context> {
+  readonly name: string;
+  readonly callback: (request: {
+    readonly text: string;
+    readonly context: Context | undefined;
+    readonly signal: AbortSignal;
+    readonly profile: string | null;
+    readonly sessionId: string;
+    readonly turnId: string;
+  }) => GuardrailResult | Promise<GuardrailResult>;
+}
+
+export class WorkerGuardrailTripwire extends Error {
+  constructor(
+    readonly kind: 'input' | 'output',
+    readonly guardrail: string,
+    readonly result: GuardrailResult,
+  ) {
+    super('Worker run blocked by guardrail');
+    this.name = 'WorkerGuardrailTripwire';
+  }
+}
+
 export interface WorkerApprovalDecision {
   readonly callId: string;
   readonly revision: number;
@@ -135,6 +164,8 @@ export interface WorkerAgentProfile<Context> {
       ) => boolean | null | Promise<boolean | null>
     >
   >;
+  inputGuardrails?: readonly WorkerGuardrail<Context>[];
+  outputGuardrails?: readonly WorkerGuardrail<Context>[];
   /** Current function names and their captured destination profile IDs. */
   handoffs?: Readonly<Record<string, string>>;
 }
@@ -158,6 +189,10 @@ export interface WorkerTextOptions<Context> {
       ) => boolean | null | Promise<boolean | null>
     >
   >;
+  /** Blocking checks on each new input before the first model request. */
+  inputGuardrails?: readonly WorkerGuardrail<Context>[];
+  /** Checks on the final text before returning it or saving a completed turn. */
+  outputGuardrails?: readonly WorkerGuardrail<Context>[];
   maxTurns?: number;
   /** The store must grant an exclusive writer lease and atomically commit the revision. */
   session?: { id: string; store: SessionStore };
@@ -346,6 +381,21 @@ function captureApprovals<Context>(
   return approvals;
 }
 
+function captureWorkerGuardrails<Context>(
+  guards: readonly WorkerGuardrail<Context>[] = [],
+) {
+  return guards.map((guard) => {
+    const { name, callback } = guard;
+    if (
+      typeof name !== 'string' ||
+      !name.trim() ||
+      typeof callback !== 'function'
+    )
+      throw new TypeError('Worker guardrail requires a name and a callback');
+    return { name, callback: callback.bind(guard) };
+  });
+}
+
 function wireTools<Context>(
   tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
   approvals: ReadonlyMap<string, unknown>,
@@ -394,6 +444,8 @@ async function runWorkerTextTurn<Context>(
     session,
     agents,
     approve,
+    inputGuardrails,
+    outputGuardrails,
   }: WorkerTextOptions<Context>,
   allowPause: boolean,
 ): Promise<WorkerTextResult> {
@@ -419,6 +471,8 @@ async function runWorkerTextTurn<Context>(
   let pendingDecision = decision;
   const toolsByName = captureTools(tools);
   const approvals = captureApprovals(toolsByName, approve);
+  const inputChecks = captureWorkerGuardrails(inputGuardrails);
+  const outputChecks = captureWorkerGuardrails(outputGuardrails);
   const profiles = new Map(
     Object.entries(agents?.profiles ?? {}).map(([id, profile]) => {
       const tools = captureTools(profile.tools ?? []);
@@ -430,6 +484,8 @@ async function runWorkerTextTurn<Context>(
           instructions: profile.instructions,
           tools,
           approvals: captureApprovals(tools, profile.approve),
+          inputChecks: captureWorkerGuardrails(profile.inputGuardrails),
+          outputChecks: captureWorkerGuardrails(profile.outputGuardrails),
           handoffs: Object.fromEntries(Object.entries(profile.handoffs ?? {})),
         },
       ];
@@ -449,6 +505,32 @@ async function runWorkerTextTurn<Context>(
     turnId: crypto.randomUUID(),
   };
   const usedProviders = new Set<NativeModel>();
+  const checkGuards = async (
+    kind: 'input' | 'output',
+    text: string,
+    profile: string | null,
+  ) => {
+    const selected = currentProfile(profile);
+    const checks =
+      kind === 'input'
+        ? [...inputChecks, ...(selected?.inputChecks ?? [])]
+        : [...outputChecks, ...(selected?.outputChecks ?? [])];
+    for (const guard of checks) {
+      signal.throwIfAborted();
+      const result = captureGuardrailResult(
+        await guard.callback({
+          text,
+          context,
+          signal,
+          profile,
+          ...owner,
+        }),
+      );
+      signal.throwIfAborted();
+      if (result.tripwireTriggered)
+        throw new WorkerGuardrailTripwire(kind, guard.name, result);
+    }
+  };
   type StoredResult = {
     result: WorkerTextResult;
     snapshot: { revision: number };
@@ -483,10 +565,13 @@ async function runWorkerTextTurn<Context>(
       max_turns: maxTurns,
       snapshot,
     });
+    if (typeof input === 'string' && effect?.type === 'model')
+      await checkGuards('input', input, effect.profile);
     while (effect) {
       signal.throwIfAborted();
       switch (effect.type) {
         case 'done':
+          await checkGuards('output', effect.text, effect.profile);
           return {
             result: { type: 'completed', text: effect.text },
             snapshot: effect.snapshot,

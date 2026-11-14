@@ -1379,7 +1379,11 @@
     {
       "path": "sdk-portable-text-approval.patch",
       "sha256": "05384d5a6d0d689395611e5c3efc649079a11eabae872602689cf7a8200b9bbe"
+    },
+    {
+      "path": "sdk-portable-text-final-profile.patch",
+      "sha256": "46db02ad6f33874dd4d0415353f37d7a80b55dc7544563eb8aff54e32caf1e54"
     }
   ],
-  "result_tree": "54b4952764e32e2f4e1fa1c4980257fc5cac1301"
+  "result_tree": "a73b812c2b5cee1335dc929fc9ae01a9480790ad"
 }
