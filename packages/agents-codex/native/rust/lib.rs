@@ -123,6 +123,23 @@ pub fn _agent_profiles_fingerprint(roster_json: String, root_id: String) -> napi
     agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)
 }
 
+#[napi(js_name = "_agent_profiles_prepared_destinations")]
+pub fn _agent_profiles_prepared_destinations(
+    roster_json: String,
+    root_id: String,
+    history_json: String,
+) -> napi::Result<String> {
+    let opening = agent_profiles::OpeningProfiles {
+        input_preparations: Default::default(),
+        fingerprint: agent_profiles::fingerprint(&roster_json, &root_id).map_err(input_error)?,
+        root_id,
+        roster: serde_json::from_str(&roster_json).map_err(input_error)?,
+    };
+    let ids = agent_profiles::prepared_destinations(&opening, &instruction_history(&history_json)?)
+        .map_err(input_error)?;
+    serde_json::to_string(&ids).map_err(native_error)
+}
+
 #[napi(js_name = "_agent_profiles_restore_source")]
 pub fn _agent_profiles_restore_source(
     roster_json: String,
@@ -2860,6 +2877,13 @@ impl NativeThread {
         serde_json::to_string(&receipt).map_err(native_error)
     }
 
+    #[napi(js_name = "_agent_profiles_prepared_catalog")]
+    pub fn _agent_profiles_prepared_catalog(&self, profile_id: String) -> napi::Result<String> {
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        agent_profiles::prepared_catalog(&inner.thread, &profile_id).map_err(native_error)
+    }
+
     #[napi(js_name = "_active_agent_profile")]
     pub async fn _active_agent_profile(&self) -> napi::Result<String> {
         let inner = self.current()?;
@@ -5013,17 +5037,22 @@ impl NativeThread {
     }
 
     #[napi(js_name = "_record_memory_input_admission")]
-    pub async fn record_memory_input_admission(&self, turn_id: String) -> napi::Result<()> {
+    pub async fn record_memory_input_admission(&self, turn_id: String) -> napi::Result<String> {
         let inner = self.current()?;
-        canonical_history::record_memory_input_admission(&inner, &turn_id)
+        let source = canonical_history::record_memory_input_admission(&inner, &turn_id)
             .await
-            .map_err(native_error)
+            .map_err(native_error)?;
+        serde_json::to_string(&source).map_err(native_error)
     }
 
     #[napi(js_name = "_memory_history")]
-    pub async fn memory_history(&self, turn_id: String) -> napi::Result<String> {
+    pub async fn memory_history(
+        &self,
+        turn_id: String,
+        scope_json: Option<String>,
+    ) -> napi::Result<String> {
         let inner = self.current()?;
-        let value = canonical_history::memory_snapshot(&inner, &turn_id)
+        let value = canonical_history::memory_snapshot(&inner, &turn_id, scope_json.as_deref())
             .await
             .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)

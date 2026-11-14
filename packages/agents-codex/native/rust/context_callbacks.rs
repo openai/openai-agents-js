@@ -588,6 +588,12 @@ impl PythonTools {
         }
     }
 
+    pub(crate) fn agent_workspace_cancellation(&self, turn: &str) -> Result<CancellationToken> {
+        self.context_stop(turn)?
+            .callback_cancellation()
+            .context("Destination preparation requires its captured root turn")
+    }
+
     pub(super) fn context_stop(&self, turn: &str) -> Result<Arc<CapturedTurnStop>> {
         self.context_control
             .get()

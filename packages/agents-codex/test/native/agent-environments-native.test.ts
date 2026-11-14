@@ -74,8 +74,11 @@ function owned(
   };
 }
 
-it('has been rolling back earlier acquired resources when a later Agent source fails before native sampling', async () => {
-  const server = new ModelServer([[message('Unreachable.')]]);
+it('has been preserving a destination preparation failure before destination sampling', async () => {
+  const server = new ModelServer([
+    [call('transfer_to_child', {}, { callId: 'failed-destination' })],
+    [message('Unreachable.')],
+  ]);
   await using provider = await providerFor(server);
   const closed: string[] = [];
   const first = owned('root-resource', closed);
@@ -94,9 +97,16 @@ it('has been rolling back earlier acquired resources when a later Agent source f
     environment: first.source,
     handoffs: [child],
   });
-  await expect(root.session()).rejects.toThrow(failure);
+  const session = await root.session();
+  try {
+    await expect((await session.submit('Transfer.')).wait()).rejects.toThrow(
+      failure,
+    );
+  } finally {
+    await session.close();
+  }
   expect(closed).toEqual(['root-resource']);
-  expect(server.requests).toHaveLength(0);
+  expect(server.requests).toHaveLength(1);
   await expect(access(first.cwd())).rejects.toThrow();
   await expect(access(second.cwd())).rejects.toThrow();
 });

@@ -1363,7 +1363,15 @@
     {
       "path": "sdk-websocket-decoder-retirement.patch",
       "sha256": "1b872b4d27849340d29fbc213610f07290c4496cff04945d7ae3fa7fd1113e10"
+    },
+    {
+      "path": "sdk-caller-owned-history-replay.patch",
+      "sha256": "0cc239e867191474f72356e23e59c97e1f765c519e75aa1b66f959e638d4a2a9"
+    },
+    {
+      "path": "sdk-profile-owned-memory-history.patch",
+      "sha256": "04512bd707a42bfbadc823894d2d11ee9c1182360f09186fd0159f5f787d3773"
     }
   ],
-  "result_tree": "b5faf7c169aa2019927618a2ce53ba612140cbaf"
+  "result_tree": "f9c125a889ead28dd406224baded819433738b13"
 }

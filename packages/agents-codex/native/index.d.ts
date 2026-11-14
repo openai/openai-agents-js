@@ -133,6 +133,7 @@ export class NativeThread {
     rosterJson: string,
     rootId: string,
   ): Promise<string>;
+  _agent_profiles_prepared_catalog(profileId: string): string;
   _active_agent_profile(): Promise<string>;
   _admit_realtime_agent_graph(
     generation: string,
@@ -177,8 +178,8 @@ export class NativeThread {
     limit?: number | null,
     forReplay?: boolean,
   ): Promise<string>;
-  _record_memory_input_admission(turn_id: string): Promise<void>;
-  _memory_history(turn_id: string): Promise<string>;
+  _record_memory_input_admission(turn_id: string): Promise<string>;
+  _memory_history(turn_id: string, scope_json?: string): Promise<string>;
   _stored_history(query_json: string): Promise<string>;
   _set_stored_name(name_json: string): Promise<string>;
   _stored_history_close_action(action_json: string): _StoredHistoryClose;
@@ -326,7 +327,10 @@ export class NativeThread {
   _reply_tool_not_found(responseJson: string): void;
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
-  _account_provider_request(ownerJson: string, operationJson: string): string | null;
+  _account_provider_request(
+    ownerJson: string,
+    operationJson: string,
+  ): string | null;
   _reply_model_producer(response_json: string): void;
   _start_model_producer(
     owner_json: string,
@@ -583,6 +587,7 @@ declare const binding: {
   _decision_questions: typeof _decision_questions;
   _decision_result: typeof _decision_result;
   _agent_profiles_fingerprint: typeof _agent_profiles_fingerprint;
+  _agent_profiles_prepared_destinations: typeof _agent_profiles_prepared_destinations;
   _agent_profiles_restore_source: typeof _agent_profiles_restore_source;
   _agent_profiles_operation_source: typeof _agent_profiles_operation_source;
   _packaged_runtime(): {
@@ -643,6 +648,11 @@ export function _agent_profiles_fingerprint(
   rootId: string,
 ): string;
 
+export function _agent_profiles_prepared_destinations(
+  rosterJson: string,
+  rootId: string,
+  historyJson: string,
+): string;
 export function _agent_profiles_restore_source(
   rosterJson: string,
   rootId: string,

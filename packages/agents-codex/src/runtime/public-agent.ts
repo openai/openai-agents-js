@@ -1,6 +1,9 @@
+import { z } from 'zod';
 import type { RunErrorHandler } from './run-error-recovery';
 import type { Observation } from './observation';
 import { acquireProfileEnvironments } from './profile-environments';
+import { DeferredAgentPreparation } from './deferred-agent-preparation';
+import { environmentConfig } from './environment';
 import {
   captureProviderHistory,
   type ProviderHistory,
@@ -1628,16 +1631,14 @@ export class Agent<Context = undefined, Output = string> {
     );
     acquiredEnvironment(environmentOwner);
     const profileEnvironments = profiles
-      ? await acquireProfileEnvironments(profiles, environmentOwner)
+      ? await acquireProfileEnvironments(
+          profiles,
+          environmentOwner,
+          !persistent && options.resume === undefined,
+        )
       : undefined;
     const capabilityLease = environmentOwner.sandboxCapabilities;
-    if (
-      capabilityLease?.hasContributions ||
-      [...(profileEnvironments?.values() ?? [])].some(
-        (owner) => owner.sandboxCapabilities?.hasContributions,
-      )
-    ) {
-      if (stateResult && !stateResult.success) throw stateResult.error;
+    const assertCapabilityContributions = () => {
       if (
         opening ||
         isManualSessionState(stateResult?.data) ||
@@ -1665,6 +1666,15 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(
           'Sandbox capability contributions require a fresh root or idle restore with eager direct function tools or owned Shell/ApplyPatch callbacks',
         );
+    };
+    if (
+      capabilityLease?.hasContributions ||
+      [...(profileEnvironments?.values() ?? [])].some(
+        (owner) => owner.sandboxCapabilities?.hasContributions,
+      )
+    ) {
+      if (stateResult && !stateResult.success) throw stateResult.error;
+      assertCapabilityContributions();
       const contributed = capabilityLease?.hasContributions
         ? await capabilityLease.contributions(settings, transformContext)
         : { tools: [], settings, transformContext };
@@ -1690,6 +1700,7 @@ export class Agent<Context = undefined, Output = string> {
           contributed,
           instructions,
           profileEnvironments,
+          profileEnvironments?.deferred,
         );
         catalog = captureTools(
           profiles[0].declaration.tools as readonly SessionTool[],
@@ -1711,6 +1722,7 @@ export class Agent<Context = undefined, Output = string> {
     }
     const environment = environmentOwner.environment;
     const hasExecutorEnvironment =
+      !!profileEnvironments?.deferred.size ||
       !!environment ||
       [...(profileEnvironments?.values() ?? [])].some(
         (owner) => owner.environment !== undefined,
@@ -1837,6 +1849,118 @@ export class Agent<Context = undefined, Output = string> {
           }),
         ),
       });
+    if (graph && profiles && profileEnvironments?.deferred.size) {
+      const recipe = graph;
+      const declarations = profiles;
+      const deferred = new DeferredAgentPreparation(
+        profileEnvironments,
+        async (id, owner) => {
+          let profile = declarations.find((entry) => entry.id === id)!;
+          const capability = owner.sandboxCapabilities;
+          if (capability) {
+            if (capability.hasContributions) assertCapabilityContributions();
+            const contribution = await capability.contributions(
+              profile.declaration.modelSettings,
+              profile.declaration.transformContext,
+            );
+            [profile] = await prepareCapabilityProfiles(
+              [profile],
+              capability,
+              contribution,
+              profile.declaration.instructions ?? '',
+              new Map([[id, owner]]),
+            );
+          }
+          const captured = captureProfileRuntimes(
+            declarations.map((entry) => (entry.id === id ? profile : entry)),
+            catalog,
+            profileInstructions,
+            outputGuardrails.length > 0,
+            inputGuardrails.length + agentInputGuardrails.length > 0,
+            settings,
+          );
+          const row = captured.roster.find((entry) => entry.id === id)!;
+          const runtime = captured.profiles.get(id)!;
+          return {
+            runtime,
+            declaration: {
+              ...row,
+              workspace_preparation: true,
+              environment: environmentConfig(owner.environment!),
+              environment_tools: [...owner.environment!.tools],
+              workspace_instructions:
+                owner.profileWorkspaceInstructions ??
+                owner.workspaceInstructions ??
+                '',
+            },
+          };
+        },
+        recipe.workspace,
+      );
+      graph = Object.freeze({
+        ...recipe,
+        deferred,
+        workspace: deferred,
+        roster: Object.freeze(
+          recipe.roster.map((row) =>
+            profileEnvironments.deferred.has(row.id as string)
+              ? Object.freeze({
+                  ...row,
+                  environment_preparation: true,
+                  workspace_preparation: true,
+                  environment_tools: [],
+                })
+              : row,
+          ),
+        ),
+      });
+      if (state) {
+        const native = await binding();
+        const destinations = z
+          .array(z.string())
+          .nullable()
+          .parse(
+            JSON.parse(
+              native._agent_profiles_prepared_destinations(
+                JSON.stringify(profileRoster(graph, environment)),
+                graph.rootId,
+                JSON.stringify(state.history),
+              ),
+            ),
+          );
+        const ready = new Map(graph.profiles);
+        for (const id of destinations ?? profileEnvironments.deferred) {
+          if (!profileEnvironments.deferred.has(id)) continue;
+          const prepared = await deferred.capture(
+            id,
+            environmentOwner.signal,
+            () => environmentOwner.signal.throwIfAborted(),
+            true,
+          );
+          ready.set(id, prepared.runtime);
+        }
+        graph =
+          destinations === null
+            ? Object.freeze({
+                ...recipe,
+                profiles: ready,
+                roster: Object.freeze(
+                  recipe.roster.map((row) => {
+                    const prepared = deferred.declaration(row.id as string);
+                    if (!prepared) return row;
+                    const legacy: JsonObject = {
+                      ...prepared,
+                      workspace_preparation: false,
+                    };
+                    if (legacy.workspace_instructions === '')
+                      delete legacy.workspace_instructions;
+                    return Object.freeze(legacy);
+                  }),
+                ),
+              })
+            : Object.freeze({ ...graph, profiles: ready });
+      }
+    }
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
       graph && state
@@ -1931,6 +2055,15 @@ export class Agent<Context = undefined, Output = string> {
         : []),
       ...[
         ...new Set([
+          ...(profileEnvironments?.deferred.size
+            ? [
+                'exec_command',
+                'write_stdin',
+                'apply_patch',
+                'project_glob',
+                'project_grep',
+              ]
+            : []),
           ...(environment?.tools ?? []),
           ...[...(profileEnvironments?.values() ?? [])].flatMap(
             (owner) => owner.environment?.tools ?? [],
@@ -2702,9 +2835,14 @@ async function prepareCapabilityProfiles(
   root: Awaited<ReturnType<SandboxCapabilityLease['contributions']>>,
   instructions: string,
   resources?: ReadonlyMap<string, EnvironmentAcquisition>,
+  deferred?: ReadonlySet<string>,
 ): Promise<readonly CapturedAgentProfile<any, any>[]> {
   const prepared: CapturedAgentProfile<any, any>[] = [];
   for (const [index, profile] of profiles.entries()) {
+    if (deferred?.has(profile.id)) {
+      prepared.push(profile);
+      continue;
+    }
     const resourceOwner = resources
       ? resources.get(profile.id)?.sandboxCapabilities
       : owner;

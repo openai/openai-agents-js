@@ -1415,6 +1415,7 @@ const submissions = new WeakMap<
     profileSettlement?: Promise<void>;
     workspaceSettlement?: Promise<void>;
     memoryAdmissionRecorded?: boolean;
+    memorySource?: AgentProfileReceipt;
     memoryAdmissionFailure?: { error: unknown };
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
@@ -2723,6 +2724,7 @@ export class Session<OutputT = string, Context = unknown> {
     generation: string,
   ): ToolCatalog {
     const source = this.messageProfile(message);
+    if (source) this.acknowledgeWorkspace(source);
     const catalog = source
       ? this.profileCatalogs.get(
           this.profileKey(source.profile_id, profileInteger(generation)),
@@ -2849,14 +2851,36 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
+  private publishPreparedProfile(id: string): void {
+    const deferred = this.options.agentGraph?.deferred;
+    if (deferred?.runtime(id)) {
+      const generation = BigInt(
+        profileInteger(this.#native._agent_profiles_prepared_catalog(id)),
+      );
+      const runtime = deferred.confirm(id, generation);
+      if (runtime) {
+        this.profileRuntimes = new Map(this.profileRuntimes).set(id, runtime);
+        const key = this.profileKey(id, generation);
+        this.profileCatalogs.set(key, runtime.catalog);
+        this.profileStepMcp.set(key, runtime.mcp);
+        this.profileMcp.set(key, runtime.mcp);
+        this.profileHighWater =
+          generation > this.profileHighWater
+            ? generation
+            : this.profileHighWater;
+      }
+    }
+  }
   private acknowledgeWorkspace(receipt: AgentProfileReceipt): void {
     const pending = this.workspacePreparation;
     if (
       pending &&
       receipt.profile_id === pending.target &&
       receipt.epoch !== pending.source.epoch
-    )
+    ) {
+      this.publishPreparedProfile(receipt.profile_id);
       this.workspacePreparation = undefined;
+    }
   }
   private async settleWorkspace(
     run: NativeTurn,
@@ -3671,6 +3695,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.profileRuntimes = allocated.profiles;
         this.profileHighWater = allocated.highWater;
         for (const [id, profile] of this.profileRuntimes) {
+          graph.deferred?.configured(id);
           this.profileCatalogs.set(
             this.profileKey(id, profile.catalog.generation),
             profile.catalog,
@@ -5739,7 +5764,7 @@ export class Session<OutputT = string, Context = unknown> {
       originMcp: this.mcpBindings,
       originProfileId: this.profileCurrent?.profile_id,
       operationDeclarationSource:
-        options?.tools !== undefined && options.tools.length
+        ((options?.tools !== undefined && options.tools.length) || this.options.agentGraph)
           ? this.profileCurrent
           : undefined,
       prepareRequest: options?.prepareRequest,
@@ -7269,7 +7294,7 @@ export class Session<OutputT = string, Context = unknown> {
     const continueRetained = error === undefined && retained;
     run.failure = error;
     if (
-      this.options.environmentOwner?.hasSandboxMemory &&
+      this.options.environmentOwner?.hasAnySandboxMemory &&
       run.id !== null &&
       this.rootRun(run).inputGuardrailsPassed !== false &&
       (!this.restoredRoot ||
@@ -7280,7 +7305,19 @@ export class Session<OutputT = string, Context = unknown> {
       submission.memoryAdmissionRecorded = true;
       const turnId = run.id;
       const persistence = Promise.resolve()
-        .then(() => this.#native._record_memory_input_admission(turnId))
+        .then(async () => {
+          const value = parseProfileReceipt(
+            await this.#native._record_memory_input_admission(turnId),
+          );
+          if (this.options.agentGraph) {
+            const graph = this.callbackProfileGraph(value);
+            if (!graph)
+              throw new NativeError(
+                'Memory terminal source has no captured Agent graph',
+              );
+            submission.memorySource = checkProfileReceipt(value, graph);
+          }
+        })
         .catch((cause: unknown) => {
           submission.memoryAdmissionFailure = { error: cause };
         });
@@ -14531,16 +14568,28 @@ export class Session<OutputT = string, Context = unknown> {
             encodeProfileReceipt(expected),
           );
           check();
+          const preparation = new AbortController();
+          const stopPreparation = async () => {
+            preparation.abort(
+              new TurnAborted('Session closed during destination preparation'),
+            );
+          };
+          this.interceptionCleanups.add(stopPreparation);
           try {
             prepared = await workspace.prepareWorkspace(
               target,
-              this.options.environmentOwner!.signal,
+              AbortSignal.any([
+                this.options.environmentOwner!.signal,
+                preparation.signal,
+              ]),
               check,
             );
           } catch (error) {
             this.retire(error);
             void this.close().catch(() => {});
             throw error;
+          } finally {
+            this.interceptionCleanups.delete(stopPreparation);
           }
         }
         let receipt: AgentProfileReceipt;
@@ -14572,6 +14621,9 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Native Agent activation acknowledgement did not match',
             );
+          if (workspace && this.options.agentGraph?.deferred?.runtime(target)) {
+            this.publishPreparedProfile(target);
+          }
           await this.commitProfile(receipt, true);
           await this.realtimeOwner?._syncProfile(true);
         } catch (error) {
@@ -16377,9 +16429,9 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
 
-  private async prepareMemory(): Promise<void> {
-    const owner = this.options.environmentOwner;
-    if (!owner?.hasSandboxMemory)
+  private async prepareMemory(automatic = false): Promise<void> {
+    const rootOwner = this.options.environmentOwner;
+    if (!rootOwner?.hasAnySandboxMemory)
       throw new TypeError(
         'Configure memory on sandboxEnvironment before flushing',
       );
@@ -16435,9 +16487,40 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const admissionFailure = submissions.get(run)?.memoryAdmissionFailure;
     if (admissionFailure) throw admissionFailure.error;
-    // Reuse native replay's predecode budget and durable input-admission proof.
+    let owner = rootOwner;
+    let scope: string | undefined;
+    if (this.options.agentGraph) {
+      const source = submissions.get(run)?.memorySource;
+      if (!source)
+        throw new NativeError(
+          'Memory requires its native terminal Agent receipt',
+        );
+      const graph = this.callbackProfileGraph(source);
+      const selected = graph?.environments?.get(source.profile_id);
+      if (!selected)
+        throw new NativeError(
+          'Memory resource is outside its captured Agent graph',
+        );
+      owner = selected;
+      const profiles = [...graph!.environments!]
+        .filter(
+          ([id, candidate]) =>
+            candidate === selected &&
+            !(
+              graph!.deferred?.resources.deferred.has(id) &&
+              graph!.deferred.runtime(id) === undefined
+            ),
+        )
+        .map(([id]) => id);
+      scope = `{"source":${encodeProfileReceipt(source)},"profiles":${JSON.stringify(profiles)}}`;
+    }
+    if (!owner.hasSandboxMemory) {
+      if (automatic) return;
+      throw new TypeError('The terminal Agent resource has no sandbox memory');
+    }
+    // Native output and original input receipts independently select this partition.
     const snapshot: { revision: string; total: number; items: string[] } =
-      JSON.parse(await this.#native._memory_history(run.id!));
+      JSON.parse(await this.#native._memory_history(run.id!, scope));
     if (snapshot.total > 256)
       throw new RangeError(
         'Native sandbox memory supports at most 256 original records',
@@ -17273,10 +17356,10 @@ export class Session<OutputT = string, Context = unknown> {
     managed.captureRequested = true;
     let memoryPrepared = true;
     const prepareMemory =
-      this.options.environmentOwner?.hasSandboxMemory && this.lastRun
+      this.options.environmentOwner?.hasAnySandboxMemory && this.lastRun
         ? async () => {
             memoryPrepared = false;
-            await this.prepareMemory();
+            await this.prepareMemory(true);
             memoryPrepared = true;
           }
         : undefined;

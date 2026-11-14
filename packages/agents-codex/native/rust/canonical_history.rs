@@ -269,6 +269,7 @@ async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyho
 }
 
 const MEMORY_INPUT_ADMITTED: &str = "sandbox_memory_input_admitted";
+const MEMORY_TERMINAL_PROFILE: &str = "sandbox_memory_terminal_profile";
 
 fn sampling_receipt(context: &codex_protocol::protocol::TurnContextItem) -> bool {
     context.sdk_receipt.as_ref().is_some_and(|receipt| {
@@ -286,7 +287,7 @@ fn sampling_receipt(context: &codex_protocol::protocol::TurnContextItem) -> bool
 pub async fn record_memory_input_admission(
     state: &ThreadState,
     turn_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Value> {
     let _operation = state.engine.operation(false)?;
     let (_, total, items) = state.thread.sdk_replay_history_snapshot().await?;
     ensure!(
@@ -321,30 +322,66 @@ pub async fn record_memory_input_admission(
         .as_mut()
         .and_then(Value::as_object_mut)
         .context("Memory input admission requires an object sampling receipt")?;
+    let terminal = serde_json::to_value(crate::agent_profiles::active(&state.thread).await?)?;
     receipt.insert(MEMORY_INPUT_ADMITTED.to_owned(), Value::Bool(true));
+    receipt.insert(MEMORY_TERMINAL_PROFILE.to_owned(), terminal.clone());
     state
         .thread
         .append_rollout_items(&[RolloutItem::TurnContext(context)])
         .await?;
     state.thread.flush_rollout().await?;
-    Ok(())
+    Ok(terminal)
 }
 
 /// Unproven input remains outside memory, including after ordinary resume/fork.
-pub async fn memory_snapshot(state: &ThreadState, turn_id: &str) -> anyhow::Result<Value> {
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryScope {
+    source: codex_protocol::agent_profile::AgentProfileReceipt,
+    profiles: Vec<String>,
+}
+
+pub async fn memory_snapshot(
+    state: &ThreadState,
+    turn_id: &str,
+    scope_json: Option<&str>,
+) -> anyhow::Result<Value> {
     let _operation = state.engine.operation(false)?;
     let _mutation = state
         .mutations
         .try_lock()
         .context("native mutation is in progress")?;
     idle(state).await?;
-    let (revision, total, items) = state.thread.sdk_replay_history_snapshot().await?;
+    let scope: Option<MemoryScope> = scope_json
+        .map(|raw| {
+            ensure!(
+                raw.len() <= 64 * 1024,
+                "Memory scope exceeds its native bound"
+            );
+            Ok::<_, anyhow::Error>(serde_json::from_str(raw)?)
+        })
+        .transpose()?;
+    let opening = match &scope {
+        Some(scope) => Some(
+            crate::agent_profiles::memory_scope(&state.thread, &scope.source, &scope.profiles)
+                .await?,
+        ),
+        None => None,
+    };
+    let (revision, total, items, sources) = if scope.is_some() {
+        let (revision, total, items, sources) = state.thread.sdk_memory_history_snapshot().await?;
+        (revision, total, items, Some(sources))
+    } else {
+        let (revision, total, items) = state.thread.sdk_replay_history_snapshot().await?;
+        (revision, total, items, None)
+    };
     ensure!(
         total <= 256,
         "Native sandbox memory supports at most 256 original records"
     );
     let history = crate::subagents::read_history(state, None).await?;
     let mut admitted = HashSet::new();
+    let mut terminal_profile = None;
     for item in &history {
         match item {
             RolloutItem::TurnContext(context)
@@ -358,6 +395,19 @@ pub async fn memory_snapshot(state: &ThreadState, turn_id: &str) -> anyhow::Resu
             {
                 if let Some(turn) = &context.turn_id {
                     admitted.insert(turn.clone());
+                    if turn == turn_id {
+                        if let Some(value) = context
+                            .sdk_receipt
+                            .as_ref()
+                            .and_then(|receipt| receipt.get(MEMORY_TERMINAL_PROFILE))
+                        {
+                            let source: Option<codex_protocol::agent_profile::AgentProfileReceipt> =
+                                serde_json::from_value(value.clone())?;
+                            // Retained continuations may settle the same turn again.
+                            // Only the newest native settlement proof owns its export.
+                            terminal_profile = Some(source);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -367,20 +417,112 @@ pub async fn memory_snapshot(state: &ThreadState, turn_id: &str) -> anyhow::Resu
         admitted.contains(turn_id),
         "Native sandbox memory requires proven input admission"
     );
-    let items = items
-        .into_iter()
-        .filter_map(|raw| {
-            let item: Value = match serde_json::from_str(&raw) {
-                Ok(item) => item,
-                Err(error) => return Some(Err(error)),
+    if let Some(scope) = &scope {
+        ensure!(
+            terminal_profile.flatten().as_ref() == Some(&scope.source),
+            "Memory requires its exact native terminal profile proof"
+        );
+    }
+    let mut selected = Vec::new();
+    let mut input_sources = std::collections::HashMap::new();
+    let mut producers =
+        std::collections::HashMap::<&str, std::collections::HashMap<u64, usize>>::new();
+    if let (Some(opening), Some(sources)) = (&opening, &sources) {
+        crate::agent_profiles::validate_restored(opening, &history)?;
+        for source in sources {
+            if let Some(profile) = &source.profile {
+                ensure!(
+                    source.graph.as_deref() == Some(opening.fingerprint.as_str()),
+                    "Memory producer belongs to another Agent graph"
+                );
+                producers
+                    .entry(profile.profile_id.as_str())
+                    .or_default()
+                    .insert(profile.epoch, 0usize);
+            }
+        }
+        // Validate only the bounded set of output producers retained by this query.
+        for item in &history {
+            if let RolloutItem::ResponseItem(row) = item {
+                if let Some(metadata) = &row.metadata {
+                    if let Some(value) = &metadata.sdk_agent_profile {
+                        let profile = crate::agent_profiles::profile_receipt(value)?;
+                        if let Some(count) = producers
+                            .get_mut(profile.profile_id.as_str())
+                            .and_then(|epochs| epochs.get_mut(&profile.epoch))
+                        {
+                            ensure!(
+                                metadata.sdk_agent_graph.as_deref()
+                                    == Some(opening.fingerprint.as_str()),
+                                "Memory producer has a conflicting graph receipt"
+                            );
+                            *count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        ensure!(
+            producers
+                .values()
+                .flat_map(|epochs| epochs.values())
+                .all(|count| *count == 1),
+            "Memory producer requires a unique accepted Agent envelope"
+        );
+    }
+    for (index, raw) in items.into_iter().enumerate() {
+        let item: Value = serde_json::from_str(&raw)?;
+        let turn = item
+            .get("internal_chat_message_metadata_passthrough")
+            .and_then(|metadata| metadata.get("turn_id"))
+            .and_then(Value::as_str);
+        let Some(turn) = turn.and_then(|turn| admitted.get(turn)).map(String::as_str) else {
+            continue;
+        };
+        if let (Some(scope), Some(opening), Some(sources)) = (&scope, &opening, &sources) {
+            let source = sources
+                .get(index)
+                .context("Memory source alignment changed")?;
+            if !source.projected || source.inherited {
+                continue;
+            }
+            let profile = if let Some(profile) = &source.profile {
+                profile
+            } else if item.get("type").and_then(Value::as_str) == Some("message")
+                && item.get("role").and_then(Value::as_str) == Some("user")
+            {
+                if !input_sources.contains_key(turn) {
+                    input_sources.insert(
+                        turn,
+                        crate::agent_profiles::operation_source(opening, &history, turn)?,
+                    );
+                }
+                input_sources.get(turn).expect("captured input source")
+            } else {
+                // Historical/caller context has no generated-output receipt. It
+                // cannot silently become a different resource's memory input.
+                continue;
             };
-            let turn = item
-                .get("internal_chat_message_metadata_passthrough")
-                .and_then(|metadata| metadata.get("turn_id"))
-                .and_then(Value::as_str);
-            turn.is_some_and(|turn| admitted.contains(turn))
-                .then_some(Ok(raw))
-        })
-        .collect::<Result<Vec<_>, serde_json::Error>>()?;
-    Ok(json!({"revision":revision,"total":total,"items":items}))
+            if !scope.profiles.contains(&profile.profile_id) {
+                continue;
+            }
+        }
+        selected.push(raw);
+    }
+    if scope.is_some() {
+        let mut fold = codex_history::sdk_originals::SdkOriginalSnapshotFold::new(
+            selected.len(),
+            selected.len(),
+        );
+        for raw in &selected {
+            fold.begin_item().map_err(anyhow::Error::msg)?;
+            fold.write_item(raw.as_bytes())
+                .map_err(anyhow::Error::msg)?;
+            fold.end_item().map_err(anyhow::Error::msg)?;
+        }
+        let (revision, total, items) = fold.finish().map_err(anyhow::Error::msg)?;
+        Ok(json!({"revision":revision,"total":total,"items":items}))
+    } else {
+        Ok(json!({"revision":revision,"total":total,"items":selected}))
+    }
 }
