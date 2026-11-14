@@ -889,6 +889,122 @@ if (args[0] === 'build' && process.env.TEST_DISABLE_POST_BUILD_GIT === '1') fs.w
         expect(readFileSync(join(bin, 'local-notes.txt'), 'utf8')).toBe(
           'keep unrelated work',
         );
+        if (host === 'x86_64-pc-windows-msvc') {
+          writeFileSync(log, '');
+          const partialBuild = [
+            'package',
+            '--source',
+            source,
+            '--rmcp-source',
+            source,
+            '--windows-component',
+          ];
+          const addon = invoke([...partialBuild, 'addon']);
+          expect(addon.status, addon.stderr).toBe(0);
+          const addonReceipt = JSON.parse(
+            readFileSync(join(native, 'build-receipt.json'), 'utf8'),
+          );
+          expect(Object.keys(addonReceipt.products)).toEqual([
+            'native/codex.node',
+          ]);
+          const helpers = invoke([...partialBuild, 'helpers']);
+          expect(helpers.status, helpers.stderr).toBe(0);
+          const helperReceipt = JSON.parse(
+            readFileSync(join(native, 'build-receipt.json'), 'utf8'),
+          );
+          expect(Object.keys(helperReceipt.products).sort()).toEqual([
+            'bin/codex-code-mode-host.exe',
+            'bin/codex-sdk-runtime.exe',
+            'native/test-bin/exec-server-fixture.exe',
+          ]);
+          expect(addonReceipt.inputs).toEqual(helperReceipt.inputs);
+          expect(addonReceipt.sources).toEqual(helperReceipt.sources);
+          const all = readFileSync(log, 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line).args);
+          expect(all.filter((args) => args[0] === 'test')).toHaveLength(1);
+          const [addonCommand, helperCommand] = all.filter(
+            (args) => args[0] === 'build',
+          );
+          expect(addonCommand).toEqual(
+            expect.arrayContaining(['--lib', 'codex-agents-node', '--release']),
+          );
+          expect(addonCommand).not.toContain('--config');
+          expect(helperCommand).toEqual(
+            expect.arrayContaining([
+              'codex-agents-helpers',
+              '--target',
+              host,
+              '--release',
+              '--example',
+              'exec-server-fixture',
+              'codex-sdk-runtime',
+              'codex-code-mode-host',
+            ]),
+          );
+          const parts = join(dir, 'parts');
+          for (const [name, receipt] of [
+            ['addon', addonReceipt],
+            ['helpers', helperReceipt],
+          ] as const) {
+            for (const product of Object.keys(receipt.products)) {
+              const destination = join(parts, name, product);
+              mkdirSync(resolve(destination, '..'), { recursive: true });
+              copyFileSync(join(pkg, product), destination);
+            }
+            writeFileSync(
+              join(parts, name, 'native/build-receipt.json'),
+              JSON.stringify(receipt),
+            );
+          }
+          writeFileSync(
+            join(native, 'index.js'),
+            'module.exports = { CODEX_REVISION: ' +
+              JSON.stringify(addonReceipt.sources.codex.revision) +
+              ', create_engine() {}, create_checkpoint_engine() {}, _packaged_runtime() { return []; } };',
+          );
+          appendFileSync(
+            preload,
+            "\nif (process.env.TEST_WINDOWS_ASSEMBLY) Object.defineProperties(process, { platform: { value: 'win32' }, arch: { value: 'x64' } });\n",
+          );
+          const assemble = () =>
+            invoke(['assemble-windows', '--windows-parts', parts], {
+              TEST_WINDOWS_ASSEMBLY: '1',
+            });
+          const assembled = assemble();
+          expect(assembled.status, assembled.stderr).toBe(0);
+          const assembledReceipt = JSON.parse(
+            readFileSync(join(native, 'build-receipt.json'), 'utf8'),
+          );
+          expect(assembledReceipt.products).toEqual({
+            ...addonReceipt.products,
+            'bin/codex-sdk-runtime.exe':
+              helperReceipt.products['bin/codex-sdk-runtime.exe'],
+            'bin/codex-code-mode-host.exe':
+              helperReceipt.products['bin/codex-code-mode-host.exe'],
+          });
+          const partial = join(parts, 'helpers/native/build-receipt.json');
+          for (const [changes, message] of [
+            [{ host: 'other-host' }, 'Invalid Windows helpers build receipt'],
+            [{ release: false }, 'Invalid Windows helpers build receipt'],
+            [{ sources: {} }, 'Reviewed sources changed'],
+            [{ inputs: {} }, 'Native inputs changed'],
+            [{ products: addonReceipt.products }, 'Windows product inventory'],
+          ] as const) {
+            writeFileSync(
+              partial,
+              JSON.stringify({ ...helperReceipt, ...changes }),
+            );
+            expect(assemble().stderr).toContain(message);
+          }
+          writeFileSync(partial, JSON.stringify(helperReceipt));
+          writeFileSync(
+            join(parts, 'helpers/bin/codex-sdk-runtime.exe'),
+            'bad',
+          );
+          expect(assemble().stderr).toContain('Windows product digest differs');
+        }
         if (downloads) {
           const cargoLog = readFileSync(log, 'utf8');
           for (const mode of ['exhausted', '404', 'digest', 'tls'] as const) {

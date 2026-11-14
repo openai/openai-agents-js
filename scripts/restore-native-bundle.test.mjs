@@ -605,6 +605,88 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   );
 }, 30_000);
 
+test('restores only regular Windows parts from the specified artifact outputs', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'agents-windows-parts-'));
+  onTestFinished(() => rmSync(directory, { recursive: true, force: true }));
+  const output = join(directory, 'verified');
+  const root = join(directory, 'package');
+  execFileSync('git', ['init', '-q', directory], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const receipt = 'native/build-receipt.json';
+  const addon = 'native/codex.node';
+  const helper = 'bin/codex-sdk-runtime.exe';
+  const host = 'bin/codex-code-mode-host.exe';
+  const fixture = 'native/test-bin/exec-server-fixture.exe';
+  for (const name of [receipt, addon, helper, host, fixture]) {
+    mkdirSync(dirname(join(root, name)), { recursive: true });
+    writeFileSync(join(root, name), name);
+  }
+  const archive = (...files) =>
+    execFileSync('tar', ['-czf', '-', '-C', root, ...files], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  const validAddon = archive(receipt, addon);
+  const validHelpers = archive(receipt, helper, host, fixture);
+  const artifact = (id, bytes) =>
+    JSON.stringify({
+      'artifact-id': String(id),
+      'artifact-digest': createHash('sha256').update(bytes).digest('hex'),
+    });
+  const run = (addonBytes, expectedAddon = addonBytes) => {
+    const sources = JSON.stringify({
+      1: addonBytes.toString('base64'),
+      2: validHelpers.toString('base64'),
+    });
+    const preload = `
+      const archives = ${sources};
+      globalThis.fetch = async (url) => {
+        const id = new URL(url).pathname.split('/').at(-2);
+        return new Response(Buffer.from(archives[id], 'base64'));
+      };
+    `;
+    return spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'data:text/javascript,' + encodeURIComponent(preload),
+        fileURLToPath(
+          new URL('./restore-windows-native-parts.mjs', import.meta.url),
+        ),
+      ],
+      {
+        cwd: directory,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          WINDOWS_PARTS: output,
+          WINDOWS_ADDON: artifact(1, expectedAddon),
+          WINDOWS_HELPERS: artifact(2, validHelpers),
+          NATIVE_INPUTS: createHash('sha256').digest('hex'),
+        },
+      },
+    );
+  };
+  for (const bad of [
+    archive(receipt, addon, addon),
+    archive(receipt, addon, helper),
+    archive(receipt),
+  ]) {
+    const result = run(bad);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Unexpected Windows addon transfer files');
+    expect(existsSync(output)).toBe(false);
+  }
+  const corrupt = run(validAddon, Buffer.from('another archive'));
+  expect(corrupt.status).toBe(1);
+  expect(corrupt.stderr).toContain('Native bundle checksum mismatch');
+  expect(existsSync(output)).toBe(false);
+  const valid = run(validAddon);
+  expect(valid.status, valid.stderr).toBe(0);
+  expect(readFileSync(join(output, 'addon', addon), 'utf8')).toBe(addon);
+  expect(readFileSync(join(output, 'helpers', fixture), 'utf8')).toBe(fixture);
+});
+
 test('workflow keeps the publication barrier and qualification coverage on explicit protected transfers', () => {
   const path = (name) =>
     fileURLToPath(new URL('../.github/workflows/' + name, import.meta.url));
@@ -646,7 +728,19 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     );
   }
   expect(native).toContain('toJSON(steps.upload.outputs)');
-  expect(native).toContain('name: Native bundle (${{ inputs.platform }})');
+  expect(native).toContain("format('Native bundle ({0})', inputs.platform)");
+  expect(native).toContain(
+    'windows-bundle:\n    name: Native bundle (win32-x64)\n    needs: [native, windows-filenames]',
+  );
+  expect(native).toContain(
+    "inputs.platform == 'win32-x64' && jobs.windows-bundle.outputs.artifact",
+  );
+  expect(native).toContain(
+    'WINDOWS_ADDON: ${{ needs.native.outputs.windows_addon }}',
+  );
+  expect(native).toContain(
+    'WINDOWS_HELPERS: ${{ needs.windows-filenames.outputs.windows_helpers }}',
+  );
   expect(native).toContain('name: Publish native bundle\n');
   expect(native).toContain(
     `inputs.platform == 'linux-arm64' && inputs.managed_arm && '{"group":"codex-runners","labels":"codex-linux-arm64"}'`,
