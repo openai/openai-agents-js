@@ -91,7 +91,7 @@ jobs:
           native_archive="librusty_v8_ptrcomp_sandbox_release_${native_host}.a.gz"
           native_suffix=""
           if [[ "$EXPECTED_PLATFORM" == win32-x64 ]]; then
-            native_args+=(--config "$PWD/.upstream/reviewed-codex/codex-rs/.cargo/config.toml" --target "$native_host")
+            native_args+=(--package codex-agents-helpers --config "$PWD/.upstream/reviewed-codex/codex-rs/.cargo/config.toml" --target "$native_host")
             native_output="$CARGO_TARGET_DIR/$native_host/release"
             native_archive="rusty_v8_ptrcomp_sandbox_release_${native_host}.lib.gz"
             native_suffix=".exe"

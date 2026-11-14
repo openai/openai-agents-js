@@ -1658,6 +1658,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-agents-helpers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "codex-arg0",
+ "codex-code-mode-host",
+ "codex-exec-server",
+ "codex-http-client",
+ "libc",
+ "napi-build",
+ "tokio",
+]
+
+[[package]]
 name = "codex-agents-node"
 version = "0.1.0"
 dependencies = [

@@ -360,6 +360,8 @@ async function build() {
     '--locked',
     '--package',
     'codex-agents-node',
+    '--package',
+    'codex-agents-helpers',
     ...(release ? ['--release'] : []),
   ];
   run('cargo', clean, { env: environment, stdio: 'inherit' });
@@ -385,7 +387,7 @@ async function build() {
       'build',
       '--locked',
       '--lib',
-      ...(windows ? [] : helpers),
+      ...(windows ? ['--package', 'codex-agents-node'] : helpers),
       ...profile,
       ...timings,
     ],
@@ -400,6 +402,8 @@ async function build() {
       [
         'build',
         '--locked',
+        '--package',
+        'codex-agents-helpers',
         ...helpers,
         '--config',
         join(archive, 'codex-rs', '.cargo', 'config.toml'),
