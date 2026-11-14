@@ -9,6 +9,9 @@ on:
       inputs_hash:
         required: true
         type: string
+      managed_arm:
+        type: boolean
+        default: false
     outputs:
       artifact:
         value: ${{ jobs.native.outputs.artifact }}
@@ -25,6 +28,7 @@ jobs:
       ${{ fromJSON(
         github.repository == 'openai/openai-agents-js' && inputs.platform == 'linux-x64' && '{"group":"codex-runners","labels":"codex-linux-x64-xl"}' ||
         github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64' && '{"group":"codex-runners","labels":"codex-windows-x64"}' ||
+        inputs.platform == 'linux-arm64' && inputs.managed_arm && '{"group":"codex-runners","labels":"codex-linux-arm64"}' ||
         inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"' ||
         github.repository == 'openai/openai-agents-js' && inputs.platform == 'darwin-arm64' &&
           ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
@@ -41,7 +45,7 @@ jobs:
     env: &native_env
       EXPECTED_PLATFORM: ${{ inputs.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
-      CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' &&64 || inputs.platform == 'win32-x64' &&16 || inputs.platform == 'linux-arm64' &&4 ||5 }}
+      CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' && 64 || inputs.platform == 'win32-x64' && 16 || inputs.platform == 'linux-arm64' && (inputs.managed_arm && 16 || 4) || 5 }}
       CARGO_INCREMENTAL: '0'
     steps:
       - &native_checkout

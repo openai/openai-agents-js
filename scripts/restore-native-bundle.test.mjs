@@ -649,8 +649,16 @@ test('workflow keeps the publication barrier and qualification coverage on expli
   expect(native).toContain('name: Native bundle (${{ inputs.platform }})');
   expect(native).toContain('name: Publish native bundle\n');
   expect(native).toContain(
+    `inputs.platform == 'linux-arm64' && inputs.managed_arm && '{"group":"codex-runners","labels":"codex-linux-arm64"}'`,
+  );
+  expect(native).toContain(
     `inputs.platform == 'linux-arm64' && '"ubuntu-24.04-arm"'`,
   );
+  expect(native).toContain(
+    "inputs.platform == 'linux-arm64' && (inputs.managed_arm && 16 || 4)",
+  );
+  expect(workflow).toContain('managed_arm: &managed_arm >-');
+  expect(qualify).toContain('managed_arm: *managed_arm');
   expect(qualify).toContain(
     'platform: linux-arm64\n            runner: ubuntu-24.04-arm\n',
   );

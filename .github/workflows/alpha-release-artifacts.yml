@@ -100,6 +100,11 @@ jobs:
     with:
       platform: linux-arm64
       inputs_hash: ${{ needs.select.outputs.inputs_hash }}
+      managed_arm: &managed_arm >-
+        ${{ github.repository == 'openai/openai-agents-js' &&
+          ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
+           (github.event_name == 'pull_request' && github.base_ref == 'feat/codex-harness' &&
+            github.event.pull_request.head.repo.full_name == github.repository)) }}
 
   produce-macos:
     needs: select
@@ -203,11 +208,7 @@ jobs:
             platform: linux-arm64
             runner: ubuntu-24.04-arm
             cargo_jobs: 4
-            managed_arm: >-
-              ${{ github.repository == 'openai/openai-agents-js' &&
-                ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
-                 (github.event_name == 'pull_request' && github.base_ref == 'feat/codex-harness' &&
-                  github.event.pull_request.head.repo.full_name == github.repository)) }}
+            managed_arm: *managed_arm
             artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
           - &macos_package
             platform: darwin-arm64
