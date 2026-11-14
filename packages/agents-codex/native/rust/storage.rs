@@ -321,9 +321,8 @@ impl MemoryThreadStore {
         &self,
         id: ThreadId,
         keys: Vec<crate::python_tools::PendingKey>,
-        raw_prefix: &serde_json::Value,
+        prefix: Vec<RolloutItem>,
     ) -> anyhow::Result<bool> {
-        let prefix: Vec<RolloutItem> = serde_json::from_value(raw_prefix.clone())?;
         let mut writers = self.manual_writers.lock().await;
         let Some(writer) = writers.get_mut(&id) else {
             return Ok(false);

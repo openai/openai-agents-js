@@ -1,11 +1,11 @@
-import { access } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
 import { WebSocketServer, type WebSocket } from 'ws';
-import { z } from 'zod';
 import { Manifest, sandboxEnvironment } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
-import { Agent, Environment, NativeProvider, tool } from '../../src';
+import { Agent, Environment, NativeProvider } from '../../src';
 import type { Session as CoreSession } from '../../src/runtime/session';
 import { ModelServer, call, message } from './fixtures/model-server';
 import { startPublicExecutor } from './fixtures/public-executor';
@@ -127,57 +127,66 @@ async function providerFor(model: ModelServer): Promise<NativeProvider> {
 }
 
 it.each([false, true])(
-  'inherits the text-selected resource through repeated voice updates (child=%s)',
+  'inherits the text-selected executor through repeated voice updates (child=%s)',
   async (childSelected) => {
     const executor = await startPublicExecutor();
-    const model = new ModelServer(
-      childSelected
+    const selected = childSelected ? 'child-resource' : 'root-resource';
+    const model = new ModelServer([
+      ...(childSelected
         ? [
             [call('transfer_to_child', {}, { callId: 'resource-transfer' })],
             [message('Child ready.')],
           ]
-        : [[message('Root ready.')]],
-    );
+        : [[message('Root ready.')]]),
+      [
+        call(
+          'exec_command',
+          { cmd: 'cat identity.txt', login: false },
+          { callId: 'inspect-one' },
+        ),
+      ],
+      [message('First resource inspected.')],
+      [
+        call(
+          'exec_command',
+          { cmd: 'cat identity.txt', login: false },
+          { callId: 'inspect-two' },
+        ),
+      ],
+      [message('Second resource inspected.')],
+    ]);
     const peer = new PolicyPeer(model);
-    const closed: string[] = [];
     const paths = new Map<string, string>();
-    const source = (label: string) =>
-      sandboxEnvironment({
-        client: new UnixLocalSandboxClient(),
-        manifest: new Manifest({
-          entries: { 'identity.txt': { type: 'file', content: label } },
-        }),
-        connect: async (sandbox) => {
-          const cwd = sandbox.state.workspaceRootPath as string;
-          paths.set(label, cwd);
-          return Environment.lease(
-            new Environment({
-              url: executor.url,
-              headers: executor.headers,
-              cwd,
-              writableRoots: [cwd],
-              tools: ['exec_command', 'write_stdin'],
-            }),
-            () => {
-              closed.push(label);
-            },
-          );
-        },
+    for (const label of ['root-resource', 'child-resource']) {
+      const cwd = join(executor.cwd, label);
+      await mkdir(cwd);
+      await writeFile(join(cwd, 'identity.txt'), label);
+      paths.set(label, cwd);
+    }
+    const environment = (label: string) => {
+      const cwd = paths.get(label)!;
+      return new Environment({
+        url: executor.url,
+        headers: executor.headers,
+        cwd,
+        writableRoots: [cwd],
+        tools: ['exec_command', 'write_stdin'],
       });
+    };
     let session: Awaited<ReturnType<Agent['session']>> | undefined;
     await using provider = await providerFor(model);
     try {
       const child = new Agent({
         name: 'child',
         instructions: 'Child.',
-        environment: source('child-resource'),
+        environment: environment('child-resource'),
       });
       const root = new Agent({
         name: 'root',
         instructions: 'Root.',
         model: 'gpt-5.5',
         provider,
-        environment: source('root-resource'),
+        environment: environment('root-resource'),
         handoffs: [child],
       });
       session = await root.session();
@@ -185,22 +194,6 @@ it.each([false, true])(
         (await (await session.submit('Select the text agent.')).wait())
           .finalOutput,
       ).toBe(childSelected ? 'Child ready.' : 'Root ready.');
-      const observed: string[] = [];
-      const inspect = tool({
-        name: 'inspect_resource',
-        description: 'Inspect this resource.',
-        parameters: z.object({}),
-        execute: async (_args, context) => {
-          const text = (
-            await context.sandbox!.exec({
-              cmd: 'cat identity.txt',
-              login: false,
-            })
-          ).stdout;
-          observed.push(text);
-          return text;
-        },
-      });
       const voice = await session.realtime({ model: 'fixture-realtime' });
       try {
         const internal = session as unknown as CoreSession<string, undefined>;
@@ -222,7 +215,6 @@ it.each([false, true])(
               voice.updateAgent(
                 new Agent({
                   instructions: 'Rejected resource selection.',
-                  tools: [inspect],
                 }),
               ),
             ).rejects.toThrow();
@@ -231,30 +223,51 @@ it.each([false, true])(
           }
           expect(await internal._realtimeCurrentProfile()).toEqual(current);
         }
-        for (const name of ['voice-one', 'voice-two']) {
+        for (const [index, name] of ['voice-one', 'voice-two'].entries()) {
           await voice.updateAgent(
             new Agent({
               name,
               instructions: 'Inspect the inherited resource.',
-              tools: [inspect],
             }),
           );
-          peer.call('inspect_resource', {}, name);
+          peer.call(
+            'background_agent',
+            { input_transcript: 'Read identity.txt with exec_command.' },
+            name,
+          );
           expect(await peer.output(name)).toContain(
-            childSelected ? 'child-resource' : 'root-resource',
+            index === 0
+              ? 'First resource inspected.'
+              : 'Second resource inspected.',
           );
         }
-        expect(observed.map((value) => value.trim())).toEqual(
-          Array(2).fill(childSelected ? 'child-resource' : 'root-resource'),
+        const starts = executor.requests.filter(
+          (request) => request.method === 'process/start',
+        );
+        expect(starts).toHaveLength(2);
+        expect(starts.map((request) => (request.params as Frame).cwd)).toEqual(
+          Array(2).fill(pathToFileURL(paths.get(selected)!).href),
+        );
+        for (const callId of ['inspect-one', 'inspect-two']) {
+          const reply = model.requests
+            .flatMap((request) => request.input as Frame[])
+            .find(
+              (item) => item.call_id === callId && item.output !== undefined,
+            );
+          expect(JSON.stringify(reply?.output)).toContain(selected);
+          expect(JSON.stringify(reply?.output)).not.toContain(
+            childSelected ? 'root-resource' : 'child-resource',
+          );
+        }
+        expect(await session.getActiveAgent()).toBe(
+          childSelected ? child : root,
         );
       } finally {
         await voice.close();
       }
-      expect(closed).toEqual([]);
-      for (const cwd of paths.values()) await access(join(cwd, 'identity.txt'));
       await session.close();
       session = undefined;
-      expect(closed.sort()).toEqual(['child-resource', 'root-resource']);
+      for (const cwd of paths.values()) await access(join(cwd, 'identity.txt'));
       model.assertExhausted();
     } finally {
       await session?.close();
@@ -265,3 +278,44 @@ it.each([false, true])(
   },
   30000,
 );
+
+it('rejects live sandbox sources before opening Realtime', async () => {
+  const model = new ModelServer([]);
+  const peer = new PolicyPeer(model);
+  await using provider = await providerFor(model);
+  const connect = vi.fn(() => {
+    throw new Error('Unexpected sandbox acquisition');
+  });
+  try {
+    const child = new Agent({
+      name: 'child',
+      instructions: 'Child.',
+      environment: sandboxEnvironment({
+        client: new UnixLocalSandboxClient(),
+        manifest: new Manifest({
+          entries: {
+            'identity.txt': { type: 'file', content: 'child-resource' },
+          },
+        }),
+        connect,
+      }),
+    });
+    await using session = await new Agent({
+      instructions: 'Root.',
+      model: 'gpt-5.5',
+      provider,
+      handoffs: [child],
+    }).session();
+    await expect(
+      session.realtime({ model: 'fixture-realtime' }),
+    ).rejects.toThrow(
+      'Live sandbox capability manifests require text Agent activation',
+    );
+    expect(connect).not.toHaveBeenCalled();
+    expect(peer.frames).toEqual([]);
+    expect(model.requests).toEqual([]);
+  } finally {
+    await peer.close();
+    await ModelServer.closeAll();
+  }
+}, 30000);
