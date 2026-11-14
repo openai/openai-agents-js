@@ -13,7 +13,7 @@ export async function providerMetadataFixture(
   const canary = 'private-worker-continuation';
   const prompts: any[][] = [];
   let effects = 0;
-  let stored: string | null = null;
+  const stored: { snapshot: string | null } = { snapshot: null };
   const observed: unknown[] = [];
   const metadata = (suffix: string) => ({
     fixture: { continuation: canary + '-' + suffix },
@@ -95,7 +95,7 @@ export async function providerMetadataFixture(
       return 'fixture-owner';
     },
     async read() {
-      return stored;
+      return stored.snapshot;
     },
     async commit(
       _id: string,
@@ -104,9 +104,13 @@ export async function providerMetadataFixture(
       expected: number,
       value: string,
     ) {
-      if ((stored === null ? 0 : JSON.parse(stored).revision) !== expected)
+      if (
+        (stored.snapshot === null
+          ? 0
+          : JSON.parse(stored.snapshot).revision) !== expected
+      )
         throw Error('Wrong metadata checkpoint revision');
-      stored = value;
+      stored.snapshot = value;
     },
     async release() {},
   };
@@ -141,7 +145,7 @@ export async function providerMetadataFixture(
     !JSON.stringify(secondPrompt).includes(canary + '-tool')
   )
     throw Error('Missing native tool-loop continuation metadata');
-  if (!stored || !stored.includes(canary + '-final'))
+  if (!stored.snapshot?.includes(canary + '-final'))
     throw Error('Missing completed checkpoint metadata');
   const resumed = await runWorkerText('Continue.', {
     ...options,

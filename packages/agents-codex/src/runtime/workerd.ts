@@ -767,7 +767,7 @@ async function runWorkerTextTurn<Context>(
   const firstModel = async (
     effect: Extract<Effect, { type: 'model' }>,
     userInput: string,
-    sample: (signal: AbortSignal) => Promise<ModelResponse>,
+    sample: (signal: AbortSignal) => Promise<JsonObject>,
   ) => {
     const checks = [
       ...inputChecks,
