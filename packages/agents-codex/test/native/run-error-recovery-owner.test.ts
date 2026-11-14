@@ -674,3 +674,94 @@ it('recovers after a request ceiling while retaining exactly one accepted tool e
   expect(server.requests).toHaveLength(1);
   server.assertExhausted();
 });
+
+it('observes native output before a one-shot recovery settles the same streamed run', async () => {
+  const received: string[] = [];
+  let release!: () => void;
+  const observed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const invalid = '{"answer":42}';
+  const itemId = 'msg_streamed_invalid';
+  let requests = 0;
+  await using provider = new NativeProvider({
+    modelBackend: {
+      complete() {
+        throw new Error('Expected a streaming request');
+      },
+      async *stream(): AsyncGenerator<
+        import('../../src/runtime/binding').JsonObject
+      > {
+        requests++;
+        yield {
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { type: 'message', id: itemId, role: 'assistant', content: [] },
+        };
+        yield {
+          type: 'response.output_text.delta',
+          item_id: itemId,
+          output_index: 0,
+          content_index: 0,
+          delta: invalid,
+        };
+        await observed;
+        yield {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: {
+            type: 'message',
+            id: itemId,
+            role: 'assistant',
+            content: [{ type: 'output_text', text: invalid }],
+          },
+        };
+        yield { type: 'response.completed', response: { id: 'response-1' } };
+      },
+    },
+  });
+  const result = await new Agent({
+    instructions: 'Answer.',
+    model: 'fixture-stream-model',
+    outputType: z.object({ answer: z.string() }),
+    provider,
+  }).run('Begin.', {
+    signal: AbortSignal.timeout(8_000),
+    onEvent(event) {
+      if (event.type === 'output_text_delta') {
+        received.push(event.delta);
+        release();
+      }
+    },
+    errorHandler(failure) {
+      expect(failure.kind).toBe('invalid_output');
+      expect(received.join('')).toBe(invalid);
+      return new RecoverRun({ answer: 'fallback' });
+    },
+    returnHistory: true,
+  });
+  expect(result.finalOutput).toEqual({ answer: 'fallback' });
+  expect(requests).toBe(1);
+  expect(JSON.stringify(result.history)).toContain('fallback');
+});
+
+it('stops native streaming when its one-shot observer throws', async () => {
+  const failure = new Error('synthetic observer failure');
+  const invalid = '{"answer":42}';
+  const server = new ModelServer([[message(invalid)]]);
+  await using provider = await providerFor(server);
+  const handler = vi.fn();
+  await expect(
+    new Agent({
+      instructions: 'Answer.',
+      outputType: z.object({ answer: z.string() }),
+      provider,
+    }).run('Begin.', {
+      onEvent() {
+        throw failure;
+      },
+      errorHandler: handler,
+    }),
+  ).rejects.toBe(failure);
+  expect(handler).not.toHaveBeenCalled();
+});

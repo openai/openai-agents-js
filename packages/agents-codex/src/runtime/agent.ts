@@ -1,4 +1,6 @@
 import type { RunErrorHandler } from './run-error-recovery';
+import type { Observation } from './observation';
+import { abortable } from '../voice/abortable';
 import { configuredAgentTool } from './agent-tool';
 import { MAX_AUDIO_INPUT_BYTES } from './media';
 import { managedWorkspaceRestore } from './managed-workspace';
@@ -50,6 +52,7 @@ import {
   type OneShotOptions,
   type Completed,
   type CapturedInputStoragePolicy,
+  type Turn,
 } from './session';
 import {
   sessionStateSchema,
@@ -584,6 +587,7 @@ interface OwnedRunOptions {
   guardrailInput?: import('./input').UserInput;
   errorInput?: import('./input').UserInput | null;
   errorHandler?: RunErrorHandler<any, any>;
+  onEvent?: (event: Observation) => void | Promise<void>;
   captureErrorDetails?: boolean;
   inputStoragePolicy?: CapturedInputStoragePolicy;
   returnState?: boolean;
@@ -659,6 +663,21 @@ async function completeOwnedSession<Output>(
     }
     throw options.signal.reason;
   }
+  let events: Promise<void> | undefined;
+  const observe = options.onEvent;
+  const observeTurn = observe
+    ? (turn: Turn<Output, string | null>) => {
+        events = (async () => {
+          for await (const event of turn.events()) {
+            const invoke = Promise.resolve(observe(event));
+            if (options.signal) await abortable(invoke, options.signal);
+            else await invoke;
+          }
+        })();
+        // Close owned work promptly if the callback fails while sampling.
+        void events.catch(() => closeOwned().catch(() => {}));
+      }
+    : undefined;
   const pending = (async () => {
     if (options.returnRawUsage) session._startRawUsage();
     if (options.returnItems || options.errorInput !== undefined)
@@ -675,14 +694,28 @@ async function completeOwnedSession<Output>(
         options.modelSettingsOverride,
         options.toolNotFoundBehavior,
         options.inputStoragePolicy,
+        observeTurn,
       );
+    } else if (session.restoredTurn) {
+      observeTurn?.(session.restoredTurn);
     }
     return session.wait();
   })();
   delete options.guardrailInput;
   const result = await pending.catch(async (error) => {
     let primary = originalFailure(error);
-    if (options.errorInput !== undefined && !options.signal?.aborted) {
+    let observationFailed = false;
+    try {
+      await events;
+    } catch (observerError) {
+      observationFailed = true;
+      primary = originalFailure(observerError);
+    }
+    if (
+      !observationFailed &&
+      options.errorInput !== undefined &&
+      !options.signal?.aborted
+    ) {
       let details;
       try {
         details = await session._captureRunErrorDetails(options.errorInput);
@@ -718,6 +751,7 @@ async function completeOwnedSession<Output>(
     throw primary;
   });
   try {
+    await events;
     options.signal?.throwIfAborted();
     const completed =
       options.returnState ||

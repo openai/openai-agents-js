@@ -1,4 +1,5 @@
 import type { RunErrorHandler } from './run-error-recovery';
+import type { Observation } from './observation';
 import { acquireProfileEnvironments } from './profile-environments';
 import {
   captureProviderHistory,
@@ -404,6 +405,8 @@ export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   captureErrorDetails?: boolean;
   /** Supply validated fallback output after an eligible settled failure, without retrying. */
   errorHandler?: RunErrorHandler<Output, Context>;
+  /** Observe this run's native events while it executes. The handler can await backpressure. */
+  onEvent?: (event: Observation) => void | Promise<void>;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -1010,6 +1013,9 @@ export class Agent<Context = undefined, Output = string> {
     if (errorHandler !== undefined && typeof errorHandler !== 'function')
       throw new TypeError('errorHandler must be callable');
     const observeFailure = captureErrorDetails || errorHandler !== undefined;
+    const onEvent = options.onEvent;
+    if (onEvent !== undefined && typeof onEvent !== 'function')
+      throw new TypeError('onEvent must be callable');
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
     const beforeStep = options.beforeStep;
@@ -1126,6 +1132,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnRawUsage !== true &&
       options.returnItems !== true &&
       !observeFailure &&
+      onEvent === undefined &&
       options.prepareRequest === undefined &&
       inputStoragePolicy === undefined &&
       modelOverride === undefined &&
@@ -1160,6 +1167,7 @@ export class Agent<Context = undefined, Output = string> {
       guardrailInput,
       errorInput,
       errorHandler,
+      onEvent,
       captureErrorDetails,
       inputStoragePolicy,
       maxModelSteps,

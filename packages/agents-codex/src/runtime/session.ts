@@ -5208,8 +5208,9 @@ export class Session<OutputT = string, Context = unknown> {
     modelSettingsOverride?: ModelSettings,
     toolNotFoundBehavior?: OperationOptions['toolNotFoundBehavior'],
     inputStoragePolicy?: CapturedInputStoragePolicy,
+    observeTurn?: (turn: Turn<OutputT, string | null>) => void,
   ): Promise<NativeRunResult> {
-    this.startTurn(
+    const run = this.startTurn(
       input,
       false,
       undefined,
@@ -5236,6 +5237,7 @@ export class Session<OutputT = string, Context = unknown> {
       inputStoragePolicy,
     );
 
+    observeTurn?.(this.issuedTurn(run) as Turn<OutputT, string | null>);
     return this.#waitResult();
   }
   private get hasInputGuardrails(): boolean {
