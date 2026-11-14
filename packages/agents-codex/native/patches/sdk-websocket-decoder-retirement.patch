@@ -1,0 +1,86 @@
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index 4167af5a3cf85746eb74a2141b2d85ac0dab7311..b87067237ccf160a6cc8a2933f47f64dbe0c116b 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -68,6 +68,8 @@ pub struct ResponsesWebsocketMessageTransport {
+     pub messages: mpsc::UnboundedReceiver<Result<Message, WsError>>,
+     pub driver: tokio::task::JoinHandle<()>,
+     pub headers: HeaderMap,
++    /// Core records only a decoded terminal protocol error before retiring this transport.
++    pub decoded_integrity: Arc<OnceLock<codex_protocol::error::ResponseIntegrityReason>>,
+ }
+ 
+ use codex_protocol::model_request_transport::WebsocketOptions;
+@@ -77,6 +79,7 @@ struct WsStream {
+     rx_message: mpsc::UnboundedReceiver<Result<Message, WsError>>,
+     pump_task: tokio::task::JoinHandle<()>,
+     abort_on_drop: bool,
++    decoded_integrity: Option<Arc<OnceLock<codex_protocol::error::ResponseIntegrityReason>>>,
+     upgrade_rate_limits: Option<ApiRateLimits>,
+ }
+ 
+@@ -88,6 +91,14 @@ pub enum ResponsesWebsocketCommand {
+ }
+ 
+ impl WsStream {
++    fn record_decoded_integrity(&self, error: &ApiError) {
++        if let ApiError::ResponseIntegrity { reason } = error
++            && let Some(cause) = &self.decoded_integrity
++        {
++            let _ = cause.set(reason.clone());
++        }
++    }
++
+     fn new(inner: WebSocketConnection, upgrade_rate_limits: Option<ApiRateLimits>, options: WebsocketOptions) -> Self {
+         let (tx_command, mut rx_command) = mpsc::channel::<ResponsesWebsocketCommand>(32);
+         let (tx_message, rx_message) = mpsc::unbounded_channel::<Result<Message, WsError>>();
+@@ -189,6 +200,7 @@ impl WsStream {
+             rx_message,
+             pump_task,
+             abort_on_drop: true,
++            decoded_integrity: None,
+             upgrade_rate_limits,
+         }
+     }
+@@ -439,6 +451,9 @@ impl ResponsesWebsocketConnection {
+                 };
+ 
+                 if let Err(err) = result {
++                    if let Some(stream) = guard.as_ref() {
++                        stream.record_decoded_integrity(&err);
++                    }
+                     // A terminal stream error should reach the caller immediately. Waiting for a
+                     // graceful close handshake here can stall indefinitely and mask the error.
+                     let failed_stream = guard.take();
+@@ -749,6 +764,7 @@ async fn connect_websocket_with_options(
+             rx_message: transport.messages,
+             pump_task: transport.driver,
+             abort_on_drop: false,
++            decoded_integrity: Some(transport.decoded_integrity),
+             upgrade_rate_limits: parse_api_rate_limits(&transport.headers),
+         };
+         (stream, StatusCode::SWITCHING_PROTOCOLS, transport.headers)
+@@ -1614,6 +1630,7 @@ mod tests {
+             rx_message,
+             pump_task: tokio::spawn(std::future::pending::<()>()),
+             abort_on_drop: true,
++            decoded_integrity: None,
+             upgrade_rate_limits: None,
+         };
+         let connection =
+@@ -1688,6 +1705,7 @@ mod tests {
+             rx_message,
+             pump_task,
+             abort_on_drop: true,
++            decoded_integrity: None,
+             upgrade_rate_limits: None,
+         };
+         let (tx_event, mut rx_event) = mpsc::channel(8);
+@@ -1831,6 +1849,7 @@ mod tests {
+                 rx_message,
+                 pump_task,
+                 abort_on_drop: true,
++            decoded_integrity: None,
+                 upgrade_rate_limits: None,
+             };
+             let (tx_event, mut rx_event) = mpsc::channel(8);

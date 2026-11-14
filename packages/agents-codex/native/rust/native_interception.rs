@@ -3743,12 +3743,14 @@ struct SentinelTicket {
 pub(crate) enum SentinelFailure {
     Transport(codex_api::TransportError),
     WebSocket { oversized: bool },
+    DecodedIntegrity { reason: codex_protocol::error::ResponseIntegrityReason },
 }
 
 impl SentinelFailure {
     pub(crate) fn into_response_error(self) -> ModelResponseError {
         match self {
             Self::Transport(error) => ModelResponseError::Transport(error),
+            Self::DecodedIntegrity { reason } => ModelResponseError::ResponseIntegrity { reason },
             Self::WebSocket { oversized } => ModelResponseError::InvalidRequest {
                 message: if oversized {
                     "Native WebSocket request exceeds the 64 MiB UTF-8 transport limit; model context limits are separate."
@@ -3828,6 +3830,11 @@ impl SentinelRequest {
                             }))
                     {
                         match error {
+                            SentinelFailure::DecodedIntegrity { .. }
+                                if self.ticket.kind != ModelRequestKind::Generation =>
+                            {
+                                Some(SentinelFailure::WebSocket { oversized: false }.into_response_error())
+                            }
                             // An admitted, decoded protocol error stays terminal even
                             // if the local WebSocket receiver closes before its poll.
                             SentinelFailure::WebSocket { oversized: false }
@@ -8260,10 +8267,12 @@ mod tests {
     async fn admitted_websocket_failure_keeps_already_decoded_integrity() {
         use codex_protocol::error::ResponseIntegrityReason;
 
-        for (kind, decoded, retains_integrity) in [
-            (ModelRequestKind::Generation, false, false),
-            (ModelRequestKind::Generation, true, true),
-            (ModelRequestKind::Warmup, true, false),
+        for (kind, decoded, retains_integrity, early_integrity) in [
+            (ModelRequestKind::Generation, false, false, false),
+            (ModelRequestKind::Generation, true, true, false),
+            (ModelRequestKind::Warmup, true, false, false),
+            (ModelRequestKind::Generation, false, true, true),
+            (ModelRequestKind::Warmup, false, false, true),
         ] {
             let control = Arc::new(Control::new("root".into(), true));
             let owner = (kind == ModelRequestKind::Generation)
@@ -8290,8 +8299,16 @@ mod tests {
             });
             let upstream = Box::pin(stream::once(async move {
                 *ticket.failure.lock().unwrap() =
-                    Some(SentinelFailure::WebSocket { oversized: false });
-                if decoded {
+                    Some(if early_integrity {
+                        SentinelFailure::DecodedIntegrity {
+                            reason: ResponseIntegrityReason::UndecodableOutputItem,
+                        }
+                    } else {
+                        SentinelFailure::WebSocket { oversized: false }
+                    });
+                if early_integrity {
+                    Ok(ResponseEvent::Created { response_id: Some("response".into()) })
+                } else if decoded {
                     Err(ModelResponseError::ResponseIntegrity {
                         reason: ResponseIntegrityReason::UndecodableOutputItem,
                     })

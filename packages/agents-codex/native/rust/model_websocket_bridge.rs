@@ -1,4 +1,5 @@
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
+use codex_protocol::error::ResponseIntegrityReason;
 
 use anyhow::{Context, Result, ensure};
 use codex_api::{ApiError, ResponsesWebsocketCommand, ResponsesWebsocketMessageTransport};
@@ -28,6 +29,8 @@ pub(crate) async fn connect(
     let (commands, command_rx) = mpsc::channel(32);
     let (message_tx, messages) = mpsc::unbounded_channel();
     let (mut ready, connected) = oneshot::channel();
+    let decoded_integrity = Arc::new(OnceLock::new());
+    let retired_integrity = decoded_integrity.clone();
     let owner = Arc::clone(&control);
     let retired = || ApiError::Stream("Native WebSocket owner ended".into());
     let driver = control
@@ -62,8 +65,8 @@ pub(crate) async fn connect(
                 };
                 let result = tokio::select! {
                     biased;
-                    () = stopped.cancelled() => Ok(()),
-                    () = message_tx.closed() => Ok(()),
+                    () = stopped.cancelled() => Ok(BridgeExit::OwnerStopped),
+                    () = message_tx.closed() => Ok(BridgeExit::ConsumerRetired),
                     result = bridge.run(command_rx, &message_tx, websocket_options) => result,
                 };
                 if let Some((ticket, oversized)) = bridge.pending.take()
@@ -73,10 +76,15 @@ pub(crate) async fn connect(
                         &engine,
                         &provider,
                         &ticket,
-                        SentinelFailure::WebSocket { oversized },
+                        retirement_failure(
+                            &result,
+                            retired_integrity.get(),
+                            oversized,
+                            bridge.generation.as_ref().is_some_and(|generation| !generation.warmup),
+                        ),
                     );
                 }
-                if result.is_err() {
+                if result.is_err() || matches!(result, Ok(BridgeExit::ConsumerSendFailed)) {
                     let _ = message_tx.send(Ok(Message::Close(Some(CloseFrame {
                         code: CloseCode::Error,
                         reason: "Native provider request failed".into(),
@@ -92,7 +100,32 @@ pub(crate) async fn connect(
         messages,
         driver,
         headers,
+        decoded_integrity,
     })
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BridgeExit {
+    ConsumerRetired,
+    ConsumerSendFailed,
+    OwnerStopped,
+    PeerEnded,
+}
+
+fn retirement_failure(
+    exit: &Result<BridgeExit>,
+    decoded: Option<&ResponseIntegrityReason>,
+    oversized: bool,
+    generation: bool,
+) -> SentinelFailure {
+    if generation && !oversized
+        && matches!(exit, Ok(BridgeExit::ConsumerRetired | BridgeExit::ConsumerSendFailed))
+        && let Some(reason) = decoded
+    {
+        SentinelFailure::DecodedIntegrity { reason: reason.clone() }
+    } else {
+        SentinelFailure::WebSocket { oversized }
+    }
 }
 
 struct Generation {
@@ -119,7 +152,7 @@ impl Bridge<'_> {
         mut commands: mpsc::Receiver<ResponsesWebsocketCommand>,
         messages: &mpsc::UnboundedSender<Result<Message, WsError>>,
         options: codex_protocol::model_request_transport::WebsocketOptions,
-    ) -> Result<()> {
+    ) -> Result<BridgeExit> {
         let mut buffered = None;
         let mut pongs = self.socket.subscribe_pongs().map_err(|error| anyhow::anyhow!(error.reason))?;
         let mut ping_timer = options.ping_interval_ms.and_then(|value| {
@@ -138,12 +171,12 @@ impl Bridge<'_> {
                 biased;
                 command = commands.recv() => {
                     let Some(ResponsesWebsocketCommand::Send { message, tx_result }) = command else {
-                        return Ok(());
+                        return Ok(BridgeExit::ConsumerRetired);
                     };
                     // Acknowledge the local handoff, as the loopback socket did.
                     // Upstream failures retire the admitted request before closing.
                     if tx_result.send(Ok(())).is_err() {
-                        return Ok(());
+                        return Ok(BridgeExit::ConsumerRetired);
                     }
                     // Apply the carrier's message limit before any JSON parsing.
                     if message.len() > MAX_REQUEST_BYTES {
@@ -151,15 +184,17 @@ impl Bridge<'_> {
                             code: CloseCode::Size,
                             reason: Default::default(),
                         }))));
-                        return Ok(());
+                        return Ok(BridgeExit::ConsumerRetired);
                     }
                     let Message::Text(message) = message else {
                         ensure!(matches!(message, Message::Close(_)), "Invalid native WebSocket request");
-                        return Ok(());
+                        return Ok(BridgeExit::ConsumerRetired);
                     };
                     self.send(relay_json(message.as_str())?).await?;
                     if let Some(frame) = buffered.take() {
-                        self.forward(Some(frame), messages)?;
+                        if !self.forward(Some(frame), messages)? {
+                            return Ok(BridgeExit::ConsumerSendFailed);
+                        }
                     }
                 }
                 _ = async { match ping_timer.as_mut() {
@@ -190,10 +225,12 @@ impl Bridge<'_> {
                 received = self.socket.receive_frame(), if buffered.is_none() => {
                     let frame = received.map_err(|error| anyhow::anyhow!(error.reason))?;
                     if self.generation.is_some() {
-                        self.forward(frame, messages)?;
+                        if !self.forward(frame, messages)? {
+                            return Ok(BridgeExit::ConsumerSendFailed);
+                        }
                     } else {
                         match frame {
-                            None | Some(Frame::Close(..) | Frame::Closed) => return Ok(()),
+                            None | Some(Frame::Close(..) | Frame::Closed) => return Ok(BridgeExit::PeerEnded),
                             Some(frame) => buffered = Some(frame),
                         }
                     }
@@ -206,14 +243,12 @@ impl Bridge<'_> {
         &mut self,
         frame: Option<Frame>,
         messages: &mpsc::UnboundedSender<Result<Message, WsError>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(Frame::Text(text)) = frame else {
             anyhow::bail!("Native provider ended before completion");
         };
         self.observe(relay_json(&text)?)?;
-        messages
-            .send(Ok(Message::Text(text.into())))
-            .map_err(|_| anyhow::anyhow!("Native WebSocket consumer ended"))
+        Ok(messages.send(Ok(Message::Text(text.into()))).is_ok())
     }
 
     async fn send(&mut self, mut body: Value) -> Result<()> {
@@ -447,7 +482,30 @@ fn normalize_relay_numbers(value: &mut Value) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::relay_json;
+    use super::*;
+
+    #[test]
+    fn local_decoder_retirement_is_terminal_without_replaying() {
+        for exit in [BridgeExit::ConsumerRetired, BridgeExit::ConsumerSendFailed] {
+            assert!(matches!(
+                retirement_failure(&Ok(exit), Some(&ResponseIntegrityReason::UndecodableOutputItem), false, true),
+                SentinelFailure::DecodedIntegrity { reason: ResponseIntegrityReason::UndecodableOutputItem }
+            ));
+        }
+        for (exit, oversized, generation) in [
+            (Ok(BridgeExit::ConsumerRetired), false, false),
+            (Ok(BridgeExit::ConsumerRetired), true, true),
+            (Ok(BridgeExit::PeerEnded), false, true),
+            (Ok(BridgeExit::OwnerStopped), false, true),
+            (Err(anyhow::anyhow!("physical failure")), false, true),
+        ] {
+            assert!(matches!(
+                retirement_failure(&exit, Some(&ResponseIntegrityReason::UndecodableOutputItem), oversized, generation),
+                SentinelFailure::WebSocket { oversized: actual } if actual == oversized
+            ));
+        }
+        assert!(matches!(retirement_failure(&Ok(BridgeExit::ConsumerRetired), None, false, true), SentinelFailure::WebSocket { oversized: false }));
+    }
 
     #[test]
     fn relay_projection_uses_finite_javascript_numbers() {
