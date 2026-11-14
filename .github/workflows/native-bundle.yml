@@ -35,27 +35,31 @@ jobs:
     timeout-minutes: 180
     outputs:
       artifact: ${{ toJSON(steps.upload.outputs) }}
-    defaults:
+    defaults: &native_defaults
       run:
         shell: bash
-    env:
+    env: &native_env
       EXPECTED_PLATFORM: ${{ inputs.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: ${{ inputs.platform == 'linux-x64' &&64 || inputs.platform == 'win32-x64' &&16 || inputs.platform == 'linux-arm64' &&4 ||5 }}
       CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - &native_checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 2
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      - &native_node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Check runner platform
+      - &native_platform
+        name: Check runner platform
         run: node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
-      - name: Install Rust
+      - &native_rust
+        name: Install Rust
         run: |
           echo "CARGO_HOME=$RUNNER_TEMP/agents-cargo" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/agents-target" >> "$GITHUB_ENV"
@@ -68,7 +72,8 @@ jobs:
       - name: Install macOS build tools
         if: runner.os == 'macOS'
         run: brew install cmake pkgconf protobuf openssl@3
-      - name: Install Windows build tools
+      - &native_windows_tools
+        name: Install Windows build tools
         if: runner.os == 'Windows'
         shell: pwsh
         run: choco install protoc --yes --no-progress
@@ -77,14 +82,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node packages/agents-codex/scripts/native.mjs package
-      - name: Test Windows project-search filename handling
-        if: runner.os == 'Windows'
-        working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/agents-project-search-target
-        run: |
-          native_host=$(rustc -vV | sed -n 's/^host: //p')
-          cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture
       - name: Build the executor test fixture
         working-directory: packages/agents-codex/native
         run: |
@@ -125,3 +122,31 @@ jobs:
           if-no-files-found: error
           # Automatic reuse is opportunistic; an expired bundle is rebuilt immediately.
           retention-days: 90
+
+  windows-filenames:
+    name: Windows project-search filename handling
+    if: github.repository == 'openai/openai-agents-js' && inputs.platform == 'win32-x64'
+    runs-on:
+      group: codex-runners
+      labels: codex-windows-x64
+    timeout-minutes: 180
+    defaults: *native_defaults
+    env: *native_env
+    steps:
+      - *native_checkout
+      - *native_node
+      - *native_platform
+      - *native_rust
+      - *native_windows_tools
+      - name: Prepare the reviewed native source
+        run: node packages/agents-codex/scripts/native.mjs prepare
+      - name: Test Windows project-search filename handling
+        if: runner.os == 'Windows'
+        working-directory: packages/agents-codex/native/.upstream/reviewed-codex/codex-rs
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/agents-project-search-target
+        run: |
+          native_host=$(rustc -vV | sed -n 's/^host: //p')
+          cargo test --locked --release --target "$native_host" -p codex-exec-server --lib invalid_filename -- --nocapture
+      - name: Audit the reviewed native source
+        run: node packages/agents-codex/scripts/native.mjs audit
