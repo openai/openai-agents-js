@@ -664,14 +664,22 @@ it('converts a borrowed MCP batch per tool and normalizes optional nulls before 
     name: 'open',
     parameters: original[1].inputSchema,
   });
-  expect(peer.callTool.mock.calls.map(([name, args]) => [name, args])).toEqual([
-    ['lookup', { value: 'ok' }],
-    ['open', { extra: { preserved: true } }],
-  ]);
-  expect(approvals.map((event) => [event.toolName, event.arguments])).toEqual([
-    ['lookup', { value: 'ok' }],
-    ['open', { extra: { preserved: true } }],
-  ]);
+  // The model can issue both calls in parallel. Check each payload and its
+  // approval without depending on which call reaches the server first.
+  expect(peer.callTool).toHaveBeenCalledTimes(2);
+  expect(peer.callTool.mock.calls.map(([name, args]) => [name, args])).toEqual(
+    expect.arrayContaining([
+      ['lookup', { value: 'ok' }],
+      ['open', { extra: { preserved: true } }],
+    ]),
+  );
+  expect(approvals).toHaveLength(2);
+  expect(approvals.map((event) => [event.toolName, event.arguments])).toEqual(
+    expect.arrayContaining([
+      ['lookup', { value: 'ok' }],
+      ['open', { extra: { preserved: true } }],
+    ]),
+  );
   expect(peer.declarations).toEqual(original);
   expect(peer.close).not.toHaveBeenCalled();
 });
