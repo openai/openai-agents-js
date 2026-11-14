@@ -290,12 +290,24 @@
     },
     "./internal/browser-primitives": {
       "browser": {
-        "types": "./dist/runtime/browser-primitives.d.mts",
-        "default": "./dist/runtime/browser-primitives.mjs"
+        "import": {
+          "types": "./dist/runtime/browser-primitives.d.mts",
+          "default": "./dist/runtime/browser-primitives.mjs"
+        },
+        "require": {
+          "types": "./dist/runtime/browser-primitives.d.ts",
+          "default": "./dist/runtime/browser-primitives.js"
+        }
       },
       "react-native": {
-        "types": "./dist/runtime/browser-primitives.d.mts",
-        "default": "./dist/runtime/browser-primitives.mjs"
+        "import": {
+          "types": "./dist/runtime/browser-primitives.d.mts",
+          "default": "./dist/runtime/browser-primitives.mjs"
+        },
+        "require": {
+          "types": "./dist/runtime/browser-primitives.d.ts",
+          "default": "./dist/runtime/browser-primitives.js"
+        }
       }
     }
   },
