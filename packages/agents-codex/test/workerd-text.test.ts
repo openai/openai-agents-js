@@ -193,7 +193,7 @@ portableTest(
       complete() {
         throw new Error('Expected the stream adapter');
       },
-      async *stream() {
+      async *stream(): AsyncGenerator<JsonObject> {
         const event = {
           type: 'response.completed',
           response: { id: 'duplicate', status: 'completed', output: [call] },
@@ -332,7 +332,7 @@ portableTest(
       complete() {
         throw new Error('Expected the stream adapter');
       },
-      async *stream() {
+      async *stream(): AsyncGenerator<JsonObject> {
         yield { type: 'response.created', response: { id: 'response' } };
         yield {
           type: 'response.output_item.done',
