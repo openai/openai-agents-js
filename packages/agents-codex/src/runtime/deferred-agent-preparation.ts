@@ -13,7 +13,7 @@ type PreparedDestination = Readonly<{
   owner: EnvironmentAcquisition;
 }>;
 
-/** The captured destination callback owns acquisition; Core still owns admission. */
+/** @internal The captured destination callback owns acquisition; Core still owns admission. */
 export class DeferredAgentPreparation {
   private readonly prepared = new Map<string, PreparedDestination>();
   private readonly confirmed = new Set<string>();

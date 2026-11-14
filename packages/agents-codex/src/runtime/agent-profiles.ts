@@ -47,6 +47,7 @@ export interface CapturedAgentGraph {
     string,
     import('./environment-source').EnvironmentAcquisition
   >;
+  /** @internal Destination preparation belongs to the captured runtime. */
   readonly deferred?: import('./deferred-agent-preparation').DeferredAgentPreparation;
   readonly workspace?: Pick<
     import('./sandbox-capabilities').SandboxCapabilityLease,

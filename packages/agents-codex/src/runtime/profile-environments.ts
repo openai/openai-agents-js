@@ -4,7 +4,7 @@ import {
   type EnvironmentAcquisition,
 } from './environment-source';
 
-/** Current acquisitions; pending Sources have no native executor authority. */
+/** @internal Current acquisitions; pending Sources have no native executor authority. */
 export class ProfileEnvironments extends Map<string, EnvironmentAcquisition> {
   readonly deferred = new Set<string>();
   private readonly pending = new Map<string, CapturedAgentProfile<any, any>>();
@@ -72,7 +72,7 @@ export class ProfileEnvironments extends Map<string, EnvironmentAcquisition> {
   }
 }
 
-/** Open direct declarations; defer destination Sources until captured admission. */
+/** @internal Open direct declarations; defer destination Sources until captured admission. */
 export async function acquireProfileEnvironments(
   profiles: readonly CapturedAgentProfile<any, any>[],
   root: EnvironmentAcquisition,

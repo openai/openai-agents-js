@@ -111,7 +111,7 @@ function disposeLease(state: LeaseState, guard: DisposeGuard): Promise<void> {
   ));
 }
 
-/** One current opening owns this source until joined Session retirement. */
+/** @internal One current opening owns this source until joined Session retirement. */
 export class EnvironmentAcquisition {
   readonly signal: AbortSignal;
   #detachCaller: () => void;
