@@ -465,14 +465,15 @@ describe.skipIf(process.platform === 'win32')(
   'native helper build selection',
   () => {
     it.each([
-      ['x86_64-pc-windows-msvc', false, true],
-      ['aarch64-pc-windows-msvc', true, false],
-      ['x86_64-unknown-linux-gnu', false, false],
-      ['x86_64-unknown-linux-gnu', true, true],
-      ['aarch64-apple-darwin', false, false],
+      ['x86_64-pc-windows-msvc', false, true, 'release'],
+      ['x86_64-pc-windows-msvc', false, false, 'debug'],
+      ['aarch64-pc-windows-msvc', true, false, 'release'],
+      ['x86_64-unknown-linux-gnu', false, false, 'release'],
+      ['x86_64-unknown-linux-gnu', true, true, 'release'],
+      ['aarch64-apple-darwin', false, false, 'release'],
     ] as const)(
-      'packages helpers and keeps the addon build independent (%s, configured target %s, timings %s)',
-      (host, configured, timings) => {
+      'packages helpers and keeps the addon build independent (%s, configured target %s, timings %s, %s profile)',
+      (host, configured, timings, profile) => {
         const dir = mkdtempSync(join(tmpdir(), 'agents-native-build-'));
         temporary.push(dir);
         const pkg = join(dir, 'agents');
@@ -653,7 +654,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           source,
           '--rmcp-source',
           source,
-          '--release',
+          ...(profile === 'release' ? ['--release'] : []),
           '--test-fixture',
         ];
         for (const args of [
@@ -720,7 +721,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           'codex-agents-node',
           '--package',
           'codex-agents-helpers',
-          '--release',
+          ...(profile === 'release' ? ['--release'] : []),
         ]);
         for (const build of builds) {
           expect(build.args.includes('--timings')).toBe(timings);
@@ -729,10 +730,18 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           expect(build.args).not.toContain('-j');
         }
         const addon = builds.find((build) => build.args.includes('--lib'))!;
-        expect(addon.args).not.toContain('--config');
+        const addonConfig = addon.args.indexOf('--config');
+        if (host === 'x86_64-pc-windows-msvc' && profile === 'release') {
+          expect(addonConfig).toBeGreaterThan(-1);
+          expect(addon.args[addonConfig + 1]).toBe(
+            'profile.release.package.codex-agents-node.codegen-units=2',
+          );
+        } else {
+          expect(addonConfig).toBe(-1);
+        }
         expect(addon.args).not.toContain('--target');
         expect(addon.output).toBe(
-          join(dir, 'target', ...(configured ? [host] : []), 'release'),
+          join(dir, 'target', ...(configured ? [host] : []), profile),
         );
         const helpers = builds.find((build) =>
           build.args.includes('codex-sdk-runtime'),
@@ -745,6 +754,9 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           expect(addon.args).not.toContain('codex-agents-helpers');
           expect(helpers.args).not.toContain('--lib');
           expect(helpers.args).not.toContain('codex-agents-node');
+          expect(helpers.args).not.toContain(
+            'profile.release.package.codex-agents-node.codegen-units=2',
+          );
           expect(helpers.args).toEqual(
             expect.arrayContaining([
               '--package',
@@ -758,7 +770,7 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
               host,
             ]),
           );
-          expect(helpers.output).toBe(join(dir, 'target', host, 'release'));
+          expect(helpers.output).toBe(join(dir, 'target', host, profile));
         } else {
           expect(builds).toHaveLength(1);
           expect(helpers).toBe(addon);
