@@ -986,6 +986,14 @@ export class ChatCompletionsModel implements NativeModel {
       };
     }
     const reasoning = (request.body.reasoning ?? {}) as JsonObject;
+    if (
+      Object.keys(reasoning).some(
+        (key) => key !== 'effort' && key !== 'summary',
+      )
+    )
+      throw new TypeError(
+        'Extended reasoning options require a Responses model',
+      );
     if (reasoning.effort != null) options.reasoning_effort = reasoning.effort;
     if (
       'top_logprobs' in request.body ||
@@ -1878,6 +1886,14 @@ export class AiSdkModel implements NativeModel {
     )
       throw new TypeError('AiSdkModel received unsupported request controls');
     const reasoning = (body.reasoning ?? {}) as JsonObject;
+    if (
+      Object.keys(reasoning).some(
+        (key) => key !== 'effort' && key !== 'summary',
+      )
+    )
+      throw new TypeError(
+        'AiSdkModel requires provider options for extended reasoning controls',
+      );
     const text = (body.text ?? {}) as JsonObject;
     const providerOptions = copyJsonValue(this.#providerOptions) as JsonObject;
     const thinking = (providerOptions.anthropic as JsonObject | undefined)
