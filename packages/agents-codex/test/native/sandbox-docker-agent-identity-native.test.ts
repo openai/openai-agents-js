@@ -29,8 +29,10 @@ function result(request: { input?: unknown }, callId: string) {
   );
   if (!item) throw new Error('Missing native project_grep output: ' + callId);
   return JSON.parse(item.output) as {
-    errors: unknown[];
+    errors: { code: string; path: string }[];
     matches: { line: string }[];
+    truncated: boolean;
+    truncation_reasons: string[];
   };
 }
 
@@ -47,7 +49,11 @@ function readable(
 function denied(request: { input?: unknown }, callId: string) {
   const found = result(request, callId);
   expect(found.matches).toEqual([]);
-  expect(JSON.stringify(found.errors)).toMatch(/permission denied|EACCES/i);
+  expect(found.errors).toEqual([
+    { code: 'path_unavailable', path: 'private.txt' },
+  ]);
+  expect(found.truncated).toBe(true);
+  expect(found.truncation_reasons).toContain('read_errors');
   expect(JSON.stringify(found)).not.toContain('sdk-child-private');
 }
 
@@ -104,8 +110,8 @@ it.runIf(
           .trim()
           .split('\n')
           .filter(Boolean);
-      const grep = (path: string, callId: string) =>
-        call('project_grep', { pattern: 'sdk-', path }, { callId });
+      const grep = (glob: string, callId: string) =>
+        call('project_grep', { pattern: 'sdk-', glob }, { callId });
       const model = new ModelServer([
         [grep('private.txt', 'root-private-before')],
         (request) => {
