@@ -172,7 +172,7 @@ HTTP(S) image URLs and provider file IDs require an API-key provider and a compa
 Choose how to report a tool failure:
 
 - For an expected failure that the model can handle, return `new ToolOutput([{ type: 'inputText', text: 'Record unavailable' }], false)`. The failed tool reply can let the same Turn continue.
-- Throwing an application exception or failing the tool's result schema fails the owning Turn after its callback cleanup.
+- An application exception without applicable `errorFunction` or `toolErrorFormatter` recovery has been failing the owning Turn after callback cleanup. A tool result schema failure has been failing the Turn regardless of these formatters. See [callback-body error recovery](#recover-from-callback-body-errors).
 
 Neither path rolls back earlier effects. Repeating `turn.wait()` observes the same outcome. Submitting a new prompt starts new work that may repeat effects.
 

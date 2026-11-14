@@ -24,7 +24,9 @@ This quickstart uses Node.js and npm commands, but the SDK is not limited to Nod
 
 For Docker-backed sandboxes, install Docker locally and use `DockerSandboxClient` from `@openai/agents/classic/sandbox/local`.
 
-If you use interactive local PTY sessions with `tty: true`, the process running the SDK also needs Python 3 available as `python3`, or through `OPENAI_AGENTS_PYTHON`. Non-PTY shell commands do not require Python.
+`UnixLocalSandboxClient` has been requiring [a trusted Python 3 installation](/openai-agents-js/guides/sandbox-agents/clients#host-python-requirement) for every session, including sessions without a PTY. The host's `OPENAI_AGENTS_PYTHON` setting has been accepting an absolute executable path to override discovery.
+
+For Docker-backed PTY sessions (`tty: true`), the process running the SDK has also been requiring Python 3 as `python3` or through `OPENAI_AGENTS_PYTHON`.
 
 ## Create a local sandbox agent
 

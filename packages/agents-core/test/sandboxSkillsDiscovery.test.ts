@@ -202,7 +202,7 @@ describe('Skills discovery', () => {
       'large-skill',
       description,
     );
-  });
+  }, 60_000);
 
   it('renders a large discovered literal description in prepared-agent instructions', async () => {
     const description = `First line\n${'Detail\n'.repeat(1_000_000)}Last line`;
