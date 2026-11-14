@@ -15,6 +15,7 @@ import {
   tool,
   type RunBudget,
 } from '../../src';
+import { hasSessionStateAuthority } from '../../src/runtime/state';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -98,7 +99,10 @@ it.each(['local', 'custom'])(
             await session.submit('first', { budget: { maxRequests: 1 } })
           ).wait(),
         ).resolves.toMatchObject({ finalOutput: 'First' });
-        await expect(session.saveState()).rejects.toThrow('Persistent storage');
+        const state = await session.saveState();
+        expect(hasSessionStateAuthority(state)).toBe(true);
+        expect(state.source_session_id).toBe(identity);
+        expect(JSON.stringify(state.history)).toContain('First');
       } finally {
         await session.close();
       }

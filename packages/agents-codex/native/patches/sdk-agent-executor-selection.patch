@@ -368,7 +368,7 @@ index 17a2009c2e05fb4ddf74a0a8066195c6a716f7ca..faa35ac7cb84fd325443c2981f289ab0
          let named_ceiling = resolved_policy.allowed_tools.clone();
          if let Some(allowed) = &mut resolved_policy.allowed_tools {
 diff --git a/codex-rs/exec-server/src/environment.rs b/codex-rs/exec-server/src/environment.rs
-index 41f692fb2357b3c8ebf0405fa87f4b72be519c59..ca2eb5b62b7bea43505178b44181a6fc665af23a 100644
+index 41f692fb2357b3c8ebf0405fa87f4b72be519c59..cdfc50d063a0c36b2f79576dd6ce25175f3933f0 100644
 --- a/codex-rs/exec-server/src/environment.rs
 +++ b/codex-rs/exec-server/src/environment.rs
 @@ -5,6 +5,7 @@ use std::collections::HashSet;
@@ -591,7 +591,15 @@ index 41f692fb2357b3c8ebf0405fa87f4b72be519c59..ca2eb5b62b7bea43505178b44181a6fc
              environments.insert(environment_id, Arc::clone(&environment))
          };
          drop(replaced);
-@@ -1941,6 +2070,45 @@ mod tests {
+@@ -1266,6 +1395,7 @@ mod tests {
+     use super::EnvironmentObservedStatus;
+     use super::LOCAL_ENVIRONMENT_ID;
+     use super::REMOTE_ENVIRONMENT_ID;
++    use super::RemoteEnvironmentOptions;
+     use super::noise_environment_config_from_values;
+     use crate::ExecServerRuntimeOptions;
+     use crate::ProcessId;
+@@ -1941,6 +2071,45 @@ mod tests {
          assert!(status.warnings[0].contains("environment `stdio` is unavailable"));
      }
  

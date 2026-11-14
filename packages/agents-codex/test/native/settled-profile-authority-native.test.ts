@@ -81,7 +81,11 @@ async function scenario() {
   try {
     restored = await root.session({ state: forged });
   } catch (error) {
-    expect(String(error)).toContain('live callback acceptance');
+    expect(error).toBeInstanceOf(TypeError);
+    expect([
+      'Restoring changed Agent instructions requires authenticated SessionState',
+      'Restored Agent profile requires live callback acceptance',
+    ]).toContain((error as TypeError).message);
     expect(before).toBe(1);
     expect(callbacks).toBe(0);
     expect(effects).toBe(0);

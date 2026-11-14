@@ -93,7 +93,7 @@ it('persists accepted local whole lists, rejects invalid updates and distinguish
   expect(await session.checklist()).toBeNull();
   expect(server.requests).toHaveLength(0);
   await expect(session.checklist({ subagentId: randomUUID() })).rejects.toThrow(
-    'current root',
+    'Thread is not part of this session',
   );
   await (await session.submit('Update the list.')).wait();
   const saved = await session.checklist();
