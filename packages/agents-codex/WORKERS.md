@@ -41,4 +41,4 @@ export default {
 };
 ```
 
-Use `AiSdkModel` to borrow an AI SDK language model. Worker text runs accept a text prompt and direct standalone functions with text output. Pass an `observe` callback to receive normalized model events from a streaming adapter as they arrive. Session persistence, sandbox tools, and approval or handoff flows require additional runtime support.
+Use `AiSdkModel` to borrow an AI SDK language model. Worker text runs accept a text prompt and direct standalone functions with text output. Pass an `observe` callback to receive normalized model events from a streaming adapter as they arrive. Pass `session: { id, store }` to save completed turns and reuse their history. The `SessionStore` grants an exclusive writer lease and atomically commits each revision. Keep the stored snapshots private to the application. Worker snapshots are distinct from Node session snapshots. Sandbox tools, approvals, and handoffs require additional runtime support.

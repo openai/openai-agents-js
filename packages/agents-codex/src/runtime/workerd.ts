@@ -1,4 +1,5 @@
 import { encode, type JsonObject, type JsonValue } from './binding';
+import type { SessionStore } from './custom-thread-store';
 import {
   captureModelResponse,
   isRawModelPart,
@@ -18,6 +19,7 @@ import {
 export { AiSdkModel, ResponsesModel } from './models';
 export { standaloneTool } from './tools';
 export type { NativeModel } from './models';
+export type { SessionStore } from './custom-thread-store';
 
 const frameLimit = 8 * 1024 * 1024;
 
@@ -36,7 +38,7 @@ type Effect =
       request_id: number;
       calls: { call_id: string; name: string; arguments: string }[];
     }
-  | { type: 'done'; text: string };
+  | { type: 'done'; text: string; snapshot: { revision: number } };
 
 class TurnControl {
   readonly #exports: TurnExports;
@@ -90,6 +92,8 @@ export interface WorkerTextOptions<Context> {
   context?: Context;
   signal?: AbortSignal;
   maxTurns?: number;
+  /** The store must grant an exclusive writer lease and atomically commit the revision. */
+  session?: { id: string; store: SessionStore };
   /** Receive normalized model events in order while the provider stream is open. */
   observe?: (event: Readonly<JsonObject>) => void | Promise<void>;
 }
@@ -111,10 +115,10 @@ async function completeModel(
       bytes += encoder.encode(encoded).length;
       if (bytes > frameLimit)
         throw new RangeError('Portable model stream exceeds capacity');
-      if (isRawModelPart(original)) return true;
-      const event = JSON.parse(encoded) as JsonObject;
       if (completion)
         throw new Error('Portable model stream emitted data after completion');
+      if (isRawModelPart(original)) return true;
+      const event = JSON.parse(encoded) as JsonObject;
       if (
         event.type === 'response.failed' ||
         event.type === 'response.incomplete' ||
@@ -122,7 +126,20 @@ async function completeModel(
       )
         throw new Error('Portable model stream failed');
       if (event.type === 'response.completed') {
-        completion = projectResponsesResponse(event.response);
+        const response = event.response;
+        if (
+          !response ||
+          typeof response !== 'object' ||
+          Array.isArray(response) ||
+          typeof response.id !== 'string' ||
+          !response.id ||
+          (response.status != null && response.status !== 'completed') ||
+          !Array.isArray(response.output)
+        )
+          throw new Error(
+            'Portable model stream emitted an invalid completion',
+          );
+        completion = projectResponsesResponse(response);
       }
       await observe(event);
       return true;
@@ -194,6 +211,7 @@ export async function runWorkerText<Context = undefined>(
     signal = new AbortController().signal,
     maxTurns = 10,
     observe,
+    session,
   }: WorkerTextOptions<Context>,
 ): Promise<string> {
   signal.throwIfAborted();
@@ -219,10 +237,17 @@ export async function runWorkerText<Context = undefined>(
       );
     toolsByName.set(tool.name, tool);
   }
+  if (session && (typeof session.id !== 'string' || !session.id))
+    throw new TypeError('A Worker session requires a nonempty string ID');
   const control = new TurnControl(module);
-  const owner = { sessionId: crypto.randomUUID(), turnId: crypto.randomUUID() };
+  const owner = {
+    sessionId: session?.id ?? crypto.randomUUID(),
+    turnId: crypto.randomUUID(),
+  };
   let entered = false;
-  const execute = async (): Promise<string> => {
+  const execute = async (
+    snapshot: JsonValue,
+  ): Promise<Extract<Effect, { type: 'done' }>> => {
     let effect = control.apply({
       type: 'start',
       model,
@@ -237,12 +262,13 @@ export async function runWorkerText<Context = undefined>(
         }),
       ),
       max_turns: maxTurns,
+      snapshot,
     });
     while (effect) {
       signal.throwIfAborted();
       switch (effect.type) {
         case 'done':
-          return effect.text;
+          return effect;
         case 'model': {
           const request: ModelRequest = {
             ...owner,
@@ -291,20 +317,58 @@ export async function runWorkerText<Context = undefined>(
       if (entered) await provider.cleanupOnRunEnd?.(owner);
     }
   };
-  let text: string;
-  try {
-    text = await execute();
-  } catch (error) {
+  const run = async (snapshot: JsonValue) => {
+    let result;
     try {
-      await close();
-    } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        'Worker turn and cleanup failed',
-      );
+      result = await execute(snapshot);
+    } catch (error) {
+      try {
+        await close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Worker turn and cleanup failed',
+        );
+      }
+      throw error;
+    }
+    await close();
+    return result;
+  };
+  if (!session) return (await run(null)).text;
+  const { id, store } = session;
+  const fence = await store.acquire(id);
+  let releaseNeeded = true;
+  try {
+    signal.throwIfAborted();
+    const stored = await store.read(id, fence);
+    if (stored !== null && new TextEncoder().encode(stored).length > frameLimit)
+      throw new RangeError('Portable session snapshot exceeds capacity');
+    signal.throwIfAborted();
+    const result = await run(stored === null ? null : JSON.parse(stored));
+    signal.throwIfAborted();
+    await store.commit(
+      id,
+      fence,
+      owner.turnId,
+      result.snapshot.revision - 1,
+      JSON.stringify(result.snapshot),
+    );
+    await store.flush?.(id, fence);
+    releaseNeeded = false;
+    await store.release(id, fence);
+    return result.text;
+  } catch (error) {
+    if (releaseNeeded) {
+      try {
+        await store.release(id, fence);
+      } catch (releaseError) {
+        throw new AggregateError(
+          [error, releaseError],
+          'Worker session and lease release failed',
+        );
+      }
     }
     throw error;
   }
-  await close();
-  return text;
 }

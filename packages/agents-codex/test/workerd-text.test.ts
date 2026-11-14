@@ -215,3 +215,111 @@ portableTest(
     expect(tool.execute).not.toHaveBeenCalled();
   },
 );
+
+portableTest(
+  'commits and restores native session history with a fresh declaration',
+  async () => {
+    let stored: string | null = null;
+    const expectedRevisions: number[] = [];
+    const session = {
+      id: 'worker-session',
+      store: {
+        acquire: vi.fn(async () => 'fence'),
+        read: vi.fn(async () => stored),
+        commit: vi.fn(async (_id, _fence, _writeId, expected, snapshot) => {
+          expectedRevisions.push(expected);
+          stored = snapshot;
+        }),
+        release: vi.fn(async () => {}),
+      },
+    };
+    const requests: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                { type: 'output_text', text: 'answer ' + requests.length },
+              ],
+            },
+          ],
+        };
+      },
+    };
+    await expect(
+      runWorkerText('first', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'old',
+        session,
+      }),
+    ).resolves.toBe('answer 1');
+    await expect(
+      runWorkerText('second', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'new',
+        session,
+      }),
+    ).resolves.toBe('answer 2');
+    expect(expectedRevisions).toEqual([0, 1]);
+    const input = JSON.stringify(requests[1].input);
+    expect(input).toContain('new');
+    expect(input).toContain('first');
+    expect(input).toContain('answer 1');
+    expect(input).toContain('second');
+    expect(input).not.toContain('old');
+    expect(session.store.release.mock.calls).toEqual([
+      ['worker-session', 'fence'],
+      ['worker-session', 'fence'],
+    ]);
+  },
+);
+
+portableTest(
+  'releases the store without dispatching a provider for invalid history',
+  async () => {
+    const provider = {
+      complete: vi.fn(async () => ({ output: [] })),
+    };
+    const session = {
+      id: 'corrupt',
+      store: {
+        acquire: vi.fn(async () => 'fence'),
+        read: vi.fn(async () =>
+          JSON.stringify({
+            version: 1,
+            revision: 2,
+            history: [
+              {
+                type: 'message',
+                role: 'developer',
+                content: [{ type: 'input_text', text: 'bad' }],
+              },
+            ],
+          }),
+        ),
+        commit: vi.fn(async () => {}),
+        release: vi.fn(async () => {}),
+      },
+    };
+    await expect(
+      runWorkerText('begin', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Current',
+        session,
+      }),
+    ).rejects.toThrow('Unsupported portable session history');
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(session.store.commit).not.toHaveBeenCalled();
+    expect(session.store.release).toHaveBeenCalledWith('corrupt', 'fence');
+  },
+);
