@@ -1343,7 +1343,11 @@
     {
       "path": "sdk-destination-output-strictness.patch",
       "sha256": "92a7c2e0ed5e7dd2ae78424698cd6e99e45fdcbe690ee79cda0f99d9210c5ec7"
+    },
+    {
+      "path": "sdk-websocket-decoder-retirement.patch",
+      "sha256": "1b872b4d27849340d29fbc213610f07290c4496cff04945d7ae3fa7fd1113e10"
     }
   ],
-  "result_tree": "ce88accffd584f9e20275ccecd6b81000727c007"
+  "result_tree": "aae4610b020f65defb10740a491b3260608f3acf"
 }
