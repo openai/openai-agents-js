@@ -1,0 +1,12 @@
+diff --git a/codex-rs/core/src/mcp_tool_call.rs b/codex-rs/core/src/mcp_tool_call.rs
+index a936d439622..28f78464659 100644
+--- a/codex-rs/core/src/mcp_tool_call.rs
++++ b/codex-rs/core/src/mcp_tool_call.rs
+@@ -197,6 +197,7 @@ pub(crate) async fn handle_mcp_tool_call(
+             Ok(arguments) => arguments,
+             Err(message) => {
+                 return HandledMcpToolCall {
++                    observer_failed: false,
+                     result: CallToolResult::from_error_text(message.to_string()),
+                     tool_input: JsonValue::Object(serde_json::Map::new()),
+                 };
