@@ -49,10 +49,32 @@ pub async fn snapshot(
     Ok(json!({"revision": revision, "total": total, "items": items}))
 }
 
+/// Read the last effective native handoff view under the ordinary idle permit.
+pub async fn chaining_snapshot(state: &ThreadState) -> anyhow::Result<Value> {
+    let _operation = state.engine.operation(false)?;
+    let _mutation = state.mutations.try_lock()
+        .context("native mutation is in progress")?;
+    idle(state).await?;
+    let items = match state.thread.sdk_chaining_history_projection().await? {
+        Some(items) => items,
+        None => state.thread.sdk_replay_history_snapshot().await?.2,
+    };
+    Ok(json!({"items": items}))
+}
+
 enum HistoryEdit {
-    Replace { keep: usize, items: Vec<String> },
-    Pop { allow_rebuild: bool },
-    AppendRecoveredOutput { message_id: String, text: String },
+    Replace {
+        keep: usize,
+        items: Vec<String>,
+        allow_rebuild: bool,
+    },
+    Pop {
+        allow_rebuild: bool,
+    },
+    AppendRecoveredOutput {
+        message_id: String,
+        text: String,
+    },
 }
 
 pub async fn replace(
@@ -60,8 +82,18 @@ pub async fn replace(
     expected: String,
     keep: usize,
     items: Vec<String>,
+    allow_rebuild: bool,
 ) -> anyhow::Result<Value> {
-    edit(state, expected, HistoryEdit::Replace { keep, items }).await
+    edit(
+        state,
+        expected,
+        HistoryEdit::Replace {
+            keep,
+            items,
+            allow_rebuild,
+        },
+    )
+    .await
 }
 
 pub async fn pop(
@@ -208,17 +240,20 @@ async fn edit(state: &ThreadState, expected: String, edit: HistoryEdit) -> anyho
         "history transactions require completed background execution"
     );
     let result = match edit {
-        HistoryEdit::Replace { keep, items } => {
+        HistoryEdit::Replace {
+            keep, items, allow_rebuild,
+        } => {
             // The Core revision is rechecked under its state lock when replacing below.
             // Validate before durability: neither retained nor appended history may split
             // a client tool call/result pair. Provider-hosted records keep their existing
             // context-validator treatment, including server-side tool-search output.
             let keep = validate_replacement(state, &expected, Some(keep), &items).await?;
-            state
-                .thread
-                .sdk_replace_history(&expected, keep, items)
-                .await
-                .map(|revision| json!({"revision": revision}))
+            let revision = if allow_rebuild {
+                state.thread.sdk_replace_history_allow_rebuild(&expected, keep, items).await
+            } else {
+                state.thread.sdk_replace_history(&expected, keep, items).await
+            };
+            revision.map(|revision| json!({"revision": revision}))
         }
         HistoryEdit::AppendRecoveredOutput { message_id, text } => {
             let items = vec![
@@ -352,6 +387,16 @@ pub async fn memory_snapshot(
         .try_lock()
         .context("native mutation is in progress")?;
     idle(state).await?;
+    memory_snapshot_values(state, turn_id, scope_json, None).await
+}
+
+// Both callers retain their separate admission guards for this read-only projection.
+async fn memory_snapshot_values(
+    state: &ThreadState,
+    turn_id: &str,
+    scope_json: Option<&str>,
+    pending: Option<&crate::python_tools::PendingMemoryOwner>,
+) -> anyhow::Result<Value> {
     let scope: Option<MemoryScope> = scope_json
         .map(|raw| {
             ensure!(
@@ -361,6 +406,16 @@ pub async fn memory_snapshot(
             Ok::<_, anyhow::Error>(serde_json::from_str(raw)?)
         })
         .transpose()?;
+    if let Some(proof) = pending {
+        ensure!(
+            scope.as_ref().map(|scope| &scope.source) == proof.profile.as_ref(),
+            "Pending memory requires its exact native profile scope"
+        );
+        ensure!(
+            crate::agent_profiles::active(&state.thread).await?.as_ref() == proof.profile.as_ref(),
+            "Pending memory profile changed"
+        );
+    }
     let opening = match &scope {
         Some(scope) => Some(
             crate::agent_profiles::memory_scope(&state.thread, &scope.source, &scope.profiles)
@@ -413,15 +468,36 @@ pub async fn memory_snapshot(
             _ => {}
         }
     }
+    if let Some(proof) = pending {
+        let pending_turn = proof.key.turn.as_str();
+        ensure!(
+            pending_turn == turn_id,
+            "Pending memory turn changed"
+        );
+        ensure!(
+            history.iter().any(|item| matches!(item,
+                RolloutItem::TurnContext(context)
+                    if context.turn_id.as_deref() == Some(pending_turn)
+                        && sampling_receipt(context)
+                        && context.sdk_receipt.as_ref().and_then(|receipt| receipt.get("thread_id"))
+                            .and_then(Value::as_str) == Some(state.id.to_string().as_str())
+            )),
+            "Pending memory requires its exact captured sampling receipt"
+        );
+        // The retained native approval proves this current prefix; no rollout state is written.
+        admitted.insert(pending_turn.to_owned());
+    }
     ensure!(
         admitted.contains(turn_id),
         "Native sandbox memory requires proven input admission"
     );
-    if let Some(scope) = &scope {
-        ensure!(
-            terminal_profile.flatten().as_ref() == Some(&scope.source),
-            "Memory requires its exact native terminal profile proof"
-        );
+    if pending.is_none() {
+        if let Some(scope) = &scope {
+            ensure!(
+                terminal_profile.flatten().as_ref() == Some(&scope.source),
+                "Memory requires its exact native terminal profile proof"
+            );
+        }
     }
     let mut selected = Vec::new();
     let mut input_sources = std::collections::HashMap::new();
@@ -525,4 +601,80 @@ pub async fn memory_snapshot(
     } else {
         Ok(json!({"revision":revision,"total":total,"items":selected}))
     }
+}
+
+pub async fn pending_memory_snapshot(
+    state: &ThreadState,
+    request_json: &str,
+    scope_json: Option<&str>,
+) -> anyhow::Result<Value> {
+    ensure!(
+        request_json.len() <= 64 * 1024,
+        "Pending memory owner exceeds its native bound"
+    );
+    let key: crate::python_tools::PendingKey = serde_json::from_str(request_json)?;
+    let _operation = state.engine.operation(false)?;
+    let _mutation = state
+        .mutations
+        .try_lock()
+        .context("native mutation is in progress")?;
+    let tools = state
+        .thread
+        .thread_extension_data()
+        .get::<crate::python_tools::PythonTools>()
+        .context("Pending memory requires its live managed function owner")?;
+    let proof = tools.pending_memory_owner(&state.id.to_string(), &key)?;
+    let mut snapshot = memory_snapshot_values(state, &key.turn, scope_json, Some(&proof)).await?;
+    let items = snapshot["items"]
+        .as_array()
+        .context("Invalid native memory snapshot")?;
+    let mut selected = Vec::with_capacity(items.len());
+    let mut removed = 0;
+    for raw in items {
+        let item: Value =
+            serde_json::from_str(raw.as_str().context("Invalid native memory record")?)?;
+        let turn = item
+            .get("internal_chat_message_metadata_passthrough")
+            .and_then(|value| value.get("turn_id"))
+            .and_then(Value::as_str);
+        if item.get("type").and_then(Value::as_str) == Some("function_call")
+            && item.get("call_id").and_then(Value::as_str) == Some(key.call.as_str())
+            && turn == Some(key.turn.as_str())
+        {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .context("Pending memory call is unavailable")?;
+            let namespace = item
+                .get("namespace")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let arguments: Value = serde_json::from_str(
+                item.get("arguments")
+                    .and_then(Value::as_str)
+                    .context("Pending memory call is unavailable")?,
+            )?;
+            ensure!(
+                codex_tools::ToolName::new(namespace, name.to_owned()).with_default_namespace()
+                    == proof.name.clone().with_default_namespace()
+                    && arguments == proof.arguments,
+                "Pending memory call changed"
+            );
+            removed += 1;
+        } else {
+            selected.push(raw.clone());
+        }
+    }
+    ensure!(
+        removed == 1,
+        "Pending memory requires one exact native call occurrence"
+    );
+    ensure!(
+        crate::agent_profiles::active(&state.thread).await?.as_ref() == proof.profile.as_ref(),
+        "Pending memory profile changed"
+    );
+    tools.check_pending_memory_owner(&state.id.to_string(), &proof)?;
+    snapshot["items"] = Value::Array(selected);
+    snapshot["pending_tool_name"] = json!(proof.name.to_string());
+    Ok(snapshot)
 }

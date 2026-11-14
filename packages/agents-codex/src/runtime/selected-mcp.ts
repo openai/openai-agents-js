@@ -1,3 +1,4 @@
+import { tryPrepareOpenAIStrictToolSchema } from '@openai/agents-core/utils/tool-schema';
 import { captureToolNameOverrides, projectMcpToolNames } from './mcp-names';
 import type {
   MCPToolStartObservation,
@@ -28,6 +29,8 @@ export interface McpNamespace<Context = unknown> {
 
 export interface SelectMcpToolsOptions<Context = unknown> {
   readonly context: Context;
+  /** Best-effort strict conversion per discovered tool; unsupported schemas stay unchanged. */
+  readonly convertSchemasToStrict?: boolean;
   /**
    * Per-call approval, awaited before either observer or the borrowed client.
    * Only true allows execution. Rejection, decline or cancellation prevents
@@ -167,7 +170,12 @@ export async function selectMcpTools<Context = unknown>(
   options: SelectMcpToolsOptions<Context>,
 ): Promise<readonly FunctionTool<Context>[]> {
   const { name, description, server, authenticate } = namespace;
-  const { context, signal, approval } = options;
+  const { context, signal, approval, convertSchemasToStrict } = options;
+  if (
+    convertSchemasToStrict !== undefined &&
+    typeof convertSchemasToStrict !== 'boolean'
+  )
+    throw new TypeError('MCP convertSchemasToStrict must be a boolean');
   if (approval !== undefined && typeof approval !== 'function')
     throw new TypeError('MCP approval must be callable');
   const { onToolStart, onToolEnd } = server;
@@ -307,13 +315,33 @@ export async function selectMcpTools<Context = unknown>(
       throw new TypeError(
         'MCP declarations require an object input schema and optional string description',
       );
-    const parameters = freezeJson(
+    let parameters = freezeJson(
       jsonValue.parse(
         schema.type === undefined
           ? { properties: {}, ...schema, type: 'object' }
           : schema,
       ),
     );
+    let parseArguments: ((value: JsonValue) => JsonValue) | undefined;
+    if (convertSchemasToStrict) {
+      const strictSchema = {
+        ...schema,
+        type: 'object' as const,
+        properties: schema.properties ?? {},
+        required: schema.required ?? [],
+        ...(Object.keys(schema).length === 0
+          ? { additionalProperties: false }
+          : {}),
+      };
+      const prepared = tryPrepareOpenAIStrictToolSchema(
+        strictSchema as Parameters<typeof tryPrepareOpenAIStrictToolSchema>[0],
+      );
+      if (prepared) {
+        parameters = freezeJson(jsonValue.parse(prepared.schema));
+        parseArguments = (value) =>
+          jsonObject.parse(prepared.normalizeInput(value));
+      }
+    }
     selectedRawNames.add(rawName);
     tools.push(
       createNamespacedFunctionTool<Context>({
@@ -321,6 +349,7 @@ export async function selectMcpTools<Context = unknown>(
         name: model.name,
         description: declaration.description ?? '',
         parameters,
+        ...(parseArguments ? { strict: true, parseArguments } : {}),
         async execute(args, callContext, admit, recover) {
           const event: MCPToolStartObservation = {
             serverName,

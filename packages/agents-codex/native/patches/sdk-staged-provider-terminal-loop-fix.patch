@@ -1,0 +1,22 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 9b3699282d1..2735b334fc0 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -5618,7 +5618,7 @@ async fn try_run_sampling_request(
+                     if let Some(source) = &staged_sources {
+                         if sample_cancel.is_cancelled() {
+                             tool_cancellation.cancel();
+-                            break 'provider Err(CodexErr::TurnAborted);
++                            break Err(CodexErr::TurnAborted);
+                         }
+                         let mut take = || client_session.take_provider_history_terminal(&response_id);
+                         let terminal = if let Some(attempt) = &model_attempt {
+@@ -5635,7 +5635,7 @@ async fn try_run_sampling_request(
+                         };
+                         if let Err(error) = accepted {
+                             tool_cancellation.cancel();
+-                            break 'provider Err(error);
++                            break Err(error);
+                         }
+                     }
+                     if staged_sources.is_some() {

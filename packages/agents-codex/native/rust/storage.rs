@@ -99,6 +99,53 @@ fn native_mcp_prefix_matches(
     calls == 1
 }
 
+// A recovery has no fresh model sample. Its private frame retains the exact
+// original sample, while the actual new native question still owns approval.
+fn recovered_native_mcp_prefix_matches(
+    history: &[RolloutItem],
+    data: &codex_core::McpApprovalCheckpointData,
+    sample: &str,
+) -> bool {
+    use codex_protocol::protocol::ResponseObservationStatus;
+    let anchors: Vec<_> = history.iter().enumerate().filter_map(|(index, row)| match row {
+        RolloutItem::ResponseObservationRecord(record) if record.id == sample => Some((index, record)),
+        _ => None,
+    }).collect();
+    let [(anchor, observed)] = anchors.as_slice() else { return false; };
+    if observed.thread_id != data.source_thread_id || observed.turn_id != data.turn_id
+        || observed.compaction == Some(true)
+        || observed.observation.status != ResponseObservationStatus::Completed { return false; }
+    let Some(start) = history[..*anchor].iter().rposition(|row| matches!(row,
+        RolloutItem::EventMsg(EventMsg::TurnStarted(_)))) else { return false; };
+    if !matches!(&history[start], RolloutItem::EventMsg(EventMsg::TurnStarted(turn))
+        if turn.turn_id == data.turn_id) { return false; }
+    let mut calls = 0;
+    for row in &history[start + 1..*anchor] {
+        if let RolloutItem::ResponseItem(envelope) = row {
+            match &envelope.item {
+                ResponseItem::FunctionCall { .. } if data.matches_canonical_call(&envelope.item) => calls += 1,
+                ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {},
+                _ => return false,
+            }
+        }
+    }
+    if calls != 1 { return false; }
+    let Some(current_start) = history.iter().rposition(|row| matches!(row,
+        RolloutItem::EventMsg(EventMsg::TurnStarted(_)))) else { return false; };
+    if current_start <= *anchor || !matches!(&history[current_start],
+        RolloutItem::EventMsg(EventMsg::TurnStarted(turn)) if turn.turn_id == data.turn_id) { return false; }
+    for (index, row) in history.iter().enumerate().skip(*anchor + 1) {
+        match row {
+            RolloutItem::ResponseObservationRecord(_) | RolloutItem::ResponseItem(_) => return false,
+            RolloutItem::EventMsg(EventMsg::TurnStarted(turn)) if turn.turn_id != data.turn_id => return false,
+            RolloutItem::EventMsg(EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_))
+                if index >= current_start => return false,
+            _ => {},
+        }
+    }
+    true
+}
+
 struct SuspendedCall {
     turn: String,
     call: String,
@@ -243,13 +290,14 @@ impl MemoryThreadStore {
         &self,
         id: ThreadId,
         captured: &codex_core::CapturedMcpApproval,
+        retained_sample: Option<&str>,
     ) -> anyhow::Result<bool> {
         let writers = self.manual_writers.lock().await;
         let Some(writer) = writers.get(&id) else {
             return Ok(false);
         };
         Ok(self
-            .native_mcp_capture(id, writer, &captured.checkpoint_data())
+            .native_mcp_capture(id, writer, &captured.checkpoint_data(), retained_sample)
             .await?
             .is_some())
     }
@@ -258,6 +306,7 @@ impl MemoryThreadStore {
         &self,
         id: ThreadId,
         claim: &codex_core::ClaimedMcpApproval,
+        retained_sample: Option<&str>,
     ) -> anyhow::Result<bool> {
         let mut writers = self.manual_writers.lock().await;
         let Some(writer) = writers.get_mut(&id) else {
@@ -267,7 +316,7 @@ impl MemoryThreadStore {
             return Ok(false);
         }
         let Some(capture) = self
-            .native_mcp_capture(id, writer, &claim.checkpoint_data())
+            .native_mcp_capture(id, writer, &claim.checkpoint_data(), retained_sample)
             .await?
         else {
             return Ok(false);
@@ -284,12 +333,16 @@ impl MemoryThreadStore {
         id: ThreadId,
         writer: &ManualWriter,
         data: &codex_core::McpApprovalCheckpointData,
+        retained_sample: Option<&str>,
     ) -> anyhow::Result<Option<ManualCapture>> {
         if writer.capture.is_some()
             || data.source_thread_id != id
             || writer.turn.as_deref() != Some(data.turn_id.as_str())
-            || writer.calls != 1
-            || writer.sampled_calls != 1
+            || if retained_sample.is_some() {
+                writer.calls != 0 || writer.sampled_calls != 0
+            } else {
+                writer.calls != 1 || writer.sampled_calls != 1
+            }
         {
             return Ok(None);
         }
@@ -301,9 +354,11 @@ impl MemoryThreadStore {
                 include_archived: true,
             })
             .await?;
-        if !native_mcp_prefix_matches(&history.items, data) {
-            return Ok(None);
-        }
+        let matches = match retained_sample {
+            Some(sample) => recovered_native_mcp_prefix_matches(&history.items, data, sample),
+            None => native_mcp_prefix_matches(&history.items, data),
+        };
+        if !matches { return Ok(None); }
         Ok(Some(ManualCapture {
             turn: data.turn_id.clone(),
             pending: vec![SuspendedCall {

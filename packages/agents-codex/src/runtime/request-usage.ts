@@ -42,11 +42,13 @@ export class RecordedRequestUsageProjection {
     threadId: string,
     turnId: string,
     usage: ReceivedTokenUsage | null,
+    endpoint?: 'responses.compact',
   ): void {
     this.compactionRequests += 1;
     const cacheWriteTokens = usage?.inputTokensDetails?.cacheWriteTokens;
     this.entries.push({
       scope: 'compaction',
+      ...(endpoint === undefined ? {} : { endpoint }),
       threadId,
       turnId,
       ownerAttemptId: id,

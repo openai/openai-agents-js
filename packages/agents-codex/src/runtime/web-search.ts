@@ -257,3 +257,47 @@ export function webSearchConfig(search: WebSearch | undefined): JsonObject {
     };
   return config;
 }
+
+/** @internal Captured provider declaration; never installs a local search executor. */
+export function hostedWebSearchSpec(search: WebSearch): JsonObject {
+  if (search.route !== 'hosted')
+    throw new TypeError('Scoped hosted search requires the hosted route');
+  return {
+    type: 'web_search',
+    external_web_access: search.mode === 'live',
+    ...(search.searchContextSize === undefined
+      ? {}
+      : { search_context_size: search.searchContextSize }),
+    ...(search.allowedDomains === undefined &&
+    search.blockedDomains === undefined
+      ? {}
+      : {
+          filters: {
+            ...(search.allowedDomains === undefined
+              ? {}
+              : { allowed_domains: [...search.allowedDomains] }),
+            ...(search.blockedDomains === undefined
+              ? {}
+              : { blocked_domains: [...search.blockedDomains] }),
+          },
+        }),
+    ...(search.location === undefined
+      ? {}
+      : { user_location: { type: 'approximate', ...search.location } }),
+    ...(search.searchContentTypes === undefined
+      ? {}
+      : { search_content_types: [...search.searchContentTypes] }),
+    ...(search.imageSettings === undefined
+      ? {}
+      : {
+          image_settings: {
+            ...(search.imageSettings.maxResults === undefined
+              ? {}
+              : { max_results: search.imageSettings.maxResults }),
+            ...(search.imageSettings.caption === undefined
+              ? {}
+              : { caption: search.imageSettings.caption }),
+          },
+        }),
+  };
+}

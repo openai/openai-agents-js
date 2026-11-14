@@ -1,0 +1,120 @@
+diff --git a/codex-rs/protocol/src/error_tests.rs b/codex-rs/protocol/src/error_tests.rs
+index 2d76bfd2cb9..144cad968c3 100644
+--- a/codex-rs/protocol/src/error_tests.rs
++++ b/codex-rs/protocol/src/error_tests.rs
+@@ -828,6 +828,7 @@ fn response_integrity_reason_follows_only_its_error_and_live_event() {
+         assert_eq!(restored.response_integrity_reason, None);
+         let terminal = TurnCompleteEvent {
+             tool_completion: None,
++            model_attempt: None,
+             turn_id: "owned-turn".into(),
+             last_agent_message: None,
+             error: Some(event),
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index 50967b66610..86db3ad3e46 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -5376,7 +5376,7 @@ mod computer_protocol_tests {
+         assert!(matches!(item, ResponseItem::LocalShellCallOutput { .. }));
+         assert!(item.id().is_none());
+         assert!(item.id_prefix().is_none());
+-        item.set_id(Some("invented-receipt".to_owned().into()));
++        item.set_id(Some(ResponseItemId::from_server("invented-receipt".to_owned())));
+         assert_eq!(serde_json::to_value(item).unwrap(), wire);
+         for bad in [
+             serde_json::json!({"type": "local_shell_call_output", "output": "missing id"}),
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 4b7b71544e7..749b6f9df0e 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -2947,7 +2947,7 @@ pub struct ThreadSettingsSnapshot {
+     pub invocation_timeout_ms: Option<u32>,
+     #[serde(
+         default,
+-        skip_serializing_if = "crate::model_request_controls::ModelRequestControls::is_empty",
++        skip_serializing_if = "persisted_request_controls::is_empty",
+         serialize_with = "persisted_request_controls::serialize",
+         deserialize_with = "persisted_request_controls::deserialize"
+     )]
+@@ -5390,6 +5390,70 @@ mod tests {
+     use tempfile::NamedTempFile;
+     use tempfile::TempDir;
+ 
++    #[test]
++    fn thread_settings_snapshot_canonicalizes_live_only_request_controls() -> Result<()> {
++        for implicit in [None, Some(false), Some(true)] {
++            for transport in [false, true] {
++                for durable in [false, true] {
++                    let request_controls = crate::model_request_controls::ModelRequestControls {
++                        sdk_default_provider_compaction: implicit,
++                        request_transport: transport.then_some(None),
++                        provider_compaction: durable.then_some(None),
++                        ..Default::default()
++                    };
++                    let snapshot = ThreadSettingsSnapshot {
++                        provider_history: None,
++                        tool_choice: None,
++                        invocation_timeout_ms: None,
++                        request_controls,
++                        model: "fixture-model".into(),
++                        model_provider_id: "fixture".into(),
++                        service_tier: None,
++                        approval_policy: AskForApproval::Never,
++                        approvals_reviewer: ApprovalsReviewer::User,
++                        permission_profile: PermissionProfile::read_only(),
++                        active_permission_profile: None,
++                        cwd: test_path_buf("/tmp/canonical-settings").abs(),
++                        runtime_workspace_roots: None,
++                        reasoning_effort: None,
++                        reasoning_summary: None,
++                        personality: None,
++                        collaboration_mode: crate::config_types::CollaborationMode {
++                            mode: crate::config_types::ModeKind::Default,
++                            settings: crate::config_types::Settings {
++                                model: "fixture-model".into(),
++                                reasoning_effort: None,
++                                developer_instructions: None,
++                            },
++                        },
++                        disabled_plugin_ids: Vec::new(),
++                    };
++                    let encoded = serde_json::to_value(&snapshot)?;
++                    assert_eq!(encoded.get("request_controls").is_some(), durable);
++                    if durable {
++                        assert_eq!(
++                            encoded["request_controls"],
++                            json!({"provider_compaction": null})
++                        );
++                    }
++                    let restored: ThreadSettingsSnapshot = serde_json::from_value(encoded.clone())?;
++                    assert_eq!(serde_json::to_value(restored)?, encoded);
++                    assert_eq!(
++                        snapshot.request_controls.sdk_default_provider_compaction,
++                        implicit
++                    );
++                    if !durable {
++                        let mut legacy = encoded.clone();
++                        legacy["request_controls"] = json!({});
++                        let restored: ThreadSettingsSnapshot = serde_json::from_value(legacy)?;
++                        assert_eq!(serde_json::to_value(restored)?, encoded);
++                    }
++                }
++            }
++        }
++        Ok(())
++    }
++
+     #[test]
+     fn old_turn_started_records_have_no_root_attribution() {
+         let event: TurnStartedEvent = serde_json::from_value(serde_json::json!({
+@@ -7415,6 +7479,10 @@ mod persisted_request_controls {
+     use crate::model_request_controls::ModelRequestControls;
+     use serde::{Deserialize, Deserializer, Serialize, Serializer};
+ 
++    pub fn is_empty(value: &ModelRequestControls) -> bool {
++        value.for_persistence().is_empty()
++    }
++
+     pub fn serialize<S: Serializer>(
+         value: &ModelRequestControls,
+         serializer: S,

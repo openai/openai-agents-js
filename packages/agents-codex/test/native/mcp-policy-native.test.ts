@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { firstNativeBatchWire } from '../fixtures/native-event-batches';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
@@ -25,6 +26,7 @@ import {
   NativeProvider,
   StdioMCP,
   manualTool,
+  type AgentLifecycleEvent,
   type Observation,
   type MCPCallContext,
   type MCPDiscoveryContext,
@@ -103,7 +105,7 @@ async function peer(
   toolResult?: JsonObject,
   closeResponseForKey?: string,
   extraNames: readonly string[] = [],
-  ask?: { id: string; meta?: JsonObject },
+  ask?: { id: string; meta?: JsonObject; mode?: 'form' | 'url' },
   inputSchemas?: Readonly<Record<string, JsonObject>>,
 ) {
   const effects: JsonObject[] = [];
@@ -182,13 +184,20 @@ async function peer(
                 id: ask.id,
                 method: 'elicitation/create',
                 params: {
-                  mode: 'form',
+                  mode: ask.mode ?? 'form',
                   message: 'Peer decision after restored approval',
-                  requestedSchema: {
-                    type: 'object',
-                    properties: { answer: { type: 'string' } },
-                    required: ['answer'],
-                  },
+                  ...(ask.mode === 'url'
+                    ? {
+                        url: 'https://example.test/native-peer-decision',
+                        elicitationId: 'native-peer-url-decision',
+                      }
+                    : {
+                        requestedSchema: {
+                          type: 'object',
+                          properties: { answer: { type: 'string' } },
+                          required: ['answer'],
+                        },
+                      }),
                   ...(ask.meta ? { _meta: ask.meta } : {}),
                 },
               }) +
@@ -3582,7 +3591,8 @@ async function capturePortableMcpCandidate(session: Session) {
 
 async function portableMcpAgent(
   finalReplies = 1,
-  ask?: { id: string; meta?: JsonObject },
+  ask?: { id: string; meta?: JsonObject; mode?: 'form' | 'url' },
+  onLifecycle?: (event: AgentLifecycleEvent<undefined>) => void,
 ) {
   const remote = await peer(
     'find-record',
@@ -3614,6 +3624,7 @@ async function portableMcpAgent(
   cleanup.push(() => provider.close());
   const agent = new Agent({
     instructions: 'Read the record.',
+    onLifecycle,
     provider,
     model: 'gpt-5.5',
     programmaticToolCalling: false,
@@ -3918,11 +3929,17 @@ it.each(['endpoint', 'callback'] as const)(
   30_000,
 );
 
-it.each([false, true])(
-  'restored ordinary MCP keeps the subsequent peer elicitation owner (spoof metadata: %s)',
-  async (spoofApprovalMeta) => {
+it.each([
+  ['form', false],
+  ['form', true],
+  ['url', false],
+  ['url', true],
+] as const)(
+  'restored ordinary MCP keeps the subsequent peer %s elicitation owner (spoof metadata: %s)',
+  async (mode, spoofApprovalMeta) => {
     const { agent, remote, model } = await portableMcpAgent(1, {
       id: 'mcp_tool_call_approval_portable-native',
+      mode,
       ...(spoofApprovalMeta
         ? { meta: { codex_approval_kind: 'mcp_tool_call' } }
         : {}),
@@ -3944,21 +3961,31 @@ it.each([false, true])(
     const remoteQuestion = pending.requests[0]!;
     if (
       remoteQuestion.type !== 'elicitation_request' ||
-      remoteQuestion.mode !== 'form'
+      remoteQuestion.mode !== mode
     )
       throw new Error('Peer elicitation acquired approval authority');
     expect(remote.effects).toHaveLength(1);
     await expect(restored.respond(oldReply)).rejects.toThrow();
     await expect(restored.respond(freshReply)).rejects.toThrow();
     await expect(restored.suspend()).rejects.toThrow();
-    await restored.respond(
-      remoteQuestion.reply({ answer: 'fresh peer decision' }),
-    );
+    let peerReply;
+    if (remoteQuestion.mode === 'url') {
+      expect(remoteQuestion.url).toBe(
+        'https://example.test/native-peer-decision',
+      );
+      expect(remoteQuestion.elicitationId).toBe('native-peer-url-decision');
+      peerReply = remoteQuestion.replyUrlAccept();
+    } else {
+      peerReply = remoteQuestion.reply({ answer: 'fresh peer decision' });
+    }
+    await restored.respond(peerReply);
     expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
       'settled through native decision',
     );
     expect(remote.effects).toHaveLength(1);
+    await expect(restored.respond(peerReply)).rejects.toThrow();
     expect(remote.answers).toHaveLength(1);
+    expect(remote.answers[0]?.result).toMatchObject({ action: 'accept' });
     expect(remote.answers[0]?.id).toBe(
       'mcp_tool_call_approval_portable-native',
     );
@@ -4022,4 +4049,636 @@ it.each([false, true])(
     });
     expect(remote.effects).toEqual([]);
   },
+);
+
+it.each([
+  'trusted',
+  'untrusted',
+  'legacy',
+  'recapture',
+  'recapture_untrusted',
+  'recapture_legacy',
+  'wrong_turn',
+  'wrong_profile',
+] as const)(
+  'keeps native MCP lifecycle acknowledgment through cold capture (%s)',
+  async (mode) => {
+    const events: string[] = [];
+    const { agent, model, remote } = await portableMcpAgent(
+      1,
+      undefined,
+      (event) => events.push(event.kind),
+    );
+    const source = await agent.session();
+    cleanup.push(() => source.close());
+    const original = await source.submit('Read');
+    await portableMcpApproval(original);
+    expect(events).toEqual(['start']);
+    expect(remote.effects).toEqual([]);
+    let serialized = JSON.stringify(await source.suspend());
+    await source.close();
+    const recorded = JSON.parse(serialized);
+    const marker = recorded.manual_continuation._sdk_lifecycle_start;
+    expect(marker).toMatchObject({ turn_id: original.turnId });
+    if (mode.includes('legacy')) {
+      delete recorded.manual_continuation._sdk_lifecycle_start;
+      serialized = JSON.stringify(recorded);
+    }
+    const authenticated = (value: string) =>
+      parseSessionState(value, {
+        expectedSha256: createHash('sha256').update(value).digest('hex'),
+      });
+    if (mode === 'wrong_turn' || mode === 'wrong_profile') {
+      if (mode === 'wrong_turn')
+        recorded.manual_continuation._sdk_lifecycle_start.turn_id =
+          'another-turn';
+      else {
+        const ack = recorded.manual_continuation._sdk_lifecycle_start;
+        if (ack.profile) ack.profile.epoch++;
+        else ack.profile = { profile_id: 'another-native-profile', epoch: 1 };
+      }
+      await expect(
+        agent
+          .session({ state: authenticated(JSON.stringify(recorded)) })
+          .then((opened) => {
+            cleanup.push(() => opened.close());
+            return opened;
+          }),
+      ).rejects.toThrow(/Lifecycle acknowledgment/);
+      expect(events).toEqual(['start']);
+      expect(model.requests).toHaveLength(1);
+      expect(remote.effects).toEqual([]);
+      return;
+    }
+    const repeatedStart = mode.includes('untrusted') || mode.includes('legacy');
+    const started = repeatedStart ? ['start', 'start'] : ['start'];
+    const state = mode.includes('untrusted')
+      ? parseSessionState(serialized)
+      : authenticated(serialized);
+    const first = await agent.session({ state });
+    cleanup.push(() => first.close());
+    let restored = first;
+    let request = await portableMcpApproval(first.restoredTurn!);
+    expect(model.requests).toHaveLength(1);
+    expect(remote.effects).toEqual([]);
+    expect(events).toEqual(started);
+    if (mode.includes('recapture')) {
+      const again = JSON.stringify(await first.suspend());
+      expect(
+        JSON.parse(again).manual_continuation._sdk_lifecycle_start,
+      ).toEqual(marker);
+      await first.close();
+      const next = await agent.session({ state: authenticated(again) });
+      cleanup.push(() => next.close());
+      restored = next;
+      request = await portableMcpApproval(next.restoredTurn!);
+      expect(events).toEqual(started);
+      expect(model.requests).toHaveLength(1);
+      expect(remote.effects).toEqual([]);
+    }
+    await restored.respond(request.reply('allow_once'));
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+      'settled through native decision',
+    );
+    expect(events).toEqual([...started, 'end']);
+    expect(remote.effects.map((effect) => effect.name)).toEqual([
+      'find-record',
+    ]);
+    expect(model.requests).toHaveLength(2);
+    await expect(restored.suspend()).rejects.toThrow();
+    model.assertExhausted();
+  },
+);
+
+it.each(['allow_once', 'deny'] as const)(
+  'remembers only the current raw native MCP policy and asks again after cold restore (%s)',
+  async (choice) => {
+    const remote = await peer('find-record', undefined, undefined, undefined, [
+      'write-other',
+    ]);
+    const names = ['reviewed', 'reviewed', 'other', 'reviewed', 'reviewed'];
+    const model = new ModelServer(
+      names.flatMap((name, index) => [
+        [
+          call(
+            name,
+            { key: String(index) },
+            { namespace: 'mcp__fixture', callId: `remembered-${index}` },
+          ),
+        ],
+        [message(`done-${index}`)],
+      ]),
+    );
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-remembered-mcp',
+      supportsWebsockets: false,
+    });
+    cleanup.push(() => provider.close());
+    const agent = new Agent({
+      instructions: 'Use the chosen tool.',
+      provider,
+      model: 'gpt-5.5',
+      programmaticToolCalling: false,
+      tools: [
+        new HttpMCP({
+          name: 'fixture',
+          url: remote.url,
+          tools: ['find-record', 'write-other'],
+          toolNameOverrides: {
+            'find-record': 'reviewed',
+            'write-other': 'other',
+          },
+          approvalMode: 'preapproved',
+          toolApprovalOverrides: {
+            'find-record': 'prompt',
+            'write-other': 'prompt',
+          },
+          cacheToolsList: false,
+        }),
+      ],
+    });
+    const source = await agent.session();
+    cleanup.push(() => source.close());
+    const first = await source.submit('first');
+    const request = await portableMcpApproval(first);
+    expect(remote.effects).toHaveLength(0);
+    const nativeOwner = (
+      source as unknown as PortableMcpCandidate
+    ).nativeQuestions.get(request);
+    if (!nativeOwner?.questionId)
+      throw new Error('Expected current native question owner');
+    const deniedWire = {
+      kind: 'mcp_approval',
+      server_name: 'fixture',
+      request_id: 'mcp_tool_call_approval_remembered-0',
+      decision: 'deny',
+    };
+    await expect(
+      nativeOwner.native._respond_owned_native_question(
+        nativeOwner.questionId,
+        JSON.stringify(deniedWire),
+        true,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      nativeOwner.native._respond_owned_native_question(
+        nativeOwner.questionId,
+        JSON.stringify({
+          ...deniedWire,
+          decision: 'allow_once',
+          content: { approved: true },
+        }),
+        true,
+      ),
+    ).rejects.toThrow();
+    expect(
+      await nativeOwner.native._native_question_pending(nativeOwner.questionId),
+    ).toBe(true);
+    expect(remote.effects).toHaveLength(0);
+    const rememberedReply = request.reply(choice, { always: true });
+    await source.respond(rememberedReply);
+    expect((await first.wait()).finalOutput).toBe('done-0');
+    await expect(source.respond(rememberedReply)).rejects.toThrow();
+    expect(
+      (await (await source.submit('same tool, new arguments')).wait())
+        .finalOutput,
+    ).toBe('done-1');
+    const different = await source.submit('other raw tool');
+    await source.respond((await portableMcpApproval(different)).reply('deny'));
+    expect((await different.wait()).finalOutput).toBe('done-2');
+    expect(
+      (await (await source.submit('original tool again')).wait()).finalOutput,
+    ).toBe('done-3');
+    const saved = await source.saveState();
+    await source.close();
+    await using restored = await agent.session({ state: saved });
+    const final = await restored.submit('fresh cold owner');
+    const fresh = await portableMcpApproval(final);
+    await expect(restored.respond(rememberedReply)).rejects.toThrow();
+    await restored.respond(fresh.reply('deny'));
+    expect((await final.wait()).finalOutput).toBe('done-4');
+    expect(remote.effects.map((entry) => entry.name)).toEqual(
+      choice === 'allow_once'
+        ? ['find-record', 'find-record', 'find-record']
+        : [],
+    );
+    expect(remote.effects.map((entry) => entry.arguments)).toEqual(
+      choice === 'allow_once' ? [{ key: '0' }, { key: '1' }, { key: '3' }] : [],
+    );
+    expect(JSON.stringify(model.requests)).not.toContain('rememberMcp');
+    expect(JSON.stringify(saved)).not.toContain('remembered_mcp');
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it.each(['credential', 'endpoint', 'declaration'] as const)(
+  'remembered native MCP choice refuses a changed current %s',
+  async (change) => {
+    const schemas: Record<string, JsonObject> = {
+      'find-record': { ...recordTool.inputSchema },
+    };
+    const original = await peer(
+      'find-record',
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      schemas,
+    );
+    const replacement = await peer('find-record');
+    const model = new ModelServer([
+      [
+        call(
+          'reviewed',
+          { key: 'first' },
+          { namespace: 'mcp__fixture', callId: 'remember-source' },
+        ),
+      ],
+      [message('first done')],
+      [
+        call(
+          'reviewed',
+          { key: 'second' },
+          { namespace: 'mcp__fixture', callId: 'remember-changed' },
+        ),
+      ],
+      [message('changed done')],
+    ]);
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-remembered-change',
+      supportsWebsockets: false,
+    });
+    cleanup.push(() => provider.close());
+    const descriptor = (changed: boolean) =>
+      new HttpMCP({
+        name: 'fixture',
+        url: changed && change === 'endpoint' ? replacement.url : original.url,
+        tools: ['find-record'],
+        toolNameOverrides: { 'find-record': 'reviewed' },
+        approvalMode: 'preapproved',
+        toolApprovalOverrides: { 'find-record': 'prompt' },
+        ...(changed && change === 'credential'
+          ? { bearerToken: 'new-synthetic-token' }
+          : {}),
+        cacheToolsList: false,
+      });
+    const agent = new Agent({
+      instructions: 'Use the record.',
+      provider,
+      model: 'gpt-5.5',
+      programmaticToolCalling: false,
+      tools: [descriptor(false)],
+    });
+    await using session = await agent.session();
+    const first = await session.submit('first');
+    await session.respond(
+      (await portableMcpApproval(first)).reply('allow_once', { always: true }),
+    );
+    expect((await first.wait()).finalOutput).toBe('first done');
+    expect(original.effects).toHaveLength(1);
+    if (change === 'declaration')
+      schemas['find-record'] = {
+        ...recordTool.inputSchema,
+        properties: {
+          ...recordTool.inputSchema.properties,
+          revision: { type: 'string' },
+        },
+      };
+    await session.update({ tools: [descriptor(true)] });
+    const changed = await session.submit('changed binding');
+    const request = await portableMcpApproval(changed);
+    expect(original.effects).toHaveLength(1);
+    expect(replacement.effects).toHaveLength(0);
+    await session.respond(request.reply('deny'));
+    expect((await changed.wait()).finalOutput).toBe('changed done');
+    expect(original.effects).toHaveLength(1);
+    expect(replacement.effects).toHaveLength(0);
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it('requires a fresh native MCP decision after reconnect without replaying the lost effect', async () => {
+  const remote = await peer('lookup', undefined, reconnectResult, firstEffect);
+  const { model, session } = await open(
+    new HttpMCP({
+      ...reconnectOptions,
+      url: remote.url,
+      activation: 'session',
+      toolApprovalOverrides: { lookup: 'prompt' },
+    }),
+    reconnectResponses(),
+  );
+  expect(remote.initializations).toBe(1);
+  const turn = await session.submit('Record both entries.');
+  const first = await portableMcpApproval(turn);
+  const stale = first.reply('allow_once');
+  await session.respond(first.reply('allow_once', { always: true }));
+  const second = await portableMcpApproval(turn);
+  expect(second).not.toBe(first);
+  expect(remote.effects).toMatchObject([
+    { name: 'lookup', arguments: { key: firstEffect }, initialization: 1 },
+  ]);
+  await expect(session.respond(stale)).rejects.toThrow();
+  await session.respond(second.reply('deny'));
+  expect((await turn.wait()).finalOutput).toBe('done');
+  expect(remote.effects).toHaveLength(1);
+  expect(remote.initializations).toBe(2);
+  expectToolOutput(
+    model.requests[1]!,
+    firstEffect,
+    'MCP tool invocation failed',
+  );
+  model.assertExhausted();
+}, 30_000);
+
+it.each(['wire', 'arguments'] as const)(
+  'v0 strict MCP optional-null compatibility: %s',
+  async (mode) => {
+    const remote = await peer(
+      'lookup',
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      {
+        lookup: {
+          type: 'object',
+          properties: {
+            key: { type: 'string' },
+            optional: { type: 'string' },
+            nullable: { type: ['string', 'null'] },
+          },
+          required: ['key'],
+          additionalProperties: false,
+        },
+      },
+    );
+    const { session, model } = await open(
+      new HttpMCP({
+        ...reconnectOptions,
+        url: remote.url,
+        tools: ['lookup'],
+        strictToolSchemas: true,
+      }),
+      [
+        [
+          call(
+            'lookup',
+            { key: 'strict-case', optional: null, nullable: null },
+            { namespace: 'mcp__fixture', callId: 'strict-null' },
+          ),
+        ],
+        [message('done')],
+      ],
+    );
+    expect(
+      (await (await session.submit('Use the optional defaults.')).wait())
+        .finalOutput,
+    ).toBe('done');
+    if (mode === 'arguments') {
+      expect(remote.effects).toHaveLength(1);
+      expect(remote.effects[0].arguments).toEqual({
+        key: 'strict-case',
+        nullable: null,
+      });
+    } else {
+      const namespace = (model.requests[0].tools as JsonObject[]).find(
+        (tool) => tool.name === 'mcp__fixture',
+      );
+      const spec = (namespace!.tools as JsonObject[]).find(
+        (tool) => tool.name === 'lookup',
+      )!;
+      const acceptsNull = (schema: JsonObject): boolean =>
+        schema.type === 'null' ||
+        (Array.isArray(schema.type) && schema.type.includes('null')) ||
+        (Array.isArray(schema.anyOf) &&
+          schema.anyOf.some((value) => acceptsNull(value as JsonObject)));
+      expect(spec.strict).toBe(true);
+      const properties = (spec.parameters as JsonObject)
+        .properties as JsonObject;
+      expect(acceptsNull(properties.optional as JsonObject)).toBe(true);
+    }
+    expect(model.requests).toHaveLength(2);
+  },
+);
+
+it.each(['cold', 'recapture', 'changed_policy', 'tampered_call'] as const)(
+  'keeps strict MCP effective arguments behind its canonical cold owner (%s)',
+  async (mode) => {
+    const schema = {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        optional: { type: 'string' },
+        nullable: { type: ['string', 'null'] },
+      },
+      required: ['key'],
+      additionalProperties: false,
+    };
+    const remote = await peer(
+      'lookup',
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      { lookup: schema },
+    );
+    const args = { key: 'strict-cold', optional: null, nullable: null };
+    const sampled = call('lookup', args, {
+      namespace: 'mcp__fixture',
+      callId: 'strict-cold',
+    });
+    sampled.arguments =
+      ' { "key": "strict-cold", "optional": null, "nullable": null } ';
+    const model = new ModelServer([[sampled], [message('strict cold done')]]);
+    const config = await model.config();
+    const provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-strict-mcp',
+      supportsWebsockets: false,
+    });
+    cleanup.push(() => provider.close());
+    const agentFor = (strict: boolean) =>
+      new Agent({
+        instructions: 'Read the record.',
+        provider,
+        model: 'gpt-5.5',
+        programmaticToolCalling: false,
+        tools: [
+          new HttpMCP({
+            name: 'fixture',
+            url: remote.url,
+            tools: ['lookup'],
+            approvalMode: 'preapproved',
+            toolApprovalOverrides: { lookup: 'prompt' },
+            cacheToolsList: false,
+            strictToolSchemas: strict,
+          }),
+        ],
+      });
+    const agent = agentFor(true);
+    const source = await agent.session();
+    cleanup.push(() => source.close());
+    const original = await source.submit('Read');
+    const old = await portableMcpApproval(original);
+    const oldReply = old.reply('allow_once');
+    expect(remote.effects).toEqual([]);
+    let serialized = JSON.stringify(await source.suspend());
+    await source.close();
+    const recorded = JSON.parse(serialized);
+    expect(recorded.manual_continuation.pending_mcp[0].arguments).toEqual(args);
+    const authenticated = (value: string) =>
+      parseSessionState(value, {
+        expectedSha256: createHash('sha256').update(value).digest('hex'),
+      });
+    if (mode === 'tampered_call') {
+      recorded.manual_continuation.pending_mcp[0].arguments.optional = 'forged';
+      await expect(
+        agent
+          .session({ state: authenticated(JSON.stringify(recorded)) })
+          .then((opened) => {
+            cleanup.push(() => opened.close());
+            return opened;
+          }),
+      ).rejects.toThrow();
+      expect(remote.effects).toEqual([]);
+      expect(model.requests).toHaveLength(1);
+      return;
+    }
+    if (mode === 'changed_policy') {
+      await expect(
+        agentFor(false)
+          .session({ state: authenticated(serialized) })
+          .then((opened) => {
+            cleanup.push(() => opened.close());
+            return opened;
+          }),
+      ).rejects.toThrow();
+      expect(remote.effects).toEqual([]);
+      expect(model.requests).toHaveLength(1);
+      return;
+    }
+    let restored = await agent.session({ state: authenticated(serialized) });
+    cleanup.push(() => restored.close());
+    let request = await portableMcpApproval(restored.restoredTurn!);
+    expect(remote.effects).toEqual([]);
+    expect(model.requests).toHaveLength(1);
+    if (mode === 'recapture') {
+      serialized = JSON.stringify(await restored.suspend());
+      expect(
+        JSON.parse(serialized).manual_continuation.pending_mcp[0].arguments,
+      ).toEqual(args);
+      await restored.close();
+      restored = await agent.session({ state: authenticated(serialized) });
+      request = await portableMcpApproval(restored.restoredTurn!);
+    }
+    await expect(restored.respond(oldReply)).rejects.toThrow();
+    expect(remote.effects).toEqual([]);
+    await restored.respond(request.reply('allow_once'));
+    expect((await restored.restoredTurn!.wait()).finalOutput).toBe(
+      'strict cold done',
+    );
+    expect(remote.effects.map((effect) => effect.arguments)).toEqual([
+      { key: 'strict-cold', nullable: null },
+    ]);
+    expect(model.requests).toHaveLength(2);
+    model.assertExhausted();
+  },
+  30_000,
+);
+
+it.each(['before', 'approval'] as const)(
+  'shares strict MCP effective arguments with app %s and the actual RPC',
+  async (phase) => {
+    const schema = {
+      type: 'object',
+      properties: {
+        key: { type: 'string' },
+        optional: { type: 'string' },
+        nullable: { type: ['string', 'null'] },
+      },
+      required: ['key'],
+      additionalProperties: false,
+    };
+    const remote = await peer(
+      'lookup',
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      { lookup: schema },
+    );
+    const views: { original: JsonObject; effective: JsonObject }[] = [];
+    const metadata: JsonObject[] = [];
+    const observe = (ctx: MCPCallContext) => {
+      views.push({
+        original: structuredClone(ctx.originalArguments),
+        effective: structuredClone(ctx.effectiveArguments),
+      });
+    };
+    const { session, model } = await open(
+      new HttpMCP({
+        ...reconnectOptions,
+        url: remote.url,
+        tools: ['lookup'],
+        strictToolSchemas: true,
+        ...(phase === 'before'
+          ? {
+              before(ctx: MCPCallContext) {
+                observe(ctx);
+                return { action: 'allow' as const };
+              },
+            }
+          : {
+              approval(ctx: MCPCallContext) {
+                observe(ctx);
+                return true;
+              },
+            }),
+        requestMetadata(event) {
+          metadata.push(structuredClone(event.arguments));
+          return {};
+        },
+      }),
+      [
+        [
+          call(
+            'lookup',
+            { key: 'strict-app', optional: null, nullable: null },
+            { namespace: 'mcp__fixture', callId: 'strict-app' },
+          ),
+        ],
+        [message('strict app done')],
+      ],
+    );
+    expect((await (await session.submit('Read')).wait()).finalOutput).toBe(
+      'strict app done',
+    );
+    expect(views).toEqual([
+      {
+        original: { key: 'strict-app', optional: null, nullable: null },
+        effective: { key: 'strict-app', nullable: null },
+      },
+    ]);
+    expect(metadata).toEqual([{ key: 'strict-app', nullable: null }]);
+    expect(remote.effects.map((effect) => effect.arguments)).toEqual([
+      { key: 'strict-app', nullable: null },
+    ]);
+    expect(model.requests).toHaveLength(2);
+    model.assertExhausted();
+  },
+  30_000,
 );

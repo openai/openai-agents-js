@@ -103,6 +103,7 @@ export class ResponsesWebSocketModel implements NativeModel {
   readonly #requestOptions;
   readonly #promptCacheKey;
   readonly #unsafe = new WeakSet<object>();
+  readonly #unsent = new WeakSet<object>();
 
   constructor(
     readonly connect: ResponsesSocketFactory,
@@ -123,6 +124,13 @@ export class ResponsesWebSocketModel implements NativeModel {
         suggested: false,
         replaySafety: 'unsafe',
         reason: 'Responses WebSocket frame may have reached the provider',
+      };
+    if (error && typeof error === 'object' && this.#unsent.has(error))
+      return {
+        suggested: true,
+        replaySafety: 'safe',
+        responseStarted: false,
+        reason: 'Responses WebSocket closed before request dispatch',
       };
   }
 
@@ -161,6 +169,7 @@ export class ResponsesWebSocketModel implements NativeModel {
     owner.busy = true;
     let connection: Connection | undefined;
     let sent = false;
+    let opening = false;
     let terminal = false;
     try {
       const body = copyJsonValue(request.body) as JsonObject;
@@ -218,12 +227,39 @@ export class ResponsesWebSocketModel implements NativeModel {
       connection = owner.connection;
       request.signal.throwIfAborted();
       if (owner.retired) throw new TypeError('Responses socket owner retired');
-      sent = true;
-      connection.socket.send(frame as Parameters<ResponsesSocket['send']>[0]);
       const deadline =
         options.timeout === undefined
           ? undefined
           : Date.now() + options.timeout;
+      // Hosted wrappers account for dispatch in send, so await opening first.
+      if (
+        socketReplacementChecks.has(connection.socket) &&
+        connection.socket.socket.readyState === 0
+      ) {
+        opening = true;
+        while (connection.socket.socket.readyState === 0) {
+          const next = await readNext(connection, request.signal, deadline);
+          if (next.done || next.value.type === 'close')
+            throw new Error(
+              'Responses WebSocket closed before request dispatch',
+            );
+          if (next.value.type === 'error') throw next.value.error;
+          if (next.value.type === 'message') {
+            opening = false;
+            throw new TypeError(
+              'Responses WebSocket received data before request dispatch',
+            );
+          }
+        }
+        if (connection.socket.socket.readyState !== 1)
+          throw new Error('Responses WebSocket closed before request dispatch');
+        request.signal.throwIfAborted();
+        if (owner.retired)
+          throw new TypeError('Responses socket owner retired');
+        opening = false;
+      }
+      sent = true;
+      connection.socket.send(frame as Parameters<ResponsesSocket['send']>[0]);
       let responseId: unknown;
       for (;;) {
         const next = await readNext(connection, request.signal, deadline);
@@ -273,7 +309,14 @@ export class ResponsesWebSocketModel implements NativeModel {
           throw new Error('Responses WebSocket provider error');
       }
     } catch (error) {
-      let failure = sent ? requestError(error) : error;
+      let failure =
+        opening && !request.signal.aborted
+          ? new Error('Responses WebSocket closed before request dispatch', {
+              cause: error,
+            })
+          : sent
+            ? requestError(error)
+            : error;
       if (connection) {
         try {
           await this.#closeAfterRequest(connection, sent);
@@ -286,8 +329,10 @@ export class ResponsesWebSocketModel implements NativeModel {
           );
         }
       }
-      if (sent && failure && typeof failure === 'object')
-        this.#unsafe.add(failure);
+      if (failure && typeof failure === 'object') {
+        if (sent) this.#unsafe.add(failure);
+        else if (opening && !request.signal.aborted) this.#unsent.add(failure);
+      }
       throw failure;
     } finally {
       owner.busy = false;

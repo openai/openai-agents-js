@@ -6,6 +6,7 @@ import {
 } from './sandbox-defaults';
 import { z } from 'zod';
 import type { AgentLifecycleCallback } from './agent-lifecycle';
+import type { ToolLifecycleCallback } from './tool-lifecycle';
 import type { RunErrorHandler } from './run-error-recovery';
 import type { Observation } from './observation';
 import { acquireProfileEnvironments } from './profile-environments';
@@ -91,6 +92,7 @@ import {
 import {
   assertOutputState,
   assertHandoffPresentationAuthority,
+  assertProducedItemsPrefixAuthority,
   hasSessionStateAuthority,
   captureSessionState,
   sessionStateSchema,
@@ -98,6 +100,7 @@ import {
   isOutputAwareState,
   isBudgetedManualSessionState,
   readCheckpointSelections,
+  withoutPassiveInputQueue,
 } from './state';
 import { openSession, runOwnedSession, type SessionSetup } from './agent';
 import { tryOpenPlainRun, type PreparedPlainRun } from './plain-run';
@@ -119,8 +122,12 @@ import {
   type OutputSpec,
   type PreparedOutput,
 } from './output';
-import { webSearchConfig, webSearchName } from './web-search';
-import { hostedToolSpecs, hostedToolType } from './hosted-tools';
+import { webSearchConfig, webSearchName, webSearch } from './web-search';
+import {
+  captureHostedTool,
+  hostedToolSpecs,
+  hostedToolPolicyIdentity,
+} from './hosted-tools';
 import { NativeError } from './native-error';
 import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
@@ -172,6 +179,7 @@ import { localStoragePath, type LocalStorage } from './local-storage';
 import { captureThreadStore, type SessionStore } from './custom-thread-store';
 import {
   validateCustomStorageCompatibility,
+  validateCustomStorageEnvironment,
   validatePrepareRequestCompatibility,
 } from './opening-compatibility';
 import { captureReconciledCalls } from './local-recovery';
@@ -216,6 +224,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
    */
   beforeComplete?: BeforeComplete<Context>;
   onLifecycle?: AgentLifecycleCallback<Context>;
+  onToolLifecycle?: ToolLifecycleCallback<Context>;
   /** Reduce settled direct function results before another model request.
    * Finish proposals use the source Agent's output and completion policies.
    * Accepted handoffs and CodeMode calls remain outside this hook.
@@ -259,6 +268,10 @@ export type AgentOptions<Context = undefined, Output = string> = {
     : { outputType: OutputSpec<Output> });
 
 export interface SessionBaseOptions<Context = undefined> {
+  /** Synchronous run-level managed function lifecycle, before the issuing Agent callback. */
+  onToolLifecycle?: ToolLifecycleCallback<Context>;
+  /** Select original staged occurrences after request projection, before local sampling. */
+  pendingInputAdmission?: 'selected-before-send';
   /** Select current provider-owned HTTP history; restore requires its exact accepted anchor. */
   providerHistory?: ProviderHistory;
   /** Restore has been requiring the original trusted limits and effective missing-usage policy. */
@@ -401,9 +414,13 @@ export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   /** Persist only this run's owned text user input after model projection. */
   storeProjectedUserInput?: SubmitOptions<Context>['storeProjectedUserInput'];
   returnState?: boolean;
-  /** Capture conversation records for replay through another Session's transactHistory.
-   * History above 4,096 original records or 8 MiB causes a size error after completion. */
-  returnHistory?: boolean;
+  /** Capture conversation records for another Session's transactHistory.
+   * True retains canonical originals. 'chaining' uses the last accepted handoff
+   * presentation without changing canonical history or rerunning callbacks.
+   * A changed handoff view requires admitted native records; preserving extra
+   * fields requires a native occurrence ID.
+   * Results above 4,096 records or 8 MiB cause a size error after completion. */
+  returnHistory?: boolean | 'chaining';
   /** Return original usage from accepted Responses requests completed during this
    * invocation, in response order. History and checkpoints omit these objects.
    * Capture above 4,096 responses or 8 MiB raises NativeError after completion. */
@@ -467,6 +484,8 @@ interface CapturedOpening {
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
   readonly onLifecycle?: AgentLifecycleCallback<any>;
+  readonly agentToolLifecycle?: ToolLifecycleCallback<any>;
+  readonly onToolLifecycle?: ToolLifecycleCallback<any>;
   readonly toolBatchCompletion?: ToolBatchCompletion<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
   readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
@@ -487,6 +506,7 @@ type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
     decisions?: DecisionProvider;
     beforeComplete?: BeforeComplete<Context>;
     onLifecycle?: AgentLifecycleCallback<Context>;
+    onToolLifecycle?: ToolLifecycleCallback<Context>;
     toolBatchCompletion?: ToolBatchCompletion<Context>;
   };
   [deferredOpening]?: {
@@ -610,6 +630,7 @@ export class Agent<Context = undefined, Output = string> {
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
   onLifecycle?: AgentLifecycleCallback<Context>;
+  onToolLifecycle?: ToolLifecycleCallback<Context>;
   toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails: readonly InputGuardrail<Context>[];
   outputGuardrails: readonly OutputGuardrail<Context>[];
@@ -676,6 +697,7 @@ export class Agent<Context = undefined, Output = string> {
     for (const name of [
       'beforeComplete',
       'onLifecycle',
+      'onToolLifecycle',
       'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
@@ -685,6 +707,7 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
     this.onLifecycle = options.onLifecycle;
+    this.onToolLifecycle = options.onToolLifecycle;
     this.toolBatchCompletion = options.toolBatchCompletion;
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
@@ -1119,6 +1142,7 @@ export class Agent<Context = undefined, Output = string> {
       verifyConfiguredChildExecutorTools:
         options.verifyConfiguredChildExecutorTools,
       toolErrorFormatter: options.toolErrorFormatter,
+      onToolLifecycle: options.onToolLifecycle,
       tracing: options.tracing,
       parentTrace: captureTraceContext(options.parentTrace),
       state: options.state,
@@ -1144,6 +1168,7 @@ export class Agent<Context = undefined, Output = string> {
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
         onLifecycle: this.onLifecycle,
+        onToolLifecycle: this.onToolLifecycle,
         toolBatchCompletion: this.toolBatchCompletion,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
@@ -1159,7 +1184,7 @@ export class Agent<Context = undefined, Output = string> {
       maxModelSteps === undefined &&
       budget === undefined &&
       options.returnState !== true &&
-      options.returnHistory !== true &&
+      !options.returnHistory &&
       options.returnRawUsage !== true &&
       options.returnItems !== true &&
       !observeFailure &&
@@ -1244,6 +1269,16 @@ export class Agent<Context = undefined, Output = string> {
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
     );
+    const agentToolLifecycle = opening
+      ? opening.agentToolLifecycle
+      : owned
+        ? owned.onToolLifecycle
+        : this.onToolLifecycle;
+    const onToolLifecycle = opening
+      ? opening.onToolLifecycle
+      : options.onToolLifecycle;
+    if (onToolLifecycle !== undefined && typeof onToolLifecycle !== 'function')
+      throw new TypeError('onToolLifecycle must be callable');
     const onLifecycle = (options as OwnedSessionOptions<Context>)[
       correctionOpening
     ]
@@ -1482,7 +1517,7 @@ export class Agent<Context = undefined, Output = string> {
       customStore,
       declarations,
       catalog,
-      environmentInput !== undefined,
+      environmentInput,
     );
     const reconciledCalls = captureReconciledCalls(options.reconciledCalls);
     if (
@@ -1497,6 +1532,7 @@ export class Agent<Context = undefined, Output = string> {
         : sessionStateSchema.safeParse(structuredClone(suppliedState));
     if (stateResult?.success) {
       assertHandoffPresentationAuthority(suppliedState as SessionState);
+      assertProducedItemsPrefixAuthority(suppliedState as SessionState);
       if (hasSessionStateAuthority(suppliedState as SessionState))
         captureSessionState(stateResult.data);
     }
@@ -1562,6 +1598,7 @@ export class Agent<Context = undefined, Output = string> {
           decisions,
           beforeComplete,
           onLifecycle,
+          onToolLifecycle: agentToolLifecycle,
           toolBatchCompletion,
           inputGuardrails: agentInputGuardrails,
           outputGuardrails: agentOutputGuardrails,
@@ -1581,6 +1618,13 @@ export class Agent<Context = undefined, Output = string> {
       : this.handoffs.length || this.realtime !== undefined
         ? captureCurrentProfiles()
         : undefined;
+    const scopedHostedSearch =
+      profiles?.some(
+        (profile) =>
+          profile.scopedHostedSearch !== undefined ||
+          profile.scopedHostedFileSearch !== undefined ||
+          profile.scopedHostedCodeInterpreter !== undefined,
+      ) ?? false;
     if (profiles) {
       const selectedTools = splitToolDeclarations(
         profiles[0].declaration.tools,
@@ -1641,6 +1685,7 @@ export class Agent<Context = undefined, Output = string> {
           declarations.nativeGoals ||
           declarations.checklist ||
           declarations.webSearch ||
+          scopedHostedSearch ||
           declarations.hostedTools.length > 0 ||
           declarations.tools.some((tool) => tool.deferLoading) ||
           declarations.mcp.some(
@@ -1667,6 +1712,10 @@ export class Agent<Context = undefined, Output = string> {
         instructions,
       );
     let profileInstructions = instructions;
+    if (customStore && profiles) {
+      for (const profile of profiles)
+        validateCustomStorageEnvironment(profile.declaration.environment);
+    }
     const environmentOwner = await acquireEnvironment(
       environmentInput,
       options.signal,
@@ -1783,7 +1832,21 @@ export class Agent<Context = undefined, Output = string> {
         'Portable state cannot be combined with persistent storage or resume',
       );
     if (stateResult && !stateResult.success) throw stateResult.error;
-    const state = stateResult?.data;
+    const passiveInput =
+      stateResult?.data.format_version === 21
+        ? stateResult.data.pending_input_queue
+        : undefined;
+    if (
+      passiveInput !== undefined &&
+      options.pendingInputAdmission !== 'selected-before-send'
+    )
+      throw new TypeError(
+        'Passive input queue requires a current selected-before-send declaration',
+      );
+    const state =
+      stateResult?.data === undefined
+        ? undefined
+        : withoutPassiveInputQueue(stateResult.data);
     if (
       state &&
       (state.executor_read_only ?? false) !== (environment?.readOnly ?? false)
@@ -2097,6 +2160,26 @@ export class Agent<Context = undefined, Output = string> {
           profile.catalog.tools.some((tool) => tool.deferLoading) ||
           profile.mcp.some((server) => server.deferLoading),
       );
+    const distinctFileSearch = graph
+      ? [...graph.profiles.values()].some(
+          ({ profile, catalog }) =>
+            splitToolDeclarations(profile.declaration.tools).hostedTools.some(
+              (tool) => tool.kind === 'file_search',
+            ) &&
+            (catalog.tools.some((tool) => {
+              const ref = toolIdentity(tool);
+              return (
+                ref.namespace === 'functions' && ref.name === 'file_search'
+              );
+            }) ||
+              Object.hasOwn(profile.handoffs, 'file_search') ||
+              Object.hasOwn(profile.decisionHandoffs ?? {}, 'file_search')),
+        )
+      : declarations.hostedTools.some((tool) => tool.kind === 'file_search') &&
+        catalog.tools.some((tool) => {
+          const ref = toolIdentity(tool);
+          return ref.namespace === 'functions' && ref.name === 'file_search';
+        });
     const selected = [
       ...(projectGuidance
         ? ['read_text_file', 'view_image'].map((name) => ({
@@ -2105,10 +2188,9 @@ export class Agent<Context = undefined, Output = string> {
           }))
         : []),
       ...(search ? [webSearchName(search)] : []),
-      ...declarations.hostedTools.map((tool) => ({
-        name: hostedToolType(tool),
-        namespace: 'functions',
-      })),
+      ...declarations.hostedTools.map((tool) =>
+        hostedToolPolicyIdentity(tool, distinctFileSearch),
+      ),
       ...declarations.tools
         .filter((tool) => !isClientToolSearchTool(tool))
         .map(toolIdentity),
@@ -2157,6 +2239,13 @@ export class Agent<Context = undefined, Output = string> {
       for (const profile of graph.profiles.values()) {
         for (const identity of [
           ...profile.catalog.tools.map(toolIdentity),
+          ...(profile.profile.scopedHostedSearch
+            ? [webSearchName(profile.profile.scopedHostedSearch)]
+            : []),
+          ...[
+            ...(profile.profile.scopedHostedFileSearch ?? []),
+            ...(profile.profile.scopedHostedCodeInterpreter ?? []),
+          ].map((tool) => hostedToolPolicyIdentity(tool, distinctFileSearch)),
           ...mcpToolNames(profile.mcp),
           ...Object.keys(profile.profile.handoffs).map((name) => ({
             namespace: 'functions',
@@ -2216,7 +2305,11 @@ export class Agent<Context = undefined, Output = string> {
             },
           }
         : {}),
-      ...webSearchConfig(search),
+      ...webSearchConfig(
+        scopedHostedSearch && search?.route !== 'standalone'
+          ? undefined
+          : search,
+      ),
     };
     if (settings) {
       if (settings.reasoningEffort !== undefined)
@@ -2558,7 +2651,10 @@ export class Agent<Context = undefined, Output = string> {
           _hosted_tools: hostedToolSpecs(
             declarations.hostedTools.filter(
               (tool) =>
-                tool.kind !== 'tool_search' || tool.execution !== 'client',
+                (!scopedHostedSearch ||
+                  (tool.kind !== 'file_search' &&
+                    tool.kind !== 'code_interpreter')) &&
+                (tool.kind !== 'tool_search' || tool.execution !== 'client'),
             ),
           ),
           ...(provider.responseMode === 'buffered'
@@ -2654,6 +2750,8 @@ export class Agent<Context = undefined, Output = string> {
           ) as Agent<any, any>),
         beforeComplete,
         onLifecycle,
+        agentToolLifecycle,
+        onToolLifecycle,
         toolBatchCompletion,
         inputGuardrails,
         outputGuardrails,
@@ -2669,6 +2767,7 @@ export class Agent<Context = undefined, Output = string> {
         nativeAgents,
         webSearch: search,
         hostedTools: declarations.hostedTools,
+        distinctFileSearch,
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
@@ -2678,6 +2777,8 @@ export class Agent<Context = undefined, Output = string> {
           inheritedSandboxDefault,
         ),
         providerHistory: options.providerHistory,
+        pendingInputAdmission: options.pendingInputAdmission,
+        pendingInputQueue: passiveInput,
         hostedPrompt,
         hostedPromptControls: promptControls,
         checklist: declarations.checklist,
@@ -2744,6 +2845,8 @@ export class Agent<Context = undefined, Output = string> {
             decisions,
             beforeComplete,
             onLifecycle,
+            agentToolLifecycle,
+            onToolLifecycle,
             toolBatchCompletion,
             inputGuardrails,
             outputGuardrails,
@@ -3059,10 +3162,22 @@ export function captureAgentProfiles<Context, Output>(
     const {
       tools: _tools,
       mcp: _mcp,
+      webSearch,
+      hostedTools,
       ...grants
     } = splitToolDeclarations(agent.tools);
     return {
       ...grants,
+      hostedTools: realtimeGraph
+        ? hostedTools
+        : hostedTools.filter(
+            (tool) =>
+              tool.kind !== 'file_search' && tool.kind !== 'code_interpreter',
+          ),
+      // Hosted search belongs to the captured provider request, not a local
+      // executor. Standalone and Realtime keep the existing common ceiling.
+      webSearch:
+        !realtimeGraph && webSearch?.route === 'hosted' ? undefined : webSearch,
       programmaticToolCalling: agent.programmaticToolCalling,
     };
   };
@@ -3193,6 +3308,7 @@ export function captureAgentProfiles<Context, Output>(
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
       onLifecycle: source.onLifecycle,
+      onToolLifecycle: source.onToolLifecycle,
       toolBatchCompletion: source.toolBatchCompletion,
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
@@ -3383,6 +3499,62 @@ export function captureAgentProfiles<Context, Output>(
                 extraBody: declaration.modelSettings?.extraBody,
               }),
       }),
+    );
+  }
+  const rootSearch = splitToolDeclarations(rootDeclaration.tools).webSearch;
+  const fileSearches = (declaration: Agent<Context, Output>) =>
+    splitToolDeclarations(declaration.tools).hostedTools.filter(
+      (tool) => tool.kind === 'file_search',
+    );
+  const rootFileSearches = fileSearches(rootDeclaration);
+  const codeInterpreters = (declaration: Agent<Context, Output>) =>
+    splitToolDeclarations(declaration.tools).hostedTools.filter(
+      (tool) => tool.kind === 'code_interpreter',
+    );
+  const rootCodeInterpreters = codeInterpreters(rootDeclaration);
+  if (
+    !realtimeGraph &&
+    profiles.some(
+      (profile) =>
+        !isDeepStrictEqual(
+          splitToolDeclarations(profile.declaration.tools).webSearch,
+          rootSearch,
+        ) ||
+        !isDeepStrictEqual(
+          fileSearches(profile.declaration),
+          rootFileSearches,
+        ) ||
+        !isDeepStrictEqual(
+          codeInterpreters(profile.declaration),
+          rootCodeInterpreters,
+        ),
+    )
+  ) {
+    return Object.freeze(
+      profiles.map((profile) =>
+        Object.freeze({
+          ...profile,
+          scopedHostedCodeInterpreter: Object.freeze(
+            codeInterpreters(profile.declaration).map((tool) =>
+              captureHostedTool(tool),
+            ),
+          ),
+          scopedHostedFileSearch: Object.freeze(
+            fileSearches(profile.declaration).map((tool) =>
+              captureHostedTool(tool),
+            ),
+          ),
+          scopedHostedSearch: (() => {
+            const search = splitToolDeclarations(
+              profile.declaration.tools,
+            ).webSearch;
+            if (!search) return null;
+            if (search.route === 'standalone') return undefined;
+            const { kind: _kind, ...options } = search;
+            return webSearch(options);
+          })(),
+        }),
+      ),
     );
   }
   return Object.freeze(profiles);

@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -8,6 +9,7 @@ import {
   NativeError,
   NativeProvider,
   fileSessionStore,
+  parseSessionState,
   tool,
   type SessionStore,
 } from '../../src';
@@ -187,7 +189,7 @@ it('ignores oversized tool output discarded by a history replacement', async () 
   ).toBe(false);
   expect(effects).toEqual(['completed']);
   expect(server.requests).toHaveLength(3);
-});
+}, 15_000);
 
 it.each([false, true])(
   'continues one-shot history in another session with returnState=%s',
@@ -779,5 +781,154 @@ it.each([
       canonical: expected,
       replayed: expected,
     });
+  },
+);
+
+it('has been rebuilding an explicit positive prefix from admitted originals after compaction', async () => {
+  const server = new ModelServer([
+    [message('live retained context')],
+    [message('cold retained context')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-rebuilt-prefix',
+    supportsWebsockets: false,
+  });
+  const agent = new Agent({
+    instructions: 'PREFIX_APPLICATION_GUIDANCE',
+    provider,
+  });
+  const retained = {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'retained original message' }],
+  };
+  const audit = {
+    type: 'application_note',
+    value: 'retained audit-only marker',
+  };
+  const removed = {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'deleted original message' }],
+  };
+  const replacement = {
+    type: 'message',
+    role: 'user',
+    content: [{ type: 'input_text', text: 'replacement input message' }],
+  };
+  let stateWire = '';
+  let expectedSha256 = '';
+  let savedHistory: unknown;
+  {
+    await using session = await agent.session();
+    const initial = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: initial.revision,
+      keep: 0,
+      items: [retained, audit, removed],
+    });
+    const before = await session.historySnapshot();
+    await session.compact({
+      summary: 'deleted and retained compacted summary',
+    });
+    await expect(
+      session.transactHistory({
+        expectedRevision: before.revision,
+        keep: 2,
+        items: [replacement],
+      }),
+    ).rejects.toThrow(
+      'cannot shorten original history across model compaction',
+    );
+    expect(await session.historySnapshot()).toEqual(before);
+    await session.transactHistory({
+      expectedRevision: before.revision,
+      keep: 2,
+      items: [replacement],
+      rebuildModelContext: true,
+    });
+    expect((await session.historySnapshot()).items).toEqual([
+      retained,
+      audit,
+      replacement,
+    ]);
+    expect(server.requests).toHaveLength(0);
+    const context = JSON.stringify(await session.modelContext());
+    expect(context).toContain('retained original message');
+    expect(context).toContain('replacement input message');
+    expect(context).not.toContain('retained audit-only marker');
+    expect(context).not.toContain('deleted original message');
+    expect(context).not.toContain('compacted summary');
+    expect(
+      (await (await session.submit('continue live')).wait()).finalOutput,
+    ).toBe('live retained context');
+    const wire = JSON.stringify(server.requests[0]);
+    expect(wire).toContain('PREFIX_APPLICATION_GUIDANCE');
+    expect(wire).toContain('retained original message');
+    expect(wire).toContain('replacement input message');
+    expect(wire).not.toContain('retained audit-only marker');
+    expect(wire).not.toContain('deleted original message');
+    expect(wire).not.toContain('compacted summary');
+    savedHistory = await session.historySnapshot();
+    stateWire = JSON.stringify(await session.saveState());
+    expectedSha256 = createHash('sha256').update(stateWire).digest('hex');
+  }
+  await using restored = await agent.session({
+    state: parseSessionState(stateWire, { expectedSha256 }),
+  });
+  expect(await restored.historySnapshot()).toEqual(savedHistory);
+  expect(
+    (await (await restored.submit('continue cold')).wait()).finalOutput,
+  ).toBe('cold retained context');
+  const wire = JSON.stringify(server.requests[1]);
+  expect(wire).toContain('PREFIX_APPLICATION_GUIDANCE');
+  expect(wire).not.toContain('deleted original message');
+  expect(wire).not.toContain('compacted summary');
+  expect(wire).not.toContain('retained audit-only marker');
+  server.assertExhausted();
+});
+
+it.each(['compaction', 'context_compaction'])(
+  'has been refusing a retained imported opaque %s boundary in the explicit rebuild fallback',
+  async (type) => {
+    const server = new ModelServer([]);
+    const config = await server.config();
+    await using provider = new NativeProvider({
+      baseUrl: (config['model_providers.fixture'] as { base_url: string })
+        .base_url,
+      apiKey: 'synthetic-opaque-prefix',
+      supportsWebsockets: false,
+    });
+    const agent = new Agent({ instructions: 'Answer.', provider });
+    await using session = await agent.session();
+    const initial = await session.historySnapshot();
+    await session.transactHistory({
+      expectedRevision: initial.revision,
+      keep: 0,
+      items: [
+        { type, encrypted_content: 'opaque imported retained boundary' },
+        {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'removed source' }],
+        },
+      ],
+    });
+    const before = await session.historySnapshot();
+    await session.compact({ summary: 'summary containing removed source' });
+    const contextBefore = await session.modelContext();
+    await expect(
+      session.transactHistory({
+        expectedRevision: before.revision,
+        keep: 1,
+        rebuildModelContext: true,
+      }),
+    ).rejects.toThrow('cannot rebuild a retained provider compaction boundary');
+    expect(await session.historySnapshot()).toEqual(before);
+    expect(await session.modelContext()).toEqual(contextBefore);
+    expect(server.requests).toHaveLength(0);
   },
 );

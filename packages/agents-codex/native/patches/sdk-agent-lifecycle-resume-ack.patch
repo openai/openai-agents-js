@@ -1,0 +1,72 @@
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 059da363610..7289314a2ae 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -96,6 +96,23 @@ impl Session {
+         if started.as_ref() == Some(&receipt) {
+             return Ok(());
+         }
++        if let Some(restored) = context.extension_data
++            .get::<Option<codex_extension_api::AgentLifecycleStartAcknowledgment>>()
++            && let Some(ack) = restored.as_ref()
++            && ack.turn_id == context.sub_id && ack.profile == receipt
++        {
++            if context.next_step_settings.load_full().agent_profile.as_ref()
++                .map(|current| &current.receipt) != receipt.as_ref()
++            {
++                return Err(invalid("Agent lifecycle source changed during restore"));
++            }
++            if cancellation.is_cancelled() {
++                return Err(CodexErr::TurnAborted);
++            }
++            context.extension_data.insert(ack.clone());
++            *started = Some(receipt);
++            return Ok(());
++        }
+         self.notify_agent_activity(context, source, None, cancellation).await?;
+         if context.next_step_settings.load_full().agent_profile.as_ref()
+             .map(|current| &current.receipt) != receipt.as_ref()
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index a7275f791fe..1b742b76aa0 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -66,6 +66,7 @@ pub use turn_input::TurnInputContext;
+ pub use turn_input::TurnInputEnvironment;
+ pub use turn_lifecycle::AgentProfile;
+ pub use turn_lifecycle::AgentLifecycleInput;
++pub use turn_lifecycle::AgentLifecycleStartAcknowledgment;
+ pub use turn_lifecycle::AgentProfileActivation;
+ pub use turn_lifecycle::AgentProfileBoundaryInput;
+ pub use turn_lifecycle::AgentProfileDecisionHandoffTools;
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 335dd92e31e..edc51c9829e 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -10,6 +10,15 @@ use tokio_util::sync::CancellationToken;
+ 
+ use crate::ExtensionData;
+ 
++/// An enabled SDK start callback completed for this exact turn and Agent entry.
++/// Native checkpoint owners may carry it only through authenticated continuations.
++#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct AgentLifecycleStartAcknowledgment {
++    pub turn_id: String,
++    pub profile: Option<codex_protocol::agent_profile::AgentProfileReceipt>,
++}
++
+ /// Runs before task registration or during cancellable regular-task startup.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum TurnStartPhase {
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index aa4fbaa8223..97ca4809575 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -53,6 +53,7 @@ pub use codex_tools::parse_tool_input_schema;
+ pub use codex_tools::parse_tool_input_schema_without_compaction;
+ pub use contributors::AgentProfile;
+ pub use contributors::AgentLifecycleInput;
++pub use contributors::AgentLifecycleStartAcknowledgment;
+ pub use contributors::AgentProfileActivation;
+ pub use contributors::AgentProfileBoundaryInput;
+ pub use contributors::AgentProfileDecisionHandoffTools;

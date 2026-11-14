@@ -1,0 +1,595 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 51eeb291820..ac40b62397c 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -3603,6 +3603,16 @@ impl ModelClientSession {
+         }
+         let thread_id = self.client.state.thread_id.to_string();
+         self.pending_http_response = None;
++        let staged_sources = crate::session::staged_input_projection::source_count(
++            prompt.tool_admission.as_ref().and_then(|admission| admission.step_store()));
++        if staged_sources.is_some() && self.client.provider_history.is_some() {
++            return Err(CodexErr::InvalidRequest("Selected staged admission requires local history".into()));
++        }
++        if staged_sources.is_some() && responses_metadata.request_kind.as_ref().is_some_and(
++            |kind| matches!(kind, crate::responses_metadata::CodexResponsesRequestKind::Compaction(_))) {
++            return Err(CodexErr::InvalidRequest("Selected staged admission does not admit compaction requests".into()));
++        }
++        let mut origins = staged_sources.map(|count| (0..count).map(Some).collect::<Vec<_>>());
+         let mut transformed = None;
+         for contributor in &self.client.request_contributors {
+             if !contributor.transforms_context(&thread_id) {
+@@ -3613,6 +3623,8 @@ impl ModelClientSession {
+                 .as_deref()
+                 .ok_or_else(|| CodexErr::InvalidRequest("Missing model context owner".into()))?;
+             let projected = transformed.get_or_insert_with(|| prompt.clone());
++            let input_count = projected.input.len();
++            let mut source_indices = None;
+             contributor
+                 .transform_context(codex_extension_api::ModelContextInput {
+                     turn_store: prompt
+@@ -3635,10 +3647,19 @@ impl ModelClientSession {
+                         .hosted_prompt
+                         .as_mut()
+                         .and_then(Option::as_mut),
++                    source_indices: origins.as_ref().map(|_| &mut source_indices),
+                     items: &mut projected.input,
+                 })
+                 .await
+                 .map_err(CodexErr::InvalidRequest)?;
++            if let Some(previous) = origins.take() {
++                let indices = source_indices.ok_or_else(|| CodexErr::InvalidRequest(
++                    "Selected staged admission requires a live contributor source map".into()))?;
++                if indices.len() != projected.input.len() || indices.iter().flatten().any(|index| *index >= input_count) {
++                    return Err(CodexErr::InvalidRequest("Context source map is outside its captured input".into()));
++                }
++                origins = Some(indices.into_iter().map(|index| index.and_then(|index| previous[index])).collect());
++            }
+         }
+         if let Some(projected) = &transformed
+             && let Some(recorder) = &self.client.executed_tool_calls
+@@ -3649,6 +3670,23 @@ impl ModelClientSession {
+             projected.input == prompt.input && projected.request_controls == prompt.request_controls
+         });
+         let prompt = transformed.as_ref().unwrap_or(prompt);
++        let selected_wire = if staged_sources.is_some() {
++            let websocket_enabled = self.websocket_for_prompt(prompt)?;
++            let wire_api = self.client.state.provider.info().wire_api;
++            let programmatic = codex_protocol::model_request_controls::HostedToolChoice::ProgrammaticToolCalling {};
++            let has_programmatic = prompt.tools.iter().any(|tool| tool.captured_hosted_choice(&programmatic).is_some())
++                || prompt.request_controls.hosted_tool_choice.as_ref().and_then(Option::as_ref)
++                    .is_some_and(|choice| matches!(choice, codex_protocol::model_request_controls::HostedToolChoice::ProgrammaticToolCalling {}));
++            if websocket_enabled || model_info.use_responses_lite || !matches!(wire_api, WireApi::Responses)
++                || prompt.request_controls.hosted_prompt.as_ref().and_then(Option::as_ref).is_some()
++                || has_programmatic {
++                return Err(CodexErr::InvalidRequest("Selected staged admission requires ordinary Responses HTTP without hosted prompt or programmatic tools".into()));
++            }
++            if let Some(admission) = &prompt.prepared_request_admission {
++                admission.admit_request().map_err(CodexErr::Fatal)?;
++            }
++            Some((websocket_enabled, wire_api))
++        } else { None };
+         if prompt.tool_admission.as_ref().is_some_and(|admission| {
+             admission.turn_store().get::<codex_extension_api::ProjectedUserInputStorage>()
+                 .is_some_and(|policy| policy.0)
+@@ -3663,8 +3701,15 @@ impl ModelClientSession {
+             &prompt.input,
+         )
+         .await?;
+-        let websocket_enabled = self.websocket_for_prompt(prompt)?;
+-        let wire_api = self.client.state.provider.info().wire_api;
++        crate::session::staged_input_projection::commit(
++            prompt.tool_admission.as_ref().map(|admission| admission.turn_store()),
++            prompt.tool_admission.as_ref().and_then(|admission| admission.step_store()),
++            &prompt.input, origins.as_deref(),
++        ).await?;
++        let (websocket_enabled, wire_api) = match selected_wire {
++            Some(selected) => selected,
++            None => (self.websocket_for_prompt(prompt)?, self.client.state.provider.info().wire_api),
++        };
+         match wire_api {
+             WireApi::Responses => {
+                 let mut auth_recovery = RequestAuthRecovery::new(&self.client.state.provider);
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index a0f7b527756..0af2deabbb7 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -1,5 +1,6 @@
+ mod agent_profile;
+ pub(crate) mod projected_input;
++pub(crate) mod staged_input_projection;
+ pub(crate) mod startup;
+ 
+ use crate::WithTurnExtensionData;
+@@ -2473,6 +2474,7 @@ impl Session {
+     ) -> CodexResult<()> {
+         if matches!(&msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
+             projected_input::join(turn_context).await?;
++            staged_input_projection::join(turn_context).await?;
+         }
+         if !crate::tools::builtin_result_policy::filter_event(
+             &turn_context.extension_data,
+diff --git a/codex-rs/core/src/session/projected_input.rs b/codex-rs/core/src/session/projected_input.rs
+index e013415a452..4bd39febe39 100644
+--- a/codex-rs/core/src/session/projected_input.rs
++++ b/codex-rs/core/src/session/projected_input.rs
+@@ -54,6 +54,16 @@ pub(crate) fn stage(
+     input: &TurnInput,
+     additional_contexts: &[String],
+ ) -> Result<bool, CodexErr> {
++    if turn.extension_data.get::<codex_extension_api::StagedInputBatch>()
++        .is_some_and(|batch| batch.projects_occurrences())
++        && matches!(input, TurnInput::UserInput { content, .. } if content.iter().all(
++            |part| matches!(part, UserInput::Text { text, .. } if text.is_empty())))
++    {
++        if !additional_contexts.is_empty() {
++            return Err(CodexErr::InvalidRequest("Queued input drain does not admit hook-created context".into()));
++        }
++        return Ok(true);
++    }
+     if turn
+         .extension_data
+         .get::<codex_extension_api::ProjectedUserInputStorage>()
+diff --git a/codex-rs/core/src/session/staged_input_projection.rs b/codex-rs/core/src/session/staged_input_projection.rs
+new file mode 100644
+index 00000000000..9fc162cc9ff
+--- /dev/null
++++ b/codex-rs/core/src/session/staged_input_projection.rs
+@@ -0,0 +1,199 @@
++//! Current, local occurrence admission for portable staged text input.
++use super::{ModelInfo, Session, StepContext, TurnContext};
++use codex_extension_api::{ExtensionData, StagedInputBatch};
++use codex_protocol::error::CodexErr;
++use codex_protocol::models::{ContentItem, ResponseItem};
++use futures::{
++    FutureExt,
++    future::{BoxFuture, Shared},
++};
++use std::collections::HashSet;
++use std::sync::{Arc, Mutex, Weak};
++
++type WriteJoin = Shared<BoxFuture<'static, Result<(), String>>>;
++struct Pending {
++    session: Weak<Session>,
++    turn: Weak<TurnContext>,
++    batch: Arc<StagedInputBatch>,
++    settlement: tokio::sync::Mutex<()>,
++    write: Mutex<Option<WriteJoin>>,
++}
++struct Sources {
++    count: usize,
++    model_info: Arc<ModelInfo>,
++    // Request position, immutable batch position, original payload.
++    entries: Vec<(usize, usize, ResponseItem)>,
++}
++
++pub(crate) fn stage(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    _model: &ModelInfo,
++    batch: &Arc<StagedInputBatch>,
++) -> Result<(), CodexErr> {
++    if batch
++        .pending_occurrences_for(&turn.sub_id)
++        .iter()
++        .any(|(_, item)| {
++            !matches!(item,
++        ResponseItem::Message { role, content, .. } if role == "user" && content.iter()
++            .all(|part| matches!(part, ContentItem::InputText { .. })))
++        })
++    {
++        return Err(CodexErr::InvalidRequest(
++            "Selected staged admission requires text user items".into(),
++        ));
++    }
++    turn.extension_data.get_or_init(|| Pending {
++        session: Arc::downgrade(session),
++        turn: Arc::downgrade(turn),
++        batch: Arc::clone(batch),
++        settlement: tokio::sync::Mutex::new(()),
++        write: Mutex::new(None),
++    });
++    Ok(())
++}
++
++pub(crate) fn append_to_prompt(step: &StepContext, input: &mut Vec<ResponseItem>) {
++    let Some(pending) = step.turn.extension_data.get::<Pending>() else {
++        return;
++    };
++    let entries = pending
++        .batch
++        .pending_occurrences_for(&step.turn.sub_id)
++        .into_iter()
++        .map(|(ordinal, item)| {
++            let index = input.len();
++            input.push(item.clone());
++            (index, ordinal, item)
++        })
++        .collect();
++    step.extension_data.insert(Sources {
++        count: input.len(),
++        model_info: step.settings.model_info.clone(),
++        entries,
++    });
++}
++
++pub(crate) fn source_count(step: Option<&ExtensionData>) -> Option<usize> {
++    step.and_then(|store| store.get::<Sources>())
++        .filter(|sources| !sources.entries.is_empty())
++        .map(|sources| sources.count)
++}
++
++pub(crate) async fn commit(
++    turn_store: Option<&ExtensionData>,
++    step_store: Option<&ExtensionData>,
++    projected: &[ResponseItem],
++    origins: Option<&[Option<usize>]>,
++) -> Result<(), CodexErr> {
++    let Some(pending) = turn_store.and_then(|store| store.get::<Pending>()) else {
++        return Ok(());
++    };
++    let sources = step_store
++        .and_then(|store| store.get::<Sources>())
++        .ok_or_else(|| {
++            CodexErr::InvalidRequest("Staged input lacks its sampled source owner".into())
++        })?;
++    if sources.entries.is_empty() {
++        return Ok(());
++    }
++    let origins = origins
++        .ok_or_else(|| CodexErr::InvalidRequest("Staged input lacks its live source map".into()))?;
++    if projected.len() != origins.len()
++        || origins
++            .iter()
++            .flatten()
++            .any(|index| *index >= sources.count)
++    {
++        return Err(CodexErr::InvalidRequest(
++            "Staged source map is outside its sampled request".into(),
++        ));
++    }
++    if projected.iter().zip(origins).any(|(item, origin)| {
++        origin.is_none() && matches!(item, ResponseItem::Message { role, .. } if role == "user")
++    }) {
++        return Err(CodexErr::InvalidRequest(
++            "Selected staged admission requires original user objects".into(),
++        ));
++    }
++    let _settlement = pending.settlement.lock().await;
++    let previous = pending
++        .write
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++        .clone();
++    if let Some(previous) = previous {
++        previous.await.map_err(CodexErr::Fatal)?;
++    }
++    let retained: HashSet<_> = origins.iter().flatten().copied().collect();
++    let remaining: HashSet<_> = pending
++        .batch
++        .pending_occurrences_for(&pending.turn.upgrade().ok_or(CodexErr::TurnAborted)?.sub_id)
++        .into_iter()
++        .map(|(index, _)| index)
++        .collect();
++    let selected: Vec<_> = sources
++        .entries
++        .iter()
++        .filter(|(index, ordinal, _)| retained.contains(index) && remaining.contains(ordinal))
++        .cloned()
++        .collect();
++    if selected.is_empty() {
++        return Ok(());
++    }
++    let session = pending.session.upgrade().ok_or(CodexErr::TurnAborted)?;
++    let turn = pending.turn.upgrade().ok_or(CodexErr::TurnAborted)?;
++    let Some((active, cancelled)) = session.active_turn_context_and_cancellation_token().await
++    else {
++        return Err(CodexErr::TurnAborted);
++    };
++    if active.sub_id != turn.sub_id || cancelled.is_cancelled() {
++        return Err(CodexErr::TurnAborted);
++    }
++    let model = sources.model_info.clone();
++    let batch = Arc::clone(&pending.batch);
++    // The write owns both persistence and acknowledgment through caller cancellation.
++    let write = tokio::spawn(async move {
++        let positions = selected
++            .iter()
++            .map(|(_, ordinal, _)| *ordinal)
++            .collect::<Vec<_>>();
++        let items = selected
++            .into_iter()
++            .map(|(_, _, item)| session.annotate_client_response_item(item))
++            .collect();
++        session
++            .record_annotated_conversation_items(&turn, &model, items)
++            .await;
++        session
++            .ensure_rollout_durable()
++            .await
++            .map_err(|error| error.to_string())?;
++        batch.acknowledge_occurrences(&positions)
++    })
++    .map(|result| result.unwrap_or_else(|_| Err("Staged input persistence task failed".into())))
++    .boxed()
++    .shared();
++    *pending
++        .write
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(write.clone());
++    write.await.map_err(CodexErr::Fatal)
++}
++
++pub(crate) async fn join(turn: &TurnContext) -> Result<(), CodexErr> {
++    let Some(pending) = turn.extension_data.get::<Pending>() else {
++        return Ok(());
++    };
++    let _settlement = pending.settlement.lock().await;
++    let write = pending
++        .write
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++        .clone();
++    if let Some(write) = write {
++        write.await.map_err(CodexErr::Fatal)?;
++    }
++    Ok(())
++}
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index a6f20d26584..88a986040e6 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -179,6 +179,13 @@ pub(crate) async fn run_turn(
+     cancellation_token: CancellationToken,
+ ) -> CodexResult<Option<String>> {
+     sess.check_agent_profile_admission()?;
++    if let Some(seed) = turn_context.extension_data
++        .get::<Option<Arc<codex_extension_api::FreshStagedInput>>>()
++        .and_then(|entry| entry.as_ref().as_ref().cloned())
++        && let Some(batch) = seed.claim(&sess.thread_id.to_string(), &turn_context.sub_id)
++    {
++        turn_context.extension_data.insert(batch);
++    }
+ 
+     if crate::guardian::is_basic_session_source(&turn_context.session_source) {
+         crate::guardian::check_pending_guardian_input(&sess, &turn_context).await?;
+@@ -677,10 +684,10 @@ pub(crate) async fn run_turn(
+             .get::<codex_extension_api::StagedInputBatch>()
+             .filter(|staged| {
+                 staged.items_for(&turn_context.sub_id).is_some()
+-                    && turn_context
++                    && (staged.projects_occurrences() || turn_context
+                         .extension_data
+                         .get::<codex_extension_api::SelectedStagedInput>()
+-                        .is_none()
++                        .is_none())
+             });
+         if let Some(staged) = &staged_input {
+             turn_context
+@@ -741,6 +748,10 @@ pub(crate) async fn run_turn(
+                 items,
+             )
+             .map_err(CodexErr::Fatal)?;
++            if staged.projects_occurrences() {
++                super::staged_input_projection::stage(&sess, &turn_context,
++                    &step_context.settings.model_info, staged)?;
++            } else {
+             // Step selection has joined the SDK input guardrails. The manual replies
+             // are already in history, so the batch follows them in the next request.
+             let admitted = items
+@@ -778,6 +789,7 @@ pub(crate) async fn run_turn(
+             .await;
+             sess.ensure_rollout_durable().await?;
+             staged.acknowledge();
++            }
+         }
+         select_sdk_profile_client(
+             &sess,
+@@ -2219,6 +2231,7 @@ pub(crate) fn build_prompt(
+     if crate::tools::spec_plan::has_selected_tool_plan(&step_context.extension_data) {
+         input.retain_mut(|item| step_context.tool_router.project_tool_catalog_item(item));
+     }
++    super::staged_input_projection::append_to_prompt(step_context, &mut input);
+     Prompt {
+         prefer_buffered_response: false,
+         observe_raw_provider_events: false,
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 97ca4809575..d2f5c837c29 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -191,6 +191,7 @@ pub use model_request::ResponseEvent;
+ pub use model_request::SdkProviderResponseSpanAdmission;
+ pub use model_request::SdkProviderResponseSpanInput;
+ pub use model_request::SelectedStagedInput;
++pub use model_request::FreshStagedInput;
+ pub use model_request::StagedInputBatch;
+ pub use model_request::StagedInputPreparation;
+ pub use model_request::ToolsOnlyCallInput;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index f2f7a88ddf1..91ead65c272 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -161,27 +161,124 @@ pub struct StagedInputBatch {
+     turn_id: String,
+     items: Arc<[ResponseItem]>,
+     admitted: Arc<AtomicBool>,
++    selected: Option<Arc<std::sync::Mutex<Vec<bool>>>>,
+ }
+-
+ impl StagedInputBatch {
+     pub fn new(turn_id: String, items: Vec<ResponseItem>) -> Self {
+         Self {
+             turn_id,
+             items: items.into(),
+             admitted: Arc::new(AtomicBool::new(false)),
++            selected: None,
+         }
+     }
+-
++    /// Only a current application opening selects this nonpersistent route.
++    pub fn selected_before_send(turn_id: String, items: Vec<ResponseItem>) -> Self {
++        let mut batch = Self::new(turn_id, items);
++        batch.selected = Some(Arc::new(std::sync::Mutex::new(vec![
++            false;
++            batch.items.len()
++        ])));
++        batch
++    }
++    pub fn projects_occurrences(&self) -> bool {
++        self.selected.is_some()
++    }
++    // The original path keeps its borrowed view and atomic acknowledgment.
+     pub fn items_for(&self, turn_id: &str) -> Option<&[ResponseItem]> {
+         (self.turn_id == turn_id && self.is_pending()).then_some(self.items.as_ref())
+     }
+-
++    pub fn guard_items_for(&self, turn_id: &str) -> Option<std::borrow::Cow<'_, [ResponseItem]>> {
++        if self.projects_occurrences() {
++            let items = self
++                .pending_occurrences_for(turn_id)
++                .into_iter()
++                .map(|(_, item)| item)
++                .collect::<Vec<_>>();
++            (!items.is_empty()).then_some(std::borrow::Cow::Owned(items))
++        } else {
++            self.items_for(turn_id).map(std::borrow::Cow::Borrowed)
++        }
++    }
++    pub fn pending_occurrences_for(&self, turn_id: &str) -> Vec<(usize, ResponseItem)> {
++        if self.turn_id != turn_id {
++            return Vec::new();
++        }
++        let Some(selected) = &self.selected else {
++            return if self.admitted.load(Ordering::Acquire) {
++                Vec::new()
++            } else {
++                self.items.iter().cloned().enumerate().collect()
++            };
++        };
++        let selected = selected
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        self.items
++            .iter()
++            .enumerate()
++            .filter(|(index, _)| !selected[*index])
++            .map(|(index, item)| (index, item.clone()))
++            .collect()
++    }
+     pub fn is_pending(&self) -> bool {
+-        !self.items.is_empty() && !self.admitted.load(Ordering::Acquire)
++        if let Some(selected) = &self.selected {
++            selected
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)
++                .iter()
++                .any(|value| !value)
++        } else {
++            !self.items.is_empty() && !self.admitted.load(Ordering::Acquire)
++        }
+     }
+-
+     pub fn acknowledge(&self) {
+         self.admitted.store(true, Ordering::Release);
++        if let Some(selected) = &self.selected {
++            selected
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner)
++                .fill(true);
++        }
++    }
++    /// The owner joins canonical persistence before acknowledging native positions.
++    pub fn acknowledge_occurrences(&self, positions: &[usize]) -> Result<(), String> {
++        let selected = self
++            .selected
++            .as_ref()
++            .ok_or("Staged batch has no selected occurrence owner")?;
++        let mut selected = selected
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if positions.iter().any(|index| *index >= selected.len()) {
++            return Err("Staged occurrence is outside its native batch".into());
++        }
++        for index in positions {
++            selected[*index] = true;
++        }
++        Ok(())
++    }
++}
++
++/// Current root-only queue activation. This receipt never enters portable state.
++pub struct FreshStagedInput {
++    thread_id: String,
++    batch: StagedInputBatch,
++    current_turn: Arc<std::sync::Mutex<String>>,
++    claimed: AtomicBool,
++}
++impl FreshStagedInput {
++    pub fn new(thread_id: String, batch: StagedInputBatch,
++        current_turn: Arc<std::sync::Mutex<String>>) -> Result<Self, String> {
++        if !batch.projects_occurrences() { return Err("Fresh staged input requires selected occurrence ownership".into()); }
++        Ok(Self { thread_id, batch, current_turn, claimed: AtomicBool::new(false) })
++    }
++    /// Core claims only after its atomic fresh-root admission, before sampling.
++    pub fn claim(&self, thread_id: &str, turn_id: &str) -> Option<StagedInputBatch> {
++        if self.thread_id != thread_id || self.claimed.compare_exchange(false, true,
++            Ordering::AcqRel, Ordering::Acquire).is_err() { return None; }
++        *self.current_turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = turn_id.to_owned();
++        Some(StagedInputBatch { turn_id: turn_id.to_owned(), ..self.batch.clone() })
+     }
+ }
+ 
+@@ -202,6 +299,8 @@ pub struct ModelContextInput<'a> {
+     pub compaction: bool,
+     /// A configured source may resolve its reference through this same admitted exchange.
+     pub hosted_prompt: Option<&'a mut codex_protocol::model_request_controls::HostedPromptControls>,
++    /// Private current callback positions, never checkpoint-provided identity.
++    pub source_indices: Option<&'a mut Option<Vec<Option<usize>>>>,
+     pub items: &'a mut Vec<ResponseItem>,
+ }
+ 
+@@ -740,3 +839,44 @@ mod sampling_stop_tests {
+         assert_eq!(TurnSamplingStop::default().try_commit(|| 3), Some(3));
+     }
+ }
++
++#[cfg(test)]
++mod staged_occurrence_tests {
++    use super::*;
++    #[test]
++    fn equal_staged_occurrences_keep_distinct_native_positions() {
++        let item: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"message", "role":"user", "content":[{"type":"input_text", "text":"same"}]
++        }))
++        .unwrap();
++        let batch =
++            StagedInputBatch::selected_before_send("turn".into(), vec![item.clone(), item.clone()]);
++        assert!(batch.pending_occurrences_for("other").is_empty());
++        assert!(batch.acknowledge_occurrences(&[99]).is_err());
++        assert_eq!(batch.pending_occurrences_for("turn").len(), 2);
++        batch.acknowledge_occurrences(&[1, 1]).unwrap();
++        assert_eq!(batch.pending_occurrences_for("turn"), vec![(0, item)]);
++        assert!(batch.is_pending());
++        batch.acknowledge_occurrences(&[0]).unwrap();
++        assert!(!batch.is_pending());
++    }
++    #[test]
++    fn fresh_root_claim_preserves_live_mask_and_rejects_other_threads() {
++        let item: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"message", "role":"user", "content":[{"type":"input_text", "text":"same"}]
++        })).unwrap();
++        let batch = StagedInputBatch::selected_before_send("old".into(), vec![item.clone(), item.clone()]);
++        let current = Arc::new(std::sync::Mutex::new("old".into()));
++        let claim = FreshStagedInput::new("thread".into(), batch.clone(), Arc::clone(&current)).unwrap();
++        assert!(claim.claim("child", "new").is_none());
++        // A rejected/busy native submission has not been freezing an earlier mask.
++        batch.acknowledge_occurrences(&[0]).unwrap();
++        let fresh = claim.claim("thread", "new").unwrap();
++        assert_eq!(fresh.pending_occurrences_for("new"), vec![(1, item)]);
++        assert_eq!(*current.lock().unwrap(), "new");
++        assert!(claim.claim("thread", "later").is_none());
++        fresh.acknowledge_occurrences(&[1]).unwrap();
++        assert!(!batch.is_pending());
++    }
++
++}

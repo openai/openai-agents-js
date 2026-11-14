@@ -1,0 +1,108 @@
+diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
+index ab008a3467a..02f90710c68 100644
+--- a/codex-rs/core/src/client/provider_history.rs
++++ b/codex-rs/core/src/client/provider_history.rs
+@@ -591,12 +591,65 @@ impl Cursor {
+                 .map(input_digest)
+                 .transpose()?
+                 .is_some_and(|digest| digest == window.input_sha256);
+-            if let Some(canonical) = canonical.filter(|_| !unchanged_wire_prefix) {
++            let wire_unsent = (|| -> Result<Vec<usize>> {
++                let prefix = request
++                    .input
++                    .get(..window.input_len)
++                    .ok_or_else(|| invalid("Provider history lost acknowledged input"))?;
++                let tail = request.input[window.input_len..]
++                    .iter()
++                    .map(item_digest)
++                    .map(|digest| digest.map(hex))
++                    .collect::<Result<Vec<_>>>()?;
++                window
++                    .unsent_input_indices(full_len, &input_digest(prefix)?, &tail)
++                    .map_err(CodexErr::InvalidRequest)
++            })();
++            if unchanged_wire_prefix && wire_unsent.is_ok() {
++                Some(wire_unsent?)
++            } else if unchanged_wire_prefix
++                && canonical.is_some()
++                && window.canonical_tail_sha256.is_some()
++            {
++                // The same delivered input can coexist with a locally admitted
++                // MCP output. Prove the input and output projections separately.
++                let mut outputs = canonical.expect("checked canonical receipt");
++                let first = outputs
++                    .output_sha256
++                    .len()
++                    .checked_sub(window.output_sha256.len())
++                    .ok_or_else(|| {
++                        invalid("Provider history has an incomplete canonical output")
++                    })?;
++                outputs.output_sha256 = outputs.output_sha256[first..].to_vec();
++                outputs.input_len = 0;
++                outputs.input_sha256 = canonical_prefix_digest(&[]);
++                let mapped = canonical_input
++                    .wire_input_indices
++                    .iter()
++                    .enumerate()
++                    .map(|(offset, source)| (canonical_input.prefix_len + offset, *source))
++                    .filter(|(wire, _)| *wire >= window.input_len)
++                    .collect::<Vec<_>>();
++                let hashes = mapped
++                    .iter()
++                    .map(|(_, source)| canonical_input.sampling_item_sha256[*source])
++                    .collect::<Vec<_>>();
++                let unsent = unsent_hash_indices(&outputs, &hashes)?;
++                let mut indices =
++                    (window.input_len..canonical_input.prefix_len).collect::<Vec<_>>();
++                indices.extend(unsent.into_iter().map(|index| mapped[index].0));
++                Some(indices)
++            } else if let Some(canonical) = canonical {
+                 let unsent =
+                     unsent_hash_indices(&canonical, &canonical_input.sampling_item_sha256)?
+                         .into_iter()
+                         .collect::<std::collections::HashSet<_>>();
+-                let mut indices = (0..canonical_input.prefix_len).collect::<Vec<_>>();
++                let mut indices = if unchanged_wire_prefix {
++                    Vec::new()
++                } else {
++                    (0..canonical_input.prefix_len).collect::<Vec<_>>()
++                };
+                 indices.extend(
+                     canonical_input
+                         .wire_input_indices
+@@ -607,20 +660,7 @@ impl Cursor {
+                 );
+                 Some(indices)
+             } else {
+-                let prefix = request
+-                    .input
+-                    .get(..window.input_len)
+-                    .ok_or_else(|| invalid("Provider history lost acknowledged input"))?;
+-                let tail = request.input[window.input_len..]
+-                    .iter()
+-                    .map(item_digest)
+-                    .map(|digest| digest.map(hex))
+-                    .collect::<Result<Vec<_>>>()?;
+-                Some(
+-                    window
+-                        .unsent_input_indices(full_len, &input_digest(prefix)?, &tail)
+-                        .map_err(CodexErr::InvalidRequest)?,
+-                )
++                Some(wire_unsent?)
+             }
+         } else {
+             None
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 2735b334fc0..6cd50d29bc2 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2424,7 +2424,8 @@ async fn run_sampling_request(
+                 && sess.services.model_client.provider_history_selection().is_some()
+             {
+                 if !matches!(sess.services.model_client.provider_history_selection(),
+-                    Some(codex_protocol::provider_history::ProviderHistorySelection::PreviousResponse { id: Some(_) }))
++                    Some(codex_protocol::provider_history::ProviderHistorySelection::PreviousResponse { id: Some(_) })
++                        | Some(codex_protocol::provider_history::ProviderHistorySelection::Conversation { .. }))
+                     || step_context.settings.model_info.use_responses_lite
+                     || step_context.tool_router.has_provider_programmatic_tool()
+                 {

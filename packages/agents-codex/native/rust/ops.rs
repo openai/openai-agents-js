@@ -20,6 +20,7 @@ use codex_utils_path_uri::PathUri;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 
 macro_rules! params {
@@ -319,6 +320,8 @@ params!(TurnParams {
     input: Value,
     #[serde(default)]
     project_model_inputs: bool,
+    #[serde(default)]
+    selected_pending_input: bool,
     #[serde(default)]
     profile_output_override: bool,
     observation_submission_id: Option<String>,
@@ -833,9 +836,12 @@ pub async fn recover_prepared(
     raise_on_unknown_tool: bool,
     profile_output_override: bool,
     native_mcp: Option<codex_core::NativeMcpRecovery>,
+    lifecycle_start_ack: Option<codex_extension_api::AgentLifecycleStartAcknowledgment>,
 ) -> Result<Value> {
     let thread = &state.thread;
     let mut init = thread.config_snapshot().await.turn_extension_init;
+    // Clear an inherited acknowledgment when this frame has no trusted marker.
+    init.insert(lifecycle_start_ack);
     if let Some(native_mcp) = native_mcp {
         anyhow::ensure!(
             terminal.is_none(),
@@ -940,7 +946,9 @@ async fn start_with_params<'a>(
                 thread_id: state.id.to_string(),
                 preserve_turn_output: p.profile_output_override,
             });
-            init.insert(codex_extension_api::ProjectedUserInputStorage(p.project_model_inputs));
+            init.insert(codex_extension_api::ProjectedUserInputStorage(
+                p.project_model_inputs,
+            ));
             Some(init)
         }
     } else {
@@ -987,6 +995,35 @@ async fn start_with_params<'a>(
             .collect(),
         responsesapi_client_metadata: p.responsesapi_client_metadata,
         trace: p.trace,
+    };
+    let turn_init = if let Some((state, _)) = managed.as_ref() {
+        let queue = crate::python_tools::PythonTools::fresh_staged_input(state)?;
+        let mut init = match turn_init {
+            Some(init) => init,
+            None => thread.config_snapshot().await.turn_extension_init,
+        };
+        init.insert(None::<Arc<codex_extension_api::FreshStagedInput>>);
+        if let Some(queue) = queue {
+            if !p.selected_pending_input || !matches!(p.mode, Mode::StartIfIdle) {
+                return Err(pre_admission(anyhow::anyhow!(
+                    "Pending staged data requires an explicit fresh selected submission"
+                )));
+            }
+            if p.project_model_inputs
+                || !request.additional_context.is_empty()
+                || !request.prompt_cache_breakpoints.is_empty()
+                || !matches!(&request.input, TurnInput::UserInput { content, .. } if content.iter().all(|part|
+                    matches!(part, codex_protocol::user_input::UserInput::Text { text, .. } if text.is_empty())))
+            {
+                return Err(pre_admission(anyhow::anyhow!(
+                    "Pending staged data requires an empty fresh submission without another input policy"
+                )));
+            }
+            init.insert(Some(queue));
+        }
+        Some(init)
+    } else {
+        turn_init
     };
     match p.mode {
         Mode::StartIfIdle | Mode::StartOrSteer

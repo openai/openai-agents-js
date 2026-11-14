@@ -103,6 +103,7 @@ impl ModelRequestContributor for Contributor {
                     &owner.turn,
                     cancellation,
                     attempt.clone(),
+                    None,
                     {
                         let mut message = json!({"type":"_sdk_prepare_request",
                         "recovery_attempt":input.recovery_attempt, "data":presentation.data,

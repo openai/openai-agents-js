@@ -1,0 +1,1472 @@
+diff --git a/codex-rs/cli/src/mcp_cmd.rs b/codex-rs/cli/src/mcp_cmd.rs
+index 8b8dd4638d3..fc474ccf80d 100644
+--- a/codex-rs/cli/src/mcp_cmd.rs
++++ b/codex-rs/cli/src/mcp_cmd.rs
+@@ -430,7 +430,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/catalog_tests.rs b/codex-rs/codex-mcp/src/catalog_tests.rs
+index ef7db594915..283605a4048 100644
+--- a/codex-rs/codex-mcp/src/catalog_tests.rs
++++ b/codex-rs/codex-mcp/src/catalog_tests.rs
+@@ -43,7 +43,7 @@ fn server(url: &str) -> McpServerConfig {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: true,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/connection_manager_tests.rs b/codex-rs/codex-mcp/src/connection_manager_tests.rs
+index d18c0e0e3cf..50343add737 100644
+--- a/codex-rs/codex-mcp/src/connection_manager_tests.rs
++++ b/codex-rs/codex-mcp/src/connection_manager_tests.rs
+@@ -4716,7 +4716,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -4749,7 +4749,7 @@ async fn no_local_runtime_fails_local_stdio_but_keeps_local_http_server() {
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -4865,7 +4865,7 @@ fn mcp_init_error_display_prompts_for_github_pat() {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -5030,7 +5030,7 @@ fn mcp_init_error_display_reports_generic_errors() {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -5114,7 +5114,7 @@ fn reusable_server_config(url: &str) -> McpServerConfig {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/mcp/mod.rs b/codex-rs/codex-mcp/src/mcp/mod.rs
+index bc06bd00d29..b17c693abee 100644
+--- a/codex-rs/codex-mcp/src/mcp/mod.rs
++++ b/codex-rs/codex-mcp/src/mcp/mod.rs
+@@ -683,7 +683,7 @@ fn mcp_server_config_for_url(
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/mcp/mod_tests.rs b/codex-rs/codex-mcp/src/mcp/mod_tests.rs
+index 73da1b59181..6f1f663c665 100644
+--- a/codex-rs/codex-mcp/src/mcp/mod_tests.rs
++++ b/codex-rs/codex-mcp/src/mcp/mod_tests.rs
+@@ -654,7 +654,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -687,7 +687,7 @@ async fn effective_mcp_servers_preserve_runtime_servers() {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/plugin_config_tests.rs b/codex-rs/codex-mcp/src/plugin_config_tests.rs
+index fadaed5e026..d58cff96c59 100644
+--- a/codex-rs/codex-mcp/src/plugin_config_tests.rs
++++ b/codex-rs/codex-mcp/src/plugin_config_tests.rs
+@@ -538,7 +538,7 @@ fn stdio_server(
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -579,7 +579,7 @@ fn declared_placement_preserves_local_plugin_normalization() {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -904,7 +904,7 @@ fn local_environment_placement_preserves_http_env_references() {
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/codex-mcp/src/runtime.rs b/codex-rs/codex-mcp/src/runtime.rs
+index e36f3b75895..d90a44dc45b 100644
+--- a/codex-rs/codex-mcp/src/runtime.rs
++++ b/codex-rs/codex-mcp/src/runtime.rs
+@@ -1455,7 +1455,7 @@ mod tests {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/config/src/mcp_requirements_tests.rs b/codex-rs/config/src/mcp_requirements_tests.rs
+index 99acab462e6..6d62c63809f 100644
+--- a/codex-rs/config/src/mcp_requirements_tests.rs
++++ b/codex-rs/config/src/mcp_requirements_tests.rs
+@@ -20,7 +20,7 @@ fn stdio_server(command: &str, args: &[&str]) -> McpServerConfig {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/config/src/mcp_types.rs b/codex-rs/config/src/mcp_types.rs
+index 9f912e95030..1a530ae430b 100644
+--- a/codex-rs/config/src/mcp_types.rs
++++ b/codex-rs/config/src/mcp_types.rs
+@@ -219,6 +219,41 @@ pub enum McpStartupReadiness {
+     Catalog,
+ }
+ 
++/// Internal SDK conversion policy; booleans retain the existing Python/Core behavior.
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
++#[serde(untagged)]
++pub enum SdkStrictMcpToolSchemas {
++    Required(bool),
++    NullableOptional(SdkNullableOptionalMcpSchema),
++}
++
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
++pub enum SdkNullableOptionalMcpSchema {
++    #[serde(rename = "omit_synthetic_nulls")]
++    OmitSyntheticNulls,
++}
++
++impl Default for SdkStrictMcpToolSchemas {
++    fn default() -> Self {
++        Self::Required(false)
++    }
++}
++
++impl From<bool> for SdkStrictMcpToolSchemas {
++    fn from(value: bool) -> Self {
++        Self::Required(value)
++    }
++}
++
++impl SdkStrictMcpToolSchemas {
++    pub fn enabled(self) -> bool {
++        self != Self::Required(false)
++    }
++    pub fn nullable_optionals(self) -> bool {
++        matches!(self, Self::NullableOptional(_))
++    }
++}
++
+ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+     value == &T::default()
+ }
+@@ -237,8 +272,8 @@ pub struct McpServerConfig {
+     pub sdk_cache_tools_list: Option<bool>,
+ 
+     /// Best-effort strict schemas for ordinary SDK-managed MCP tools.
+-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+-    pub sdk_strict_tool_schemas: bool,
++    #[serde(default, skip_serializing_if = "is_default")]
++    pub sdk_strict_tool_schemas: SdkStrictMcpToolSchemas,
+ 
+     /// Authentication flow, including an explicit no-fallback EMA mode.
+     #[serde(default, skip_serializing_if = "is_default")]
+@@ -389,7 +424,7 @@ pub struct RawMcpServerConfig {
+ 
+     /// Best-effort strict schemas for ordinary SDK-managed MCP tools.
+     #[serde(default)]
+-    pub sdk_strict_tool_schemas: bool,
++    pub sdk_strict_tool_schemas: SdkStrictMcpToolSchemas,
+     // stdio
+     pub command: Option<String>,
+     #[serde(default)]
+diff --git a/codex-rs/config/src/mcp_types_tests.rs b/codex-rs/config/src/mcp_types_tests.rs
+index e877f240607..6ba6c6adaa0 100644
+--- a/codex-rs/config/src/mcp_types_tests.rs
++++ b/codex-rs/config/src/mcp_types_tests.rs
+@@ -646,7 +646,7 @@ fn deserialize_ignores_unknown_server_fields() {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core-plugins/src/manager_tests.rs b/codex-rs/core-plugins/src/manager_tests.rs
+index 1f161d011d3..2b6578ef2e1 100644
+--- a/codex-rs/core-plugins/src/manager_tests.rs
++++ b/codex-rs/core-plugins/src/manager_tests.rs
+@@ -984,7 +984,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -1091,7 +1091,7 @@ enabled = true
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -2202,7 +2202,7 @@ async fn load_plugins_uses_manifest_configured_component_paths() {
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -2546,7 +2546,7 @@ async fn load_plugins_ignores_manifest_component_paths_without_dot_slash() {
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -2806,7 +2806,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+diff --git a/codex-rs/core/src/config/config_tests.rs b/codex-rs/core/src/config/config_tests.rs
+index 755255d640e..1d7bca16558 100644
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -144,7 +144,7 @@ fn stdio_mcp_with_args(command: &str, args: &[&str]) -> McpServerConfig {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -177,7 +177,7 @@ fn http_mcp(url: &str) -> McpServerConfig {
+         startup_readiness: Default::default(),
+         sdk_turn_scoped_stdio: false,
+         sdk_cache_tools_list: None,
+-        sdk_strict_tool_schemas: false,
++        sdk_strict_tool_schemas: false.into(),
+         supports_parallel_tool_calls: false,
+         tool_input_schema_max_bytes: None,
+         omit_tools_from: None,
+@@ -6881,7 +6881,7 @@ async fn replace_mcp_servers_round_trips_entries() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: std::num::NonZeroUsize::new(8_000),
+             omit_tools_from: None,
+@@ -7325,7 +7325,7 @@ async fn replace_mcp_servers_serializes_env_sorted() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7408,7 +7408,7 @@ async fn replace_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7476,7 +7476,7 @@ async fn replace_mcp_servers_serializes_sourced_env_vars() -> anyhow::Result<()>
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7535,7 +7535,7 @@ async fn replace_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7597,7 +7597,7 @@ async fn replace_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7676,7 +7676,7 @@ async fn replace_mcp_servers_streamable_http_serializes_custom_headers() -> anyh
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7766,7 +7766,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7809,7 +7809,7 @@ async fn replace_mcp_servers_streamable_http_removes_optional_sections() -> anyh
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -7888,7 +7888,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers()
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -7921,7 +7921,7 @@ async fn replace_mcp_servers_streamable_http_isolates_headers_between_servers()
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -8016,7 +8016,7 @@ async fn replace_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -8073,7 +8073,7 @@ async fn replace_mcp_servers_serializes_required_flag() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -8130,7 +8130,7 @@ async fn replace_mcp_servers_serializes_tool_filters() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -8192,7 +8192,7 @@ async fn replace_mcp_servers_streamable_http_serializes_oauth_resource() -> anyh
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/config/edit_tests.rs b/codex-rs/core/src/config/edit_tests.rs
+index a04cfc1209a..1da2551e609 100644
+--- a/codex-rs/core/src/config/edit_tests.rs
++++ b/codex-rs/core/src/config/edit_tests.rs
+@@ -1083,7 +1083,7 @@ fn blocking_replace_mcp_servers_round_trips() {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: true,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1121,7 +1121,7 @@ fn blocking_replace_mcp_servers_round_trips() {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1218,7 +1218,7 @@ fn blocking_replace_mcp_servers_serializes_tool_approval_overrides(output_token_
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1300,7 +1300,7 @@ foo = { command = "cmd" }
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1357,7 +1357,7 @@ foo = { command = "cmd" } # keep me
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1413,7 +1413,7 @@ foo = { command = "cmd", args = ["--flag"] } # keep me
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -1470,7 +1470,7 @@ foo = { command = "cmd" }
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/mcp_approval_recovery.rs b/codex-rs/core/src/mcp_approval_recovery.rs
+index d758db2854c..f7e67a872d4 100644
+--- a/codex-rs/core/src/mcp_approval_recovery.rs
++++ b/codex-rs/core/src/mcp_approval_recovery.rs
+@@ -290,7 +290,12 @@ impl NativeMcpRecovery {
+                 && call_id == data.call_id
+                 && invocation.server == data.server_name
+                 && invocation.tool == data.tool_name
+-                && invocation.arguments == data.arguments
++                && invocation.arguments
++                    == crate::mcp_tool_call::effective_sdk_mcp_arguments(
++                        call,
++                        data.arguments.as_ref(),
++                    )
++                    .map_err(anyhow::Error::msg)?
+                 && self.prepared.call.has_same_approval_declaration(call),
+             "MCP recovery requires its fresh native decision before an effect"
+         );
+diff --git a/codex-rs/core/src/mcp_skill_dependencies.rs b/codex-rs/core/src/mcp_skill_dependencies.rs
+index 90ac0106c37..b8b412b2252 100644
+--- a/codex-rs/core/src/mcp_skill_dependencies.rs
++++ b/codex-rs/core/src/mcp_skill_dependencies.rs
+@@ -419,7 +419,7 @@ fn mcp_dependency_to_server_config(
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+@@ -463,7 +463,7 @@ fn mcp_dependency_to_server_config(
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/mcp_tool_call.rs b/codex-rs/core/src/mcp_tool_call.rs
+index 1e6ce703f78..6626140e007 100644
+--- a/codex-rs/core/src/mcp_tool_call.rs
++++ b/codex-rs/core/src/mcp_tool_call.rs
+@@ -185,6 +185,20 @@ pub(crate) async fn handle_mcp_tool_call(
+                 .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new())),
+         };
+     };
++    // Preserve the sampled call for canonical recovery. All approval and RPC
++    // consumers use this separately derived effective invocation.
++    let sampled_invocation = invocation.clone();
++    let mut invocation = invocation;
++    invocation.arguments =
++        match effective_sdk_mcp_arguments(&prepared_call, invocation.arguments.as_ref()) {
++            Ok(arguments) => arguments,
++            Err(message) => {
++                return HandledMcpToolCall {
++                    result: CallToolResult::from_error_text(message.to_string()),
++                    tool_input: JsonValue::Object(serde_json::Map::new()),
++                };
++            }
++        };
+     let metadata = match mcp_tool_metadata(
+         prepared_call.tool_info(),
+         prepared_call.plugin_id(),
+@@ -257,7 +271,7 @@ pub(crate) async fn handle_mcp_tool_call(
+     }
+     let _approval_metadata = sess.register_mcp_tool_approval_metadata(
+         &call_id,
+-        &invocation,
++        &sampled_invocation,
+         metadata.clone(),
+         GuardianReviewContext::from(step_context),
+         step_context,
+@@ -2682,3 +2696,34 @@ async fn notify_mcp_tool_call_skip(
+ #[cfg(test)]
+ #[path = "mcp_tool_call_tests.rs"]
+ mod tests;
++
++pub(crate) fn effective_sdk_mcp_arguments(
++    call: &PreparedMcpCall,
++    sampled: Option<&JsonValue>,
++) -> Result<Option<JsonValue>, &'static str> {
++    let Some(sampled) = sampled else {
++        return Ok(None);
++    };
++    let config = call
++        .config()
++        .mcp_server_catalog
++        .server(call.server_name())
++        .map(|registration| registration.config());
++    if call.is_host_owned_apps()
++        || call.is_selected_plugin_server()
++        || !config.is_some_and(|config| config.sdk_strict_tool_schemas.nullable_optionals())
++    {
++        return Ok(Some(sampled.clone()));
++    }
++    let budget = config
++        .and_then(|config| config.tool_input_schema_max_bytes)
++        .map(std::num::NonZeroUsize::get);
++    Ok(Some(
++        codex_tools::normalize_nullable_mcp_arguments(
++            call.tool_info().tool.input_schema.as_ref(),
++            budget,
++            sampled,
++        )?
++        .unwrap_or_else(|| sampled.clone()),
++    ))
++}
+diff --git a/codex-rs/core/src/mcp_tool_exposure.rs b/codex-rs/core/src/mcp_tool_exposure.rs
+index 197c9119d8f..2b52bdd8bee 100644
+--- a/codex-rs/core/src/mcp_tool_exposure.rs
++++ b/codex-rs/core/src/mcp_tool_exposure.rs
+@@ -32,6 +32,7 @@ struct CachedMcpHandler {
+     agent_plugin: bool,
+     schema_max_bytes: Option<NonZeroUsize>,
+     strict_tool_schema: bool,
++    nullable_optional_schema: bool,
+     handler: Arc<McpHandler>,
+ }
+ 
+@@ -112,7 +113,10 @@ fn append_mcp_tools(
+         let tool_input_schema_max_bytes =
+             server.and_then(|server| server.config().tool_input_schema_max_bytes);
+         let strict_tool_schema = !agent_plugin
+-            && server.is_some_and(|server| server.config().sdk_strict_tool_schemas);
++            && server.is_some_and(|server| server.config().sdk_strict_tool_schemas.enabled());
++        let nullable_optional_schema = strict_tool_schema
++            && server
++                .is_some_and(|server| server.config().sdk_strict_tool_schemas.nullable_optionals());
+         // Handlers contain immutable tool metadata, not a connection or authorization snapshot.
+         // Preserve their identity across equivalent bindings so the search index can also be reused.
+         let handler = if let Some(cached) = handlers.get(&tool_name).filter(|cached| {
+@@ -120,12 +124,18 @@ fn append_mcp_tools(
+                 && cached.agent_plugin == agent_plugin
+                 && cached.schema_max_bytes == tool_input_schema_max_bytes
+                 && cached.strict_tool_schema == strict_tool_schema
++                && cached.nullable_optional_schema == nullable_optional_schema
+         }) {
+             Arc::clone(&cached.handler)
+         } else {
+             handlers.remove(&tool_name);
+             let handler = if agent_plugin {
+                 McpHandler::new_agent_plugin(tool.clone())
++            } else if nullable_optional_schema {
++                McpHandler::new_with_nullable_strict_schema(
++                    tool.clone(),
++                    tool_input_schema_max_bytes.map(NonZeroUsize::get),
++                )
+             } else if strict_tool_schema {
+                 McpHandler::new_with_best_effort_strict_schema(
+                     tool.clone(),
+@@ -151,6 +161,7 @@ fn append_mcp_tools(
+                     agent_plugin,
+                     schema_max_bytes: tool_input_schema_max_bytes,
+                     strict_tool_schema,
++                    nullable_optional_schema,
+                     handler: Arc::clone(&handler),
+                 },
+             );
+diff --git a/codex-rs/core/src/owned_question.rs b/codex-rs/core/src/owned_question.rs
+index 36523916682..80687b9884b 100644
+--- a/codex-rs/core/src/owned_question.rs
++++ b/codex-rs/core/src/owned_question.rs
+@@ -143,6 +143,17 @@ fn mcp_approval_declaration_fingerprint(
+             &tool.plugin_display_names,
+         ),
+     ))?;
++    // Retain existing fingerprints byte-for-byte for bool/default policy.
++    // JS nullable omission additionally binds its policy and exact schema budget.
++    let encoded = if config.sdk_strict_tool_schemas.nullable_optionals() {
++        bounded_checkpoint_json(&(
++            serde_json::from_slice::<serde_json::Value>(&encoded)?,
++            "omit_synthetic_nulls",
++            config.tool_input_schema_max_bytes,
++        ))?
++    } else {
++        encoded
++    };
+     let mut canonical: serde_json::Value = serde_json::from_slice(&encoded)
+         .map_err(|_| anyhow::anyhow!("MCP approval declaration could not be fingerprinted"))?;
+     canonical.sort_all_objects();
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 81e391be811..5239b7eb53e 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -10379,7 +10379,7 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/src/tools/handlers/mcp.rs b/codex-rs/core/src/tools/handlers/mcp.rs
+index 7f44a7bfcbc..298dde7f94e 100644
+--- a/codex-rs/core/src/tools/handlers/mcp.rs
++++ b/codex-rs/core/src/tools/handlers/mcp.rs
+@@ -52,13 +52,16 @@ const MAX_MCP_NAMESPACE_DESCRIPTION_BYTES: usize = 512 * 1024;
+ pub struct McpHandler {
+     tool_info: ToolInfo,
+     spec: Arc<ToolSpec>,
++    nullable_optional: bool,
++    schema_max_bytes: Option<usize>,
+     code_mode_tool_definitions: OnceLock<(Option<usize>, Vec<codex_code_mode::ToolDefinition>)>,
+ }
+ 
+ impl McpHandler {
+     pub fn new(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
+         Self::with_agent_plugin(
+-            tool_info, /*agent_plugin*/ false, /*schema_max_bytes*/ None, /*strict*/ false,
++            tool_info, /*agent_plugin*/ false, /*schema_max_bytes*/ None,
++            /*strict*/ false, /*nullable_optional*/ false,
+         )
+     }
+ 
+@@ -71,12 +74,14 @@ impl McpHandler {
+             /*agent_plugin*/ false,
+             Some(schema_max_bytes),
+             /*strict*/ false,
++            /*nullable_optional*/ false,
+         )
+     }
+ 
+     pub fn new_agent_plugin(tool_info: ToolInfo) -> Result<Self, serde_json::Error> {
+         Self::with_agent_plugin(
+-            tool_info, /*agent_plugin*/ true, /*schema_max_bytes*/ None, /*strict*/ false,
++            tool_info, /*agent_plugin*/ true, /*schema_max_bytes*/ None,
++            /*strict*/ false, /*nullable_optional*/ false,
+         )
+     }
+ 
+@@ -84,7 +89,20 @@ impl McpHandler {
+         tool_info: ToolInfo,
+         schema_max_bytes: Option<usize>,
+     ) -> Result<Self, serde_json::Error> {
+-        Self::with_agent_plugin(tool_info, /*agent_plugin*/ false, schema_max_bytes, /*strict*/ true)
++        Self::with_agent_plugin(
++            tool_info,
++            /*agent_plugin*/ false,
++            schema_max_bytes,
++            /*strict*/ true,
++            /*nullable_optional*/ false,
++        )
++    }
++
++    pub(crate) fn new_with_nullable_strict_schema(
++        tool_info: ToolInfo,
++        schema_max_bytes: Option<usize>,
++    ) -> Result<Self, serde_json::Error> {
++        Self::with_agent_plugin(tool_info, false, schema_max_bytes, true, true)
+     }
+ 
+     fn with_agent_plugin(
+@@ -92,6 +110,7 @@ impl McpHandler {
+         agent_plugin: bool,
+         schema_max_bytes: Option<usize>,
+         strict: bool,
++        nullable_optional: bool,
+     ) -> Result<Self, serde_json::Error> {
+         if agent_plugin {
+             tool_info.namespace_description =
+@@ -111,10 +130,13 @@ impl McpHandler {
+             agent_plugin,
+             schema_max_bytes,
+             strict,
++            nullable_optional,
+         )?);
+         Ok(Self {
+             tool_info,
+             spec,
++            nullable_optional,
++            schema_max_bytes,
+             code_mode_tool_definitions: OnceLock::new(),
+         })
+     }
+@@ -222,6 +244,27 @@ impl McpHandler {
+         } else {
+             invocation.session.prepare_mcp_call(&self.tool_info).await
+         };
++        if let Some(call) = prepared_mcp_call.as_ref() {
++            let current = call
++                .config()
++                .mcp_server_catalog
++                .server(call.server_name())
++                .map(|registration| registration.config());
++            let current_nullable =
++                current.is_some_and(|config| config.sdk_strict_tool_schemas.nullable_optionals());
++            let current_budget = current
++                .and_then(|config| config.tool_input_schema_max_bytes)
++                .map(std::num::NonZeroUsize::get);
++            if current_nullable != self.nullable_optional
++                || (self.nullable_optional
++                    && (call.tool_info() != &self.tool_info
++                        || current_budget != self.schema_max_bytes))
++            {
++                return Err(FunctionCallError::RespondToModel(
++                    "MCP strict declaration changed before execution".to_string(),
++                ));
++            }
++        }
+         if profile_call
+             && prepared_mcp_call
+                 .as_ref()
+@@ -558,10 +601,17 @@ fn create_tool_spec(
+     agent_plugin: bool,
+     schema_max_bytes: Option<usize>,
+     strict: bool,
++    nullable_optional: bool,
+ ) -> Result<ToolSpec, serde_json::Error> {
+     let tool_name = tool_info.canonical_tool_name();
+     let tool = if agent_plugin {
+         agent_plugin_mcp_tool_to_responses_api_tool(&tool_name, &tool_info.tool)?
++    } else if strict && nullable_optional {
++        codex_tools::mcp_tool_to_nullable_strict_responses_api_tool(
++            &tool_name,
++            &tool_info.tool,
++            schema_max_bytes,
++        )?
+     } else if strict {
+         mcp_tool_to_best_effort_strict_responses_api_tool(
+             &tool_name,
+diff --git a/codex-rs/core/tests/suite/code_mode.rs b/codex-rs/core/tests/suite/code_mode.rs
+index 722fff7d2fb..091126191f2 100644
+--- a/codex-rs/core/tests/suite/code_mode.rs
++++ b/codex-rs/core/tests/suite/code_mode.rs
+@@ -736,7 +736,7 @@ async fn run_code_mode_turn_with_rmcp_config(
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/hooks_mcp.rs b/codex-rs/core/tests/suite/hooks_mcp.rs
+index 93beebf3c40..cfe99541bce 100644
+--- a/codex-rs/core/tests/suite/hooks_mcp.rs
++++ b/codex-rs/core/tests/suite/hooks_mcp.rs
+@@ -294,7 +294,7 @@ fn insert_rmcp_test_server(
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: false,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs b/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
+index c5a0411c169..7a7dac0ebc0 100644
+--- a/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
++++ b/codex-rs/core/tests/suite/mcp_refresh_cleanup.rs
+@@ -153,7 +153,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs b/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
+index f7afb6bc4dd..3a8c82afe8f 100644
+--- a/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
++++ b/codex-rs/core/tests/suite/mcp_startup_refresh_http_proxy.rs
+@@ -138,7 +138,7 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/rmcp_client.rs b/codex-rs/core/tests/suite/rmcp_client.rs
+index 1b1b668d6b8..0d09771736e 100644
+--- a/codex-rs/core/tests/suite/rmcp_client.rs
++++ b/codex-rs/core/tests/suite/rmcp_client.rs
+@@ -385,7 +385,7 @@ fn insert_mcp_server(
+             startup_readiness: Default::default(),
+             sdk_turn_scoped_stdio: false,
+             sdk_cache_tools_list: None,
+-            sdk_strict_tool_schemas: false,
++            sdk_strict_tool_schemas: false.into(),
+             supports_parallel_tool_calls: options.supports_parallel_tool_calls,
+             tool_input_schema_max_bytes: None,
+             omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/search_tool.rs b/codex-rs/core/tests/suite/search_tool.rs
+index aba79629e3f..bf8fc8550ea 100644
+--- a/codex-rs/core/tests/suite/search_tool.rs
++++ b/codex-rs/core/tests/suite/search_tool.rs
+@@ -1342,7 +1342,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
+                     oauth_resource: None,
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -1480,7 +1480,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
+                     oauth_resource: None,
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -1634,7 +1634,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
+                     oauth_resource: None,
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/sqlite_state.rs b/codex-rs/core/tests/suite/sqlite_state.rs
+index 5bd23ab4585..113c76a9a33 100644
+--- a/codex-rs/core/tests/suite/sqlite_state.rs
++++ b/codex-rs/core/tests/suite/sqlite_state.rs
+@@ -888,7 +888,7 @@ async fn mcp_call_marks_thread_memory_mode_polluted_when_configured() -> Result<
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/token_budget.rs b/codex-rs/core/tests/suite/token_budget.rs
+index 9eb19bed7ec..ce7f7c84e18 100644
+--- a/codex-rs/core/tests/suite/token_budget.rs
++++ b/codex-rs/core/tests/suite/token_budget.rs
+@@ -778,7 +778,7 @@ async fn token_budget_context_injects_plain_thread_hint_text() -> Result<()> {
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+diff --git a/codex-rs/core/tests/suite/truncation.rs b/codex-rs/core/tests/suite/truncation.rs
+index eb8cce4d979..03c729e5dd0 100644
+--- a/codex-rs/core/tests/suite/truncation.rs
++++ b/codex-rs/core/tests/suite/truncation.rs
+@@ -416,7 +416,7 @@ async fn mcp_tool_call_output_exceeds_limit_truncated_for_model() -> Result<()>
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+@@ -524,7 +524,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/ext/mcp/src/plugin/provider_tests.rs b/codex-rs/ext/mcp/src/plugin/provider_tests.rs
+index 81748a86bdc..1c4b2439133 100644
+--- a/codex-rs/ext/mcp/src/plugin/provider_tests.rs
++++ b/codex-rs/ext/mcp/src/plugin/provider_tests.rs
+@@ -198,7 +198,7 @@ async fn reads_declared_config_only_through_executor_file_system() {
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -231,7 +231,7 @@ async fn reads_declared_config_only_through_executor_file_system() {
+                     startup_readiness: Default::default(),
+                     sdk_turn_scoped_stdio: false,
+                     sdk_cache_tools_list: None,
+-                    sdk_strict_tool_schemas: false,
++                    sdk_strict_tool_schemas: false.into(),
+                     supports_parallel_tool_calls: false,
+                     tool_input_schema_max_bytes: None,
+                     omit_tools_from: None,
+@@ -294,7 +294,7 @@ async fn reads_manifest_object_config_without_executor_file_system_access() {
+                 startup_readiness: Default::default(),
+                 sdk_turn_scoped_stdio: false,
+                 sdk_cache_tools_list: None,
+-                sdk_strict_tool_schemas: false,
++                sdk_strict_tool_schemas: false.into(),
+                 supports_parallel_tool_calls: false,
+                 tool_input_schema_max_bytes: None,
+                 omit_tools_from: None,
+diff --git a/codex-rs/tools/src/json_schema.rs b/codex-rs/tools/src/json_schema.rs
+index 01ff74e15f0..42b5c0195c4 100644
+--- a/codex-rs/tools/src/json_schema.rs
++++ b/codex-rs/tools/src/json_schema.rs
+@@ -2,10 +2,12 @@
+ 
+ mod compaction;
+ mod strict_mcp;
++mod strict_mcp_optional;
+ mod traversal;
+ mod types;
+ 
+ pub(crate) use strict_mcp::strict_mcp_input_schema;
++pub use strict_mcp_optional::{normalize_nullable_mcp_arguments, nullable_mcp_input_schema};
+ pub use types::AdditionalProperties;
+ pub use types::JsonSchema;
+ pub use types::JsonSchemaPrimitiveType;
+diff --git a/codex-rs/tools/src/json_schema/strict_mcp_optional.rs b/codex-rs/tools/src/json_schema/strict_mcp_optional.rs
+new file mode 100644
+index 00000000000..4931f98585c
+--- /dev/null
++++ b/codex-rs/tools/src/json_schema/strict_mcp_optional.rs
+@@ -0,0 +1,385 @@
++//! JavaScript's opt-in optional/null preservation, separate from legacy strict conversion.
++use serde_json::{Map, Value, json};
++use std::collections::{BTreeMap, BTreeSet};
++
++const MAX_BYTES: usize = 65_536;
++const MAX_DEPTH: usize = 64;
++
++fn children(schema: &Value) -> Vec<&Value> {
++    let mut nodes = Vec::new();
++    for key in ["properties", "$defs", "definitions"] {
++        if let Some(values) = schema.get(key).and_then(Value::as_object) {
++            nodes.extend(values.values());
++        }
++    }
++    if let Some(items) = schema.get("items") {
++        nodes.push(items);
++    }
++    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
++        nodes.extend(branches);
++    }
++    nodes
++}
++
++fn allows_null(schema: &Value, root: &Value, depth: usize) -> Option<bool> {
++    if depth > MAX_DEPTH {
++        return None;
++    }
++    let schema = schema.as_object()?;
++    if let Some(reference) = schema.get("$ref") {
++        return allows_null(
++            root.pointer(reference.as_str()?.strip_prefix('#')?)?,
++            root,
++            depth + 1,
++        );
++    }
++    if let Some(typ) = schema.get("type") {
++        let accepts = match typ {
++            Value::String(typ) => typ == "null",
++            Value::Array(types) => types.iter().any(|typ| typ == "null"),
++            _ => return None,
++        };
++        if !accepts {
++            return Some(false);
++        }
++    }
++    if let Some(values) = schema.get("enum") {
++        if !values.as_array()?.iter().any(Value::is_null) {
++            return Some(false);
++        }
++    }
++    if let Some(value) = schema.get("const") {
++        if !value.is_null() {
++            return Some(false);
++        }
++    }
++    if let Some(branches) = schema.get("anyOf") {
++        let values: Vec<_> = branches
++            .as_array()?
++            .iter()
++            .map(|node| allows_null(node, root, depth + 1))
++            .collect();
++        if values.contains(&Some(true)) {
++            return Some(true);
++        }
++        if values.iter().all(|value| *value == Some(false)) {
++            return Some(false);
++        }
++        return None;
++    }
++    Some(true)
++}
++
++fn optional(schema: &Value, key: &str) -> bool {
++    !schema
++        .get("required")
++        .and_then(Value::as_array)
++        .is_some_and(|required| required.iter().any(|value| value == key))
++}
++
++fn omits_fields(schema: &Value, root: &Value, depth: usize) -> bool {
++    if depth > MAX_DEPTH {
++        return true;
++    }
++    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
++        return reference
++            .strip_prefix('#')
++            .and_then(|r| root.pointer(r))
++            .is_none_or(|node| omits_fields(node, root, depth + 1));
++    }
++    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
++        if properties
++            .iter()
++            .any(|(key, node)| optional(schema, key) && allows_null(node, root, 0) != Some(true))
++        {
++            return true;
++        }
++    }
++    children(schema)
++        .iter()
++        .any(|node| omits_fields(node, root, depth + 1))
++}
++
++fn supported_normalization(schema: &Value, root: &Value, depth: usize) -> bool {
++    if depth > MAX_DEPTH {
++        return false;
++    }
++    if let Some(branches) = schema.get("anyOf").and_then(Value::as_array) {
++        // Match v0's fail-closed boundary: no branch-aware runtime validator.
++        if branches.iter().any(|node| omits_fields(node, root, 0)) {
++            return false;
++        }
++    }
++    children(schema)
++        .iter()
++        .all(|node| supported_normalization(node, root, depth + 1))
++}
++
++fn references(schema: &Value, found: &mut BTreeSet<String>, depth: usize) -> bool {
++    if depth > MAX_DEPTH {
++        return false;
++    }
++    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
++        found.insert(reference.to_owned());
++    }
++    children(schema)
++        .iter()
++        .all(|node| references(node, found, depth + 1))
++}
++
++fn rewrite_references(schema: &mut Value, refs: &BTreeMap<String, String>) {
++    let Some(object) = schema.as_object_mut() else {
++        return;
++    };
++    if let Some(reference) = object.get_mut("$ref") {
++        if let Some(next) = reference.as_str().and_then(|r| refs.get(r)) {
++            *reference = Value::String(next.clone());
++        }
++    }
++    for key in ["properties", "$defs", "definitions"] {
++        if let Some(nodes) = object.get_mut(key).and_then(Value::as_object_mut) {
++            for node in nodes.values_mut() {
++                rewrite_references(node, refs);
++            }
++        }
++    }
++    if let Some(node) = object.get_mut("items") {
++        rewrite_references(node, refs);
++    }
++    if let Some(nodes) = object.get_mut("anyOf").and_then(Value::as_array_mut) {
++        for node in nodes {
++            rewrite_references(node, refs);
++        }
++    }
++}
++
++fn wrap_optional(schema: &mut Value, root: &Value, depth: usize) -> Option<()> {
++    if depth > MAX_DEPTH {
++        return None;
++    }
++    let required = schema.get("required").cloned().unwrap_or(json!([]));
++    if !required.is_array() {
++        return None;
++    }
++    let object = schema.as_object_mut()?;
++    if let Some(properties) = object.get_mut("properties") {
++        for (key, node) in properties.as_object_mut()? {
++            let nullable = allows_null(node, root, 0)?;
++            wrap_optional(node, root, depth + 1)?;
++            if !required.as_array()?.iter().any(|value| value == key) && !nullable {
++                let original = std::mem::replace(node, Value::Null);
++                *node = json!({"anyOf":[original,{"type":"null"}]});
++            }
++        }
++    }
++    for key in ["$defs", "definitions"] {
++        if let Some(nodes) = object.get_mut(key) {
++            for node in nodes.as_object_mut()?.values_mut() {
++                wrap_optional(node, root, depth + 1)?;
++            }
++        }
++    }
++    if let Some(node) = object.get_mut("items") {
++        wrap_optional(node, root, depth + 1)?;
++    }
++    if let Some(nodes) = object.get_mut("anyOf") {
++        for node in nodes.as_array_mut()? {
++            wrap_optional(node, root, depth + 1)?;
++        }
++    }
++    Some(())
++}
++
++pub fn nullable_mcp_input_schema(
++    input: &Map<String, Value>,
++    budget: Option<usize>,
++) -> Option<super::JsonSchema> {
++    let original = Value::Object(input.clone());
++    let bytes = serde_json::to_vec(&original).ok()?.len();
++    if bytes > MAX_BYTES || !supported_normalization(&original, &original, 0) {
++        return None;
++    }
++    let mut refs = BTreeSet::new();
++    if !references(&original, &mut refs, 0) {
++        return None;
++    }
++    let mut prepared = original.clone();
++    if !refs.is_empty() {
++        let mut estimate = bytes;
++        let mut mapping = BTreeMap::new();
++        let defs = prepared
++            .as_object_mut()?
++            .entry("$defs")
++            .or_insert(json!({}))
++            .as_object_mut()?;
++        for (index, reference) in refs.into_iter().enumerate() {
++            let target = original.pointer(reference.strip_prefix('#')?)?;
++            estimate = estimate.checked_add(serde_json::to_vec(target).ok()?.len())?;
++            if estimate > MAX_BYTES {
++                return None;
++            }
++            let mut name = format!("__sdk_nullable_ref_{index}");
++            while defs.contains_key(&name) {
++                name.push('_');
++            }
++            defs.insert(name.clone(), target.clone());
++            mapping.insert(reference, format!("#/$defs/{name}"));
++        }
++        rewrite_references(&mut prepared, &mapping);
++    }
++    let stable = prepared.clone();
++    wrap_optional(&mut prepared, &stable, 0)?;
++    super::strict_mcp::strict_mcp_input_schema(prepared.as_object()?, budget)
++}
++
++fn normalize(
++    schema: &Value,
++    root: &Value,
++    value: &mut Value,
++    depth: usize,
++    references: usize,
++) -> bool {
++    if depth > MAX_DEPTH || references > MAX_DEPTH {
++        return false;
++    }
++    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
++        return reference
++            .strip_prefix('#')
++            .and_then(|r| root.pointer(r))
++            .is_some_and(|schema| normalize(schema, root, value, depth, references + 1));
++    }
++    match value {
++        Value::Object(values) => {
++            if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
++                for (key, node) in properties {
++                    if optional(schema, key)
++                        && values.get(key).is_some_and(Value::is_null)
++                        && allows_null(node, root, 0) == Some(false)
++                    {
++                        values.remove(key);
++                    } else if let Some(value) = values.get_mut(key) {
++                        if !normalize(node, root, value, depth + 1, 0) {
++                            return false;
++                        }
++                    }
++                }
++            }
++        }
++        Value::Array(values) => {
++            if let Some(items) = schema.get("items") {
++                for value in values {
++                    if !normalize(items, root, value, depth + 1, 0) {
++                        return false;
++                    }
++                }
++            }
++        }
++        _ => {}
++    }
++    true
++}
++
++/// None means the exact provider conversion has retained its non-strict fallback.
++pub fn normalize_nullable_mcp_arguments(
++    input: &Map<String, Value>,
++    budget: Option<usize>,
++    value: &Value,
++) -> Result<Option<Value>, &'static str> {
++    if nullable_mcp_input_schema(input, budget).is_none() {
++        return Ok(None);
++    }
++    let root = Value::Object(input.clone());
++    let mut effective = value.clone();
++    if !normalize(&root, &root, &mut effective, 0, 0) {
++        return Err("MCP strict arguments exceed the supported nesting bound");
++    }
++    Ok(Some(effective))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn preserves_explicit_null_and_omits_only_synthetic_optional_fields() {
++        let input = json!({"type":"object","properties":{
++            "key":{"type":"string"}, "note":{"type":"string"},
++            "nullable":{"type":["string","null"]},
++            "nested":{"type":"object","properties":{"note":{"type":"string"}}},
++            "list":{"type":"array","items":{"type":"object","properties":{"note":{"type":"string"}}}}
++        },"required":["key"],"additionalProperties":false});
++        let schema = serde_json::to_value(
++            nullable_mcp_input_schema(input.as_object().unwrap(), None).unwrap(),
++        )
++        .unwrap();
++        assert_eq!(
++            schema["properties"]["note"]["anyOf"][1],
++            json!({"type":"null"})
++        );
++        let arguments = json!({"key":"ok","note":null,"nullable":null,"nested":{"note":null},"list":[{"note":null}]});
++        assert_eq!(
++            normalize_nullable_mcp_arguments(input.as_object().unwrap(), None, &arguments).unwrap(),
++            Some(json!({"key":"ok","nullable":null,"nested":{},"list":[{}]}))
++        );
++        assert_eq!(arguments["note"], Value::Null);
++        let legacy = serde_json::to_value(
++            super::super::strict_mcp::strict_mcp_input_schema(input.as_object().unwrap(), None)
++                .unwrap(),
++        )
++        .unwrap();
++        assert_eq!(legacy["properties"]["note"]["type"], "string");
++        assert!(legacy["properties"]["note"].get("anyOf").is_none());
++    }
++
++    #[test]
++    fn stabilizes_property_references_without_inheriting_optional_null() {
++        let input = json!({"type":"object","properties":{
++            "optional":{"type":"string"},
++            "requiredCopy":{"$ref":"#/properties/optional"}
++        },"required":["requiredCopy"],"additionalProperties":false});
++        let schema = serde_json::to_value(
++            nullable_mcp_input_schema(input.as_object().unwrap(), None).unwrap(),
++        )
++        .unwrap();
++        let reference = schema["properties"]["requiredCopy"]["$ref"]
++            .as_str()
++            .unwrap();
++        assert_eq!(
++            schema
++                .pointer(reference.strip_prefix('#').unwrap())
++                .unwrap()["type"],
++            "string"
++        );
++        assert_eq!(
++            normalize_nullable_mcp_arguments(
++                input.as_object().unwrap(),
++                None,
++                &json!({"optional":null,"requiredCopy":null})
++            )
++            .unwrap(),
++            Some(json!({"requiredCopy":null}))
++        );
++    }
++
++    #[test]
++    fn retains_open_and_ambiguous_branch_fallback_without_argument_changes() {
++        for input in [
++            json!({"type":"object","properties":{},"additionalProperties":true}),
++            json!({"type":"object","properties":{"value":{"anyOf":[
++                {"type":"object","properties":{"note":{"type":"string"}}},
++                {"type":"string"}
++            ]}}}),
++        ] {
++            assert!(nullable_mcp_input_schema(input.as_object().unwrap(), None).is_none());
++            assert!(
++                normalize_nullable_mcp_arguments(
++                    input.as_object().unwrap(),
++                    None,
++                    &json!({"value":{"note":null}})
++                )
++                .unwrap()
++                .is_none()
++            );
++        }
++    }
++}
+diff --git a/codex-rs/tools/src/lib.rs b/codex-rs/tools/src/lib.rs
+index be5cb314804..08f24249d2c 100644
+--- a/codex-rs/tools/src/lib.rs
++++ b/codex-rs/tools/src/lib.rs
+@@ -81,8 +81,8 @@ pub use responses_api::agent_plugin_mcp_tool_to_responses_api_tool;
+ pub use responses_api::coalesce_loadable_tool_specs;
+ pub use responses_api::default_namespace_description;
+ pub use responses_api::dynamic_tool_to_responses_api_tool;
+-pub use responses_api::mcp_tool_to_deferred_responses_api_tool;
+ pub use responses_api::mcp_tool_to_best_effort_strict_responses_api_tool;
++pub use responses_api::mcp_tool_to_deferred_responses_api_tool;
+ pub use responses_api::mcp_tool_to_responses_api_tool;
+ pub use responses_api::tool_definition_to_responses_api_tool;
+ pub use tool_call::ConversationHistory;
+@@ -133,3 +133,7 @@ pub use tool_spec::create_tools_json_for_responses_lite;
+ pub use tool_spec::create_tools_raw_json_for_responses_api;
+ 
+ pub use hosted_tools::client_tool_search_spec;
++
++pub use json_schema::{normalize_nullable_mcp_arguments, nullable_mcp_input_schema};
++
++pub use responses_api::mcp_tool_to_nullable_strict_responses_api_tool;
+diff --git a/codex-rs/tools/src/responses_api.rs b/codex-rs/tools/src/responses_api.rs
+index af27b8215c2..f9f1950e879 100644
+--- a/codex-rs/tools/src/responses_api.rs
++++ b/codex-rs/tools/src/responses_api.rs
+@@ -222,3 +222,20 @@ pub fn tool_definition_to_responses_api_tool(tool_definition: ToolDefinition) ->
+ #[cfg(test)]
+ #[path = "responses_api_tests.rs"]
+ mod tests;
++
++/// JavaScript optional-null mode; the ordinary strict converter remains unchanged.
++pub fn mcp_tool_to_nullable_strict_responses_api_tool(
++    tool_name: &ToolName,
++    tool: &rmcp::model::Tool,
++    schema_max_bytes: Option<usize>,
++) -> Result<ResponsesApiTool, serde_json::Error> {
++    let mut output = mcp_tool_to_responses_api_tool(tool_name, tool, schema_max_bytes)?;
++    if let Some(mut schema) =
++        crate::nullable_mcp_input_schema(tool.input_schema.as_ref(), schema_max_bytes)
++    {
++        schema.mcp_input_schema_max_bytes = schema_max_bytes;
++        output.strict = true;
++        output.parameters = schema;
++    }
++    Ok(output)
++}

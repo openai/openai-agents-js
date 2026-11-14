@@ -628,6 +628,10 @@ export type {
 export type { SandboxCapability } from './runtime/sandbox-capabilities';
 
 export type {
+  ToolLifecycleEvent,
+  ToolLifecycleCallback,
+} from './runtime/tool-lifecycle';
+export type {
   AgentLifecycleEvent,
   AgentLifecycleCallback,
 } from './runtime/agent-lifecycle';

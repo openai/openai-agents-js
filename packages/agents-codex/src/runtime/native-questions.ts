@@ -30,7 +30,10 @@ export interface ApprovalRequest extends QuestionIdentity {
   readonly type: 'approval_request';
   readonly submissionId: string;
   readonly turnId: string;
-  reply(decision: 'allow_once' | 'deny'): NativeQuestionReply;
+  reply(
+    decision: 'allow_once' | 'deny',
+    options?: { always?: boolean },
+  ): NativeQuestionReply;
 }
 
 /**
@@ -87,7 +90,7 @@ export interface NativeQuestionGrant {
 
 const replies = new WeakMap<
   object,
-  { request: NativeQuestion; wire: string }
+  { request: NativeQuestion; wire: string; rememberMcp?: boolean }
 >();
 
 const urlConsent = Symbol('URL consent');
@@ -97,6 +100,13 @@ export type NativeQuestionPresentation = (
   target: object,
   prepareReply: (value: unknown) => NativeQuestionReply,
 ) => void;
+
+/** @internal Remembering stays in the issued reply token, outside the RPC payload. */
+export function nativeReplyRememberedMcp(
+  reply: NativeQuestionReply,
+): boolean | undefined {
+  return replies.get(reply)?.rememberMcp;
+}
 
 /** @internal A cast or deserialized object cannot issue a reply. */
 export function isNativeQuestionReply(
@@ -189,12 +199,27 @@ export function issueNativeQuestion(
     value: () =>
       `${identity.type} { sessionId: ${JSON.stringify(identity.sessionId)} }`,
   });
-  const prepareReply = (value: unknown): NativeQuestionReply => {
+  const prepareReply = (
+    value: unknown,
+    options: { always?: boolean } = {},
+  ): NativeQuestionReply => {
+    if (options.always !== undefined && typeof options.always !== 'boolean')
+      throw new TypeError('Approval always must be a boolean');
+    if (
+      options.always &&
+      (identity.type !== 'approval_request' ||
+        (value !== 'allow_once' && value !== 'deny'))
+    )
+      throw new TypeError('Remembering requires an approval decision');
     if (!active())
       throw new TypeError('Native request is expired or already answered');
     const wire = encode(value);
     const reply = Object.freeze(Object.create(null)) as NativeQuestionReply;
-    replies.set(reply, { request, wire });
+    replies.set(reply, {
+      request,
+      wire,
+      ...(options.always ? { rememberMcp: value === 'allow_once' } : {}),
+    });
     return reply;
   };
   Object.defineProperty(request, 'reply', { value: prepareReply });

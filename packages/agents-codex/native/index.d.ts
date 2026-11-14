@@ -165,9 +165,12 @@ export class NativeThread {
   /** null means incomplete; true/false is the original completion/expiry outcome. */
   _native_url_completion_status(question_id: string): Promise<boolean | null>;
   _cancel_native_url_completion(question_id: string): Promise<boolean>;
+  _can_remember_mcp_question(question_id: string): Promise<boolean>;
+  _remembered_mcp_decision(question_id: string): Promise<boolean | null>;
   _respond_owned_native_question(
     question_id: string,
     response_json: string,
+    remember_mcp?: boolean,
   ): Promise<boolean>;
   /** Negative retirement only. Positive replies require a captured question. */
   _respond_native_question(response_json: string): Promise<void>;
@@ -178,8 +181,13 @@ export class NativeThread {
     limit?: number | null,
     forReplay?: boolean,
   ): Promise<string>;
+  _chaining_history(): Promise<string>;
   _record_memory_input_admission(turn_id: string): Promise<string>;
   _memory_history(turn_id: string, scope_json?: string): Promise<string>;
+  _pending_memory_history(
+    request_json: string,
+    scope_json?: string | undefined | null,
+  ): Promise<string>;
   _stored_history(query_json: string): Promise<string>;
   _set_stored_name(name_json: string): Promise<string>;
   _stored_history_close_action(action_json: string): _StoredHistoryClose;
@@ -187,6 +195,7 @@ export class NativeThread {
     expectedRevision: string,
     keep: number,
     itemsJson: string,
+    allowRebuild?: boolean,
   ): Promise<string>;
   _append_recovered_output(
     expectedRevision: string,
@@ -327,6 +336,13 @@ export class NativeThread {
   _reply_tool_not_found(responseJson: string): void;
   _reply_model_retry(responseJson: string): void;
   _report_model_attempt_usage(ownerJson: string, usageJson: string): boolean;
+  _account_compaction_request(
+    ownerJson: string,
+    operation: 'dispatch' | 'settle',
+    requestId?: string,
+    usageJson?: string,
+    responseReceived?: boolean,
+  ): string;
   _account_provider_request(
     ownerJson: string,
     operationJson: string,
@@ -399,10 +415,15 @@ export class NativeThread {
   _end_manual_checkpoint_wait(token: string): void;
   _manual_checkpoint_ready(validated_requests_json: string): Promise<boolean>;
   _seal_manual_checkpoint(validated_requests_json: string): Promise<string>;
+  _restore_staged_input_data(
+    input_json: string,
+    selected: boolean,
+  ): Promise<void>;
   _restore_manual_continuation(
     continuation_json: string,
     tracing_context?: string,
     operation_tools_json?: string,
+    select_pending_input?: boolean,
   ): Promise<string>;
   _respond_manual_continuation(request_and_output_json: string): Promise<void>;
   _complete_manual_continuation(
@@ -412,6 +433,8 @@ export class NativeThread {
     tracing_context?: string,
     observationSubmissionId?: string,
     profileOutputOverride?: boolean,
+    /** @internal Publish only replies owned by a fresh native terminal receipt. */
+    preserveAcceptedReplies?: boolean,
   ): Promise<string>;
   _start_raw_usage(): void;
   _start_request_attempts(): void;

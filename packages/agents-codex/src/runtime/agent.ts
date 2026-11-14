@@ -121,6 +121,14 @@ export async function openSession(
     options.state == null
       ? null
       : sessionStateSchema.parse(structuredClone(options.state));
+  if (
+    isManualSessionState(saved) &&
+    (!options.state || !hasSessionStateAuthority(options.state))
+  ) {
+    // Editable checkpoints cannot claim an application callback already ran.
+    delete saved.manual_continuation._sdk_lifecycle_start;
+    options = { ...options, state: saved };
+  }
   if (oneShot) {
     if (isManualSessionState(saved)) {
       if (oneShot.input != null)
@@ -564,6 +572,8 @@ export async function openSession(
   if (oneShot?.returnRawUsage) session._startRawUsage();
   if (oneShot?.returnItems) session._startProducedItems();
   await session._start();
+  if (options.pendingInputQueue !== undefined)
+    await session._restorePassiveInputQueue();
   if (isManualSessionState(saved))
     await session._restoreManualContinuation(
       saved,
@@ -591,7 +601,7 @@ interface OwnedRunOptions {
   captureErrorDetails?: boolean;
   inputStoragePolicy?: CapturedInputStoragePolicy;
   returnState?: boolean;
-  returnHistory?: boolean;
+  returnHistory?: boolean | 'chaining';
   returnRawUsage?: boolean;
   returnItems?: boolean;
   signal?: AbortSignal;
@@ -599,8 +609,14 @@ interface OwnedRunOptions {
   budget?: import('./run-budget').RunBudgetTracker;
 }
 
-async function captureRunHistory(session: Session<any>) {
-  const { items } = await session._historyForReplay();
+async function captureRunHistory(
+  session: Session<any>,
+  view: boolean | 'chaining',
+) {
+  const items =
+    view === 'chaining'
+      ? await session._chainingHistoryForReplay()
+      : (await session._historyForReplay()).items;
   return Object.freeze(
     items.filter(
       (item) =>
@@ -764,7 +780,12 @@ async function completeOwnedSession<Output>(
               ? { state: await session.saveState() }
               : {}),
             ...(options.returnHistory
-              ? { history: await captureRunHistory(session) }
+              ? {
+                  history: await captureRunHistory(
+                    session,
+                    options.returnHistory,
+                  ),
+                }
               : {}),
             ...(options.returnRawUsage
               ? { rawUsage: session._takeRawUsage(result.turn.turnId) }

@@ -214,11 +214,14 @@ export class EnvironmentAcquisition {
     thread: string,
     snapshot: CanonicalHistorySnapshot,
     terminal: SandboxMemoryTerminal,
+    admit?: () => void,
   ): Promise<void> {
     const owner = this.state?.sandboxMemory;
     if (!owner || !this.state)
       throw new TypeError('This Environment has no native sandbox memory');
-    return this.state.scope(() => owner.flush(thread, snapshot, terminal));
+    return this.state.scope(() =>
+      owner.flush(thread, snapshot, terminal, admit),
+    );
   }
 
   /** @internal Guard active phase callbacks across Sessions sharing this resource. */

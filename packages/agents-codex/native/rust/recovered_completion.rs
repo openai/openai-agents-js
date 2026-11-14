@@ -191,6 +191,31 @@ impl FreshTerminalReceipts {
         );
         Ok(())
     }
+    pub(super) fn has_current_call(
+        &self,
+        tools: &PythonTools,
+        generation: &Arc<Generation>,
+        thread: &str,
+        turn: &str,
+        call: &str,
+        slot: usize,
+    ) -> Result<bool> {
+        self.check(tools)?;
+        ensure!(
+            Arc::ptr_eq(&self.generation, generation),
+            "Early reply publication changed its native catalog"
+        );
+        let pending = self.calls.lock().expect("recovered terminal receipts poisoned");
+        Ok(pending.as_ref().is_some_and(|keys| keys.iter().any(|key| {
+            key.reply.thread == thread
+                && key.reply.instance == tools.instance
+                && key.reply.generation == generation.id
+                && key.turn == turn
+                && key.call == call
+                && key.reply.slot == slot
+        })))
+    }
+
     pub(super) fn adopt(&self, tools: &PythonTools, step: &StepCatalog) -> Result<()> {
         let mut pending = self
             .calls

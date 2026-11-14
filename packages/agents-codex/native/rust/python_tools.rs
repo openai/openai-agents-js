@@ -130,6 +130,16 @@ pub(crate) struct PendingKey {
     pub(crate) call: String,
 }
 
+/// Read-only proof retained only while one fresh root function approval is pending.
+/// This value is never serialized or used to settle the original callback.
+pub(crate) struct PendingMemoryOwner {
+    pub(crate) key: PendingKey,
+    pub(crate) invocation: u64,
+    pub(crate) profile: Option<codex_extension_api::AgentProfileReceipt>,
+    pub(crate) name: ToolName,
+    pub(crate) arguments: Value,
+}
+
 /// Independent schema and local-authority decisions for one root installation.
 pub(crate) struct ToolInstallOptions {
     pub(crate) preserve_schemas: bool,
@@ -156,6 +166,7 @@ pub(crate) struct NativeMediaContext {
 struct CallbackRelease {
     receipt: Value,
     model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+    compaction: Option<Arc<dyn codex_extension_api::CompactionRequestAccounting>>,
     entered: std::sync::atomic::AtomicBool,
     cancelled: std::sync::atomic::AtomicBool,
     released: std::sync::atomic::AtomicBool,
@@ -171,9 +182,17 @@ impl CallbackRelease {
         receipt: Value,
         model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
     ) -> Arc<Self> {
+        Self::with_accounting(receipt, model_attempt, None)
+    }
+    fn with_accounting(
+        receipt: Value,
+        model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+        compaction: Option<Arc<dyn codex_extension_api::CompactionRequestAccounting>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             receipt,
             model_attempt,
+            compaction,
             entered: std::sync::atomic::AtomicBool::new(false),
             cancelled: std::sync::atomic::AtomicBool::new(false),
             released: std::sync::atomic::AtomicBool::new(false),
@@ -566,6 +585,7 @@ pub(crate) fn validate_declarations(specs: &[DynamicToolSpec]) -> Result<()> {
                         | "write_stdin"
                 ))
                 && key.namespace.as_deref() != Some("tool_search")
+                && key.namespace.as_deref() != Some("_agents_sdk_hosted")
                 && !matches!(
                     (key.namespace.as_deref(), key.name.as_str()),
                     (Some("web"), "run") | (Some("image_gen"), "imagegen")
@@ -691,6 +711,70 @@ impl PythonTools {
             attempt.account_provider_request(operation)
         })?
         .ok_or_else(|| anyhow::anyhow!("Native provider request accounting receipt expired"))
+    }
+
+    pub(crate) fn account_compaction_request(
+        self: &Arc<Self>,
+        root: &str,
+        receipt: &Value,
+        operation: &str,
+        request_id: Option<&str>,
+        usage: Option<codex_protocol::protocol::ReceivedResponseUsage>,
+        received: bool,
+    ) -> Result<String> {
+        ensure!(
+            receipt.get("kind").and_then(Value::as_str) == Some("preparation"),
+            "Invalid compaction receipt"
+        );
+        let thread = receipt
+            .get("thread")
+            .and_then(Value::as_str)
+            .context("Invalid compaction thread")?;
+        let instance = receipt
+            .get("instance")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let id = receipt
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<u64>().ok())
+            .context("Invalid compaction receipt")?;
+        let owner = self
+            .exact_owner(root, thread, &instance)
+            .context("Compaction owner expired")?;
+        let replies = owner.step_replies.lock().expect("Step replies poisoned");
+        let pending = replies.get(&id).context("Compaction callback expired")?;
+        let callback = pending
+            .callback
+            .as_ref()
+            .context("Compaction callback expired")?;
+        ensure!(
+            callback.receipt == *receipt
+                && callback.entered.load(Ordering::Acquire)
+                && !callback.released.load(Ordering::Acquire),
+            "Compaction callback expired"
+        );
+        let accounting = callback
+            .compaction
+            .as_ref()
+            .context("Callback has no compaction accounting owner")?;
+        match operation {
+            "dispatch" => {
+                ensure!(
+                    !callback.cancelled.load(Ordering::Acquire) && !pending.reply.is_closed(),
+                    "Compaction callback cancelled"
+                );
+                accounting.dispatched().map_err(anyhow::Error::msg)
+            }
+            "settle" => {
+                let id = request_id.context("Missing compaction request identity")?;
+                accounting
+                    .settled(id, usage, received)
+                    .map_err(anyhow::Error::msg)?;
+                Ok(id.to_owned())
+            }
+            _ => anyhow::bail!("Unknown compaction accounting operation"),
+        }
     }
 
     fn with_model_attempt_receipt<T>(
@@ -1514,6 +1598,13 @@ impl PythonTools {
         }
         let search = crate::config::web_search_tool(&startup.config);
         fixed.extend(search.iter().cloned());
+        let policy = startup
+            .thread_extension_init
+            .get::<ToolPolicy>()
+            .unwrap_or_default();
+        let file_search_alias = ToolName::new(Some("_agents_sdk_hosted".into()), "file_search");
+        let separate_file_search = policy.allowed_tools.as_ref()
+            .is_some_and(|names| names.contains(&file_search_alias));
         let hosted_names: HashSet<_> = startup
             .thread_extension_init
             .get::<codex_extension_api::HostedModelTools>()
@@ -1526,8 +1617,12 @@ impl PythonTools {
                             codex_tools::HostedToolSpec::Mcp(tool) => {
                                 ToolName::new(Some("hosted_mcp".into()), tool.server_label.clone())
                             }
+                            codex_tools::HostedToolSpec::WebSearch(_) => {
+                                ToolName::plain("web_search")
+                            }
                             codex_tools::HostedToolSpec::FileSearch(_) => {
-                                ToolName::plain("file_search")
+                                if separate_file_search { file_search_alias.clone() }
+                                else { ToolName::plain("file_search") }
                             }
                             codex_tools::HostedToolSpec::CodeInterpreter(_) => {
                                 ToolName::plain("code_interpreter")
@@ -1551,13 +1646,11 @@ impl PythonTools {
         fixed.extend(
             hosted_names
                 .iter()
-                .filter(|name| name.namespace.as_deref() != Some("hosted_mcp"))
+                .filter(|name| !matches!(name.namespace.as_deref(),
+                    Some("hosted_mcp" | "_agents_sdk_hosted")))
                 .cloned(),
         );
-        let policy = startup
-            .thread_extension_init
-            .get::<ToolPolicy>()
-            .unwrap_or_default();
+
         if let Some(search) = &search {
             ensure!(
                 policy.allows(search),
@@ -1613,6 +1706,10 @@ impl PythonTools {
                         "project_grep",
                     ]
                     .into_iter()
+                    .filter(|name| {
+                        startup.thread_extension_init.get::<crate::custom_storage::ReceiptStore>().is_none()
+                            || matches!(*name, "project_glob" | "project_grep")
+                    })
                     .map(|name| ToolName::plain(name).with_default_namespace()),
                 );
             }
@@ -4132,7 +4229,7 @@ impl ToolContributor for PythonContributor {
                 request["msg"]["staged_input_preparation"] = json!(true);
             }
             if let Some(staged) = turn.get::<codex_extension_api::SelectedStagedInput>() {
-                if let Some(records) = staged.0.items_for(turn.level_id()) {
+                if let Some(records) = staged.0.guard_items_for(turn.level_id()) {
                     request["msg"]["staged_input"] = json!(records);
                 }
             }

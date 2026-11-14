@@ -23,6 +23,7 @@ import {
 } from './background-result';
 import { handoffResultTarget, withHandoffResultTarget } from './handoff-result';
 import {
+  cloneJson,
   decode,
   encode,
   jsonValue,
@@ -34,7 +35,11 @@ import {
 import type { Turn } from './session';
 import { usageReportBinding, type UsageReporter } from './run-events';
 import type { WebSearch } from './web-search';
-import type { HostedTool, ClientToolSearchExecutor } from './hosted-tools';
+import type {
+  HostedTool,
+  FileSearch,
+  ClientToolSearchExecutor,
+} from './hosted-tools';
 import type { ChildInvocation, NativeAgents } from './native-agents';
 import type { HttpMCP, StdioMCP } from './mcp';
 import {
@@ -413,7 +418,8 @@ export function toolRef(name: string, namespace?: string | null): ToolRef {
     ...(namespace === undefined ? {} : { namespace }),
   });
 }
-export type ToolSelector<Context = any> = SessionTool<Context> | ToolRef;
+export type ToolSelector<Context = any> =
+  SessionTool<Context> | ToolRef | FileSearch;
 
 const declarationOwners = new WeakMap<object, object>();
 const configuredAgentRoles = new WeakMap<object, string>();
@@ -872,6 +878,8 @@ export function createNamespacedFunctionTool<Context>(options: {
   name: string;
   description: string;
   parameters: JsonValue;
+  strict?: boolean;
+  parseArguments?: (value: JsonValue) => JsonValue;
   execute: (
     args: JsonObject,
     context: ToolCallContext<Context>,
@@ -884,6 +892,7 @@ export function createNamespacedFunctionTool<Context>(options: {
     name,
     description,
     parameters,
+    ...(options.strict ? { strict: true } : {}),
     namespace: namespace.name,
     namespaceDescription: namespace.description,
     errorFunction: undefined as ToolErrorFunction<Context> | null | undefined,
@@ -899,8 +908,11 @@ export function createNamespacedFunctionTool<Context>(options: {
         typeof this.errorFunction !== 'function'
       )
         throw new TypeError('errorFunction must be a function');
-      const parsed = losslessJsonObjectSchema.parse(args);
-      const original = Object.freeze(structuredClone(parsed));
+      const input = losslessJsonObjectSchema.parse(args);
+      const original = Object.freeze(structuredClone(input));
+      const parsed = options.parseArguments
+        ? losslessJsonObjectSchema.parse(options.parseArguments(input))
+        : input;
       const effective = Object.freeze(structuredClone(parsed));
       const result = await invokeWithTimeout(
         (signal) => {
@@ -1403,9 +1415,7 @@ function createFunctionTool<
       );
       return failed(text);
     }
-    const originalArguments = Object.freeze(
-      structuredClone(args) as JsonObject,
-    );
+    const originalArguments = Object.freeze(cloneJson(args) as JsonObject);
     let parsed: ToolParameterOutput<T>;
     if (approved) parsed = approved.value as ToolParameterOutput<T>;
     else if (effectiveArgs !== undefined) parsed = parseInput(effectiveArgs);
@@ -1634,7 +1644,7 @@ function createFunctionTool<
       const admit = () => signal.throwIfAborted();
       admit();
       const effective = captureStandaloneArguments(
-        parseInput(structuredClone(original)),
+        parseInput(cloneJson(original)),
       );
       const callbackContext: ToolInvocationInputContext<Context> =
         Object.freeze({
@@ -1642,7 +1652,7 @@ function createFunctionTool<
           signal,
         });
       return {
-        arguments: structuredClone(effective) as JsonObject,
+        arguments: cloneJson(effective) as JsonObject,
         execute: (guard) =>
           invokeBound(
             original,
@@ -1652,7 +1662,7 @@ function createFunctionTool<
             undefined,
             {
               get value() {
-                return structuredClone(effective);
+                return cloneJson(effective);
               },
               matches: (candidate) => isDeepStrictEqual(candidate, effective),
             },
@@ -1872,6 +1882,12 @@ export function captureTools(
   generation = 0n,
 ): ToolCatalog {
   const captured = tools.map((tool) => {
+    const identity = toolIdentity(tool);
+    if (
+      identity.namespace === '_agents_sdk_hosted' &&
+      identity.name === 'file_search'
+    )
+      throw new TypeError('The hosted FileSearch policy identity is reserved');
     if (
       tool.kind !== 'manual' &&
       typeof tool[prepareInvocation] !== 'function'

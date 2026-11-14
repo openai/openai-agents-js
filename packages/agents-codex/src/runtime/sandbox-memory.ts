@@ -63,6 +63,7 @@ const MEMORY_TOOL_RECORDS = new Set([
 export interface SandboxMemoryTerminal {
   terminal_state:
     | 'completed'
+    | 'interrupted'
     | 'cancelled'
     | 'failed'
     | 'guardrail_tripped'
@@ -70,6 +71,8 @@ export interface SandboxMemoryTerminal {
   exception_type: string | null;
   exception_message: string | null;
   has_final_output: boolean;
+  capture_key?: string;
+  pending_tool_name?: string;
 }
 
 interface MemoryInvocation {
@@ -158,8 +161,8 @@ export class SandboxMemoryOwner {
   private readonly storage: InstanceType<Runtime['SandboxMemoryStorage']>;
   private thread?: string;
   private readonly resourceSessionId: string | undefined;
-  private enqueuedRevision?: string;
-  private completedRevision?: string;
+  private enqueuedCapture?: string;
+  private completedCapture?: string;
 
   constructor(
     private readonly resource: SandboxSessionLike,
@@ -280,6 +283,7 @@ export class SandboxMemoryOwner {
     thread: string,
     snapshot: CanonicalHistorySnapshot,
     terminal: SandboxMemoryTerminal,
+    admit?: () => void,
   ): Promise<void> {
     this.checkOperation('flush');
     this.active();
@@ -287,6 +291,10 @@ export class SandboxMemoryOwner {
       this.resource,
       this.controller.signal,
       async () => {
+        // Waiting for this resource can outlive a pending approval. This check
+        // admits IO once; later approval settlement does not revoke the
+        // already-admitted immutable snapshot.
+        admit?.();
         const invocation: MemoryInvocation = {
           resource: this.resource,
           active: true,
@@ -317,10 +325,15 @@ export class SandboxMemoryOwner {
       this.resourceSessionId,
     );
     this.thread = thread;
-    if (this.completedRevision === snapshot.revision) return;
+    const capture = JSON.stringify([
+      snapshot.revision,
+      terminal.capture_key ?? null,
+      terminal.terminal_state,
+    ]);
+    if (this.completedCapture === capture) return;
     const { memoriesDir, sessionsDir, summaryFile } = this.config.layout;
     const rolloutPath = `${sessionsDir}/${thread}.jsonl`;
-    if (this.enqueuedRevision !== snapshot.revision) {
+    if (this.enqueuedCapture !== capture) {
       await this.operation('sandbox.memory.enqueue_rollout', async () => {
         await this.storage.ensureLayout(this.config);
         // Each revision is a complete snapshot; keep one bounded latest record.
@@ -329,7 +342,7 @@ export class SandboxMemoryOwner {
           `${boundedJson(transcript)}\n`,
         );
       });
-      this.enqueuedRevision = snapshot.revision;
+      this.enqueuedCapture = capture;
     }
     await this.operation('sandbox.memory.flush', async () => {
       const input = boundedJson({ transcript });
@@ -391,7 +404,7 @@ export class SandboxMemoryOwner {
         selectedItems: selection.selected,
       });
     });
-    this.completedRevision = snapshot.revision;
+    this.completedCapture = capture;
   }
 }
 
@@ -507,6 +520,9 @@ function memoryTranscript(
       exception_message: terminal.exception_message,
       has_final_output: terminal.has_final_output,
       native_history_revision: snapshot.revision,
+      ...(terminal.pending_tool_name === undefined
+        ? {}
+        : { pending_tool_name: terminal.pending_tool_name }),
     },
     items,
   };
