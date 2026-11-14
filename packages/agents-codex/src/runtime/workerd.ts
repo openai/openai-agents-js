@@ -12,6 +12,7 @@ import {
   type NativeModel,
 } from './models';
 import {
+  invokeGuardedStandalone,
   isDirectFunctionTool,
   managedApproval,
   outputOf,
@@ -370,12 +371,14 @@ async function runTools<Context>(
           signal.throwIfAborted();
           const guards = policies.get(call.name) ?? [];
           const approved = prepared.get(call.call_id);
-          const request = () => {
-            const value = workerCall(call, effect.profile, context, signal);
-            return approved
-              ? { ...value, arguments: structuredClone(approved.arguments) }
-              : value;
-          };
+          const request = (effective: JsonObject) => ({
+            profile: effect.profile,
+            callId: call.call_id,
+            name: call.name,
+            arguments: structuredClone(effective),
+            context,
+            signal,
+          });
           const evaluate = (
             kind: 'tool_input' | 'tool_output',
             name: string,
@@ -395,21 +398,34 @@ async function runTools<Context>(
               outputInfo: verdict.outputInfo,
             });
           };
-          for (const guard of guards) {
-            if (!guard.before) continue;
-            const verdict = await guard.before(request());
-            const denial = evaluate('tool_input', guard.name, verdict);
-            if (denial !== undefined) return denial;
-          }
+          let executedArguments: JsonObject | undefined;
+          const admission = guards.length
+            ? async (effective: JsonObject) => {
+                for (const guard of guards) {
+                  if (!guard.before) continue;
+                  const verdict = await guard.before(request(effective));
+                  const denial = evaluate('tool_input', guard.name, verdict);
+                  if (denial !== undefined) return denial;
+                }
+                executedArguments = effective;
+              }
+            : undefined;
           const result = approved
-            ? await approved.execute()
-            : await tool.invoke(call.arguments, { context, signal });
+            ? await approved.execute(admission)
+            : admission
+              ? await invokeGuardedStandalone(
+                  tool,
+                  call.arguments,
+                  { context, signal },
+                  admission,
+                )
+              : await tool.invoke(call.arguments, { context, signal });
           signal.throwIfAborted();
           const output = wireToolOutput(result);
           for (const guard of guards) {
-            if (!guard.after) continue;
+            if (!guard.after || !executedArguments) continue;
             const verdict = await guard.after({
-              ...request(),
+              ...request(executedArguments),
               output,
             });
             const denial = evaluate('tool_output', guard.name, verdict);

@@ -1257,3 +1257,91 @@ portableTest(
     );
   },
 );
+
+portableTest.each([true, false])(
+  'runs Worker guards on the final parsed invocation arguments (%s)',
+  async (deny) => {
+    const execute = vi.fn(({ text }: { text: string }) => text);
+    const guardBefore = vi.fn(
+      ({ arguments: args }: { arguments: Readonly<JsonObject> }) => {
+        expect(args).toEqual({ text: 'replacement!' });
+        Reflect.set(args, 'text', 'guard mutated copy');
+        return deny
+          ? ({ action: 'deny', reason: 'safe denial' } as const)
+          : ({ action: 'allow' } as const);
+      },
+    );
+    const guardAfter = vi.fn(
+      ({
+        arguments: args,
+        output,
+      }: {
+        arguments: Readonly<JsonObject>;
+        output: string;
+      }) => {
+        expect(args).toEqual({ text: 'replacement!' });
+        expect(output).toBe('replacement!');
+        return { action: 'allow' } as const;
+      },
+    );
+    const tool = standaloneTool({
+      name: 'lookup',
+      parameters: z
+        .object({ text: z.string().default('ready') })
+        .transform(({ text }) => ({ text: text + '!' })),
+      before({ effectiveArguments }) {
+        expect(effectiveArguments).toEqual({ text: 'ready!' });
+        return {
+          action: 'replaceArguments',
+          arguments: { text: 'replacement' },
+        };
+      },
+      execute,
+    });
+    const requests: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output:
+            requests.length === 1
+              ? [{ ...call, arguments: '{}' }]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    await expect(
+      runWorkerText('Ask.', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool],
+        toolGuardrails: {
+          lookup: [
+            { name: 'effective', before: guardBefore, after: guardAfter },
+          ],
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(guardBefore).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledTimes(deny ? 0 : 1);
+    if (!deny)
+      expect(execute.mock.calls[0][0]).toEqual({ text: 'replacement!' });
+    expect(guardAfter).toHaveBeenCalledTimes(deny ? 0 : 1);
+    expect(requests[1].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          output: deny ? 'safe denial' : 'replacement!',
+        }),
+      ]),
+    );
+  },
+);

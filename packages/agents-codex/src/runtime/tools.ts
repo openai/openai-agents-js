@@ -563,9 +563,12 @@ export interface StandaloneFunctionTool<
     options?: { context?: Context; signal?: AbortSignal },
   ): Promise<Result | ToolOutput>;
 }
+type StandaloneExecutionGuard = (
+  argumentsValue: JsonObject,
+) => Promise<string | undefined>;
 type PreparedStandaloneTool = {
   readonly arguments: JsonObject;
-  execute(): Promise<unknown>;
+  execute(guard?: StandaloneExecutionGuard): Promise<unknown>;
 };
 type PrepareStandaloneTool = (
   raw: JsonObject,
@@ -573,6 +576,42 @@ type PrepareStandaloneTool = (
   signal: AbortSignal,
 ) => PreparedStandaloneTool;
 const standaloneApprovals = new WeakMap<object, PrepareStandaloneTool>();
+const standaloneInvocations = new WeakMap<
+  object,
+  (
+    args: string,
+    options: { context: unknown; signal: AbortSignal },
+    guard: StandaloneExecutionGuard,
+  ) => Promise<unknown>
+>();
+
+function captureStandaloneArguments(parsed: unknown): JsonObject {
+  const value = copyApprovalInput(parsed, true);
+  const captured: unknown = JSON.parse(encode(value));
+  if (
+    !captured ||
+    typeof captured !== 'object' ||
+    Array.isArray(captured) ||
+    !isDeepStrictEqual(value, captured)
+  )
+    throw new TypeError(
+      'Worker tool policies require JSON object arguments after validation',
+    );
+  return captured as JsonObject;
+}
+
+/** @internal Guard the effective arguments after parsing and local policy. */
+export function invokeGuardedStandalone(
+  tool: StandaloneFunctionTool<any, unknown>,
+  args: string,
+  options: { context: unknown; signal: AbortSignal },
+  guard: StandaloneExecutionGuard,
+): Promise<unknown> {
+  const invoke = standaloneInvocations.get(tool);
+  if (!invoke)
+    throw new TypeError('Worker tool guards require a standalone SDK tool');
+  return invoke(args, options, guard);
+}
 
 /** @internal Validate an approval before its caller can expose or execute it. */
 export function prepareStandaloneApproval(
@@ -1289,6 +1328,7 @@ function createFunctionTool<
   async function invokeStandalone(
     argumentsValue: JsonObject | string,
     options?: { context?: Context; signal?: AbortSignal },
+    guard?: StandaloneExecutionGuard,
   ): Promise<z.input<Result> | z.output<Result> | ToolOutput> {
     const context: ToolInvocationInputContext<Context> = Object.freeze({
       context: options?.context as Context,
@@ -1316,6 +1356,9 @@ function createFunctionTool<
       undefined,
       undefined,
       argumentError,
+      undefined,
+      undefined,
+      guard,
     ) as Promise<z.input<Result> | z.output<Result> | ToolOutput>;
   }
 
@@ -1329,6 +1372,7 @@ function createFunctionTool<
     argumentError?: string | SyntaxError,
     beforeExecute?: () => Promise<boolean>,
     onBodyEntry?: () => void,
+    standaloneGuard?: StandaloneExecutionGuard,
   ): Promise<ToolResponse | ToolOutput | z.input<Result> | z.output<Result>> {
     admit();
     const live = liveToolContext(context);
@@ -1417,6 +1461,11 @@ function createFunctionTool<
       const enabled = await beforeExecute();
       admit();
       if (!enabled) return failed(`Tool ${name} not found`);
+    }
+    if (standaloneGuard) {
+      const denial = await standaloneGuard(captureStandaloneArguments(parsed));
+      admit();
+      if (denial !== undefined) return failed(denial);
     }
     const timeoutError =
       callbackTimeout === undefined
@@ -1568,23 +1617,19 @@ function createFunctionTool<
       ) as Promise<ToolResponse>,
   });
   if (standalone) {
+    standaloneInvocations.set(declaration, (args, options, guard) =>
+      invokeStandalone(
+        args,
+        { context: options.context as Context, signal: options.signal },
+        guard,
+      ),
+    );
     standaloneApprovals.set(declaration, (original, appContext, signal) => {
       const admit = () => signal.throwIfAborted();
       admit();
-      const parsed = copyApprovalInput(
+      const effective = captureStandaloneArguments(
         parseInput(structuredClone(original)),
-        true,
       );
-      const effective: unknown = JSON.parse(encode(parsed));
-      if (
-        !effective ||
-        typeof effective !== 'object' ||
-        Array.isArray(effective) ||
-        !isDeepStrictEqual(parsed, effective)
-      )
-        throw new TypeError(
-          'Worker approval requires JSON object arguments after validation',
-        );
       const callbackContext: ToolInvocationInputContext<Context> =
         Object.freeze({
           context: appContext as Context,
@@ -1592,13 +1637,24 @@ function createFunctionTool<
         });
       return {
         arguments: structuredClone(effective) as JsonObject,
-        execute: () =>
-          invokeBound(original, callbackContext, () => {}, admit, undefined, {
-            get value() {
-              return structuredClone(effective);
+        execute: (guard) =>
+          invokeBound(
+            original,
+            callbackContext,
+            () => {},
+            admit,
+            undefined,
+            {
+              get value() {
+                return structuredClone(effective);
+              },
+              matches: (candidate) => isDeepStrictEqual(candidate, effective),
             },
-            matches: (candidate) => isDeepStrictEqual(candidate, effective),
-          }),
+            undefined,
+            undefined,
+            undefined,
+            guard,
+          ),
       };
     });
   }
