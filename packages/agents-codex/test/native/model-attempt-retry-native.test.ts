@@ -701,9 +701,16 @@ it.each([false, true])(
   20_000,
 );
 
-it.each(['retry', 'attempt', 'invocation'] as const)(
-  'rebinds forged graph %s controls to current declarations',
-  async (control) => {
+it.each([
+  ['retry', false],
+  ['retry', true],
+  ['attempt', false],
+  ['attempt', true],
+  ['invocation', false],
+  ['invocation', true],
+] as const)(
+  'rebinds forged graph %s controls to current declarations (authenticated=%s)',
+  async (control, authenticated) => {
     let restored = false;
     let roundtrip = false;
     let routes = 0;
@@ -788,11 +795,8 @@ it.each(['retry', 'attempt', 'invocation'] as const)(
     expect(changed).toBeGreaterThan(0);
     restored = true;
     complete.mockClear();
-    await expect(agent.session({ state: forged })).rejects.toThrow(
-      'Restoring changed Agent instructions requires authenticated SessionState',
-    );
     await using session = await agent.session({
-      state: authenticateTestState(forged),
+      state: authenticated ? authenticateTestState(forged) : forged,
     });
     const turn = await session.submit('continue');
     if (control === 'retry')
@@ -868,9 +872,13 @@ it('uses the restored worker retry bound instead of the root bound', async () =>
   expect(complete).toHaveBeenCalledTimes(1);
 }, 20_000);
 
-it.each([false, true])(
-  'keeps current invocation authority through manual restore (graph=%s)',
-  async (graph) => {
+it.each([
+  [false, false],
+  [true, false],
+  [true, true],
+] as const)(
+  'keeps current invocation authority through manual restore (graph=%s, authenticated=%s)',
+  async (graph, authenticated) => {
     let calls = 0;
     const lookup = manualTool({
       name: 'lookup',
@@ -932,12 +940,8 @@ it.each([false, true])(
       return settings;
     }) as typeof state;
     expect(changed).toBeGreaterThan(0);
-    if (graph)
-      await expect(agent.session({ state: forged })).rejects.toThrow(
-        'Restoring changed Agent instructions requires authenticated SessionState',
-      );
     await using restored = await agent.session({
-      state: graph ? authenticateTestState(forged) : forged,
+      state: authenticated ? authenticateTestState(forged) : forged,
     });
     for await (const event of restored.events()) {
       if (event.type !== 'action_requested') continue;

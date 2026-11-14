@@ -1354,7 +1354,7 @@
     },
     {
       "path": "sdk-standard-responses-reasoning-options.patch",
-      "sha256": "5b6aabe63479b6d790b564dbc23e6a2fdb9f7e9e08b5bc1fca5a11dc8b69ece6"
+      "sha256": "762dc23b744a46d0bb1c46bb0f16a4a0463bae3ef606386126efc7fa46abbbb5"
     },
     {
       "path": "sdk-bind-declaration-output-strictness.patch",
@@ -1457,5 +1457,5 @@
       "sha256": "fead081483217dd25cbee8ff5ffe2ac77ca90493fd523c9b88a36c14e91c2f02"
     }
   ],
-  "result_tree": "627e6718f2d8da8dd1ac613510f0b9acfad46699"
+  "result_tree": "a41b1128e9921b768982b696ca0eb12d86088f18"
 }

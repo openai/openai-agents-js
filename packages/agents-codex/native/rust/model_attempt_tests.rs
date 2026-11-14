@@ -108,6 +108,7 @@ async fn cancelled_producer_joins_cleanup_and_measures_original_frame() {
         "fixture",
         json!({"model":"fixture","input":[]}),
         source.clone(),
+        false,
     ));
     assert!(futures_util::poll!(&mut produce).is_pending());
     let event = tools.next_request().await;
@@ -160,26 +161,37 @@ async fn cancelled_producer_joins_cleanup_and_measures_original_frame() {
 }
 
 #[tokio::test]
-async fn generic_failed_producer_reply_closes_after_physical_release() {
-    let tools = super::super::pending_tests::tools();
-    let original = Attempt::new("original");
-    let mut produce = Box::pin(tools.produce_model_response(
-        "fixture",
-        json!({"model":"fixture","input":[]}),
-        admission(original),
-    ));
-    assert!(futures_util::poll!(&mut produce).is_pending());
-    let event = tools.next_request().await;
-    let callback = event["msg"]["_sdk_callback"].clone();
-    assert!(tools.callback_operation("root", &callback, "enter"));
-    tools
-        .reply_model_producer(
-            serde_json::from_value(json!({"owner":receipt(&event),"failed":true})).unwrap(),
-        )
-        .unwrap();
-    assert!(futures_util::poll!(&mut produce).is_pending());
-    assert!(tools.callback_operation("root", &callback, "release"));
-    assert!(produce.await.is_err());
+async fn producer_provenance_stays_outside_body_and_joins_physical_release() {
+    for native_reasoning_context in [false, true] {
+        let tools = super::super::pending_tests::tools();
+        let original = Attempt::new("original");
+        let mut produce = Box::pin(tools.produce_model_response(
+            "fixture",
+            json!({"model":"fixture","input":[],"reasoning":{"context":"all_turns"}}),
+            admission(original),
+            native_reasoning_context,
+        ));
+        assert!(futures_util::poll!(&mut produce).is_pending());
+        let event = tools.next_request().await;
+        assert_eq!(
+            event["msg"]["native_reasoning_context"],
+            json!(native_reasoning_context)
+        );
+        assert_eq!(
+            event["msg"]["data"],
+            json!({"model":"fixture","input":[],"reasoning":{"context":"all_turns"}})
+        );
+        let callback = event["msg"]["_sdk_callback"].clone();
+        assert!(tools.callback_operation("root", &callback, "enter"));
+        tools
+            .reply_model_producer(
+                serde_json::from_value(json!({"owner":receipt(&event),"failed":true})).unwrap(),
+            )
+            .unwrap();
+        assert!(futures_util::poll!(&mut produce).is_pending());
+        assert!(tools.callback_operation("root", &callback, "release"));
+        assert!(produce.await.is_err());
+    }
 }
 
 #[tokio::test]
@@ -243,6 +255,7 @@ async fn failed_cleanup_is_retained_until_exact_retirement_even_after_early_rele
             "fixture",
             json!({"model":"fixture","input":[]}),
             admission(frame.clone()),
+            false,
         ));
         assert!(futures_util::poll!(&mut produce).is_pending());
         let event = tools.next_request().await;
@@ -272,6 +285,7 @@ async fn provider_failure_wrapper_reports_the_original_frame() {
         "fixture",
         json!({"model":"fixture","input":[]}),
         admission(original.clone()),
+        false,
     ));
     assert!(futures_util::poll!(&mut produce).is_pending());
     let event = tools.next_request().await;

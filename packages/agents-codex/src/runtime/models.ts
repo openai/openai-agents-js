@@ -429,6 +429,18 @@ export function captureRequestOptionsSource(
     : captureRequestOptions(value);
 }
 
+const nativeReasoningContexts = new WeakSet<ModelRequest>();
+
+/** @internal Retain typed native provenance outside the provider request body. */
+export function markNativeReasoningContext(
+  request: ModelRequest,
+  value: unknown,
+): void {
+  if (value === true) nativeReasoningContexts.add(request);
+  else if (value !== undefined && value !== false)
+    throw new TypeError('Invalid native reasoning context provenance');
+}
+
 const modelRequestTransport = new WeakMap<ModelRequest, ModelRequestOptions>();
 
 /** @internal Bind transport preferences to the exact native producer request. */
@@ -989,7 +1001,14 @@ export class ChatCompletionsModel implements NativeModel {
     const reasoning = (request.body.reasoning ?? {}) as JsonObject;
     if (
       Object.keys(reasoning).some(
-        (key) => key !== 'effort' && key !== 'summary',
+        (key) =>
+          key !== 'effort' &&
+          key !== 'summary' &&
+          !(
+            key === 'context' &&
+            reasoning.context === 'all_turns' &&
+            nativeReasoningContexts.has(request)
+          ),
       )
     )
       throw new TypeError(

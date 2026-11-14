@@ -104,6 +104,7 @@ import {
   isRawModelPart,
   isResponsesWebSocketStream,
   markModelRequestTransport,
+  markNativeReasoningContext,
   markRawProviderRequest,
   pumpModelStream,
   borrowedResponsesRequestId,
@@ -10126,6 +10127,7 @@ export class Session<OutputT = string, Context = unknown> {
                 );
               bindModelProviderMetadata(request, msg.provider_metadata);
               markModelRequestTransport(request, msg.request_transport);
+              markNativeReasoningContext(request, msg.native_reasoning_context);
               if (this.options.includeRawProviderEvents)
                 markRawProviderRequest(request);
               Object.freeze(request);
