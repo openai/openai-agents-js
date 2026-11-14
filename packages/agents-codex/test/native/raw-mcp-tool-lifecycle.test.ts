@@ -152,8 +152,7 @@ it.each([
       if (mode === 'pending-restore') {
         expect(seen).toEqual([]);
         expect(effects).toEqual([]);
-        const saved = JSON.parse(JSON.stringify(await session.saveState()));
-        await session.close();
+        const saved = JSON.parse(JSON.stringify(await session.suspend()));
         await expect(turn.wait()).rejects.toThrow();
         await using restored = await agent.session({
           context: application,
