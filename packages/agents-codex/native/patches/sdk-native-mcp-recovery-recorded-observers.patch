@@ -1,0 +1,20 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 316691657fb..16ad15a887a 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -532,12 +532,12 @@ pub(crate) async fn run_turn(
+                 ..Default::default()
+             },
+         );
+-        sess.record_annotated_conversation_items(
++        sess.record_tool_result(
+             &turn_context,
+             &first_step_context.settings.model_info,
+-            vec![result.envelope],
++            result,
+         )
+-        .await;
++        .await?;
+         sess.ensure_rollout_durable().await?;
+     }
+ 

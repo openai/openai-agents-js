@@ -1523,7 +1523,11 @@
     {
       "path": "sdk-raw-mcp-observer-initializer.patch",
       "sha256": "86b77892e2e8d4793d6b110e27cc33a0f1aa6009b0f9f29c34337bf079fe97e0"
+    },
+    {
+      "path": "sdk-native-mcp-recovery-recorded-observers.patch",
+      "sha256": "7ffbc08c239155999a857f9981f738b360bf940bbc39abba2c36dd64f1f0ee23"
     }
   ],
-  "result_tree": "ca5225401a8b6cb08bf1e8533d1e66dc0a126dd7"
+  "result_tree": "3ef79547d68e3680f279488819762565c969ec43"
 }
