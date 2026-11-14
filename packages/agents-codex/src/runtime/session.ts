@@ -13515,16 +13515,18 @@ export class Session<OutputT = string, Context = unknown> {
             request.callId,
             configuredData,
           );
+    const defaultProviderCompaction =
+      environmentOwner?.defaultProviderCompaction ??
+      (environmentOwner === this.options.environmentOwner
+        ? this.options.defaultProviderCompaction
+        : undefined);
     let session = await declaration.open(
       context.context,
       environment,
       context.signal,
       restoredChild,
       this.verifiedConfiguredExecutorCheckpoint,
-      environmentOwner?.defaultProviderCompaction ??
-        (environmentOwner === this.options.environmentOwner
-          ? this.options.defaultProviderCompaction
-          : undefined),
+      defaultProviderCompaction,
     );
     const child: ConfiguredChild = {
       session,
@@ -13643,6 +13645,7 @@ export class Session<OutputT = string, Context = unknown> {
             context.signal,
             child.checkpoint,
             true,
+            defaultProviderCompaction,
           );
           if (!(session instanceof Session))
             throw new NativeError(

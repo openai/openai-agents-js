@@ -18,6 +18,7 @@ import {
   Environment,
   NativeProvider,
   ChatCompletionsModel,
+  isFunctionApprovalRequest,
   tool,
   manualTool,
   shellTool,
@@ -1477,3 +1478,74 @@ it.each([
     server.assertExhausted();
   },
 );
+
+it('retains the borrowed sandbox compaction default after a refused parent checkpoint', async () => {
+  const server = new ModelServer([
+    [
+      call(
+        'default_delegate',
+        { input: 'Child task.' },
+        { callId: 'default-child-call' },
+      ),
+    ],
+    [call('child_effect', {}, { callId: 'compaction-child-effect' })],
+    [message('Child recovered.')],
+    [message('Parent completed.')],
+  ]);
+  await using provider = await providerFor(server);
+  let effects = 0;
+  const child = new Agent({
+    provider,
+    model: 'fixture-default-child',
+    instructions: 'Request approval then finish.',
+    tools: [
+      tool({
+        name: 'child_effect',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute() {
+          effects++;
+          return 'Approved.';
+        },
+      }),
+    ],
+  });
+  const root = new Agent({
+    provider,
+    model: 'fixture-default-parent',
+    instructions: 'Delegate to the child.',
+    tools: [child.asTool({ toolName: 'default_delegate' })],
+  });
+  await using session = await root.session({
+    environment: sourceFor(undefined),
+  });
+  const turn = await session.submit('Delegate.');
+  const original = await turn.wait({ until: 'interaction' });
+  expect('requests' in original).toBe(true);
+  const capture = session as unknown as {
+    captureConfiguredParent(beforeSeal: () => void): Promise<unknown>;
+  };
+  await expect(
+    capture.captureConfiguredParent(() => {
+      throw new Error('Injected parent checkpoint refusal');
+    }),
+  ).rejects.toThrow('Injected parent checkpoint refusal');
+  expect(effects).toBe(0);
+  const pending = await turn.wait({ until: 'interaction' });
+  if (!('requests' in pending))
+    throw new Error('Expected recovered child approval');
+  const request = pending.requests.find(isFunctionApprovalRequest);
+  if (!request) throw new Error('Expected recovered child approval');
+  expect(request.callId).toBe('compaction-child-effect');
+  await session.respond(request.approve());
+  expect((await turn.wait()).finalOutput).toBe('Parent completed.');
+  expect(effects).toBe(1);
+  const requests = server.requests.filter(
+    ({ model }) => model === 'fixture-default-child',
+  );
+  expect(requests.map(({ context_management }) => context_management)).toEqual([
+    [{ type: 'compaction', compact_threshold: 240000 }],
+    [{ type: 'compaction', compact_threshold: 240000 }],
+  ]);
+  server.assertExhausted();
+}, 20_000);

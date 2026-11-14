@@ -1,6 +1,7 @@
 import type { JsonObject } from './binding';
-import type { EnvironmentAcquisition } from './environment-source';
 import type { NativeProvider } from './provider';
+
+type CompactionOwner = { readonly defaultProviderCompaction?: boolean };
 
 // Only the captured configured-child opening can attach this presentation receipt.
 const configuredChildDefaults = new WeakMap<object, boolean>();
@@ -24,7 +25,7 @@ export function consumeConfiguredChildSandboxDefault(
 
 /** Opaque model producers retain explicit request-control opt-in. */
 export function sandboxDefaultCompaction(
-  owner: EnvironmentAcquisition | undefined,
+  owner: CompactionOwner | undefined,
   provider: NativeProvider,
   inherited?: boolean,
 ): boolean | undefined {
@@ -34,7 +35,7 @@ export function sandboxDefaultCompaction(
 
 export function sandboxDefaultModel(
   model: JsonObject,
-  owner: EnvironmentAcquisition | undefined,
+  owner: CompactionOwner | undefined,
   provider: NativeProvider,
   inherited?: boolean,
 ): JsonObject {
