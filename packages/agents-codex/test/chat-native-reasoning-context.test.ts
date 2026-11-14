@@ -5,7 +5,7 @@ import {
   type ModelRequest,
 } from '../src/runtime/models';
 
-function request(reasoning: Record<string, unknown>): ModelRequest {
+function request(reasoning: ModelRequest['body']): ModelRequest {
   return {
     body: { model: 'native-model', input: [], reasoning },
     context: undefined,
