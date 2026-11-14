@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { beforeAll, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   AiSdkModel,
   runWorkerText,
@@ -19,18 +20,14 @@ beforeAll(async () => {
   control = new WebAssembly.Module(bytes);
 });
 
-function lookup(execute = vi.fn(({ value }) => 'observed:' + value)) {
+function lookup() {
+  const execute = vi.fn(({ value }: { value: string }) => 'observed:' + value);
   return {
     execute,
     declaration: standaloneTool({
       name: 'lookup',
       description: 'Read a local value.',
-      parameters: {
-        type: 'object',
-        properties: { value: { type: 'string' } },
-        required: ['value'],
-        additionalProperties: false,
-      },
+      parameters: z.object({ value: z.string() }),
       execute,
     }),
   };
