@@ -1391,7 +1391,15 @@
     {
       "path": "sdk-portable-text-effective-approval.patch",
       "sha256": "127237154a128262efcbe1bc08c5327bff8a1404b717c89171bb32a58f1b0c13"
+    },
+    {
+      "path": "sdk-portable-text-provider-metadata.patch",
+      "sha256": "58fb1615539af94c3750262e64c14a65d42f3693f035ce8b9548be913a013e53"
+    },
+    {
+      "path": "sdk-portable-text-output-contract.patch",
+      "sha256": "022614abb190179f95551aa31b9856048ac6e3a59f23a43235db49590f9b2d8b"
     }
   ],
-  "result_tree": "79518b8210518bceae14792d54df5d5ef24cbf96"
+  "result_tree": "00071832ceb7d637b9b927a40d6c22ff02e38df7"
 }

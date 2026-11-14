@@ -1,7 +1,17 @@
 import { isDeepStrictEqual } from 'node:util';
+import {
+  bindModelProviderMetadata,
+  captureModelProviderStreamFrame,
+} from './model-provider-metadata';
 import { encode, type JsonObject, type JsonValue } from './binding';
 import type { SessionStore } from './custom-thread-store';
 import { captureGuardrailResult, type GuardrailResult } from './guardrails';
+import {
+  assertOutputRepairSupported,
+  prepareOutput,
+  type OutputSpec,
+  type PreparedOutput,
+} from './output';
 import {
   captureModelResponse,
   isRawModelPart,
@@ -21,6 +31,8 @@ import {
 } from './tools';
 
 export { AiSdkModel, ResponsesModel } from './models';
+export { OutputValidationError } from './output';
+export type { OutputSpec } from './output';
 export { standaloneTool } from './tools';
 export type { NativeModel } from './models';
 export type { SessionStore } from './custom-thread-store';
@@ -40,6 +52,7 @@ type Effect =
       type: 'model';
       request_id: number;
       body: JsonObject;
+      provider_metadata?: JsonValue;
       profile: string | null;
     }
   | {
@@ -160,16 +173,20 @@ export interface WorkerApprovalDecision {
   readonly approved: boolean;
 }
 
+export interface WorkerPendingApproval {
+  type: 'approval';
+  callId: string;
+  revision: number;
+  name: string;
+  profile: string | null;
+  arguments: JsonObject;
+}
+
 export type WorkerTextResult =
-  | { type: 'completed'; text: string }
-  | {
-      type: 'approval';
-      callId: string;
-      revision: number;
-      name: string;
-      profile: string | null;
-      arguments: JsonObject;
-    };
+  { type: 'completed'; text: string } | WorkerPendingApproval;
+
+export type WorkerOutputResult<Output> =
+  { type: 'completed'; text: string; output: Output } | WorkerPendingApproval;
 
 export interface WorkerAgentProfile<Context> {
   model: string;
@@ -235,12 +252,14 @@ async function completeModel(
   provider: NativeModel,
   request: ModelRequest,
   observe: WorkerTextOptions<unknown>['observe'],
-): Promise<ModelResponse> {
-  if (!observe || !provider.stream) return provider.complete(request);
+): Promise<JsonObject> {
+  if (!observe || !provider.stream)
+    return captureModelResponse(await provider.complete(request));
   const stream = await provider.stream(request);
   let completion: ModelResponse | undefined;
   let responseId: string | undefined;
   const outputItems = new Map<number, JsonValue>();
+  const providerMetadata: JsonObject[] = [];
   let bytes = 0;
   const encoder = new TextEncoder();
   await pumpModelStream(stream, {
@@ -253,6 +272,21 @@ async function completeModel(
       if (completion)
         throw new Error('Portable model stream emitted data after completion');
       if (isRawModelPart(original)) return true;
+      if (Object.hasOwn(original, '__sdk_model_provider_metadata'))
+        throw new Error(
+          'Portable model stream cannot supply private metadata envelopes',
+        );
+      const captured = captureModelProviderStreamFrame(encoded, original);
+      if (captured !== encoded) {
+        bytes +=
+          encoder.encode(captured).length - encoder.encode(encoded).length;
+        if (bytes > frameLimit || providerMetadata.length >= 4096)
+          throw new RangeError('Portable model metadata exceeds capacity');
+        providerMetadata.push(
+          (JSON.parse(captured) as JsonObject)
+            .__sdk_model_provider_metadata as JsonObject,
+        );
+      }
       const event = JSON.parse(encoded) as JsonObject;
       if (
         event.type === 'response.failed' ||
@@ -286,7 +320,7 @@ async function completeModel(
           throw new Error(
             'Portable model stream emitted an invalid output item',
           );
-        outputItems.set(index, event.item);
+        outputItems.set(index, structuredClone(event.item));
       } else if (event.type === 'response.completed') {
         const response = event.response;
         if (
@@ -319,7 +353,9 @@ async function completeModel(
   });
   if (!completion)
     throw new Error('Portable model stream ended without completion');
-  return completion;
+  const captured = captureModelResponse(completion);
+  if (providerMetadata.length) captured.provider_metadata = providerMetadata;
+  return captured;
 }
 
 function wireToolOutput(value: unknown): string {
@@ -550,6 +586,39 @@ function wireTools<Context>(
   );
 }
 
+function workerOutputRequest(
+  body: JsonObject,
+  output?: PreparedOutput,
+): JsonObject {
+  if (output?.schema) {
+    return {
+      ...body,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'codex_output_schema',
+          strict: output.strict ?? true,
+          schema: structuredClone(output.schema),
+        },
+      },
+    };
+  }
+  if (output?.prompt) {
+    return {
+      ...body,
+      input: [
+        ...(body.input as JsonValue[]),
+        {
+          type: 'message',
+          role: 'developer',
+          content: [{ type: 'input_text', text: output.prompt }],
+        },
+      ],
+    };
+  }
+  return body;
+}
+
 /** Run a text turn and its local functions inside a Worker isolate. */
 export async function runWorkerText<Context = undefined>(
   input: string,
@@ -560,12 +629,25 @@ export async function runWorkerText<Context = undefined>(
   throw new Error('Use runWorkerTurn to pause for tool approval');
 }
 
+/** Run or resume a turn with a captured native output type and tool approvals. */
+export function runWorkerTurn<Output, Context = undefined>(
+  input: string | WorkerApprovalDecision,
+  options: WorkerTextOptions<Context> & { outputType: OutputSpec<Output> },
+): Promise<WorkerOutputResult<Output>>;
 /** Run or resume a text turn with an explicit result for a pending tool approval. */
-export async function runWorkerTurn<Context = undefined>(
+export function runWorkerTurn<Context = undefined>(
   input: string | WorkerApprovalDecision,
   options: WorkerTextOptions<Context>,
-): Promise<WorkerTextResult> {
-  return runWorkerTextTurn(input, options, true);
+): Promise<WorkerTextResult>;
+export async function runWorkerTurn<Context>(
+  input: string | WorkerApprovalDecision,
+  options: WorkerTextOptions<Context> & { outputType?: OutputSpec<unknown> },
+): Promise<WorkerTextResult | WorkerOutputResult<unknown>> {
+  const output = options.outputType
+    ? prepareOutput(options.outputType)
+    : undefined;
+  if (output) assertOutputRepairSupported(output);
+  return runWorkerTextTurn(input, options, true, output);
 }
 
 async function runWorkerTextTurn<Context>(
@@ -588,7 +670,8 @@ async function runWorkerTextTurn<Context>(
     toolGuardrails,
   }: WorkerTextOptions<Context>,
   allowPause: boolean,
-): Promise<WorkerTextResult> {
+  output?: PreparedOutput,
+): Promise<WorkerTextResult | WorkerOutputResult<unknown>> {
   signal.throwIfAborted();
   if (observe !== undefined && typeof observe !== 'function')
     throw new TypeError('observe must be a callback');
@@ -720,7 +803,7 @@ async function runWorkerTextTurn<Context>(
     return response.value;
   };
   type StoredResult = {
-    result: WorkerTextResult;
+    result: WorkerTextResult | WorkerOutputResult<unknown>;
     snapshot: { revision: number };
   };
   type Commit = (snapshot: StoredResult['snapshot']) => Promise<void>;
@@ -751,13 +834,15 @@ async function runWorkerTextTurn<Context>(
           }
         : null,
       max_turns: maxTurns,
+      ...(output ? { output_contract: output.identity.fingerprint } : {}),
       snapshot,
     });
     let initialInput = typeof input === 'string' ? input : undefined;
     while (effect) {
       signal.throwIfAborted();
       switch (effect.type) {
-        case 'done':
+        case 'done': {
+          const typed = output?.parse ? output.parse(effect.text) : effect.text;
           await checkGuards(
             'output',
             [
@@ -769,9 +854,14 @@ async function runWorkerTextTurn<Context>(
             signal,
           );
           return {
-            result: { type: 'completed', text: effect.text },
+            result: {
+              type: 'completed',
+              text: effect.text,
+              ...(output ? { output: typed } : {}),
+            },
             snapshot: effect.snapshot,
           };
+        }
         case 'checkpoint':
           throw new Error('Unexpected Worker checkpoint');
         case 'model': {
@@ -782,8 +872,9 @@ async function runWorkerTextTurn<Context>(
               runOwner: owner,
               context,
               signal: modelSignal,
-              body: requestEffect.body,
+              body: workerOutputRequest(requestEffect.body, output),
             };
+            bindModelProviderMetadata(request, requestEffect.provider_metadata);
             const modelProvider =
               currentProfile(requestEffect.profile)?.provider ?? provider;
             usedProviders.add(modelProvider);
@@ -798,7 +889,8 @@ async function runWorkerTextTurn<Context>(
           effect = control.apply({
             type: 'model',
             request_id: effect.request_id,
-            output: captureModelResponse(response).output,
+            output: response.output,
+            provider_metadata: response.provider_metadata ?? [],
           });
           break;
         }

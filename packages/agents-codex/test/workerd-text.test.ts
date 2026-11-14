@@ -1345,3 +1345,233 @@ portableTest.each([true, false])(
     );
   },
 );
+
+portableTest.each([false, true])(
+  'validates native Worker structured output through tool continuation (%s strict)',
+  async (strict) => {
+    const tool = lookup();
+    const bodies: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        bodies.push(body);
+        return {
+          output:
+            bodies.length === 1
+              ? [call]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [
+                      { type: 'output_text', text: '{"response":["native"]}' },
+                    ],
+                  },
+                ],
+        };
+      },
+    };
+    const result = await runWorkerTurn('Run tool.', {
+      control,
+      provider,
+      model: 'root',
+      instructions: 'Run lookup.',
+      tools: [tool.declaration],
+      outputType: { mode: 'native', schema: z.array(z.string()), strict },
+    });
+    expect(result).toEqual({
+      type: 'completed',
+      text: '{"response":["native"]}',
+      output: ['native'],
+    });
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies)
+      expect(body.text).toEqual({
+        format: expect.objectContaining({
+          type: 'json_schema',
+          name: 'codex_output_schema',
+          strict,
+          schema: expect.objectContaining({
+            properties: expect.objectContaining({
+              response: expect.objectContaining({ type: 'array' }),
+            }),
+          }),
+        }),
+      });
+    expect(tool.execute).toHaveBeenCalledOnce();
+  },
+);
+
+portableTest(
+  'keeps rejected Worker output out of the durable snapshot',
+  async () => {
+    const store = {
+      acquire: vi.fn(async () => 'fence'),
+      read: vi.fn(async () => null),
+      commit: vi.fn(async () => {}),
+      release: vi.fn(async () => {}),
+    };
+    const requests: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: '{"score":"invalid"}' }],
+            },
+          ],
+        };
+      },
+    };
+    await expect(
+      runWorkerTurn('Return a score.', {
+        control,
+        provider,
+        model: 'root',
+        instructions: 'Grade.',
+        session: { id: 'record', store },
+        outputType: {
+          mode: 'prompted',
+          schema: z.object({ score: z.number() }),
+          maxRetries: 0,
+        },
+      }),
+    ).rejects.toMatchObject({ name: 'OutputValidationError' });
+    expect(requests[0].text).toBeUndefined();
+    expect(requests[0].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'developer',
+          content: [
+            expect.objectContaining({
+              text: expect.stringContaining('Return only JSON'),
+            }),
+          ],
+        }),
+      ]),
+    );
+    expect(store.commit).not.toHaveBeenCalled();
+    expect(store.release).toHaveBeenCalledOnce();
+  },
+);
+
+portableTest(
+  'binds a cold approval to its original Worker output contract',
+  async () => {
+    let stored: string | null = null;
+    const store = {
+      async acquire() {
+        return 'fence';
+      },
+      async read() {
+        return stored;
+      },
+      async release() {},
+      async commit(
+        _id: string,
+        _fence: string,
+        _writeId: string,
+        _revision: number,
+        state: string,
+      ) {
+        stored = state;
+      },
+    };
+    const tool = lookup();
+    let requests = 0;
+    const provider: NativeModel = {
+      async complete() {
+        return {
+          output:
+            ++requests === 1
+              ? [call]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: '{"score":3}' }],
+                  },
+                ],
+        };
+      },
+    };
+    const options = {
+      control,
+      provider,
+      model: 'root',
+      instructions: 'Run lookup.',
+      tools: [tool.declaration],
+      session: { id: 'scored', store },
+      approve: { lookup: () => null },
+    };
+    const schema = z.object({ score: z.number() });
+    const pause = await runWorkerTurn('Do it.', {
+      ...options,
+      outputType: schema,
+    });
+    if (pause.type !== 'approval')
+      throw Error('Expected a pending tool approval');
+    const { callId, revision } = pause;
+    const decision = { callId, revision, approved: true };
+    await expect(runWorkerTurn(decision, options)).rejects.toThrow(
+      'original output contract',
+    );
+    await expect(
+      runWorkerTurn(decision, {
+        ...options,
+        outputType: z.object({ score: z.string() }),
+      }),
+    ).rejects.toThrow('original output contract');
+    expect(tool.execute).not.toHaveBeenCalled();
+    expect(requests).toBe(1);
+    await expect(
+      runWorkerTurn(decision, { ...options, outputType: schema }),
+    ).resolves.toEqual({
+      type: 'completed',
+      text: '{"score":3}',
+      output: { score: 3 },
+    });
+    expect(tool.execute).toHaveBeenCalledOnce();
+    expect(requests).toBe(2);
+  },
+);
+
+portableTest(
+  'projects typed Worker output through the AI SDK adapter',
+  async () => {
+    const provider = new AiSdkModel({
+      specificationVersion: 'v3',
+      provider: 'fixture',
+      modelId: 'fixture',
+      async doGenerate(options: { responseFormat: unknown }) {
+        expect(options.responseFormat).toEqual(
+          expect.objectContaining({
+            type: 'json',
+            name: 'codex_output_schema',
+            schema: expect.objectContaining({ required: ['score'] }),
+          }),
+        );
+        return {
+          content: [{ type: 'text', text: '{"score":7}' }],
+          finishReason: { unified: 'stop' },
+          usage: { inputTokens: { total: 1 }, outputTokens: { total: 1 } },
+          warnings: [],
+        };
+      },
+    } as unknown as AiSdkLanguageModel);
+    const result = await runWorkerTurn('Score it.', {
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Score.',
+      outputType: z.object({ score: z.number() }),
+    });
+    expect(result).toEqual({
+      type: 'completed',
+      text: '{"score":7}',
+      output: { score: 7 },
+    });
+  },
+);

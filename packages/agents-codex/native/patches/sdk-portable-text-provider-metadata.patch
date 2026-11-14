@@ -1,0 +1,215 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -22,6 +22,8 @@
+     Model {
+         request_id: u32,
+         output: Vec<Value>,
++        #[serde(default)]
++        provider_metadata: Vec<OutputMetadata>,
+     },
+     Checkpoint {
+         request_id: u32,
+@@ -48,10 +50,42 @@
+     version: u32,
+     revision: u32,
+     history: Vec<Value>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    provider_metadata: Vec<HistoryMetadata>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     active_profile: Option<String>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     approval: Option<ApprovalCheckpoint>,
++}
++
++#[derive(Clone, Deserialize, Serialize)]
++#[serde(deny_unknown_fields)]
++struct ProviderMetadata {
++    provider: String,
++    model: String,
++    value: Value,
++}
++
++#[derive(Deserialize)]
++#[serde(deny_unknown_fields)]
++struct OutputMetadata {
++    output_index: usize,
++    metadata: ProviderMetadata,
++}
++
++#[derive(Clone, Deserialize, Serialize)]
++#[serde(deny_unknown_fields)]
++struct HistoryMetadata {
++    history_index: usize,
++    item: Value,
++    metadata: ProviderMetadata,
++}
++
++#[derive(Serialize)]
++struct InputMetadata {
++    input_index: usize,
++    item: Value,
++    metadata: ProviderMetadata,
+ }
+ 
+ #[derive(Deserialize)]
+@@ -111,6 +145,8 @@
+     Model {
+         request_id: u32,
+         body: Value,
++        #[serde(skip_serializing_if = "Vec::is_empty")]
++        provider_metadata: Vec<InputMetadata>,
+         profile: Option<String>,
+     },
+     Tools {
+@@ -190,6 +226,7 @@
+     profiles: Option<Profiles>,
+     profile: Option<String>,
+     history: Vec<Value>,
++    provider_metadata: Vec<HistoryMetadata>,
+     seen_calls: HashSet<String>,
+ }
+ 
+@@ -206,6 +243,7 @@
+             profiles: None,
+             profile: None,
+             history: Vec::new(),
++            provider_metadata: Vec::new(),
+             seen_calls: HashSet::new(),
+         }
+     }
+@@ -295,10 +333,12 @@
+                 self.history.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text":input}]}));
+                 self.next_request().map(Some)
+             }
+-            Command::Model { request_id, output }
+-                if request_id == self.request_id && matches!(self.phase, Phase::Model) =>
+-            {
+-                self.admit_response(output).map(Some)
++            Command::Model {
++                request_id,
++                output,
++                provider_metadata,
++            } if request_id == self.request_id && matches!(self.phase, Phase::Model) => {
++                self.admit_response(output, provider_metadata).map(Some)
+             }
+             Command::Checkpoint {
+                 request_id,
+@@ -446,6 +486,7 @@
+                 .checked_add(1)
+                 .ok_or("Portable session revision exhausted")?,
+             history: Vec::new(),
++            provider_metadata: self.provider_metadata.clone(),
+             active_profile: self.profile.clone(),
+             approval,
+         })
+@@ -613,6 +654,22 @@
+             }
+             self.profile = Some(profile);
+         }
++        if snapshot.provider_metadata.len() > 4096 {
++            return Err("Portable provider metadata exceeds capacity");
++        }
++        let mut metadata_indexes = HashSet::new();
++        for entry in &snapshot.provider_metadata {
++            if !metadata_indexes.insert(entry.history_index)
++                || snapshot.history.get(entry.history_index) != Some(&entry.item)
++                || !Self::valid_provider_metadata(&entry.metadata)
++                || !(entry.item["type"] == "reasoning"
++                    || entry.item["type"] == "function_call"
++                    || (entry.item["type"] == "message" && entry.item["role"] == "assistant"))
++            {
++                return Err("Portable provider metadata requires its unchanged history occurrence");
++            }
++        }
++        self.provider_metadata = snapshot.provider_metadata;
+         self.revision = snapshot.revision;
+         self.history = snapshot.history;
+         Ok(snapshot.approval)
+@@ -650,7 +707,18 @@
+         } else {
+             self.instructions.as_ref()
+         };
++        let metadata_offset = usize::from(instructions.is_some());
++        let provider_metadata = self
++            .provider_metadata
++            .iter()
++            .map(|entry| InputMetadata {
++                input_index: metadata_offset + entry.history_index,
++                item: entry.item.clone(),
++                metadata: entry.metadata.clone(),
++            })
++            .collect();
+         Ok(Effect::Model {
++            provider_metadata,
+             request_id: self.request_id,
+             profile: self.profile.clone(),
+             body: json!({
+@@ -662,7 +730,40 @@
+         })
+     }
+ 
+-    fn admit_response(&mut self, output: Vec<Value>) -> Result<Effect, &'static str> {
++    fn valid_provider_metadata(metadata: &ProviderMetadata) -> bool {
++        !metadata.provider.trim().is_empty()
++            && !metadata.model.trim().is_empty()
++            && metadata.value.is_object()
++    }
++
++    fn append_response(&mut self, output: Vec<Value>, metadata: Vec<OutputMetadata>) {
++        let offset = self.history.len();
++        self.provider_metadata
++            .extend(metadata.into_iter().map(|entry| HistoryMetadata {
++                history_index: offset + entry.output_index,
++                item: output[entry.output_index].clone(),
++                metadata: entry.metadata,
++            }));
++        self.history.extend(output);
++    }
++
++    fn admit_response(
++        &mut self,
++        output: Vec<Value>,
++        provider_metadata: Vec<OutputMetadata>,
++    ) -> Result<Effect, &'static str> {
++        if self.provider_metadata.len() + provider_metadata.len() > 4096 {
++            return Err("Portable provider metadata exceeds capacity");
++        }
++        let mut metadata_indexes = HashSet::new();
++        for entry in &provider_metadata {
++            if entry.output_index >= output.len()
++                || !metadata_indexes.insert(entry.output_index)
++                || !Self::valid_provider_metadata(&entry.metadata)
++            {
++                return Err("Portable provider metadata requires exact output occurrences");
++            }
++        }
+         let mut calls = Vec::new();
+         let mut transfer = None;
+         let mut text = String::new();
+@@ -740,7 +841,7 @@
+         continuation.require_follow_up(!calls.is_empty() || transfer.is_some());
+         if !continuation.complete(None) {
+             self.phase = Phase::Finished;
+-            self.history.extend(output);
++            self.append_response(output, provider_metadata);
+             let mut snapshot = self.snapshot(None)?;
+             snapshot.history = std::mem::take(&mut self.history);
+             return Ok(Effect::Done {
+@@ -756,14 +857,14 @@
+             if !calls.is_empty() {
+                 return Err("Portable handoffs require a dedicated response");
+             }
+-            self.history.extend(output);
++            self.append_response(output, provider_metadata);
+             self.history.push(
+                 json!({"type":"function_call_output","call_id":call_id,"output":"Transferred."}),
+             );
+             self.profile = Some(target);
+             return self.next_request();
+         }
+-        self.history.extend(output);
++        self.append_response(output, provider_metadata);
+         let mut batch = Batch::new(&calls);
+         let (remaining, automatic) = calls.into_iter().partition(|call| call.requires_approval);
+         batch.remaining = remaining;
