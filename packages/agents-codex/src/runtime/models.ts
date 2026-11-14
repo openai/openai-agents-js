@@ -1680,6 +1680,24 @@ function redactAiSdkThoughtSignatures(event: JsonObject): void {
   if (Object.keys(metadata).length === 0) delete event.providerMetadata;
 }
 
+// Opted-in raw AI SDK chunks can contain the provider's wire message rather
+// than the normalized part metadata. Keep signed continuation data private.
+function redactRawAiSdkThoughtSignatures(value: unknown): void {
+  const pending = [value];
+  while (pending.length) {
+    const current = pending.pop();
+    if (current === null || typeof current !== 'object') continue;
+    if (Array.isArray(current)) {
+      for (const entry of current) pending.push(entry);
+    } else {
+      const row = current as JsonObject;
+      delete row.thoughtSignature;
+      delete row.thought_signature;
+      for (const entry of Object.values(row)) pending.push(entry);
+    }
+  }
+}
+
 function hasAiSdkThoughtSignature(metadata: JsonObject | undefined): boolean {
   return googleThoughtSignatureOptions.some(
     (provider) =>
@@ -2385,7 +2403,11 @@ export class AiSdkModel implements NativeModel {
   async *#streamResponse(request: ModelRequest): AsyncIterable<JsonObject> {
     const { options, tools, applyPatchWire } = this.#parameters(request);
     request.signal.throwIfAborted();
-    const { stream } = await this.model.doStream!(options);
+    const observeRaw = hasRawProviderEvents(request);
+    const { stream } = await this.model.doStream!({
+      ...options,
+      ...(observeRaw ? { includeRawChunks: true } : {}),
+    });
     const reader = stream.getReader();
     let cancellation: Promise<void> | undefined;
     const cancel = () =>
@@ -2420,20 +2442,21 @@ export class AiSdkModel implements NativeModel {
         request.signal.throwIfAborted();
         if (next.done) break;
         const part = next.value;
+        if (part.type === 'raw' && !observeRaw) continue;
         const encoded = JSON.stringify(part);
         bytes += Buffer.byteLength(encoded);
         if (bytes > maxChatStreamBytes)
           throw new TypeError('AiSdkModel stream exceeded its buffer limit');
-        if (
-          (request as ModelRequest & { [rawProviderRequest]?: boolean })[
-            rawProviderRequest
-          ]
-        ) {
+        if (observeRaw) {
           const original = JSON.parse(encoded) as JsonObject;
           redactAiSdkThoughtSignatures(original);
+          if (original.type === 'raw')
+            redactRawAiSdkThoughtSignatures(original.rawValue);
           rawModelParts.add(original);
           yield original;
         }
+        // The v0 adapter observes these parts without generating agent items.
+        if (part.type === 'raw' || part.type === 'source') continue;
         if (part.type === 'error') throw part.error;
         if (finished && part.type !== 'response-metadata')
           throw new TypeError('AiSdkModel stream continued after finish');
@@ -2978,6 +3001,7 @@ export class AiSdkModel implements NativeModel {
       }
     };
     for (const part of result.content ?? []) {
+      if (part.type === 'source') continue;
       if (part.type === 'text') {
         const streamed = part[aiSdkStreamTextParts] as
           AiSdkTextPart[] | undefined;
