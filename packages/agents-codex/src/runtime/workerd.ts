@@ -45,6 +45,14 @@ type Effect =
       request_id: number;
       calls: { call_id: string; name: string; arguments: string }[];
     }
+  | {
+      type: 'approval';
+      request_id: number;
+      revision: number;
+      profile: string | null;
+      call: { call_id: string; name: string; arguments: string };
+    }
+  | { type: 'checkpoint'; snapshot: { revision: number } }
   | { type: 'done'; text: string; snapshot: { revision: number } };
 
 class TurnControl {
@@ -88,11 +96,45 @@ class TurnControl {
   }
 }
 
+export interface WorkerToolApproval<Context> {
+  readonly profile: string | null;
+  readonly callId: string;
+  readonly name: string;
+  readonly arguments: Readonly<JsonObject>;
+  readonly context: Context | undefined;
+  readonly signal: AbortSignal;
+}
+
+export interface WorkerApprovalDecision {
+  readonly callId: string;
+  readonly revision: number;
+  readonly approved: boolean;
+}
+
+export type WorkerTextResult =
+  | { type: 'completed'; text: string }
+  | {
+      type: 'approval';
+      callId: string;
+      revision: number;
+      name: string;
+      profile: string | null;
+      arguments: JsonObject;
+    };
+
 export interface WorkerAgentProfile<Context> {
   model: string;
   instructions: string;
   provider?: NativeModel;
   tools?: readonly StandaloneFunctionTool<Context, unknown>[];
+  approve?: Readonly<
+    Record<
+      string,
+      (
+        call: WorkerToolApproval<Context>,
+      ) => boolean | null | Promise<boolean | null>
+    >
+  >;
   /** Current function names and their captured destination profile IDs. */
   handoffs?: Readonly<Record<string, string>>;
 }
@@ -107,6 +149,15 @@ export interface WorkerTextOptions<Context> {
   tools?: readonly StandaloneFunctionTool<Context, unknown>[];
   context?: Context;
   signal?: AbortSignal;
+  /** Decide before dispatching. Returning null pauses a turn backed by a session store. */
+  approve?: Readonly<
+    Record<
+      string,
+      (
+        call: WorkerToolApproval<Context>,
+      ) => boolean | null | Promise<boolean | null>
+    >
+  >;
   maxTurns?: number;
   /** The store must grant an exclusive writer lease and atomically commit the revision. */
   session?: { id: string; store: SessionStore };
@@ -281,8 +332,23 @@ function captureTools<Context>(
   return toolsByName;
 }
 
+function captureApprovals<Context>(
+  tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
+  policies: WorkerTextOptions<Context>['approve'],
+) {
+  const approvals = new Map(Object.entries(policies ?? {}));
+  for (const [name, callback] of approvals) {
+    if (!tools.has(name) || typeof callback !== 'function')
+      throw new TypeError(
+        'Worker approval requires a current tool and a callback',
+      );
+  }
+  return approvals;
+}
+
 function wireTools<Context>(
   tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
+  approvals: ReadonlyMap<string, unknown>,
 ) {
   return [...tools.values()].map(
     ({ name, description, parameters, strict }) => ({
@@ -290,6 +356,7 @@ function wireTools<Context>(
       description,
       parameters,
       strict: strict ?? false,
+      requires_approval: approvals.has(name),
     }),
   );
 }
@@ -297,6 +364,23 @@ function wireTools<Context>(
 /** Run a text turn and its local functions inside a Worker isolate. */
 export async function runWorkerText<Context = undefined>(
   input: string,
+  options: WorkerTextOptions<Context>,
+): Promise<string> {
+  const result = await runWorkerTextTurn(input, options, false);
+  if (result.type === 'completed') return result.text;
+  throw new Error('Use runWorkerTurn to pause for tool approval');
+}
+
+/** Run or resume a text turn with an explicit result for a pending tool approval. */
+export async function runWorkerTurn<Context = undefined>(
+  input: string | WorkerApprovalDecision,
+  options: WorkerTextOptions<Context>,
+): Promise<WorkerTextResult> {
+  return runWorkerTextTurn(input, options, true);
+}
+
+async function runWorkerTextTurn<Context>(
+  input: string | WorkerApprovalDecision,
   {
     control: module,
     provider,
@@ -309,25 +393,47 @@ export async function runWorkerText<Context = undefined>(
     observe,
     session,
     agents,
+    approve,
   }: WorkerTextOptions<Context>,
-): Promise<string> {
+  allowPause: boolean,
+): Promise<WorkerTextResult> {
   signal.throwIfAborted();
   if (observe !== undefined && typeof observe !== 'function')
     throw new TypeError('observe must be a callback');
-  if (typeof input !== 'string' || typeof instructions !== 'string')
-    throw new TypeError('Portable text requires string input and instructions');
+  if (typeof instructions !== 'string')
+    throw new TypeError('Portable text requires string instructions');
+  const decision = typeof input === 'string' ? undefined : input;
+  if (
+    typeof input !== 'string' &&
+    (!session ||
+      !decision ||
+      typeof decision.callId !== 'string' ||
+      !Number.isSafeInteger(decision.revision) ||
+      decision.revision < 1 ||
+      typeof decision.approved !== 'boolean')
+  ) {
+    throw new TypeError(
+      'Worker approval requires a stored session and a valid decision',
+    );
+  }
+  let pendingDecision = decision;
   const toolsByName = captureTools(tools);
+  const approvals = captureApprovals(toolsByName, approve);
   const profiles = new Map(
-    Object.entries(agents?.profiles ?? {}).map(([id, profile]) => [
-      id,
-      {
-        provider: profile.provider ?? provider,
-        model: profile.model,
-        instructions: profile.instructions,
-        tools: captureTools(profile.tools ?? []),
-        handoffs: Object.fromEntries(Object.entries(profile.handoffs ?? {})),
-      },
-    ]),
+    Object.entries(agents?.profiles ?? {}).map(([id, profile]) => {
+      const tools = captureTools(profile.tools ?? []);
+      return [
+        id,
+        {
+          provider: profile.provider ?? provider,
+          model: profile.model,
+          instructions: profile.instructions,
+          tools,
+          approvals: captureApprovals(tools, profile.approve),
+          handoffs: Object.fromEntries(Object.entries(profile.handoffs ?? {})),
+        },
+      ];
+    }),
   );
   const currentProfile = (id: string | null) => {
     if (id === null) return undefined;
@@ -343,15 +449,21 @@ export async function runWorkerText<Context = undefined>(
     turnId: crypto.randomUUID(),
   };
   const usedProviders = new Set<NativeModel>();
+  type StoredResult = {
+    result: WorkerTextResult;
+    snapshot: { revision: number };
+  };
+  type Commit = (snapshot: StoredResult['snapshot']) => Promise<void>;
   const execute = async (
     snapshot: JsonValue,
-  ): Promise<Extract<Effect, { type: 'done' }>> => {
+    commit?: Commit,
+  ): Promise<StoredResult> => {
     let effect = control.apply({
       type: 'start',
       model,
       instructions,
-      input,
-      tools: wireTools(toolsByName),
+      input: typeof input === 'string' ? input : null,
+      tools: wireTools(toolsByName, approvals),
       profiles: agents
         ? {
             root: agents.root,
@@ -361,7 +473,7 @@ export async function runWorkerText<Context = undefined>(
                 {
                   model: profile.model,
                   instructions: profile.instructions,
-                  tools: wireTools(profile.tools),
+                  tools: wireTools(profile.tools, profile.approvals),
                   handoffs: profile.handoffs,
                 },
               ]),
@@ -375,7 +487,12 @@ export async function runWorkerText<Context = undefined>(
       signal.throwIfAborted();
       switch (effect.type) {
         case 'done':
-          return effect;
+          return {
+            result: { type: 'completed', text: effect.text },
+            snapshot: effect.snapshot,
+          };
+        case 'checkpoint':
+          throw new Error('Unexpected Worker checkpoint');
         case 'model': {
           const request: ModelRequest = {
             ...owner,
@@ -397,6 +514,85 @@ export async function runWorkerText<Context = undefined>(
             type: 'model',
             request_id: effect.request_id,
             output: captureModelResponse(response).output,
+          });
+          break;
+        }
+        case 'approval': {
+          const { call, request_id, revision, profile } = effect;
+          const checkpoint = (claim: boolean) => {
+            const checkpoint = control.apply({
+              type: 'checkpoint',
+              request_id,
+              call_id: call.call_id,
+              claim,
+            });
+            if (checkpoint?.type !== 'checkpoint')
+              throw new Error('Worker approval checkpoint is unavailable');
+            return checkpoint.snapshot;
+          };
+          const policy = (currentProfile(profile)?.approvals ?? approvals).get(
+            call.name,
+          );
+          if (!policy)
+            throw new Error('Native text issued an unavailable approval');
+          const args: unknown = JSON.parse(call.arguments);
+          if (!args || typeof args !== 'object' || Array.isArray(args))
+            throw new TypeError(
+              'Worker approval requires JSON object arguments',
+            );
+          let approved: boolean | null;
+          if (pendingDecision) {
+            if (
+              !commit ||
+              pendingDecision.callId !== call.call_id ||
+              pendingDecision.revision !== revision
+            )
+              throw new Error(
+                'Worker approval decision does not match the pending call',
+              );
+            approved = pendingDecision.approved;
+            pendingDecision = undefined;
+          } else {
+            approved = await policy({
+              profile,
+              callId: call.call_id,
+              name: call.name,
+              arguments: args as JsonObject,
+              context,
+              signal,
+            });
+          }
+          signal.throwIfAborted();
+          if (approved === null) {
+            if (!allowPause || !commit)
+              throw new Error(
+                'Worker approval pauses require runWorkerTurn with a session store',
+              );
+            const snapshot = checkpoint(false);
+            return {
+              result: {
+                type: 'approval',
+                callId: call.call_id,
+                revision: snapshot.revision,
+                name: call.name,
+                profile,
+                arguments: args as JsonObject,
+              },
+              snapshot,
+            };
+          }
+          if (typeof approved !== 'boolean')
+            throw new TypeError(
+              'Worker approval must return a boolean or null',
+            );
+          // Persist the claim before dispatch, so a failed result commit cannot replay a side effect.
+          if (approved && commit) await commit(checkpoint(true));
+          signal.throwIfAborted();
+          effect = control.apply({
+            type: 'approval',
+            request_id,
+            call_id: call.call_id,
+            approved,
           });
           break;
         }
@@ -439,10 +635,10 @@ export async function runWorkerText<Context = undefined>(
     if (failures.length)
       throw new AggregateError(failures, 'Worker turn cleanup failed');
   };
-  const run = async (snapshot: JsonValue) => {
+  const run = async (snapshot: JsonValue, commit?: Commit) => {
     let result;
     try {
-      result = await execute(snapshot);
+      result = await execute(snapshot, commit);
     } catch (error) {
       try {
         await close();
@@ -457,7 +653,7 @@ export async function runWorkerText<Context = undefined>(
     await close();
     return result;
   };
-  if (!session) return (await run(null)).text;
+  if (!session) return (await run(null)).result;
   const { id, store } = session;
   const fence = await store.acquire(id);
   let releaseNeeded = true;
@@ -467,19 +663,25 @@ export async function runWorkerText<Context = undefined>(
     if (stored !== null && new TextEncoder().encode(stored).length > frameLimit)
       throw new RangeError('Portable session snapshot exceeds capacity');
     signal.throwIfAborted();
-    const result = await run(stored === null ? null : JSON.parse(stored));
-    signal.throwIfAborted();
-    await store.commit(
-      id,
-      fence,
-      owner.turnId,
-      result.snapshot.revision - 1,
-      JSON.stringify(result.snapshot),
+    const commit: Commit = async (snapshot) => {
+      signal.throwIfAborted();
+      await store.commit(
+        id,
+        fence,
+        `${owner.turnId}:${snapshot.revision}`,
+        snapshot.revision - 1,
+        JSON.stringify(snapshot),
+      );
+      await store.flush?.(id, fence);
+    };
+    const result = await run(
+      stored === null ? null : JSON.parse(stored),
+      commit,
     );
-    await store.flush?.(id, fence);
+    await commit(result.snapshot);
     releaseNeeded = false;
     await store.release(id, fence);
-    return result.text;
+    return result.result;
   } catch (error) {
     if (releaseNeeded) {
       try {

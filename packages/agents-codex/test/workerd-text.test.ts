@@ -5,6 +5,7 @@ import { z } from 'zod';
 import {
   AiSdkModel,
   runWorkerText,
+  runWorkerTurn,
   standaloneTool,
   type NativeModel,
 } from '../src/runtime/workerd';
@@ -506,5 +507,238 @@ portableTest(
     );
     expect(JSON.stringify(requests[3].input)).toContain('observed:local');
     expect(tool.execute).toHaveBeenCalledTimes(1);
+  },
+);
+
+portableTest.each([true, false])(
+  'adjudicates Worker tool admission before side effects (%s)',
+  async (approved) => {
+    const tool = lookup();
+    const asks: unknown[] = [];
+    const responses: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        responses.push(body);
+        return {
+          output:
+            responses.length === 1
+              ? [call]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    await expect(
+      runWorkerText('Ask first.', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool.declaration],
+        approve: {
+          lookup(request) {
+            expect(tool.execute).not.toHaveBeenCalled();
+            asks.push(request.arguments);
+            return approved;
+          },
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(asks).toEqual([{ value: 'local' }]);
+    expect(tool.execute).toHaveBeenCalledTimes(approved ? 1 : 0);
+    expect(JSON.stringify(responses[1].input)).toContain(
+      approved ? 'observed:local' : 'Tool call denied.',
+    );
+  },
+);
+
+portableTest.each(['approve', 'deny', 'lost result'] as const)(
+  'resumes a stored Worker approval in a fresh native instance (%s)',
+  async (outcome) => {
+    let stored: string | null = null;
+    const revisions: number[] = [];
+    const session = {
+      id: 'approval-session',
+      store: {
+        acquire: vi.fn(async () => 'fence'),
+        read: vi.fn(async () => stored),
+        async commit(
+          _id: string,
+          _fence: string,
+          _writeId: string,
+          expected: number,
+          snapshot: string,
+        ) {
+          if (outcome === 'lost result' && expected === 2)
+            throw new Error('Store unavailable');
+          expect(stored === null ? 0 : JSON.parse(stored).revision).toBe(
+            expected,
+          );
+          revisions.push(expected);
+          stored = snapshot;
+        },
+        release: vi.fn(async () => {}),
+      },
+    };
+    const asks = vi.fn(() => null);
+    const original = lookup();
+    const tool = lookup();
+    const requests: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output:
+            requests.length === 1
+              ? [call]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    const options = {
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Use lookup.',
+      session,
+    };
+    const paused = await runWorkerTurn('Ask first.', {
+      ...options,
+      tools: [original.declaration],
+      approve: { lookup: asks },
+    });
+    expect(paused).toEqual({
+      type: 'approval',
+      callId: 'test-call',
+      revision: 1,
+      name: 'lookup',
+      profile: null,
+      arguments: { value: 'local' },
+    });
+    expect(original.execute).not.toHaveBeenCalled();
+    expect(revisions).toEqual([0]);
+
+    const resume = {
+      ...options,
+      tools: [tool.declaration],
+      approve: { lookup: asks },
+    };
+    const decision = {
+      callId: 'test-call',
+      revision: 1,
+      approved: outcome !== 'deny',
+    };
+    await expect(
+      runWorkerTurn({ ...decision, revision: 2 }, resume),
+    ).rejects.toThrow('does not match the pending call');
+    expect(tool.execute).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(1);
+
+    if (outcome === 'lost result') {
+      await expect(runWorkerTurn(decision, resume)).rejects.toThrow(
+        'Store unavailable',
+      );
+      await expect(runWorkerTurn(decision, resume)).rejects.toThrow(
+        'already claimed',
+      );
+      expect(revisions).toEqual([0, 1]);
+    } else {
+      await expect(runWorkerTurn(decision, resume)).resolves.toEqual({
+        type: 'completed',
+        text: 'done',
+      });
+      await expect(runWorkerTurn(decision, resume)).rejects.toThrow(
+        'No portable approval is pending',
+      );
+      expect(revisions).toEqual(outcome === 'approve' ? [0, 1, 2] : [0, 1]);
+    }
+    expect(asks).toHaveBeenCalledTimes(1);
+    expect(tool.execute).toHaveBeenCalledTimes(outcome === 'deny' ? 0 : 1);
+    expect(requests).toHaveLength(2);
+    expect(JSON.stringify(requests[1].input)).toContain(
+      outcome === 'deny' ? 'Tool call denied.' : 'observed:local',
+    );
+    expect(session.store.release).toHaveBeenCalledTimes(4);
+  },
+);
+
+portableTest(
+  'commits a fresh inline approval before dispatch in a stored turn',
+  async () => {
+    let stored: string | null = null;
+    const sideEffects = vi.fn(() => {
+      expect(JSON.parse(stored ?? 'null')).toMatchObject({
+        revision: 1,
+        approval: { call_id: 'test-call', claimed: true },
+      });
+      return 'observed:local';
+    });
+    const provider: NativeModel = {
+      complete: vi
+        .fn()
+        .mockResolvedValueOnce({ output: [call] })
+        .mockResolvedValueOnce({
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'done' }],
+            },
+          ],
+        }),
+    };
+    const session = {
+      id: 'inline',
+      store: {
+        async acquire() {
+          return 'fence';
+        },
+        async read() {
+          return stored;
+        },
+        async commit(
+          _id: string,
+          _fence: string,
+          _writeId: string,
+          expected: number,
+          snapshot: string,
+        ) {
+          expect(stored === null ? 0 : JSON.parse(stored).revision).toBe(
+            expected,
+          );
+          stored = snapshot;
+        },
+        async release() {},
+      },
+    };
+    const tool = standaloneTool({
+      name: 'lookup',
+      parameters: z.object({ value: z.string() }),
+      execute: sideEffects,
+    });
+    await expect(
+      runWorkerText('Look up.', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool],
+        session,
+        approve: { lookup: () => true },
+      }),
+    ).resolves.toBe('done');
+    expect(sideEffects).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(stored ?? 'null')).toMatchObject({ revision: 2 });
   },
 );

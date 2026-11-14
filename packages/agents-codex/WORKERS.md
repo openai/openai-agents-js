@@ -41,4 +41,34 @@ export default {
 };
 ```
 
-Use `AiSdkModel` to borrow an AI SDK language model. Worker text runs accept a text prompt and direct standalone functions with text output. Pass an `observe` callback to receive normalized model events from a streaming adapter as they arrive. Pass `session: { id, store }` to save completed turns and reuse their history. The `SessionStore` grants an exclusive writer lease and atomically commits each revision. Keep the stored snapshots private to the application. Worker snapshots are distinct from Node session snapshots. Use the `agents` option to give each Worker Agent profile its own model, instructions, and tools. Each profile lists its named handoffs to other current profiles. The Rust controller checks the transfer against those declarations and stores the active profile with the completed turn. A handoff must be the only call in a model response. Sandbox tools and resumable approvals require additional runtime support.
+Use `AiSdkModel` to borrow an AI SDK language model. Worker text runs accept a text prompt and direct standalone functions with text output. Pass an `observe` callback to receive normalized model events from a streaming adapter as they arrive. Pass `session: { id, store }` to save completed turns and reuse their history. The `SessionStore` grants an exclusive writer lease and atomically commits each revision. Keep the stored snapshots private to the application. Worker snapshots are distinct from Node session snapshots. Use the `agents` option to give each Worker Agent profile its own model, instructions, and tools. Each profile lists its named handoffs to other current profiles. The Rust controller checks the transfer against those declarations and stores the active profile with the completed turn. A handoff must be the only call in a model response. Sandbox tools require a native Node runtime.
+
+
+## Pause a turn for approval
+
+Set `approve` to a map from tool names to callbacks. Return `true` to run a tool, or `false` to send a denial to the model without running the tool. When you use `runWorkerTurn` with a session store, you can return `null` to pause before the tool runs.
+
+```ts
+import { runWorkerTurn } from '@openai/agents/worker';
+
+const options = {
+  control,
+  provider,
+  model: 'gpt-5.5',
+  instructions: 'Use the local lookup tool.',
+  tools: [lookup],
+  session: { id: sessionId, store },
+  approve: { lookup: () => null },
+};
+
+const pending = await runWorkerTurn('Look up status.', options);
+// After authenticating the caller and checking they can decide for this session:
+if (pending.type === 'approval') {
+  const result = await runWorkerTurn(
+    { callId: pending.callId, revision: pending.revision, approved: true },
+    options,
+  );
+}
+```
+
+Pass the same session ID and tool declarations when resuming from another request. The call ID and revision tie the decision to the pending request. Each approval currently requires its own model response. The SDK records an approved call before dispatch. If the tool result cannot be saved after dispatch, the SDK refuses to repeat the call because it cannot know whether the original side effect occurred.

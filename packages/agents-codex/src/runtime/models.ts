@@ -2443,6 +2443,7 @@ export class AiSdkModel implements NativeModel {
     const pendingInputs = new Set<string>();
     const toolInputMetadata = new Map<string, JsonObject>();
     const calls = new Set<string>();
+    const unrequestedToolResults = new Set<string>();
     const reasoningBlocks = new Map<string, AiSdkStreamReasoningBlock>();
     const reasoningItems = new Map<string, AiSdkStreamReasoning>();
     let text: AiSdkStreamText | undefined;
@@ -2478,6 +2479,15 @@ export class AiSdkModel implements NativeModel {
           part.type === 'file'
         )
           continue;
+        if (
+          part.type === 'tool-result' &&
+          typeof part.toolCallId === 'string' &&
+          !calls.has(part.toolCallId) &&
+          !tools.some((tool: any) => tool.name === part.toolName)
+        ) {
+          unrequestedToolResults.add(part.toolCallId);
+          continue;
+        }
         if (part.type === 'error') throw part.error;
         if (finished && part.type !== 'response-metadata')
           throw new TypeError('AiSdkModel stream continued after finish');
@@ -2663,7 +2673,8 @@ export class AiSdkModel implements NativeModel {
             if (
               typeof part.toolCallId !== 'string' ||
               !part.toolCallId ||
-              calls.has(part.toolCallId)
+              calls.has(part.toolCallId) ||
+              unrequestedToolResults.has(part.toolCallId)
             )
               throw new TypeError(
                 'AiSdkModel stream requires unique tool call IDs',
@@ -3021,8 +3032,19 @@ export class AiSdkModel implements NativeModel {
         pendingTextParts = [];
       }
     };
+    const responseToolCalls = new Set<string>();
+    for (const part of result.content ?? []) {
+      if (part.type === 'tool-call') responseToolCalls.add(part.toolCallId);
+    }
     for (const part of result.content ?? []) {
       if (part.type === 'source' || part.type === 'file') continue;
+      if (
+        part.type === 'tool-result' &&
+        typeof part.toolCallId === 'string' &&
+        !responseToolCalls.has(part.toolCallId) &&
+        !tools.some((tool: any) => tool.name === part.toolName)
+      )
+        continue;
       if (part.type === 'text') {
         const streamed = part[aiSdkStreamTextParts] as
           AiSdkTextPart[] | undefined;
