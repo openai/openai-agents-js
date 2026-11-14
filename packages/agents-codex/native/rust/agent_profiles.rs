@@ -48,6 +48,13 @@ pub(crate) struct ProfileSpec {
     instructions: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     workspace_preparation: bool,
+    /// An explicit Source has been awaiting authenticated destination preparation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    environment_preparation: bool,
+    /// Current host preparation; never part of the portable declaration fingerprint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prepared: Option<Box<ProfileSpec>>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_instructions: Option<String>,
     tools: ToolDeclarations,
@@ -177,6 +184,10 @@ pub(crate) fn decision_handoff_selection(
 }
 
 impl ProfileSpec {
+    fn ready(&self) -> &Self {
+        self.prepared.as_deref().unwrap_or(self)
+    }
+
     fn admits_handoff(&self, name: &ToolName, target: &str) -> bool {
         let name = name.clone().with_default_namespace();
         self.handoffs.iter().any(|(declared, destination)| {
@@ -226,6 +237,8 @@ pub(crate) struct McpToolDeclaration {
 pub(crate) struct WorkspacePreparation {
     instructions: String,
     workspace_instructions: String,
+    #[serde(default)]
+    profile: Option<Value>,
 }
 #[derive(Clone)]
 struct WorkspaceAppendix(String);
@@ -239,13 +252,17 @@ pub(crate) struct ProfileProviders(
     pub(crate) BTreeMap<String, codex_core::SdkAgentProfileProvider>,
 );
 
-pub(crate) async fn bind_profile_providers(
-    startup: &mut StartThreadOptions,
-) -> Result<()> {
+pub(crate) async fn bind_profile_providers(startup: &mut StartThreadOptions) -> Result<()> {
     let opening = startup.thread_extension_init.get::<OpeningProfiles>();
-    let declared: HashSet<&str> = opening.iter().flat_map(|opening| {
-        opening.roster.iter().filter_map(|profile| profile.native_provider_id.as_deref())
-    }).collect();
+    let declared: HashSet<&str> = opening
+        .iter()
+        .flat_map(|opening| {
+            opening
+                .roster
+                .iter()
+                .filter_map(|profile| profile.native_provider_id.as_deref())
+        })
+        .collect();
     if let Some(bound) = startup.thread_extension_init.get::<ProfileProviders>() {
         ensure!(
             bound.0.len() == declared.len()
@@ -254,33 +271,55 @@ pub(crate) async fn bind_profile_providers(
         );
         return Ok(());
     }
-    let keys = startup.thread_extension_init.remove::<PendingProviderKeys>();
+    let keys = startup
+        .thread_extension_init
+        .remove::<PendingProviderKeys>();
     let count = keys.as_ref().map_or(0, |keys| keys.0.len());
-    ensure!(count == declared.len(), "Missing current handoff provider authority");
-    let Some(keys) = keys else { return Ok(()); };
+    ensure!(
+        count == declared.len(),
+        "Missing current handoff provider authority"
+    );
+    let Some(keys) = keys else {
+        return Ok(());
+    };
     ensure!(
         startup.config.sdk_provider_history.is_none(),
         "Distinct handoff providers require SDK-managed history"
     );
     let mut providers = BTreeMap::new();
     for (id, key) in &keys.0 {
-        ensure!(declared.contains(id.as_str()), "Unexpected handoff provider authority");
-        let info = startup.config.model_providers.get(id)
-            .context("Missing current handoff provider configuration")?.clone();
         ensure!(
-            info.requires_openai_auth && info.auth.is_none() && info.env_key.is_none()
-                && info.experimental_bearer_token.is_none() && info.gateway_oauth.is_none()
+            declared.contains(id.as_str()),
+            "Unexpected handoff provider authority"
+        );
+        let info = startup
+            .config
+            .model_providers
+            .get(id)
+            .context("Missing current handoff provider configuration")?
+            .clone();
+        ensure!(
+            info.requires_openai_auth
+                && info.auth.is_none()
+                && info.env_key.is_none()
+                && info.experimental_bearer_token.is_none()
+                && info.gateway_oauth.is_none()
                 && !info.is_amazon_bedrock(),
             "Distinct handoff providers require captured API-key Responses authority"
         );
         let auth_manager = crate::auth::manager(&startup.config, Some(key.clone())).await?;
-        providers.insert(id.clone(), codex_core::SdkAgentProfileProvider {
-            id: Arc::from(id.as_str()),
-            info,
-            auth_manager,
-        });
+        providers.insert(
+            id.clone(),
+            codex_core::SdkAgentProfileProvider {
+                id: Arc::from(id.as_str()),
+                info,
+                auth_manager,
+            },
+        );
     }
-    startup.thread_extension_init.insert(ProfileProviders(providers));
+    startup
+        .thread_extension_init
+        .insert(ProfileProviders(providers));
     Ok(())
 }
 
@@ -290,18 +329,35 @@ fn insert_profile_provider(
     data: &mut ExtensionDataInit,
 ) -> Result<()> {
     if let Some(id) = &descriptor.native_provider_id {
-        let providers = thread.thread_extension_data().get::<ProfileProviders>()
+        let providers = thread
+            .thread_extension_data()
+            .get::<ProfileProviders>()
             .context("Missing current handoff provider authority")?;
-        let provider = providers.0.get(id).context("Unknown current handoff provider")?;
+        let provider = providers
+            .0
+            .get(id)
+            .context("Unknown current handoff provider")?;
         data.insert(provider.clone());
     }
     Ok(())
 }
 
+type ProfilePolicy = (bool, bool, Option<Value>, Vec<String>);
+
+#[derive(Clone)]
+struct ProfilePreparationContext {
+    config: Arc<codex_core_api::Config>,
+    manager: Arc<codex_core_api::EnvironmentManager>,
+    storage: Option<std::path::PathBuf>,
+}
+
 /// Private ready executor selections supplied by the current host graph.
+#[derive(Clone)]
 pub(crate) struct ProfileEnvironments {
     profiles: BTreeMap<String, AgentProfileEnvironment>,
-    _executor_owners: Vec<codex_exec_server::ScopedEnvironment>,
+    _executor_owners: Vec<Arc<codex_exec_server::ScopedEnvironment>>,
+    policies: BTreeMap<String, ProfilePolicy>,
+    preparation: Arc<ProfilePreparationContext>,
     pub(crate) default: AgentProfileEnvironment,
     pub(crate) digest: String,
     pub(crate) strict: bool,
@@ -316,35 +372,38 @@ impl ProfileEnvironments {
     }
 }
 
-fn environment_policy(
+async fn environment_policy(
     environment: &AgentProfileEnvironment,
     config: &codex_core_api::Config,
     manager: &codex_core_api::EnvironmentManager,
 ) -> Result<Option<Value>> {
+    let Some(selection) = environment.0.as_ref() else {
+        return Ok(None);
+    };
     let local_network = crate::environment::local_session_network_policy(config);
-    environment
-        .0
-        .as_ref()
-        .map(|selection| {
-            let remote = manager
-                .get_environment(&selection.environment_id)
-                .context("selected executor was not registered")?
-                .is_remote();
-            let mut policy = codex_protocol::protocol::sdk_executor_policy_receipt(
-                selection,
-                remote,
-                local_network.as_ref(),
-            )
-            .context("Agent executor policy is unavailable")?;
-            // Native IDs are process-local routing keys. A fresh owner supplies
-            // transport, credentials and an independently qualified selection.
-            policy
-                .as_object_mut()
-                .expect("executor policy object")
-                .remove("environment_id");
-            Ok(policy)
-        })
-        .transpose()
+    let remote = manager
+        .get_environment(&selection.environment_id)
+        .context("selected executor was not registered")?
+        .is_remote();
+    let mut policy = codex_protocol::protocol::sdk_executor_policy_receipt(
+        selection,
+        remote,
+        local_network.as_ref(),
+    )
+    .context("Agent executor policy is unavailable")?;
+    // Native IDs remain process-local routing keys, never portable authority.
+    policy
+        .as_object_mut()
+        .expect("executor policy object")
+        .remove("environment_id");
+    crate::environment::bind_process_identity_receipt(
+        manager,
+        selection,
+        environment.requires_process_identity(),
+        &mut policy,
+    )
+    .await?;
+    Ok(Some(policy))
 }
 
 pub(crate) async fn prepare_environments(
@@ -354,11 +413,15 @@ pub(crate) async fn prepare_environments(
     let Some(opening) = startup.thread_extension_init.get::<OpeningProfiles>() else {
         return Ok(());
     };
-    if opening
-        .roster
-        .iter()
-        .all(|profile| profile.environment.is_none() && profile.environment_tools.is_none())
-    {
+    let requires_identity = crate::config::environment(&engine.runtime_json)?
+        .as_ref()
+        .is_some_and(crate::environment::EnvironmentOptions::requires_process_identity);
+    let inherited_identity_only = opening.roster.iter().all(|profile| {
+        profile.environment.is_none()
+            && profile.environment_tools.is_none()
+            && !profile.environment_preparation
+    });
+    if inherited_identity_only && !requires_identity {
         return Ok(());
     }
     ensure!(
@@ -366,21 +429,25 @@ pub(crate) async fn prepare_environments(
         "Agent environments require a host-owned executor configuration"
     );
     let inherited = match startup.environments.as_deref().unwrap_or_default() {
-        [] => AgentProfileEnvironment(None),
+        [] => AgentProfileEnvironment(None, false),
         [selection]
             if matches!(
                 selection.config,
                 codex_protocol::protocol::EnvironmentConfigState::Ready(_)
             ) =>
         {
-            AgentProfileEnvironment(Some(selection.clone()))
+            AgentProfileEnvironment(Some(selection.clone()), requires_identity)
         }
         _ => anyhow::bail!("Agent environments require one ready default executor or no default"),
     };
+    ensure!(
+        !requires_identity || inherited.0.is_some(),
+        "Selected user requires a ready current default executor"
+    );
     let manager = engine.manager.environment_manager();
     let mut bindings = BTreeMap::new();
     for profile in &opening.roster {
-        if let Some(environment) = &profile.environment {
+        if let Some(environment) = &profile.ready().environment {
             let options: crate::environment::EnvironmentOptions =
                 serde_json::from_value(environment.clone())
                     .context("Invalid Agent executor options")?;
@@ -395,11 +462,16 @@ pub(crate) async fn prepare_environments(
         .thread_extension_init
         .get::<crate::environment::StrictExecutorWrites>()
         .is_some();
-    let inherited_policy = environment_policy(&inherited, &startup.config, &manager)?;
+    let inherited_policy = environment_policy(&inherited, &startup.config, &manager).await?;
+    // Identity-only inheritance preserves an absent per-profile tool override.
+    // The existing thread tool policy continues enforcing its current ceiling.
+    let inherited_tool_names = HashSet::new();
     for profile in &opening.roster {
-        let tools = profile
+        let ready = profile.ready();
+        let tools = ready
             .environment_tools
             .as_ref()
+            .or_else(|| inherited_identity_only.then_some(&inherited_tool_names))
             .context("Agent requires its captured executor tool declaration")?;
         ensure!(
             tools.iter().all(|name| matches!(
@@ -408,9 +480,16 @@ pub(crate) async fn prepare_environments(
             )),
             "Invalid Agent executor tool declaration"
         );
-        let mut tool_names: Vec<_> = tools.iter().collect();
+        let mut tool_names: Vec<_> = tools.iter().cloned().collect();
         tool_names.sort_unstable();
-        let environment = if let Some(options) = bindings.get(&profile.id) {
+        let environment = if profile.environment_preparation && profile.prepared.is_none() {
+            ensure!(
+                tools.is_empty() && profile.environment.is_none(),
+                "Pending Agent environment cannot carry executor authority"
+            );
+            policies.insert(profile.id.clone(), (false, false, None, tool_names));
+            AgentProfileEnvironment(None, false)
+        } else if let Some(options) = bindings.get(&profile.id) {
             // Each runtime registration is fresh. Portable history selects the
             // profile and cannot name, replace or reconnect an executor.
             let id = format!(
@@ -425,9 +504,10 @@ pub(crate) async fn prepare_environments(
                     engine.local_private_paths(),
                 )
                 .await?;
-            executor_owners.extend(owner);
-            let environment = AgentProfileEnvironment(Some(selection));
-            let policy = environment_policy(&environment, &startup.config, &manager)?;
+            executor_owners.extend(owner.map(Arc::new));
+            let environment =
+                AgentProfileEnvironment(Some(selection), options.requires_process_identity());
+            let policy = environment_policy(&environment, &startup.config, &manager).await?;
             policies.insert(
                 profile.id.clone(),
                 (true, strict.is_some(), policy, tool_names),
@@ -451,6 +531,14 @@ pub(crate) async fn prepare_environments(
     startup.thread_extension_init.insert(ProfileEnvironments {
         profiles: admitted,
         _executor_owners: executor_owners,
+        policies,
+        preparation: Arc::new(ProfilePreparationContext {
+            config: Arc::new(startup.config.clone()),
+            manager: manager.clone(),
+            storage: engine
+                .local_storage_home()
+                .map(std::path::Path::to_path_buf),
+        }),
         default: inherited,
         digest,
         strict: has_strict,
@@ -579,7 +667,9 @@ impl OpeningProfiles {
     pub(crate) fn capabilities(&self) -> [bool; 6] {
         [
             self.roster.iter().any(|profile| profile.selecting_steps),
-            self.roster.iter().any(|profile| profile.transform_context),
+            self.roster
+                .iter()
+                .any(|profile| profile.transform_context || profile.environment_preparation),
             self.roster.iter().any(|profile| profile.before_compact),
             self.roster.iter().any(|profile| profile.before_complete),
             self.roster.iter().any(|profile| profile.post_turn_compact),
@@ -595,6 +685,29 @@ fn decode_roster(raw: &str) -> Result<Vec<ProfileSpec>> {
 }
 
 fn validate(roster: &[ProfileSpec], root_id: &str) -> Result<()> {
+    if roster.iter().any(|profile| profile.prepared.is_some()) {
+        for profile in roster {
+            if let Some(prepared) = &profile.prepared {
+                ensure!(
+                    profile.environment_preparation
+                        && profile.environment.is_none()
+                        && prepared.id == profile.id
+                        && prepared.prepared.is_none()
+                        && !prepared.environment_preparation
+                        && prepared.environment.is_some()
+                        && prepared.output_fingerprint == profile.output_fingerprint
+                        && prepared.native_provider_id == profile.native_provider_id
+                        && prepared.handoffs == profile.handoffs,
+                    "Invalid prepared destination identity"
+                );
+            }
+        }
+        let ready: Vec<_> = roster
+            .iter()
+            .map(|profile| profile.ready().clone())
+            .collect();
+        validate(&ready, root_id)?;
+    }
     let ids = roster
         .iter()
         .map(|profile| profile.id.as_str())
@@ -704,6 +817,8 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
         .iter()
         .map(|profile| {
             let mut descriptor = serde_json::to_value(profile)?;
+            descriptor["tools"] =
+                serde_json::to_value(profile.tools.without_configured_agent_roles())?;
             descriptor["model"] = serde_json::to_value(profile.model.for_persistence())?;
             // Endpoint credentials, process configuration and refreshed policies are not
             // declaration compatibility. Their fresh native owners remain authority.
@@ -713,6 +828,11 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
                 .expect("Agent declaration object");
             fields.remove("environment");
             fields.remove("environment_tools");
+            fields.remove("prepared");
+            if profile.environment_preparation {
+                fields.remove("workspace_preparation");
+            }
+
             Ok(descriptor)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -758,17 +878,27 @@ pub(crate) fn install_opening(
         "Captured Agent graph is already installed"
     );
     for (id, names) in &opening.input_preparations {
-        let source = opening.roster.iter().find(|profile| &profile.id == id)
+        let source = opening
+            .roster
+            .iter()
+            .find(|profile| &profile.id == id)
             .context("Handoff input source is outside the captured graph")?;
         let unique: HashSet<_> = names.iter().collect();
-        ensure!(unique.len() == names.len() && names.iter().all(|name|
-            (source.handoffs.contains_key(name) || source.decision_handoffs.contains_key(name))),
-            "Handoff input callback is outside its exact captured declarations");
-    }
-    if opening.input_preparations.values().any(|names| !names.is_empty()) {
-        startup.thread_extension_init.insert(
-            codex_protocol::agent_profile::AgentProfileHandoffInputCapture,
+        ensure!(
+            unique.len() == names.len()
+                && names.iter().all(|name| (source.handoffs.contains_key(name)
+                    || source.decision_handoffs.contains_key(name))),
+            "Handoff input callback is outside its exact captured declarations"
         );
+    }
+    if opening
+        .input_preparations
+        .values()
+        .any(|names| !names.is_empty())
+    {
+        startup
+            .thread_extension_init
+            .insert(codex_protocol::agent_profile::AgentProfileHandoffInputCapture);
     }
     startup.thread_extension_init.insert(OpeningFiles(files));
     startup.thread_extension_init.insert(opening);
@@ -869,6 +999,53 @@ fn restored_envelope<'a>(
     Ok(Some((envelope, receipt)))
 }
 
+pub(crate) fn prepared_destinations(
+    opening: &OpeningProfiles,
+    history: &[RolloutItem],
+) -> Result<Option<Vec<String>>> {
+    // Legacy checkpoints keep their prior eager acquisition and validation route.
+    let recorded = history.iter().rev().find_map(|item| match item {
+        RolloutItem::ResponseItem(envelope) => envelope
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.sdk_agent_graph.as_deref()),
+        _ => None,
+    });
+    if recorded.is_some_and(|fingerprint| fingerprint != opening.fingerprint) {
+        return Ok(None);
+    }
+    validate_restored(opening, history)?;
+    let mut ids = HashSet::new();
+    ids.insert(opening.root_id.clone());
+    for item in history {
+        let RolloutItem::ResponseItem(envelope) = item else {
+            continue;
+        };
+        let Some(metadata) = &envelope.metadata else {
+            continue;
+        };
+        let Some(raw) = &metadata.sdk_agent_profile else {
+            continue;
+        };
+        ensure!(
+            metadata.sdk_agent_graph.as_deref() == Some(opening.fingerprint.as_str()),
+            "Prepared Agent history belongs to another captured graph"
+        );
+        let receipt = profile_receipt(raw)?;
+        ensure!(
+            opening
+                .roster
+                .iter()
+                .any(|profile| profile.id == receipt.profile_id),
+            "Prepared Agent history is outside its captured declarations"
+        );
+        ids.insert(receipt.profile_id);
+    }
+    let mut ids: Vec<_> = ids.into_iter().collect();
+    ids.sort();
+    Ok(Some(ids))
+}
+
 /// Recover the declaration owner frozen before queue admission, never the sampled actor.
 pub(crate) fn operation_source(
     opening: &OpeningProfiles,
@@ -948,11 +1125,14 @@ pub(crate) fn validate_restored_environment(
             .filter(|metadata| metadata.sdk_agent_profile.is_some()),
         _ => None,
     });
-    let recorded = latest_profile.and_then(|metadata| metadata.sdk_agent_environment_policy.as_deref());
+    let recorded =
+        latest_profile.and_then(|metadata| metadata.sdk_agent_environment_policy.as_deref());
     let no_profile_or_sampling = latest_profile.is_none()
-        && !history.iter().any(|item| matches!(item,
-            RolloutItem::TurnContext(context) if context.sdk_receipt.is_some()
-        ));
+        && !history.iter().any(|item| {
+            matches!(item,
+                RolloutItem::TurnContext(context) if context.sdk_receipt.is_some()
+            )
+        });
     ensure!(
         recorded == expected || no_profile_or_sampling,
         "Restore requires the recorded Agent environment grants"
@@ -1019,6 +1199,7 @@ struct PreparedProfile {
     environment_tools: Option<AgentProfileExecutorTools>,
 }
 
+#[derive(Clone)]
 struct Reservation {
     turn: String,
     expected: AgentProfileReceipt,
@@ -1036,6 +1217,179 @@ struct AgentProfiles {
     profiles: BTreeMap<String, PreparedProfile>,
     files: Vec<InstructionFile>,
     reservation: Mutex<Option<Reservation>>,
+}
+
+async fn prepare_destination(
+    thread: &CodexThread,
+    profiles: Arc<AgentProfiles>,
+    expected: &AgentProfileReceipt,
+    target: &str,
+    raw: Value,
+    cancelled: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<Arc<AgentProfiles>> {
+    let base = profiles
+        .opening
+        .roster
+        .iter()
+        .find(|profile| profile.id == target)
+        .context("Destination preparation is outside its captured graph")?;
+    ensure!(
+        base.environment_preparation,
+        "Destination has no captured environment preparation"
+    );
+    ensure!(
+        profiles
+            .profiles
+            .get(target)
+            .is_some_and(|profile| profile.declaration.environment_preparation),
+        "Destination environment has already been prepared"
+    );
+    let descriptor: ProfileSpec =
+        serde_json::from_value(raw).context("Invalid prepared destination declaration")?;
+    ensure!(
+        descriptor.id == target
+            && descriptor.prepared.is_none()
+            && !descriptor.environment_preparation
+            && descriptor.workspace_preparation
+            && descriptor.environment.is_some()
+            && descriptor.native_provider_id == base.native_provider_id
+            && descriptor.output_fingerprint == base.output_fingerprint
+            && descriptor.handoffs == base.handoffs
+            && descriptor.model.model == base.model.model,
+        "Destination preparation has been changing its captured identity"
+    );
+    let decision_targets = |profile: &ProfileSpec| {
+        profile
+            .decision_handoffs
+            .iter()
+            .map(|(name, declaration)| (name.clone(), declaration.targets.clone()))
+            .collect::<BTreeMap<_, _>>()
+    };
+    ensure!(
+        decision_targets(&descriptor) == decision_targets(base),
+        "Destination preparation has been changing captured Decision targets"
+    );
+    let tools = descriptor
+        .environment_tools
+        .clone()
+        .context("Prepared destination has no executor tool ceiling")?;
+    ensure!(
+        tools.iter().all(|name| matches!(
+            name.as_str(),
+            "exec_command" | "write_stdin" | "apply_patch" | "project_glob" | "project_grep"
+        )),
+        "Invalid prepared destination executor tools"
+    );
+    if let Some(cancelled) = cancelled {
+        ensure!(
+            !cancelled.is_cancelled(),
+            "Destination preparation cancelled"
+        );
+    }
+    let previous = thread
+        .thread_extension_data()
+        .get::<ProfileEnvironments>()
+        .context("Destination preparation has no captured environment owner")?;
+    let mut environments = (*previous).clone();
+    let mut config = (*environments.preparation.config).clone();
+    let options: crate::environment::EnvironmentOptions = serde_json::from_value(
+        descriptor
+            .environment
+            .clone()
+            .expect("prepared environment"),
+    )?;
+    options.restrict_network_approval(&mut config)?;
+    let id = format!(
+        "sdk-profile-{}",
+        codex_protocol::ThreadId::new().to_string().replace('-', "")
+    );
+    let prepare = options.prepare_profile_selection(
+        &id,
+        &config,
+        &environments.preparation.manager,
+        crate::environment::LocalPrivatePaths {
+            storage: environments.preparation.storage.as_deref(),
+            saved_login_file: None,
+        },
+    );
+    let (selection, strict, owner) = if let Some(cancelled) = cancelled {
+        tokio::select! { biased;
+            _ = cancelled.cancelled() => anyhow::bail!("Destination preparation cancelled"),
+            result = prepare => result?,
+        }
+    } else {
+        prepare.await?
+    };
+    environments._executor_owners.extend(owner.map(Arc::new));
+    let environment =
+        AgentProfileEnvironment(Some(selection), options.requires_process_identity());
+    let policy =
+        environment_policy(&environment, &config, &environments.preparation.manager).await?;
+    let mut names: Vec<_> = tools.iter().cloned().collect();
+    names.sort_unstable();
+    environments
+        .policies
+        .insert(target.to_owned(), (true, strict.is_some(), policy, names));
+    environments.digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&environments.policies)?)
+    );
+    environments
+        .profiles
+        .insert(target.to_owned(), environment.clone());
+    environments.strict |= strict.is_some();
+    let default_model = profiles
+        .profiles
+        .get(&profiles.opening.root_id)
+        .context("Captured root Agent is unavailable")?
+        .model
+        .model
+        .clone();
+    let prepared = prepare_profile(
+        thread,
+        &profiles.tools,
+        &descriptor,
+        descriptor.model.clone(),
+        &default_model,
+        false,
+        false,
+        Some(environment),
+        Some(AgentProfileExecutorTools { allowed: tools }),
+    )
+    .await?;
+    if let Some(cancelled) = cancelled {
+        ensure!(
+            !cancelled.is_cancelled(),
+            "Destination preparation cancelled"
+        );
+    }
+    ensure!(
+        thread
+            .captured_agent_profile()
+            .await?
+            .is_some_and(|current| &current.receipt == expected),
+        "Destination preparation source has been retiring"
+    );
+    let mut entries = profiles.profiles.clone();
+    entries.insert(target.to_owned(), prepared);
+    let updated = Arc::new(AgentProfiles {
+        opening: profiles.opening.clone(),
+        environment_policy_digest: Some(environments.digest.clone()),
+        thread: profiles.thread.clone(),
+        tools: profiles.tools.clone(),
+        profiles: entries,
+        files: profiles.files.clone(),
+        reservation: Mutex::new(
+            profiles
+                .reservation
+                .lock()
+                .expect("Agent reservation poisoned")
+                .clone(),
+        ),
+    });
+    thread.thread_extension_data().insert(environments);
+    thread.thread_extension_data().insert(updated.clone());
+    Ok(updated)
 }
 
 #[derive(Clone)]
@@ -1057,6 +1411,8 @@ fn rebind_restored_controls(
     model: &mut AgentProfileModelSettings,
     current: &AgentProfileModelSettings,
 ) {
+    model.request_controls.sdk_default_provider_compaction =
+        current.request_controls.sdk_default_provider_compaction;
     model.invocation_timeout_ms = current.invocation_timeout_ms;
     model.request_controls.retry = current.request_controls.retry.clone();
     model.request_controls.attempt_timeout_ms = current.request_controls.attempt_timeout_ms;
@@ -1077,6 +1433,18 @@ async fn prepare_profile(
     environment: Option<AgentProfileEnvironment>,
     environment_tools: Option<AgentProfileExecutorTools>,
 ) -> Result<PreparedProfile> {
+    let mut pending;
+    let descriptor = if descriptor.environment_preparation && descriptor.prepared.is_none() {
+        pending = descriptor.clone();
+        pending.mcp_servers.clear();
+        pending.mcp_result_tools.clear();
+        pending.mcp_metadata_tools.clear();
+        pending.mcp_discovery_tools.clear();
+        pending.mcp_tools.clear();
+        &pending
+    } else {
+        descriptor.ready()
+    };
     if model.model.is_empty() {
         model.model = default_model.to_owned();
     }
@@ -1084,7 +1452,11 @@ async fn prepare_profile(
         descriptor.selecting_steps,
         descriptor.transform_context,
         descriptor.before_compact,
-        descriptor.before_complete,
+        descriptor.before_complete
+            || crate::python_tools::agent_lifecycle::enabled(
+                thread.thread_extension_data(),
+                &descriptor.id,
+            ),
         descriptor.post_turn_compact,
         descriptor.tool_batch_completion,
     ];
@@ -1449,6 +1821,10 @@ impl AgentProfiles {
             .profiles
             .get(id)
             .context("Agent is outside the captured graph")?;
+        ensure!(
+            !prepared.declaration.environment_preparation,
+            "Destination environment requires its captured preparation"
+        );
         let files = if id == self.opening.root_id {
             self.files.clone()
         } else {
@@ -1480,6 +1856,14 @@ impl AgentProfiles {
         metadata.sdk_agent_graph = Some(self.opening.fingerprint.clone());
         metadata.sdk_agent_environment_policy = self.environment_policy_digest.clone();
         let mut data = ExtensionDataInit::new();
+        data.insert(codex_extension_api::AgentProfileOutputStrict(
+            prepared
+                .declaration
+                .model
+                .request_controls
+                .output_schema_strict
+                .unwrap_or(true),
+        ));
         if let Some(appendix) = appendix {
             data.insert(WorkspaceAppendix(appendix));
         }
@@ -1579,8 +1963,67 @@ pub(crate) async fn active_specs(thread: &CodexThread) -> Result<Option<ToolDecl
     Ok(Some(catalog.selected_declarations()))
 }
 
+pub(crate) fn prepared_catalog(thread: &CodexThread, id: &str) -> Result<String> {
+    let profiles = thread
+        .thread_extension_data()
+        .get::<Arc<AgentProfiles>>()
+        .context("Captured Agent graph is unavailable")?;
+    let profile = profiles
+        .profiles
+        .get(id)
+        .context("Prepared Agent is outside the captured graph")?;
+    ensure!(
+        !profile.declaration.environment_preparation,
+        "Agent environment has not been prepared"
+    );
+    Ok(profile.catalog.generation.id.to_string())
+}
+
 pub(crate) async fn active(thread: &CodexThread) -> Result<Option<AgentProfileReceipt>> {
     Ok(thread.agent_profile_receipt().await?)
+}
+
+/// Validate a private memory partition against the currently captured resource owner.
+/// This selects history only; it grants no tool, executor or profile transition.
+pub(crate) async fn memory_scope(
+    thread: &CodexThread,
+    expected: &AgentProfileReceipt,
+    profiles: &[String],
+) -> Result<Arc<OpeningProfiles>> {
+    let store = thread.thread_extension_data();
+    let opening = store
+        .get::<OpeningProfiles>()
+        .context("Memory requires the captured Agent graph")?;
+    let unique: HashSet<_> = profiles.iter().collect();
+    ensure!(
+        !profiles.is_empty()
+            && profiles.len() <= 1024
+            && unique.len() == profiles.len()
+            && unique.contains(&expected.profile_id),
+        "Memory requires a bounded resource partition containing its source"
+    );
+    let environments = store
+        .get::<ProfileEnvironments>()
+        .context("Memory requires admitted profile resource ownership")?;
+    let environment = environments
+        .selection(&expected.profile_id)?
+        .0
+        .map(|selection| selection.environment_id);
+    for id in profiles {
+        ensure!(
+            opening.roster.iter().any(|profile| &profile.id == id),
+            "Memory profile is outside the captured Agent graph"
+        );
+        ensure!(
+            environments
+                .selection(id)?
+                .0
+                .map(|selection| selection.environment_id)
+                == environment,
+            "Memory partition crosses admitted resources"
+        );
+    }
+    Ok(opening)
 }
 
 pub(crate) async fn configure(
@@ -1648,10 +2091,10 @@ pub(crate) async fn configure(
         let mut model = if descriptor.id == opening.root_id {
             opening_model.clone()
         } else {
-            descriptor.model.clone()
+            descriptor.ready().model.clone()
         };
         if restored {
-            rebind_restored_controls(&mut model, &descriptor.model);
+            rebind_restored_controls(&mut model, &descriptor.ready().model);
         }
         profiles.insert(
             descriptor.id.clone(),
@@ -1668,6 +2111,7 @@ pub(crate) async fn configure(
                     .map(|env| env.selection(&descriptor.id))
                     .transpose()?,
                 descriptor
+                    .ready()
                     .environment_tools
                     .clone()
                     .map(|allowed| AgentProfileExecutorTools { allowed }),
@@ -1706,6 +2150,14 @@ pub(crate) async fn configure(
         )?;
         let generation = catalog.generation.id;
         let mut data = ExtensionDataInit::new();
+        data.insert(codex_extension_api::AgentProfileOutputStrict(
+            prepared
+                .declaration
+                .model
+                .request_controls
+                .output_schema_strict
+                .unwrap_or(true),
+        ));
         data.insert(codex_extension_api::AgentProfileInstructions {
             text: Some(accepted.text.clone()),
         });
@@ -2100,12 +2552,18 @@ pub(crate) fn restore_handoff(
         .thread_extension_data()
         .get::<Arc<AgentProfiles>>()
         .context("Restored handoff graph is absent")?;
-    if profiles.opening.input_preparations.get(&receipt.source.profile_id)
-        .is_some_and(|names| names.iter().any(|name| name == &tool_name.name)) {
+    if profiles
+        .opening
+        .input_preparations
+        .get(&receipt.source.profile_id)
+        .is_some_and(|names| names.iter().any(|name| name == &tool_name.name))
+    {
         state.thread.thread_extension_data().insert(
             codex_protocol::agent_profile::AgentProfileHandoffInputRequest {
-                turn_id:turn.to_owned(), tool_name:tool_name.name.clone(),
-                handoff:receipt.clone(), restored:true,
+                turn_id: turn.to_owned(),
+                tool_name: tool_name.name.clone(),
+                handoff: receipt.clone(),
+                restored: true,
             },
         );
     }
@@ -2197,11 +2655,51 @@ pub(crate) async fn activate(
         !declaration.workspace_preparation || workspace.is_some(),
         "Agent activation requires its owned workspace preparation"
     );
+    let mut profiles = profiles.as_ref().clone();
+    if let Some(raw) = workspace
+        .as_ref()
+        .and_then(|preparation| preparation.profile.clone())
+    {
+        profiles =
+            prepare_destination(&state.thread, profiles, &expected, target, raw, None).await?;
+    }
     let candidate = profiles.workspace_candidate(&state.thread, target, workspace)?;
     Ok(state
         .thread
         .activate_agent_profile(Some(expected), candidate)
         .await?)
+}
+
+pub(crate) fn validate_lifecycle_handoff(
+    input: &codex_extension_api::AgentLifecycleInput<'_>,
+) -> Result<()> {
+    let Some(target) = input.target_profile_id else {
+        return Ok(());
+    };
+    let source = input
+        .source
+        .context("Lifecycle handoff has no admitted source")?;
+    let profiles = input
+        .thread_store
+        .get::<Arc<AgentProfiles>>()
+        .context("Lifecycle handoff has no captured graph")?;
+    let declaration = &profiles
+        .profiles
+        .get(&source.receipt.profile_id)
+        .context("Lifecycle source is outside the graph")?
+        .declaration;
+    ensure!(
+        declaration
+            .handoffs
+            .values()
+            .any(|candidate| candidate == target)
+            || declaration
+                .decision_handoffs
+                .values()
+                .any(|entry| entry.targets.iter().any(|candidate| candidate == target)),
+        "Lifecycle handoff target is outside its source declaration"
+    );
+    Ok(())
 }
 
 pub(crate) struct Contributor;
@@ -2215,6 +2713,7 @@ impl TurnLifecycleContributor for Contributor {
             let Some(profiles) = input.thread_store.get::<Arc<AgentProfiles>>() else {
                 return Ok(None);
             };
+            let mut profiles = profiles.as_ref().clone();
             let restored = profiles
                 .reservation
                 .lock()
@@ -2292,23 +2791,56 @@ impl TurnLifecycleContributor for Contributor {
             } else {
                 None
             };
+            if let Some(raw) = workspace
+                .as_ref()
+                .and_then(|preparation| preparation.profile.clone())
+            {
+                let cancellation = profiles
+                    .tools
+                    .agent_workspace_cancellation(input.turn_id)
+                    .map_err(|error| error.to_string())?;
+                profiles = prepare_destination(
+                    &thread,
+                    profiles,
+                    &expected,
+                    &target_id,
+                    raw,
+                    Some(&cancellation),
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
             let mut target = profiles
                 .workspace_candidate(&thread, &target_id, workspace)
                 .map_err(|error| error.to_string())?;
-            if let Some(request) = input.turn_store.get::<
-                codex_protocol::agent_profile::AgentProfileHandoffInputRequest,
-            >() {
-                let proposed = input.turn_store.get::<
-                    codex_protocol::agent_profile::AgentProfileHandoffPresentation,
-                >().ok_or("Handoff input lacks its native grouped proposal")?;
+            if let Some(request) = input
+                .turn_store
+                .get::<codex_protocol::agent_profile::AgentProfileHandoffInputRequest>(
+            ) {
+                let proposed = input
+                    .turn_store
+                    .get::<codex_protocol::agent_profile::AgentProfileHandoffPresentation>()
+                    .ok_or("Handoff input lacks its native grouped proposal")?;
                 if proposed.handoff != request.handoff || request.turn_id != input.turn_id {
                     return Err("Handoff input proposal belongs to another accepted call".into());
                 }
-                let captured = thread.captured_agent_profile().await
-                    .map_err(|error| error.to_string())?.ok_or("Handoff source profile closed")?;
-                let prepared = profiles.tools.prepare_handoff_input(
-                    input.turn_store, input.thread_store.level_id(), input.turn_id, &captured, &request, &proposed,
-                ).await.map_err(|error| error.to_string())?;
+                let captured = thread
+                    .captured_agent_profile()
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or("Handoff source profile closed")?;
+                let prepared = profiles
+                    .tools
+                    .prepare_handoff_input(
+                        input.turn_store,
+                        input.thread_store.level_id(),
+                        input.turn_id,
+                        &captured,
+                        &request,
+                        &proposed,
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
                 let mut with_input = (*target).clone();
                 with_input.data.insert(prepared);
                 target = Arc::new(with_input);
@@ -2423,13 +2955,20 @@ impl<'call> ToolExecutor<ToolCall<'call>> for HandoffExecutor {
             })
         })();
         if let Some(handoff) = &handoff {
-            if self.profiles.opening.input_preparations.get(&self.source.profile_id)
-                .is_some_and(|names| names.contains(&self.name)) {
+            if self
+                .profiles
+                .opening
+                .input_preparations
+                .get(&self.source.profile_id)
+                .is_some_and(|names| names.contains(&self.name))
+            {
                 if let Some(thread) = self.profiles.thread.upgrade() {
                     thread.thread_extension_data().insert(
                         codex_protocol::agent_profile::AgentProfileHandoffInputRequest {
-                            turn_id:turn_id.to_owned(), tool_name:self.name.clone(),
-                            handoff:handoff.clone(), restored:false,
+                            turn_id: turn_id.to_owned(),
+                            tool_name: self.name.clone(),
+                            handoff: handoff.clone(),
+                            restored: false,
                         },
                     );
                 }
@@ -2764,6 +3303,28 @@ mod tests {
                 "service_tier":null,"tool_choice":null,"personality":null},
                 "instructions":"Destination","tools":[],"output_fingerprint":"output-b"}
         ])
+    }
+
+    #[test]
+    fn deferred_recipe_distinguishes_legacy_and_excludes_current_ready_credentials() {
+        let mut raw = roster();
+        let legacy = fingerprint(&raw.to_string(), "a").unwrap();
+        let mut ready = raw[1].clone();
+        ready["workspace_preparation"] = json!(true);
+        ready["environment"] =
+            json!({"url":"wss://current.invalid", "headers":{"Authorization":"synthetic"}});
+        ready["environment_tools"] = json!(["project_grep"]);
+        raw[1]["environment_preparation"] = json!(true);
+        raw[1]["workspace_preparation"] = json!(true);
+        raw[1]["environment_tools"] = json!([]);
+        let pending = fingerprint(&raw.to_string(), "a").unwrap();
+        assert_ne!(pending, legacy);
+        raw[1]["prepared"] = ready;
+        assert_eq!(fingerprint(&raw.to_string(), "a").unwrap(), pending);
+        raw[1]["prepared"]["environment"]["headers"]["Authorization"] = json!("fresh-synthetic");
+        assert_eq!(fingerprint(&raw.to_string(), "a").unwrap(), pending);
+        raw[1]["prepared"]["id"] = json!("a");
+        assert!(fingerprint(&raw.to_string(), "a").is_err());
     }
 
     #[test]

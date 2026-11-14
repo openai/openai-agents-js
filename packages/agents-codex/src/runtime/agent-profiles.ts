@@ -47,7 +47,12 @@ export interface CapturedAgentGraph {
     string,
     import('./environment-source').EnvironmentAcquisition
   >;
-  readonly workspace?: import('./sandbox-capabilities').SandboxCapabilityLease;
+  /** @internal Destination preparation belongs to the captured runtime. */
+  readonly deferred?: import('./deferred-agent-preparation').DeferredAgentPreparation;
+  readonly workspace?: Pick<
+    import('./sandbox-capabilities').SandboxCapabilityLease,
+    'prepareWorkspace' | 'failWorkspace'
+  >;
   /** Pure native preflight of this exact supplied history, before resource acquisition. */
   readonly restoredSource?: AgentProfileReceipt;
   /** Owning-turn declaration supplying an explicit suspended operation ceiling. */
@@ -428,7 +433,8 @@ export function profileRoster(
 ): readonly JsonObject[] {
   return graph.roster.map((row) => ({
     ...row,
-    ...(graph.environments
+    ...(graph.environments &&
+    !graph.deferred?.resources.deferred.has(row.id as string)
       ? {
           environment_tools: [
             ...(graph.environments.get(row.id as string)?.environment?.tools ??
@@ -445,20 +451,33 @@ export function profileRoster(
             : {}),
         }
       : {}),
-    mcp_servers: mcpConfig(
-      graph.profiles
-        .get(row.id as string)!
-        .mcp.filter(
-          (server) =>
-            (server.tools.length > 0 ||
-              (server instanceof StdioMCP && server.lifetime === 'turn')) &&
-            (!(server instanceof HttpMCP) || server.activation !== 'operation'),
+    ...(graph.deferred?.resources.deferred.has(row.id as string)
+      ? {
+          environment_preparation: true,
+          workspace_preparation: true,
+          environment_tools: [],
+          ...(graph.deferred.declaration(row.id as string)
+            ? { prepared: graph.deferred.declaration(row.id as string)! }
+            : {}),
+        }
+      : {}),
+    mcp_servers: graph.deferred?.resources.deferred.has(row.id as string)
+      ? row.mcp_servers
+      : mcpConfig(
+          graph.profiles
+            .get(row.id as string)!
+            .mcp.filter(
+              (server) =>
+                (server.tools.length > 0 ||
+                  (server instanceof StdioMCP && server.lifetime === 'turn')) &&
+                (!(server instanceof HttpMCP) ||
+                  server.activation !== 'operation'),
+            ),
+          graph.environments?.get(row.id as string)?.environment ?? environment,
+          graph.profiles.get(row.id as string)!.profile.declaration
+            .programmaticToolCalling,
+          graph.profiles.get(row.id as string)!.mcp,
         ),
-      graph.environments?.get(row.id as string)?.environment ?? environment,
-      graph.profiles.get(row.id as string)!.profile.declaration
-        .programmaticToolCalling,
-      graph.profiles.get(row.id as string)!.mcp,
-    ),
   }));
 }
 

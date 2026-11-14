@@ -1357,12 +1357,52 @@
       "sha256": "5b6aabe63479b6d790b564dbc23e6a2fdb9f7e9e08b5bc1fca5a11dc8b69ece6"
     },
     {
+      "path": "sdk-bind-declaration-output-strictness.patch",
+      "sha256": "88425d1fe0e451e9ba1134382c9aacbfaca34a75bf8917fc2d81ec3b439eaaf7"
+    },
+    {
+      "path": "sdk-configured-agent-tool-origin.patch",
+      "sha256": "afa40f722d663ade8af2b18c84b13847a91d67c96be128dd9e06d0500ae202a1"
+    },
+    {
+      "path": "sdk-managed-mcp-strict-tool-schemas.patch",
+      "sha256": "f1c7d33f257f87cee3e77283844b1e7721915d30a50f4eaee1ecd9a77cc4890f"
+    },
+    {
+      "path": "sdk-managed-mcp-schema-budget.patch",
+      "sha256": "49db34ae509b0a24d157a88b9882c5e227a497529d1af71573d4e11602cd29bf"
+    },
+    {
       "path": "sdk-websocket-decoder-retirement.patch",
       "sha256": "1b872b4d27849340d29fbc213610f07290c4496cff04945d7ae3fa7fd1113e10"
     },
     {
       "path": "sdk-preserve-guardian-reasoning-default.patch",
       "sha256": "395780f87e2c6ec8e235b6c341534f1902b78405d0fc6be1bcf1d3c224208b43"
+    },
+    {
+      "path": "sdk-caller-owned-history-replay.patch",
+      "sha256": "0cc239e867191474f72356e23e59c97e1f765c519e75aa1b66f959e638d4a2a9"
+    },
+    {
+      "path": "sdk-profile-owned-memory-history.patch",
+      "sha256": "04512bd707a42bfbadc823894d2d11ee9c1182360f09186fd0159f5f787d3773"
+    },
+    {
+      "path": "sdk-agent-lifecycle.patch",
+      "sha256": "5d47947405653ceebc654e08404bf40677fde7699d3d1e32ef8a7385db17c2c9"
+    },
+    {
+      "path": "sdk-agent-process-identity.patch",
+      "sha256": "a1e5e5e53b122b7dcfd22d05eeb0bca8c5e31096baa1adc21b994e1e0ccd4927"
+    },
+    {
+      "path": "sdk-coupled-input-data.patch",
+      "sha256": "24c7e00afac4d23d0ac849e6c8a641a87e2e769b22c1f8c54e7bac4f54d04904"
+    },
+    {
+      "path": "sdk-agent-lifecycle-cancellation-import.patch",
+      "sha256": "d158ce5029592af74687874af1b4a2ccb7935ede9aa0391795e6563bce3d2088"
     },
     {
       "path": "sdk-portable-text-control.patch",
@@ -1399,7 +1439,23 @@
     {
       "path": "sdk-portable-text-output-contract.patch",
       "sha256": "022614abb190179f95551aa31b9856048ac6e3a59f23a43235db49590f9b2d8b"
+    },
+    {
+      "path": "sdk-profile-default-provider-compaction.patch",
+      "sha256": "841e4269d813a54a180f16af6d482f540af37f3642fe3bee65e3b1c1e03ee664"
+    },
+    {
+      "path": "sdk-profile-interactive-terminal-ownership.patch",
+      "sha256": "3656e1d432b25e3ffdf6fbb6c33dc4c4084525a3073cd9719a30d41e0e6a40ef"
+    },
+    {
+      "path": "sdk-compaction-request-usage.patch",
+      "sha256": "59df12322ea183bba71973918cf8226a0a3585180c6678195c42529fc19fccd7"
+    },
+    {
+      "path": "sdk-portable-text-tool-finalization.patch",
+      "sha256": "fead081483217dd25cbee8ff5ffe2ac77ca90493fd523c9b88a36c14e91c2f02"
     }
   ],
-  "result_tree": "00071832ceb7d637b9b927a40d6c22ff02e38df7"
+  "result_tree": "acaf5423eded2ace2d428e62331eed9194c47e9a"
 }

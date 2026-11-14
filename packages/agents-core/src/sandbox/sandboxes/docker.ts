@@ -19,7 +19,9 @@ import type {
   ApplyPatchOperation,
   ApplyPatchResult,
   Editor,
+  PatchFormat,
 } from '../../editor';
+import { applyPatchFormat } from '../internal/patchFormat';
 import type { ToolOutputImage } from '../../tool';
 import { applyDiff } from '../../utils/applyDiff';
 import {
@@ -349,8 +351,21 @@ export async function openDockerGatewayScope(
         resource: SandboxSessionLike,
         execServerPath: string,
         connectionSignal: AbortSignal,
+        runAs?: string,
       ) {
         connectionSignal.throwIfAborted();
+        if (
+          runAs !== undefined &&
+          (typeof runAs !== 'string' ||
+            runAs.length > 256 ||
+            runAs.trim() !== runAs ||
+            !/^[A-Za-z0-9_][A-Za-z0-9_.-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?$/.test(
+              runAs,
+            ))
+        )
+          throw new TypeError(
+            'Docker runAs must be a container user or user:group',
+          );
         if (
           !(resource instanceof DockerSandboxSession) ||
           dockerGatewayResources.get(resource) !== invocation ||
@@ -415,6 +430,9 @@ export async function openDockerGatewayScope(
               .map((grant) => grant.path),
           ],
           command: {
+            ...(runAs === undefined
+              ? {}
+              : { require_process_identity: true as const }),
             program: '/usr/bin/env',
             args: [
               '-i',
@@ -425,6 +443,7 @@ export async function openDockerGatewayScope(
               ...invocation.args,
               'exec',
               '--interactive',
+              ...(runAs === undefined ? [] : ['--user=' + runAs]),
               '--workdir=' + manifest.root,
               containerId,
               execServerPath,
@@ -1755,7 +1774,12 @@ class DockerSandboxEditor implements Editor {
   constructor(
     private readonly session: DockerSandboxSession,
     private readonly runAs?: string,
+    private readonly format?: PatchFormat,
   ) {}
+
+  withPatchFormat(format: PatchFormat): Editor {
+    return new DockerSandboxEditor(this.session, this.runAs, format);
+  }
 
   canAccessPathForEdit(path: string): boolean {
     try {
@@ -1772,7 +1796,15 @@ class DockerSandboxEditor implements Editor {
     this.session.resolveContainerFilesystemPath(operation.path, {
       forWrite: true,
     });
-    const content = applyDiff('', operation.diff, 'create');
+    if (this.format)
+      await this.session.validateContainerFilesystemPath(
+        operation.path,
+        { forWrite: true },
+        DOCKER_PATH_OUTPUT_LIMIT_BYTES,
+      );
+    const content = this.format
+      ? applyPatchFormat(this.format, '', operation.diff, 'create')
+      : applyDiff('', operation.diff, 'create');
     await this.session.writeDockerTextFileAs(
       operation.path,
       content,
@@ -1797,12 +1829,20 @@ class DockerSandboxEditor implements Editor {
           forWrite: true,
         })
       : path;
+    if (this.format && operation.moveTo)
+      await this.session.validateContainerFilesystemPath(
+        operation.moveTo,
+        { forWrite: true },
+        DOCKER_PATH_OUTPUT_LIMIT_BYTES,
+      );
     const current = new TextDecoder().decode(
       await this.session.readDockerFileAs(path, this.runAs, {
         maxBytes: 10 * 1024 * 1024,
       }),
     );
-    const next = applyDiff(current, operation.diff);
+    const next = this.format
+      ? applyPatchFormat(this.format, current, operation.diff)
+      : applyDiff(current, operation.diff);
     await this.session.writeDockerTextFileAs(
       destination,
       next,

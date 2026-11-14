@@ -430,7 +430,7 @@ impl EngineState {
         self.seal_transport_binding();
         self.interception.check_code_import_admission()?;
         // This is the ordinary merge/load pipeline, exactly once for this opening.
-        let (startup, instructions) = options
+        let (mut startup, instructions) = options
             .build(config_json, &fresh_runtime, self.cloud_config.clone())
             .await?;
         if !matches!(startup.initial_history, InitialHistory::New)
@@ -2389,13 +2389,19 @@ impl EngineState {
             !self.closed.load(Ordering::Acquire),
             "Codex engine is closed"
         );
-        let (startup, instructions) = options
+        let agent_lifecycle = options.agent_lifecycle.clone();
+        let (mut startup, instructions) = options
             .build(
                 &self.config_json,
                 &self.runtime_json,
                 self.cloud_config.clone(),
             )
             .await?;
+        startup
+            .thread_extension_init
+            .insert(crate::python_tools::agent_lifecycle::Bindings(
+                agent_lifecycle,
+            ));
         self.finish_startup(startup, instructions).await
     }
 

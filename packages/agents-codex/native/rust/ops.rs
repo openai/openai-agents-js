@@ -318,6 +318,8 @@ impl Default for Mode {
 params!(TurnParams {
     input: Value,
     #[serde(default)]
+    project_model_inputs: bool,
+    #[serde(default)]
     profile_output_override: bool,
     observation_submission_id: Option<String>,
     client_id: Option<String>,
@@ -898,6 +900,11 @@ async fn start_with_params<'a>(
         )));
     }
 
+    if p.project_model_inputs && (managed.is_none() || matches!(p.mode, Mode::Steer)) {
+        return Err(pre_admission(anyhow::anyhow!(
+            "Projected input storage is selected by the managed owning root"
+        )));
+    }
     let turn_init = if let (Some((state, _)), Some(submission)) =
         (managed.as_ref(), p.observation_submission_id)
     {
@@ -933,6 +940,7 @@ async fn start_with_params<'a>(
                 thread_id: state.id.to_string(),
                 preserve_turn_output: p.profile_output_override,
             });
+            init.insert(codex_extension_api::ProjectedUserInputStorage(p.project_model_inputs));
             Some(init)
         }
     } else {

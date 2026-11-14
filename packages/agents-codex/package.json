@@ -400,5 +400,10 @@
     "@a2a-js/sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/core": "2.4.0"
+  },
+  "browser": {
+    "node:crypto": "./dist/runtime/browser-primitives.mjs",
+    "node:util": "./dist/runtime/browser-primitives.mjs",
+    "node:buffer": "./dist/runtime/browser-primitives.mjs"
   }
 }

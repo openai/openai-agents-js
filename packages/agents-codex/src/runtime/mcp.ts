@@ -277,6 +277,8 @@ export interface MCPOptions<Context = unknown> {
   ) => boolean | Promise<boolean>;
   /** Raw native list caching; omission preserving native defaults. */
   cacheToolsList?: boolean;
+  /** Try strict model schemas; tools with incompatible schemas keep their native default. */
+  strictToolSchemas?: boolean;
   /** Follow native rules (default), or preapprove selected tools. Application approval still applies. */
   approvalMode?: 'native' | 'preapproved';
   /** Native rules, a prompt or preapproval for selected raw names. Core evaluates prompts under the active permission policy. Application approval still applies. */
@@ -324,6 +326,7 @@ abstract class MCP<Context> {
   readonly toolNameOverrides: Readonly<Record<string, string>>;
   readonly toolFilter?: MCPOptions<Context>['toolFilter'];
   readonly cacheToolsList?: boolean;
+  readonly strictToolSchemas: boolean;
   readonly approvalMode: 'native' | 'preapproved';
   readonly toolApprovalOverrides: NonNullable<
     MCPOptions<Context>['toolApprovalOverrides']
@@ -350,10 +353,18 @@ abstract class MCP<Context> {
     )
       throw new TypeError('MCP cacheToolsList must be a boolean');
     if (
+      options.strictToolSchemas !== undefined &&
+      typeof options.strictToolSchemas !== 'boolean'
+    )
+      throw new TypeError('MCP strictToolSchemas must be a boolean');
+    if (
       options.name === 'codex_apps' &&
-      (options.toolFilter !== undefined || options.cacheToolsList !== undefined)
+      (options.toolFilter !== undefined ||
+        options.cacheToolsList !== undefined ||
+        options.strictToolSchemas === true)
     )
       throw new TypeError('MCP discovery controls require an ordinary server');
+    this.strictToolSchemas = options.strictToolSchemas ?? false;
     this.toolFilter = options.toolFilter;
     Object.defineProperty(this, 'toolFilter', { enumerable: false });
     this.cacheToolsList = options.cacheToolsList;
@@ -745,6 +756,7 @@ function mcpServerConfig(
     ...(server.cacheToolsList === undefined
       ? {}
       : { sdk_cache_tools_list: server.cacheToolsList }),
+    ...(server.strictToolSchemas ? { sdk_strict_tool_schemas: true } : {}),
   };
   const toolSettings = new Map<string, JsonObject>();
   for (const raw of server.tools) {
@@ -806,6 +818,7 @@ export function selectHttpLeaves(
     tools,
     toolFilter: server.toolFilter,
     cacheToolsList: server.cacheToolsList,
+    strictToolSchemas: server.strictToolSchemas,
     approvalMode: server.approvalMode,
     startupTimeout: server.startupTimeout,
     executionTimeout: server.executionTimeout,
@@ -869,6 +882,7 @@ export function resourceMcpBinding(server: McpTool): McpTool {
     tools: [],
     toolFilter: server.toolFilter,
     cacheToolsList: server.cacheToolsList,
+    strictToolSchemas: server.strictToolSchemas,
     command: server.command,
     args: server.args,
     envVars: server.envVars,

@@ -1,3 +1,6 @@
+#[path = "agent_lifecycle.rs"]
+pub(crate) mod agent_lifecycle;
+
 #[path = "handoff_inputs.rs"]
 pub(crate) mod handoff_inputs;
 
@@ -4262,6 +4265,10 @@ impl PythonExecutor {
 }
 
 impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
+    fn configured_agent_tool_role(&self) -> Option<&str> {
+        self.generation.specs.configured_agent_role(self.slot)
+    }
+
     fn tool_name(&self) -> ToolName {
         self.generation.entries[self.slot].name.clone()
     }
@@ -4734,6 +4741,21 @@ impl ToolLifecycleContributor for PythonContributor {
 }
 
 impl TurnLifecycleContributor for PythonContributor {
+    fn before_agent_lifecycle<'a>(
+        &'a self,
+        input: codex_extension_api::AgentLifecycleInput<'a>,
+    ) -> ExtensionFuture<'a, std::result::Result<(), String>> {
+        Box::pin(async move {
+            let Some(tools) = input.thread_store.get::<PythonTools>() else {
+                return Ok(());
+            };
+            tools
+                .agent_lifecycle(input)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+
     fn hold_tool_completion(&self, input: codex_extension_api::ToolCompletionInput<'_>) -> bool {
         terminal_completion::hold(input)
     }

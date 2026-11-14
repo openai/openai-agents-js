@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { losslessJsonObjectSchema } from './binding';
-import type { RecordedRequestUsage } from './history';
+import type { ReceivedTokenUsage, RecordedRequestUsage } from './history';
 import type { CapturedModelAttempt } from './model-attempts';
 import {
   addRunUsage,
@@ -34,6 +34,40 @@ export class RecordedRequestUsageProjection {
     string,
     { id: string; reports: number; cacheWriteTokens?: TokenCount } | null
   >();
+
+  private compactionRequests = 0;
+
+  observeCompaction(
+    id: string,
+    threadId: string,
+    turnId: string,
+    usage: ReceivedTokenUsage | null,
+  ): void {
+    this.compactionRequests += 1;
+    const cacheWriteTokens = usage?.inputTokensDetails?.cacheWriteTokens;
+    this.entries.push({
+      scope: 'compaction',
+      threadId,
+      turnId,
+      ownerAttemptId: id,
+      attemptId: id,
+      requestOrdinal: this.compactionRequests,
+      tokenUsageKnown:
+        usage?.inputTokens !== undefined &&
+        usage.outputTokens !== undefined &&
+        usage.totalTokens !== undefined,
+      inputTokens: usage?.inputTokens ?? 0,
+      inputTokensDetails: {
+        cachedTokens: usage?.inputTokensDetails?.cachedTokens ?? 0,
+        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+      },
+      outputTokens: usage?.outputTokens ?? 0,
+      outputTokensDetails: {
+        reasoningTokens: usage?.outputTokensDetails?.reasoningTokens ?? 0,
+      },
+      totalTokens: usage?.totalTokens ?? 0,
+    });
+  }
 
   recordCacheWrite(threadId: string, value: TokenCount | undefined): void {
     const active = this.active.get(threadId);
@@ -262,7 +296,12 @@ export class RecordedRequestUsageProjection {
     owners: Iterable<CapturedModelAttempt>,
     legacyRequests: number | bigint,
   ): boolean {
-    if (!this.complete || BigInt(legacyRequests) !== 0n) return false;
+    if (
+      !this.complete ||
+      BigInt(legacyRequests) !== 0n ||
+      this.compactionRequests !== 0
+    )
+      return false;
     let requests = 0n;
     for (const captured of owners) {
       if (captured.wire.provider_managed === true) {

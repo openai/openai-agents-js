@@ -2,6 +2,11 @@ import type { ApplyPatchOperation } from './types/protocol';
 import type { RunContext } from './runContext';
 export type { ApplyPatchOperation } from './types/protocol';
 
+/** A synchronous text format; the managed editor retains filesystem authority. */
+export interface PatchFormat {
+  applyDiff(input: string, diff: string, mode?: 'create' | 'default'): string;
+}
+
 /**
  * Result returned by an Editor operation.
  */
@@ -30,6 +35,8 @@ export type EditorInvocationContext = {
  * Host interface responsible for applying diffs on disk.
  */
 export interface Editor {
+  /** Preserve this provider's scoped file operations with another text format. */
+  withPatchFormat?(format: PatchFormat): Editor;
   /**
    * Creates a new file from a V4A diff.
    */

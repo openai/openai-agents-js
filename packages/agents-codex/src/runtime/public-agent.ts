@@ -1,5 +1,16 @@
+import {
+  bindConfiguredChildSandboxDefault,
+  consumeConfiguredChildSandboxDefault,
+  sandboxDefaultCompaction,
+  sandboxDefaultModel,
+} from './sandbox-defaults';
+import { z } from 'zod';
+import type { AgentLifecycleCallback } from './agent-lifecycle';
 import type { RunErrorHandler } from './run-error-recovery';
+import type { Observation } from './observation';
 import { acquireProfileEnvironments } from './profile-environments';
+import { DeferredAgentPreparation } from './deferred-agent-preparation';
+import { environmentConfig } from './environment';
 import {
   captureProviderHistory,
   type ProviderHistory,
@@ -115,7 +126,7 @@ import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
 import type { ToolErrorFormatter } from './tools';
 
-import { Environment } from './environment';
+import { Environment, requiresProcessIdentity } from './environment';
 import {
   loadInstructionFiles,
   type InstructionFileReceipt,
@@ -204,6 +215,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Cancellation and close join entered callbacks. Do not mutate this Session.
    */
   beforeComplete?: BeforeComplete<Context>;
+  onLifecycle?: AgentLifecycleCallback<Context>;
   /** Reduce settled direct function results before another model request.
    * Finish proposals use the source Agent's output and completion policies.
    * Accepted handoffs and CodeMode calls remain outside this hook.
@@ -386,6 +398,8 @@ export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
   /** Replace or omit new user input before native submission and storage. */
   inputStoragePolicy?: SubmitOptions<Context>['inputStoragePolicy'];
+  /** Persist only this run's owned text user input after model projection. */
+  storeProjectedUserInput?: SubmitOptions<Context>['storeProjectedUserInput'];
   returnState?: boolean;
   /** Capture conversation records for replay through another Session's transactHistory.
    * History above 4,096 original records or 8 MiB causes a size error after completion. */
@@ -404,6 +418,8 @@ export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   captureErrorDetails?: boolean;
   /** Supply validated fallback output after an eligible settled failure, without retrying. */
   errorHandler?: RunErrorHandler<Output, Context>;
+  /** Observe this run's native events while it executes. The handler can await backpressure. */
+  onEvent?: (event: Observation) => void | Promise<void>;
 }
 
 // Track inheritance without retaining a replaced mutable Agent.provider.
@@ -450,6 +466,7 @@ interface CapturedOpening {
   readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
+  readonly onLifecycle?: AgentLifecycleCallback<any>;
   readonly toolBatchCompletion?: ToolBatchCompletion<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
   readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
@@ -469,6 +486,7 @@ type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
   [ownedRun]?: OneShotOptions & {
     decisions?: DecisionProvider;
     beforeComplete?: BeforeComplete<Context>;
+    onLifecycle?: AgentLifecycleCallback<Context>;
     toolBatchCompletion?: ToolBatchCompletion<Context>;
   };
   [deferredOpening]?: {
@@ -591,6 +609,7 @@ export class Agent<Context = undefined, Output = string> {
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
+  onLifecycle?: AgentLifecycleCallback<Context>;
   toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails: readonly InputGuardrail<Context>[];
   outputGuardrails: readonly OutputGuardrail<Context>[];
@@ -656,6 +675,7 @@ export class Agent<Context = undefined, Output = string> {
         : captureModelSettings(options.modelSettings);
     for (const name of [
       'beforeComplete',
+      'onLifecycle',
       'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
@@ -664,6 +684,7 @@ export class Agent<Context = undefined, Output = string> {
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
+    this.onLifecycle = options.onLifecycle;
     this.toolBatchCompletion = options.toolBatchCompletion;
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
@@ -831,6 +852,10 @@ export class Agent<Context = undefined, Output = string> {
       providerHistory: captureProviderHistory(suppliedOptions?.providerHistory),
       parentTrace: captureTraceContext(suppliedOptions?.parentTrace),
     } as OwnedSessionOptions<Context>;
+    bindConfiguredChildSandboxDefault(
+      options,
+      consumeConfiguredChildSandboxDefault(suppliedOptions),
+    );
     if (
       options.observationRetention !== undefined &&
       options.observationRetention !== 'bounded' &&
@@ -1010,6 +1035,9 @@ export class Agent<Context = undefined, Output = string> {
     if (errorHandler !== undefined && typeof errorHandler !== 'function')
       throw new TypeError('errorHandler must be callable');
     const observeFailure = captureErrorDetails || errorHandler !== undefined;
+    const onEvent = options.onEvent;
+    if (onEvent !== undefined && typeof onEvent !== 'function')
+      throw new TypeError('onEvent must be callable');
     const maxModelSteps = validateMaxModelSteps(options.maxModelSteps);
     const budget = RunBudgetTracker.capture(options.budget);
     const beforeStep = options.beforeStep;
@@ -1042,17 +1070,25 @@ export class Agent<Context = undefined, Output = string> {
         );
       return parts;
     };
+    if (options.storeProjectedUserInput && input === null)
+      throw new TypeError(
+        'storeProjectedUserInput requires a direct text user input',
+      );
     const inputStoragePolicy =
       input === null
         ? undefined
-        : captureInputStoragePolicy(input, options.inputStoragePolicy);
+        : captureInputStoragePolicy(
+            input,
+            options.inputStoragePolicy,
+            options.storeProjectedUserInput,
+          );
     if (inputStoragePolicy) inputStoragePolicy.capture = captureRunInput;
     const preparedInput = input === null ? null : captureRunInput(input);
     const factory = this.session;
     const factoryApply = factory.apply;
     const guardrailInput =
       input !== null &&
-      inputStoragePolicy === undefined &&
+      inputStoragePolicy?.project === undefined &&
       (this.inputGuardrails.length > 0 ||
         (options.inputGuardrails?.length ?? 0) > 0 ||
         (options.state !== undefined && this.handoffs.length > 0) ||
@@ -1062,7 +1098,7 @@ export class Agent<Context = undefined, Output = string> {
         ? structuredClone(input)
         : undefined;
     const errorInput = observeFailure
-      ? inputStoragePolicy
+      ? inputStoragePolicy?.project
         ? null
         : structuredClone(input)
       : undefined;
@@ -1107,6 +1143,7 @@ export class Agent<Context = undefined, Output = string> {
         returnItems: options.returnItems || observeFailure,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
+        onLifecycle: this.onLifecycle,
         toolBatchCompletion: this.toolBatchCompletion,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
@@ -1126,6 +1163,7 @@ export class Agent<Context = undefined, Output = string> {
       options.returnRawUsage !== true &&
       options.returnItems !== true &&
       !observeFailure &&
+      onEvent === undefined &&
       options.prepareRequest === undefined &&
       inputStoragePolicy === undefined &&
       modelOverride === undefined &&
@@ -1160,6 +1198,7 @@ export class Agent<Context = undefined, Output = string> {
       guardrailInput,
       errorInput,
       errorHandler,
+      onEvent,
       captureErrorDetails,
       inputStoragePolicy,
       maxModelSteps,
@@ -1177,6 +1216,8 @@ export class Agent<Context = undefined, Output = string> {
     acquiredEnvironment: (owner: EnvironmentAcquisition) => void,
     cleanupAcquired: () => void,
   ) {
+    const inheritedSandboxDefault =
+      consumeConfiguredChildSandboxDefault(options);
     const privateOwned = consumePrivateOwnedGrant(
       (options as OwnedSessionOptions<Context>)[ownedRun]?.privateEngineGrant,
     );
@@ -1203,6 +1244,15 @@ export class Agent<Context = undefined, Output = string> {
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
     );
+    const onLifecycle = (options as OwnedSessionOptions<Context>)[
+      correctionOpening
+    ]
+      ? undefined
+      : opening
+        ? opening.onLifecycle
+        : owned
+          ? owned.onLifecycle
+          : this.onLifecycle;
     const declaredBeforeComplete = opening
       ? opening.beforeComplete
       : owned
@@ -1495,38 +1545,41 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Sign in with ChatGPT supports a single Agent with direct local function tools and settled state',
       );
+    const captureCurrentProfiles = () =>
+      captureAgentProfiles(
+        this,
+        new Agent({
+          instructions: baseInstructions,
+          name,
+          model,
+          modelSettings: settings,
+          provider,
+          outputType: outputType as OutputSpec<Output> | undefined,
+          tools: options.tools ?? this.tools,
+          handoffs: this.handoffs,
+          toolNameCollisionPolicy: this.toolNameCollisionPolicy,
+          realtime: this.realtime,
+          decisions,
+          beforeComplete,
+          onLifecycle,
+          toolBatchCompletion,
+          inputGuardrails: agentInputGuardrails,
+          outputGuardrails: agentOutputGuardrails,
+          programmaticToolCalling,
+          beforeCompact,
+          compaction,
+          transformContext,
+          prepareHandoffInput,
+          hostedPrompt,
+        } as AgentOptions<Context, Output>),
+        true,
+        undefined,
+        promptControls,
+      );
     let profiles = opening
       ? opening.profiles
       : this.handoffs.length || this.realtime !== undefined
-        ? captureAgentProfiles(
-            this,
-            new Agent({
-              instructions: baseInstructions,
-              name,
-              model,
-              modelSettings: settings,
-              provider,
-              outputType: outputType as OutputSpec<Output> | undefined,
-              tools: options.tools ?? this.tools,
-              handoffs: this.handoffs,
-              toolNameCollisionPolicy: this.toolNameCollisionPolicy,
-              realtime: this.realtime,
-              decisions,
-              beforeComplete,
-              toolBatchCompletion,
-              inputGuardrails: agentInputGuardrails,
-              outputGuardrails: agentOutputGuardrails,
-              programmaticToolCalling,
-              beforeCompact,
-              compaction,
-              transformContext,
-              prepareHandoffInput,
-              hostedPrompt,
-            } as AgentOptions<Context, Output>),
-            true,
-            undefined,
-            promptControls,
-          )
+        ? captureCurrentProfiles()
         : undefined;
     if (profiles) {
       const selectedTools = splitToolDeclarations(
@@ -1619,17 +1672,20 @@ export class Agent<Context = undefined, Output = string> {
       options.signal,
     );
     acquiredEnvironment(environmentOwner);
+    // Root-only selected-user launches need the same existing policy receipt
+    // owner as graph openings. Ordinary launches keep their previous path.
+    if (!profiles && requiresProcessIdentity(environmentOwner.environment)) {
+      profiles = captureCurrentProfiles();
+    }
     const profileEnvironments = profiles
-      ? await acquireProfileEnvironments(profiles, environmentOwner)
+      ? await acquireProfileEnvironments(
+          profiles,
+          environmentOwner,
+          !persistent && options.resume === undefined,
+        )
       : undefined;
     const capabilityLease = environmentOwner.sandboxCapabilities;
-    if (
-      capabilityLease?.hasContributions ||
-      [...(profileEnvironments?.values() ?? [])].some(
-        (owner) => owner.sandboxCapabilities?.hasContributions,
-      )
-    ) {
-      if (stateResult && !stateResult.success) throw stateResult.error;
+    const assertCapabilityContributions = () => {
       if (
         opening ||
         isManualSessionState(stateResult?.data) ||
@@ -1657,6 +1713,15 @@ export class Agent<Context = undefined, Output = string> {
         throw new TypeError(
           'Sandbox capability contributions require a fresh root or idle restore with eager direct function tools or owned Shell/ApplyPatch callbacks',
         );
+    };
+    if (
+      capabilityLease?.hasContributions ||
+      [...(profileEnvironments?.values() ?? [])].some(
+        (owner) => owner.sandboxCapabilities?.hasContributions,
+      )
+    ) {
+      if (stateResult && !stateResult.success) throw stateResult.error;
+      assertCapabilityContributions();
       const contributed = capabilityLease?.hasContributions
         ? await capabilityLease.contributions(settings, transformContext)
         : { tools: [], settings, transformContext };
@@ -1682,6 +1747,7 @@ export class Agent<Context = undefined, Output = string> {
           contributed,
           instructions,
           profileEnvironments,
+          profileEnvironments?.deferred,
         );
         catalog = captureTools(
           profiles[0].declaration.tools as readonly SessionTool[],
@@ -1703,6 +1769,7 @@ export class Agent<Context = undefined, Output = string> {
     }
     const environment = environmentOwner.environment;
     const hasExecutorEnvironment =
+      !!profileEnvironments?.deferred.size ||
       !!environment ||
       [...(profileEnvironments?.values() ?? [])].some(
         (owner) => owner.environment !== undefined,
@@ -1808,7 +1875,7 @@ export class Agent<Context = undefined, Output = string> {
           ),
         ),
       });
-    if (graph && profileEnvironments)
+    if (graph && profileEnvironments && hasExecutorEnvironment)
       graph = Object.freeze({
         ...graph,
         environments: profileEnvironments,
@@ -1816,16 +1883,160 @@ export class Agent<Context = undefined, Output = string> {
           graph.roster.map((row) => {
             if (row.workspace_preparation === true) return row;
             const owner = profileEnvironments.get(row.id as string)!;
+            const workspaceInstructions = owner.sandboxCapabilities
+              ?.hasPreparedProfiles
+              ? owner.profileWorkspaceInstructions
+              : owner.workspaceInstructions;
+            return workspaceInstructions
+              ? Object.freeze({
+                  ...row,
+                  workspace_instructions: workspaceInstructions,
+                })
+              : row;
+          }),
+        ),
+      });
+    if (graph && profileEnvironments)
+      graph = Object.freeze({
+        ...graph,
+        roster: Object.freeze(
+          graph.roster.map((row) => {
+            const id = row.id as string;
+            if (profileEnvironments.deferred.has(id)) return row;
+            const declaration = graph!.profiles.get(id)!.profile.declaration;
             return Object.freeze({
               ...row,
-              workspace_instructions:
-                (owner.sandboxCapabilities?.hasPreparedProfiles
-                  ? owner.profileWorkspaceInstructions
-                  : owner.workspaceInstructions) ?? '',
+              model: sandboxDefaultModel(
+                row.model as JsonObject,
+                profileEnvironments.get(id),
+                declaration.provider ?? provider,
+                profileEnvironments.get(id) === environmentOwner
+                  ? inheritedSandboxDefault
+                  : undefined,
+              ),
             });
           }),
         ),
       });
+    if (graph && profiles && profileEnvironments?.deferred.size) {
+      const recipe = graph;
+      const declarations = profiles;
+      const deferred = new DeferredAgentPreparation(
+        profileEnvironments,
+        async (id, owner) => {
+          let profile = declarations.find((entry) => entry.id === id)!;
+          const capability = owner.sandboxCapabilities;
+          if (capability) {
+            if (capability.hasContributions) assertCapabilityContributions();
+            const contribution = await capability.contributions(
+              profile.declaration.modelSettings,
+              profile.declaration.transformContext,
+            );
+            [profile] = await prepareCapabilityProfiles(
+              [profile],
+              capability,
+              contribution,
+              profile.declaration.instructions ?? '',
+              new Map([[id, owner]]),
+            );
+          }
+          const captured = captureProfileRuntimes(
+            declarations.map((entry) => (entry.id === id ? profile : entry)),
+            catalog,
+            profileInstructions,
+            outputGuardrails.length > 0,
+            inputGuardrails.length + agentInputGuardrails.length > 0,
+            settings,
+          );
+          const row = profileRoster(captured, owner.environment).find(
+            (entry) => entry.id === id,
+          )!;
+          const runtime = captured.profiles.get(id)!;
+          return {
+            runtime,
+            declaration: {
+              ...row,
+              model: sandboxDefaultModel(
+                row.model as JsonObject,
+                owner,
+                profile.declaration.provider ?? provider,
+              ),
+              workspace_preparation: true,
+              environment: environmentConfig(owner.environment!),
+              environment_tools: [...owner.environment!.tools],
+              workspace_instructions:
+                owner.profileWorkspaceInstructions ??
+                owner.workspaceInstructions ??
+                '',
+            },
+          };
+        },
+        recipe.workspace,
+      );
+      graph = Object.freeze({
+        ...recipe,
+        deferred,
+        workspace: deferred,
+        roster: Object.freeze(
+          recipe.roster.map((row) =>
+            profileEnvironments.deferred.has(row.id as string)
+              ? Object.freeze({
+                  ...row,
+                  environment_preparation: true,
+                  workspace_preparation: true,
+                  environment_tools: [],
+                })
+              : row,
+          ),
+        ),
+      });
+      if (state) {
+        const native = await binding();
+        const destinations = z
+          .array(z.string())
+          .nullable()
+          .parse(
+            JSON.parse(
+              native._agent_profiles_prepared_destinations(
+                JSON.stringify(profileRoster(graph, environment)),
+                graph.rootId,
+                JSON.stringify(state.history),
+              ),
+            ),
+          );
+        const ready = new Map(graph.profiles);
+        for (const id of destinations ?? profileEnvironments.deferred) {
+          if (!profileEnvironments.deferred.has(id)) continue;
+          const prepared = await deferred.capture(
+            id,
+            environmentOwner.signal,
+            () => environmentOwner.signal.throwIfAborted(),
+            true,
+          );
+          ready.set(id, prepared.runtime);
+        }
+        graph =
+          destinations === null
+            ? Object.freeze({
+                ...recipe,
+                profiles: ready,
+                roster: Object.freeze(
+                  recipe.roster.map((row) => {
+                    const prepared = deferred.declaration(row.id as string);
+                    if (!prepared) return row;
+                    const legacy: JsonObject = {
+                      ...prepared,
+                      workspace_preparation: false,
+                    };
+                    if (legacy.workspace_instructions === '')
+                      delete legacy.workspace_instructions;
+                    return Object.freeze(legacy);
+                  }),
+                ),
+              })
+            : Object.freeze({ ...graph, profiles: ready });
+      }
+    }
     const graphNative = graph ? await binding() : undefined;
     const restoredSource =
       graph && state
@@ -1920,6 +2131,15 @@ export class Agent<Context = undefined, Output = string> {
         : []),
       ...[
         ...new Set([
+          ...(profileEnvironments?.deferred.size
+            ? [
+                'exec_command',
+                'write_stdin',
+                'apply_patch',
+                'project_glob',
+                'project_grep',
+              ]
+            : []),
           ...(environment?.tools ?? []),
           ...[...(profileEnvironments?.values() ?? [])].flatMap(
             (owner) => owner.environment?.tools ?? [],
@@ -2279,6 +2499,16 @@ export class Agent<Context = undefined, Output = string> {
                 },
               }
             : {}),
+          _agent_lifecycle: completedGraph
+            ? [...completedGraph.profiles]
+                .filter(
+                  ([, value]) =>
+                    value.profile.declaration.onLifecycle !== undefined,
+                )
+                .map(([id]) => id)
+            : onLifecycle === undefined
+              ? []
+              : [''],
           _context_callbacks: {
             tool_not_found: toolErrorFormatter !== undefined,
             model_producer: provider.modelBackend !== undefined,
@@ -2302,6 +2532,12 @@ export class Agent<Context = undefined, Output = string> {
               ) ??
                 false),
             before_complete:
+              onLifecycle !== undefined ||
+              (completedGraph &&
+                [...completedGraph.profiles.values()].some(
+                  (value) =>
+                    value.profile.declaration.onLifecycle !== undefined,
+                )) ||
               beforeComplete !== undefined ||
               agentOutputGuardrails.length > 0 ||
               outputGuardrails.length > 0 ||
@@ -2417,6 +2653,7 @@ export class Agent<Context = undefined, Output = string> {
             } as AgentOptions<Context, Output>),
           ) as Agent<any, any>),
         beforeComplete,
+        onLifecycle,
         toolBatchCompletion,
         inputGuardrails,
         outputGuardrails,
@@ -2435,6 +2672,11 @@ export class Agent<Context = undefined, Output = string> {
         nativeGoals: declarations.nativeGoals,
         mcpTools: declarations.mcp.length ? declarations.mcp : undefined,
         initialModelSettings: settings,
+        defaultProviderCompaction: sandboxDefaultCompaction(
+          environmentOwner,
+          provider,
+          inheritedSandboxDefault,
+        ),
         providerHistory: options.providerHistory,
         hostedPrompt,
         hostedPromptControls: promptControls,
@@ -2501,6 +2743,7 @@ export class Agent<Context = undefined, Output = string> {
             profiles,
             decisions,
             beforeComplete,
+            onLifecycle,
             toolBatchCompletion,
             inputGuardrails,
             outputGuardrails,
@@ -2691,9 +2934,14 @@ async function prepareCapabilityProfiles(
   root: Awaited<ReturnType<SandboxCapabilityLease['contributions']>>,
   instructions: string,
   resources?: ReadonlyMap<string, EnvironmentAcquisition>,
+  deferred?: ReadonlySet<string>,
 ): Promise<readonly CapturedAgentProfile<any, any>[]> {
   const prepared: CapturedAgentProfile<any, any>[] = [];
   for (const [index, profile] of profiles.entries()) {
+    if (deferred?.has(profile.id)) {
+      prepared.push(profile);
+      continue;
+    }
     const resourceOwner = resources
       ? resources.get(profile.id)?.sandboxCapabilities
       : owner;
@@ -2944,6 +3192,7 @@ export function captureAgentProfiles<Context, Output>(
       toolNameCollisionPolicy: source.toolNameCollisionPolicy,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
+      onLifecycle: source.onLifecycle,
       toolBatchCompletion: source.toolBatchCompletion,
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
@@ -3219,6 +3468,7 @@ export function openOwnedHistorySession<Context, Output>(
       input,
       decisions: captureDecisionProvider(agent.decisions),
       beforeComplete: agent.beforeComplete,
+      onLifecycle: agent.onLifecycle,
       toolBatchCompletion: agent.toolBatchCompletion,
     },
   } as OwnedSessionOptions<Context>;

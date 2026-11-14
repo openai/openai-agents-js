@@ -1,6 +1,12 @@
+import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
-import { Agent, NativeProvider, type SessionState } from '../../src';
+import {
+  Agent,
+  NativeProvider,
+  parseSessionState,
+  type SessionState,
+} from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
 afterEach(() => ModelServer.closeAll());
@@ -141,3 +147,55 @@ it.each([false, true])(
   },
   30_000,
 );
+
+it('rebinds non-strict root output for checkpoints that omitted profile strictness', async () => {
+  const server = new ModelServer([
+    [message('{"value":"initial"}')],
+    [message('{"value":"restored"}')],
+  ]);
+  const config = await server.config();
+  await using provider = new NativeProvider({
+    baseUrl: (config['model_providers.fixture'] as { base_url: string })
+      .base_url,
+    apiKey: 'synthetic-output-strictness',
+    supportsWebsockets: false,
+  });
+  const schema = z.strictObject({ value: z.string() });
+  const destination = new Agent({
+    name: 'B',
+    instructions: 'Complete.',
+    outputType: { mode: 'native', schema },
+  });
+  const source = new Agent({
+    model: 'gpt-5.5',
+    provider,
+    instructions: 'Start.',
+    outputType: { mode: 'native', schema, strict: false },
+    handoffs: [destination],
+  });
+  let state: SessionState;
+  {
+    await using session = await source.session();
+    expect((await (await session.submit('Start.')).wait()).finalOutput).toEqual(
+      {
+        value: 'initial',
+      },
+    );
+    state = await session.saveState();
+  }
+  // Older root profile receipts carried model settings without this field.
+  const legacyWire = JSON.stringify(state, (key, value: unknown) =>
+    key === 'output_schema_strict' ? undefined : value,
+  );
+  const legacyState = parseSessionState(legacyWire, {
+    expectedSha256: createHash('sha256').update(legacyWire).digest('hex'),
+  });
+  await using restored = await source.session({ state: legacyState });
+  expect(
+    (await (await restored.submit('Continue.')).wait()).finalOutput,
+  ).toEqual({
+    value: 'restored',
+  });
+  expect(format(server.requests[1]).strict).toBe(false);
+  server.assertExhausted();
+});

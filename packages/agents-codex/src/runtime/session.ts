@@ -1,3 +1,4 @@
+import type { AgentLifecycleCallback } from './agent-lifecycle';
 import { abortable } from '../voice/abortable';
 import {
   RecoverRun,
@@ -525,6 +526,7 @@ export interface SessionOptions {
   includeRequestAttempts?: boolean;
   includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
+  onLifecycle?: AgentLifecycleCallback<any>;
   toolBatchCompletion?: ToolBatchCompletion<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
   outputGuardrails?: readonly OutputGuardrail<any>[];
@@ -566,6 +568,8 @@ export interface SessionOptions {
   agentGraph?: CapturedAgentGraph & { readonly fingerprint: string };
   context?: unknown;
   initialModelSettings?: ModelSettings;
+  /** Fresh acquisition policy; excluded from public model settings and saved state. */
+  defaultProviderCompaction?: boolean;
   providerHistory?: ProviderHistory;
   /** @internal Captured authorized prompt source; never serialized as a callback. */
   hostedPrompt?: HostedPromptSource<any>;
@@ -730,10 +734,16 @@ export interface SubmitOptions<
     history: CanonicalHistorySnapshot,
     signal: AbortSignal,
   ) => UserInput | null | Promise<UserInput | null>;
+  /** Persist only this root's text user input after the captured model projection.
+   * Requires Responses HTTP and retained source item IDs. Prior history and tool
+   * results stay unchanged. Source-less user additions/replacements, cache markers,
+   * and automatic compaction are unsupported. */
+  storeProjectedUserInput?: boolean;
 }
 
 export type CapturedInputStoragePolicy = {
-  project: NonNullable<SubmitOptions['inputStoragePolicy']>;
+  project?: NonNullable<SubmitOptions['inputStoragePolicy']>;
+  modelProjection?: true;
   input: UserInput;
   capture?: (input: UserInput) => ReturnType<typeof nativeInput>;
 };
@@ -742,11 +752,21 @@ export type CapturedInputStoragePolicy = {
 export function captureInputStoragePolicy(
   input: UserInput,
   project: SubmitOptions['inputStoragePolicy'],
+  storeProjectedUserInput: SubmitOptions['storeProjectedUserInput'] = false,
 ): CapturedInputStoragePolicy | undefined {
-  if (project === undefined) return;
+  if (typeof storeProjectedUserInput !== 'boolean')
+    throw new TypeError('storeProjectedUserInput must be boolean');
+  if (project === undefined)
+    return storeProjectedUserInput
+      ? { modelProjection: true, input: structuredClone(input) }
+      : undefined;
   if (typeof project !== 'function')
     throw new TypeError('inputStoragePolicy must be callable');
-  return { project, input: structuredClone(input) };
+  return {
+    project,
+    input: structuredClone(input),
+    ...(storeProjectedUserInput ? { modelProjection: true } : {}),
+  };
 }
 /** @internal Validate before opening a provider or allocating a submission. */
 export function validateModelOverride(
@@ -1415,6 +1435,7 @@ const submissions = new WeakMap<
     profileSettlement?: Promise<void>;
     workspaceSettlement?: Promise<void>;
     memoryAdmissionRecorded?: boolean;
+    memorySource?: AgentProfileReceipt;
     memoryAdmissionFailure?: { error: unknown };
     callerSignal?: AbortSignal;
     observation: ObservationPhase;
@@ -2723,6 +2744,7 @@ export class Session<OutputT = string, Context = unknown> {
     generation: string,
   ): ToolCatalog {
     const source = this.messageProfile(message);
+    if (source) this.acknowledgeWorkspace(source);
     const catalog = source
       ? this.profileCatalogs.get(
           this.profileKey(source.profile_id, profileInteger(generation)),
@@ -2849,14 +2871,36 @@ export class Session<OutputT = string, Context = unknown> {
     }
   }
 
+  private publishPreparedProfile(id: string): void {
+    const deferred = this.options.agentGraph?.deferred;
+    if (deferred?.runtime(id)) {
+      const generation = BigInt(
+        profileInteger(this.#native._agent_profiles_prepared_catalog(id)),
+      );
+      const runtime = deferred.confirm(id, generation);
+      if (runtime) {
+        this.profileRuntimes = new Map(this.profileRuntimes).set(id, runtime);
+        const key = this.profileKey(id, generation);
+        this.profileCatalogs.set(key, runtime.catalog);
+        this.profileStepMcp.set(key, runtime.mcp);
+        this.profileMcp.set(key, runtime.mcp);
+        this.profileHighWater =
+          generation > this.profileHighWater
+            ? generation
+            : this.profileHighWater;
+      }
+    }
+  }
   private acknowledgeWorkspace(receipt: AgentProfileReceipt): void {
     const pending = this.workspacePreparation;
     if (
       pending &&
       receipt.profile_id === pending.target &&
       receipt.epoch !== pending.source.epoch
-    )
+    ) {
+      this.publishPreparedProfile(receipt.profile_id);
       this.workspacePreparation = undefined;
+    }
   }
   private async settleWorkspace(
     run: NativeTurn,
@@ -3572,6 +3616,18 @@ export class Session<OutputT = string, Context = unknown> {
             : this.options.initialModelSettings;
         await this.restoreModelControls(settings);
       }
+      if (
+        this.options.defaultProviderCompaction !== undefined &&
+        (await this.#native._update_model_settings(
+          encode({
+            request_controls: {
+              sdk_default_provider_compaction:
+                this.options.defaultProviderCompaction,
+            },
+          }),
+        )) !== true
+      )
+        throw new NativeError('Native sandbox defaults were not acknowledged');
       this.configureNative(this.#native);
       if (
         this.restored &&
@@ -3671,6 +3727,7 @@ export class Session<OutputT = string, Context = unknown> {
         this.profileRuntimes = allocated.profiles;
         this.profileHighWater = allocated.highWater;
         for (const [id, profile] of this.profileRuntimes) {
+          graph.deferred?.configured(id);
           this.profileCatalogs.set(
             this.profileKey(id, profile.catalog.generation),
             profile.catalog,
@@ -5208,8 +5265,9 @@ export class Session<OutputT = string, Context = unknown> {
     modelSettingsOverride?: ModelSettings,
     toolNotFoundBehavior?: OperationOptions['toolNotFoundBehavior'],
     inputStoragePolicy?: CapturedInputStoragePolicy,
+    observeTurn?: (turn: Turn<OutputT, string | null>) => void,
   ): Promise<NativeRunResult> {
-    this.startTurn(
+    const run = this.startTurn(
       input,
       false,
       undefined,
@@ -5236,6 +5294,7 @@ export class Session<OutputT = string, Context = unknown> {
       inputStoragePolicy,
     );
 
+    observeTurn?.(this.issuedTurn(run) as Turn<OutputT, string | null>);
     return this.#waitResult();
   }
   private get hasInputGuardrails(): boolean {
@@ -5288,6 +5347,7 @@ export class Session<OutputT = string, Context = unknown> {
     const inputStoragePolicy = captureInputStoragePolicy(
       input,
       options?.inputStoragePolicy,
+      options?.storeProjectedUserInput,
     );
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
@@ -5306,7 +5366,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.parentTrace = parentTrace;
     run.inputGuardrailsPassed = this.hasInputGuardrails ? false : undefined;
     run.guardrailInput =
-      this.hasInputGuardrails && !inputStoragePolicy
+      this.hasInputGuardrails && !inputStoragePolicy?.project
         ? structuredClone(input)
         : undefined;
     run.selection = selection;
@@ -5373,6 +5433,7 @@ export class Session<OutputT = string, Context = unknown> {
     const inputStoragePolicy = captureInputStoragePolicy(
       input,
       options?.inputStoragePolicy,
+      options?.storeProjectedUserInput,
     );
     const output =
       options?.outputType === undefined
@@ -5395,7 +5456,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tracing,
       options?.writableRoots,
       parentTrace,
-      this.hasInputGuardrails && !inputStoragePolicy
+      this.hasInputGuardrails && !inputStoragePolicy?.project
         ? structuredClone(input)
         : undefined,
       undefined,
@@ -5737,7 +5798,8 @@ export class Session<OutputT = string, Context = unknown> {
       originMcp: this.mcpBindings,
       originProfileId: this.profileCurrent?.profile_id,
       operationDeclarationSource:
-        options?.tools !== undefined && options.tools.length
+        (options?.tools !== undefined && options.tools.length) ||
+        this.options.agentGraph
           ? this.profileCurrent
           : undefined,
       prepareRequest: options?.prepareRequest,
@@ -6414,6 +6476,9 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
       ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
       mode: 'start_if_idle',
+      ...(inputStoragePolicy?.modelProjection
+        ? { project_model_inputs: true }
+        : {}),
       profile_output_override: state.outputOverride,
       ...(run.raiseOnUnknownTool === undefined
         ? {}
@@ -6463,7 +6528,8 @@ export class Session<OutputT = string, Context = unknown> {
         if (!tracing && !inputStoragePolicy) return submit(wire!);
         let submission: string;
         try {
-          if (inputStoragePolicy) {
+          if (inputStoragePolicy?.project) {
+            const project = inputStoragePolicy.project;
             const preparation = new AbortController();
             const signal = AbortSignal.any([
               run.controller.signal,
@@ -6492,7 +6558,7 @@ export class Session<OutputT = string, Context = unknown> {
                   );
                 throw error;
               });
-              const { project, input } = inputStoragePolicy;
+              const { input } = inputStoragePolicy;
               await this.invokeCallback(
                 run,
                 async () => {
@@ -7267,7 +7333,8 @@ export class Session<OutputT = string, Context = unknown> {
     const continueRetained = error === undefined && retained;
     run.failure = error;
     if (
-      this.options.environmentOwner?.hasSandboxMemory &&
+      (this.options.agentGraph !== undefined ||
+        this.options.environmentOwner?.hasAnySandboxMemory) &&
       run.id !== null &&
       this.rootRun(run).inputGuardrailsPassed !== false &&
       (!this.restoredRoot ||
@@ -7278,7 +7345,19 @@ export class Session<OutputT = string, Context = unknown> {
       submission.memoryAdmissionRecorded = true;
       const turnId = run.id;
       const persistence = Promise.resolve()
-        .then(() => this.#native._record_memory_input_admission(turnId))
+        .then(async () => {
+          const value = parseProfileReceipt(
+            await this.#native._record_memory_input_admission(turnId),
+          );
+          if (this.options.agentGraph) {
+            const graph = this.callbackProfileGraph(value);
+            if (!graph)
+              throw new NativeError(
+                'Memory terminal source has no captured Agent graph',
+              );
+            submission.memorySource = checkProfileReceipt(value, graph);
+          }
+        })
         .catch((cause: unknown) => {
           submission.memoryAdmissionFailure = { error: cause };
         });
@@ -8085,6 +8164,7 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === '_sdk_before_compact' ||
       msg.type === '_sdk_before_compact_policy' ||
       msg.type === '_sdk_handoff_input' ||
+      msg.type === '_sdk_agent_lifecycle' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -8469,6 +8549,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === '_sdk_before_compact' ||
       kind === '_sdk_before_compact_policy' ||
       kind === '_sdk_handoff_input' ||
+      kind === '_sdk_agent_lifecycle' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -9470,7 +9551,6 @@ export class Session<OutputT = string, Context = unknown> {
         ? declaration!.outputGuardrails
         : (this.options.agentOutputGuardrails ?? [])),
     ];
-    if (!guards.length) return;
     const scope = this.decisionScope(message, request.signal);
     try {
       await settleOutputGuardrails({
@@ -9487,6 +9567,22 @@ export class Session<OutputT = string, Context = unknown> {
       });
     } finally {
       await scope.close();
+    }
+    const callback = this.sourceModelCallbacks(message).onLifecycle;
+    if (callback !== undefined) {
+      check();
+      callback(
+        Object.freeze({
+          kind: 'end',
+          context: this.options.context,
+          agent,
+          sessionId: this.id,
+          turnId: request.turnId,
+          subagentId: request.subagentId,
+          output: request.finalOutput,
+        }),
+      );
+      check();
     }
   }
 
@@ -9523,6 +9619,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
+    onLifecycle?: AgentLifecycleCallback<any>;
     toolBatchCompletion?: ToolBatchCompletion<any>;
     beforeCompact?: BeforeCompact<any>;
     compaction?: ResponsesCompaction<any>;
@@ -9535,6 +9632,7 @@ export class Session<OutputT = string, Context = unknown> {
     const captured = this.profileRuntimes.get(source.profile_id)!.profile;
     return {
       beforeComplete: captured.declaration.beforeComplete,
+      onLifecycle: captured.declaration.onLifecycle,
       toolBatchCompletion: captured.declaration.toolBatchCompletion,
       beforeCompact: captured.declaration.beforeCompact,
       compaction: captured.declaration.compaction,
@@ -9598,6 +9696,7 @@ export class Session<OutputT = string, Context = unknown> {
           const workspace = msg.type === '_sdk_agent_workspace';
           const responseSpan = msg.type === '_sdk_provider_response_span';
           const handoffInput = msg.type === '_sdk_handoff_input';
+          const lifecycle = msg.type === '_sdk_agent_lifecycle';
           const notFound = msg.type === '_sdk_tool_not_found';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
@@ -9626,6 +9725,7 @@ export class Session<OutputT = string, Context = unknown> {
             else if (responseSpan)
               sourceNative._reply_provider_response_span(data);
             else if (handoffInput) sourceNative._reply_handoff_input(data);
+            else if (lifecycle) sourceNative._reply_agent_lifecycle(data);
             else if (notFound) sourceNative._reply_tool_not_found(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
@@ -9725,6 +9825,41 @@ export class Session<OutputT = string, Context = unknown> {
               );
               check();
               reply({ data: admitted });
+              return;
+            }
+            if (lifecycle) {
+              const callback = this.sourceModelCallbacks(msg).onLifecycle;
+              if (callback !== undefined) {
+                const kind = z.enum(['start', 'handoff']).parse(msg.phase);
+                const agent = this.sourceApplicationAgent(msg);
+                if (!agent)
+                  throw new NativeError(
+                    'Lifecycle callback has no application Agent',
+                  );
+                const target =
+                  kind === 'handoff'
+                    ? this.profileRuntimes.get(
+                        z.string().parse(msg.target_profile_id),
+                      )?.profile.agent
+                    : undefined;
+                if (kind === 'handoff' && target === undefined)
+                  throw new NativeError(
+                    'Lifecycle target is outside the captured graph',
+                  );
+                callback(
+                  Object.freeze({
+                    kind,
+                    context: this.options.context,
+                    agent,
+                    target,
+                    sessionId: this.id,
+                    turnId: z.string().parse(msg.turn_id),
+                    subagentId: child ? owner.childId : undefined,
+                  }),
+                );
+              }
+              check();
+              reply({});
               return;
             }
             if (handoffInput) {
@@ -10297,7 +10432,8 @@ export class Session<OutputT = string, Context = unknown> {
                     (source
                       ? (agent?.outputGuardrails.length ?? 0)
                       : (this.options.agentOutputGuardrails?.length ?? 0)) >
-                  0
+                    0 ||
+                  this.sourceModelCallbacks(msg).onLifecycle !== undefined
                 ) {
                   let value: unknown = text ?? '';
                   if (!child) {
@@ -13379,12 +13515,18 @@ export class Session<OutputT = string, Context = unknown> {
             request.callId,
             configuredData,
           );
+    const defaultProviderCompaction =
+      environmentOwner?.defaultProviderCompaction ??
+      (environmentOwner === this.options.environmentOwner
+        ? this.options.defaultProviderCompaction
+        : undefined);
     let session = await declaration.open(
       context.context,
       environment,
       context.signal,
       restoredChild,
       this.verifiedConfiguredExecutorCheckpoint,
+      defaultProviderCompaction,
     );
     const child: ConfiguredChild = {
       session,
@@ -13413,6 +13555,27 @@ export class Session<OutputT = string, Context = unknown> {
     let relay = Promise.resolve();
     let relayFailure: { error: unknown } | undefined;
     let output: string | undefined;
+    let streamAgent: import('./public-agent').Agent<any, any> | undefined;
+    const streamReaders: Promise<void>[] = [];
+    const streamErrors: unknown[] = [];
+    const observe = (turn: Turn<unknown>) => {
+      if (!declaration.observe) return;
+      if (!(session instanceof Session))
+        throw new NativeError('Configured child requires its native Session');
+      const reader = declaration.observe(
+        turn,
+        session,
+        streamAgent!,
+        context.callId,
+        context.call,
+        context.signal,
+        (error) => {
+          streamErrors.push(error);
+          void close().catch(() => {});
+        },
+      );
+      if (reader) streamReaders.push(reader);
+    };
     const errors: unknown[] = [];
     try {
       context.signal.throwIfAborted();
@@ -13466,12 +13629,14 @@ export class Session<OutputT = string, Context = unknown> {
           abort();
         });
       };
+      if (declaration.observe) streamAgent = await session.getActiveAgent();
       startRelay();
       child.recover = async () => {
         try {
           if (!child.checkpoint || !child.recoveryReady)
             throw new NativeError('Configured recovery has no saved child');
           await close();
+          await Promise.all(streamReaders);
           await reader?.return?.();
           await relay;
           session = await declaration.open(
@@ -13480,6 +13645,7 @@ export class Session<OutputT = string, Context = unknown> {
             context.signal,
             child.checkpoint,
             true,
+            defaultProviderCompaction,
           );
           if (!(session instanceof Session))
             throw new NativeError(
@@ -13491,11 +13657,13 @@ export class Session<OutputT = string, Context = unknown> {
           child.checkpoint = undefined;
           child.sealing = false;
           closing = undefined;
+          if (declaration.observe) streamAgent = await session.getActiveAgent();
           startRelay();
           if (!session.restoredTurn)
             throw new NativeError('Configured recovery has no original turn');
           child.recoveryReady.resolve();
           this.observations.notify();
+          observe(session.restoredTurn);
           return await session.restoredTurn.wait();
         } catch (error) {
           child.recoveryReady?.reject(error);
@@ -13509,6 +13677,7 @@ export class Session<OutputT = string, Context = unknown> {
         throw new NativeError(
           'Configured continuation has no original child turn',
         );
+      observe(turn);
       const result = await turn.wait().catch(async (error) => {
         if (child.sealing && child.sealOutcome)
           return await child.sealOutcome.promise;
@@ -13534,10 +13703,12 @@ export class Session<OutputT = string, Context = unknown> {
         close(),
         reader?.return?.(),
         relay,
+        ...streamReaders,
       ]);
       for (const result of cleanup)
         if (result.status === 'rejected') errors.push(result.reason);
     }
+    errors.push(...streamErrors);
     if (relayFailure) errors.push(relayFailure.error);
     const unexpected = errors.filter(
       (error) =>
@@ -14529,16 +14700,28 @@ export class Session<OutputT = string, Context = unknown> {
             encodeProfileReceipt(expected),
           );
           check();
+          const preparation = new AbortController();
+          const stopPreparation = async () => {
+            preparation.abort(
+              new TurnAborted('Session closed during destination preparation'),
+            );
+          };
+          this.interceptionCleanups.add(stopPreparation);
           try {
             prepared = await workspace.prepareWorkspace(
               target,
-              this.options.environmentOwner!.signal,
+              AbortSignal.any([
+                this.options.environmentOwner!.signal,
+                preparation.signal,
+              ]),
               check,
             );
           } catch (error) {
             this.retire(error);
             void this.close().catch(() => {});
             throw error;
+          } finally {
+            this.interceptionCleanups.delete(stopPreparation);
           }
         }
         let receipt: AgentProfileReceipt;
@@ -14570,6 +14753,9 @@ export class Session<OutputT = string, Context = unknown> {
             throw new NativeError(
               'Native Agent activation acknowledgement did not match',
             );
+          if (workspace && this.options.agentGraph?.deferred?.runtime(target)) {
+            this.publishPreparedProfile(target);
+          }
           await this.commitProfile(receipt, true);
           await this.realtimeOwner?._syncProfile(true);
         } catch (error) {
@@ -16375,9 +16561,9 @@ export class Session<OutputT = string, Context = unknown> {
     return pending;
   }
 
-  private async prepareMemory(): Promise<void> {
-    const owner = this.options.environmentOwner;
-    if (!owner?.hasSandboxMemory)
+  private async prepareMemory(automatic = false): Promise<void> {
+    const rootOwner = this.options.environmentOwner;
+    if (!rootOwner?.hasAnySandboxMemory)
       throw new TypeError(
         'Configure memory on sandboxEnvironment before flushing',
       );
@@ -16433,9 +16619,40 @@ export class Session<OutputT = string, Context = unknown> {
     }
     const admissionFailure = submissions.get(run)?.memoryAdmissionFailure;
     if (admissionFailure) throw admissionFailure.error;
-    // Reuse native replay's predecode budget and durable input-admission proof.
+    let owner = rootOwner;
+    let scope: string | undefined;
+    if (this.options.agentGraph) {
+      const source = submissions.get(run)?.memorySource;
+      if (!source)
+        throw new NativeError(
+          'Memory requires its native terminal Agent receipt',
+        );
+      const graph = this.callbackProfileGraph(source);
+      const selected = graph?.environments?.get(source.profile_id);
+      if (!selected)
+        throw new NativeError(
+          'Memory resource is outside its captured Agent graph',
+        );
+      owner = selected;
+      const profiles = [...graph!.environments!]
+        .filter(
+          ([id, candidate]) =>
+            candidate === selected &&
+            !(
+              graph!.deferred?.resources.deferred.has(id) &&
+              graph!.deferred.runtime(id) === undefined
+            ),
+        )
+        .map(([id]) => id);
+      scope = `{"source":${encodeProfileReceipt(source)},"profiles":${JSON.stringify(profiles)}}`;
+    }
+    if (!owner.hasSandboxMemory) {
+      if (automatic) return;
+      throw new TypeError('The terminal Agent resource has no sandbox memory');
+    }
+    // Native output and original input receipts independently select this partition.
     const snapshot: { revision: string; total: number; items: string[] } =
-      JSON.parse(await this.#native._memory_history(run.id!));
+      JSON.parse(await this.#native._memory_history(run.id!, scope));
     if (snapshot.total > 256)
       throw new RangeError(
         'Native sandbox memory supports at most 256 original records',
@@ -17271,10 +17488,10 @@ export class Session<OutputT = string, Context = unknown> {
     managed.captureRequested = true;
     let memoryPrepared = true;
     const prepareMemory =
-      this.options.environmentOwner?.hasSandboxMemory && this.lastRun
+      this.options.environmentOwner?.hasAnySandboxMemory && this.lastRun
         ? async () => {
             memoryPrepared = false;
-            await this.prepareMemory();
+            await this.prepareMemory(true);
             memoryPrepared = true;
           }
         : undefined;

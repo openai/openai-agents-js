@@ -11,7 +11,9 @@ import type {
   ApplyPatchOperation,
   ApplyPatchResult,
   Editor,
+  PatchFormat,
 } from '../../editor';
+import { applyPatchFormat } from '../internal/patchFormat';
 import { UserError } from '../../errors';
 import { registerExclusiveWorkspaceCreate } from './shared/exclusiveWorkspaceFiles';
 import type { ToolOutputImage } from '../../tool';
@@ -290,8 +292,8 @@ export class UnixLocalSandboxSession<
 
   createEditor(runAs?: string): Editor {
     this.assertSessionUsable();
-    return new UnixLocalSandboxEditor(this, (operation) =>
-      this.applyFileOperation(operation, runAs),
+    return new UnixLocalSandboxEditor(this, (operation, format) =>
+      this.applyFileOperation(operation, runAs, format),
     );
   }
 
@@ -982,6 +984,7 @@ export class UnixLocalSandboxSession<
   private async applyFileOperation(
     operation: ApplyPatchOperation,
     runAs?: string,
+    format?: PatchFormat,
   ): Promise<void> {
     const generation = this.fileOperationGeneration;
     const assertCurrent = () => {
@@ -1004,7 +1007,9 @@ export class UnixLocalSandboxSession<
         operation.type === 'delete_file' ? 'entry' : 'content',
       );
       if (operation.type === 'create_file') {
-        const input = applyDiff('', operation.diff, 'create');
+        const input = format
+          ? applyPatchFormat(format, '', operation.diff, 'create')
+          : applyDiff('', operation.diff, 'create');
         await this.files.run(
           { operation: 'create', path },
           { input, identity },
@@ -1025,7 +1030,13 @@ export class UnixLocalSandboxSession<
             : undefined;
         await this.files.run(
           { operation: 'update', path, destination, unlinkPath },
-          { identity, update: (current) => applyDiff(current, operation.diff) },
+          {
+            identity,
+            update: (current) =>
+              format
+                ? applyPatchFormat(format, current, operation.diff)
+                : applyDiff(current, operation.diff),
+          },
         );
       } else {
         await this.files.run({ operation: 'delete', path }, { identity });
@@ -1877,14 +1888,27 @@ function realpathForValidation(path: string, originalPath?: string): string {
 
 class UnixLocalSandboxEditor implements Editor {
   private readonly session: UnixLocalSandboxSession;
-  private readonly apply: (operation: ApplyPatchOperation) => Promise<void>;
+  private readonly apply: (
+    operation: ApplyPatchOperation,
+    format?: PatchFormat,
+  ) => Promise<void>;
+  private readonly format?: PatchFormat;
 
   constructor(
     session: UnixLocalSandboxSession,
-    apply: (operation: ApplyPatchOperation) => Promise<void>,
+    apply: (
+      operation: ApplyPatchOperation,
+      format?: PatchFormat,
+    ) => Promise<void>,
+    format?: PatchFormat,
   ) {
     this.session = session;
     this.apply = apply;
+    this.format = format;
+  }
+
+  withPatchFormat(format: PatchFormat): Editor {
+    return new UnixLocalSandboxEditor(this.session, this.apply, format);
   }
 
   canAccessPathForEdit(path: string): boolean {
@@ -1899,21 +1923,21 @@ class UnixLocalSandboxEditor implements Editor {
   async createFile(
     operation: Extract<ApplyPatchOperation, { type: 'create_file' }>,
   ): Promise<ApplyPatchResult> {
-    await this.apply(operation);
+    await this.apply(operation, this.format);
     return {};
   }
 
   async updateFile(
     operation: Extract<ApplyPatchOperation, { type: 'update_file' }>,
   ): Promise<ApplyPatchResult> {
-    await this.apply(operation);
+    await this.apply(operation, this.format);
     return {};
   }
 
   async deleteFile(
     operation: Extract<ApplyPatchOperation, { type: 'delete_file' }>,
   ): Promise<ApplyPatchResult> {
-    await this.apply(operation);
+    await this.apply(operation, this.format);
     return {};
   }
 }

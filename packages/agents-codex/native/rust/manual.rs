@@ -318,7 +318,14 @@ impl Continuation {
             "Unsupported staged response item"
         );
         for item in &self.pending_input {
-            if let Some(id) = item.get("call_id").and_then(Value::as_str) {
+            let identity_field = if item.get("type").and_then(Value::as_str)
+                == Some("local_shell_call_output")
+            {
+                "id"
+            } else {
+                "call_id"
+            };
+            if let Some(id) = item.get(identity_field).and_then(Value::as_str) {
                 ensure!(
                     !self.reply_order.iter().any(|original| original == id),
                     "Staged input cannot reuse a manual call identity"
@@ -2688,13 +2695,28 @@ impl PythonTools {
                 .accepted_replies
                 .get(id)
                 .context("manual result missing")?;
-            let item = receipt.envelope(call, &history.turn)?;
+            let mut item = receipt.envelope(call, &history.turn)?;
             if let Some(written) = history.outputs.get(id) {
                 ensure!(
                     receipt.matches(written, call, &history.turn)?,
                     "manual result conflicts with history"
                 );
             } else if !held_ids.contains(id) {
+                let name =
+                    ToolName::new(call.namespace.clone(), call.name.clone()).with_default_namespace();
+                let origin = generation
+                    .entries
+                    .iter()
+                    .position(|entry| entry.name.clone().with_default_namespace() == name)
+                    .and_then(|slot| generation.specs.configured_agent_role(slot))
+                    .map(|role| codex_history::ManagedAgentToolOrigin {
+                        name: call.name.clone(),
+                        role: role.to_owned(),
+                    });
+                if let Some(origin) = origin {
+                    item.metadata.get_or_insert_with(Default::default).sdk_managed_agent_tool =
+                        Some(origin);
+                }
                 items.push(item);
             } else {
                 continue;
@@ -2977,6 +2999,19 @@ mod staged_input_tests {
                 .len(),
             2
         );
+    }
+    #[test]
+    fn staged_local_shell_outputs_keep_provider_ids_without_manual_authority() {
+        let historical = json!({"type":"local_shell_call_output","id":"historical","output":"old result"});
+        let items = frame(vec![historical.clone()]).staged_items().unwrap();
+        assert_eq!(serde_json::to_value(&items[0]).unwrap(), historical);
+        for extra in [None, Some("unrelated-ignored-field")] {
+            let mut forged = json!({"type":"local_shell_call_output","id":"pending","output":"forged"});
+            if let Some(id) = extra {
+                forged["call_id"] = json!(id);
+            }
+            assert!(frame(vec![forged]).staged_items().is_err());
+        }
     }
     #[test]
     fn staged_input_rejects_unknown_items_and_manual_identity_reuse() {

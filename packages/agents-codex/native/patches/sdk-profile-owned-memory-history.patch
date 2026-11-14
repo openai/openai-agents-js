@@ -1,0 +1,480 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index ee30338a707..910a9798212 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1210,6 +1210,18 @@ impl CodexThread {
+         self.session.sdk_replay_history_snapshot().await
+     }
+ 
++    /// Bounded originals with query-local, native-captured memory ownership.
++    pub async fn sdk_memory_history_snapshot(
++        &self,
++    ) -> CodexResult<(
++        String,
++        usize,
++        Vec<String>,
++        Vec<codex_history::sdk_originals::SdkMemorySource>,
++    )> {
++        self.session.sdk_memory_history_snapshot().await
++    }
++
+     /// Replace a canonical history suffix under the SDK's exclusive idle permit.
+     #[doc(hidden)]
+     pub async fn sdk_replace_history(
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index f0e7ac58e32..7362d9276e9 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -308,6 +308,72 @@ impl Session {
+             .await
+     }
+ 
++    /// Read query-local memory provenance from the same exact canonical occurrences.
++    pub(crate) async fn sdk_memory_history_snapshot(
++        &self,
++    ) -> codex_protocol::error::Result<(
++        String,
++        usize,
++        Vec<String>,
++        Vec<codex_history::sdk_originals::SdkMemorySource>,
++    )> {
++        use super::original_history_read::{MemorySnapshotReader, SnapshotReader};
++        use codex_protocol::error::CodexErr;
++        let unavailable = || {
++            CodexErr::InvalidRequest(
++                "Canonical original history is unavailable for memory export".into(),
++            )
++        };
++        let (revision, total, originals) = self.sdk_replay_history_snapshot().await?;
++        drop(originals);
++        if total > 256 {
++            return Err(CodexErr::InvalidRequest(
++                "Native sandbox memory supports at most 256 original records".into(),
++            ));
++        }
++        let (token, policy) = {
++            let state = self.state.lock().await;
++            (
++                (
++                    state.sdk_originals.revision().map(str::to_owned),
++                    state.sdk_originals.read_token().1,
++                ),
++                state.sdk_originals_replay_policy.unwrap_or(
++                    codex_utils_output_truncation::TruncationPolicy::Bytes(usize::MAX),
++                ),
++            )
++        };
++        let live = self.live_thread().ok_or_else(unavailable)?;
++        live.flush().await.map_err(|_| unavailable())?;
++        let sources = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
++        let captured = live
++            .read_original_history(Box::new(MemorySnapshotReader {
++                snapshot: SnapshotReader {
++                    limit: 256,
++                    policy,
++                    max_bytes: Some(8 * 1024 * 1024),
++                },
++                sources: std::sync::Arc::clone(&sources),
++            }))
++            .await
++            .map_err(|_| unavailable())?;
++        let state = self.state.lock().await;
++        if (
++            state.sdk_originals.revision().map(str::to_owned),
++            state.sdk_originals.read_token().1,
++        ) != token
++            || captured.0 != revision
++            || captured.1 != total
++        {
++            return Err(unavailable());
++        }
++        let owned = std::mem::take(&mut *sources.lock().map_err(|_| unavailable())?);
++        if owned.len() != total {
++            return Err(unavailable());
++        }
++        Ok((captured.0, captured.1, captured.2, owned))
++    }
++
+     async fn sdk_history_snapshot_inner(
+         &self,
+         limit: Option<usize>,
+diff --git a/codex-rs/core/src/session/original_history_read.rs b/codex-rs/core/src/session/original_history_read.rs
+index 007084d87f4..5d8a2817fae 100644
+--- a/codex-rs/core/src/session/original_history_read.rs
++++ b/codex-rs/core/src/session/original_history_read.rs
+@@ -4,7 +4,9 @@ mod stream;
+ use std::fs::File;
+ use std::io::{self, Read, Seek, SeekFrom, Write};
+ 
+-use codex_history::sdk_originals::{SdkOriginalHistoryCheckpoint, SdkOriginalSnapshotFold};
++use codex_history::sdk_originals::{
++    SdkMemorySource, SdkOriginalHistoryCheckpoint, SdkOriginalSnapshotFold,
++};
+ use codex_history::{ResponseItemEnvelope, RetainedInputSource, RolloutItem};
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::protocol::EventMsg;
+@@ -117,6 +119,11 @@ pub(super) struct SnapshotReader {
+     pub(super) policy: TruncationPolicy,
+     pub(super) max_bytes: Option<usize>,
+ }
++pub(super) struct MemorySnapshotReader {
++    pub(super) snapshot: SnapshotReader,
++    pub(super) sources: std::sync::Arc<std::sync::Mutex<Vec<SdkMemorySource>>>,
++}
++
+ pub(super) const REPLAY_HISTORY_LIMIT_ERROR: &str =
+     "Run completed, but its one-shot conversation history exceeds the result size limit";
+ 
+@@ -227,10 +234,55 @@ impl SnapshotReader {
+         read?;
+         fold.end_item().map_err(|_| invalid())
+     }
++    fn fold_owned_original(
++        &self,
++        source: &mut dyn OriginalSource,
++        entry: Entry,
++        fold: &mut SdkOriginalSnapshotFold,
++        ownership: Option<&mut Vec<SdkMemorySource>>,
++    ) -> io::Result<()> {
++        if let Some(ownership) = ownership {
++            // Drop each bounded projection before reading the next original.
++            let projection = self.projection(source, entry)?;
++            let metadata = projection.as_ref().and_then(|row| row.metadata.as_ref());
++            #[derive(serde::Serialize)]
++            struct BorrowedSource<'a> {
++                profile: Option<&'a codex_protocol::agent_profile::AgentProfileReceipt>,
++                graph: Option<&'a str>,
++                projected: bool,
++                inherited: bool,
++            }
++            let selected = BorrowedSource {
++                profile: metadata.and_then(|metadata| metadata.sdk_memory_profile.as_ref()),
++                graph: metadata.and_then(|metadata| metadata.sdk_agent_graph.as_deref()),
++                projected: projection.is_some(),
++                inherited: metadata.is_some_and(|metadata| metadata.inherited_user_message),
++            };
++            let mut counter = CountBytes(0);
++            serde_json::to_writer(&mut counter, &selected).map_err(|_| invalid())?;
++            fold.charge_retained_bytes(counter.0)
++                .map_err(|_| io::Error::from(io::ErrorKind::FileTooLarge))?;
++            ownership.push(SdkMemorySource {
++                profile: selected.profile.cloned(),
++                graph: selected.graph.map(str::to_owned),
++                projected: selected.projected,
++                inherited: selected.inherited,
++            });
++        }
++        self.fold_original(source, entry, fold)
++    }
++
+     fn read(&self, items: &[RolloutItem]) -> io::Result<OriginalHistorySnapshot> {
+         self.read_source(&mut MemorySource::new(items))
+     }
+     fn read_source(&self, source: &mut dyn OriginalSource) -> io::Result<OriginalHistorySnapshot> {
++        self.read_source_with_ownership(source, None)
++    }
++    fn read_source_with_ownership(
++        &self,
++        source: &mut dyn OriginalSource,
++        mut ownership: Option<&mut Vec<SdkMemorySource>>,
++    ) -> io::Result<OriginalHistorySnapshot> {
+         // Discover the surviving generation from control records before decoding entries.
+         // Older generations can contain payloads that would exceed this result's budget.
+         let mut has_rollback = false;
+@@ -259,7 +311,7 @@ impl SnapshotReader {
+                 let Action::Append(entry) = action else {
+                     return Err(invalid());
+                 };
+-                self.fold_original(source, entry, &mut fold)?;
++                self.fold_owned_original(source, entry, &mut fold, ownership.as_deref_mut())?;
+             }
+             return fold.finish().map_err(|_| invalid());
+         }
+@@ -274,7 +326,12 @@ impl SnapshotReader {
+         }
+         let mut fold = self.fold(positions.len)?;
+         for index in 0..positions.len {
+-            self.fold_original(source, positions.get(index)?, &mut fold)?;
++            self.fold_owned_original(
++                source,
++                positions.get(index)?,
++                &mut fold,
++                ownership.as_deref_mut(),
++            )?;
+         }
+         fold.finish().map_err(|_| invalid())
+     }
+@@ -650,6 +707,46 @@ impl Write for FoldWriter<'_> {
+         Ok(())
+     }
+ }
++struct CountBytes(usize);
++impl Write for CountBytes {
++    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
++        self.0 = self.0.checked_add(bytes.len()).ok_or_else(invalid)?;
++        Ok(bytes.len())
++    }
++    fn flush(&mut self) -> io::Result<()> {
++        Ok(())
++    }
++}
++
++impl OriginalHistoryReader for MemorySnapshotReader {
++    fn read_items(&mut self, items: &[RolloutItem]) -> ThreadStoreResult<OriginalHistorySnapshot> {
++        let mut sources = self.sources.lock().map_err(|_| snapshot_error(invalid()))?;
++        sources.clear();
++        let result = self
++            .snapshot
++            .read_source_with_ownership(&mut MemorySource::new(items), Some(&mut sources));
++        if result.is_err() {
++            sources.clear();
++        }
++        result.map_err(snapshot_error)
++    }
++    fn read_segments(
++        &mut self,
++        segments: &[OriginalHistorySegment],
++    ) -> ThreadStoreResult<OriginalHistorySnapshot> {
++        let mut sources = self.sources.lock().map_err(|_| snapshot_error(invalid()))?;
++        sources.clear();
++        let result = self.snapshot.read_source_with_ownership(
++            &mut stream::LocalSource::new(segments),
++            Some(&mut *sources),
++        );
++        if result.is_err() {
++            sources.clear();
++        }
++        result.map_err(snapshot_error)
++    }
++}
++
+ impl OriginalHistoryReader for SnapshotReader {
+     fn read_items(&mut self, items: &[RolloutItem]) -> ThreadStoreResult<OriginalHistorySnapshot> {
+         self.read(items).map_err(snapshot_error)
+@@ -670,6 +767,70 @@ mod tests {
+     use codex_protocol::protocol::ThreadRolledBackEvent;
+     use serde_json::json;
+ 
++    #[test]
++    fn memory_sources_charge_the_same_query_budget() {
++        let value = json!({"type":"audit","value":"bounded original"});
++        let records = [checkpoint(&[value.clone()])];
++        let sources = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
++        let mut reader = MemorySnapshotReader {
++            snapshot: SnapshotReader {
++                limit: 1,
++                policy: TruncationPolicy::Bytes(4096),
++                max_bytes: None,
++            },
++            sources: std::sync::Arc::clone(&sources),
++        };
++        let first = reader.read_items(&records).unwrap();
++        let source_bytes = sources
++            .lock()
++            .unwrap()
++            .iter()
++            .map(|source| serde_json::to_vec(source).unwrap().len())
++            .sum::<usize>();
++        let exact = first.2.iter().map(String::len).sum::<usize>() + source_bytes;
++        reader.snapshot.max_bytes = Some(exact);
++        assert_eq!(reader.read_items(&records).unwrap(), first);
++        reader.snapshot.max_bytes = Some(exact - 1);
++        assert!(reader.read_items(&records).is_err());
++        assert!(sources.lock().unwrap().is_empty());
++    }
++
++    #[test]
++    fn memory_sources_follow_occurrences_without_joining_wire_ids() {
++        let item: ResponseItem = serde_json::from_value(json!({
++            "type":"message", "id":"same-provider-id", "role":"assistant",
++            "content":[{"type":"output_text","text":"same output"}],
++        }))
++        .unwrap();
++        let records = ["root", "child"].map(|id| {
++            let mut envelope = ResponseItemEnvelope::new(item.clone());
++            envelope.metadata = Some(codex_history::CodexHarnessMetadata {
++                sdk_memory_profile: Some(codex_protocol::agent_profile::AgentProfileReceipt {
++                    profile_id: id.into(),
++                    epoch: 0,
++                }),
++                sdk_agent_graph: Some("captured-graph".into()),
++                ..Default::default()
++            });
++            RolloutItem::ResponseItem(envelope)
++        });
++        let sources = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
++        let mut reader = MemorySnapshotReader {
++            snapshot: SnapshotReader {
++                limit: 2,
++                policy: TruncationPolicy::Bytes(4096),
++                max_bytes: Some(4096),
++            },
++            sources: std::sync::Arc::clone(&sources),
++        };
++        let (_, total, originals) = reader.read_items(&records).unwrap();
++        assert_eq!(total, 2);
++        assert_eq!(originals[0], originals[1]);
++        let sources = sources.lock().unwrap();
++        assert_eq!(sources[0].profile.as_ref().unwrap().profile_id, "root");
++        assert_eq!(sources[1].profile.as_ref().unwrap().profile_id, "child");
++    }
++
+     #[test]
+     fn replay_snapshot_requires_all_records_to_fit() {
+         let originals = [
+diff --git a/codex-rs/core/src/session/step_context.rs b/codex-rs/core/src/session/step_context.rs
+index 120e08a5fed..d387d9ef789 100644
+--- a/codex-rs/core/src/session/step_context.rs
++++ b/codex-rs/core/src/session/step_context.rs
+@@ -56,6 +56,27 @@ pub(crate) struct StepContext {
+ }
+ 
+ impl StepContext {
++    /// Memory export observes the captured producer, never the current live actor.
++    pub(crate) fn memory_metadata(
++        &self,
++        mut metadata: Option<codex_history::CodexHarnessMetadata>,
++    ) -> Option<codex_history::CodexHarnessMetadata> {
++        if let Some(source) = self
++            .extension_data
++            .get::<codex_extension_api::CapturedAgentProfile>()
++        {
++            let metadata = metadata.get_or_insert_default();
++            metadata.sdk_memory_profile = Some(source.receipt.clone());
++            metadata.sdk_agent_graph = source
++                .profile
++                .application_instructions
++                .metadata
++                .as_ref()
++                .and_then(|metadata| metadata.sdk_agent_graph.clone());
++        }
++        metadata
++    }
++
+     pub(crate) fn uses_incremental_tools(&self) -> bool {
+         self.settings.model_info.use_responses_lite
+             // Append-only schema deltas cannot retract a selected step's tools.
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index d397fb88641..42c06950a91 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -3525,6 +3525,7 @@ async fn release_held_tool_results(sess: &Session, step: &StepContext, withheld:
+                         .map(|metadata| codex_history::CodexHarnessMetadata {
+                             sdk_agent_profile: metadata.sdk_agent_profile,
+                             sdk_agent_graph: metadata.sdk_agent_graph,
++                            sdk_memory_profile: metadata.sdk_memory_profile,
+                             ..Default::default()
+                         });
+             }
+diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
+index 67829224372..6f338083c45 100644
+--- a/codex-rs/core/src/stream_events_utils.rs
++++ b/codex-rs/core/src/stream_events_utils.rs
+@@ -103,6 +103,7 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
+     metadata: Option<CodexHarnessMetadata>,
+ ) {
+     let turn_context = &step_context.turn;
++    let metadata = step_context.memory_metadata(metadata);
+     if let Some(metadata) = metadata {
+         sess.record_annotated_conversation_items(
+             turn_context,
+@@ -389,10 +390,12 @@ pub(crate) async fn handle_output_item_done(
+     provider_agent_metadata: Option<serde_json::Value>,
+     provider_metadata: Option<codex_history::ModelProviderMetadata>,
+ ) -> Result<OutputItemResult> {
+-    let mut metadata = provider_metadata.map(|metadata| CodexHarnessMetadata {
+-        sdk_model_provider_metadata: Some(metadata),
+-        ..Default::default()
+-    });
++    let mut metadata = ctx
++        .step_context
++        .memory_metadata(provider_metadata.map(|metadata| CodexHarnessMetadata {
++            sdk_model_provider_metadata: Some(metadata),
++            ..Default::default()
++        }));
+     let mut output = OutputItemResult::default();
+     let plan_mode = ctx.step_context.turn.mode() == ModeKind::Plan;
+     ctx.tool_runtime.observe_requested_item(&item);
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 735e1abd02b..6c1f64f750f 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -582,6 +582,7 @@ impl ToolCallRuntime {
+                     .get_or_insert_default()
+                     .delivered_assistant_message = Some(text.clone());
+             }
++            response.metadata = retained_step_context.memory_metadata(response.metadata.take());
+             recorder.attach_direct_call_to_output(&mut response.item, recorded_call);
+             Ok(DirectToolResult {
+                 succeeded,
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index b3572085b40..10b1fcc6f53 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -114,6 +114,10 @@ pub struct CodexHarnessMetadata {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_agent_profile: Option<serde_json::Value>,
+ 
++    /// Captured producer of one native original, for opt-in memory partitioning only.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub sdk_memory_profile: Option<codex_protocol::agent_profile::AgentProfileReceipt>,
++
+     /// Accepted model-provider data for this exact occurrence; never a routing grant.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_model_provider_metadata: Option<ModelProviderMetadata>,
+diff --git a/codex-rs/history/src/sdk_originals.rs b/codex-rs/history/src/sdk_originals.rs
+index b4cb836e2f4..32171ee7770 100644
+--- a/codex-rs/history/src/sdk_originals.rs
++++ b/codex-rs/history/src/sdk_originals.rs
+@@ -41,6 +41,15 @@ impl From<SdkOriginalHistory> for SdkOriginalHistoryCheckpoint {
+     }
+ }
+ 
++/// Query-local ownership of one original; never execution or replay authority.
++#[derive(Clone, Debug, Serialize)]
++pub struct SdkMemorySource {
++    pub profile: Option<codex_protocol::agent_profile::AgentProfileReceipt>,
++    pub graph: Option<String>,
++    pub projected: bool,
++    pub inherited: bool,
++}
++
+ /// The projection is fixed at admission. Restore never promotes an audit-only value.
+ #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+ pub struct SdkOriginalItem {
+@@ -422,20 +431,28 @@ impl SdkOriginalSnapshotFold {
+         if !self.active {
+             return Err("inconsistent original stream");
+         }
++        if self.current.is_some() {
++            self.charge_retained_bytes(bytes.len())?;
++        }
+         if let Some(current) = &mut self.current {
+-            if let Some(remaining) = &mut self.remaining_bytes {
+-                let Some(next) = remaining.checked_sub(bytes.len()) else {
+-                    self.byte_limit_exceeded = true;
+-                    return Err("original stream exceeds the snapshot byte limit");
+-                };
+-                *remaining = next;
+-            }
+             current.extend_from_slice(bytes);
+         }
+         self.index.hash.update(bytes);
+         Ok(())
+     }
+ 
++    /// Charge query-local ownership data without changing the original revision.
++    pub fn charge_retained_bytes(&mut self, bytes: usize) -> Result<(), &'static str> {
++        if let Some(remaining) = &mut self.remaining_bytes {
++            let Some(next) = remaining.checked_sub(bytes) else {
++                self.byte_limit_exceeded = true;
++                return Err("original stream exceeds the snapshot byte limit");
++            };
++            *remaining = next;
++        }
++        Ok(())
++    }
++
+     pub fn end_item(&mut self) -> Result<(), &'static str> {
+         if !self.active {
+             return Err("inconsistent original stream");

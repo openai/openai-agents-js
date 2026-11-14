@@ -4,16 +4,31 @@ import {
   type ApplyPatchOperation,
   type ApplyPatchResult,
   type Editor,
+  type PatchFormat,
 } from '@openai/agents-core';
-import { isSandboxPathNotFoundError } from '@openai/agents-core/sandbox/internal';
+import {
+  applyPatchFormat,
+  isSandboxPathNotFoundError,
+} from '@openai/agents-core/sandbox/internal';
 import { posixDirname } from './paths';
 import type { RemoteEditorIo } from './types';
 
 export class RemoteSandboxEditor implements Editor {
   private readonly io: RemoteEditorIo;
 
-  constructor(io: RemoteEditorIo) {
+  constructor(
+    io: RemoteEditorIo,
+    private readonly format?: PatchFormat,
+  ) {
+    if (format && typeof io.resolvePath !== 'function')
+      throw new UserError(
+        'Managed patch formats require scoped path resolution.',
+      );
     this.io = io;
+  }
+
+  withPatchFormat(format: PatchFormat): Editor {
+    return new RemoteSandboxEditor(this.io, format);
   }
 
   async createFile(
@@ -25,7 +40,9 @@ export class RemoteSandboxEditor implements Editor {
         `Cannot create file because it already exists: ${path}`,
       );
     }
-    const content = applyDiff('', operation.diff, 'create');
+    const content = this.format
+      ? applyPatchFormat(this.format, '', operation.diff, 'create')
+      : applyDiff('', operation.diff, 'create');
     const parent = posixDirname(path);
     if (this.io.mkdir && parent !== '.' && parent !== '/') {
       await this.io.mkdir(parent);
@@ -43,7 +60,9 @@ export class RemoteSandboxEditor implements Editor {
       ? await this.resolvePath(moveTo, { forWrite: true })
       : path;
     const current = await this.io.readText(path);
-    const next = applyDiff(current, operation.diff);
+    const next = this.format
+      ? applyPatchFormat(this.format, current, operation.diff)
+      : applyDiff(current, operation.diff);
     const parent = posixDirname(destination);
     if (this.io.mkdir && parent !== '.' && parent !== '/') {
       await this.io.mkdir(parent);

@@ -80,7 +80,7 @@ export interface RecordedTokenUsageWire {
 
 /** One SDK-managed model attempt or native hosted transport request. */
 export interface RecordedRequestUsage extends RecordedTokenUsage {
-  scope: 'sdk_model_attempt' | 'provider_request';
+  scope: 'sdk_model_attempt' | 'provider_request' | 'compaction';
   threadId: string;
   turnId: string;
   ownerAttemptId: string;
@@ -156,7 +156,7 @@ export type HistoryTurn = {
   usage: RecordedTokenUsage | null;
   /** Retained native-attempt totals; unavailable without native attempt records. */
   runUsage?: RunUsage;
-  /** Settled native attempts, without enumerating opaque external retries. */
+  /** Settled model attempts, hosted requests and observed compaction requests. */
   requestUsageEntries?: RecordedRequestUsage[];
   /** Covers retained SDK attempts only; never attests opaque external client attempts or charges.
    * False when durable settled facts or legacy request measurements are missing. */
@@ -231,7 +231,7 @@ const recordedUsageWireSchema = z.strictObject({
   totalTokens: nonnegativeTokenCountWireSchema,
 });
 const recordedRequestUsageWireSchema = recordedUsageWireSchema.extend({
-  scope: z.enum(['sdk_model_attempt', 'provider_request']),
+  scope: z.enum(['sdk_model_attempt', 'provider_request', 'compaction']),
   threadId: z.string().min(1),
   turnId: z.string().min(1),
   ownerAttemptId: z.string().min(1),
@@ -1677,6 +1677,18 @@ export function projectHistory(
             ? receivedUsage(object(payload.usage)!)
             : null,
         };
+        if (payload.compaction === true) {
+          const entries =
+            requestUsage.get(payload.turn_id) ??
+            new RecordedRequestUsageProjection();
+          entries.observeCompaction(
+            payload.id,
+            observation.threadId,
+            payload.turn_id,
+            observation.usage,
+          );
+          requestUsage.set(payload.turn_id, entries);
+        }
         received.set(payload.id, observation);
         observations.set(payload.turn_id, received);
         appendResponse(responses, payload.turn_id, observation);

@@ -9,6 +9,7 @@ import { captureGuardrailResult, type GuardrailResult } from './guardrails';
 import {
   assertOutputRepairSupported,
   prepareOutput,
+  parseToolCompletion,
   type OutputSpec,
   type PreparedOutput,
 } from './output';
@@ -75,6 +76,7 @@ type Effect =
       text: string;
       profile: string | null;
       snapshot: { revision: number };
+      tool_output?: boolean;
     };
 
 class TurnControl {
@@ -497,7 +499,6 @@ function captureTools<Context>(
       !isDirectFunctionTool(tool) ||
       managedApproval(tool) ||
       tool.namespace ||
-      tool.finishTurn ||
       toolsByName.has(tool.name)
     )
       throw new TypeError(
@@ -576,12 +577,13 @@ function wireTools<Context>(
   approvals: ReadonlyMap<string, unknown>,
 ) {
   return [...tools.values()].map(
-    ({ name, description, parameters, strict }) => ({
+    ({ name, description, parameters, strict, finishTurn }) => ({
       name,
       description,
       parameters,
       strict: strict ?? false,
       requires_approval: approvals.has(name),
+      finish_turn: finishTurn ?? false,
     }),
   );
 }
@@ -842,7 +844,13 @@ async function runWorkerTextTurn<Context>(
       signal.throwIfAborted();
       switch (effect.type) {
         case 'done': {
-          const typed = output?.parse ? output.parse(effect.text) : effect.text;
+          const typed = output
+            ? effect.tool_output
+              ? parseToolCompletion(output, effect.text).value
+              : output.parse
+                ? output.parse(effect.text)
+                : effect.text
+            : effect.text;
           await checkGuards(
             'output',
             [

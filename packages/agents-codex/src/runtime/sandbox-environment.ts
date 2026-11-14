@@ -121,6 +121,8 @@ export interface DockerGatewayOptions {
   socketPath?: string;
   /** Absolute path to a compatible exec-server in the selected image. */
   execServerPath?: string;
+  /** Existing container user or user:group for the entire native executor. */
+  runAs?: string;
   capabilityDirectories?: readonly string[];
   tools?: readonly ExecutorToolName[];
 }
@@ -297,11 +299,24 @@ function createSandboxEnvironment<
           execServerPath:
             options.dockerGateway.execServerPath ??
             '/usr/local/bin/exec-server',
+          runAs: options.dockerGateway.runAs,
           capabilityDirectories:
             options.dockerGateway.capabilityDirectories?.slice(),
           tools: [...(options.dockerGateway.tools ?? [])],
         };
   if (docker) {
+    if (
+      docker.runAs !== undefined &&
+      (typeof docker.runAs !== 'string' ||
+        docker.runAs.length > 256 ||
+        docker.runAs.trim() !== docker.runAs ||
+        !/^[A-Za-z0-9_][A-Za-z0-9_.-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?$/.test(
+          docker.runAs,
+        ))
+    )
+      throw new TypeError(
+        'Docker runAs must be a container user or user:group',
+      );
     if (
       connect !== undefined ||
       options.session ||
@@ -471,6 +486,7 @@ function createSandboxEnvironment<
   const providerOptions =
     options.options === undefined ? undefined : captureOptions(options.options);
   const capabilityUser = options.capabilityUser;
+  const defaultProviderCompaction = options.capabilities === undefined;
   const capabilityConfiguration = captureSandboxCapabilities(
     options.capabilities,
     capabilityUser,
@@ -783,6 +799,7 @@ function createSandboxEnvironment<
             created,
             docker.execServerPath,
             signal,
+            docker.runAs,
           );
           return Environment.lease(
             dockerStdioEnvironment<Context>(
@@ -952,6 +969,7 @@ function createSandboxEnvironment<
             ),
             skillInstructions,
           ),
+          defaultProviderCompaction,
         );
       };
       // Resume inspection protects the old state. The owned provider mutation

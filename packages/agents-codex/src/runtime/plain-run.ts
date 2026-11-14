@@ -238,6 +238,7 @@ export async function tryOpenPlainRun(
       providerConfig.websocket_options !== undefined) ||
     options.modelBackend ||
     options.beforeComplete ||
+    options.onLifecycle ||
     options.toolBatchCompletion ||
     options.inputGuardrails?.length ||
     options.outputGuardrails?.length ||

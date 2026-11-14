@@ -117,6 +117,45 @@ it.each([undefined, true, false])(
   },
 );
 
+it('streams Chat Completions without a global Buffer', async () => {
+  const model = new ChatCompletionsModel(
+    {
+      chat: {
+        completions: {
+          async *create() {
+            yield {
+              id: 'browser-response',
+              choices: [
+                {
+                  index: 0,
+                  delta: { content: 'héllo' },
+                  finish_reason: 'stop',
+                },
+              ],
+            };
+          },
+        },
+      },
+    },
+    undefined,
+    { stream: true },
+  );
+  vi.stubGlobal('Buffer', undefined);
+  try {
+    const events = [];
+    for await (const event of model.stream!(request())) events.push(event);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'response.output_text.delta',
+        delta: 'héllo',
+      }),
+    );
+    expect(events.at(-1)).toMatchObject({ type: 'response.completed' });
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
 it('retains the completed default and omits streaming options on that route', async () => {
   const create = vi.fn(async (_body: unknown, _options: unknown) => ({
     id: 'complete',

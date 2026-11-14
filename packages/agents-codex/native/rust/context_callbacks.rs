@@ -103,6 +103,7 @@ impl ContextLease {
 }
 
 pub(super) enum PreparationReply {
+    AgentLifecycle(oneshot::Sender<std::result::Result<(), ()>>),
     Workspace(
         oneshot::Sender<std::result::Result<crate::agent_profiles::WorkspacePreparation, ()>>,
     ),
@@ -139,6 +140,7 @@ impl PreparationReply {
             Self::Workspace(reply) => reply.is_closed(),
             Self::ProviderResponseSpan(reply) => reply.is_closed(),
             Self::HandoffInput(reply) => reply.is_closed(),
+            Self::AgentLifecycle(reply) => reply.is_closed(),
             Self::ToolNotFound(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
@@ -586,6 +588,12 @@ impl PythonTools {
                 .map_err(|_| anyhow::anyhow!("Expired compaction policy reply")),
             _ => unreachable!(),
         }
+    }
+
+    pub(crate) fn agent_workspace_cancellation(&self, turn: &str) -> Result<CancellationToken> {
+        self.context_stop(turn)?
+            .callback_cancellation()
+            .context("Destination preparation requires its captured root turn")
     }
 
     pub(super) fn context_stop(&self, turn: &str) -> Result<Arc<CapturedTurnStop>> {

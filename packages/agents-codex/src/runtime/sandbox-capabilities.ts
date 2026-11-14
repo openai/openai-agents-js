@@ -34,6 +34,7 @@ export interface SandboxCapability {
 export class SandboxWorkspaceCleanupError extends AggregateError {}
 
 export interface SandboxWorkspacePreparation {
+  readonly profile?: import('./binding').JsonObject;
   readonly instructions: string;
   readonly workspace_instructions: string;
 }

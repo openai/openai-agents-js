@@ -1,0 +1,12 @@
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 2c3034356ea2a593261ae0f3479506f12c555668..335dd92e31ec2ce8eec3ce5ca878004b0f1bcbf9 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -6,6 +6,7 @@ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::protocol::CodexErrorInfo;
+ use codex_protocol::protocol::TokenUsage;
+ use codex_protocol::protocol::TurnAbortReason;
++use tokio_util::sync::CancellationToken;
+
+ use crate::ExtensionData;
+

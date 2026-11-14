@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { beforeAll, expect, it } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
 import { providerMetadataFixture } from './fixtures/worker-provider-metadata';
 const path = new URL('../native/codex-turn-control.wasm', import.meta.url);
 let control: WebAssembly.Module;
@@ -20,5 +20,21 @@ it.skipIf(!existsSync(path)).each(['buffered', 'streamed'] as const)(
         privateObserver: false,
         foreign,
       });
+  },
+);
+
+it.skipIf(!existsSync(path))(
+  'observes AI SDK streaming without a global Buffer',
+  async () => {
+    vi.stubGlobal('Buffer', undefined);
+    try {
+      expect(await providerMetadataFixture(control, 'streamed')).toMatchObject({
+        effects: 1,
+        requests: 3,
+        privateObserver: false,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   },
 );

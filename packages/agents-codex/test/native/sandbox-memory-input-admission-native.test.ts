@@ -178,7 +178,10 @@ it
           });
         } else if (route === 'failed-write')
           spy.mockRejectedValueOnce(writeFailure);
-        else spy.mockResolvedValueOnce(undefined);
+        else
+          spy.mockImplementationOnce(async function (this: NativeThread) {
+            return this._active_agent_profile();
+          });
         restoreSpy = () => spy.mockRestore();
       }
       original = await agent.session({ environment: source() });

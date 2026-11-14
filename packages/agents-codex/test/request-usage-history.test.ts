@@ -180,3 +180,63 @@ it.each(['thread', 'turn_id'])(
     expect(turn.requestUsageEntriesComplete).toBe(false);
   },
 );
+
+it('retains exact compaction occurrences in order with separate known and unknown usage', () => {
+  const compact = (id: string, usage: Record<string, number | string>) => ({
+    type: 'response_observation_record',
+    payload: {
+      id,
+      thread_id: 'thread',
+      turn_id: 'turn',
+      response_id: 'shared-provider-id',
+      status: 'completed',
+      compaction: true,
+      usage,
+    },
+  });
+  const first = compact('compact-1', {
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    cache_write_input_tokens: 0,
+  });
+  const turn = history(
+    fact('first-owner', 'first-attempt', 1, 0, 4),
+    first,
+    first,
+    compact('compact-2', { input_tokens: '9007199254740993' }),
+    fact('second-owner', 'second-attempt', 1, 0, 3),
+  );
+  expect(turn.requestUsageEntries).toMatchObject([
+    { scope: 'sdk_model_attempt', attemptId: 'first-attempt' },
+    {
+      scope: 'compaction',
+      attemptId: 'compact-1',
+      requestOrdinal: 1,
+      tokenUsageKnown: true,
+      totalTokens: 0,
+      inputTokensDetails: { cacheWriteTokens: 0 },
+    },
+    {
+      scope: 'compaction',
+      attemptId: 'compact-2',
+      requestOrdinal: 2,
+      tokenUsageKnown: false,
+      inputTokens: 9007199254740993n,
+    },
+    { scope: 'sdk_model_attempt', attemptId: 'second-attempt' },
+  ]);
+  expect(turn.requestUsageEntries![2].inputTokensDetails).not.toHaveProperty(
+    'cacheWriteTokens',
+  );
+  expect(turn.requestUsageEntriesComplete).toBe(false);
+  const wire = recordedTurnToWire({
+    ...turn,
+    subagentId: null,
+    parentSessionId: 'parent',
+    parentTurnId: 'original',
+  });
+  expect(
+    recordedTurnFromWire(repairTurnWireSchema.parse(wire)).requestUsageEntries,
+  ).toEqual(turn.requestUsageEntries);
+});

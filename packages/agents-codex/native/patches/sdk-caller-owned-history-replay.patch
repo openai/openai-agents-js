@@ -1,0 +1,513 @@
+diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
+index d580dd3d1c2..8e51f5eae93 100644
+--- a/codex-rs/app-server/src/notification_media.rs
++++ b/codex-rs/app-server/src/notification_media.rs
+@@ -69,7 +69,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
+                 | ResponseItem::ItemReference { .. }
+                 | ResponseItem::Program { .. }
+                 | ResponseItem::ProgramOutput { .. }
+-                | ResponseItem::Other => {}
++                | ResponseItem::LocalShellCallOutput { .. }
++            | ResponseItem::Other => {}
+             }
+             ServerNotification::RawResponseItemCompleted(notification)
+         }
+diff --git a/codex-rs/app-server/src/request_processors/turn_processor.rs b/codex-rs/app-server/src/request_processors/turn_processor.rs
+index 7ca4096691c..19c55903f98 100644
+--- a/codex-rs/app-server/src/request_processors/turn_processor.rs
++++ b/codex-rs/app-server/src/request_processors/turn_processor.rs
+@@ -85,7 +85,8 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
+         | ResponseItem::ItemReference { .. }
+         | ResponseItem::Program { .. }
+         | ResponseItem::ProgramOutput { .. }
+-        | ResponseItem::Other => false,
++        | ResponseItem::LocalShellCallOutput { .. }
++            | ResponseItem::Other => false,
+     }) {
+         return Err(invalid_request(REMOTE_IMAGE_URL_ERROR));
+     }
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index dac05b50d62..279c49ad900 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -133,6 +133,7 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool
+             | ResponseItem::ItemReference { .. }
+             | ResponseItem::Program { .. }
+             | ResponseItem::ProgramOutput { .. }
++            | ResponseItem::LocalShellCallOutput { .. }
+             | ResponseItem::Other => false,
+         },
+         RolloutItem::RealtimeItem(_)
+diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
+index fdead0cf552..feb70ed056f 100644
+--- a/codex-rs/core/src/client_common.rs
++++ b/codex-rs/core/src/client_common.rs
+@@ -214,6 +214,7 @@ fn normalize_image_details(items: &mut [ResponseItem], model_info: &ModelInfo) {
+             | ResponseItem::ItemReference { .. }
+             | ResponseItem::Program { .. }
+             | ResponseItem::ProgramOutput { .. }
++            | ResponseItem::LocalShellCallOutput { .. }
+             | ResponseItem::Other => {}
+         }
+     }
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index a78c876d5e1..0b3f8b464e9 100644
+--- a/codex-rs/core/src/context_manager/history.rs
++++ b/codex-rs/core/src/context_manager/history.rs
+@@ -1170,7 +1170,10 @@ pub(crate) fn is_api_message(
+     metadata: Option<&CodexHarnessMetadata>,
+ ) -> bool {
+     match message {
+-        ResponseItem::Message { role, .. } => role.as_str() != "system",
++        ResponseItem::Message { role, .. } => {
++            role.as_str() != "system"
++                || metadata.is_some_and(|metadata| metadata.client_authored)
++        },
+         ResponseItem::ConfigurationUpdate { .. } => {
+             metadata.is_some_and(|metadata| metadata.harness_authored_configuration)
+         }
+@@ -1184,6 +1187,7 @@ pub(crate) fn is_api_message(
+         | ResponseItem::ComputerCall { .. }
+         | ResponseItem::ApplyPatchCallOutput { .. }
+         | ResponseItem::ComputerCallOutput { .. }
++        | ResponseItem::LocalShellCallOutput { .. }
+         | ResponseItem::CustomToolCall { .. }
+         | ResponseItem::CustomToolCallOutput { .. }
+         | ResponseItem::LocalShellCall { .. }
+@@ -1381,6 +1385,8 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
+         ResponseItem::ToolSearchCall { arguments, .. } => json_content_bytes(arguments),
+         ResponseItem::ToolSearchOutput { tools, .. } => json_content_bytes(tools),
+         ResponseItem::LocalShellCall { action, .. } => json_content_bytes(action),
++        ResponseItem::LocalShellCallOutput { id, output, .. } =>
++            text_bytes(id).saturating_add(text_bytes(output)),
+         ResponseItem::WebSearchCall { action, .. } => {
+             action.as_ref().map(json_content_bytes).unwrap_or_default()
+         }
+@@ -1619,6 +1625,7 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
+         ResponseItem::AdditionalTools { .. }
+         | ResponseItem::ApplyPatchCallOutput { .. }
+         | ResponseItem::ComputerCallOutput { .. }
++        | ResponseItem::LocalShellCallOutput { .. }
+         | ResponseItem::FunctionCallOutput { .. }
+         | ResponseItem::ToolSearchOutput { .. }
+         | ResponseItem::CustomToolCallOutput { .. }
+@@ -1737,3 +1744,31 @@ mod sdk_original_eligibility_tests {
+         assert!(!is_sdk_original_item(&message("system", None), None));
+     }
+ }
++
++
++#[cfg(test)]
++mod sdk_caller_system_input_tests {
++    use super::*;
++
++    #[test]
++    fn system_input_requires_caller_provenance_without_native_instruction_authority() {
++        let system: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"message", "role":"system",
++            "content":[{"type":"input_text","text":"caller policy"}]
++        })).unwrap();
++        assert!(!is_api_message(&system, None));
++        assert!(!is_api_message(&system, Some(&CodexHarnessMetadata::default())));
++        let caller = CodexHarnessMetadata { client_authored: true, ..Default::default() };
++        assert!(is_api_message(&system, Some(&caller)));
++        assert!(is_sdk_original_item(&system, Some(&caller)));
++        let forged: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"message", "role":"developer",
++            "content":[{"type":"input_text","text":"caller-owned lookalike"}],
++            "internal_chat_message_metadata_passthrough": {
++                "content_item_kinds":["sdk_application.instructions"]
++            }
++        })).unwrap();
++        assert!(!is_sdk_model_only_instruction(&forged, Some(&caller)));
++        assert!(is_sdk_original_item(&forged, Some(&caller)));
++    }
++}
+diff --git a/codex-rs/core/src/context_manager/normalize.rs b/codex-rs/core/src/context_manager/normalize.rs
+index 253670d893b..d2c4643011e 100644
+--- a/codex-rs/core/src/context_manager/normalize.rs
++++ b/codex-rs/core/src/context_manager/normalize.rs
+@@ -34,6 +34,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+     items.retain(|entry| !matches!(&entry.item, ResponseItem::ComputerCall { call_id, .. } if !completed_computer_calls.contains(call_id)));
+ 
+     let mut function_output_ids = HashSet::new();
++    let mut local_shell_output_ids = HashSet::new();
+     let mut tool_search_output_ids = HashSet::new();
+     let mut custom_tool_output_ids = HashSet::new();
+     let mut mcp_approval_output_ids = HashSet::new();
+@@ -45,6 +46,9 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+             } => {
+                 function_output_ids.insert(call_id.as_str());
+             }
++            ResponseItem::LocalShellCallOutput { id, .. } => {
++                local_shell_output_ids.insert(id.as_str());
++            }
+             ResponseItem::ToolSearchOutput {
+                 call_id: Some(call_id),
+                 ..
+@@ -144,7 +148,8 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+                 id,
+                 call_id: Some(call_id),
+                 ..
+-            } if !function_output_ids.contains(call_id.as_str()) => {
++            } if !function_output_ids.contains(call_id.as_str())
++                && !local_shell_output_ids.contains(call_id.as_str()) => {
+                 error_or_panic(format!(
+                     "Local shell call output is missing for call id: {call_id}"
+                 ));
+@@ -165,6 +170,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+     }
+     drop((
+         function_output_ids,
++        local_shell_output_ids,
+         tool_search_output_ids,
+         custom_tool_output_ids,
+         mcp_approval_output_ids,
+@@ -382,13 +388,18 @@ pub(crate) fn remove_corresponding_for(items: &mut Vec<ResponseItemEnvelope>, it
+             ..
+         } => {
+             remove_first_matching(items, |i| {
+-                matches!(
+-                    i,
+-                    ResponseItem::FunctionCallOutput {
+-                        call_id: Some(existing),
+-                        ..
+-                    } if existing == call_id
+-                )
++                matches!(i, ResponseItem::FunctionCallOutput {
++                    call_id: Some(existing), ..
++                } if existing == call_id)
++                    || matches!(i, ResponseItem::LocalShellCallOutput { id, .. }
++                        if id == call_id)
++            });
++        }
++        ResponseItem::LocalShellCallOutput { id, .. } => {
++            remove_first_matching(items, |i| {
++                matches!(i, ResponseItem::LocalShellCall {
++                    call_id: Some(call_id), ..
++                } if call_id == id)
+             });
+         }
+         _ => {}
+diff --git a/codex-rs/core/src/image_preparation.rs b/codex-rs/core/src/image_preparation.rs
+index 0d021023eb9..c4878a74557 100644
+--- a/codex-rs/core/src/image_preparation.rs
++++ b/codex-rs/core/src/image_preparation.rs
+@@ -300,6 +300,7 @@ pub(crate) async fn prepare_response_items(
+             | ResponseItem::ItemReference { .. }
+             | ResponseItem::Program { .. }
+             | ResponseItem::ProgramOutput { .. }
++            | ResponseItem::LocalShellCallOutput { .. }
+             | ResponseItem::Other => None,
+         };
+         prepared_items.push(item);
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index f0e7ac58e32..703cbf1f8d1 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -552,6 +552,11 @@ impl Session {
+                     let projection = projection.map(|mut item| {
+                         Self::assign_missing_response_item_id(&mut item);
+                         let mut envelope = self.annotate_client_response_item(item);
++                        if matches!(&envelope.item, ResponseItem::Message { role, .. }
++                            if matches!(role.as_str(), "developer" | "system"))
++                        {
++                            envelope.metadata.get_or_insert_default().client_authored = true;
++                        }
+                         if !cache_breakpoints.is_empty()
+                             && let (Some(id), ResponseItem::Message { content, .. }) =
+                                 (envelope.item.id(), &envelope.item)
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index d397fb88641..ceb1fc15f99 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -743,8 +743,39 @@ pub(crate) async fn run_turn(
+             .map_err(CodexErr::Fatal)?;
+             // Step selection has joined the SDK input guardrails. The manual replies
+             // are already in history, so the batch follows them in the next request.
+-            sess.record_conversation_items(&turn_context, &step_context.settings.model_info, items)
+-                .await;
++            let admitted = items
++                .iter()
++                .cloned()
++                .map(|item| {
++                    let provider_compaction = matches!(
++                        &item,
++                        ResponseItem::Compaction { .. }
++                            | ResponseItem::ContextCompaction {
++                                encrypted_content: Some(_),
++                                ..
++                            }
++                    );
++                    let caller_instruction = matches!(
++                        &item,
++                        ResponseItem::Message { role, .. }
++                            if matches!(role.as_str(), "developer" | "system")
++                    );
++                    let mut envelope = sess.annotate_client_response_item(item);
++                    if caller_instruction {
++                        envelope.metadata.get_or_insert_default().client_authored = true;
++                    }
++                    if provider_compaction {
++                        envelope.metadata.get_or_insert_default().provider_compaction = true;
++                    }
++                    envelope
++                })
++                .collect();
++            sess.record_annotated_conversation_items(
++                &turn_context,
++                &step_context.settings.model_info,
++                admitted,
++            )
++            .await;
+             sess.ensure_rollout_durable().await?;
+             staged.acknowledge();
+         }
+@@ -5263,6 +5294,7 @@ async fn try_run_sampling_request(
+                         | ResponseItem::ItemReference { .. }
+                         | ResponseItem::Program { .. }
+                         | ResponseItem::ProgramOutput { .. }
++                        | ResponseItem::LocalShellCallOutput { .. }
+                         | ResponseItem::Other => false,
+                     };
+ 
+diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
+index 67829224372..840f2aa4c85 100644
+--- a/codex-rs/core/src/stream_events_utils.rs
++++ b/codex-rs/core/src/stream_events_utils.rs
+@@ -619,6 +619,7 @@ pub(crate) async fn handle_non_tool_response_item(
+         ResponseItem::ItemReference { .. } => "item_reference",
+         ResponseItem::Program { .. } => "program",
+         ResponseItem::ProgramOutput { .. } => "program_output",
++        ResponseItem::LocalShellCallOutput { .. } => "local_shell_call_output",
+         ResponseItem::Other => "other",
+     };
+     debug!(
+diff --git a/codex-rs/core/src/turn_timing.rs b/codex-rs/core/src/turn_timing.rs
+index 8413a50765b..6ebcccdb2a4 100644
+--- a/codex-rs/core/src/turn_timing.rs
++++ b/codex-rs/core/src/turn_timing.rs
+@@ -463,7 +463,8 @@ fn response_item_records_turn_ttft(item: &ResponseItem) -> bool {
+         | ResponseItem::ItemReference { .. }
+         | ResponseItem::Program { .. }
+         | ResponseItem::ProgramOutput { .. }
+-        | ResponseItem::Other => false,
++        | ResponseItem::LocalShellCallOutput { .. }
++            | ResponseItem::Other => false,
+     }
+ }
+ 
+diff --git a/codex-rs/ext/image-generation/src/tool.rs b/codex-rs/ext/image-generation/src/tool.rs
+index d6299905512..d628ecf8e5d 100644
+--- a/codex-rs/ext/image-generation/src/tool.rs
++++ b/codex-rs/ext/image-generation/src/tool.rs
+@@ -542,6 +542,7 @@ fn recent_images(
+             | ResponseItem::ItemReference { .. }
+             | ResponseItem::Program { .. }
+             | ResponseItem::ProgramOutput { .. }
++            | ResponseItem::LocalShellCallOutput { .. }
+             | ResponseItem::Other => {}
+         }
+         for image in image_references {
+diff --git a/codex-rs/guardian-context/src/transcript.rs b/codex-rs/guardian-context/src/transcript.rs
+index 2aea8cb94a0..f9dbd4d5586 100644
+--- a/codex-rs/guardian-context/src/transcript.rs
++++ b/codex-rs/guardian-context/src/transcript.rs
+@@ -280,6 +280,15 @@ pub fn collect_transcript(
+                 };
+                 (kind, text)
+             }
++            ResponseItem::LocalShellCallOutput { output, .. } => {
++                if !config.options.include_tool_outputs {
++                    continue;
++                }
++                (
++                    ConversationTranscriptEntryKind::ToolOutput("local shell result".to_string()),
++                    output.clone(),
++                )
++            }
+             ResponseItem::FunctionCallOutput {
+                 call_id: None,
+                 name: Some(name),
+diff --git a/codex-rs/history/src/sdk_originals.rs b/codex-rs/history/src/sdk_originals.rs
+index b4cb836e2f4..1701180fb7a 100644
+--- a/codex-rs/history/src/sdk_originals.rs
++++ b/codex-rs/history/src/sdk_originals.rs
+@@ -101,7 +101,6 @@ pub fn input_projection(value: &str) -> Result<Option<ResponseItem>, String> {
+         ResponseItem::Other
+         | ResponseItem::ConfigurationUpdate { .. }
+         | ResponseItem::CompactionTrigger { .. } => None,
+-        ResponseItem::Message { ref role, .. } if role == "system" => None,
+         item => Some(item),
+     })
+ }
+@@ -536,6 +535,7 @@ pub fn client_tool_pair_part(item: &ResponseItem) -> Option<(&'static str, Optio
+             matches!(item, ResponseItem::ShellCall { .. }),
+         ),
+         ResponseItem::LocalShellCall { call_id, .. } => ("function", call_id.as_deref(), true),
++        ResponseItem::LocalShellCallOutput { id, .. } => ("function", Some(id.as_str()), false),
+         ResponseItem::FunctionCallOutput { call_id, .. } => ("function", call_id.as_deref(), false),
+         ResponseItem::ComputerCall { call_id, .. } => ("computer", Some(call_id.as_str()), true),
+         ResponseItem::ComputerCallOutput { call_id, .. } => {
+diff --git a/codex-rs/otel/src/events/session_telemetry.rs b/codex-rs/otel/src/events/session_telemetry.rs
+index 977f877d5dc..9d597150077 100644
+--- a/codex-rs/otel/src/events/session_telemetry.rs
++++ b/codex-rs/otel/src/events/session_telemetry.rs
+@@ -1437,6 +1437,7 @@ impl SessionTelemetry {
+             ResponseItem::ItemReference { .. } => "item_reference".into(),
+             ResponseItem::Program { .. } => "program".into(),
+             ResponseItem::ProgramOutput { .. } => "program_output".into(),
++            ResponseItem::LocalShellCallOutput { .. } => "local_shell_call_output".into(),
+             ResponseItem::Other => "other".into(),
+         }
+     }
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index 719ad6b9ba8..50967b66610 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -1236,6 +1236,16 @@ pub enum ResponseItem {
+         #[ts(optional)]
+         internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
+     },
++    /// Historical Responses local-shell output. `id` references the provider call;
++    /// it is not a new SDK occurrence ID or an execution receipt.
++    LocalShellCallOutput {
++        id: String,
++        output: String,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        status: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
++    },
+     #[serde(deserialize_with = "deserialize_function_call")]
+     FunctionCall {
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+@@ -1636,6 +1646,7 @@ impl ResponseItem {
+             Self::ConfigurationUpdate { .. }
+             | Self::CompactionTrigger { .. }
+             | Self::ItemReference { .. }
++            | Self::LocalShellCallOutput { .. }
+             | Self::Other => None,
+         }
+     }
+@@ -1675,6 +1686,7 @@ impl ResponseItem {
+             Self::ConfigurationUpdate { .. }
+             | Self::CompactionTrigger { .. }
+             | Self::ItemReference { .. }
++            | Self::LocalShellCallOutput { .. }
+             | Self::Other => {}
+         }
+     }
+@@ -1713,6 +1725,7 @@ impl ResponseItem {
+             Self::ConfigurationUpdate { .. }
+             | Self::CompactionTrigger { .. }
+             | Self::ItemReference { .. }
++            | Self::LocalShellCallOutput { .. }
+             | Self::Other => None,
+         }
+     }
+@@ -1756,6 +1769,10 @@ impl ResponseItem {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+             }
++            | Self::LocalShellCallOutput {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
+             | Self::FunctionCallOutput {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+@@ -1864,6 +1881,10 @@ impl ResponseItem {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+             }
++            | Self::LocalShellCallOutput {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
+             | Self::CustomToolCall {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+@@ -1982,6 +2003,10 @@ impl ResponseItem {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+             }
++            | Self::LocalShellCallOutput {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
+             | Self::CustomToolCall {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+@@ -5338,4 +5363,27 @@ mod computer_protocol_tests {
+             assert_eq!(serde_json::to_value(parsed).unwrap(), item);
+         }
+     }
++
++    #[test]
++    fn local_shell_output_keeps_provider_correlation_id() {
++        let wire = serde_json::json!({
++            "type": "local_shell_call_output",
++            "id": "historical-shell",
++            "output": "historical result",
++            "status": "completed"
++        });
++        let mut item: ResponseItem = serde_json::from_value(wire.clone()).unwrap();
++        assert!(matches!(item, ResponseItem::LocalShellCallOutput { .. }));
++        assert!(item.id().is_none());
++        assert!(item.id_prefix().is_none());
++        item.set_id(Some("invented-receipt".to_owned().into()));
++        assert_eq!(serde_json::to_value(item).unwrap(), wire);
++        for bad in [
++            serde_json::json!({"type": "local_shell_call_output", "output": "missing id"}),
++            serde_json::json!({"type": "local_shell_call_output", "id": "historical-shell", "output": 7}),
++        ] {
++            assert!(serde_json::from_value::<ResponseItem>(bad).is_err());
++        }
++    }
++
+ }
+diff --git a/codex-rs/rollout/src/persistence_metrics.rs b/codex-rs/rollout/src/persistence_metrics.rs
+index 86e6803c18c..7b60e6b8c49 100644
+--- a/codex-rs/rollout/src/persistence_metrics.rs
++++ b/codex-rs/rollout/src/persistence_metrics.rs
+@@ -351,6 +351,7 @@ fn response_item_type(item: &ResponseItemEnvelope) -> &'static str {
+         ResponseItem::ItemReference { .. } => "response.item_reference",
+         ResponseItem::Program { .. } => "response.program",
+         ResponseItem::ProgramOutput { .. } => "response.program_output",
++        ResponseItem::LocalShellCallOutput { .. } => "response.local_shell_call_output",
+         ResponseItem::Other => "response.other",
+     }
+ }
+diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
+index 477f7e86303..51d73ea4a3f 100644
+--- a/codex-rs/rollout/src/policy.rs
++++ b/codex-rs/rollout/src/policy.rs
+@@ -89,6 +89,7 @@ pub fn should_persist_response_item(item: &ResponseItem) -> bool {
+         | ResponseItem::FunctionCall { .. }
+         | ResponseItem::ToolSearchCall { .. }
+         | ResponseItem::FunctionCallOutput { .. }
++        | ResponseItem::LocalShellCallOutput { .. }
+         | ResponseItem::ToolSearchOutput { .. }
+         | ResponseItem::ApplyPatchCall { .. }
+         | ResponseItem::ComputerCall { .. }
+@@ -126,6 +127,7 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
+         | ResponseItem::FunctionCall { .. }
+         | ResponseItem::ToolSearchCall { .. }
+         | ResponseItem::FunctionCallOutput { .. }
++        | ResponseItem::LocalShellCallOutput { .. }
+         | ResponseItem::ToolSearchOutput { .. }
+         | ResponseItem::ApplyPatchCall { .. }
+         | ResponseItem::ComputerCall { .. }
+diff --git a/codex-rs/utils/audio/src/lib.rs b/codex-rs/utils/audio/src/lib.rs
+index 4eb8434ae3c..09e04fd5c69 100644
+--- a/codex-rs/utils/audio/src/lib.rs
++++ b/codex-rs/utils/audio/src/lib.rs
+@@ -99,6 +99,7 @@ pub fn prepare_response_items(items: &mut [ResponseItem]) {
+             | ResponseItem::ItemReference { .. }
+             | ResponseItem::Program { .. }
+             | ResponseItem::ProgramOutput { .. }
++            | ResponseItem::LocalShellCallOutput { .. }
+             | ResponseItem::Other => {}
+         }
+     }

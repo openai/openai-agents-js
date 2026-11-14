@@ -24,7 +24,10 @@ export type {
   RequestAttempts,
 } from './runtime/request-attempts';
 export { Agent, Runner } from './runtime/public-agent';
-export type { AgentAsToolOptions } from './runtime/agent-tool';
+export type {
+  AgentAsToolOptions,
+  AgentToolStreamEvent,
+} from './runtime/agent-tool';
 export type {
   AgentOptions,
   AgentOutput,
@@ -616,6 +619,15 @@ export type { HostedResponsesWebSocketModelOptions } from './runtime/hosted-resp
 export { getHostedAgentMetadata } from './runtime/hosted-agent-metadata';
 export type { HostedAgentMetadata } from './runtime/hosted-agent-metadata';
 
-export type { SandboxAccess } from './runtime/sandbox-context';
+export type {
+  SandboxAccess,
+  SandboxEditorOptions,
+  PatchFormat,
+} from './runtime/sandbox-context';
 
 export type { SandboxCapability } from './runtime/sandbox-capabilities';
+
+export type {
+  AgentLifecycleEvent,
+  AgentLifecycleCallback,
+} from './runtime/agent-lifecycle';

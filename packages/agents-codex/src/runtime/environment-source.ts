@@ -44,6 +44,7 @@ interface LeaseState {
   readonly skillLease?: SandboxSkillLease;
   readonly sandboxProvider?: SandboxProviderBinding;
   readonly sandboxCapabilities?: SandboxCapabilityLease;
+  readonly defaultProviderCompaction?: boolean;
   readonly signal?: AbortSignal;
   readonly scope: ReturnType<typeof AsyncLocalStorage.snapshot>;
   readonly dispose: (guard: DisposeGuard) => void | Promise<void>;
@@ -67,6 +68,7 @@ export function createEnvironmentLease<Context>(
   sandboxProvider?: SandboxProviderBinding,
   sandboxCapabilities?: SandboxCapabilityLease,
   profileWorkspaceInstructions?: string,
+  defaultProviderCompaction?: boolean,
 ): EnvironmentLease<Context> {
   if (!(environment instanceof Environment))
     throw new TypeError('Environment.lease requires an Environment');
@@ -83,6 +85,7 @@ export function createEnvironmentLease<Context>(
     skillLease,
     sandboxProvider,
     sandboxCapabilities,
+    defaultProviderCompaction,
   };
   const close = () => {
     if (state.claimed)
@@ -184,6 +187,11 @@ export class EnvironmentAcquisition {
   }
 
   /** @internal The current resource owns its bound capability contributions. */
+  /** Current source declaration; saved state never supplies this policy. */
+  get defaultProviderCompaction(): boolean | undefined {
+    return this.state?.defaultProviderCompaction;
+  }
+
   get sandboxCapabilities(): SandboxCapabilityLease | undefined {
     return this.state?.sandboxCapabilities;
   }
@@ -191,6 +199,14 @@ export class EnvironmentAcquisition {
   /** @internal Fresh declaration presence; never restored from checkpoint data. */
   get hasSandboxMemory(): boolean {
     return this.state?.sandboxMemory !== undefined;
+  }
+
+  /** @internal Preserve each adopted resource's independent memory owner. */
+  get hasAnySandboxMemory(): boolean {
+    return (
+      this.hasSandboxMemory ||
+      [...this.#profileOwners.keys()].some((owner) => owner.hasAnySandboxMemory)
+    );
   }
 
   /** @internal Keep all resource IO inside the exact acquisition's scope. */
@@ -208,11 +224,14 @@ export class EnvironmentAcquisition {
   /** @internal Guard active phase callbacks across Sessions sharing this resource. */
   checkMemoryOperation(operation: string): void {
     this.state?.sandboxMemory?.checkOperation(operation);
+    for (const owner of this.#profileOwners.keys())
+      owner.checkMemoryOperation(operation);
   }
 
   /** @internal Session close cancels generation before joining its mutation. */
   cancelMemory(): void {
     this.state?.sandboxMemory?.cancel();
+    for (const owner of this.#profileOwners.keys()) owner.cancelMemory();
   }
 
   attachSession(session: { close(): Promise<void> }): void {
