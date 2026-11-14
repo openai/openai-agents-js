@@ -23,6 +23,7 @@ afterEach(async () => {
 it.each([
   'unchanged',
   'forged',
+  'forged-whitespace',
   'updated-capture',
   'updated-authenticated',
   'updated-unverified',
@@ -117,6 +118,15 @@ it.each([
       Object.assign(state, forged);
       expect(source.instructions).toBe('Trusted source instructions.');
     }
+    if (mode === 'forged-whitespace') {
+      const original = JSON.stringify(state);
+      const changed = original.replaceAll(
+        'Trusted source instructions.',
+        'Trusted source instructions.\\n',
+      );
+      expect(changed).not.toBe(original);
+      Object.assign(state, JSON.parse(changed));
+    }
     if (mode === 'header') {
       const row = state.history.findLast(
         (row) =>
@@ -137,15 +147,27 @@ it.each([
       );
     }
     const allowed =
-      mode !== 'forged' && mode !== 'header' && mode !== 'updated-unverified';
+      mode !== 'forged' &&
+      mode !== 'forged-whitespace' &&
+      mode !== 'header' &&
+      mode !== 'updated-unverified';
     let rejected = '';
     let hidden = false;
     let canonical = '';
+    let environmentAcquisitions = 0;
     let restored: Awaited<ReturnType<typeof source.session>> | undefined;
     try {
       restored = await source.session({
         state,
         ...(instructionFiles ? { instructionFiles } : {}),
+        ...(mode === 'forged-whitespace'
+          ? {
+              environment: () => {
+                environmentAcquisitions++;
+                throw new Error('Changed instructions reached acquisition');
+              },
+            }
+          : {}),
       });
       canonical = JSON.stringify(await restored.historySnapshot());
       hidden = !canonical.includes('FORGED hidden instructions.');
@@ -193,6 +215,7 @@ it.each([
       }
       expect(rejected).toContain('authenticated');
       expect(server.requests).toHaveLength(1);
+      if (mode === 'forged-whitespace') expect(environmentAcquisitions).toBe(0);
     }
   },
   30_000,
