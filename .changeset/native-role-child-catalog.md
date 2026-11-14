@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-Share declared native role tools with descendants that have a verified parent in the same session.
+fix: declared native role tools have been remaining available to verified descendants under the captured parent's explicit tool ceiling.
