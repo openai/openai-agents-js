@@ -178,7 +178,7 @@ async function completeModel(
             ))
         )
           throw new Error('Portable model stream changed completed output');
-        completion = projectResponsesResponse(response);
+        completion = projectResponsesResponse(structuredClone(response));
       }
       await observe(event);
       return true;

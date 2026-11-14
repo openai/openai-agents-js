@@ -362,3 +362,53 @@ portableTest(
     expect(tool.execute).not.toHaveBeenCalled();
   },
 );
+
+portableTest(
+  'keeps observer changes out of the admitted tool arguments',
+  async () => {
+    const tool = lookup();
+    let requests = 0;
+    const provider: NativeModel = {
+      complete() {
+        throw new Error('Expected the stream adapter');
+      },
+      async *stream(): AsyncGenerator<JsonObject> {
+        requests++;
+        yield {
+          type: 'response.completed',
+          response: {
+            id: String(requests),
+            status: 'completed',
+            output:
+              requests === 1
+                ? [call]
+                : [
+                    {
+                      type: 'message',
+                      role: 'assistant',
+                      content: [{ type: 'output_text', text: 'done' }],
+                    },
+                  ],
+          },
+        };
+      },
+    };
+    await expect(
+      runWorkerText('Find it.', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool.declaration],
+        observe(event) {
+          if (requests !== 1 || event.type !== 'response.completed') return;
+          const response = event.response as JsonObject;
+          const output = response.output as JsonObject[];
+          output[0].arguments = '{"value":"injected"}';
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(tool.execute).toHaveBeenCalledTimes(1);
+    expect(tool.execute.mock.calls[0][0]).toEqual({ value: 'local' });
+  },
+);
