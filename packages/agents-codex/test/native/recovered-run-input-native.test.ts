@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { afterEach, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
@@ -6,6 +7,7 @@ import {
   NativeProvider,
   RunDiagnosticError,
   manualTool,
+  parseSessionState,
 } from '../../src';
 import { ModelServer, call, message } from './fixtures/model-server';
 
@@ -139,9 +141,13 @@ it.each([
     };
     if (legacy) delete context.original_input;
     else expect(Object.hasOwn(context, 'original_input')).toBe(capture);
+    const checkpoint = JSON.stringify(state);
+    const expectedSha256 = createHash('sha256')
+      .update(checkpoint)
+      .digest('hex');
     const failure = await agent
       .run(null, {
-        state,
+        state: parseSessionState(checkpoint, { expectedSha256 }),
         captureErrorDetails: expose,
         onInteraction(event) {
           if (event.type !== 'action_requested')

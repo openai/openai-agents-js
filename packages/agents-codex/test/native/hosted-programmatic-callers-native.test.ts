@@ -214,7 +214,7 @@ it.each([
       ).toEqual(
         mode === 'ordinary'
           ? ['completed']
-          : mode === 'terminal-identical'
+          : mode === 'repeated-incomplete' || mode === 'terminal-identical'
             ? ['incomplete', 'incomplete', 'completed']
             : ['incomplete', 'completed'],
       );
