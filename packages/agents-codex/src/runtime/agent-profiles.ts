@@ -461,20 +461,23 @@ export function profileRoster(
             : {}),
         }
       : {}),
-    mcp_servers: mcpConfig(
-      graph.profiles
-        .get(row.id as string)!
-        .mcp.filter(
-          (server) =>
-            (server.tools.length > 0 ||
-              (server instanceof StdioMCP && server.lifetime === 'turn')) &&
-            (!(server instanceof HttpMCP) || server.activation !== 'operation'),
+    mcp_servers: graph.deferred?.resources.deferred.has(row.id as string)
+      ? row.mcp_servers
+      : mcpConfig(
+          graph.profiles
+            .get(row.id as string)!
+            .mcp.filter(
+              (server) =>
+                (server.tools.length > 0 ||
+                  (server instanceof StdioMCP && server.lifetime === 'turn')) &&
+                (!(server instanceof HttpMCP) ||
+                  server.activation !== 'operation'),
+            ),
+          graph.environments?.get(row.id as string)?.environment ?? environment,
+          graph.profiles.get(row.id as string)!.profile.declaration
+            .programmaticToolCalling,
+          graph.profiles.get(row.id as string)!.mcp,
         ),
-      graph.environments?.get(row.id as string)?.environment ?? environment,
-      graph.profiles.get(row.id as string)!.profile.declaration
-        .programmaticToolCalling,
-      graph.profiles.get(row.id as string)!.mcp,
-    ),
   }));
 }
 

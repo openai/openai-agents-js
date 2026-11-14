@@ -10,6 +10,7 @@ import {
   Agent,
   Environment,
   HttpMCP,
+  StdioMCP,
   InteractionRequired,
   NativeProvider,
   manualTool,
@@ -260,4 +261,38 @@ it('has been suspending a settled non-memory root after acquiring an unvisited m
     await executor.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
+});
+
+it('has been leaving environment-location MCP on an unvisited destination inert without a root Environment', async () => {
+  const model = new ModelServer([[message('root only')]]);
+  await using provider = await providerFor(model);
+  let acquired = 0;
+  const destination = new Agent({
+    name: 'unused',
+    instructions: 'Never enter.',
+    tools: [
+      new StdioMCP({
+        name: 'deferred-stdio',
+        command: 'unused-no-spawn',
+        tools: ['lookup'],
+        location: 'environment',
+      }),
+    ],
+    environment: async () => {
+      acquired++;
+      throw new Error('Unused destination has been remaining unprepared');
+    },
+  });
+  await using session = await new Agent({
+    provider,
+    model: 'gpt-5.5',
+    instructions: 'Answer without transferring.',
+    handoffs: [destination],
+  }).session();
+  expect(acquired).toBe(0);
+  expect((await (await session.submit('Stay here.')).wait()).finalOutput).toBe(
+    'root only',
+  );
+  expect(acquired).toBe(0);
+  model.assertExhausted();
 });
