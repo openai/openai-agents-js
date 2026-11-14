@@ -2,6 +2,7 @@ import {
   hostedToolSpecs,
   type FileSearch,
   type CodeInterpreter,
+  type ImageGeneration,
 } from './hosted-tools';
 import { hostedWebSearchSpec, type WebSearch } from './web-search';
 import { isDeepStrictEqual } from 'node:util';
@@ -43,6 +44,8 @@ export interface CapturedAgentProfile<Context, Output> {
   readonly scopedHostedFileSearch?: readonly FileSearch[];
   /** @internal Exact captured provider code execution declarations. */
   readonly scopedHostedCodeInterpreter?: readonly CodeInterpreter[];
+  /** @internal Exact captured provider image-generation declarations. */
+  readonly scopedHostedImageGeneration?: readonly ImageGeneration[];
 }
 
 export interface AgentProfileRuntime {
@@ -345,7 +348,8 @@ export function captureProfileRuntimes(
       id: profile.id,
       ...(profile.scopedHostedSearch === undefined &&
       profile.scopedHostedFileSearch === undefined &&
-      profile.scopedHostedCodeInterpreter === undefined
+      profile.scopedHostedCodeInterpreter === undefined &&
+      profile.scopedHostedImageGeneration === undefined
         ? {}
         : {
             hosted_search: {
@@ -356,6 +360,7 @@ export function captureProfileRuntimes(
                 ...hostedToolSpecs([
                   ...(profile.scopedHostedFileSearch ?? []),
                   ...(profile.scopedHostedCodeInterpreter ?? []),
+                  ...(profile.scopedHostedImageGeneration ?? []),
                 ]),
               ],
             },

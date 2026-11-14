@@ -423,6 +423,10 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   expect(armRestored.status, armRestored.error).toBe(0);
   const restoredArmFixture = join(repo, 'packages/agents-codex', armFixture);
   expect(readFileSync(restoredArmFixture, 'utf8')).toBe(armFixture + '\n');
+  const fixtureSha256 = createHash('sha256')
+    .update(readFileSync(restoredArmFixture))
+    .digest('hex');
+  expect(armRestored.output).toBe(`fixture_sha256=${fixtureSha256}\n`);
   rmSync(restoredArmFixture);
   const restored = run({ inputs, artifact: pair, bytes: archive }, true);
   expect(restored.status, restored.error).toBe(0);
@@ -465,12 +469,14 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   );
   expect(incomplete.status).toBe(1);
   expect(incomplete.error).toContain(armFixture);
+  expect(incomplete.output).toBe('');
   const corrupt = run(
     { inputs, artifact: pair, bytes: Buffer.from('corrupt') },
     true,
   );
   expect(corrupt.status).toBe(1);
   expect(corrupt.error).toContain('Native bundle checksum mismatch');
+  expect(corrupt.output).toBe('');
   const missingTransfer = run(
     { inputs, artifact: pair, bytes: archive, status: 410 },
     true,

@@ -132,14 +132,14 @@ fn insert_hosted_search(
     ensure!(
         search.tools.iter().filter(|tool| matches!(tool, codex_tools::HostedToolSpec::WebSearch(_))).count() <= 1
             && search.tools.iter().all(|tool| matches!(tool,
-                codex_tools::HostedToolSpec::WebSearch(_) | codex_tools::HostedToolSpec::FileSearch(_) | codex_tools::HostedToolSpec::CodeInterpreter(_))),
+                codex_tools::HostedToolSpec::WebSearch(_) | codex_tools::HostedToolSpec::FileSearch(_) | codex_tools::HostedToolSpec::CodeInterpreter(_) | codex_tools::HostedToolSpec::ImageGeneration(_))),
         "Agent hosted-tool override requires only its captured provider declarations"
     );
     // Other thread-hosted tools retain their existing common captured grant.
     // The captured provider value belongs only to this Agent's immutable step data.
     let mut inherited = common.map(|tools| tools.as_ref().clone()).unwrap_or_default();
     inherited.tools.retain(|tool| !matches!(tool,
-        codex_tools::HostedToolSpec::WebSearch(_) | codex_tools::HostedToolSpec::FileSearch(_) | codex_tools::HostedToolSpec::CodeInterpreter(_)));
+        codex_tools::HostedToolSpec::WebSearch(_) | codex_tools::HostedToolSpec::FileSearch(_) | codex_tools::HostedToolSpec::CodeInterpreter(_) | codex_tools::HostedToolSpec::ImageGeneration(_)));
     inherited.tools.extend(search.tools.iter().cloned());
     data.insert(inherited);
     Ok(())

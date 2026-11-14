@@ -542,7 +542,7 @@ pub(super) async fn propose(
                 .lock()
                 .expect("held terminal outputs poisoned")
                 .iter()
-                .any(|(item, _)| item.item == *input.output)
+                .any(|(item, _, _)| item.item == *input.output)
         })
     };
     let guard_only = input.guard_only || key.is_none();

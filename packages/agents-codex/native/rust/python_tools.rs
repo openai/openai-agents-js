@@ -1,3 +1,5 @@
+#[path = "tool_observers.rs"]
+pub(crate) mod tool_observers;
 #[path = "agent_lifecycle.rs"]
 pub(crate) mod agent_lifecycle;
 
@@ -4794,6 +4796,12 @@ impl ToolLifecycleContributor for PythonContributor {
             }
             tools.format_tool_not_found(input).await.map_err(|_| ())
         })
+    }
+
+    fn observe_tool_start<'a>(
+        &'a self, input: ToolStartInput<'a>,
+    ) -> codex_extension_api::ExtensionFuture<'a, std::result::Result<Option<Arc<dyn codex_extension_api::RecordedToolOutputObserver>>, String>> {
+        Box::pin(async move { tool_observers::capture(&input).map_err(|error| error.to_string()) })
     }
 
     fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {

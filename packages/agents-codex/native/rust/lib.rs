@@ -3684,6 +3684,40 @@ impl NativeThread {
         owner.reply_agent_lifecycle(response).map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_tool_lifecycle")]
+    pub fn _reply_tool_lifecycle(&self, response_json: String) -> napi::Result<()> {
+        if response_json.len() > 8 * 1024 * 1024 {
+            return Err(input_error("Tool lifecycle reply exceeds 8 MiB"));
+        }
+        let inner = self.current()?;
+        let response: python_tools::tool_observers::Reply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Tool lifecycle requires a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired Tool lifecycle owner"))?;
+        owner.reply_tool_lifecycle(response).map_err(input_error)
+    }
+
+    #[napi(js_name = "_enable_raw_mcp_tool_lifecycle")]
+    pub fn _enable_raw_mcp_tool_lifecycle(&self) -> napi::Result<()> {
+        let inner = self.current()?;
+        let store = inner.thread.thread_extension_data();
+        if store.get::<python_tools::PythonTools>().is_none() {
+            return Err(input_error("Tool lifecycle requires a managed Session"));
+        }
+        store.get_or_init(|| python_tools::tool_observers::Bindings);
+        Ok(())
+    }
+
     #[napi(js_name = "_reply_handoff_input")]
     pub fn _reply_handoff_input(&self, response_json: String) -> napi::Result<()> {
         if response_json.len() > 8 * 1024 * 1024 {

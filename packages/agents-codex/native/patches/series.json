@@ -1515,7 +1515,19 @@
     {
       "path": "sdk-hosted-file-search-role-identity.patch",
       "sha256": "d51143ff580c423fd1aabbe6604b5a1fa49070bf632c4ddf05fc9ad6e732207d"
+    },
+    {
+      "path": "sdk-raw-mcp-recorded-observers.patch",
+      "sha256": "40df34bc97b15304270fee5b7289e9255d523cfb7095e94ada145b1157480043"
+    },
+    {
+      "path": "sdk-raw-mcp-observer-initializer.patch",
+      "sha256": "86b77892e2e8d4793d6b110e27cc33a0f1aa6009b0f9f29c34337bf079fe97e0"
+    },
+    {
+      "path": "sdk-native-mcp-recovery-recorded-observers.patch",
+      "sha256": "7ffbc08c239155999a857f9981f738b360bf940bbc39abba2c36dd64f1f0ee23"
     }
   ],
-  "result_tree": "bddfc0ed186e04942ed219517997ac41293810e2"
+  "result_tree": "3ef79547d68e3680f279488819762565c969ec43"
 }

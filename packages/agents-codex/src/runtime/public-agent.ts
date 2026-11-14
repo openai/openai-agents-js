@@ -1624,7 +1624,8 @@ export class Agent<Context = undefined, Output = string> {
         (profile) =>
           profile.scopedHostedSearch !== undefined ||
           profile.scopedHostedFileSearch !== undefined ||
-          profile.scopedHostedCodeInterpreter !== undefined,
+          profile.scopedHostedCodeInterpreter !== undefined ||
+          profile.scopedHostedImageGeneration !== undefined,
       ) ?? false;
     if (profiles) {
       const selectedTools = splitToolDeclarations(
@@ -2246,6 +2247,7 @@ export class Agent<Context = undefined, Output = string> {
           ...[
             ...(profile.profile.scopedHostedFileSearch ?? []),
             ...(profile.profile.scopedHostedCodeInterpreter ?? []),
+            ...(profile.profile.scopedHostedImageGeneration ?? []),
           ].map((tool) => hostedToolPolicyIdentity(tool, distinctFileSearch)),
           ...mcpToolNames(profile.mcp),
           ...Object.keys(profile.profile.handoffs).map((name) => ({
@@ -2654,7 +2656,8 @@ export class Agent<Context = undefined, Output = string> {
               (tool) =>
                 (!scopedHostedSearch ||
                   (tool.kind !== 'file_search' &&
-                    tool.kind !== 'code_interpreter')) &&
+                    tool.kind !== 'code_interpreter' &&
+                    tool.kind !== 'image_generation')) &&
                 (tool.kind !== 'tool_search' || tool.execution !== 'client'),
             ),
           ),
@@ -3173,7 +3176,9 @@ export function captureAgentProfiles<Context, Output>(
         ? hostedTools
         : hostedTools.filter(
             (tool) =>
-              tool.kind !== 'file_search' && tool.kind !== 'code_interpreter',
+              tool.kind !== 'file_search' &&
+              tool.kind !== 'code_interpreter' &&
+              tool.kind !== 'image_generation',
           ),
       // Hosted search belongs to the captured provider request, not a local
       // executor. Standalone and Realtime keep the existing common ceiling.
@@ -3513,6 +3518,11 @@ export function captureAgentProfiles<Context, Output>(
       (tool) => tool.kind === 'code_interpreter',
     );
   const rootCodeInterpreters = codeInterpreters(rootDeclaration);
+  const imageGenerations = (declaration: Agent<Context, Output>) =>
+    splitToolDeclarations(declaration.tools).hostedTools.filter(
+      (tool) => tool.kind === 'image_generation',
+    );
+  const rootImageGenerations = imageGenerations(rootDeclaration);
   if (
     !realtimeGraph &&
     profiles.some(
@@ -3528,6 +3538,10 @@ export function captureAgentProfiles<Context, Output>(
         !isDeepStrictEqual(
           codeInterpreters(profile.declaration),
           rootCodeInterpreters,
+        ) ||
+        !isDeepStrictEqual(
+          imageGenerations(profile.declaration),
+          rootImageGenerations,
         ),
     )
   ) {
@@ -3535,6 +3549,11 @@ export function captureAgentProfiles<Context, Output>(
       profiles.map((profile) =>
         Object.freeze({
           ...profile,
+          scopedHostedImageGeneration: Object.freeze(
+            imageGenerations(profile.declaration).map((tool) =>
+              captureHostedTool(tool),
+            ),
+          ),
           scopedHostedCodeInterpreter: Object.freeze(
             codeInterpreters(profile.declaration).map((tool) =>
               captureHostedTool(tool),
