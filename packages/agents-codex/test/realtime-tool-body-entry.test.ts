@@ -49,3 +49,54 @@ it.each([undefined, 1])(
     expect(errorFunction).not.toHaveBeenCalled();
   },
 );
+
+it.each([undefined, 1])(
+  'has been refusing tool effects after synchronous body-entry cancellation (timeout %s)',
+  async (callbackTimeout) => {
+    const controller = new AbortController();
+    const failure = new Error('Start listener cancelled before tool effects');
+    const execute = vi.fn(() => 'unexpected effect');
+    const errorFunction = vi.fn(() => 'formatted');
+    const entered = vi.fn(() => {
+      controller.abort(failure);
+    });
+    const selected = tool({
+      name: 'lookup',
+      parameters: z.object({}),
+      callbackTimeout,
+      execute,
+      errorFunction,
+    });
+    const context = {
+      context: undefined,
+      submission: {
+        sessionId: 's',
+        childId: 'c',
+        instanceId: '1',
+        turnId: 't',
+        submissionId: 'r',
+      },
+      threadId: 's',
+      turnId: 't',
+      callId: 'call',
+      signal: controller.signal,
+    };
+    await expect(
+      invokeFunctionTool(
+        selected,
+        {},
+        context,
+        vi.fn(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        entered,
+      ),
+    ).rejects.toBe(failure);
+    expect(entered).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(errorFunction).not.toHaveBeenCalled();
+  },
+);

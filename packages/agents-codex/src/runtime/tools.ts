@@ -1513,6 +1513,8 @@ function createFunctionTool<
           signal.throwIfAborted();
           admit();
           onBodyEntry?.();
+          signal.throwIfAborted();
+          admit();
         },
         timeoutSettlement,
         toolSessionOwners.get(context)?.retainTimeoutBody,
