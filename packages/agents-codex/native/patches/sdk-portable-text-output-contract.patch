@@ -1,0 +1,79 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index 7b3192144a7dcb68e42854475fb8c2699da88fd7..114e75c61b3d8f2f4a9d228eb8fbd967f533c685 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -18,6 +18,7 @@ enum Command {
+         max_turns: u32,
+         snapshot: Option<Snapshot>,
+         profiles: Option<Profiles>,
++        output_contract: Option<String>,
+     },
+     Model {
+         request_id: u32,
+@@ -113,6 +114,8 @@ struct ApprovalCheckpoint {
+     claimed: bool,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     effective_arguments: Option<Value>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    output_contract: Option<String>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     remaining: Vec<(String, Declaration)>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -225,6 +228,7 @@ pub(crate) struct PortableTurn {
+     tools: Vec<Declaration>,
+     profiles: Option<Profiles>,
+     profile: Option<String>,
++    output_contract: Option<String>,
+     history: Vec<Value>,
+     provider_metadata: Vec<HistoryMetadata>,
+     seen_calls: HashSet<String>,
+@@ -242,6 +246,7 @@ impl Default for PortableTurn {
+             tools: Vec::new(),
+             profiles: None,
+             profile: None,
++            output_contract: None,
+             history: Vec::new(),
+             provider_metadata: Vec::new(),
+             seen_calls: HashSet::new(),
+@@ -279,6 +284,7 @@ impl PortableTurn {
+                 max_turns,
+                 snapshot,
+                 profiles,
++                output_contract,
+             } if matches!(self.phase, Phase::New) => {
+                 if model.trim().is_empty() || !(1..=MAX_ROUNDS).contains(&max_turns) {
+                     return Err("Invalid portable turn configuration");
+@@ -306,6 +312,15 @@ impl PortableTurn {
+                     }
+                     self.profile = Some(graph.root.clone());
+                 }
++                if output_contract.as_ref().is_some_and(|value| {
++                    value.len() != 64
++                        || !value
++                            .bytes()
++                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
++                }) {
++                    return Err("Invalid portable output contract");
++                }
++                self.output_contract = output_contract;
+                 self.profiles = profiles;
+                 self.model = model;
+                 self.tools = tools;
+@@ -389,6 +404,7 @@ impl PortableTurn {
+                     declaration,
+                     claimed: claim,
+                     effective_arguments: Some(effective_arguments),
++                    output_contract: self.output_contract.clone(),
+                     remaining,
+                     results,
+                 }))?;
+@@ -528,6 +544,9 @@ impl PortableTurn {
+         if approval.claimed {
+             return Err("Portable approval was already claimed and its tool outcome is unknown");
+         }
++        if approval.output_contract != self.output_contract {
++            return Err("Portable approval requires its original output contract");
++        }
+         if !(1..self.max_turns).contains(&approval.request_id) {
+             return Err("Portable approval exceeds the current request limit");
+         }

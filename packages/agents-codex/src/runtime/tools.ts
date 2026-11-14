@@ -1,11 +1,11 @@
 import { inheritSandboxContext, type SandboxAccess } from './sandbox-context';
 import type { StandardSchemaWithJSON } from '@openai/agents-core';
 import type { SandboxSkillLease } from './sandbox-skills';
-import { isZodObject } from '@openai/agents-core/utils';
 import {
   getSchemaAndParserFromInputType,
+  isZodObject,
   stripStrictNullsForZodSchema,
-} from '@openai/agents-core/utils/internal';
+} from '@openai/agents-core/utils/tool-schema';
 import type { ApprovedArguments } from './manual';
 import {
   decisionBinding,
@@ -14,6 +14,7 @@ import {
 } from './decisions';
 import { captureToolPart, mediaRecord } from './media';
 import type { FileReference, ImageDetail } from './media';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   isBackgroundResult,
@@ -562,6 +563,69 @@ export interface StandaloneFunctionTool<
     options?: { context?: Context; signal?: AbortSignal },
   ): Promise<Result | ToolOutput>;
 }
+type StandaloneExecutionGuard = (
+  argumentsValue: JsonObject,
+) => Promise<string | undefined>;
+type PreparedStandaloneTool = {
+  readonly arguments: JsonObject;
+  execute(guard?: StandaloneExecutionGuard): Promise<unknown>;
+};
+type PrepareStandaloneTool = (
+  raw: JsonObject,
+  context: unknown,
+  signal: AbortSignal,
+) => PreparedStandaloneTool;
+const standaloneApprovals = new WeakMap<object, PrepareStandaloneTool>();
+const standaloneInvocations = new WeakMap<
+  object,
+  (
+    args: string,
+    options: { context: unknown; signal: AbortSignal },
+    guard: StandaloneExecutionGuard,
+  ) => Promise<unknown>
+>();
+
+function captureStandaloneArguments(parsed: unknown): JsonObject {
+  const value = copyApprovalInput(parsed, true);
+  const captured: unknown = JSON.parse(encode(value));
+  if (
+    !captured ||
+    typeof captured !== 'object' ||
+    Array.isArray(captured) ||
+    !isDeepStrictEqual(value, captured)
+  )
+    throw new TypeError(
+      'Worker tool policies require JSON object arguments after validation',
+    );
+  return captured as JsonObject;
+}
+
+/** @internal Guard the effective arguments after parsing and local policy. */
+export function invokeGuardedStandalone(
+  tool: StandaloneFunctionTool<any, unknown>,
+  args: string,
+  options: { context: unknown; signal: AbortSignal },
+  guard: StandaloneExecutionGuard,
+): Promise<unknown> {
+  const invoke = standaloneInvocations.get(tool);
+  if (!invoke)
+    throw new TypeError('Worker tool guards require a standalone SDK tool');
+  return invoke(args, options, guard);
+}
+
+/** @internal Validate an approval before its caller can expose or execute it. */
+export function prepareStandaloneApproval(
+  tool: StandaloneFunctionTool<any, unknown>,
+  original: JsonObject,
+  context: unknown,
+  signal: AbortSignal,
+): PreparedStandaloneTool {
+  const prepare = standaloneApprovals.get(tool);
+  if (!prepare)
+    throw new TypeError('Worker approval requires a standalone SDK tool');
+  return prepare(original, context, signal);
+}
+
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
   if (hostedMcpBinding(tool)) return 'hosted_mcp';
@@ -1264,6 +1328,7 @@ function createFunctionTool<
   async function invokeStandalone(
     argumentsValue: JsonObject | string,
     options?: { context?: Context; signal?: AbortSignal },
+    guard?: StandaloneExecutionGuard,
   ): Promise<z.input<Result> | z.output<Result> | ToolOutput> {
     const context: ToolInvocationInputContext<Context> = Object.freeze({
       context: options?.context as Context,
@@ -1291,6 +1356,9 @@ function createFunctionTool<
       undefined,
       undefined,
       argumentError,
+      undefined,
+      undefined,
+      guard,
     ) as Promise<z.input<Result> | z.output<Result> | ToolOutput>;
   }
 
@@ -1304,6 +1372,7 @@ function createFunctionTool<
     argumentError?: string | SyntaxError,
     beforeExecute?: () => Promise<boolean>,
     onBodyEntry?: () => void,
+    standaloneGuard?: StandaloneExecutionGuard,
   ): Promise<ToolResponse | ToolOutput | z.input<Result> | z.output<Result>> {
     admit();
     const live = liveToolContext(context);
@@ -1392,6 +1461,11 @@ function createFunctionTool<
       const enabled = await beforeExecute();
       admit();
       if (!enabled) return failed(`Tool ${name} not found`);
+    }
+    if (standaloneGuard) {
+      const denial = await standaloneGuard(captureStandaloneArguments(parsed));
+      admit();
+      if (denial !== undefined) return failed(denial);
     }
     const timeoutError =
       callbackTimeout === undefined
@@ -1542,6 +1616,48 @@ function createFunctionTool<
         onBodyEntry,
       ) as Promise<ToolResponse>,
   });
+  if (standalone) {
+    standaloneInvocations.set(declaration, (args, options, guard) =>
+      invokeStandalone(
+        args,
+        { context: options.context as Context, signal: options.signal },
+        guard,
+      ),
+    );
+    standaloneApprovals.set(declaration, (original, appContext, signal) => {
+      const admit = () => signal.throwIfAborted();
+      admit();
+      const effective = captureStandaloneArguments(
+        parseInput(structuredClone(original)),
+      );
+      const callbackContext: ToolInvocationInputContext<Context> =
+        Object.freeze({
+          context: appContext as Context,
+          signal,
+        });
+      return {
+        arguments: structuredClone(effective) as JsonObject,
+        execute: (guard) =>
+          invokeBound(
+            original,
+            callbackContext,
+            () => {},
+            admit,
+            undefined,
+            {
+              get value() {
+                return structuredClone(effective);
+              },
+              matches: (candidate) => isDeepStrictEqual(candidate, effective),
+            },
+            undefined,
+            undefined,
+            undefined,
+            guard,
+          ),
+      };
+    });
+  }
   if (!needsApproval) return declaration;
   const approval: ManagedApproval<Context> = {
     ...(errorFunction !== null || inputErrorFunction

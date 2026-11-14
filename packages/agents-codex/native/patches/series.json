@@ -1345,9 +1345,61 @@
       "sha256": "92a7c2e0ed5e7dd2ae78424698cd6e99e45fdcbe690ee79cda0f99d9210c5ec7"
     },
     {
+      "path": "sdk-hosted-provider-request-detail.patch",
+      "sha256": "1b315c5f6f0d7273fa9e181f3a8861418e4aec298c6d63c7d375b0da68fe8cca"
+    },
+    {
+      "path": "sdk-custom-trace-completion-data.patch",
+      "sha256": "8bd86158083b0bf2ef25dc95560e725c2de6c8b256eaab81313021ed62cba669"
+    },
+    {
+      "path": "sdk-standard-responses-reasoning-options.patch",
+      "sha256": "5b6aabe63479b6d790b564dbc23e6a2fdb9f7e9e08b5bc1fca5a11dc8b69ece6"
+    },
+    {
       "path": "sdk-websocket-decoder-retirement.patch",
       "sha256": "1b872b4d27849340d29fbc213610f07290c4496cff04945d7ae3fa7fd1113e10"
+    },
+    {
+      "path": "sdk-preserve-guardian-reasoning-default.patch",
+      "sha256": "395780f87e2c6ec8e235b6c341534f1902b78405d0fc6be1bcf1d3c224208b43"
+    },
+    {
+      "path": "sdk-portable-text-control.patch",
+      "sha256": "d3b23e2f6719c686557717c1389a11a011791f078391f18f12940f5882cfb976"
+    },
+    {
+      "path": "sdk-portable-text-session.patch",
+      "sha256": "3f44e8aa976e2a9aa99402ad87f65b7c0ba4b47fa8e26cd7db1bf6147d4109a6"
+    },
+    {
+      "path": "sdk-portable-text-handoff.patch",
+      "sha256": "94b04226c8becb08b9830c64dbe3dc7b2c6b39ce0e0a1636fc47872aae93a108"
+    },
+    {
+      "path": "sdk-portable-text-approval.patch",
+      "sha256": "05384d5a6d0d689395611e5c3efc649079a11eabae872602689cf7a8200b9bbe"
+    },
+    {
+      "path": "sdk-portable-text-final-profile.patch",
+      "sha256": "46db02ad6f33874dd4d0415353f37d7a80b55dc7544563eb8aff54e32caf1e54"
+    },
+    {
+      "path": "sdk-portable-text-approval-batches.patch",
+      "sha256": "4e814c06489e89dd02694e6c647b12f0ce44d149af0342fb70e36cbd01c08fe0"
+    },
+    {
+      "path": "sdk-portable-text-effective-approval.patch",
+      "sha256": "127237154a128262efcbe1bc08c5327bff8a1404b717c89171bb32a58f1b0c13"
+    },
+    {
+      "path": "sdk-portable-text-provider-metadata.patch",
+      "sha256": "58fb1615539af94c3750262e64c14a65d42f3693f035ce8b9548be913a013e53"
+    },
+    {
+      "path": "sdk-portable-text-output-contract.patch",
+      "sha256": "022614abb190179f95551aa31b9856048ac6e3a59f23a43235db49590f9b2d8b"
     }
   ],
-  "result_tree": "aae4610b020f65defb10740a491b3260608f3acf"
+  "result_tree": "00071832ceb7d637b9b927a40d6c22ff02e38df7"
 }

@@ -1,0 +1,331 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index 71a0480e8cc9fb7a433045bd9d23f91d282c6da1..d36d2ab0a032c65c4bfbf49625ae984aa110973c 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -13,7 +13,7 @@ enum Command {
+     Start {
+         model: String,
+         instructions: String,
+-        input: String,
++        input: Option<String>,
+         tools: Vec<Declaration>,
+         max_turns: u32,
+         snapshot: Option<Snapshot>,
+@@ -23,6 +23,16 @@ enum Command {
+         request_id: u32,
+         output: Vec<Value>,
+     },
++    Checkpoint {
++        request_id: u32,
++        call_id: String,
++        claim: bool,
++    },
++    Approval {
++        request_id: u32,
++        call_id: String,
++        approved: bool,
++    },
+     Tool {
+         request_id: u32,
+         call_id: String,
+@@ -39,6 +49,8 @@ struct Snapshot {
+     history: Vec<Value>,
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     active_profile: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    approval: Option<ApprovalCheckpoint>,
+ }
+
+ #[derive(Deserialize)]
+@@ -59,18 +71,31 @@ struct Profile {
+
+ #[derive(Deserialize, Serialize)]
+ #[serde(deny_unknown_fields)]
++struct ApprovalCheckpoint {
++    request_id: u32,
++    call_id: String,
++    declaration: Declaration,
++    claimed: bool,
++}
++
++#[derive(Clone, Deserialize, PartialEq, Serialize)]
++#[serde(deny_unknown_fields)]
+ struct Declaration {
+     name: String,
+     description: String,
+     parameters: Value,
+     strict: bool,
++    #[serde(default)]
++    requires_approval: bool,
+ }
+
+-#[derive(Serialize)]
++#[derive(Clone, Serialize)]
+ struct Call {
+     call_id: String,
+     name: String,
+     arguments: String,
++    #[serde(skip)]
++    requires_approval: bool,
+ }
+
+ #[derive(Serialize)]
+@@ -86,6 +111,15 @@ enum Effect {
+         calls: Vec<Call>,
+         profile: Option<String>,
+     },
++    Approval {
++        request_id: u32,
++        revision: u32,
++        profile: Option<String>,
++        call: Call,
++    },
++    Checkpoint {
++        snapshot: Snapshot,
++    },
+     Done {
+         text: String,
+         snapshot: Snapshot,
+@@ -96,6 +130,7 @@ enum Phase {
+     New,
+     Model,
+     Tools(Vec<(String, Option<Value>)>),
++    Approval(Call),
+     Finished,
+ }
+
+@@ -192,14 +227,26 @@ impl PortableTurn {
+                 self.model = model;
+                 self.tools = tools;
+                 self.max_turns = max_turns;
+-                if let Some(snapshot) = snapshot {
+-                    self.restore(snapshot)?;
+-                }
++                let approval = if let Some(snapshot) = snapshot {
++                    self.restore(snapshot)?
++                } else {
++                    None
++                };
+                 if !instructions.is_empty() {
+                     self.instructions = Some(
+                         json!({"type":"message","role":"developer","content":[{"type":"input_text","text":instructions}]}),
+                     );
+                 }
++                if let Some(approval) = approval {
++                    if input.is_some() {
++                        return Err(
++                            "Portable session requires a decision for its pending approval",
++                        );
++                    }
++                    let call = self.restore_approval(approval)?;
++                    return Ok(Some(self.request_approval(call)));
++                }
++                let input = input.ok_or("No portable approval is pending")?;
+                 self.history.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text":input}]}));
+                 self.next_request().map(Some)
+             }
+@@ -208,6 +255,52 @@ impl PortableTurn {
+             {
+                 self.admit_response(output).map(Some)
+             }
++            Command::Checkpoint {
++                request_id,
++                call_id,
++                claim,
++            } if request_id == self.request_id => {
++                let Phase::Approval(call) = &self.phase else {
++                    return Err("No portable approval is pending");
++                };
++                if call.call_id != call_id {
++                    return Err("Portable approval belongs to a different tool call");
++                }
++                let declaration = self.approval_declaration(&call.name)?.clone();
++                let mut snapshot = self.snapshot(Some(ApprovalCheckpoint {
++                    request_id,
++                    call_id,
++                    declaration,
++                    claimed: claim,
++                }))?;
++                snapshot.history = self.history.clone();
++                self.revision = snapshot.revision;
++                Ok(Some(Effect::Checkpoint { snapshot }))
++            }
++            Command::Approval {
++                request_id,
++                call_id,
++                approved,
++            } if request_id == self.request_id => {
++                let phase = std::mem::replace(&mut self.phase, Phase::Finished);
++                let Phase::Approval(call) = phase else {
++                    return Err("No portable approval is pending");
++                };
++                if call.call_id != call_id {
++                    return Err("Portable approval belongs to a different tool call");
++                }
++                if approved {
++                    self.phase = Phase::Tools(vec![(call_id, None)]);
++                    Ok(Some(Effect::Tools {
++                        request_id,
++                        calls: vec![call],
++                        profile: self.profile.clone(),
++                    }))
++                } else {
++                    self.history.push(json!({"type":"function_call_output","call_id":call_id,"output":"Tool call denied."}));
++                    self.next_request().map(Some)
++                }
++            }
+             Command::Tool {
+                 request_id,
+                 call_id,
+@@ -260,7 +353,72 @@ impl PortableTurn {
+             .get(self.profile.as_ref()?)
+     }
+
+-    fn restore(&mut self, snapshot: Snapshot) -> Result<(), &'static str> {
++    fn approval_declaration(&self, name: &str) -> Result<&Declaration, &'static str> {
++        self.current_profile()
++            .map_or(self.tools.as_slice(), |profile| &profile.tools)
++            .iter()
++            .find(|tool| tool.name == name && tool.requires_approval)
++            .ok_or("Portable approval requires its original tool declaration")
++    }
++
++    fn snapshot(&self, approval: Option<ApprovalCheckpoint>) -> Result<Snapshot, &'static str> {
++        Ok(Snapshot {
++            version: 1,
++            revision: self
++                .revision
++                .checked_add(1)
++                .ok_or("Portable session revision exhausted")?,
++            history: Vec::new(),
++            active_profile: self.profile.clone(),
++            approval,
++        })
++    }
++
++    fn request_approval(&mut self, call: Call) -> Effect {
++        self.phase = Phase::Approval(call.clone());
++        Effect::Approval {
++            request_id: self.request_id,
++            revision: self.revision,
++            call,
++            profile: self.profile.clone(),
++        }
++    }
++
++    fn restore_approval(&mut self, approval: ApprovalCheckpoint) -> Result<Call, &'static str> {
++        if approval.claimed {
++            return Err("Portable approval was already claimed and its tool outcome is unknown");
++        }
++        if !(1..self.max_turns).contains(&approval.request_id) {
++            return Err("Portable approval exceeds the current request limit");
++        }
++        let item = self
++            .history
++            .iter()
++            .rev()
++            .find(|item| item["type"] == "function_call" && item["call_id"] == approval.call_id)
++            .ok_or("Portable session has no matching approval call")?;
++        let name = item["name"]
++            .as_str()
++            .ok_or("Invalid portable approval name")?;
++        if self.approval_declaration(name)? != &approval.declaration {
++            return Err("Portable approval requires its original tool declaration");
++        }
++        let arguments = item["arguments"]
++            .as_str()
++            .filter(|arguments| {
++                serde_json::from_str::<Value>(arguments).is_ok_and(|value| value.is_object())
++            })
++            .ok_or("Invalid portable approval arguments")?;
++        self.request_id = approval.request_id;
++        Ok(Call {
++            call_id: approval.call_id,
++            name: name.to_owned(),
++            arguments: arguments.to_owned(),
++            requires_approval: true,
++        })
++    }
++
++    fn restore(&mut self, snapshot: Snapshot) -> Result<Option<ApprovalCheckpoint>, &'static str> {
+         if snapshot.version != 1 || snapshot.revision == 0 {
+             return Err("Unsupported portable session snapshot");
+         }
+@@ -303,8 +461,11 @@ impl PortableTurn {
+                 _ => return Err("Unsupported portable session history"),
+             }
+         }
+-        if !pending.is_empty() {
+-            return Err("Portable session has unresolved calls");
++        match &snapshot.approval {
++            None if pending.is_empty() => {}
++            Some(approval) if pending.len() == 1 && pending.contains(approval.call_id.as_str()) => {
++            }
++            _ => return Err("Portable session has unresolved calls"),
+         }
+         if let Some(profile) = snapshot.active_profile {
+             if !self
+@@ -318,7 +479,7 @@ impl PortableTurn {
+         }
+         self.revision = snapshot.revision;
+         self.history = snapshot.history;
+-        Ok(())
++        Ok(snapshot.approval)
+     }
+
+     fn next_request(&mut self) -> Result<Effect, &'static str> {
+@@ -402,6 +563,9 @@ impl PortableTurn {
+                         .and_then(|active| active.handoffs.get(name))
+                         .cloned();
+                     let active_tools = profile.map_or(&self.tools, |active| &active.tools);
++                    let requires_approval = active_tools
++                        .iter()
++                        .any(|tool| tool.name == name && tool.requires_approval);
+                     if calls.len() >= MAX_CALLS
+                         || !(item["namespace"].is_null() || item["namespace"] == "functions")
+                         || !(item["caller"].is_null() || item["caller"] == json!({"type":"direct"}))
+@@ -430,6 +594,7 @@ impl PortableTurn {
+                         call_id: id.to_owned(),
+                         name: name.to_owned(),
+                         arguments: arguments.to_owned(),
++                        requires_approval,
+                     });
+                 }
+                 _ => return Err("Unsupported portable model output"),
+@@ -440,19 +605,9 @@ impl PortableTurn {
+         if !continuation.complete(None) {
+             self.phase = Phase::Finished;
+             self.history.extend(output);
+-            let revision = self
+-                .revision
+-                .checked_add(1)
+-                .ok_or("Portable session revision exhausted")?;
+-            return Ok(Effect::Done {
+-                text,
+-                snapshot: Snapshot {
+-                    version: 1,
+-                    revision,
+-                    history: std::mem::take(&mut self.history),
+-                    active_profile: self.profile.clone(),
+-                },
+-            });
++            let mut snapshot = self.snapshot(None)?;
++            snapshot.history = std::mem::take(&mut self.history);
++            return Ok(Effect::Done { text, snapshot });
+         }
+         if self.request_id >= self.max_turns {
+             return Err("Portable turn reached its model request limit");
+@@ -468,6 +623,13 @@ impl PortableTurn {
+             self.profile = Some(target);
+             return self.next_request();
+         }
++        if calls.iter().any(|call| call.requires_approval) {
++            if calls.len() != 1 {
++                return Err("Portable approval requires a dedicated response");
++            }
++            self.history.extend(output);
++            return Ok(self.request_approval(calls.pop().expect("one approval call")));
++        }
+         self.history.extend(output);
+         self.phase = Phase::Tools(
+             calls

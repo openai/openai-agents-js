@@ -120,6 +120,8 @@ export interface ModelSettings {
   invocationTimeoutMs?: number | null;
   reasoningEffort?: string;
   reasoningSummary?: string;
+  /** Additional standard Responses reasoning controls, including context and mode. */
+  reasoningOptions?: JsonObject | null;
   /** null clears an existing service tier override. */
   serviceTier?: string | null;
   /** Outer mode, captured eager ToolRef, or explicit hosted selector. A named target only narrows
@@ -249,6 +251,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
   const allowed = new Set([
     'reasoningEffort',
     'reasoningSummary',
+    'reasoningOptions',
     'serviceTier',
     'toolChoice',
     'invocationTimeoutMs',
@@ -401,6 +404,14 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
             'extraBody cannot replace native request fields; use the corresponding model setting',
           );
         value = copyJsonValue(value);
+      } else if (key === 'reasoningOptions') {
+        if (typeof value !== 'object' || Array.isArray(value))
+          throw new TypeError('reasoningOptions must be a JSON object');
+        if (Object.hasOwn(value, 'effort') || Object.hasOwn(value, 'summary'))
+          throw new TypeError(
+            'Use reasoningEffort and reasoningSummary for those fields',
+          );
+        value = copyJsonValue(value);
       } else if (key === 'requestTransport') {
         if (!['auto', 'http', 'websocket'].includes(value as string))
           throw new TypeError(
@@ -476,6 +487,7 @@ export function captureModelSettings(source?: ModelSettings): ModelSettings {
         'truncation',
         'include',
         'contextManagement',
+        'reasoningOptions',
         'providerCompaction',
         'extraBody',
         'extraHeaders',
@@ -552,6 +564,7 @@ export function modelOverrides(
     truncation: 'truncation',
     include: 'include',
     contextManagement: 'context_management',
+    reasoningOptions: 'reasoning_options',
     extraBody: 'extra_body',
   } as const;
   for (const [key, wire] of Object.entries(names)) {

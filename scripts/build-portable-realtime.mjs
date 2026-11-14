@@ -63,11 +63,20 @@ const crate = join(
   '.upstream/reviewed-codex/codex-rs/realtime-control',
 );
 const inputFiles = ['Cargo.toml', 'Cargo.lock', 'src/lib.rs', 'src/wasm.rs'];
+const textCrate = join(dirname(crate), 'turn-control');
+const textInputFiles = [...inputFiles, 'src/portable.rs'];
+
 const snapshot = () => ({
   script: sha256(readFileSync(fileURLToPath(import.meta.url))),
   sourceIdentity,
   inputs: Object.fromEntries(
     inputFiles.map((name) => [name, sha256(readFileSync(join(crate, name)))]),
+  ),
+  textInputs: Object.fromEntries(
+    textInputFiles.map((name) => [
+      name,
+      sha256(readFileSync(join(textCrate, name))),
+    ]),
   ),
 });
 const require = createRequire(import.meta.url);
@@ -97,38 +106,40 @@ function run(program, args, cwd = native) {
 }
 run('rustup', ['target', 'add', 'wasm32-unknown-unknown']);
 const toolchain = run('rustc', ['-vV']);
-run('cargo', [
-  'build',
-  '--manifest-path',
-  join(crate, 'Cargo.toml'),
-  '--target',
-  'wasm32-unknown-unknown',
-  '--release',
-  '--locked',
-]);
-const built = join(
-  target,
-  'wasm32-unknown-unknown/release/codex_realtime_control.wasm',
-);
-const bytes = readFileSync(built);
-const module = new globalThis.WebAssembly.Module(bytes);
-if (globalThis.WebAssembly.Module.imports(module).length)
-  throw new Error('Portable control imports host capabilities.');
-const exports = new Map(
-  globalThis.WebAssembly.Module.exports(module).map(({ name, kind }) => [
-    name,
-    kind,
-  ]),
-);
-for (const [name, kind] of [
-  ['memory', 'memory'],
-  ['input_buffer', 'function'],
-  ['apply', 'function'],
-  ['output_pointer', 'function'],
-  ['output_length', 'function'],
-])
-  if (exports.get(name) !== kind)
-    throw new Error(`Portable control omitted ABI export ${name}.`);
+function buildControl(cratePath, binary) {
+  run('cargo', [
+    'build',
+    '--manifest-path',
+    join(cratePath, 'Cargo.toml'),
+    '--target',
+    'wasm32-unknown-unknown',
+    '--release',
+    '--locked',
+  ]);
+  const built = join(target, 'wasm32-unknown-unknown/release', binary);
+  const bytes = readFileSync(built);
+  const module = new globalThis.WebAssembly.Module(bytes);
+  if (globalThis.WebAssembly.Module.imports(module).length)
+    throw new Error('Portable control imports host capabilities.');
+  const exports = new Map(
+    globalThis.WebAssembly.Module.exports(module).map(({ name, kind }) => [
+      name,
+      kind,
+    ]),
+  );
+  for (const [name, kind] of [
+    ['memory', 'memory'],
+    ['input_buffer', 'function'],
+    ['apply', 'function'],
+    ['output_pointer', 'function'],
+    ['output_length', 'function'],
+  ])
+    if (exports.get(name) !== kind)
+      throw new Error(`Portable control omitted ABI export ${name}.`);
+  return { built, bytes };
+}
+const { built, bytes } = buildControl(crate, 'codex_realtime_control.wasm');
+const text = buildControl(textCrate, 'codex_turn_control.wasm');
 // Binaryen's virtual filesystem does not consistently resolve Windows drive paths.
 // Keep its input and output local to an explicit working directory.
 const loweringDirectory = dirname(built);
@@ -196,6 +207,8 @@ const receipt = {
   toolchain,
   target: 'wasm32-unknown-unknown',
   artifact: { path: 'codex-realtime-control.wasm', sha256: artifact },
+  text: { path: 'codex-turn-control.wasm', sha256: sha256(text.bytes) },
+
   hermes: {
     binaryen: binaryenManifest.version,
     wasm2jsSha256: wasm2jsHash,
@@ -203,11 +216,16 @@ const receipt = {
   },
 };
 for (const directory of products) {
-  const staged = join(directory, `codex-realtime-control.${process.pid}.wasm`);
-  copyFileSync(built, staged);
-  if (sha256(readFileSync(staged)) !== artifact)
-    throw new Error('Portable artifact copy changed.');
-  renameSync(staged, join(directory, 'codex-realtime-control.wasm'));
+  for (const [source, product] of [
+    [built, receipt.artifact],
+    [text.built, receipt.text],
+  ]) {
+    const staged = join(directory, `${product.path}.${process.pid}`);
+    copyFileSync(source, staged);
+    if (sha256(readFileSync(staged)) !== product.sha256)
+      throw new Error('Portable artifact copy changed.');
+    renameSync(staged, join(directory, product.path));
+  }
   writeFileSync(
     join(directory, 'portable-build-receipt.json'),
     `${JSON.stringify(receipt, null, 2)}\n`,

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { it, expect, vi } from 'vitest';
 import { APIUserAbortError } from 'openai';
@@ -6,11 +7,20 @@ import {
   Agent,
   NativeProvider,
   manualTool,
+  parseSessionState,
   tool,
   type ModelRequest,
+  type ModelRetryAdvice,
+  type ModelRetryAdviceRequest,
   type ModelResponse,
   type RetryContext,
 } from '../../src';
+function authenticateTestState(state: unknown) {
+  const serialized = JSON.stringify(state);
+  return parseSessionState(serialized, {
+    expectedSha256: createHash('sha256').update(serialized).digest('hex'),
+  });
+}
 function message(text = 'ok', input = 1): ModelResponse {
   return {
     output: [
@@ -178,12 +188,17 @@ it('uses Core retries with captured callback identity, new logical advice signal
     expect(args.request.body).toEqual(requests[0].body);
     expect(args.signal).not.toBe(requests[0].signal);
     expect(args.signal.aborted).toBe(false);
-    return { suggested: true };
+    return { suggested: true, replaySafety: 'safe' as const };
   });
   const laterPolicy = vi.fn(() => ({ retry: false }));
-  const backend = {
+  const backend: {
+    getRetryAdvice: (
+      request: ModelRetryAdviceRequest,
+    ) => ModelRetryAdvice | undefined;
+    complete: (request: ModelRequest) => ModelResponse;
+  } = {
     getRetryAdvice: advice,
-    complete(request: ModelRequest): ModelResponse {
+    complete(request) {
       requests.push(request);
       order.push(`request${requests.length}`);
       if (requests.length === 1) {
@@ -209,6 +224,8 @@ it('uses Core retries with captured callback identity, new logical advice signal
           expect(context.error).toBe(error);
           expect(context.normalizedError.statusCode).toBe(503);
           expect(context.providerAdvice?.suggested).toBe(true);
+          expect(context.replaySafety).toBe('safe');
+          expect(context.stateful).toBe(false);
           expect(context.signal.aborted).toBe(false);
           return { retry: true, delayMs: 0 };
         },
@@ -771,7 +788,12 @@ it.each(['retry', 'attempt', 'invocation'] as const)(
     expect(changed).toBeGreaterThan(0);
     restored = true;
     complete.mockClear();
-    await using session = await agent.session({ state: forged });
+    await expect(agent.session({ state: forged })).rejects.toThrow(
+      'Restoring changed Agent instructions requires authenticated SessionState',
+    );
+    await using session = await agent.session({
+      state: authenticateTestState(forged),
+    });
     const turn = await session.submit('continue');
     if (control === 'retry')
       await expect(turn.wait()).rejects.toThrow('current no-retry declaration');
@@ -910,7 +932,13 @@ it.each([false, true])(
       return settings;
     }) as typeof state;
     expect(changed).toBeGreaterThan(0);
-    await using restored = await agent.session({ state: forged });
+    if (graph)
+      await expect(agent.session({ state: forged })).rejects.toThrow(
+        'Restoring changed Agent instructions requires authenticated SessionState',
+      );
+    await using restored = await agent.session({
+      state: graph ? authenticateTestState(forged) : forged,
+    });
     for await (const event of restored.events()) {
       if (event.type !== 'action_requested') continue;
       await restored.respond(event.reply('accepted'));

@@ -1,5 +1,6 @@
 //! Exact usage at JS transport boundaries. Core stored history stays numeric.
 
+use anyhow::Context;
 use codex_protocol::protocol::TokenUsage;
 use serde_json::Value;
 
@@ -108,6 +109,22 @@ fn visit_event(message: &mut Value, counter: CounterVisitor) -> anyhow::Result<(
         && let Some(data) = message.get_mut("data")
     {
         visit_model_attempt(data, counter)?;
+        if let Some(requests) = data.get_mut("provider_requests") {
+            let requests = requests.as_array_mut().context("Expected provider request usage array")?;
+            for request in requests {
+                counter(
+                    request
+                        .get_mut("request_ordinal")
+                        .context("Expected native request ordinal")?,
+                )?;
+                visit_usage(
+                    request
+                        .get_mut("token_usage")
+                        .context("Expected native request token usage")?,
+                    counter,
+                )?;
+            }
+        }
     }
     match message.get("type").and_then(Value::as_str) {
         Some("raw_response_completed") => {

@@ -7,13 +7,20 @@ import type { TraceEvent } from '../../../src/runtime/telemetry';
 
 async function main() {
   const batches: { data: Record<string, any>[] }[] = [];
+  const otlpBatches: { resourceSpans?: unknown[] }[] = [];
   const collector = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const payload = JSON.parse(Buffer.concat(chunks).toString());
+    if (request.url === '/v1/traces') {
+      otlpBatches.push(payload);
+      response.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+      return;
+    }
     assert.equal(request.url, '/v1/traces/ingest');
     assert.equal(request.headers.authorization, 'Bearer synthetic-export-key');
     assert.equal(request.headers['openai-beta'], 'traces=v1');
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) chunks.push(Buffer.from(chunk));
-    batches.push(JSON.parse(Buffer.concat(chunks).toString()));
+    batches.push(payload);
     response.writeHead(200).end();
   });
   collector.listen(0, '127.0.0.1');
@@ -30,7 +37,13 @@ async function main() {
 
     const diagnostics: string[] = [];
     const events: TraceEvent[] = [];
+    const largeCompletion = { result: 'λ"\\'.repeat(40_000) };
     await telemetry.configure({
+      traces: {
+        kind: 'otlp-http',
+        endpoint: `http://127.0.0.1:${address.port}/v1/traces`,
+        protocol: 'json',
+      },
       traceProcessors: [
         new telemetry.ConsoleTraceProcessor((line) => diagnostics.push(line)),
         exporter,
@@ -69,7 +82,9 @@ async function main() {
           { name: 'metadata-only', includeSensitiveData: true },
           async (span) => {
             assert.equal(span.context.includeSensitiveData, false);
-            span.end({ data: { private_fixture: 'must-not-export' } });
+            span.end({
+              data: { ...largeCompletion, private_fixture: 'must-not-export' },
+            });
           },
         );
         telemetry.setSensitiveDataLoggingEnabled(true);
@@ -81,6 +96,12 @@ async function main() {
               category: 'synthetic_error',
               data: { result: 'synthetic completion' },
             });
+          },
+        );
+        await telemetry.withSpan(
+          { name: 'large-custom-completion', includeSensitiveData: true },
+          async (span) => {
+            span.end({ data: largeCompletion });
           },
         );
       },
@@ -151,6 +172,23 @@ async function main() {
     )!;
     assert.ok(JSON.stringify(completed).includes('synthetic completion'));
     assert.equal(completed.outcome, 'error');
+    const largeEvent = events.find(
+      (event) =>
+        event.name === 'large-custom-completion' && event.lifecycle === 'end',
+    )!;
+    assert.equal(
+      largeEvent.attributes['sdk.outcome.data'],
+      JSON.stringify(largeCompletion),
+    );
+    const originalDeliveries = events.length;
+    await telemetry.dispatchTraceEvent(largeEvent);
+    assert.ok(events.length > originalDeliveries);
+    const replayed = events.at(-1)!;
+    assert.equal(replayed.span_id, largeEvent.span_id);
+    assert.equal(
+      replayed.attributes['sdk.outcome.data'],
+      JSON.stringify(largeCompletion),
+    );
     const records = batches.flatMap((batch) => batch.data);
     const exported = records.find(
       (record) =>
@@ -167,6 +205,30 @@ async function main() {
       exported.span_data.data['sdk.outcome.data'],
       JSON.stringify({ result: 'synthetic completion' }),
     );
+    const largeExport = records.find(
+      (record) =>
+        record.object === 'trace.span' &&
+        record.span_data.name === 'large-custom-completion',
+    )!;
+    assert.equal(
+      largeExport.span_data.data['sdk.outcome.data'],
+      JSON.stringify(largeCompletion),
+    );
+    const otlpSpans = otlpBatches.flatMap(({ resourceSpans }) =>
+      (resourceSpans ?? []).flatMap((resource: any) =>
+        (resource.scopeSpans ?? []).flatMap((scope: any) => scope.spans ?? []),
+      ),
+    );
+    const otlpSpan = otlpSpans.find(
+      (span) => span.name === 'large-custom-completion',
+    );
+    assert.equal(
+      otlpSpan?.attributes.find(
+        (entry: any) => entry.key === 'sdk.outcome.data',
+      )?.value.stringValue,
+      JSON.stringify(largeCompletion),
+    );
+    assert.ok(!JSON.stringify(otlpSpans).includes('must-not-export'));
     assert.ok(!JSON.stringify(records).includes('must-not-export'));
     assert.ok(diagnostics.some((line) => line.includes('with-payload')));
     assert.ok(!diagnostics.join('').includes('must-not-export'));
