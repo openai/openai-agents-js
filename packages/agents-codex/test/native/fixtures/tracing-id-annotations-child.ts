@@ -309,10 +309,17 @@ async function main() {
       } finally {
         malformed.close();
       }
+      await telemetry.withTrace(
+        {
+          name: 'large-explicit-metadata',
+          metadata: { value: 'é'.repeat(65537) },
+        },
+        () => {},
+      );
       await assert.rejects(
         telemetry.startTrace({
-          name: 'metadata-still-bounded',
-          metadata: { value: 'é'.repeat(65537) },
+          name: 'non-metadata-still-bounded',
+          groupId: 'é'.repeat(65537),
         }),
         /128 KiB/,
       );
