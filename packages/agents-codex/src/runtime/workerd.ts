@@ -1,10 +1,25 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  nativeInput,
+  responseContent,
+  type UserMessage,
+  type InputText,
+  type InputImage,
+  type InputImageFile,
+  type InputFile,
+} from './input';
+import { randomUUID } from 'node:crypto';
+import {
   bindModelProviderMetadata,
   captureModelProviderStreamFrame,
 } from './model-provider-metadata';
-import { encode, type JsonObject, type JsonValue } from './binding';
+import { cloneJson, encode, type JsonObject, type JsonValue } from './binding';
+import { decodeControlOutput } from './decode-utf8';
 import type { SessionStore } from './custom-thread-store';
+import {
+  HermesTextControl,
+  type LoweredTurnExports,
+} from './turn-control-binding';
 import { captureGuardrailResult, type GuardrailResult } from './guardrails';
 import {
   assertOutputRepairSupported,
@@ -16,6 +31,8 @@ import {
 import {
   captureModelResponse,
   isRawModelPart,
+  isBorrowedResponsesStream,
+  markRawProviderRequest,
   projectResponsesResponse,
   pumpModelStream,
   type ModelRequest,
@@ -29,12 +46,14 @@ import {
   outputOf,
   prepareStandaloneApproval,
   type StandaloneFunctionTool,
+  type ToolResponse,
 } from './tools';
 
-export { AiSdkModel, ResponsesModel } from './models';
+export { AiSdkModel, ChatCompletionsModel, ResponsesModel } from './models';
 export { OutputValidationError } from './output';
 export type { OutputSpec } from './output';
-export { standaloneTool } from './tools';
+export { standaloneTool, ToolOutput } from './tools';
+export type { ToolResponse } from './tools';
 export type { NativeModel } from './models';
 export type { SessionStore } from './custom-thread-store';
 
@@ -49,6 +68,15 @@ interface TurnExports extends WebAssembly.Exports {
 }
 
 type Effect =
+  | {
+      type: 'history';
+      previous_revision: number;
+      revision: number;
+      pending_approval: boolean;
+      items?: JsonObject[];
+      popped?: JsonObject[];
+      checkpoint?: string;
+    }
   | {
       type: 'model';
       request_id: number;
@@ -80,17 +108,24 @@ type Effect =
     };
 
 class TurnControl {
-  readonly #exports: TurnExports;
+  readonly #exports: LoweredTurnExports;
 
-  constructor(control: WebAssembly.Module) {
-    if (WebAssembly.Module.imports(control).length)
-      throw new TypeError(
-        'Native text control cannot import host capabilities',
-      );
-    this.#exports = new WebAssembly.Instance(control).exports as TurnExports;
+  constructor(control: WorkerTextOptions<unknown>['control']) {
+    if (control instanceof HermesTextControl) {
+      this.#exports = control.instantiate();
+    } else {
+      if (WebAssembly.Module.imports(control).length)
+        throw new TypeError(
+          'Native text control cannot import host capabilities',
+        );
+      const exports = new WebAssembly.Instance(control).exports as TurnExports;
+      if (!(exports.memory instanceof WebAssembly.Memory))
+        throw new TypeError('Invalid native text control module');
+      this.#exports = exports;
+    }
     const exports = this.#exports;
     if (
-      !(exports.memory instanceof WebAssembly.Memory) ||
+      !exports.memory?.buffer ||
       typeof exports.input_buffer !== 'function' ||
       typeof exports.apply !== 'function' ||
       typeof exports.output_pointer !== 'function' ||
@@ -111,12 +146,208 @@ class TurnControl {
       exports.output_pointer(),
       exports.output_length(),
     );
-    const reply = JSON.parse(new TextDecoder().decode(response)) as {
+    const reply = JSON.parse(decodeControlOutput(response)) as {
       effect: Effect | null;
       error?: string;
     };
     if (reply.error) throw new Error(reply.error);
     return reply.effect;
+  }
+}
+
+/** Current caller-owned user content; no fetching, uploads or local paths. */
+export type WorkerUserInput =
+  | string
+  | (Omit<UserMessage, 'content'> & {
+      readonly content:
+        | string
+        | readonly (InputText | InputImage | InputImageFile | InputFile)[];
+    });
+
+function workerUserContent(input: WorkerUserInput): JsonValue[] {
+  const parts = responseContent(nativeInput(input));
+  for (const value of parts) {
+    const part = value as JsonObject;
+    if (
+      !['input_text', 'input_image', 'input_file'].includes(
+        part.type as string,
+      ) ||
+      Object.hasOwn(part, 'prompt_cache_breakpoint')
+    )
+      throw new TypeError(
+        'Worker input supports text, images and files without cache breakpoints',
+      );
+    const reference = part.image_url ?? part.file_url;
+    if (typeof reference === 'string' && !reference.startsWith('data:')) {
+      const url = new URL(reference);
+      if (url.protocol !== 'https:' || url.username || url.password)
+        throw new TypeError(
+          'Worker remote media requires an HTTPS URL without credentials',
+        );
+    }
+  }
+  return parts;
+}
+
+export type WorkerHistoryOperation =
+  | { readonly type: 'read'; readonly limit?: number }
+  | { readonly type: 'append'; readonly items: readonly JsonObject[] }
+  | { readonly type: 'pop'; readonly count?: number }
+  | { readonly type: 'clear' };
+
+export interface WorkerHistoryOptions {
+  readonly control: WorkerTextOptions<unknown>['control'];
+  readonly session: NonNullable<WorkerTextOptions<unknown>['session']>;
+  readonly expectedRevision?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface WorkerHistoryResult {
+  readonly revision: number;
+  readonly pendingApproval: boolean;
+  /** Present for reads; detached protocol rows without executable authority. */
+  readonly items?: readonly JsonObject[];
+  /** Removed tail rows in their original order. */
+  readonly popped?: readonly JsonObject[];
+}
+
+/** Read or update native stored history under the current exclusive writer lease. */
+export function transactWorkerHistory(
+  operation: Extract<WorkerHistoryOperation, { readonly type: 'read' }>,
+  options: WorkerHistoryOptions,
+): Promise<WorkerHistoryResult & { readonly items: readonly JsonObject[] }>;
+export function transactWorkerHistory(
+  operation: WorkerHistoryOperation,
+  options: WorkerHistoryOptions,
+): Promise<WorkerHistoryResult>;
+export async function transactWorkerHistory(
+  operation: WorkerHistoryOperation,
+  options: WorkerHistoryOptions,
+): Promise<WorkerHistoryResult> {
+  const signal = options.signal ?? new AbortController().signal;
+  signal.throwIfAborted();
+  const { id } = options.session;
+  if (typeof id !== 'string' || !id)
+    throw new TypeError('A Worker session requires a nonempty string ID');
+  const { expectedRevision } = options;
+  if (
+    expectedRevision !== undefined &&
+    (!Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 0 ||
+      expectedRevision > 0xffff_ffff)
+  )
+    throw new TypeError(
+      'Worker history revision must be an unsigned 32-bit integer',
+    );
+  const captured = cloneJson(
+    Object.fromEntries(
+      Object.entries(operation).filter(([, value]) => value !== undefined),
+    ) as JsonObject,
+  );
+  if (
+    operation.type === 'read' &&
+    operation.limit !== undefined &&
+    !Number.isSafeInteger(operation.limit)
+  )
+    throw new TypeError('Worker history limit must be an integer');
+  if (
+    operation.type === 'pop' &&
+    operation.count !== undefined &&
+    (!Number.isSafeInteger(operation.count) ||
+      operation.count < 0 ||
+      operation.count > 0xffff_ffff)
+  )
+    throw new TypeError(
+      'Worker history count must be an unsigned 32-bit integer',
+    );
+  const control = new TurnControl(options.control);
+  return withWorkerSession(
+    options.session,
+    signal,
+    randomUUID(),
+    async (stored, commit) => {
+      const effect = control.apply({
+        type: 'history',
+        snapshot: stored,
+        operation: captured,
+        ...(expectedRevision === undefined
+          ? {}
+          : { expected_revision: expectedRevision }),
+      });
+      if (effect?.type !== 'history')
+        throw new Error('Unexpected native Worker history result');
+      signal.throwIfAborted();
+      if (effect.checkpoint !== undefined)
+        await commit(
+          effect.checkpoint,
+          effect.previous_revision,
+          effect.revision,
+        );
+      return {
+        revision: effect.revision,
+        pendingApproval: effect.pending_approval,
+        ...(effect.items === undefined ? {} : { items: effect.items }),
+        ...(effect.popped === undefined ? {} : { popped: effect.popped }),
+      };
+    },
+  );
+}
+
+type WorkerStoreCommit = (
+  checkpoint: string,
+  previousRevision: number,
+  revision: number,
+) => Promise<void>;
+
+async function withWorkerSession<Result>(
+  session: NonNullable<WorkerTextOptions<unknown>['session']>,
+  signal: AbortSignal,
+  operationId: string,
+  execute: (
+    stored: string | null,
+    commit: WorkerStoreCommit,
+  ) => Promise<Result>,
+): Promise<Result> {
+  const { id, store } = session;
+  const fence = await store.acquire(id);
+  let releaseNeeded = true;
+  try {
+    signal.throwIfAborted();
+    const stored = await store.read(id, fence);
+    if (stored !== null && new TextEncoder().encode(stored).length > frameLimit)
+      throw new RangeError('Portable session snapshot exceeds capacity');
+    signal.throwIfAborted();
+    const commit: WorkerStoreCommit = async (
+      checkpoint,
+      previousRevision,
+      revision,
+    ) => {
+      signal.throwIfAborted();
+      await store.commit(
+        id,
+        fence,
+        operationId + ':' + revision,
+        previousRevision,
+        checkpoint,
+      );
+      await store.flush?.(id, fence);
+    };
+    const result = await execute(stored, commit);
+    releaseNeeded = false;
+    await store.release(id, fence);
+    return result;
+  } catch (error) {
+    if (releaseNeeded) {
+      try {
+        await store.release(id, fence);
+      } catch (releaseError) {
+        throw new AggregateError(
+          [error, releaseError],
+          'Worker session and lease release failed',
+        );
+      }
+    }
+    throw error;
   }
 }
 
@@ -135,6 +366,8 @@ export interface WorkerGuardrail<Context> {
   readonly runInParallel?: boolean;
   readonly callback: (request: {
     readonly text: string;
+    /** Detached captured input for input checks; absent for output checks. */
+    readonly input?: WorkerUserInput;
     readonly context: Context | undefined;
     readonly signal: AbortSignal;
     readonly profile: string | null;
@@ -154,7 +387,11 @@ export interface WorkerToolGuardrail<Context> {
     call: WorkerToolApproval<Context>,
   ) => WorkerToolGuardrailResult | Promise<WorkerToolGuardrailResult>;
   readonly after?: (
-    call: WorkerToolApproval<Context> & { readonly output: string },
+    call: WorkerToolApproval<Context> & {
+      readonly output: string;
+      /** Detached native content for a media result; output retains its text view. */
+      readonly response?: Readonly<ToolResponse>;
+    },
   ) => WorkerToolGuardrailResult | Promise<WorkerToolGuardrailResult>;
 }
 
@@ -213,8 +450,8 @@ export interface WorkerAgentProfile<Context> {
 }
 
 export interface WorkerTextOptions<Context> {
-  /** Precompiled module from `@openai/agents-codex/worker/control.wasm`. */
-  control: WebAssembly.Module;
+  /** Precompiled Wasm module or the SDK's bundled Hermes controller. */
+  control: WebAssembly.Module | HermesTextControl;
   /** Application model adapter, including the native AiSdkModel and ResponsesModel. */
   provider: NativeModel;
   model: string;
@@ -248,16 +485,23 @@ export interface WorkerTextOptions<Context> {
   };
   /** Receive normalized model events in order while the provider stream is open. */
   observe?: (event: Readonly<JsonObject>) => void | Promise<void>;
+  /** Receive detached provider stream parts. Raw data never enters turn history. */
+  observeRaw?: (part: Readonly<JsonObject>) => void | Promise<void>;
 }
 
 async function completeModel(
   provider: NativeModel,
   request: ModelRequest,
   observe: WorkerTextOptions<unknown>['observe'],
+  observeRaw: WorkerTextOptions<unknown>['observeRaw'],
 ): Promise<JsonObject> {
-  if (!observe || !provider.stream)
+  if (observeRaw && !provider.stream)
+    throw new TypeError('Portable raw observation requires a streaming model');
+  if ((!observe && !observeRaw) || !provider.stream)
     return captureModelResponse(await provider.complete(request));
+  if (observeRaw) markRawProviderRequest(request);
   const stream = await provider.stream(request);
+  const borrowedResponses = isBorrowedResponsesStream(stream);
   let completion: ModelResponse | undefined;
   let responseId: string | undefined;
   const outputItems = new Map<number, JsonValue>();
@@ -273,6 +517,10 @@ async function completeModel(
         throw new RangeError('Portable model stream exceeds capacity');
       if (completion)
         throw new Error('Portable model stream emitted data after completion');
+      if (observeRaw && (isRawModelPart(original) || borrowedResponses)) {
+        await observeRaw(JSON.parse(encoded) as JsonObject);
+        request.signal.throwIfAborted();
+      }
       if (isRawModelPart(original)) return true;
       if (Object.hasOwn(original, '__sdk_model_provider_metadata'))
         throw new Error(
@@ -322,7 +570,7 @@ async function completeModel(
           throw new Error(
             'Portable model stream emitted an invalid output item',
           );
-        outputItems.set(index, structuredClone(event.item));
+        outputItems.set(index, cloneJson(event.item));
       } else if (event.type === 'response.completed') {
         const response = event.response;
         if (
@@ -346,9 +594,9 @@ async function completeModel(
             ))
         )
           throw new Error('Portable model stream changed completed output');
-        completion = projectResponsesResponse(structuredClone(response));
+        completion = projectResponsesResponse(cloneJson(response));
       }
-      await observe(event);
+      await observe?.(event);
       return true;
     },
     finish() {},
@@ -360,11 +608,27 @@ async function completeModel(
   return captured;
 }
 
-function wireToolOutput(value: unknown): string {
-  const output = outputOf(value);
-  if (output.contentItems.every((part) => part.type === 'inputText'))
-    return output.contentItems.map((part) => part.text).join('\n');
-  throw new TypeError('Portable text tools require text output');
+function wireToolOutput(
+  value: unknown,
+  finishTurn: boolean,
+): {
+  wire: string | JsonValue[];
+  response: ToolResponse;
+} {
+  const response = outputOf(value);
+  if (response.contentItems.every((part) => part.type === 'inputText'))
+    return {
+      wire: response.contentItems.map((part) => part.text).join('\n'),
+      response,
+    };
+  if (finishTurn)
+    throw new TypeError('Portable finishing tools require text output');
+  const content = responseContent(response.contentItems);
+  const wire = workerUserContent({
+    role: 'user',
+    content: content as unknown as Exclude<WorkerUserInput, string>['content'],
+  });
+  return { wire, response };
 }
 
 function workerCall<Context>(
@@ -413,7 +677,7 @@ async function runTools<Context>(
             profile: effect.profile,
             callId: call.call_id,
             name: call.name,
-            arguments: structuredClone(effective),
+            arguments: cloneJson(effective),
             context,
             signal,
           });
@@ -459,12 +723,19 @@ async function runTools<Context>(
                 )
               : await tool.invoke(call.arguments, { context, signal });
           signal.throwIfAborted();
-          const output = wireToolOutput(result);
+          const captured = wireToolOutput(result, tool.finishTurn ?? false);
+          const output = captured.wire;
           for (const guard of guards) {
             if (!guard.after || !executedArguments) continue;
             const verdict = await guard.after({
               ...request(executedArguments),
-              output,
+              output:
+                typeof output === 'string' ? output : JSON.stringify(output),
+              ...(typeof output === 'string'
+                ? {}
+                : {
+                    response: Object.freeze(structuredClone(captured.response)),
+                  }),
             });
             const denial = evaluate('tool_output', guard.name, verdict);
             if (denial !== undefined) return denial;
@@ -600,7 +871,7 @@ function workerOutputRequest(
           type: 'json_schema',
           name: 'codex_output_schema',
           strict: output.strict ?? true,
-          schema: structuredClone(output.schema),
+          schema: cloneJson(output.schema),
         },
       },
     };
@@ -623,7 +894,7 @@ function workerOutputRequest(
 
 /** Run a text turn and its local functions inside a Worker isolate. */
 export async function runWorkerText<Context = undefined>(
-  input: string,
+  input: WorkerUserInput,
   options: WorkerTextOptions<Context>,
 ): Promise<string> {
   const result = await runWorkerTextTurn(input, options, false);
@@ -633,16 +904,16 @@ export async function runWorkerText<Context = undefined>(
 
 /** Run or resume a turn with a captured native output type and tool approvals. */
 export function runWorkerTurn<Output, Context = undefined>(
-  input: string | WorkerApprovalDecision,
+  input: WorkerUserInput | WorkerApprovalDecision,
   options: WorkerTextOptions<Context> & { outputType: OutputSpec<Output> },
 ): Promise<WorkerOutputResult<Output>>;
 /** Run or resume a text turn with an explicit result for a pending tool approval. */
 export function runWorkerTurn<Context = undefined>(
-  input: string | WorkerApprovalDecision,
+  input: WorkerUserInput | WorkerApprovalDecision,
   options: WorkerTextOptions<Context>,
 ): Promise<WorkerTextResult>;
 export async function runWorkerTurn<Context>(
-  input: string | WorkerApprovalDecision,
+  input: WorkerUserInput | WorkerApprovalDecision,
   options: WorkerTextOptions<Context> & { outputType?: OutputSpec<unknown> },
 ): Promise<WorkerTextResult | WorkerOutputResult<unknown>> {
   const output = options.outputType
@@ -653,7 +924,7 @@ export async function runWorkerTurn<Context>(
 }
 
 async function runWorkerTextTurn<Context>(
-  input: string | WorkerApprovalDecision,
+  input: WorkerUserInput | WorkerApprovalDecision,
   {
     control: module,
     provider,
@@ -664,6 +935,7 @@ async function runWorkerTextTurn<Context>(
     signal = new AbortController().signal,
     maxTurns = 10,
     observe,
+    observeRaw,
     session,
     agents,
     approve,
@@ -677,11 +949,34 @@ async function runWorkerTextTurn<Context>(
   signal.throwIfAborted();
   if (observe !== undefined && typeof observe !== 'function')
     throw new TypeError('observe must be a callback');
+  if (observeRaw !== undefined && typeof observeRaw !== 'function')
+    throw new TypeError('observeRaw must be a callback');
   if (typeof instructions !== 'string')
     throw new TypeError('Portable text requires string instructions');
-  const decision = typeof input === 'string' ? undefined : input;
+  const isUser =
+    typeof input === 'string' ||
+    (input !== null &&
+      typeof input === 'object' &&
+      'role' in input &&
+      input.role === 'user');
+  const decision = isUser ? undefined : (input as WorkerApprovalDecision);
+  const userInput = isUser ? (input as WorkerUserInput) : undefined;
+  const userContent =
+    userInput === undefined ? undefined : workerUserContent(userInput);
+  const capturedInput: WorkerUserInput | undefined =
+    userContent === undefined
+      ? undefined
+      : typeof userInput === 'string'
+        ? userInput
+        : {
+            role: 'user',
+            content: cloneJson(userContent) as unknown as Exclude<
+              WorkerUserInput,
+              string
+            >['content'],
+          };
   if (
-    typeof input !== 'string' &&
+    !isUser &&
     (!session ||
       !decision ||
       typeof decision.callId !== 'string' ||
@@ -731,8 +1026,8 @@ async function runWorkerTextTurn<Context>(
     throw new TypeError('A Worker session requires a nonempty string ID');
   const control = new TurnControl(module);
   const owner = {
-    sessionId: session?.id ?? crypto.randomUUID(),
-    turnId: crypto.randomUUID(),
+    sessionId: session?.id ?? randomUUID(),
+    turnId: randomUUID(),
   };
   const usedProviders = new Set<NativeModel>();
   const prepared = new Map<
@@ -745,6 +1040,7 @@ async function runWorkerTextTurn<Context>(
     text: string,
     profile: string | null,
     currentSignal: AbortSignal,
+    currentInput?: WorkerUserInput,
   ) => {
     const settled = await Promise.allSettled(
       checks.map(async (guard) => {
@@ -752,6 +1048,9 @@ async function runWorkerTextTurn<Context>(
         const result = captureGuardrailResult(
           await guard.callback({
             text,
+            ...(currentInput === undefined
+              ? {}
+              : { input: structuredClone(currentInput) }),
             context,
             signal: currentSignal,
             profile,
@@ -768,9 +1067,18 @@ async function runWorkerTextTurn<Context>(
   };
   const firstModel = async (
     effect: Extract<Effect, { type: 'model' }>,
-    userInput: string,
+    userInput: WorkerUserInput,
     sample: (signal: AbortSignal) => Promise<JsonObject>,
   ) => {
+    const text =
+      typeof userInput === 'string'
+        ? userInput
+        : typeof userInput.content === 'string'
+          ? userInput.content
+          : userInput.content
+              .filter((part): part is InputText => part.type === 'input_text')
+              .map((part) => part.text)
+              .join('\n');
     const checks = [
       ...inputChecks,
       ...(currentProfile(effect.profile)?.inputChecks ?? []),
@@ -778,9 +1086,10 @@ async function runWorkerTextTurn<Context>(
     await checkGuards(
       'input',
       checks.filter((guard) => !guard.runInParallel),
-      userInput,
+      text,
       effect.profile,
       signal,
+      userInput,
     );
     const parallel = checks.filter((guard) => guard.runInParallel);
     if (!parallel.length) return sample(signal);
@@ -793,9 +1102,10 @@ async function runWorkerTextTurn<Context>(
     const guarded = checkGuards(
       'input',
       parallel,
-      userInput,
+      text,
       effect.profile,
       combined,
+      userInput,
     ).catch(cancelSibling);
     const sampled = sample(combined).catch(cancelSibling);
     const [guard, response] = await Promise.allSettled([guarded, sampled]);
@@ -817,7 +1127,10 @@ async function runWorkerTextTurn<Context>(
       type: 'start',
       model,
       instructions,
-      input: typeof input === 'string' ? input : null,
+      input:
+        typeof capturedInput === 'string'
+          ? capturedInput
+          : (userContent ?? null),
       tools: wireTools(toolsByName, approvals),
       profiles: agents
         ? {
@@ -839,7 +1152,7 @@ async function runWorkerTextTurn<Context>(
       ...(output ? { output_contract: output.identity.fingerprint } : {}),
       snapshot,
     });
-    let initialInput = typeof input === 'string' ? input : undefined;
+    let initialInput = capturedInput;
     while (effect) {
       signal.throwIfAborted();
       switch (effect.type) {
@@ -870,6 +1183,7 @@ async function runWorkerTextTurn<Context>(
             snapshot: effect.snapshot,
           };
         }
+        case 'history':
         case 'checkpoint':
           throw new Error('Unexpected Worker checkpoint');
         case 'model': {
@@ -886,7 +1200,7 @@ async function runWorkerTextTurn<Context>(
             const modelProvider =
               currentProfile(requestEffect.profile)?.provider ?? provider;
             usedProviders.add(modelProvider);
-            return completeModel(modelProvider, request, observe);
+            return completeModel(modelProvider, request, observe, observeRaw);
           };
           const response =
             initialInput === undefined
@@ -938,7 +1252,7 @@ async function runWorkerTextTurn<Context>(
           );
           if (!policy)
             throw new Error('Native text issued an unavailable approval');
-          const request = { ...original, arguments: structuredClone(args) };
+          const request = { ...original, arguments: cloneJson(args) };
           let approved: boolean | null;
           if (pendingDecision) {
             if (
@@ -1050,45 +1364,33 @@ async function runWorkerTextTurn<Context>(
     return result;
   };
   if (!session) return (await run(null)).result;
-  const { id, store } = session;
-  const fence = await store.acquire(id);
-  let releaseNeeded = true;
-  try {
-    signal.throwIfAborted();
-    const stored = await store.read(id, fence);
-    if (stored !== null && new TextEncoder().encode(stored).length > frameLimit)
-      throw new RangeError('Portable session snapshot exceeds capacity');
-    signal.throwIfAborted();
-    const commit: Commit = async (snapshot) => {
-      signal.throwIfAborted();
-      await store.commit(
-        id,
-        fence,
-        `${owner.turnId}:${snapshot.revision}`,
-        snapshot.revision - 1,
-        JSON.stringify(snapshot),
-      );
-      await store.flush?.(id, fence);
-    };
-    const result = await run(
-      stored === null ? null : JSON.parse(stored),
-      commit,
-    );
-    await commit(result.snapshot);
-    releaseNeeded = false;
-    await store.release(id, fence);
-    return result.result;
-  } catch (error) {
-    if (releaseNeeded) {
-      try {
-        await store.release(id, fence);
-      } catch (releaseError) {
-        throw new AggregateError(
-          [error, releaseError],
-          'Worker session and lease release failed',
+  return withWorkerSession(
+    session,
+    signal,
+    owner.turnId,
+    async (stored, commit) => {
+      const commitSnapshot: Commit = (snapshot) =>
+        commit(
+          JSON.stringify(snapshot),
+          snapshot.revision - 1,
+          snapshot.revision,
         );
-      }
-    }
-    throw error;
-  }
+      const result = await run(
+        stored === null ? null : JSON.parse(stored),
+        commitSnapshot,
+      );
+      await commitSnapshot(result.snapshot);
+      return result.result;
+    },
+  );
 }
+
+export {
+  createWorkerTelemetry,
+  WorkerTelemetry,
+  WorkerTraceSpan,
+} from './worker-telemetry';
+export type {
+  WorkerTraceOptions,
+  WorkerTelemetryOptions,
+} from './worker-telemetry';

@@ -94,10 +94,12 @@ function sourcePathForExport(
     ['@openai/agents', '@openai/agents-codex'].includes(
       workspacePackage.name,
     ) &&
-    exportPath === './voice/control.hermes' &&
-    distTarget === './native/codex-realtime-control.mjs'
+    ((exportPath === './voice/control.hermes' &&
+      distTarget === './native/codex-realtime-control.mjs') ||
+      (exportPath === './worker/control.hermes' &&
+        distTarget === './native/codex-turn-control.mjs'))
   ) {
-    return resolve(workspacePackage.root, 'native/codex-realtime-control.mjs');
+    return resolve(workspacePackage.root, distTarget);
   }
   if (!distTarget.startsWith('./dist/')) {
     throw new Error(

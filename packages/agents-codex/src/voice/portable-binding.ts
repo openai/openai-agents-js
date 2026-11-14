@@ -1,4 +1,5 @@
 import { boundedVoiceJSON } from './bounded-voice-json';
+import { decodeControlOutput } from '../runtime/decode-utf8';
 import type {
   PortableVoiceControl,
   PortableVoiceEffect,
@@ -49,12 +50,7 @@ export class PortableVoiceControlBinding implements PortableVoiceControl {
       this.exports.output_pointer(),
       this.exports.output_length(),
     );
-    const chunks: string[] = [];
-    for (let offset = 0; offset < outputBytes.length; offset += 8192)
-      chunks.push(
-        String.fromCharCode(...outputBytes.subarray(offset, offset + 8192)),
-      );
-    const output = JSON.parse(decodeURIComponent(escape(chunks.join('')))) as {
+    const output = JSON.parse(decodeControlOutput(outputBytes)) as {
       effects?: PortableVoiceEffect[];
       error?: string;
     };

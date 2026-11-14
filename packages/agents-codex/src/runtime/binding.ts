@@ -28,6 +28,7 @@ export type JsonObject = z.infer<typeof jsonObject>;
 export function copyJsonValue(
   value: unknown,
   parents = new Set<object>(),
+  omitUndefinedProperties = false,
 ): JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean')
     return value;
@@ -49,15 +50,19 @@ export function copyJsonValue(
       for (let index = 0; index < value.length; index++) {
         if (!Object.hasOwn(value, index))
           throw new TypeError('Expected a dense JSON array');
-        copied.push(copyJsonValue(value[index], parents));
+        copied.push(
+          copyJsonValue(value[index], parents, omitUndefinedProperties),
+        );
       }
       return copied;
     }
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [
-        key,
-        copyJsonValue(item, parents),
-      ]),
+      Object.entries(value)
+        .filter(([, item]) => !omitUndefinedProperties || item !== undefined)
+        .map(([key, item]) => [
+          key,
+          copyJsonValue(item, parents, omitUndefinedProperties),
+        ]),
     );
   } finally {
     parents.delete(value);

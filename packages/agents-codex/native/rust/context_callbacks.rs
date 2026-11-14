@@ -1447,6 +1447,8 @@ pub(super) enum ModelDelivery {
         observe_raw_ai_sdk: bool,
         observe_raw_responses_websocket: bool,
         chat_stream: bool,
+        ai_sdk_stream: bool,
+        original_usage: Option<OriginalResponsesUsage>,
         provider_metadata: Option<codex_extension_api::CapturedModelProviderOutput>,
     },
 }
@@ -1561,11 +1563,110 @@ struct ReceivedCacheWriteUsage {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct OriginalResponsesUsage {
+pub(super) struct OriginalResponsesUsage {
     response_id: String,
     #[serde(default)]
     upstream_request_id: Option<String>,
     usage: serde_json::Map<String, Value>,
+    #[serde(default)]
+    ai_sdk: bool,
+    #[serde(default)]
+    provider_response_id: Option<String>,
+}
+impl OriginalResponsesUsage {
+    fn validate_ai_sdk(&self, canonical_id: &str) -> Result<()> {
+        ensure!(
+            self.ai_sdk && !canonical_id.trim().is_empty() && self.response_id == canonical_id,
+            "Original AI SDK usage has no matching completion"
+        );
+        if let Some(provider_id) = &self.provider_response_id {
+            ensure!(
+                !provider_id.trim().is_empty() && provider_id == canonical_id,
+                "Original AI SDK provider identity differs from completion"
+            );
+        }
+        Ok(())
+    }
+
+    fn observation(&self) -> Result<codex_protocol::protocol::ResponseObservation> {
+        use codex_protocol::protocol::{
+            ReceivedResponseUsage, ResponseObservation, ResponseObservationStatus,
+        };
+        let count = |value: &Value| value.as_i64().filter(|count| *count >= 0);
+        let raw = Value::Object(self.usage.clone());
+        let received = if self.ai_sdk {
+            self.validate_ai_sdk(&self.response_id)?;
+            let tokens = |key: &str| {
+                raw.get(key)
+                    .and_then(|value| count(value).or_else(|| value.get("total").and_then(count)))
+            };
+            let input = tokens("inputTokens");
+            let output = tokens("outputTokens");
+            ReceivedResponseUsage {
+                input_tokens: input,
+                cached_input_tokens: raw
+                    .pointer("/inputTokens/cacheRead")
+                    .or_else(|| raw.get("cachedInputTokens"))
+                    .and_then(count),
+                cache_write_input_tokens: raw.pointer("/inputTokens/cacheWrite").and_then(count),
+                output_tokens: output,
+                reasoning_output_tokens: raw
+                    .pointer("/outputTokens/reasoning")
+                    .or_else(|| raw.get("reasoningTokens"))
+                    .and_then(count),
+                total_tokens: input
+                    .zip(output)
+                    .and_then(|(input, output)| input.checked_add(output)),
+            }
+        } else {
+            ensure!(
+                self.provider_response_id.is_none(),
+                "Provider identity override requires AI SDK usage"
+            );
+            ReceivedResponseUsage {
+                input_tokens: raw.get("input_tokens").and_then(count),
+                cached_input_tokens: raw
+                    .pointer("/input_tokens_details/cached_tokens")
+                    .and_then(count),
+                cache_write_input_tokens: raw
+                    .pointer("/input_tokens_details/cache_write_tokens")
+                    .and_then(count),
+                output_tokens: raw.get("output_tokens").and_then(count),
+                reasoning_output_tokens: raw
+                    .pointer("/output_tokens_details/reasoning_tokens")
+                    .and_then(count),
+                total_tokens: raw.get("total_tokens").and_then(count),
+            }
+        };
+        Ok(ResponseObservation {
+            response_id: if self.ai_sdk {
+                self.provider_response_id.clone()
+            } else {
+                Some(self.response_id.clone())
+            },
+            upstream_request_id: self.upstream_request_id.clone(),
+            status: ResponseObservationStatus::Completed,
+            incomplete_reason: None,
+            usage: Some(received),
+        })
+    }
+}
+
+fn retain_original_stream_usage(
+    events: &mut [codex_api::ResponseEvent],
+    original: OriginalResponsesUsage,
+) -> Result<()> {
+    let Some(codex_api::ResponseEvent::Completed {
+        response_id,
+        usage_metadata,
+        ..
+    }) = events.last_mut()
+    else {
+        anyhow::bail!("Original AI SDK usage requires an accepted completion");
+    };
+    original.validate_ai_sdk(response_id)?;
+    usage_metadata.get_or_insert_default().metadata = Some(Value::Object(original.usage));
+    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1714,6 +1815,18 @@ impl PythonTools {
                     !reply.response_id.trim().is_empty(),
                     "Native model response requires an identifier"
                 );
+                if let Some(original) = &reply.original_usage {
+                    if original.ai_sdk {
+                        ensure!(
+                            self.context_control
+                                .get()
+                                .and_then(Weak::upgrade)
+                                .is_some_and(|control| control.raw_usage_active()),
+                            "Original SDK usage requires active capture"
+                        );
+                        original.validate_ai_sdk(&reply.response_id)?;
+                    }
+                }
                 if !reply.provider_metadata.is_empty() {
                     let output: Vec<ResponseItem> =
                         serde_json::from_value(Value::Array(reply.output.clone()))
@@ -1740,29 +1853,8 @@ impl PythonTools {
                             original.response_id == *response_id,
                             "Original Responses usage does not match model response"
                         );
+                        let observation = original.observation()?;
                         let raw_usage = Value::Object(original.usage);
-                        let count = |value: &Value| value.as_i64().filter(|count| *count >= 0);
-                        let received_usage = codex_protocol::protocol::ReceivedResponseUsage {
-                            input_tokens: raw_usage.get("input_tokens").and_then(count),
-                            cached_input_tokens: raw_usage
-                                .pointer("/input_tokens_details/cached_tokens")
-                                .and_then(count),
-                            cache_write_input_tokens: raw_usage
-                                .pointer("/input_tokens_details/cache_write_tokens")
-                                .and_then(count),
-                            output_tokens: raw_usage.get("output_tokens").and_then(count),
-                            reasoning_output_tokens: raw_usage
-                                .pointer("/output_tokens_details/reasoning_tokens")
-                                .and_then(count),
-                            total_tokens: raw_usage.get("total_tokens").and_then(count),
-                        };
-                        let observation = codex_protocol::protocol::ResponseObservation {
-                            response_id: Some(original.response_id),
-                            upstream_request_id: original.upstream_request_id,
-                            status: codex_protocol::protocol::ResponseObservationStatus::Completed,
-                            incomplete_reason: None,
-                            usage: Some(received_usage),
-                        };
                         usage_metadata.get_or_insert_default().metadata = Some(raw_usage);
                         events.insert(
                             events.len() - 1,
@@ -1880,6 +1972,8 @@ impl PythonTools {
                 observe_raw_ai_sdk: observe_raw && ai_sdk_stream,
                 observe_raw_responses_websocket: observe_raw && responses_websocket_stream,
                 chat_stream,
+                ai_sdk_stream,
+                original_usage: None,
                 provider_metadata,
             }),
         ) else {
@@ -1930,6 +2024,8 @@ impl PythonTools {
                 observe_raw_chat,
                 observe_raw_ai_sdk,
                 observe_raw_responses_websocket,
+                ai_sdk_stream,
+                original_usage,
                 provider_metadata,
                 ..
             }) = &mut pending.reply
@@ -1971,6 +2067,52 @@ impl PythonTools {
                     true,
                 )
             } else {
+                let mut captured_usage = None;
+                let usage_cleaned;
+                let data = if data.contains("__sdk_ai_sdk_original_usage") {
+                    ensure!(
+                        data.len() <= 16 * 1024 * 1024,
+                        "AI SDK usage frame exceeds its limit"
+                    );
+                    let mut frame: Value =
+                        serde_json::from_str(data).context("Invalid AI SDK usage frame")?;
+                    let annotation = frame
+                        .as_object_mut()
+                        .and_then(|frame| frame.remove("__sdk_ai_sdk_original_usage"));
+                    if let Some(annotation) = annotation {
+                        ensure!(
+                            *ai_sdk_stream && original_usage.is_none(),
+                            "Original usage requires its admitted AI SDK stream"
+                        );
+                        ensure!(
+                            self.context_control
+                                .get()
+                                .and_then(Weak::upgrade)
+                                .is_some_and(|control| control.raw_usage_active()),
+                            "Original usage requires its active capture"
+                        );
+                        ensure!(
+                            frame.get("type").and_then(Value::as_str) == Some("response.completed"),
+                            "Original usage requires a completed frame"
+                        );
+                        let original: OriginalResponsesUsage =
+                            serde_json::from_value(annotation)
+                                .context("Invalid original AI SDK usage")?;
+                        original.validate_ai_sdk(
+                            frame
+                                .pointer("/response/id")
+                                .and_then(Value::as_str)
+                                .context("Missing original usage canonical identity")?,
+                        )?;
+                        captured_usage = Some(original);
+                        usage_cleaned = serde_json::to_string(&frame)?;
+                        usage_cleaned.as_str()
+                    } else {
+                        data
+                    }
+                } else {
+                    data
+                };
                 let cleaned;
                 let data = if data.contains("__sdk_model_provider_metadata") {
                     ensure!(
@@ -2018,7 +2160,23 @@ impl PythonTools {
                     data
                 };
                 let had_usage = projection.completed_usage().is_some();
-                let (projected, continuing) = projection.push(data);
+                let (mut projected, continuing) = projection.push(data);
+                if let Some(original) = captured_usage {
+                    ensure!(
+                        continuing && projection.completed_usage().is_some(),
+                        "Original usage requires a valid completed payload"
+                    );
+                    let mut matched = false;
+                    for event in &mut projected {
+                        if let codex_api::ResponseEvent::ResponseObserved(value) = event {
+                            ensure!(!matched, "Ambiguous original usage observation");
+                            *value = original.observation()?;
+                            matched = true;
+                        }
+                    }
+                    ensure!(matched, "Missing original usage observation");
+                    *original_usage = Some(original);
+                }
                 if !had_usage {
                     if let (Some(attempt), Some(usage)) = (attempt, projection.completed_usage()) {
                         // Retirement can drop the projection before the normal reply reports usage.
@@ -2144,6 +2302,7 @@ impl PythonTools {
                 finish,
                 projection,
                 chat_stream,
+                original_usage,
                 ..
             } => {
                 let usage = projection.completed_usage().cloned();
@@ -2161,6 +2320,13 @@ impl PythonTools {
                 {
                     // Chat synthesizes this completion for Core's normalized counters.
                     usage_metadata.metadata = None;
+                }
+                if let Some(original) = original_usage {
+                    if let Ok(events) = &mut result {
+                        if let Err(error) = retain_original_stream_usage(events, original) {
+                            result = Err(model_stream_error(error));
+                        }
+                    }
                 }
                 if let (Some(attempt), Some(usage)) = (&attempt, usage) {
                     if let Err(error) = attempt.report_usage(usage) {
@@ -2259,5 +2425,81 @@ mod mapped_context_materialization_tests {
         assert!(materialize_mapped_context_items(&[original.clone()], &mut [changed], &[Some(0)]).is_err());
         assert!(materialize_mapped_context_items(&[original.clone()], &mut [original.clone()], &[Some(1)]).is_err());
         assert!(materialize_mapped_context_items(&[original.clone()], &mut [original], &[]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod original_ai_sdk_usage_tests {
+    use super::*;
+
+    fn original(provider: Option<&str>) -> OriginalResponsesUsage {
+        serde_json::from_value(json!({
+            "response_id":"canonical", "ai_sdk":true,
+            "provider_response_id":provider,
+            "usage":{"inputTokens":{"total":3,"cacheRead":1},"outputTokens":{"total":2,"text":2},"raw":{"values":[0,null,false]}}
+        })).unwrap()
+    }
+
+    #[test]
+    fn anonymous_original_usage_never_claims_a_provider_identifier() {
+        let value = original(None);
+        let observation = value.observation().unwrap();
+        assert!(observation.response_id.is_none());
+        let usage = observation.usage.unwrap();
+        assert_eq!(usage.input_tokens, Some(3));
+        assert_eq!(usage.output_tokens, Some(2));
+        assert_eq!(usage.total_tokens, Some(5));
+        assert_eq!(usage.cached_input_tokens, Some(1));
+        assert_eq!(usage.cache_write_input_tokens, None);
+        assert_eq!(usage.reasoning_output_tokens, None);
+    }
+
+    #[test]
+    fn known_original_usage_requires_exact_canonical_binding() {
+        assert_eq!(
+            original(Some("canonical"))
+                .observation()
+                .unwrap()
+                .response_id
+                .as_deref(),
+            Some("canonical")
+        );
+        assert!(original(Some("other")).observation().is_err());
+        assert!(original(None).validate_ai_sdk("other").is_err());
+    }
+
+    #[test]
+    fn original_stream_data_requires_an_accepted_completion() {
+        let mut absent = Vec::new();
+        assert!(retain_original_stream_usage(&mut absent, original(None)).is_err());
+        let mut events: Vec<_> =
+            codex_extension_api::completed_model_response("canonical".to_owned(), Vec::new(), None)
+                .into_iter()
+                .map(|event| event.unwrap())
+                .collect();
+        retain_original_stream_usage(&mut events, original(None)).unwrap();
+        let Some(codex_api::ResponseEvent::Completed {
+            usage_metadata: Some(metadata),
+            ..
+        }) = events.last()
+        else {
+            panic!("missing completion");
+        };
+        assert_eq!(
+            metadata.metadata.as_ref().unwrap().pointer("/raw/values"),
+            Some(&json!([0, null, false]))
+        );
+    }
+
+    #[test]
+    fn rejected_stream_cannot_publish_original_usage() {
+        let mut projection = codex_api::ApplicationModelStream::new(false);
+        let (_, continuing) = projection.push(r#"{"type":"response.completed","response":{"id":"canonical","status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}"#);
+        assert!(continuing);
+        assert!(
+            projection
+                .finish(Some("producer rejected its final payload"))
+                .is_err()
+        );
     }
 }

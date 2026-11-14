@@ -138,6 +138,8 @@ const portableReceiptFile = 'portable-build-receipt.json';
 const portableHermesFiles = [
   'codex-realtime-control.mjs',
   'codex-realtime-control.cjs',
+  'codex-turn-control.mjs',
+  'codex-turn-control.cjs',
 ];
 const facadeNative = join(facadeRoot, 'native');
 assert(
@@ -246,6 +248,38 @@ for (const name of ['@openai/agents', '@openai/agents-codex']) {
       assert.equal(start[0].event.session.instructions, config.instructions);
       first.apply({ type: 'close' });
       assert.equal(second.apply({ type: 'start', config })[0].id, 1);
+    }
+    const workerModules = [
+      [require(`${name}/worker`), require(`${name}/worker/control.hermes`)],
+      [
+        await import(`${name}/worker`),
+        await import(`${name}/worker/control.hermes`),
+      ],
+    ];
+    for (const [worker, hermes] of workerModules) {
+      const control = hermes.createHermesTextControl();
+      const input = 'Hermes native text 海豚';
+      const run = () =>
+        worker.runWorkerText(input, {
+          control,
+          model: 'fixture',
+          instructions: 'Reply once.',
+          provider: {
+            async complete({ body }) {
+              assert(JSON.stringify(body.input).includes(input));
+              return {
+                output: [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: input }],
+                  },
+                ],
+              };
+            },
+          },
+        });
+      assert.deepEqual(await Promise.all([run(), run()]), [input, input]);
     }
   } finally {
     globalThis.WebAssembly = savedWebAssembly;

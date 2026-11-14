@@ -239,6 +239,16 @@
       }
     },
     "./worker/control.wasm": "./native/codex-turn-control.wasm",
+    "./worker/control.hermes": {
+      "import": {
+        "types": "./dist/worker-control.hermes.d.mts",
+        "default": "./native/codex-turn-control.mjs"
+      },
+      "require": {
+        "types": "./dist/worker-control.hermes.d.ts",
+        "default": "./native/codex-turn-control.cjs"
+      }
+    },
     "./voice/control.wasm": "./native/codex-realtime-control.wasm",
     "./memory": {
       "import": {
@@ -321,6 +331,8 @@
     "dist",
     "CLASSIC.md",
     "native/codex-turn-control.wasm",
+    "native/codex-turn-control.mjs",
+    "native/codex-turn-control.cjs",
     "native/codex-realtime-control.wasm",
     "native/portable-build-receipt.json",
     "native/codex-realtime-control.mjs",
@@ -411,6 +423,9 @@
       ],
       "voice/control.hermes": [
         "dist/voice/control.hermes.d.ts"
+      ],
+      "worker/control.hermes": [
+        "dist/worker-control.hermes.d.ts"
       ]
     }
   }

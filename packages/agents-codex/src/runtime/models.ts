@@ -71,6 +71,50 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
+const originalAiSdkUsage = new WeakMap<object, JsonObject>();
+const rawUsageRequests = new WeakSet<object>();
+const originalAiSdkFrames = new WeakMap<
+  object,
+  { encoded: string; original: JsonObject }
+>();
+
+/** @internal Existing raw-usage opt-in, outside provider request data. */
+export function markRawUsageRequest(request: ModelRequest): void {
+  rawUsageRequests.add(request);
+}
+
+function snapshotAiSdkUsage(value: unknown): JsonObject | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  try {
+    const snapshot = copyJsonValue(value, new Set(), true) as JsonObject;
+    if (Buffer.byteLength(JSON.stringify(snapshot)) <= maxChatStreamBytes)
+      return snapshot;
+  } catch {
+    // Optional usage never adopts non-JSON objects or changes the model result.
+  }
+}
+
+/** @internal Native admission strips this owner-bound completion annotation. */
+export function captureAiSdkOriginalUsageFrame(
+  encoded: string,
+  event: JsonObject,
+): string {
+  const captured = originalAiSdkFrames.get(event);
+  if (!captured) return encoded;
+  if (
+    captured.encoded !== encoded ||
+    Object.hasOwn(event, '__sdk_ai_sdk_original_usage')
+  )
+    throw new TypeError(
+      'AI SDK original usage completion changed before settlement',
+    );
+  return (
+    encoded.slice(0, -1) +
+    ',"__sdk_ai_sdk_original_usage":' +
+    JSON.stringify(captured.original) +
+    '}'
+  );
+}
 const borrowedResponsesStreams = new WeakMap<
   AsyncIterable<JsonObject>,
   { upstreamRequestId?: string; abort: () => void }
@@ -299,6 +343,9 @@ export function captureModelResponse(
         rawChatCompletion
       ]
     : undefined;
+  const sdkOriginal = captureRawUsage
+    ? originalAiSdkUsage.get(response)
+    : undefined;
   const original = captureRawUsage
     ? (
         response as ModelResponse & {
@@ -341,7 +388,17 @@ export function captureModelResponse(
             usage: original.usage,
           },
         }
-      : {}),
+      : sdkOriginal
+        ? {
+            original_usage: {
+              response_id: responseId,
+              upstream_request_id: null,
+              usage: sdkOriginal,
+              ai_sdk: true,
+              provider_response_id: response.responseId ?? null,
+            },
+          }
+        : {}),
   }) as JsonObject;
 }
 /** HTTP options for one borrowed OpenAI client request; native cancellation is retained. */
@@ -2738,6 +2795,8 @@ export class AiSdkModel implements NativeModel {
     };
     request.signal.addEventListener('abort', abort, { once: true });
     let responseId = 'resp_aisdk_' + randomUUID();
+    let providerResponseId: string | undefined;
+    let originalUsage: JsonObject | undefined;
     let started = false;
     let finished = false;
     let finishReason: any;
@@ -2769,6 +2828,21 @@ export class AiSdkModel implements NativeModel {
         bytes += Buffer.byteLength(encoded);
         if (bytes > maxChatStreamBytes)
           throw new TypeError('AiSdkModel stream exceeded its buffer limit');
+        if (part.type === 'finish') {
+          if (rawUsageRequests.has(request))
+            originalUsage = snapshotAiSdkUsage(part.usage);
+          if (part.usage) {
+            const measured = aiSdkUsage(part.usage);
+            request.reportUsage?.({
+              inputTokens: measured.input_tokens ?? 0,
+              cachedInputTokens: measured.cached_input_tokens ?? 0,
+              cacheWriteInputTokens: measured.cache_write_input_tokens ?? 0,
+              outputTokens: measured.output_tokens ?? 0,
+              reasoningOutputTokens: measured.reasoning_output_tokens ?? 0,
+              totalTokens: measured.total_tokens ?? 0,
+            });
+          }
+        }
         if (observeRaw) {
           const original = JSON.parse(encoded) as JsonObject;
           redactAiSdkThoughtSignatures(original);
@@ -2804,8 +2878,10 @@ export class AiSdkModel implements NativeModel {
             responseProviderMetadata,
             part.providerMetadata,
           );
-          if (!started && typeof part.id === 'string' && part.id.trim())
+          if (!started && typeof part.id === 'string' && part.id.trim()) {
             responseId = part.id;
+            providerResponseId = part.id;
+          }
           continue;
         }
         if (
@@ -3031,17 +3107,6 @@ export class AiSdkModel implements NativeModel {
             finished = true;
             finishReason = part.finishReason;
             usage = part.usage;
-            if (usage) {
-              const measured = aiSdkUsage(usage);
-              request.reportUsage?.({
-                inputTokens: measured.input_tokens ?? 0,
-                cachedInputTokens: measured.cached_input_tokens ?? 0,
-                cacheWriteInputTokens: measured.cache_write_input_tokens ?? 0,
-                outputTokens: measured.output_tokens ?? 0,
-                reasoningOutputTokens: measured.reasoning_output_tokens ?? 0,
-                totalTokens: measured.total_tokens ?? 0,
-              });
-            }
             break;
           case 'stream-start':
             responseProviderMetadata = mergeModelProviderMetadata(
@@ -3124,7 +3189,7 @@ export class AiSdkModel implements NativeModel {
         retainModelProviderStreamFrame(event, result, index);
         yield event;
       }
-      yield {
+      const completed: JsonObject = {
         type: 'response.completed',
         response: {
           id: responseId,
@@ -3142,7 +3207,7 @@ export class AiSdkModel implements NativeModel {
                       ? {}
                       : {
                           cache_write_tokens:
-                            result.usage.cache_write_input_tokens,
+                            result.usage.cache_write_input_tokens ?? 0,
                         }),
                   },
                   output_tokens_details: {
@@ -3153,6 +3218,17 @@ export class AiSdkModel implements NativeModel {
             : {}),
         },
       };
+      if (originalUsage)
+        originalAiSdkFrames.set(completed, {
+          encoded: JSON.stringify(completed),
+          original: {
+            response_id: responseId,
+            provider_response_id: providerResponseId ?? null,
+            ai_sdk: true,
+            usage: originalUsage,
+          },
+        });
+      yield completed;
     } finally {
       request.signal.removeEventListener('abort', abort);
       try {
@@ -3241,6 +3317,10 @@ export class AiSdkModel implements NativeModel {
       const { namespace: _untrustedNamespace, ...captured } = item;
       return identity ? { ...captured, ...identity } : captured;
     };
+
+    const originalUsage = rawUsageRequests.has(request)
+      ? snapshotAiSdkUsage(result.usage)
+      : undefined;
     const finishReason =
       typeof result.finishReason === 'string'
         ? result.finishReason
@@ -3555,6 +3635,7 @@ export class AiSdkModel implements NativeModel {
         value,
       })),
     );
+    if (originalUsage) originalAiSdkUsage.set(normalized, originalUsage);
     return normalized;
   }
 }

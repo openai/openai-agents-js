@@ -142,35 +142,37 @@ const { built, bytes } = buildControl(crate, 'codex_realtime_control.wasm');
 const text = buildControl(textCrate, 'codex_turn_control.wasm');
 // Binaryen's virtual filesystem does not consistently resolve Windows drive paths.
 // Keep its input and output local to an explicit working directory.
-const loweringDirectory = dirname(built);
-const loweredPath = join(
-  loweringDirectory,
-  'codex-realtime-control.lowered.js',
-);
-run(
-  process.execPath,
-  [
-    wasm2js,
-    basename(built),
-    '-o',
-    basename(loweredPath),
-    '--emscripten',
-    '--enable-multivalue',
-    '--enable-bulk-memory',
-    '--enable-nontrapping-float-to-int',
-    '--strip-debug',
-    '-O',
-  ],
-  loweringDirectory,
-);
-const lowered = readFileSync(loweredPath, 'utf8');
-if (
-  lowered.includes('WebAssembly') ||
-  !lowered.startsWith('function instantiate(')
-)
-  throw new Error(
-    'Hermes control is not an isolated host-independent factory.',
+function lowerControl(wasmPath) {
+  const loweringDirectory = dirname(wasmPath);
+  const loweredPath = basename(wasmPath, '.wasm') + '.lowered.js';
+  run(
+    process.execPath,
+    [
+      wasm2js,
+      basename(wasmPath),
+      '-o',
+      loweredPath,
+      '--emscripten',
+      '--enable-multivalue',
+      '--enable-bulk-memory',
+      '--enable-nontrapping-float-to-int',
+      '--strip-debug',
+      '-O',
+    ],
+    loweringDirectory,
   );
+  const lowered = readFileSync(join(loweringDirectory, loweredPath), 'utf8');
+  if (
+    lowered.includes('WebAssembly') ||
+    !lowered.startsWith('function instantiate(')
+  )
+    throw new Error(
+      'Hermes control is not an isolated host-independent factory.',
+    );
+  return lowered;
+}
+const lowered = lowerControl(built);
+const loweredText = lowerControl(text.built);
 if (sha256(readFileSync(wasm2js)) !== wasm2jsHash)
   throw new Error('Binaryen changed during the portable build.');
 const hermesProducts = {};
@@ -186,6 +188,12 @@ for (const [index, directory] of products.entries()) {
     'codex-realtime-control.cjs': owner
       ? `${body}const { PortableVoiceControlBinding } = require('../dist/voice/portable-binding.js');\nexports.createHermesVoiceControl = function () { return new PortableVoiceControlBinding(instantiate({})); };\n`
       : `module.exports = require('@openai/agents-codex/voice/control.hermes');\n`,
+    'codex-turn-control.mjs': owner
+      ? `${banner}${loweredText}\nimport { HermesTextControl } from '../dist/runtime/turn-control-binding.mjs';\nexport function createHermesTextControl() { return new HermesTextControl(() => instantiate({})); }\n`
+      : `export { createHermesTextControl } from '@openai/agents-codex/worker/control.hermes';\n`,
+    'codex-turn-control.cjs': owner
+      ? `${banner}${loweredText}\nconst { HermesTextControl } = require('../dist/runtime/turn-control-binding.js');\nexports.createHermesTextControl = function () { return new HermesTextControl(() => instantiate({})); };\n`
+      : `module.exports = require('@openai/agents-codex/worker/control.hermes');\n`,
   };
   const hashes = {};
   for (const [name, content] of Object.entries(generated)) {

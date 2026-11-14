@@ -31,10 +31,11 @@ describe('workspace package aliases', () => {
       expect(relativePath).not.toMatch(/^\.\./u);
       if (
         sourcePath.endsWith('.wasm') ||
-        sourcePath.endsWith('codex-realtime-control.mjs')
+        sourcePath.endsWith('codex-realtime-control.mjs') ||
+        sourcePath.endsWith('codex-turn-control.mjs')
       ) {
         expect(relativePath.split(sep).join('/')).toMatch(
-          /^agents(?:-codex)?\/native\/codex-(?:realtime-control\.(?:wasm|mjs)|turn-control\.wasm)$/u,
+          /^agents(?:-codex)?\/native\/codex-(?:realtime-control\.(?:wasm|mjs)|turn-control\.(?:wasm|mjs))$/u,
         );
       } else {
         expect(pathSegments).toContain('src');
