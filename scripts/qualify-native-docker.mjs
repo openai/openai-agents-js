@@ -40,10 +40,12 @@ const build = JSON.parse(
 assert.equal(build.format, 'reviewed-native-v1');
 const addonSha256 = hash(addon);
 const fixtureSha256 = hash(fixture);
-assert.equal(addonSha256, build.products['native/codex.node']);
+assert.equal(`sha256:${addonSha256}`, build.products['native/codex.node']);
+assert.match(process.env.NATIVE_FIXTURE_SHA256 ?? '', /^[a-f0-9]{64}$/);
 assert.equal(
   fixtureSha256,
-  build.products['native/test-bin/exec-server-fixture'],
+  process.env.NATIVE_FIXTURE_SHA256,
+  'Native fixture changed after bundle restore',
 );
 const inputs = nativeInputs();
 assert.equal(

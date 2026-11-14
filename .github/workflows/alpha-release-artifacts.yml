@@ -149,6 +149,7 @@ jobs:
           node-version: '24'
           cache: pnpm
       - name: Restore the current-run Linux native transfer
+        id: native_transfer
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_PLATFORM: linux-x64
@@ -159,6 +160,8 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Test strict Docker path and identity grants
+        env:
+          NATIVE_FIXTURE_SHA256: ${{ steps.native_transfer.outputs.fixture_sha256 }}
         run: |
           test -S "$CODEX_DOCKER_TEST_SOCKET"
           env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS \
