@@ -821,7 +821,7 @@ describe('public live capabilities and checkpoint advice', () => {
     },
   );
 
-  it('keeps LocalStorage output routes independent from unavailable portable advice', async () => {
+  it('keeps LocalStorage output routes independent from idle and manual advice', async () => {
     const directory = await mkdtemp(
       join(tmpdir(), 'capability-public-profile-'),
     );
@@ -846,11 +846,16 @@ describe('public live capabilities and checkpoint advice', () => {
       );
       expect(session.capabilities.get('nativeOutput').status).toBe('supported');
       expect(session.capabilities.get('promptedOutput').status).toBe('limited');
-      for (const kind of ['idle', 'manualWait'] as const)
-        expect((await session.checkpointStatus({ kind })).status).toBe(
-          'notReady',
-        );
-      expect(exported).not.toHaveBeenCalled();
+      expect(await session.checkpointStatus({ kind: 'idle' })).toEqual({
+        status: 'ready',
+        reasons: [],
+      });
+      expect(exported).toHaveBeenCalledWith(null, false, true);
+      expect(await session.checkpointStatus({ kind: 'manualWait' })).toEqual({
+        status: 'notReady',
+        reasons: ['Persistent storage cannot export SessionState'],
+      });
+      expect(exported).toHaveBeenCalledTimes(1);
       expect(
         (
           await (

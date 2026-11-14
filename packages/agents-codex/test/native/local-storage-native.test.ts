@@ -720,7 +720,9 @@ describe('public native local profiles', () => {
     })();
     const turn = await session.submit('Read.');
     const request = await pending;
-    await expect(session.saveState()).rejects.toThrow('Persistent storage');
+    await expect(session.saveState()).rejects.toThrow(
+      'saveState requires a settled open session',
+    );
     await expect(session.suspend()).rejects.toThrow('Persistent storage');
     await expect(session.compact()).rejects.toThrow('settled open session');
     await session.respond(request.reply('known receipt'));
