@@ -1,0 +1,33 @@
+[package]
+name = "codex-agents-helpers"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# Preserve the link settings used when these targets shared the addon package.
+build = "../../build.rs"
+
+[[bin]]
+name = "codex-sdk-runtime"
+path = "../runtime.rs"
+
+[[bin]]
+name = "codex-code-mode-host"
+path = "../code_mode_host.rs"
+
+[[example]]
+name = "exec-server-fixture"
+path = "../../tests/fixtures/exec_server.rs"
+
+[dependencies]
+anyhow = "1"
+codex-arg0 = { path = "../../.upstream/reviewed-codex/codex-rs/arg0" }
+codex-code-mode-host = { path = "../../.upstream/reviewed-codex/codex-rs/code-mode-host" }
+codex-exec-server = { path = "../../.upstream/reviewed-codex/codex-rs/exec-server" }
+codex-http-client = { path = "../../.upstream/reviewed-codex/codex-rs/http-client" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.186"
+
+[build-dependencies]
+napi-build = "2"

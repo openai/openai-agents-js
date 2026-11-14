@@ -10,17 +10,11 @@ name = "agents_codex"
 path = "rust/lib.rs"
 crate-type = ["cdylib"]
 
-[[bin]]
-name = "codex-sdk-runtime"
-path = "rust/runtime.rs"
-
-[[bin]]
-name = "codex-code-mode-host"
-path = "rust/code_mode_host.rs"
-
-[[example]]
-name = "exec-server-fixture"
-path = "tests/fixtures/exec_server.rs"
+[workspace]
+members = ["rust/helpers"]
+# Keep the existing default build and example targets available from this directory.
+default-members = [".", "rust/helpers"]
+exclude = [".upstream", "rust/vendor"]
 
 [dev-dependencies]
 pretty_assertions = "=1.4.1"

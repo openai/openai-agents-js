@@ -718,6 +718,8 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           '--locked',
           '--package',
           'codex-agents-node',
+          '--package',
+          'codex-agents-helpers',
           '--release',
         ]);
         for (const build of builds) {
@@ -737,9 +739,16 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
         )!;
         if (windows) {
           expect(builds).toHaveLength(2);
+          expect(addon.args).toEqual(
+            expect.arrayContaining(['--package', 'codex-agents-node']),
+          );
+          expect(addon.args).not.toContain('codex-agents-helpers');
           expect(helpers.args).not.toContain('--lib');
+          expect(helpers.args).not.toContain('codex-agents-node');
           expect(helpers.args).toEqual(
             expect.arrayContaining([
+              '--package',
+              'codex-agents-helpers',
               '--config',
               join(
                 native,
