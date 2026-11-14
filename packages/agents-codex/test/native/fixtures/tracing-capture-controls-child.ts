@@ -37,7 +37,7 @@ async function main() {
 
     const diagnostics: string[] = [];
     const events: TraceEvent[] = [];
-    const largeCompletion = { result: 'λ\"\\'.repeat(40_000) };
+    const largeCompletion = { result: 'λ"\\'.repeat(40_000) };
     await telemetry.configure({
       traces: {
         kind: 'otlp-http',
