@@ -2472,7 +2472,12 @@ export class AiSdkModel implements NativeModel {
           yield original;
         }
         // The v0 adapter observes these parts without generating agent items.
-        if (part.type === 'raw' || part.type === 'source') continue;
+        if (
+          part.type === 'raw' ||
+          part.type === 'source' ||
+          part.type === 'file'
+        )
+          continue;
         if (part.type === 'error') throw part.error;
         if (finished && part.type !== 'response-metadata')
           throw new TypeError('AiSdkModel stream continued after finish');
@@ -3017,7 +3022,7 @@ export class AiSdkModel implements NativeModel {
       }
     };
     for (const part of result.content ?? []) {
-      if (part.type === 'source') continue;
+      if (part.type === 'source' || part.type === 'file') continue;
       if (part.type === 'text') {
         const streamed = part[aiSdkStreamTextParts] as
           AiSdkTextPart[] | undefined;
