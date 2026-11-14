@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { isDeepStrictEqual } from 'node:util';
 import { copyJsonValue, type JsonObject } from './binding';
 
