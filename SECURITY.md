@@ -20,6 +20,7 @@ Remove API keys, authorization headers, cookies, access tokens, webhook secrets,
 This policy covers the source and published packages maintained in this repository:
 
 - `@openai/agents`: the convenience package.
+- `@openai/agents-codex`: the embedded Codex runtime, native sessions and tools, and native adapters.
 - `@openai/agents-core`: agent execution, tools, sessions, run state, tracing, MCP integration, and sandbox abstractions.
 - `@openai/agents-openai`: OpenAI model and tracing integrations.
 - `@openai/agents-realtime`: Realtime sessions and transports.

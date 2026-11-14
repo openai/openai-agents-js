@@ -75,9 +75,7 @@ Historical messages may mention old skills, but they do not authorize fresh read
 
 ## Command environment
 
-Source builds: explicit command variables through `Environment.env`, for both local and remote execution.
-
-Async values: application-defined resolution inside an [`EnvironmentSource`](#lease-an-executor) before creating the new `Environment.lease(...)`. For restore: a fresh source with current values.
+Current source builds have been accepting explicit command variables through `Environment.env` for local and remote execution. For asynchronous values, the application has been resolving them inside an [`EnvironmentSource`](#lease-an-executor) before creating `Environment.lease(...)`. Restore has been using a fresh source with current values.
 
 ```typescript
 import { Environment } from '@openai/agents';
@@ -100,7 +98,7 @@ Session usage: `agent.session({ environment })`. One-shot usage: `agent.run(inpu
 | A replacement or restored Session | Current destination values. No saved copy of the earlier map. |
 | Private declaration data | The map excluded from the Environment's default JSON, saved configuration, and passive observations. Values printed by commands: ordinary tool output. |
 
-Variable names: nonempty strings without `=` or NUL. Values: strings without NUL. Both names and values: valid UTF-8 text.
+Variable names have been requiring nonempty strings without `=` or NUL. Values have been requiring strings without NUL. Both have been requiring valid UTF-8 text.
 
 Reserved names, with case-insensitive matching:
 
@@ -108,7 +106,7 @@ Reserved names, with case-insensitive matching:
 - Execution identity: `CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN`, `NODE_REPL_AUTH_TOKEN`, `CODEX_GUARDIAN_DECISIONS_API_KEY`, `OPENAI_FEDERATION_RULE_ID`, `OPENAI_IDENTITY_TOKEN_FILE`, and `OPENAI_WORKLOAD_IDENTITY_CONTEXT`.
 - Runtime-owned command values: `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_VERSION`, `CODEX_PERMISSION_PROFILE`, `CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS`, and `CODEX_PLUGIN_METRICS_OUTPUT`.
 
-Shell startup scripts: possible subsequent changes to the initial command values.
+Shell startup scripts have been remaining able to change the initial command values.
 
 ## Configured shell
 

@@ -118,7 +118,7 @@ The separate `maxModelSteps` has been retaining its remaining preparations at su
 From the repository root with the matching native build and test dependencies active, this command has been selecting the synthetic budget, model-step, and process-restart cases:
 
 ```sh
-pnpm exec vitest run packages/agents-codex/test/native/run-budget-native.test.ts packages/agents-codex/test/native/model-preparation-cap.test.ts packages/agents-codex/test/native/function-approvals-native.test.ts --pool=forks
+OPENAI_AGENTS_NATIVE_TESTS=1 pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/run-budget-native.test.ts packages/agents-codex/test/native/model-preparation-cap.test.ts packages/agents-codex/test/native/function-approvals-native.test.ts --pool=forks
 ```
 
 [The budget suite](../../../packages/agents-codex/test/native/run-budget-native.test.ts) has been checking live replies, exhausted and remaining allowances after manual/approval restore, missing-usage policy, trusted-limit rejection, one-shot continuation, and fresh settled store budgets. [The approval suite](../../../packages/agents-codex/test/native/function-approvals-native.test.ts) has been restoring budgeted approvals in a fresh process while retaining accepted siblings. [The model-step suite](../../../packages/agents-codex/test/native/model-preparation-cap.test.ts) has been checking its independent remaining-step contract. These synthetic fixtures have not been establishing provider billing or crash recovery from arbitrary automatic work.

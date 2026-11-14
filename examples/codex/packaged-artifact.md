@@ -4,7 +4,7 @@ Use `jsonArtifactTool` from `@openai/agents/artifacts` to check JSON before writ
 
 ## Run the example
 
-Use Node.js 22 or later and [build the matching SDK and native runtime](guides/building.md). The checkout must include `@openai/agents/artifacts`. Run this command from the repository root:
+Use Node.js 24 and [build the matching SDK and native runtime](guides/building.md). The checkout must include `@openai/agents/artifacts`. Run this command from the repository root:
 
 ```sh
 pnpm exec tsx examples/codex/packaged-artifact.ts
