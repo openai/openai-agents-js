@@ -220,7 +220,13 @@ export async function assertRestoredInstructionContent<Context, Output>(
       /^msg_sdk_application_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(
         revision,
       );
-    if (declared === undefined || saved !== declared || !canonicalRevision)
+    // Native profile activation appends two newlines for a present, empty
+    // workspace appendix. Compare that exact rendering without trimming.
+    if (
+      declared === undefined ||
+      (saved !== declared && saved !== declared + '\n\n') ||
+      !canonicalRevision
+    )
       throw new TypeError(unauthorized);
     const content = payload!.content as JsonObject[];
     publications.set(content[0].text as string, row);
