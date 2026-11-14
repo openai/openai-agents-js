@@ -46,6 +46,22 @@
       "require": "./dist/utils/index.js",
       "import": "./dist/utils/index.mjs"
     },
+    "./utils/tool-schema": {
+      "types": "./dist/utils/tool-schema.d.ts",
+      "node": {
+        "module-sync": "./dist/node/utils/tool-schema.cjs"
+      },
+      "require": "./dist/utils/tool-schema.js",
+      "import": "./dist/utils/tool-schema.mjs"
+    },
+    "./model-retry": {
+      "types": "./dist/runner/modelRetry.d.ts",
+      "node": {
+        "module-sync": "./dist/node/runner/modelRetry.cjs"
+      },
+      "require": "./dist/runner/modelRetry.js",
+      "import": "./dist/runner/modelRetry.mjs"
+    },
     "./utils/internal": {
       "types": "./dist/utils/internal.d.ts",
       "node": {

@@ -196,6 +196,17 @@
         "default": "./dist/voice/portable.js"
       }
     },
+    "./worker": {
+      "import": {
+        "types": "./dist/runtime/workerd.d.mts",
+        "default": "./dist/runtime/workerd.mjs"
+      },
+      "require": {
+        "types": "./dist/runtime/workerd.d.ts",
+        "default": "./dist/runtime/workerd.js"
+      }
+    },
+    "./worker/control.wasm": "./native/codex-turn-control.wasm",
     "./voice/control.wasm": "./native/codex-realtime-control.wasm",
     "./memory": {
       "node": {
@@ -322,9 +333,11 @@
     "experimental",
     "a2a",
     "A2A.md",
+    "native/codex-turn-control.wasm",
     "native/codex-realtime-control.wasm",
     "native/portable-build-receipt.json",
     "PORTABLE_CONTROL.md",
+    "WORKERS.md",
     "native/codex-realtime-control.mjs",
     "native/codex-realtime-control.cjs"
   ],

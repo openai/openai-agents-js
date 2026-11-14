@@ -1363,7 +1363,11 @@
     {
       "path": "sdk-preserve-guardian-reasoning-default.patch",
       "sha256": "395780f87e2c6ec8e235b6c341534f1902b78405d0fc6be1bcf1d3c224208b43"
+    },
+    {
+      "path": "sdk-portable-text-control.patch",
+      "sha256": "d3b23e2f6719c686557717c1389a11a011791f078391f18f12940f5882cfb976"
     }
   ],
-  "result_tree": "4ca9dbd5aa9d2a5d7167c5fb426113346fa3d438"
+  "result_tree": "5baa5fac2fbc3a2799d5e8d9739e7712f59e7483"
 }
