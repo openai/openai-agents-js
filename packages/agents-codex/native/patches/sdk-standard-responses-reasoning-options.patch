@@ -1,0 +1,179 @@
+diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
+index 5e74ae36545..162e5ca0828 100644
+--- a/codex-rs/codex-api/src/common.rs
++++ b/codex-rs/codex-api/src/common.rs
+@@ -173,6 +173,8 @@ pub struct Reasoning {
+     pub summary: Option<ReasoningSummaryConfig>,
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub context: Option<ReasoningContext>,
++    #[serde(flatten)]
++    pub options: std::collections::BTreeMap<String, serde_json::Value>,
+ }
+ 
+ fn serialize_reasoning_effort<S>(
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 109f5c15444..88c11507aa6 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1177,6 +1177,7 @@ impl ModelClient {
+                     effort: Some(effort),
+                     summary: None,
+                     context: None,
++                    options: Default::default(),
+                 }),
+         };
+ 
+@@ -1288,6 +1289,7 @@ impl ModelClient {
+             context: model_info
+                 .use_responses_lite
+                 .then_some(ReasoningContext::AllTurns),
++            options: Default::default(),
+         }
+     }
+ 
+@@ -1327,6 +1329,17 @@ impl ModelClient {
+         controls
+             .validate_profile(model_info)
+             .map_err(CodexErr::InvalidRequest)?;
++        if model_info.use_responses_lite
++            && controls
++                .reasoning_options
++                .as_ref()
++                .and_then(Option::as_ref)
++                .is_some_and(|options| !options.is_empty())
++        {
++            return Err(CodexErr::InvalidRequest(
++                "reasoning options require the standard Responses formatter".into(),
++            ));
++        }
+         if controls.has_wire_values() && self.state.provider.info().is_amazon_bedrock() {
+             return Err(CodexErr::InvalidRequest(
+                 "explicit native request controls require the standard Responses formatter".into(),
+@@ -1456,15 +1469,20 @@ impl ModelClient {
+             .transpose()?;
+         input.splice(0..0, prefix);
+         filter_provider_response_metadata(&mut input, is_openai);
+-        let reasoning = if prompt_owns_model {
++        let mut reasoning = if prompt_owns_model {
+             Reasoning {
+                 effort,
+                 summary: (summary != ReasoningSummaryConfig::None).then_some(summary),
+                 context: None,
++                options: Default::default(),
+             }
+         } else {
+             self.build_reasoning(model_info, effort, summary)
+         };
++        if let Some(options) = controls.reasoning_options.as_ref().and_then(Option::as_ref) {
++            // The standard formatter validates this map before constructing the request.
++            reasoning.options = options.clone();
++        }
+         let stream_options = (self.state.concurrent_reasoning_summaries_enabled
+             && is_openai
+             && reasoning.summary.is_some())
+@@ -1610,7 +1628,8 @@ impl ModelClient {
+             }),
+             reasoning: (!prompt_owns_model
+                 || reasoning.effort.is_some()
+-                || reasoning.summary.is_some())
++                || reasoning.summary.is_some()
++                || !reasoning.options.is_empty())
+             .then_some(reasoning),
+             store: controls.store.flatten().unwrap_or(false),
+             stream: true,
+diff --git a/codex-rs/core/src/request_observation_tests.rs b/codex-rs/core/src/request_observation_tests.rs
+index 9665e6413c7..6b47f3b2a3e 100644
+--- a/codex-rs/core/src/request_observation_tests.rs
++++ b/codex-rs/core/src/request_observation_tests.rs
+@@ -95,6 +95,7 @@ fn effort_bridge_preserves_wire_scalar_kind_and_exact_integer() {
+             effort: Some(ReasoningEffort::Custom(input.into())),
+             summary: None,
+             context: None,
++            options: Default::default(),
+         };
+         let (effort, summary) =
+             resolved_reasoning(Some(&reasoning)).expect("known scalar reasoning");
+@@ -106,6 +107,7 @@ fn effort_bridge_preserves_wire_scalar_kind_and_exact_integer() {
+         effort: None,
+         summary: Some(ReasoningSummary::Detailed),
+         context: None,
++        options: Default::default(),
+     };
+     assert_eq!(
+         resolved_reasoning(Some(&reasoning)),
+diff --git a/codex-rs/protocol/src/model_request_controls.rs b/codex-rs/protocol/src/model_request_controls.rs
+index 1f581c15dc2..2ee71ef2744 100644
+--- a/codex-rs/protocol/src/model_request_controls.rs
++++ b/codex-rs/protocol/src/model_request_controls.rs
+@@ -261,6 +261,15 @@ pub struct ModelRequestControls {
+     #[ts(optional = nullable, type = "unknown")]
+     #[schemars(with = "Option<BTreeMap<String, serde_json::Value>>")]
+     pub extra_body: Option<Option<BTreeMap<String, serde_json::Value>>>,
++    /// Additional fields of the standard Responses reasoning object.
++    #[serde(
++        default,
++        skip_serializing_if = "Option::is_none",
++        with = "serde_with::rust::double_option"
++    )]
++    #[ts(optional = nullable, type = "unknown")]
++    #[schemars(with = "Option<BTreeMap<String, serde_json::Value>>")]
++    pub reasoning_options: Option<Option<BTreeMap<String, serde_json::Value>>>,
+ 
+     #[serde(
+         default,
+@@ -397,6 +406,7 @@ impl ModelRequestControls {
+             && self.context_management.is_none()
+             && self.provider_compaction.is_none()
+             && self.extra_body.is_none()
++            && self.reasoning_options.is_none()
+             && self.max_output_tokens.is_none()
+             && self.temperature.is_none()
+             && self.top_p.is_none()
+@@ -452,6 +462,9 @@ impl ModelRequestControls {
+         if patch.extra_body.is_some() {
+             self.extra_body = patch.extra_body.clone();
+         }
++        if patch.reasoning_options.is_some() {
++            self.reasoning_options = patch.reasoning_options.clone();
++        }
+ 
+         if patch.max_output_tokens.is_some() {
+             self.max_output_tokens = patch.max_output_tokens;
+@@ -539,6 +552,25 @@ impl ModelRequestControls {
+         {
+             return Err("truncation must be auto or disabled".into());
+         }
++        if let Some(Some(options)) = &self.reasoning_options {
++            if options.contains_key("effort") || options.contains_key("summary") {
++                return Err("reasoning_options cannot replace effort or summary".into());
++            }
++            if let Some(context) = options.get("context")
++                && !context.is_null()
++                && !matches!(context.as_str(), Some("auto" | "current_turn" | "all_turns"))
++            {
++                return Err("reasoning context must be auto, current_turn, all_turns or null".into());
++            }
++            if let Some(mode) = options.get("mode")
++                && !mode.as_str().is_some_and(|value| !value.trim().is_empty())
++            {
++                return Err("reasoning mode must be a nonempty string".into());
++            }
++            if serde_json::to_vec(options).map_or(usize::MAX, |wire| wire.len()) > 64 * 1024 {
++                return Err("reasoning_options exceed 64 KiB".into());
++            }
++        }
+         if let Some(Some(body)) = &self.extra_body {
+             const RESERVED: &[&str] = &[
+                 "input_modalities",
+@@ -683,6 +715,11 @@ impl ModelRequestControls {
+                 .as_ref()
+                 .and_then(Option::as_ref)
+                 .is_some_and(|body| !body.is_empty())
++            || self
++                .reasoning_options
++                .as_ref()
++                .and_then(Option::as_ref)
++                .is_some_and(|options| !options.is_empty())
+             || self.max_output_tokens.as_ref().is_some_and(Option::is_some)
+             || self.temperature.as_ref().is_some_and(Option::is_some)
+             || self.top_p.as_ref().is_some_and(Option::is_some)

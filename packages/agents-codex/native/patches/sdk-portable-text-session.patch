@@ -1,0 +1,166 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index f1d84c3ecbdc82124d980fb2f7217bd69f25f3c3..a41ecc4c9e6f4ba9d5308921344175887aaf09d7 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -16,6 +16,7 @@ enum Command {
+         input: String,
+         tools: Vec<Declaration>,
+         max_turns: u32,
++        snapshot: Option<Snapshot>,
+     },
+     Model {
+         request_id: u32,
+@@ -29,6 +30,14 @@ enum Command {
+     Cancel,
+ }
+
++#[derive(Deserialize, Serialize)]
++#[serde(deny_unknown_fields)]
++struct Snapshot {
++    version: u32,
++    revision: u32,
++    history: Vec<Value>,
++}
++
+ #[derive(Deserialize, Serialize)]
+ #[serde(deny_unknown_fields)]
+ struct Declaration {
+@@ -50,7 +59,7 @@ struct Call {
+ enum Effect {
+     Model { request_id: u32, body: Value },
+     Tools { request_id: u32, calls: Vec<Call> },
+-    Done { text: String },
++    Done { text: String, snapshot: Snapshot },
+ }
+
+ enum Phase {
+@@ -64,6 +73,8 @@ pub(crate) struct PortableTurn {
+     phase: Phase,
+     request_id: u32,
+     max_turns: u32,
++    revision: u32,
++    instructions: Option<Value>,
+     model: String,
+     tools: Vec<Declaration>,
+     history: Vec<Value>,
+@@ -76,6 +87,8 @@ impl Default for PortableTurn {
+             phase: Phase::New,
+             request_id: 0,
+             max_turns: 0,
++            revision: 0,
++            instructions: None,
+             model: String::new(),
+             tools: Vec::new(),
+             history: Vec::new(),
+@@ -112,6 +125,7 @@ impl PortableTurn {
+                 input,
+                 tools,
+                 max_turns,
++                snapshot,
+             } if matches!(self.phase, Phase::New) => {
+                 if model.trim().is_empty()
+                     || !(1..=MAX_ROUNDS).contains(&max_turns)
+@@ -130,8 +144,13 @@ impl PortableTurn {
+                 self.model = model;
+                 self.tools = tools;
+                 self.max_turns = max_turns;
++                if let Some(snapshot) = snapshot {
++                    self.restore(snapshot)?;
++                }
+                 if !instructions.is_empty() {
+-                    self.history.push(json!({"type":"message","role":"developer","content":[{"type":"input_text","text":instructions}]}));
++                    self.instructions = Some(
++                        json!({"type":"message","role":"developer","content":[{"type":"input_text","text":instructions}]}),
++                    );
+                 }
+                 self.history.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text":input}]}));
+                 self.next_request().map(Some)
+@@ -174,6 +193,57 @@ impl PortableTurn {
+         }
+     }
+
++    fn restore(&mut self, snapshot: Snapshot) -> Result<(), &'static str> {
++        if snapshot.version != 1 || snapshot.revision == 0 {
++            return Err("Unsupported portable session snapshot");
++        }
++        let mut pending = HashSet::new();
++        for item in &snapshot.history {
++            match item["type"].as_str() {
++                Some("message") if item["role"] == "user" || item["role"] == "assistant" => {
++                    let valid = item["content"].as_array().is_some_and(|parts| {
++                        let expected = if item["role"] == "user" {
++                            "input_text"
++                        } else {
++                            "output_text"
++                        };
++                        parts
++                            .iter()
++                            .all(|part| part["type"] == expected && part["text"].is_string())
++                    });
++                    if !valid {
++                        return Err("Invalid portable session message");
++                    }
++                }
++                Some("reasoning") => {}
++                Some("function_call") => {
++                    let id = item["call_id"]
++                        .as_str()
++                        .filter(|id| !id.is_empty())
++                        .ok_or("Invalid portable session call identifier")?;
++                    if !self.seen_calls.insert(id.to_owned()) || !pending.insert(id) {
++                        return Err("Duplicate portable session call");
++                    }
++                }
++                Some("function_call_output") => {
++                    let id = item["call_id"]
++                        .as_str()
++                        .ok_or("Invalid portable session tool output")?;
++                    if !pending.remove(id) || !item["output"].is_string() {
++                        return Err("Unexpected portable session tool output");
++                    }
++                }
++                _ => return Err("Unsupported portable session history"),
++            }
++        }
++        if !pending.is_empty() {
++            return Err("Portable session has unresolved calls");
++        }
++        self.revision = snapshot.revision;
++        self.history = snapshot.history;
++        Ok(())
++    }
++
+     fn next_request(&mut self) -> Result<Effect, &'static str> {
+         if self.request_id >= self.max_turns {
+             return Err("Portable turn reached its model request limit");
+@@ -194,7 +264,8 @@ impl PortableTurn {
+             request_id: self.request_id,
+             body: json!({
+                 "model": self.model,
+-                "input": self.history, "tools":tools, "parallel_tool_calls":true,
++                "input": self.instructions.iter().chain(&self.history).collect::<Vec<_>>(),
++                "tools":tools, "parallel_tool_calls":true,
+                 "tool_choice":"auto", "store":false,
+             }),
+         })
+@@ -259,7 +330,19 @@ impl PortableTurn {
+         continuation.require_follow_up(!calls.is_empty());
+         if !continuation.complete(None) {
+             self.phase = Phase::Finished;
+-            return Ok(Effect::Done { text });
++            self.history.extend(output);
++            let revision = self
++                .revision
++                .checked_add(1)
++                .ok_or("Portable session revision exhausted")?;
++            return Ok(Effect::Done {
++                text,
++                snapshot: Snapshot {
++                    version: 1,
++                    revision,
++                    history: std::mem::take(&mut self.history),
++                },
++            });
+         }
+         if self.request_id >= self.max_turns {
+             return Err("Portable turn reached its model request limit");

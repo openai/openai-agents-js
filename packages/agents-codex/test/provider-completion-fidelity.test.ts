@@ -147,7 +147,7 @@ it.each(
     ['enabled', 'adaptive'].map((type) => ({ name, type })),
   ),
 )(
-  'rejects configured Anthropic $type thinking for $name before client entry',
+  'retains configured Anthropic $type thinking and output for $name',
   async ({ name, type }) => {
     let calls = 0;
     const provider = createAnthropic({
@@ -185,14 +185,15 @@ it.each(
         },
       },
     });
-    const failure = await model.complete(request()).then(
-      () => undefined,
-      (error: Error) => error,
-    );
-    expect({ error: failure?.message, calls }).toEqual({
-      error: 'AiSdkModel does not support configured Anthropic thinking',
-      calls: 0,
-    });
+    const response = await model.complete(request());
+    expect(calls).toBe(1);
+    expect(response.output).toMatchObject([
+      {
+        type: 'reasoning',
+        summary: [{ type: 'summary_text', text: 'synthetic reasoning' }],
+      },
+      { type: 'message', content: [{ type: 'output_text', text: 'ok' }] },
+    ]);
   },
 );
 it.each(['v2', 'v3', 'v4'] as const)(

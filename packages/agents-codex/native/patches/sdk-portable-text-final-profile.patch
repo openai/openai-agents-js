@@ -1,0 +1,25 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index d36d2ab0a032c65c4bfbf49625ae984aa110973c..1f7c94b18be60012880b7dba5a9fffe2f1e6c623 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -122,6 +122,7 @@ enum Effect {
+     },
+     Done {
+         text: String,
++        profile: Option<String>,
+         snapshot: Snapshot,
+     },
+ }
+@@ -607,7 +608,11 @@ impl PortableTurn {
+             self.history.extend(output);
+             let mut snapshot = self.snapshot(None)?;
+             snapshot.history = std::mem::take(&mut self.history);
+-            return Ok(Effect::Done { text, snapshot });
++            return Ok(Effect::Done {
++                text,
++                profile: self.profile.clone(),
++                snapshot,
++            });
+         }
+         if self.request_id >= self.max_turns {
+             return Err("Portable turn reached its model request limit");

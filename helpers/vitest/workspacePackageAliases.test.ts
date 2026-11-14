@@ -34,7 +34,7 @@ describe('workspace package aliases', () => {
         sourcePath.endsWith('codex-realtime-control.mjs')
       ) {
         expect(relativePath.split(sep).join('/')).toMatch(
-          /^agents(?:-codex)?\/native\/codex-realtime-control\.(?:wasm|mjs)$/u,
+          /^agents(?:-codex)?\/native\/codex-(?:realtime-control\.(?:wasm|mjs)|turn-control\.wasm)$/u,
         );
       } else {
         expect(pathSegments).toContain('src');
@@ -99,6 +99,9 @@ describe('workspace package aliases', () => {
     for (const name of ['agents', 'agents-codex']) {
       expect(aliases[`@openai/${name}/voice/control.wasm`]).toBe(
         resolve(rootDir, `packages/${name}/native/codex-realtime-control.wasm`),
+      );
+      expect(aliases[`@openai/${name}/worker/control.wasm`]).toBe(
+        resolve(rootDir, `packages/${name}/native/codex-turn-control.wasm`),
       );
     }
   });

@@ -180,6 +180,28 @@ it.each([false, true])(
         requests: 1,
         missingUsageRequests: 0,
       });
+      const history = [];
+      for await (const recorded of session.turns()) history.push(recorded);
+      expect(history[0]?.requestUsageEntriesComplete).toBe(true);
+      expect(history[0]?.requestUsageEntries).toMatchObject([
+        {
+          scope: 'provider_request',
+          requestOrdinal: 1,
+          tokenUsageKnown: true,
+          inputTokens: 3,
+          totalTokens: 5,
+          inputTokensDetails: { cachedTokens: 2, cacheWriteTokens: 1 },
+        },
+      ]);
+      const state = await session.saveState();
+      await using restored = await agent.session({ state });
+      const restoredHistory = [];
+      for await (const recorded of restored.turns())
+        restoredHistory.push(recorded);
+      expect(restoredHistory[0]?.requestUsageEntriesComplete).toBe(true);
+      expect(restoredHistory[0]?.requestUsageEntries).toEqual(
+        history[0]?.requestUsageEntries,
+      );
       expect(effects).toBe(1);
       expect(connections).toBe(1);
       expect(frames.map((frame) => frame.type)).toEqual([
@@ -495,6 +517,15 @@ it.each([
         requests: 2,
         missingUsageRequests: 0,
       });
+      const history = [];
+      for await (const recorded of session.turns()) history.push(recorded);
+      expect(history[0]?.requestUsageEntriesComplete).toBe(true);
+      const entries = history[0]?.requestUsageEntries ?? [];
+      expect(entries).toMatchObject([
+        { scope: 'provider_request', requestOrdinal: 1, totalTokens: 5 },
+        { scope: 'provider_request', requestOrdinal: 2, totalTokens: 11 },
+      ]);
+      expect(entries[0].attemptId).not.toBe(entries[1].attemptId);
     } finally {
       for (const socket of server.clients) socket.terminate();
       await new Promise<void>((resolve) => server.close(() => resolve()));

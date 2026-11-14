@@ -87,6 +87,7 @@ for (const esm of [false, true]) {
     '/artifacts',
     '/ui',
     '/mcp-apps',
+    '/worker',
   ]) {
     const facade = esm
       ? await import(`@openai/agents${suffix}`)
@@ -132,6 +133,7 @@ for (const path of ['bin', 'licenses']) {
 }
 
 const portableWasm = 'codex-realtime-control.wasm';
+const portableTextWasm = 'codex-turn-control.wasm';
 const portableReceiptFile = 'portable-build-receipt.json';
 const portableHermesFiles = [
   'codex-realtime-control.mjs',
@@ -144,7 +146,12 @@ assert(
 );
 assert.deepEqual(
   (await readdir(facadeNative)).sort(),
-  [portableWasm, portableReceiptFile, ...portableHermesFiles].sort(),
+  [
+    portableWasm,
+    portableTextWasm,
+    portableReceiptFile,
+    ...portableHermesFiles,
+  ].sort(),
   'Unexpected facade native inventory',
 );
 const portableReceipts = [];
@@ -175,6 +182,42 @@ for (const name of ['@openai/agents', '@openai/agents-codex']) {
       .digest('hex'),
     portableReceipt.artifact.sha256,
     `Changed portable Wasm: ${name}`,
+  );
+  const textPath = join(installed[name], 'native', portableTextWasm);
+  const textSpecifier = `${name}/worker/control.wasm`;
+  assert((await lstat(textPath)).isFile());
+  assert.equal(require.resolve(textSpecifier), textPath);
+  assert.equal(
+    await realpath(new URL(import.meta.resolve(textSpecifier))),
+    textPath,
+  );
+  assert.equal(portableReceipt.text?.path, portableTextWasm);
+  const textBytes = await readFile(textPath);
+  assert.equal(
+    createHash('sha256').update(textBytes).digest('hex'),
+    portableReceipt.text.sha256,
+  );
+  const control = new globalThis.WebAssembly.Module(textBytes);
+  assert.deepEqual(globalThis.WebAssembly.Module.imports(control), []);
+  const { runWorkerText } = await import(`${name}/worker`);
+  assert.equal(
+    await runWorkerText('test', {
+      control,
+      model: 'fixture',
+      instructions: 'Test the installed control',
+      provider: {
+        complete: () => ({
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'verified' }],
+            },
+          ],
+        }),
+      },
+    }),
+    'verified',
   );
   assert.equal(portableReceipt.hermes?.binaryen, '108.0.0');
   for (const file of portableHermesFiles) {

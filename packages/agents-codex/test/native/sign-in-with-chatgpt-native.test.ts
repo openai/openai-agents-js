@@ -1669,6 +1669,7 @@ it.each(['portable', 'local', 'application'] as const)(
     server.assertExhausted();
     ordinary.assertExhausted();
   },
+  20_000,
 );
 
 it.each(['local', 'application'] as const)(

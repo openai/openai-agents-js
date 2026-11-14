@@ -1,0 +1,128 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index 4d4ca1949b6a56549f0c512389823adcc10432bb..c922a005238571533c86f2bd5d598015cf2eba0e 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -27,6 +27,7 @@ enum Command {
+         request_id: u32,
+         call_id: String,
+         claim: bool,
++        effective_arguments: Value,
+     },
+     Approval {
+         request_id: u32,
+@@ -76,6 +77,8 @@ struct ApprovalCheckpoint {
+     call_id: String,
+     declaration: Declaration,
+     claimed: bool,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    effective_arguments: Option<Value>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     remaining: Vec<(String, Declaration)>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+@@ -119,6 +122,8 @@ enum Effect {
+         request_id: u32,
+         revision: u32,
+         profile: Option<String>,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        effective_arguments: Option<Value>,
+         call: Call,
+     },
+     Checkpoint {
+@@ -141,6 +146,7 @@ enum Phase {
+
+ struct Batch {
+     issued: HashSet<String>,
++    effective_arguments: Option<Value>,
+     remaining: Vec<Call>,
+     results: Vec<(String, Option<String>)>,
+ }
+@@ -149,6 +155,7 @@ impl Batch {
+     fn new(calls: &[Call]) -> Self {
+         Self {
+             issued: HashSet::new(),
++            effective_arguments: None,
+             remaining: Vec::new(),
+             results: calls
+                 .iter()
+@@ -297,6 +304,7 @@ impl PortableTurn {
+                 request_id,
+                 call_id,
+                 claim,
++                effective_arguments,
+             } if request_id == self.request_id => {
+                 let Phase::Approval(batch) = &self.phase else {
+                     return Err("No portable approval is pending");
+@@ -308,6 +316,14 @@ impl PortableTurn {
+                 if call.call_id != call_id {
+                     return Err("Portable approval belongs to a different tool call");
+                 }
++                if !effective_arguments.is_object()
++                    || batch
++                        .effective_arguments
++                        .as_ref()
++                        .is_some_and(|stored| stored != &effective_arguments)
++                {
++                    return Err("Portable approval requires its validated arguments");
++                }
+                 let declaration = self.approval_declaration(&call.name)?.clone();
+                 let remaining = batch
+                     .remaining
+@@ -332,6 +348,7 @@ impl PortableTurn {
+                     call_id,
+                     declaration,
+                     claimed: claim,
++                    effective_arguments: Some(effective_arguments),
+                     remaining,
+                     results,
+                 }))?;
+@@ -356,6 +373,7 @@ impl PortableTurn {
+                     return Err("Portable approval belongs to a different tool call");
+                 }
+                 let call = batch.remaining.remove(0);
++                batch.effective_arguments = None;
+                 if approved {
+                     Ok(Some(self.issue_batch(batch, vec![call])))
+                 } else {
+@@ -447,10 +465,12 @@ impl PortableTurn {
+
+     fn advance_batch(&mut self, batch: Batch) -> Result<Effect, &'static str> {
+         if let Some(call) = batch.remaining.first().cloned() {
++            let effective_arguments = batch.effective_arguments.clone();
+             self.phase = Phase::Approval(batch);
+             return Ok(Effect::Approval {
+                 request_id: self.request_id,
+                 revision: self.revision,
++                effective_arguments,
+                 call,
+                 profile: self.profile.clone(),
+             });
+@@ -470,6 +490,11 @@ impl PortableTurn {
+         if !(1..self.max_turns).contains(&approval.request_id) {
+             return Err("Portable approval exceeds the current request limit");
+         }
++        let effective_arguments = approval
++            .effective_arguments
++            .filter(Value::is_object)
++            .ok_or("Portable approval has no validated arguments")?;
++        let expected_call = approval.call_id.clone();
+         let mut declarations = std::iter::once((approval.call_id, approval.declaration))
+             .chain(approval.remaining)
+             .collect::<BTreeMap<_, _>>();
+@@ -507,9 +532,16 @@ impl PortableTurn {
+                 batch.results.push((id.to_owned(), None));
+             }
+         }
+-        if !declarations.is_empty() || !results.is_empty() || batch.remaining.is_empty() {
++        if !declarations.is_empty()
++            || !results.is_empty()
++            || batch
++                .remaining
++                .first()
++                .is_none_or(|call| call.call_id != expected_call)
++        {
+             return Err("Portable session has no matching approval call");
+         }
++        batch.effective_arguments = Some(effective_arguments);
+         self.request_id = approval.request_id;
+         Ok(batch)
+     }

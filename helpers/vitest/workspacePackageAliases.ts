@@ -83,10 +83,12 @@ function sourcePathForExport(
     ['@openai/agents', '@openai/agents-codex'].includes(
       workspacePackage.name,
     ) &&
-    exportPath === './voice/control.wasm' &&
-    distTarget === './native/codex-realtime-control.wasm'
+    ((exportPath === './voice/control.wasm' &&
+      distTarget === './native/codex-realtime-control.wasm') ||
+      (exportPath === './worker/control.wasm' &&
+        distTarget === './native/codex-turn-control.wasm'))
   ) {
-    return resolve(workspacePackage.root, 'native/codex-realtime-control.wasm');
+    return resolve(workspacePackage.root, distTarget);
   }
   if (
     ['@openai/agents', '@openai/agents-codex'].includes(

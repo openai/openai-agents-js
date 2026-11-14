@@ -228,6 +228,17 @@
         "default": "./dist/voice/portable.js"
       }
     },
+    "./worker": {
+      "import": {
+        "types": "./dist/workerd.d.mts",
+        "default": "./dist/workerd.mjs"
+      },
+      "require": {
+        "types": "./dist/workerd.d.ts",
+        "default": "./dist/workerd.js"
+      }
+    },
+    "./worker/control.wasm": "./native/codex-turn-control.wasm",
     "./voice/control.wasm": "./native/codex-realtime-control.wasm",
     "./memory": {
       "import": {
@@ -309,6 +320,7 @@
   "files": [
     "dist",
     "CLASSIC.md",
+    "native/codex-turn-control.wasm",
     "native/codex-realtime-control.wasm",
     "native/portable-build-receipt.json",
     "native/codex-realtime-control.mjs",
