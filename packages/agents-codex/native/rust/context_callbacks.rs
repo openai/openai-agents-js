@@ -1531,6 +1531,7 @@ impl PythonTools {
         model: &str,
         mut request: Value,
         admission: Arc<dyn codex_extension_api::ModelToolAdmission>,
+        native_reasoning_context: bool,
     ) -> Result<codex_extension_api::ModelResponseStream> {
         use futures_util::StreamExt;
         self.restore_schema_request(&mut request)?;
@@ -1553,6 +1554,7 @@ impl PythonTools {
         let mut message = json!({"type":"_sdk_model_produce", "model":model, "data":request,
             "root_turn_id": admission.root_turn_id(), "capture_raw_usage":capture_raw_usage,
             "run_retry_policy_override":run_retry_policy_override(admission.as_ref())});
+        message["native_reasoning_context"] = json!(native_reasoning_context);
         let retained = admission.provider_input_metadata();
         if !retained.is_empty() {
             #[derive(serde::Serialize)]

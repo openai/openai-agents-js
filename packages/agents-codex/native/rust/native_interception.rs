@@ -9997,10 +9997,11 @@ impl ModelRequestContributor for ModelProducerBoundary {
         Some(Box::new(ModelProducerRequest(
             tools,
             input.model.to_owned(),
+            input.native_reasoning_context,
         )))
     }
 }
-struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>, String);
+struct ModelProducerRequest(Arc<crate::python_tools::PythonTools>, String, bool);
 impl ModelResponseInterceptor for ModelProducerRequest {
     fn produces_response(&self) -> bool {
         true
@@ -10012,10 +10013,11 @@ impl ModelResponseInterceptor for ModelProducerRequest {
     ) -> Option<futures_util::future::BoxFuture<'a, Result<ModelResponseStream, String>>> {
         let tools = self.0.clone();
         let model = self.1.clone();
+        let native_reasoning_context = self.2;
         Some(Box::pin(async move {
             let admission = admission.ok_or("Native model producer requires request admission")?;
             tools
-                .produce_model_response(&model, request, admission)
+                .produce_model_response(&model, request, admission, native_reasoning_context)
                 .await
                 .map_err(|_| "Native model producer failed or was cancelled".to_owned())
         }))

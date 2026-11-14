@@ -1,5 +1,5 @@
 diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
-index 5e74ae36545..162e5ca0828 100644
+index 5e74ae3..162e5ca 100644
 --- a/codex-rs/codex-api/src/common.rs
 +++ b/codex-rs/codex-api/src/common.rs
 @@ -173,6 +173,8 @@ pub struct Reasoning {
@@ -12,7 +12,7 @@ index 5e74ae36545..162e5ca0828 100644
  
  fn serialize_reasoning_effort<S>(
 diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
-index 109f5c15444..88c11507aa6 100644
+index 109f5c1..ece14f9 100644
 --- a/codex-rs/core/src/client.rs
 +++ b/codex-rs/core/src/client.rs
 @@ -1177,6 +1177,7 @@ impl ModelClient {
@@ -81,8 +81,58 @@ index 109f5c15444..88c11507aa6 100644
              .then_some(reasoning),
              store: controls.store.flatten().unwrap_or(false),
              stream: true,
+@@ -2671,6 +2690,10 @@ impl ModelClientSession {
+                 &self.client.state.thread_id.to_string(),
+                 &model_info.slug,
+                 request.model.is_none(),
++                request
++                    .reasoning
++                    .as_ref()
++                    .is_some_and(|reasoning| reasoning.context.is_some()),
+                 codex_extension_api::ModelRequestKind::Generation,
+                 &mut request.client_metadata,
+                 prompt.tool_admission.clone(),
+@@ -3012,6 +3035,10 @@ impl ModelClientSession {
+                 &self.client.state.thread_id.to_string(),
+                 &model_info.slug,
+                 request.model.is_none(),
++                request
++                    .reasoning
++                    .as_ref()
++                    .is_some_and(|reasoning| reasoning.context.is_some()),
+                 if warmup {
+                     codex_extension_api::ModelRequestKind::Warmup
+                 } else {
+diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index 5b99b89..46201e5 100644
+--- a/codex-rs/core/src/model_request.rs
++++ b/codex-rs/core/src/model_request.rs
+@@ -38,6 +38,7 @@ pub(crate) fn prepare(
+         thread_id,
+         model,
+         model_omitted,
++        false,
+         kind,
+         metadata,
+         tool_admission,
+@@ -52,6 +53,7 @@ pub(crate) fn prepare_with_attempts(
+     thread_id: &str,
+     model: &str,
+     model_omitted: bool,
++    native_reasoning_context: bool,
+     kind: ModelRequestKind,
+     metadata: &mut Option<HashMap<String, String>>,
+     tool_admission: Option<Arc<dyn ModelToolAdmission>>,
+@@ -70,6 +72,7 @@ pub(crate) fn prepare_with_attempts(
+                 client_metadata: &mut additions,
+                 model,
+                 model_omitted,
++                native_reasoning_context,
+                 provider_managed_history,
+                 sdk_profile_provider_id,
+             });
 diff --git a/codex-rs/core/src/request_observation_tests.rs b/codex-rs/core/src/request_observation_tests.rs
-index 9665e6413c7..6b47f3b2a3e 100644
+index 9665e64..6b47f3b 100644
 --- a/codex-rs/core/src/request_observation_tests.rs
 +++ b/codex-rs/core/src/request_observation_tests.rs
 @@ -95,6 +95,7 @@ fn effort_bridge_preserves_wire_scalar_kind_and_exact_integer() {
@@ -101,8 +151,21 @@ index 9665e6413c7..6b47f3b2a3e 100644
      };
      assert_eq!(
          resolved_reasoning(Some(&reasoning)),
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index bbfc36b..3d00a70 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -261,6 +261,8 @@ pub struct ModelRequestInput<'a> {
+     pub model: &'a str,
+     /// True only when the final typed provider request omits its model field.
+     pub model_omitted: bool,
++    /// Typed native context, distinct from explicit flattened reasoning options.
++    pub native_reasoning_context: bool,
+     /// Core owns the provider-managed history window and any response anchor.
+     pub provider_managed_history: bool,
+     /// Live native selection, present only for a distinct admitted SDK provider.
 diff --git a/codex-rs/protocol/src/model_request_controls.rs b/codex-rs/protocol/src/model_request_controls.rs
-index 1f581c15dc2..2ee71ef2744 100644
+index 1f581c1..2ee71ef 100644
 --- a/codex-rs/protocol/src/model_request_controls.rs
 +++ b/codex-rs/protocol/src/model_request_controls.rs
 @@ -261,6 +261,15 @@ pub struct ModelRequestControls {
