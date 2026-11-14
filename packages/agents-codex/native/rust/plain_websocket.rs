@@ -209,6 +209,7 @@ impl PlainWebSocket {
             messages,
             driver,
             headers,
+            decoded_integrity: Arc::new(std::sync::OnceLock::new()),
         })
     }
 
