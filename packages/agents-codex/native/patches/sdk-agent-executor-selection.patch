@@ -1,3 +1,162 @@
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index dac05b50d6270b8264033429f13adf2437d85642..9556366f7c21ccabb501c8bce3894c6efe269da1 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -219,6 +219,7 @@ impl LocalAgentControl {
+         state: &ThreadManagerState,
+         source: Option<&SessionSource>,
+         parent_thread_id: Option<ThreadId>,
++        spawning_source: Option<&crate::AgentSpawnSource>,
+     ) -> ExtensionDataInit {
+         let mut declarations = ExtensionDataInit::new();
+         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+@@ -242,6 +243,18 @@ impl LocalAgentControl {
+         {
+             return declarations;
+         }
++        // Only an admitted executor-profile spawn carries the owner's fixed ceiling.
++        // Ordinary children and restored runtimes keep their existing startup policy.
++        if spawning_source.is_some_and(|source| {
++            source
++                .step
++                .extension_data
++                .get::<codex_extension_api::AgentProfileExecutorTools>()
++                .is_some()
++        }) && parent.session.tool_policy.allowed_tools.is_some()
++        {
++            declarations.insert((*parent.session.tool_policy).clone());
++        }
+         let thread_data = parent.thread_extension_data();
+         if let Some(applications) = thread_data.get::<codex_mcp::ApplicationApps>() {
+             declarations.insert((*applications).clone());
+@@ -534,7 +547,7 @@ impl LocalAgentControl {
+             .or_else(|| initial_history.get_resumed_parent_thread_id())
+             .or(stored_parent_thread_id);
+         let thread_extension_init = self
+-            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id)
++            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id, None)
+             .await;
+         let (inherited_environments, inherited_exec_policy, client_mcp_extensions) = if let Some(
+             (parent, parent_environments),
+@@ -767,6 +780,7 @@ impl LocalAgentControl {
+                 &state,
+                 session_source.as_ref(),
+                 options.parent_thread_id,
++                options.spawning_source.as_ref(),
+             )
+             .await;
+         let (residency_slot, residency_reservation) = if spawn_uses_v2_residency {
+@@ -1559,7 +1573,7 @@ impl LocalAgentControl {
+             .await;
+ 
+         let thread_extension_init = self
+-            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id)
++            .inherited_thread_declarations(&state, Some(&session_source), parent_thread_id, None)
+             .await;
+         let resumed_thread = state
+             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
+diff --git a/codex-rs/core/src/agent/control_tests.rs b/codex-rs/core/src/agent/control_tests.rs
+index 59a759216e09a44aef903af1fead0db33a01cfa0..6bf41fc4359812b3793258f69fbc52b2676bba46 100644
+--- a/codex-rs/core/src/agent/control_tests.rs
++++ b/codex-rs/core/src/agent/control_tests.rs
+@@ -6242,3 +6242,97 @@ for line in sys.stdin:
+         harness.control.shutdown_agent_tree(root_id).await.unwrap();
+     }).await.expect("source B child MCP test completes");
+ }
++
++#[tokio::test]
++async fn executor_profile_spawn_keeps_the_immutable_empty_owner_ceiling() {
++    let (home, config) = test_config().await;
++    let harness = child_source_memory_harness(home, config);
++    let mut options = StartThreadOptions::new(harness.config.clone());
++    options
++        .thread_extension_init
++        .insert(codex_extension_api::ToolPolicy {
++            allowed_tools: Some(Vec::new()),
++            ..Default::default()
++        });
++    let parent = harness.manager.start_thread(options).await.unwrap();
++    let parent_id = parent.thread_id;
++    let parent = parent.thread;
++    // Mutable extension data cannot replace the Session's captured ceiling.
++    parent
++        .thread_extension_data()
++        .insert(codex_extension_api::ToolPolicy {
++            allowed_tools: Some(vec![codex_tools::ToolName::plain("unadmitted")]),
++            ..Default::default()
++        });
++    for (marked, source_present) in [(true, true), (false, true), (true, false)] {
++        let turn = parent.session.new_default_turn().await;
++        let step = parent
++            .session
++            .capture_step_context(turn, &CancellationToken::new())
++            .await
++            .unwrap();
++        if marked {
++            step.extension_data
++                .insert(codex_extension_api::AgentProfileExecutorTools {
++                    allowed: std::collections::HashSet::new(),
++                });
++        }
++        let child_id = harness
++            .spawn_anonymous_child(
++                parent_id,
++                SpawnAgentOptions {
++                    parent_thread_id: Some(parent_id),
++                    spawning_source: source_present
++                        .then(|| crate::AgentSpawnSource::from_step_context(Arc::clone(&step))),
++                    ..Default::default()
++                },
++            )
++            .await;
++        let child = harness.manager.get_thread(child_id).await.unwrap();
++        let expected = (marked && source_present).then(Vec::new);
++        assert_eq!(child.session.tool_policy.allowed_tools, expected);
++        if marked && source_present {
++            // SDK startup retains the actual spawning grant in child thread data.
++            child.thread_extension_data().insert(
++                (*step
++                    .extension_data
++                    .get::<codex_extension_api::AgentProfileExecutorTools>()
++                    .unwrap())
++                .clone(),
++            );
++            let child_step = child
++                .session
++                .capture_step_context(
++                    child.session.new_default_turn().await,
++                    &CancellationToken::new(),
++                )
++                .await
++                .unwrap();
++            assert!(
++                child_step
++                    .extension_data
++                    .get::<codex_extension_api::AgentProfileExecutorTools>()
++                    .is_some()
++            );
++            let nested_id = harness
++                .spawn_anonymous_child(
++                    child_id,
++                    SpawnAgentOptions {
++                        parent_thread_id: Some(child_id),
++                        spawning_source: Some(crate::AgentSpawnSource::from_step_context(
++                            child_step,
++                        )),
++                        ..Default::default()
++                    },
++                )
++                .await;
++            let nested = harness.manager.get_thread(nested_id).await.unwrap();
++            assert_eq!(nested.session.tool_policy.allowed_tools, Some(Vec::new()));
++        }
++    }
++    harness
++        .control
++        .shutdown_agent_tree(parent_id)
++        .await
++        .unwrap();
++}
 diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
 index 05687cfaf8773bb533bea5fded4904fbd8ce3f91..ee30338a70766c11a8db66ed0a686403ab6668fa 100644
 --- a/codex-rs/core/src/codex_thread.rs
@@ -345,10 +504,10 @@ index a4fedb2018970930a394b24b33acd6e111ab5d4a..be7033004fcd235ddcb0c3c347d931bd
          let mut desired = self.latest_mcp_desired_state(auth, environments).await;
          let mut config = desired.config.as_ref().clone();
 diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
-index 17a2009c2e05fb4ddf74a0a8066195c6a716f7ca..faa35ac7cb84fd325443c2981f289ab046f6b528 100644
+index 17a2009c2e05fb4ddf74a0a8066195c6a716f7ca..d3afc8e3c08ee661d3e19fbd5716c2fee8f563a3 100644
 --- a/codex-rs/core/src/tools/spec_plan.rs
 +++ b/codex-rs/core/src/tools/spec_plan.rs
-@@ -150,6 +150,18 @@ pub(crate) async fn build_tool_router(
+@@ -150,6 +150,20 @@ pub(crate) async fn build_tool_router(
      let mut resolved_forced_tool = None;
      let mut forced_identity_seen = false;
      let mut resolved_policy = tool_policy.as_ref().clone();
@@ -359,6 +518,8 @@ index 17a2009c2e05fb4ddf74a0a8066195c6a716f7ca..faa35ac7cb84fd325443c2981f289ab0
 +                .get::<codex_extension_api::AgentProfileExecutorTools>()
 +        })
 +    {
++        // Freeze the same inherited grant onto the issuing step for native descendants.
++        step_store.insert((*executor).clone());
 +        // Named Agent environment grants can only narrow the host's thread ceiling.
 +        // SDKs declaring a profile graph always provide that explicit ceiling.
 +        let allowed = resolved_policy.allowed_tools.get_or_insert_with(Vec::new);
