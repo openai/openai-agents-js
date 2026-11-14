@@ -10,6 +10,7 @@ it.each([
   'start-failure',
   'end-failure',
   'start-cancel',
+  'pending-restore',
 ] as const)(
   'observes exact raw MCP at its admitted durable boundary (%s)',
   async (mode) => {
@@ -148,6 +149,42 @@ it.each([
         pending.requests[0]?.type !== 'approval_request'
       )
         throw Error('Expected actual native MCP approval');
+      if (mode === 'pending-restore') {
+        expect(seen).toEqual([]);
+        expect(effects).toEqual([]);
+        const saved = JSON.parse(JSON.stringify(await session.saveState()));
+        await session.close();
+        await expect(turn.wait()).rejects.toThrow();
+        await using restored = await agent.session({
+          context: application,
+          state: saved,
+        });
+        const recovered = restored.restoredTurn;
+        if (!recovered) throw new Error('Missing restored native MCP root');
+        const reopened = await recovered.wait({ until: 'interaction' });
+        if (
+          !('requests' in reopened) ||
+          reopened.requests[0]?.type !== 'approval_request'
+        )
+          throw new Error('Missing restored native MCP approval');
+        expect(seen).toEqual([]);
+        expect(effects).toEqual([]);
+        await restored.respond(reopened.requests[0].reply('allow_once'));
+        expect((await recovered.wait()).finalOutput).toBe('done');
+        expect(seen).toEqual(['start', 'end']);
+        expect(runSeen).toEqual([]);
+        expect(effects).toHaveLength(1);
+        expect(server.requests).toHaveLength(2);
+        expect(peerFailures).toEqual([]);
+        expect(
+          (await restored.historySnapshot()).items.filter(
+            (item) =>
+              item.type === 'function_call_output' &&
+              item.call_id === 'raw-native-call',
+          ),
+        ).toHaveLength(1);
+        return;
+      }
       const beforeApproval = [...seen];
       expect(effects).toEqual([]);
       await session.respond(
@@ -207,7 +244,7 @@ it.each([
       if (mode !== 'start-cancel')
         expect(outputs).toHaveLength(mode === 'start-failure' ? 0 : 1);
       if (mode === 'end-failure') {
-        const saved = await session.saveState();
+        const saved = JSON.parse(JSON.stringify(await session.saveState()));
         await session.close();
         await using restored = await agent.session({
           context: application,
