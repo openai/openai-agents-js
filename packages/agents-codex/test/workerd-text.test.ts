@@ -323,3 +323,42 @@ portableTest(
     expect(session.store.release).toHaveBeenCalledWith('corrupt', 'fence');
   },
 );
+
+portableTest(
+  'rejects a streamed tool call that changes in the completed output',
+  async () => {
+    const tool = lookup();
+    const provider: NativeModel = {
+      complete() {
+        throw new Error('Expected the stream adapter');
+      },
+      async *stream() {
+        yield { type: 'response.created', response: { id: 'response' } };
+        yield {
+          type: 'response.output_item.done',
+          output_index: 0,
+          item: call,
+        };
+        yield {
+          type: 'response.completed',
+          response: {
+            id: 'response',
+            status: 'completed',
+            output: [{ ...call, arguments: '{"value":"injected"}' }],
+          },
+        };
+      },
+    };
+    await expect(
+      runWorkerText('Find it.', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool.declaration],
+        observe() {},
+      }),
+    ).rejects.toThrow('changed completed output');
+    expect(tool.execute).not.toHaveBeenCalled();
+  },
+);

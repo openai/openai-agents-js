@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { encode, type JsonObject, type JsonValue } from './binding';
 import type { SessionStore } from './custom-thread-store';
 import {
@@ -106,6 +107,8 @@ async function completeModel(
   if (!observe || !provider.stream) return provider.complete(request);
   const stream = await provider.stream(request);
   let completion: ModelResponse | undefined;
+  let responseId: string | undefined;
+  const outputItems = new Map<number, JsonValue>();
   let bytes = 0;
   const encoder = new TextEncoder();
   await pumpModelStream(stream, {
@@ -125,20 +128,56 @@ async function completeModel(
         event.type === 'error'
       )
         throw new Error('Portable model stream failed');
-      if (event.type === 'response.completed') {
+      if (event.type === 'response.created') {
+        const response = event.response;
+        if (
+          responseId !== undefined ||
+          !response ||
+          typeof response !== 'object' ||
+          Array.isArray(response) ||
+          typeof response.id !== 'string' ||
+          !response.id.trim()
+        )
+          throw new Error('Portable model stream emitted an invalid creation');
+        responseId = response.id;
+      } else if (event.type === 'response.output_item.done') {
+        const index = event.output_index;
+        if (
+          typeof index !== 'number' ||
+          !Number.isSafeInteger(index) ||
+          index < 0 ||
+          outputItems.has(index) ||
+          !event.item ||
+          typeof event.item !== 'object' ||
+          Array.isArray(event.item)
+        )
+          throw new Error(
+            'Portable model stream emitted an invalid output item',
+          );
+        outputItems.set(index, event.item);
+      } else if (event.type === 'response.completed') {
         const response = event.response;
         if (
           !response ||
           typeof response !== 'object' ||
           Array.isArray(response) ||
           typeof response.id !== 'string' ||
-          !response.id ||
-          (response.status != null && response.status !== 'completed') ||
+          !response.id.trim() ||
+          (responseId !== undefined && responseId !== response.id) ||
+          response.status !== 'completed' ||
           !Array.isArray(response.output)
         )
           throw new Error(
             'Portable model stream emitted an invalid completion',
           );
+        if (
+          outputItems.size &&
+          (outputItems.size !== response.output.length ||
+            response.output.some(
+              (item, index) => !isDeepStrictEqual(item, outputItems.get(index)),
+            ))
+        )
+          throw new Error('Portable model stream changed completed output');
         completion = projectResponsesResponse(response);
       }
       await observe(event);
