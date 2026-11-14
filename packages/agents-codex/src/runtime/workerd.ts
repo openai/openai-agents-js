@@ -123,9 +123,24 @@ export interface WorkerGuardrail<Context> {
   }) => GuardrailResult | Promise<GuardrailResult>;
 }
 
+export type WorkerToolGuardrailResult =
+  | { readonly action: 'allow' }
+  | { readonly action: 'deny'; readonly reason: string }
+  | { readonly action: 'stop'; readonly outputInfo?: unknown };
+
+export interface WorkerToolGuardrail<Context> {
+  readonly name: string;
+  readonly before?: (
+    call: WorkerToolApproval<Context>,
+  ) => WorkerToolGuardrailResult | Promise<WorkerToolGuardrailResult>;
+  readonly after?: (
+    call: WorkerToolApproval<Context> & { readonly output: string },
+  ) => WorkerToolGuardrailResult | Promise<WorkerToolGuardrailResult>;
+}
+
 export class WorkerGuardrailTripwire extends Error {
   constructor(
-    readonly kind: 'input' | 'output',
+    readonly kind: 'input' | 'output' | 'tool_input' | 'tool_output',
     readonly guardrail: string,
     readonly result: GuardrailResult,
   ) {
@@ -166,6 +181,9 @@ export interface WorkerAgentProfile<Context> {
   >;
   inputGuardrails?: readonly WorkerGuardrail<Context>[];
   outputGuardrails?: readonly WorkerGuardrail<Context>[];
+  toolGuardrails?: Readonly<
+    Record<string, readonly WorkerToolGuardrail<Context>[]>
+  >;
   /** Current function names and their captured destination profile IDs. */
   handoffs?: Readonly<Record<string, string>>;
 }
@@ -193,6 +211,9 @@ export interface WorkerTextOptions<Context> {
   inputGuardrails?: readonly WorkerGuardrail<Context>[];
   /** Checks on the final text before returning it or saving a completed turn. */
   outputGuardrails?: readonly WorkerGuardrail<Context>[];
+  toolGuardrails?: Readonly<
+    Record<string, readonly WorkerToolGuardrail<Context>[]>
+  >;
   maxTurns?: number;
   /** The store must grant an exclusive writer lease and atomically commit the revision. */
   session?: { id: string; store: SessionStore };
@@ -296,16 +317,36 @@ async function completeModel(
   return completion;
 }
 
-function wireToolOutput(value: unknown): JsonValue {
+function wireToolOutput(value: unknown): string {
   const output = outputOf(value);
   if (output.contentItems.every((part) => part.type === 'inputText'))
     return output.contentItems.map((part) => part.text).join('\n');
   throw new TypeError('Portable text tools require text output');
 }
 
+function workerCall<Context>(
+  call: Extract<Effect, { type: 'approval' }>['call'],
+  profile: string | null,
+  context: Context | undefined,
+  signal: AbortSignal,
+): WorkerToolApproval<Context> {
+  const args: unknown = JSON.parse(call.arguments);
+  if (!args || typeof args !== 'object' || Array.isArray(args))
+    throw new TypeError('Worker tool policies require JSON object arguments');
+  return {
+    profile,
+    callId: call.call_id,
+    name: call.name,
+    arguments: args as JsonObject,
+    context,
+    signal,
+  };
+}
+
 async function runTools<Context>(
   effect: Extract<Effect, { type: 'tools' }>,
   tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
+  policies: ReadonlyMap<string, readonly WorkerToolGuardrail<Context>[]>,
   context: Context | undefined,
   signal: AbortSignal,
 ) {
@@ -320,13 +361,49 @@ async function runTools<Context>(
           const tool = tools.get(call.name);
           if (!tool)
             throw new Error('Native text issued an unavailable function');
-          siblings.signal.throwIfAborted();
-          const result = await tool.invoke(call.arguments, {
-            context,
-            signal: siblings.signal,
-          });
-          siblings.signal.throwIfAborted();
-          return wireToolOutput(result);
+          const signal = siblings.signal;
+          signal.throwIfAborted();
+          const guards = policies.get(call.name) ?? [];
+          const evaluate = (
+            kind: 'tool_input' | 'tool_output',
+            name: string,
+            verdict: WorkerToolGuardrailResult,
+          ) => {
+            signal.throwIfAborted();
+            if (verdict?.action === 'allow') return undefined;
+            if (
+              verdict?.action === 'deny' &&
+              typeof verdict.reason === 'string'
+            )
+              return verdict.reason;
+            if (verdict?.action !== 'stop')
+              throw new TypeError('Invalid Worker tool guardrail verdict');
+            throw new WorkerGuardrailTripwire(kind, name, {
+              tripwireTriggered: true,
+              outputInfo: verdict.outputInfo,
+            });
+          };
+          for (const guard of guards) {
+            if (!guard.before) continue;
+            const verdict = await guard.before(
+              workerCall(call, effect.profile, context, signal),
+            );
+            const denial = evaluate('tool_input', guard.name, verdict);
+            if (denial !== undefined) return denial;
+          }
+          const result = await tool.invoke(call.arguments, { context, signal });
+          signal.throwIfAborted();
+          const output = wireToolOutput(result);
+          for (const guard of guards) {
+            if (!guard.after) continue;
+            const verdict = await guard.after({
+              ...workerCall(call, effect.profile, context, signal),
+              output,
+            });
+            const denial = evaluate('tool_output', guard.name, verdict);
+            if (denial !== undefined) return denial;
+          }
+          return output;
         } catch (error) {
           siblings.abort(error);
           throw error;
@@ -379,6 +456,39 @@ function captureApprovals<Context>(
       );
   }
   return approvals;
+}
+
+function captureWorkerToolGuardrails<Context>(
+  tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
+  policies: WorkerTextOptions<Context>['toolGuardrails'],
+) {
+  return new Map(
+    Object.entries(policies ?? {}).map(([tool, checks]) => {
+      if (!tools.has(tool) || !Array.isArray(checks))
+        throw new TypeError('Worker tool guardrails require a current tool');
+      return [
+        tool,
+        checks.map((check: WorkerToolGuardrail<Context>) => {
+          const { name, before, after } = check;
+          if (
+            typeof name !== 'string' ||
+            !name.trim() ||
+            (!before && !after) ||
+            (before !== undefined && typeof before !== 'function') ||
+            (after !== undefined && typeof after !== 'function')
+          )
+            throw new TypeError(
+              'Worker tool guardrail requires a name and a callback',
+            );
+          return {
+            name,
+            before: before?.bind(check),
+            after: after?.bind(check),
+          };
+        }),
+      ] as const;
+    }),
+  );
 }
 
 function captureWorkerGuardrails<Context>(
@@ -446,6 +556,7 @@ async function runWorkerTextTurn<Context>(
     approve,
     inputGuardrails,
     outputGuardrails,
+    toolGuardrails,
   }: WorkerTextOptions<Context>,
   allowPause: boolean,
 ): Promise<WorkerTextResult> {
@@ -473,6 +584,7 @@ async function runWorkerTextTurn<Context>(
   const approvals = captureApprovals(toolsByName, approve);
   const inputChecks = captureWorkerGuardrails(inputGuardrails);
   const outputChecks = captureWorkerGuardrails(outputGuardrails);
+  const toolChecks = captureWorkerToolGuardrails(toolsByName, toolGuardrails);
   const profiles = new Map(
     Object.entries(agents?.profiles ?? {}).map(([id, profile]) => {
       const tools = captureTools(profile.tools ?? []);
@@ -486,6 +598,10 @@ async function runWorkerTextTurn<Context>(
           approvals: captureApprovals(tools, profile.approve),
           inputChecks: captureWorkerGuardrails(profile.inputGuardrails),
           outputChecks: captureWorkerGuardrails(profile.outputGuardrails),
+          toolChecks: captureWorkerToolGuardrails(
+            tools,
+            profile.toolGuardrails,
+          ),
           handoffs: Object.fromEntries(Object.entries(profile.handoffs ?? {})),
         },
       ];
@@ -620,11 +736,8 @@ async function runWorkerTextTurn<Context>(
           );
           if (!policy)
             throw new Error('Native text issued an unavailable approval');
-          const args: unknown = JSON.parse(call.arguments);
-          if (!args || typeof args !== 'object' || Array.isArray(args))
-            throw new TypeError(
-              'Worker approval requires JSON object arguments',
-            );
+          const request = workerCall(call, profile, context, signal);
+          const args = request.arguments;
           let approved: boolean | null;
           if (pendingDecision) {
             if (
@@ -638,14 +751,7 @@ async function runWorkerTextTurn<Context>(
             approved = pendingDecision.approved;
             pendingDecision = undefined;
           } else {
-            approved = await policy({
-              profile,
-              callId: call.call_id,
-              name: call.name,
-              arguments: args as JsonObject,
-              context,
-              signal,
-            });
+            approved = await policy(request);
           }
           signal.throwIfAborted();
           if (approved === null) {
@@ -686,6 +792,7 @@ async function runWorkerTextTurn<Context>(
           const outputs = await runTools(
             effect,
             currentProfile(effect.profile)?.tools ?? toolsByName,
+            currentProfile(effect.profile)?.toolChecks ?? toolChecks,
             context,
             signal,
           );

@@ -821,3 +821,87 @@ portableTest.each(['input', 'output', 'none'] as const)(
     expect(store.release).toHaveBeenCalledOnce();
   },
 );
+
+portableTest.each([
+  'input denial',
+  'output denial',
+  'input tripwire',
+  'output tripwire',
+  'allow',
+] as const)(
+  'guards the current Worker tool before and after execution (%s)',
+  async (mode) => {
+    const tool = lookup();
+    const requests: JsonObject[] = [];
+    const before = vi.fn(() => {
+      if (mode === 'input denial')
+        return { action: 'deny', reason: 'safe refusal' } as const;
+      if (mode === 'input tripwire')
+        return { action: 'stop', outputInfo: 'input receipt' } as const;
+      return { action: 'allow' } as const;
+    });
+    const after = vi.fn(({ output }: { output: string }) => {
+      expect(output).toBe('observed:local');
+      if (mode === 'output denial')
+        return { action: 'deny', reason: 'safe replacement' } as const;
+      if (mode === 'output tripwire')
+        return { action: 'stop', outputInfo: 'output receipt' } as const;
+      return { action: 'allow' } as const;
+    });
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output:
+            requests.length === 1
+              ? [call]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    const run = runWorkerText('Check the tool.', {
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Use lookup.',
+      tools: [tool.declaration],
+      toolGuardrails: { lookup: [{ name: 'check', before, after }] },
+    });
+    if (mode.endsWith('tripwire')) {
+      await expect(run).rejects.toMatchObject({
+        kind: mode.startsWith('input') ? 'tool_input' : 'tool_output',
+        guardrail: 'check',
+      });
+      expect(requests).toHaveLength(1);
+    } else {
+      await expect(run).resolves.toBe('done');
+      expect(requests).toHaveLength(2);
+      const outputs = (requests[1].input as JsonObject[]).filter(
+        (item) => item.type === 'function_call_output',
+      );
+      expect(outputs).toEqual([
+        {
+          type: 'function_call_output',
+          call_id: 'test-call',
+          output:
+            mode === 'input denial'
+              ? 'safe refusal'
+              : mode === 'output denial'
+                ? 'safe replacement'
+                : 'observed:local',
+        },
+      ]);
+    }
+    expect(before).toHaveBeenCalledTimes(1);
+    expect(tool.execute).toHaveBeenCalledTimes(
+      mode.startsWith('input') ? 0 : 1,
+    );
+    expect(after).toHaveBeenCalledTimes(mode.startsWith('input') ? 0 : 1);
+  },
+);
