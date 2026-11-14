@@ -3642,6 +3642,7 @@ export function openOwnedHistorySession<Context, Output>(
       decisions: captureDecisionProvider(agent.decisions),
       beforeComplete: agent.beforeComplete,
       onLifecycle: agent.onLifecycle,
+      onToolLifecycle: agent.onToolLifecycle,
       toolBatchCompletion: agent.toolBatchCompletion,
     },
   } as OwnedSessionOptions<Context>;

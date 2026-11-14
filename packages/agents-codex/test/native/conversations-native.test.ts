@@ -83,14 +83,19 @@ it('retains native tool call and receipt identities across a later run', async (
     supportsWebsockets: false,
   });
   let effects = 0;
+  const lifecycle: string[] = [];
   const agent = new Agent({
     provider,
+    onToolLifecycle: (event) => {
+      lifecycle.push(event.kind);
+    },
     instructions: 'Use lookup once, then answer.',
     tools: [
       tool({
         name: 'lookup',
         parameters: z.object({}),
         execute: () => {
+          expect(lifecycle).toEqual(['start']);
           effects++;
           return new ToolOutput(
             [{ type: 'inputText', text: 'exact native receipt' }],
@@ -108,6 +113,7 @@ it('retains native tool call and receipt identities across a later run', async (
     'later answer',
   );
   expect(effects).toBe(1);
+  expect(lifecycle).toEqual(['start', 'end']);
   expect(
     state.items.filter((item) => item.type === 'function_call'),
   ).toMatchObject([
