@@ -161,6 +161,7 @@ it.runIf(
           manifest: new Manifest({
             root: '/workspace',
             entries: {
+              '': { type: 'dir', permissions: 0o755 },
               'public.txt': {
                 type: 'file',
                 content: 'sdk-' + role + '-public',
