@@ -15,7 +15,7 @@ import console from 'node:console';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  prepareSources,
+  auditSources,
   verifyVendoredHyper,
 } from '../packages/agents-codex/scripts/native-source.mjs';
 
@@ -57,7 +57,11 @@ const sources = [
   },
 ];
 verifyVendoredHyper(native);
-const sourceIdentity = prepareSources(native, sources, true);
+const { identities: sourceIdentity, verify: verifySources } = auditSources(
+  native,
+  sources,
+  true,
+);
 const crate = join(
   native,
   '.upstream/reviewed-codex/codex-rs/realtime-control',
@@ -202,11 +206,8 @@ for (const [index, directory] of products.entries()) {
   }
   hermesProducts[owner ? '@openai/agents-codex' : '@openai/agents'] = hashes;
 }
-const afterSources = prepareSources(native, sources, false);
-if (
-  JSON.stringify(afterSources) !== JSON.stringify(sourceIdentity) ||
-  JSON.stringify(snapshot()) !== JSON.stringify(before)
-)
+verifySources();
+if (JSON.stringify(snapshot()) !== JSON.stringify(before))
   throw new Error('Portable control source changed during build.');
 const artifact = sha256(bytes);
 const receipt = {
