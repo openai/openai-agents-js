@@ -1359,7 +1359,11 @@
     {
       "path": "sdk-managed-mcp-schema-budget.patch",
       "sha256": "49db34ae509b0a24d157a88b9882c5e227a497529d1af71573d4e11602cd29bf"
+    },
+    {
+      "path": "sdk-websocket-decoder-retirement.patch",
+      "sha256": "1b872b4d27849340d29fbc213610f07290c4496cff04945d7ae3fa7fd1113e10"
     }
   ],
-  "result_tree": "b0c7959bdf8cacf1a070ee2015eda99767fe06fb"
+  "result_tree": "5bf6cd941ef53c8ab7015b7f39257c6f265ae49d"
 }

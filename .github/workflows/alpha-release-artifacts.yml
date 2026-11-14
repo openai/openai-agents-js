@@ -200,7 +200,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '24'
-          cache: pnpm
+          cache: ${{ matrix.platform != 'darwin-arm64' && 'pnpm' || '' }}
       - name: Build the current SDK
         id: build_sdk
         run: |
