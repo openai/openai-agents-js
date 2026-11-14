@@ -10,6 +10,8 @@ import {
   parseSessionState,
   tool,
   type ModelRequest,
+  type ModelRetryAdvice,
+  type ModelRetryAdviceRequest,
   type ModelResponse,
   type RetryContext,
 } from '../../src';
@@ -189,9 +191,14 @@ it('uses Core retries with captured callback identity, new logical advice signal
     return { suggested: true, replaySafety: 'safe' as const };
   });
   const laterPolicy = vi.fn(() => ({ retry: false }));
-  const backend = {
+  const backend: {
+    getRetryAdvice: (
+      request: ModelRetryAdviceRequest,
+    ) => ModelRetryAdvice | undefined;
+    complete: (request: ModelRequest) => ModelResponse;
+  } = {
     getRetryAdvice: advice,
-    complete(request: ModelRequest): ModelResponse {
+    complete(request) {
       requests.push(request);
       order.push(`request${requests.length}`);
       if (requests.length === 1) {

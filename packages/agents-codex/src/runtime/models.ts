@@ -1822,9 +1822,13 @@ export class AiSdkModel implements NativeModel {
     error,
   }: ModelRetryAdviceRequest): ModelRetryAdvice | undefined {
     const retryable = modelErrorField(error, 'isRetryable');
-    return typeof retryable === 'boolean'
-      ? { suggested: retryable }
-      : undefined;
+    if (typeof retryable !== 'boolean') return undefined;
+    const reason =
+      error instanceof Error ? modelErrorField(error, 'message') : undefined;
+    return {
+      suggested: retryable,
+      ...(typeof reason === 'string' ? { reason } : {}),
+    };
   }
   #parameters(request: ModelRequest) {
     const body = request.body;

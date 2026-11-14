@@ -113,14 +113,11 @@ it.each([false, true])(
 );
 
 it.each([
-  { modelId: 'deepseek-reasoner', providerOptions: {} },
-  {
-    modelId: 'deepseek-chat',
-    providerOptions: { deepseek: { thinking: { type: 'enabled' } } },
-  },
+  { modelId: 'deepseek-reasoner', thinking: false },
+  { modelId: 'deepseek-chat', thinking: true },
 ])(
   'keeps $modelId reasoning and its tool call on the same assistant message',
-  async ({ modelId, providerOptions }) => {
+  async ({ modelId, thinking }) => {
     let requests = 0;
     const backend = new AiSdkModel(
       {
@@ -163,7 +160,7 @@ it.each([
           };
         },
       },
-      providerOptions,
+      thinking ? { deepseek: { thinking: { type: 'enabled' } } } : {},
     );
     await using provider = new NativeProvider({
       apiKey: 'synthetic',
