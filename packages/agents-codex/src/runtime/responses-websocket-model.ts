@@ -91,9 +91,13 @@ export function retainOwnedResponsesSocketOpening(
 ): void {
   if (ownedSocketOpenings.has(source)) ownedSocketOpenings.add(target);
 }
-const socketReplacementChecks = new WeakMap<
+type HostedSocketControls = {
+  requiresReplacement(frame: JsonObject, scopeChanged: boolean): boolean;
+  takeRecoveredFrames(): SocketEnvelope[];
+};
+const hostedSocketControls = new WeakMap<
   ResponsesSocket,
-  (frame: JsonObject, scopeChanged: boolean) => boolean
+  HostedSocketControls
 >();
 
 /** @internal Scope one hosted run to the same selected headers and query. */
@@ -108,12 +112,12 @@ export function responsesSocketScope(options: ResponsesSocketOptions): string {
     .digest('hex');
 }
 
-/** @internal A hosted response can require a fresh socket for a new profile. */
-export function bindResponsesSocketReplacementCheck(
+/** @internal Register the private hosted transport controls for a physical socket. */
+export function bindHostedResponsesSocket(
   socket: ResponsesSocket,
-  check: (frame: JsonObject, scopeChanged: boolean) => boolean,
+  controls: HostedSocketControls,
 ): ResponsesSocket {
-  socketReplacementChecks.set(socket, check);
+  hostedSocketControls.set(socket, controls);
   return socket;
 }
 
@@ -238,10 +242,9 @@ export class ResponsesWebSocketModel implements NativeModel {
       const readyState = owner.connection?.socket.socket.readyState;
       if (
         owner.connection &&
-        (socketReplacementChecks.get(owner.connection.socket)?.(
-          frame,
-          owner.connection.key !== key,
-        ) ||
+        (hostedSocketControls
+          .get(owner.connection.socket)
+          ?.requiresReplacement(frame, owner.connection.key !== key) ||
           owner.connection.key !== key ||
           (readyState !== 0 && readyState !== 1))
       ) {
@@ -284,7 +287,7 @@ export class ResponsesWebSocketModel implements NativeModel {
           : Date.now() + options.timeout;
       // Hosted wrappers account for dispatch in send, so await opening first.
       if (
-        socketReplacementChecks.has(connection.socket) &&
+        hostedSocketControls.has(connection.socket) &&
         connection.socket.socket.readyState === 0
       ) {
         opening = ownedSocketOpenings.has(connection.socket);
@@ -313,9 +316,18 @@ export class ResponsesWebSocketModel implements NativeModel {
       }
       sent = true;
       connection.socket.send(frame as Parameters<ResponsesSocket['send']>[0]);
+      const recovered = hostedSocketControls
+        .get(connection.socket)
+        ?.takeRecoveredFrames();
+      const recovery = recovered?.values();
       let responseId: unknown;
       for (;;) {
-        const next = await readNext(connection, request.signal, deadline);
+        request.signal.throwIfAborted();
+        const replay = recovery?.next();
+        const next =
+          replay && !replay.done
+            ? replay
+            : await readNext(connection, request.signal, deadline);
         if (next.done)
           throw new Error(
             'Responses WebSocket closed before a terminal response',

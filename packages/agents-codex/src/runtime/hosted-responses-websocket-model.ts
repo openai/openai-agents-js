@@ -20,7 +20,7 @@ import { markResponsesWebSocketStream, projectResponsesUsage } from './models';
 import type { ModelRetryAdviceRequest } from './model-retry';
 import {
   ResponsesWebSocketModel,
-  bindResponsesSocketReplacementCheck,
+  bindHostedResponsesSocket,
   markResponsesSocketFrame,
   responsesSocketFrameKind,
   responsesSocketScope,
@@ -582,9 +582,6 @@ function hostedSocket(
     [Symbol.asyncIterator]() {
       return (producer ??= (async function* () {
         try {
-          const recovered = run.recovered;
-          run.recovered = undefined;
-          if (recovered) yield* recovered.frames;
           for (;;) {
             const next = await iterator.next();
             if (next.done) return;
@@ -876,9 +873,13 @@ function hostedSocket(
     },
   };
   retainOwnedResponsesSocketOpening(socket, transport);
-  return bindResponsesSocketReplacementCheck(
-    transport,
-    (frame, scopeChanged) => {
+  return bindHostedResponsesSocket(transport, {
+    takeRecoveredFrames() {
+      const recovered = run.recovered;
+      run.recovered = undefined;
+      return recovered?.frames ?? [];
+    },
+    requiresReplacement(frame, scopeChanged) {
       const active = run.active;
       if (active && scopeChanged) {
         run.replacementFailure = new TypeError(
@@ -905,5 +906,5 @@ function hostedSocket(
       run.active = undefined;
       return true;
     },
-  );
+  });
 }
