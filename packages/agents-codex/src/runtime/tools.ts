@@ -14,6 +14,7 @@ import {
 } from './decisions';
 import { captureToolPart, mediaRecord } from './media';
 import type { FileReference, ImageDetail } from './media';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   isBackgroundResult,
@@ -562,6 +563,30 @@ export interface StandaloneFunctionTool<
     options?: { context?: Context; signal?: AbortSignal },
   ): Promise<Result | ToolOutput>;
 }
+type PreparedStandaloneTool = {
+  readonly arguments: JsonObject;
+  execute(): Promise<unknown>;
+};
+type PrepareStandaloneTool = (
+  raw: JsonObject,
+  context: unknown,
+  signal: AbortSignal,
+) => PreparedStandaloneTool;
+const standaloneApprovals = new WeakMap<object, PrepareStandaloneTool>();
+
+/** @internal Validate an approval before its caller can expose or execute it. */
+export function prepareStandaloneApproval(
+  tool: StandaloneFunctionTool<any, unknown>,
+  original: JsonObject,
+  context: unknown,
+  signal: AbortSignal,
+): PreparedStandaloneTool {
+  const prepare = standaloneApprovals.get(tool);
+  if (!prepare)
+    throw new TypeError('Worker approval requires a standalone SDK tool');
+  return prepare(original, context, signal);
+}
+
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
   if (hostedMcpBinding(tool)) return 'hosted_mcp';
@@ -1542,6 +1567,41 @@ function createFunctionTool<
         onBodyEntry,
       ) as Promise<ToolResponse>,
   });
+  if (standalone) {
+    standaloneApprovals.set(declaration, (original, appContext, signal) => {
+      const admit = () => signal.throwIfAborted();
+      admit();
+      const parsed = copyApprovalInput(
+        parseInput(structuredClone(original)),
+        true,
+      );
+      const effective: unknown = JSON.parse(encode(parsed));
+      if (
+        !effective ||
+        typeof effective !== 'object' ||
+        Array.isArray(effective) ||
+        !isDeepStrictEqual(parsed, effective)
+      )
+        throw new TypeError(
+          'Worker approval requires JSON object arguments after validation',
+        );
+      const callbackContext: ToolInvocationInputContext<Context> =
+        Object.freeze({
+          context: appContext as Context,
+          signal,
+        });
+      return {
+        arguments: structuredClone(effective) as JsonObject,
+        execute: () =>
+          invokeBound(original, callbackContext, () => {}, admit, undefined, {
+            get value() {
+              return structuredClone(effective);
+            },
+            matches: (candidate) => isDeepStrictEqual(candidate, effective),
+          }),
+      };
+    });
+  }
   if (!needsApproval) return declaration;
   const approval: ManagedApproval<Context> = {
     ...(errorFunction !== null || inputErrorFunction

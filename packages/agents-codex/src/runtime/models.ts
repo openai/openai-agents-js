@@ -1673,15 +1673,19 @@ function redactAiSdkThoughtSignatures(event: JsonObject): void {
   const metadata = event.providerMetadata;
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
     return;
+  delete metadata.thoughtSignature;
+  delete metadata.thought_signature;
   for (const provider of googleThoughtSignatureOptions) {
     const value = metadata?.[provider];
     if (
       value &&
       typeof value === 'object' &&
       !Array.isArray(value) &&
-      Object.hasOwn(value, 'thoughtSignature')
+      (Object.hasOwn(value, 'thoughtSignature') ||
+        Object.hasOwn(value, 'thought_signature'))
     ) {
       delete value.thoughtSignature;
+      delete value.thought_signature;
       if (Object.keys(value).length === 0) delete metadata[provider];
     }
   }
@@ -1707,10 +1711,16 @@ function redactRawAiSdkThoughtSignatures(value: unknown): void {
 }
 
 function hasAiSdkThoughtSignature(metadata: JsonObject | undefined): boolean {
-  return googleThoughtSignatureOptions.some(
-    (provider) =>
-      typeof (metadata?.[provider] as JsonObject | undefined)
-        ?.thoughtSignature === 'string',
+  return (
+    typeof metadata?.thoughtSignature === 'string' ||
+    typeof metadata?.thought_signature === 'string' ||
+    googleThoughtSignatureOptions.some((provider) => {
+      const value = metadata?.[provider] as JsonObject | undefined;
+      return (
+        typeof value?.thoughtSignature === 'string' ||
+        typeof value?.thought_signature === 'string'
+      );
+    })
   );
 }
 
@@ -1995,6 +2005,38 @@ export class AiSdkModel implements NativeModel {
         this.model.provider,
         this.model.modelId,
       );
+      if (
+        providerMetadata &&
+        `${this.model.provider}:${this.model.modelId}`
+          .toLowerCase()
+          .includes('gemini')
+      ) {
+        const scoped = providerMetadata[modelTextPartMetadataKey];
+        const entries = [
+          providerMetadata,
+          ...(Array.isArray(scoped) ? scoped : []),
+        ];
+        for (const entry of entries) {
+          if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+            continue;
+          const existing = entry.google;
+          const google: JsonObject =
+            existing && typeof existing === 'object' && !Array.isArray(existing)
+              ? existing
+              : {};
+          const signature =
+            google.thoughtSignature ??
+            google.thought_signature ??
+            entry.thoughtSignature ??
+            entry.thought_signature;
+          if (typeof signature === 'string' && signature) {
+            google.thoughtSignature = signature;
+            entry.google = google;
+          }
+          delete entry.thoughtSignature;
+          delete entry.thought_signature;
+        }
+      }
       if (item.type === 'additional_tools') {
         declarations.push(...(item.tools as JsonObject[]));
         continue;

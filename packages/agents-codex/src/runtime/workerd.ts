@@ -15,6 +15,7 @@ import {
   isDirectFunctionTool,
   managedApproval,
   outputOf,
+  prepareStandaloneApproval,
   type StandaloneFunctionTool,
 } from './tools';
 
@@ -50,6 +51,7 @@ type Effect =
       type: 'approval';
       request_id: number;
       revision: number;
+      effective_arguments?: JsonObject;
       profile: string | null;
       call: { call_id: string; name: string; arguments: string };
     }
@@ -113,6 +115,8 @@ export interface WorkerToolApproval<Context> {
 
 export interface WorkerGuardrail<Context> {
   readonly name: string;
+  /** For input checks, allow sampling to begin before the result. */
+  readonly runInParallel?: boolean;
   readonly callback: (request: {
     readonly text: string;
     readonly context: Context | undefined;
@@ -347,6 +351,7 @@ async function runTools<Context>(
   effect: Extract<Effect, { type: 'tools' }>,
   tools: ReadonlyMap<string, StandaloneFunctionTool<Context, unknown>>,
   policies: ReadonlyMap<string, readonly WorkerToolGuardrail<Context>[]>,
+  prepared: ReadonlyMap<string, ReturnType<typeof prepareStandaloneApproval>>,
   context: Context | undefined,
   signal: AbortSignal,
 ) {
@@ -364,6 +369,13 @@ async function runTools<Context>(
           const signal = siblings.signal;
           signal.throwIfAborted();
           const guards = policies.get(call.name) ?? [];
+          const approved = prepared.get(call.call_id);
+          const request = () => {
+            const value = workerCall(call, effect.profile, context, signal);
+            return approved
+              ? { ...value, arguments: structuredClone(approved.arguments) }
+              : value;
+          };
           const evaluate = (
             kind: 'tool_input' | 'tool_output',
             name: string,
@@ -385,19 +397,19 @@ async function runTools<Context>(
           };
           for (const guard of guards) {
             if (!guard.before) continue;
-            const verdict = await guard.before(
-              workerCall(call, effect.profile, context, signal),
-            );
+            const verdict = await guard.before(request());
             const denial = evaluate('tool_input', guard.name, verdict);
             if (denial !== undefined) return denial;
           }
-          const result = await tool.invoke(call.arguments, { context, signal });
+          const result = approved
+            ? await approved.execute()
+            : await tool.invoke(call.arguments, { context, signal });
           signal.throwIfAborted();
           const output = wireToolOutput(result);
           for (const guard of guards) {
             if (!guard.after) continue;
             const verdict = await guard.after({
-              ...workerCall(call, effect.profile, context, signal),
+              ...request(),
               output,
             });
             const denial = evaluate('tool_output', guard.name, verdict);
@@ -495,14 +507,15 @@ function captureWorkerGuardrails<Context>(
   guards: readonly WorkerGuardrail<Context>[] = [],
 ) {
   return guards.map((guard) => {
-    const { name, callback } = guard;
+    const { name, callback, runInParallel } = guard;
     if (
       typeof name !== 'string' ||
       !name.trim() ||
-      typeof callback !== 'function'
+      typeof callback !== 'function' ||
+      (runInParallel !== undefined && typeof runInParallel !== 'boolean')
     )
       throw new TypeError('Worker guardrail requires a name and a callback');
-    return { name, callback: callback.bind(guard) };
+    return { name, callback: callback.bind(guard), runInParallel };
   });
 }
 
@@ -621,31 +634,74 @@ async function runWorkerTextTurn<Context>(
     turnId: crypto.randomUUID(),
   };
   const usedProviders = new Set<NativeModel>();
+  const prepared = new Map<
+    string,
+    ReturnType<typeof prepareStandaloneApproval>
+  >();
   const checkGuards = async (
     kind: 'input' | 'output',
+    checks: readonly WorkerGuardrail<Context>[],
     text: string,
     profile: string | null,
+    currentSignal: AbortSignal,
   ) => {
-    const selected = currentProfile(profile);
-    const checks =
-      kind === 'input'
-        ? [...inputChecks, ...(selected?.inputChecks ?? [])]
-        : [...outputChecks, ...(selected?.outputChecks ?? [])];
-    for (const guard of checks) {
-      signal.throwIfAborted();
-      const result = captureGuardrailResult(
-        await guard.callback({
-          text,
-          context,
-          signal,
-          profile,
-          ...owner,
-        }),
-      );
-      signal.throwIfAborted();
-      if (result.tripwireTriggered)
-        throw new WorkerGuardrailTripwire(kind, guard.name, result);
-    }
+    const settled = await Promise.allSettled(
+      checks.map(async (guard) => {
+        currentSignal.throwIfAborted();
+        const result = captureGuardrailResult(
+          await guard.callback({
+            text,
+            context,
+            signal: currentSignal,
+            profile,
+            ...owner,
+          }),
+        );
+        currentSignal.throwIfAborted();
+        if (result.tripwireTriggered)
+          throw new WorkerGuardrailTripwire(kind, guard.name, result);
+      }),
+    );
+    const failed = settled.find((entry) => entry.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+  };
+  const firstModel = async (
+    effect: Extract<Effect, { type: 'model' }>,
+    userInput: string,
+    sample: (signal: AbortSignal) => Promise<ModelResponse>,
+  ) => {
+    const checks = [
+      ...inputChecks,
+      ...(currentProfile(effect.profile)?.inputChecks ?? []),
+    ];
+    await checkGuards(
+      'input',
+      checks.filter((guard) => !guard.runInParallel),
+      userInput,
+      effect.profile,
+      signal,
+    );
+    const parallel = checks.filter((guard) => guard.runInParallel);
+    if (!parallel.length) return sample(signal);
+    const controller = new AbortController();
+    const combined = AbortSignal.any([signal, controller.signal]);
+    const cancelSibling = (error: unknown): never => {
+      controller.abort(error);
+      throw error;
+    };
+    const guarded = checkGuards(
+      'input',
+      parallel,
+      userInput,
+      effect.profile,
+      combined,
+    ).catch(cancelSibling);
+    const sampled = sample(combined).catch(cancelSibling);
+    const [guard, response] = await Promise.allSettled([guarded, sampled]);
+    if (controller.signal.aborted) throw controller.signal.reason;
+    if (guard.status === 'rejected') throw guard.reason;
+    if (response.status === 'rejected') throw response.reason;
+    return response.value;
   };
   type StoredResult = {
     result: WorkerTextResult;
@@ -681,13 +737,21 @@ async function runWorkerTextTurn<Context>(
       max_turns: maxTurns,
       snapshot,
     });
-    if (typeof input === 'string' && effect?.type === 'model')
-      await checkGuards('input', input, effect.profile);
+    let initialInput = typeof input === 'string' ? input : undefined;
     while (effect) {
       signal.throwIfAborted();
       switch (effect.type) {
         case 'done':
-          await checkGuards('output', effect.text, effect.profile);
+          await checkGuards(
+            'output',
+            [
+              ...outputChecks,
+              ...(currentProfile(effect.profile)?.outputChecks ?? []),
+            ],
+            effect.text,
+            effect.profile,
+            signal,
+          );
           return {
             result: { type: 'completed', text: effect.text },
             snapshot: effect.snapshot,
@@ -695,21 +759,25 @@ async function runWorkerTextTurn<Context>(
         case 'checkpoint':
           throw new Error('Unexpected Worker checkpoint');
         case 'model': {
-          const request: ModelRequest = {
-            ...owner,
-            runOwner: owner,
-            context,
-            signal,
-            body: effect.body,
+          const requestEffect = effect;
+          const sample = (modelSignal: AbortSignal) => {
+            const request: ModelRequest = {
+              ...owner,
+              runOwner: owner,
+              context,
+              signal: modelSignal,
+              body: requestEffect.body,
+            };
+            const modelProvider =
+              currentProfile(requestEffect.profile)?.provider ?? provider;
+            usedProviders.add(modelProvider);
+            return completeModel(modelProvider, request, observe);
           };
-          const modelProvider =
-            currentProfile(effect.profile)?.provider ?? provider;
-          usedProviders.add(modelProvider);
-          const response: ModelResponse = await completeModel(
-            modelProvider,
-            request,
-            observe,
-          );
+          const response =
+            initialInput === undefined
+              ? await sample(signal)
+              : await firstModel(requestEffect, initialInput, sample);
+          initialInput = undefined;
           signal.throwIfAborted();
           effect = control.apply({
             type: 'model',
@@ -719,13 +787,31 @@ async function runWorkerTextTurn<Context>(
           break;
         }
         case 'approval': {
-          const { call, request_id, revision, profile } = effect;
+          const { call, request_id, revision, profile, effective_arguments } =
+            effect;
+          const selected = currentProfile(profile);
+          const tool = (selected?.tools ?? toolsByName).get(call.name);
+          if (!tool)
+            throw new Error('Native text issued an unavailable approval tool');
+          const original = workerCall(call, profile, context, signal);
+          const validated = prepareStandaloneApproval(
+            tool,
+            original.arguments,
+            context,
+            signal,
+          );
+          const args = validated.arguments;
+          if (pendingDecision && !isDeepStrictEqual(args, effective_arguments))
+            throw new Error(
+              'Worker approval arguments changed after validation',
+            );
           const checkpoint = (claim: boolean) => {
             const checkpoint = control.apply({
               type: 'checkpoint',
               request_id,
               call_id: call.call_id,
               claim,
+              effective_arguments: args,
             });
             if (checkpoint?.type !== 'checkpoint')
               throw new Error('Worker approval checkpoint is unavailable');
@@ -736,8 +822,7 @@ async function runWorkerTextTurn<Context>(
           );
           if (!policy)
             throw new Error('Native text issued an unavailable approval');
-          const request = workerCall(call, profile, context, signal);
-          const args = request.arguments;
+          const request = { ...original, arguments: structuredClone(args) };
           let approved: boolean | null;
           if (pendingDecision) {
             if (
@@ -779,6 +864,7 @@ async function runWorkerTextTurn<Context>(
           // Persist the claim before dispatch, so a failed result commit cannot replay a side effect.
           if (approved && commit) await commit(checkpoint(true));
           signal.throwIfAborted();
+          if (approved) prepared.set(call.call_id, validated);
           effect = control.apply({
             type: 'approval',
             request_id,
@@ -793,12 +879,14 @@ async function runWorkerTextTurn<Context>(
             effect,
             currentProfile(effect.profile)?.tools ?? toolsByName,
             currentProfile(effect.profile)?.toolChecks ?? toolChecks,
+            prepared,
             context,
             signal,
           );
           signal.throwIfAborted();
           effect = null;
           for (const [index, output] of outputs.entries()) {
+            prepared.delete(calls[index].call_id);
             effect = control.apply({
               type: 'tool',
               request_id,

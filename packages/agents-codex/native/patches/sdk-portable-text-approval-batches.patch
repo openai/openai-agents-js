@@ -1,0 +1,351 @@
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index 1f7c94b18be60012880b7dba5a9fffe2f1e6c623..4d4ca1949b6a56549f0c512389823adcc10432bb 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -76,6 +76,10 @@ struct ApprovalCheckpoint {
+     call_id: String,
+     declaration: Declaration,
+     claimed: bool,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    remaining: Vec<(String, Declaration)>,
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    results: Vec<(String, String)>,
+ }
+
+ #[derive(Clone, Deserialize, PartialEq, Serialize)]
+@@ -130,11 +134,44 @@ enum Effect {
+ enum Phase {
+     New,
+     Model,
+-    Tools(Vec<(String, Option<Value>)>),
+-    Approval(Call),
++    Tools(Batch),
++    Approval(Batch),
+     Finished,
+ }
+
++struct Batch {
++    issued: HashSet<String>,
++    remaining: Vec<Call>,
++    results: Vec<(String, Option<String>)>,
++}
++
++impl Batch {
++    fn new(calls: &[Call]) -> Self {
++        Self {
++            issued: HashSet::new(),
++            remaining: Vec::new(),
++            results: calls
++                .iter()
++                .map(|call| (call.call_id.clone(), None))
++                .collect(),
++        }
++    }
++
++    fn record(&mut self, id: &str, value: String) -> Result<(), &'static str> {
++        let slot = self
++            .results
++            .iter_mut()
++            .find(|(call_id, _)| call_id == id)
++            .map(|(_, slot)| slot)
++            .ok_or("Unissued portable tool result")?;
++        if slot.is_some() {
++            return Err("Duplicate portable tool result");
++        }
++        *slot = Some(value);
++        Ok(())
++    }
++}
++
+ pub(crate) struct PortableTurn {
+     phase: Phase,
+     request_id: u32,
+@@ -244,8 +281,8 @@ impl PortableTurn {
+                             "Portable session requires a decision for its pending approval",
+                         );
+                     }
+-                    let call = self.restore_approval(approval)?;
+-                    return Ok(Some(self.request_approval(call)));
++                    let batch = self.restore_approval(approval)?;
++                    return self.advance_batch(batch).map(Some);
+                 }
+                 let input = input.ok_or("No portable approval is pending")?;
+                 self.history.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text":input}]}));
+@@ -261,18 +298,42 @@ impl PortableTurn {
+                 call_id,
+                 claim,
+             } if request_id == self.request_id => {
+-                let Phase::Approval(call) = &self.phase else {
++                let Phase::Approval(batch) = &self.phase else {
+                     return Err("No portable approval is pending");
+                 };
++                let call = batch
++                    .remaining
++                    .first()
++                    .ok_or("No portable approval is pending")?;
+                 if call.call_id != call_id {
+                     return Err("Portable approval belongs to a different tool call");
+                 }
+                 let declaration = self.approval_declaration(&call.name)?.clone();
++                let remaining = batch
++                    .remaining
++                    .iter()
++                    .skip(1)
++                    .map(|call| {
++                        Ok((
++                            call.call_id.clone(),
++                            self.approval_declaration(&call.name)?.clone(),
++                        ))
++                    })
++                    .collect::<Result<_, &'static str>>()?;
++                let results = batch
++                    .results
++                    .iter()
++                    .filter_map(|(id, result)| {
++                        result.as_ref().map(|result| (id.clone(), result.clone()))
++                    })
++                    .collect();
+                 let mut snapshot = self.snapshot(Some(ApprovalCheckpoint {
+                     request_id,
+                     call_id,
+                     declaration,
+                     claimed: claim,
++                    remaining,
++                    results,
+                 }))?;
+                 snapshot.history = self.history.clone();
+                 self.revision = snapshot.revision;
+@@ -284,22 +345,22 @@ impl PortableTurn {
+                 approved,
+             } if request_id == self.request_id => {
+                 let phase = std::mem::replace(&mut self.phase, Phase::Finished);
+-                let Phase::Approval(call) = phase else {
++                let Phase::Approval(mut batch) = phase else {
+                     return Err("No portable approval is pending");
+                 };
+-                if call.call_id != call_id {
++                if batch
++                    .remaining
++                    .first()
++                    .is_none_or(|call| call.call_id != call_id)
++                {
+                     return Err("Portable approval belongs to a different tool call");
+                 }
++                let call = batch.remaining.remove(0);
+                 if approved {
+-                    self.phase = Phase::Tools(vec![(call_id, None)]);
+-                    Ok(Some(Effect::Tools {
+-                        request_id,
+-                        calls: vec![call],
+-                        profile: self.profile.clone(),
+-                    }))
++                    Ok(Some(self.issue_batch(batch, vec![call])))
+                 } else {
+-                    self.history.push(json!({"type":"function_call_output","call_id":call_id,"output":"Tool call denied."}));
+-                    self.next_request().map(Some)
++                    batch.record(&call_id, "Tool call denied.".to_owned())?;
++                    self.advance_batch(batch).map(Some)
+                 }
+             }
+             Command::Tool {
+@@ -307,25 +368,22 @@ impl PortableTurn {
+                 call_id,
+                 output,
+             } if request_id == self.request_id => {
+-                let Phase::Tools(pending) = &mut self.phase else {
++                let Phase::Tools(batch) = &mut self.phase else {
+                     return Err("No portable tool results are pending");
+                 };
+-                let (_, slot) = pending
+-                    .iter_mut()
+-                    .find(|(id, _)| *id == call_id)
+-                    .ok_or("Unissued portable tool result")?;
+-                if slot.is_some() {
+-                    return Err("Duplicate portable tool result");
++                if !batch.issued.remove(&call_id) {
++                    return Err("Unissued or duplicate portable tool result");
+                 }
+-                *slot = Some(output);
+-                if pending.iter().any(|(_, result)| result.is_none()) {
++                let output = output.as_str().ok_or("Portable tool result must be text")?;
++                batch.record(&call_id, output.to_owned())?;
++                if !batch.issued.is_empty() {
+                     return Ok(None);
+                 }
+-                let pending = std::mem::take(pending);
+-                self.history.extend(pending.into_iter().map(|(id, output)| {
+-                    json!({"type":"function_call_output","call_id":id,"output":output.expect("all issued results settled")})
+-                }));
+-                self.next_request().map(Some)
++                let Phase::Tools(batch) = std::mem::replace(&mut self.phase, Phase::Finished)
++                else {
++                    unreachable!("completed portable tool batch")
++                };
++                self.advance_batch(batch).map(Some)
+             }
+             Command::Cancel => {
+                 self.phase = Phase::Finished;
+@@ -375,48 +433,85 @@ impl PortableTurn {
+         })
+     }
+
+-    fn request_approval(&mut self, call: Call) -> Effect {
+-        self.phase = Phase::Approval(call.clone());
+-        Effect::Approval {
++    fn issue_batch(&mut self, mut batch: Batch, calls: Vec<Call>) -> Effect {
++        batch
++            .issued
++            .extend(calls.iter().map(|call| call.call_id.clone()));
++        self.phase = Phase::Tools(batch);
++        Effect::Tools {
+             request_id: self.request_id,
+-            revision: self.revision,
+-            call,
++            calls,
+             profile: self.profile.clone(),
+         }
+     }
+
+-    fn restore_approval(&mut self, approval: ApprovalCheckpoint) -> Result<Call, &'static str> {
++    fn advance_batch(&mut self, batch: Batch) -> Result<Effect, &'static str> {
++        if let Some(call) = batch.remaining.first().cloned() {
++            self.phase = Phase::Approval(batch);
++            return Ok(Effect::Approval {
++                request_id: self.request_id,
++                revision: self.revision,
++                call,
++                profile: self.profile.clone(),
++            });
++        }
++        for (id, result) in batch.results {
++            let output = result.ok_or("Incomplete portable tool batch")?;
++            self.history
++                .push(json!({"type":"function_call_output","call_id":id,"output":output}));
++        }
++        self.next_request()
++    }
++
++    fn restore_approval(&mut self, approval: ApprovalCheckpoint) -> Result<Batch, &'static str> {
+         if approval.claimed {
+             return Err("Portable approval was already claimed and its tool outcome is unknown");
+         }
+         if !(1..self.max_turns).contains(&approval.request_id) {
+             return Err("Portable approval exceeds the current request limit");
+         }
+-        let item = self
+-            .history
+-            .iter()
+-            .rev()
+-            .find(|item| item["type"] == "function_call" && item["call_id"] == approval.call_id)
+-            .ok_or("Portable session has no matching approval call")?;
+-        let name = item["name"]
+-            .as_str()
+-            .ok_or("Invalid portable approval name")?;
+-        if self.approval_declaration(name)? != &approval.declaration {
+-            return Err("Portable approval requires its original tool declaration");
++        let mut declarations = std::iter::once((approval.call_id, approval.declaration))
++            .chain(approval.remaining)
++            .collect::<BTreeMap<_, _>>();
++        let mut results = approval.results.into_iter().collect::<BTreeMap<_, _>>();
++        let mut batch = Batch::new(&[]);
++        for item in &self.history {
++            if item["type"] != "function_call" {
++                continue;
++            }
++            let Some(id) = item["call_id"].as_str() else {
++                continue;
++            };
++            if let Some(output) = results.remove(id) {
++                batch.results.push((id.to_owned(), Some(output)));
++            } else if let Some(declaration) = declarations.remove(id) {
++                let name = item["name"]
++                    .as_str()
++                    .ok_or("Invalid portable approval name")?;
++                if self.approval_declaration(name)? != &declaration {
++                    return Err("Portable approval requires its original tool declaration");
++                }
++                let arguments = item["arguments"]
++                    .as_str()
++                    .filter(|arguments| {
++                        serde_json::from_str::<Value>(arguments)
++                            .is_ok_and(|value| value.is_object())
++                    })
++                    .ok_or("Invalid portable approval arguments")?;
++                batch.remaining.push(Call {
++                    call_id: id.to_owned(),
++                    name: name.to_owned(),
++                    arguments: arguments.to_owned(),
++                    requires_approval: true,
++                });
++                batch.results.push((id.to_owned(), None));
++            }
++        }
++        if !declarations.is_empty() || !results.is_empty() || batch.remaining.is_empty() {
++            return Err("Portable session has no matching approval call");
+         }
+-        let arguments = item["arguments"]
+-            .as_str()
+-            .filter(|arguments| {
+-                serde_json::from_str::<Value>(arguments).is_ok_and(|value| value.is_object())
+-            })
+-            .ok_or("Invalid portable approval arguments")?;
+         self.request_id = approval.request_id;
+-        Ok(Call {
+-            call_id: approval.call_id,
+-            name: name.to_owned(),
+-            arguments: arguments.to_owned(),
+-            requires_approval: true,
+-        })
++        Ok(batch)
+     }
+
+     fn restore(&mut self, snapshot: Snapshot) -> Result<Option<ApprovalCheckpoint>, &'static str> {
+@@ -464,7 +559,15 @@ impl PortableTurn {
+         }
+         match &snapshot.approval {
+             None if pending.is_empty() => {}
+-            Some(approval) if pending.len() == 1 && pending.contains(approval.call_id.as_str()) => {
++            Some(approval) => {
++                let expected = std::iter::once(approval.call_id.as_str())
++                    .chain(approval.remaining.iter().map(|(id, _)| id.as_str()))
++                    .chain(approval.results.iter().map(|(id, _)| id.as_str()))
++                    .collect::<Vec<_>>();
++                let unique: HashSet<_> = expected.iter().copied().collect();
++                if expected.len() != unique.len() || pending != unique || unique.len() > MAX_CALLS {
++                    return Err("Invalid portable approval batch");
++                }
+             }
+             _ => return Err("Portable session has unresolved calls"),
+         }
+@@ -628,24 +731,13 @@ impl PortableTurn {
+             self.profile = Some(target);
+             return self.next_request();
+         }
+-        if calls.iter().any(|call| call.requires_approval) {
+-            if calls.len() != 1 {
+-                return Err("Portable approval requires a dedicated response");
+-            }
+-            self.history.extend(output);
+-            return Ok(self.request_approval(calls.pop().expect("one approval call")));
+-        }
+         self.history.extend(output);
+-        self.phase = Phase::Tools(
+-            calls
+-                .iter()
+-                .map(|call| (call.call_id.clone(), None))
+-                .collect(),
+-        );
+-        Ok(Effect::Tools {
+-            request_id: self.request_id,
+-            calls,
+-            profile: self.profile.clone(),
+-        })
++        let mut batch = Batch::new(&calls);
++        let (remaining, automatic) = calls.into_iter().partition(|call| call.requires_approval);
++        batch.remaining = remaining;
++        if automatic.is_empty() {
++            return self.advance_batch(batch);
++        }
++        Ok(self.issue_batch(batch, automatic))
+     }
+ }

@@ -905,3 +905,355 @@ portableTest.each([
     expect(after).toHaveBeenCalledTimes(mode.startsWith('input') ? 0 : 1);
   },
 );
+
+portableTest(
+  'restores mixed Worker approval batches without repeating settled calls',
+  async () => {
+    const open = lookup();
+    const effects: string[] = [];
+    const makeTool = (name: string) =>
+      standaloneTool({
+        name,
+        parameters: z.object({ value: z.string() }),
+        execute: ({ value }) => {
+          const output = name + ':' + value;
+          effects.push(output);
+          return output;
+        },
+      });
+    const revisions: number[] = [];
+    let stored: string | null = null;
+    const session = {
+      id: 'mixed-approval',
+      store: {
+        async acquire() {
+          return 'fence';
+        },
+        async read() {
+          return stored;
+        },
+        async commit(
+          _id: string,
+          _fence: string,
+          _writeId: string,
+          expected: number,
+          snapshot: string,
+        ) {
+          expect(stored === null ? 0 : JSON.parse(stored).revision).toBe(
+            expected,
+          );
+          revisions.push(expected);
+          stored = snapshot;
+        },
+        async release() {},
+      },
+    };
+    const requests: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output:
+            requests.length === 1
+              ? [
+                  { ...call, name: 'one', call_id: 'one' },
+                  call,
+                  { ...call, name: 'two', call_id: 'two' },
+                ]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    const options = () => ({
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Use both tools.',
+      session,
+      tools: [makeTool('one'), open.declaration, makeTool('two')],
+      approve: { one: () => null, two: () => null },
+    });
+    await expect(runWorkerTurn('Ask first.', options())).resolves.toMatchObject(
+      { type: 'approval', callId: 'one', revision: 1 },
+    );
+    expect(open.execute).toHaveBeenCalledOnce();
+    expect(effects).toEqual([]);
+    await expect(
+      runWorkerTurn({ callId: 'one', revision: 1, approved: true }, options()),
+    ).resolves.toMatchObject({ type: 'approval', callId: 'two', revision: 3 });
+    await expect(
+      runWorkerTurn({ callId: 'one', revision: 1, approved: true }, options()),
+    ).rejects.toThrow('does not match');
+    expect(requests).toHaveLength(1);
+    await expect(
+      runWorkerTurn({ callId: 'two', revision: 3, approved: false }, options()),
+    ).resolves.toEqual({ type: 'completed', text: 'done' });
+    expect(open.execute).toHaveBeenCalledOnce();
+    expect(effects).toEqual(['one:local']);
+    expect(revisions).toEqual([0, 1, 2, 3]);
+    expect(
+      (requests[1].input as JsonObject[]).filter(
+        (item) => item.type === 'function_call_output',
+      ),
+    ).toEqual([
+      { type: 'function_call_output', call_id: 'one', output: 'one:local' },
+      {
+        type: 'function_call_output',
+        call_id: 'test-call',
+        output: 'observed:local',
+      },
+      {
+        type: 'function_call_output',
+        call_id: 'two',
+        output: 'Tool call denied.',
+      },
+    ]);
+  },
+);
+
+portableTest.each([true, false])(
+  'joins a parallel input check before admitting provider tool calls (%s)',
+  async (tripwireTriggered) => {
+    const events: string[] = [];
+    let sampled!: () => void;
+    const sampling = new Promise<void>((resolve) => {
+      sampled = resolve;
+    });
+    const tool = standaloneTool({
+      name: 'lookup',
+      parameters: z.object({ value: z.string() }),
+      execute: () => {
+        events.push('tool');
+        return 'value';
+      },
+    });
+    let requests = 0;
+    const provider: NativeModel = {
+      async complete() {
+        events.push('model');
+        sampled();
+        return {
+          output:
+            ++requests === 1
+              ? [call]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    const result = runWorkerText('Check first.', {
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Use lookup.',
+      tools: [tool],
+      inputGuardrails: [
+        {
+          name: 'parallel',
+          runInParallel: true,
+          async callback() {
+            events.push('guard-start');
+            await sampling;
+            events.push('guard-end');
+            return { tripwireTriggered };
+          },
+        },
+      ],
+    });
+    if (tripwireTriggered)
+      await expect(result).rejects.toMatchObject({
+        kind: 'input',
+        guardrail: 'parallel',
+      });
+    else await expect(result).resolves.toBe('done');
+    expect(events).toEqual(
+      tripwireTriggered
+        ? ['guard-start', 'model', 'guard-end']
+        : ['guard-start', 'model', 'guard-end', 'tool', 'model'],
+    );
+  },
+);
+
+portableTest(
+  'binds approved Worker execution to the validated arguments',
+  async () => {
+    let currentTarget = 'initial';
+    const execute = vi.fn(({ target }: { target: string }) => target);
+    const declare = (replace = false) =>
+      standaloneTool({
+        name: 'lookup',
+        parameters: z
+          .object({
+            target: z.string().optional(),
+          })
+          .transform(({ target }) => ({
+            target: (target ?? currentTarget).toUpperCase(),
+          })),
+        before: replace
+          ? () =>
+              ({
+                action: 'replaceArguments',
+                arguments: { target: 'different' },
+              }) as const
+          : undefined,
+        execute,
+      });
+    let stored: string | null = null;
+    const session = {
+      id: 'effective',
+      store: {
+        async acquire() {
+          return 'fence';
+        },
+        async read() {
+          return stored;
+        },
+        async commit(
+          _id: string,
+          _fence: string,
+          _writeId: string,
+          expected: number,
+          snapshot: string,
+        ) {
+          expect(stored === null ? 0 : JSON.parse(stored).revision).toBe(
+            expected,
+          );
+          stored = snapshot;
+        },
+        async release() {},
+      },
+    };
+    const responses: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        responses.push(body);
+        return {
+          output:
+            responses.length === 1
+              ? [{ ...call, arguments: '{}' }]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    const policy = vi.fn(
+      ({ arguments: args }: { arguments: Readonly<JsonObject> }) => {
+        expect(args).toEqual({ target: 'INITIAL' });
+        Reflect.set(args, 'target', 'CHANGED AFTER VALIDATION');
+        return null;
+      },
+    );
+    const options = (replace = false) => ({
+      control,
+      provider,
+      model: 'fixture',
+      instructions: 'Use lookup.',
+      session,
+      tools: [declare(replace)],
+      approve: { lookup: policy },
+    });
+    await expect(runWorkerTurn('Ask first.', options())).resolves.toMatchObject(
+      {
+        type: 'approval',
+        callId: 'test-call',
+        revision: 1,
+        arguments: { target: 'INITIAL' },
+      },
+    );
+    expect(execute).not.toHaveBeenCalled();
+
+    const decision = { callId: 'test-call', revision: 1, approved: true };
+    currentTarget = 'changed';
+    await expect(runWorkerTurn(decision, options())).rejects.toThrow(
+      'arguments changed after validation',
+    );
+    expect(JSON.parse(stored ?? 'null').revision).toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+
+    currentTarget = 'initial';
+    await expect(runWorkerTurn(decision, options(true))).resolves.toEqual({
+      type: 'completed',
+      text: 'done',
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(responses[1].input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'function_call_output',
+          output: 'Tool input policy changed approved arguments',
+        }),
+      ]),
+    );
+  },
+);
+
+portableTest(
+  'executes a transformed Worker approval exactly once without validating it again',
+  async () => {
+    const transform = vi.fn((value: { text: string }) => ({
+      text: value.text + '!',
+    }));
+    const execute = vi.fn((args: { text: string }) => args.text);
+    const tool = standaloneTool({
+      name: 'lookup',
+      parameters: z
+        .object({ text: z.string().default('ready') })
+        .transform(transform),
+      execute,
+    });
+    const requests: JsonObject[] = [];
+    const provider: NativeModel = {
+      async complete({ body }) {
+        requests.push(body);
+        return {
+          output:
+            requests.length === 1
+              ? [{ ...call, arguments: '{}' }]
+              : [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    content: [{ type: 'output_text', text: 'done' }],
+                  },
+                ],
+        };
+      },
+    };
+    await expect(
+      runWorkerText('Ask.', {
+        control,
+        provider,
+        model: 'fixture',
+        instructions: 'Use lookup.',
+        tools: [tool],
+        approve: {
+          lookup({ arguments: args }) {
+            expect(args).toEqual({ text: 'ready!' });
+            return true;
+          },
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(transform).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledExactlyOnceWith(
+      { text: 'ready!' },
+      expect.anything(),
+    );
+  },
+);
