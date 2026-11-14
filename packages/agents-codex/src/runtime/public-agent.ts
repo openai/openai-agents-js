@@ -1127,6 +1127,7 @@ export class Agent<Context = undefined, Output = string> {
       : undefined;
     const sessionOptions: OwnedSessionOptions<Context> = {
       providerHistory: options.providerHistory,
+      pendingInputAdmission: options.pendingInputAdmission,
       ...(initialMessages === undefined ? {} : { initialMessages }),
       ...(observeFailure ? { includeRawProviderEvents: true } : {}),
       ...((options as OwnedSessionOptions<Context>)[sdkMemoryPhase] === true
