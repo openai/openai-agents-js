@@ -1,4 +1,5 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
+import { Agent } from '../src/runtime/public-agent';
 import {
   CODEX_REVISION,
   parseSessionState,
@@ -153,3 +154,26 @@ it('retains the new-format fence after clearing a settled staged retry', () => {
     parseSessionState(JSON.stringify({ ...clear, format_version: 3 })),
   ).toThrow();
 });
+
+it.each(['fresh', 'manual'] as const)(
+  'forwards staged input admission through the public %s run opening',
+  async (mode) => {
+    const agent = new Agent({
+      name: 'staged-run',
+      instructions: 'Handle staged input.',
+    });
+    const opening = new Error('opening intercepted');
+    const session = vi.spyOn(agent, 'session').mockRejectedValueOnce(opening);
+    await expect(
+      agent.run(mode === 'manual' ? null : '', {
+        ...(mode === 'manual' ? { state: saved() } : {}),
+        pendingInputAdmission: 'selected-before-send',
+      }),
+    ).rejects.toBe(opening);
+    expect(session).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingInputAdmission: 'selected-before-send',
+      }),
+    );
+  },
+);

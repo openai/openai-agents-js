@@ -123,6 +123,7 @@ export function splitToolDeclarations(tools: readonly Tool[]): {
         const identity = toolIdentity(tool);
         return (
           identity.namespace === 'functions' &&
+          hosted.kind !== 'file_search' &&
           (identity.name === hostedToolType(hosted) ||
             (hosted.kind === 'provider_hosted' &&
               identity.name === hosted.providerData.name))

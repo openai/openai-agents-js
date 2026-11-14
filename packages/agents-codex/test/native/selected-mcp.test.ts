@@ -611,3 +611,54 @@ it('rejects duplicate declared raw MCP identities before alias allocation', () =
       }),
   ).toThrow('unique');
 });
+
+it('validates borrowed strict conversion before authentication or discovery', async () => {
+  const peer = new BorrowedPeer();
+  const authenticate = vi.fn();
+  await expect(
+    selectMcpTools(
+      { name: 'crm', server: peer, authenticate },
+      { context: undefined, convertSchemasToStrict: 'true' as never },
+    ),
+  ).rejects.toThrow('convertSchemasToStrict must be a boolean');
+  expect(authenticate).not.toHaveBeenCalled();
+  expect(peer.listTools).not.toHaveBeenCalled();
+});
+
+it('converts an empty borrowed schema without modifying the peer declaration', async () => {
+  const peer = new BorrowedPeer();
+  Object.assign(peer.declarations[0], { inputSchema: {} });
+  const selected = await selectMcpTools(
+    { name: 'crm', server: peer },
+    { context: undefined, convertSchemasToStrict: true },
+  );
+  expect(selected[0].strict).toBe(true);
+  expect(selected[0].parameters).toEqual({
+    type: 'object',
+    properties: {},
+    required: [],
+    additionalProperties: false,
+  });
+  expect(peer.declarations[0].inputSchema).toEqual({});
+});
+
+it('rejects an excessively deep strict borrowed schema instead of falling back', async () => {
+  const peer = new BorrowedPeer();
+  let schema: Record<string, unknown> = { type: 'string' };
+  for (let i = 0; i < 110; i++)
+    schema = {
+      type: 'object',
+      properties: { nested: schema },
+      required: ['nested'],
+      additionalProperties: false,
+    };
+  peer.declarations[0].inputSchema =
+    schema as (typeof peer.declarations)[0]['inputSchema'];
+  await expect(
+    selectMcpTools(
+      { name: 'crm', server: peer },
+      { context: undefined, convertSchemasToStrict: true },
+    ),
+  ).rejects.toThrow('too deeply nested');
+  expect(peer.callTool).not.toHaveBeenCalled();
+});

@@ -58,6 +58,9 @@ pub(crate) struct ProfileSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_instructions: Option<String>,
     tools: ToolDeclarations,
+    /// Explicit per-profile provider search; absent retains the original thread behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hosted_search: Option<codex_extension_api::HostedModelTools>,
     #[serde(default)]
     manual_slots: Vec<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -109,6 +112,37 @@ pub(crate) struct ProfileSpec {
     environment: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     environment_tools: Option<HashSet<String>>,
+}
+
+fn insert_hosted_search(
+    thread: &CodexThread,
+    profile: &ProfileSpec,
+    data: &mut ExtensionDataInit,
+) -> Result<()> {
+    let common = thread.thread_extension_data()
+        .get::<codex_extension_api::HostedModelTools>();
+    if profile.hosted_search.as_ref().or(common.as_deref()).is_some_and(|hosted| {
+        hosted.tools.iter().any(|tool| matches!(tool, codex_tools::HostedToolSpec::FileSearch(_)))
+    }) && !crate::python_tools::tool_names(&profile.tools)
+        .contains(&ToolName::plain("file_search").with_default_namespace())
+    {
+        data.insert(codex_extension_api::AgentProfileHostedFileSearchRef);
+    }
+    let Some(search) = &profile.hosted_search else { return Ok(()); };
+    ensure!(
+        search.tools.iter().filter(|tool| matches!(tool, codex_tools::HostedToolSpec::WebSearch(_))).count() <= 1
+            && search.tools.iter().all(|tool| matches!(tool,
+                codex_tools::HostedToolSpec::WebSearch(_) | codex_tools::HostedToolSpec::FileSearch(_) | codex_tools::HostedToolSpec::CodeInterpreter(_))),
+        "Agent hosted-tool override requires only its captured provider declarations"
+    );
+    // Other thread-hosted tools retain their existing common captured grant.
+    // The captured provider value belongs only to this Agent's immutable step data.
+    let mut inherited = common.map(|tools| tools.as_ref().clone()).unwrap_or_default();
+    inherited.tools.retain(|tool| !matches!(tool,
+        codex_tools::HostedToolSpec::WebSearch(_) | codex_tools::HostedToolSpec::FileSearch(_) | codex_tools::HostedToolSpec::CodeInterpreter(_)));
+    inherited.tools.extend(search.tools.iter().cloned());
+    data.insert(inherited);
+    Ok(())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -349,6 +383,7 @@ struct ProfilePreparationContext {
     config: Arc<codex_core_api::Config>,
     manager: Arc<codex_core_api::EnvironmentManager>,
     storage: Option<std::path::PathBuf>,
+    custom_store: bool,
 }
 
 /// Private ready executor selections supplied by the current host graph.
@@ -451,6 +486,14 @@ pub(crate) async fn prepare_environments(
             let options: crate::environment::EnvironmentOptions =
                 serde_json::from_value(environment.clone())
                     .context("Invalid Agent executor options")?;
+            if engine.custom_store.is_some() {
+                options.validate_custom_storage_search()?;
+                ensure!(
+                    profile.ready().environment_tools.as_ref().is_some_and(|tools|
+                        !tools.is_empty() && tools.iter().all(|name| matches!(name.as_str(), "project_glob" | "project_grep"))),
+                    "custom storage Agent Environment supports read-only project search only"
+                );
+            }
             options.restrict_network_approval(&mut startup.config)?;
             bindings.insert(profile.id.clone(), options);
         }
@@ -480,6 +523,12 @@ pub(crate) async fn prepare_environments(
             )),
             "Invalid Agent executor tool declaration"
         );
+        if engine.custom_store.is_some() {
+            ensure!(
+                tools.iter().all(|name| matches!(name.as_str(), "project_glob" | "project_grep")),
+                "custom storage Agent Environment supports read-only project search only"
+            );
+        }
         let mut tool_names: Vec<_> = tools.iter().cloned().collect();
         tool_names.sort_unstable();
         let environment = if profile.environment_preparation && profile.prepared.is_none() {
@@ -535,6 +584,7 @@ pub(crate) async fn prepare_environments(
         preparation: Arc::new(ProfilePreparationContext {
             config: Arc::new(startup.config.clone()),
             manager: manager.clone(),
+            custom_store: engine.custom_store.is_some(),
             storage: engine
                 .local_storage_home()
                 .map(std::path::Path::to_path_buf),
@@ -820,6 +870,29 @@ fn roster_fingerprint(roster: &[ProfileSpec], root_id: &str) -> Result<String> {
             descriptor["tools"] =
                 serde_json::to_value(profile.tools.without_configured_agent_roles())?;
             descriptor["model"] = serde_json::to_value(profile.model.for_persistence())?;
+            if let Some(hosted) = &profile.hosted_search {
+                // Wire serde omits result includes. Pin their captured policy,
+                // while allowing only current domain-secret values to refresh.
+                let definitions = hosted.tools.iter().map(|tool| {
+                    let mut definition = serde_json::to_value(tool)?;
+                    match tool {
+                        codex_tools::HostedToolSpec::FileSearch(config) => {
+                            definition["include_search_results"] = json!(config.include_search_results);
+                        }
+                        codex_tools::HostedToolSpec::CodeInterpreter(config) => {
+                            definition["include_outputs"] = json!(config.include_outputs);
+                            if let Some(secrets) = definition.pointer_mut("/container/network_policy/domain_secrets").and_then(Value::as_array_mut) {
+                                for secret in secrets {
+                                    if let Some(fields) = secret.as_object_mut() { fields.remove("value"); }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    Ok(definition)
+                }).collect::<Result<Vec<_>>>()?;
+                descriptor["hosted_search"] = json!({"tools": definitions});
+            }
             // Endpoint credentials, process configuration and refreshed policies are not
             // declaration compatibility. Their fresh native owners remain authority.
             descriptor["mcp_servers"] = json!(profile.mcp_servers.keys().collect::<Vec<_>>());
@@ -1254,6 +1327,7 @@ async fn prepare_destination(
             && descriptor.environment.is_some()
             && descriptor.native_provider_id == base.native_provider_id
             && descriptor.output_fingerprint == base.output_fingerprint
+            && descriptor.hosted_search == base.hosted_search
             && descriptor.handoffs == base.handoffs
             && descriptor.model.model == base.model.model,
         "Destination preparation has been changing its captured identity"
@@ -1298,6 +1372,13 @@ async fn prepare_destination(
             .clone()
             .expect("prepared environment"),
     )?;
+    if environments.preparation.custom_store {
+        options.validate_custom_storage_search()?;
+        ensure!(
+            !tools.is_empty() && tools.iter().all(|name| matches!(name.as_str(), "project_glob" | "project_grep")),
+            "custom storage prepared Environment supports read-only project search only"
+        );
+    }
     options.restrict_network_approval(&mut config)?;
     let id = format!(
         "sdk-profile-{}",
@@ -1889,6 +1970,7 @@ impl AgentProfiles {
         }
         data.insert(accepted);
         insert_profile_provider(thread, &prepared.declaration, &mut data)?;
+        insert_hosted_search(thread, &prepared.declaration, &mut data)?;
         data.insert(prepared.catalog.clone());
         data.insert(prepared.plugins.clone());
         data.insert(prepared.declaration.decision_tools());
@@ -2180,6 +2262,7 @@ pub(crate) async fn configure(
         }
         data.insert(accepted);
         insert_profile_provider(thread, &prepared.declaration, &mut data)?;
+        insert_hosted_search(thread, &prepared.declaration, &mut data)?;
         data.insert(catalog);
         data.insert(prepared.declaration.decision_tools());
         data.insert(codex_extension_api::AgentProfileHandoffTools {

@@ -17,8 +17,13 @@ it('resolves a large captured MCP roster with linear reads and preserves its cei
   // This owner-local probe controls the captured native callback payload;
   // public native tests separately exercise descriptor and peer admission.
   const session = Object.create(Session.prototype) as any;
+  const profiles = new Map([
+    ['source', { profile: { declaration: { tools: [] } } }],
+  ]);
   Object.defineProperties(session, {
-    options: { value: { agentGraph: true } },
+    options: { value: { agentGraph: { profiles } } },
+    profileRuntimes: { value: profiles },
+    fileSearchLocalProfiles: { value: new Set() },
     threadOptions: { value: {} },
     hasOperationMcp: { value: false },
     messageProfile: { value: () => ({ profile_id: 'source', epoch: 0n }) },

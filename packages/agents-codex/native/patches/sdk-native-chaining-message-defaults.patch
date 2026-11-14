@@ -1,0 +1,56 @@
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index bf3a3598066..981bc6eaafa 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -365,6 +365,24 @@ impl Session {
+         let serialize_error = |_| CodexErr::InvalidRequest(
+             "Cannot serialize native chaining history".into(),
+         );
++        // Match the same positional message defaults used by the original
++        // catalog replay. This preserves kinds already present and never
++        // changes text, tool bodies, or historical capability types.
++        let native_view = |item: &ResponseItem| {
++            if matches!(item, ResponseItem::Message { .. }) {
++                let mut normalized = item.clone();
++                if let Some(content) =
++                    codex_context_fragments::to_annotated_content(&mut normalized)
++                {
++                    let _ = codex_context_fragments::set_annotated_content(
++                        &mut normalized, content,
++                    );
++                }
++                serde_json::to_value(normalized)
++            } else {
++                serde_json::to_value(item)
++            }
++        };
+         let fingerprint = |mut view: serde_json::Value| {
+             view.sort_all_objects();
+             serde_json::to_vec(&view).map(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)))
+@@ -373,7 +391,7 @@ impl Session {
+         let mut unowned_extras = BTreeSet::new();
+         for (index, original) in originals.items.iter().enumerate() {
+             let item = &original.projection.as_ref().expect("checked admission").item;
+-            let view = serde_json::to_value(item).map_err(serialize_error)?;
++            let view = native_view(item).map_err(serialize_error)?;
+             let raw: serde_json::Value = serde_json::from_str(&original.original)
+                 .map_err(serialize_error)?;
+             if raw.get("type") != view.get("type") || raw.get("role") != view.get("role") {
+@@ -385,7 +403,7 @@ impl Session {
+             let Ok(Some(normalized)) =
+                 codex_history::sdk_originals::input_projection(&original.original)
+             else { continue; };
+-            if serde_json::to_value(normalized).map_err(serialize_error)? != view {
++            if native_view(&normalized).map_err(serialize_error)? != view {
+                 continue;
+             }
+             let has_extras = raw != view;
+@@ -398,7 +416,7 @@ impl Session {
+         }
+         let mut serialized = Vec::with_capacity(items.len());
+         for item in &items {
+-            let view = serde_json::to_value(item).map_err(serialize_error)?;
++            let view = native_view(item).map_err(serialize_error)?;
+             let digest = fingerprint(view).map_err(serialize_error)?;
+             let source = if let Some(id) = item.id() {
+                 sources.get_mut(&(id.to_string(), digest)).and_then(VecDeque::pop_front)

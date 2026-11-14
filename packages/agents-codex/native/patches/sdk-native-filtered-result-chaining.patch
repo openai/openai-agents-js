@@ -1,0 +1,129 @@
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index c1052e7d090..4c230d61529 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -1210,6 +1210,12 @@ impl CodexThread {
+         self.session.sdk_replay_history_snapshot().await
+     }
+ 
++    /// Read-only accepted handoff data, without replay or executable authority.
++    #[doc(hidden)]
++    pub async fn sdk_chaining_history_projection(&self) -> CodexResult<Option<Vec<String>>> {
++        self.session.sdk_chaining_history_projection().await
++    }
++
+     /// Bounded originals with query-local, native-captured memory ownership.
+     pub async fn sdk_memory_history_snapshot(
+         &self,
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index f2a5e0a7672..208a1e68524 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -312,6 +312,107 @@ impl Session {
+             .await
+     }
+ 
++    /// Export the current accepted handoff view as data for a fresh SDK run.
++    /// None preserves the lossless original read when the live presentation
++    /// has not changed conversation data. This never calls application hooks.
++    pub(crate) async fn sdk_chaining_history_projection(
++        &self,
++    ) -> codex_protocol::error::Result<Option<Vec<String>>> {
++        use codex_protocol::error::CodexErr;
++        let originals = self.sdk_load_original_history().await?;
++        let admitted = originals.items.iter().filter_map(|row| {
++            row.projection.as_ref().map(|projection| projection.item.clone())
++        }).collect();
++        let (items, changed) = self.project_handoff_compaction_input(admitted).await?;
++        if !changed {
++            return Ok(None);
++        }
++        if originals.items.iter().any(|row| row.projection.is_none()) {
++            return Err(CodexErr::InvalidRequest(
++                "Changed chaining history requires admitted native records".into(),
++            ));
++        }
++        // Apply the canonical replay limits to raw record bytes, without
++        // charging a second JSON escaping layer around already serialized rows.
++        let check_budget = |count: usize, bytes: Option<usize>| {
++            use super::sdk_produced_items::{MAX_BYTES, MAX_ITEMS};
++            if count > MAX_ITEMS || bytes.is_none_or(|bytes| bytes > MAX_BYTES) {
++                Err(CodexErr::InvalidRequest(
++                    "Completed chaining history exceeds the result size limit".into(),
++                ))
++            } else {
++                Ok(())
++            }
++        };
++        check_budget(originals.items.len(), originals.items.iter().try_fold(
++            0usize, |bytes, row| bytes.checked_add(row.original.len()),
++        ))?;
++        // Index native identity and the complete normalized visible row once.
++        // Original fields remain audit data; a differently typed normalized
++        // source (for example an archived approval shown as text) is not reused.
++        use sha2::{Digest, Sha256};
++        use std::collections::{BTreeMap, BTreeSet, VecDeque};
++        let serialize_error = |_| CodexErr::InvalidRequest(
++            "Cannot serialize native chaining history".into(),
++        );
++        let fingerprint = |mut view: serde_json::Value| {
++            view.sort_all_objects();
++            serde_json::to_vec(&view).map(|bytes| <[u8; 32]>::from(Sha256::digest(bytes)))
++        };
++        let mut sources: BTreeMap<(String, [u8; 32]), VecDeque<usize>> = BTreeMap::new();
++        let mut unowned_extras = BTreeSet::new();
++        for (index, original) in originals.items.iter().enumerate() {
++            let item = &original.projection.as_ref().expect("checked admission").item;
++            let view = serde_json::to_value(item).map_err(serialize_error)?;
++            let raw: serde_json::Value = serde_json::from_str(&original.original)
++                .map_err(serialize_error)?;
++            if raw.get("type") != view.get("type") || raw.get("role") != view.get("role") {
++                continue;
++            }
++            // A fixed admission projection can already truncate or normalize
++            // the raw body. Reuse only an extra-field-only original, never a
++            // larger body or a differently normalized historical capability.
++            let Ok(Some(normalized)) =
++                codex_history::sdk_originals::input_projection(&original.original)
++            else { continue; };
++            if serde_json::to_value(normalized).map_err(serialize_error)? != view {
++                continue;
++            }
++            let has_extras = raw != view;
++            let digest = fingerprint(view).map_err(serialize_error)?;
++            if let Some(id) = item.id() {
++                sources.entry((id.to_string(), digest)).or_default().push_back(index);
++            } else if has_extras {
++                unowned_extras.insert(digest);
++            }
++        }
++        let mut serialized = Vec::with_capacity(items.len());
++        for item in &items {
++            let view = serde_json::to_value(item).map_err(serialize_error)?;
++            let digest = fingerprint(view).map_err(serialize_error)?;
++            let source = if let Some(id) = item.id() {
++                sources.get_mut(&(id.to_string(), digest)).and_then(VecDeque::pop_front)
++            } else {
++                if unowned_extras.contains(&digest) {
++                    return Err(CodexErr::InvalidRequest(
++                        "Chaining history cannot preserve an unowned original record".into(),
++                    ));
++                }
++                None
++            };
++            serialized.push(match source {
++                Some(index) => originals.items[index].original.clone(),
++                None => serde_json::to_string(item).map_err(serialize_error)?,
++            });
++        }
++        // Check the actual final strings, including preserved extra fields,
++        // before this read exports any payload across the SDK boundary.
++        check_budget(serialized.len(), serialized.iter().try_fold(
++            0usize, |bytes, row| bytes.checked_add(row.len()),
++        ))?;
++        Ok(Some(serialized))
++    }
++
+     /// Read query-local memory provenance from the same exact canonical occurrences.
+     pub(crate) async fn sdk_memory_history_snapshot(
+         &self,

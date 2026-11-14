@@ -403,8 +403,37 @@ pub(crate) struct ProfileMcpPolicy {
     identities: HashMap<ToolName, (String, String)>,
     names: HashSet<ToolName>,
     rules: Rules,
+    nullable_inputs: HashMap<ToolName, (Arc<serde_json::Map<String, Value>>, Option<usize>)>,
 }
 impl ProfileMcpPolicy {
+    fn nullable_inputs(
+        binding: &codex_mcp::McpBinding,
+    ) -> HashMap<ToolName, (Arc<serde_json::Map<String, Value>>, Option<usize>)> {
+        binding
+            .tools()
+            .iter()
+            .filter_map(|tool| {
+                let config = binding
+                    .config()
+                    .mcp_server_catalog
+                    .server(&tool.server_name)?
+                    .config();
+                if !config.sdk_strict_tool_schemas.nullable_optionals() {
+                    return None;
+                }
+                Some((
+                    tool.canonical_tool_name().with_default_namespace(),
+                    (
+                        Arc::clone(&tool.tool.input_schema),
+                        config
+                            .tool_input_schema_max_bytes
+                            .map(std::num::NonZeroUsize::get),
+                    ),
+                ))
+            })
+            .collect()
+    }
+
     pub(crate) fn has_callbacks(&self) -> bool {
         !self.rules.is_empty()
     }
@@ -490,6 +519,7 @@ impl ProfileMcpPolicy {
         }
         Ok(Self {
             identities: Self::identities(binding),
+            nullable_inputs: Self::nullable_inputs(binding),
             names,
             rules: Control::compile_rules(rules)?,
         })
@@ -541,6 +571,7 @@ impl ProfileMcpSource {
         }
         self.policy = Some(Arc::new(ProfileMcpPolicy {
             identities: ProfileMcpPolicy::identities(binding),
+            nullable_inputs: ProfileMcpPolicy::nullable_inputs(binding),
             names,
             rules,
         }));
@@ -591,6 +622,44 @@ struct ProfiledRequest<T> {
     request: T,
     #[serde(skip)]
     source: Option<Arc<ProfileMcpSource>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_input: Option<Value>,
+}
+fn effective_mcp_input(
+    source: Option<&Arc<ProfileMcpSource>>,
+    name: &ToolName,
+    input: &Value,
+) -> Result<Option<Value>, String> {
+    let Some(policy) = source.and_then(|source| source.policy.as_ref()) else {
+        return Ok(None);
+    };
+    if !policy.rules.contains_key(name) {
+        return Ok(None);
+    }
+    let Some((schema, budget)) = policy.nullable_inputs.get(name) else {
+        return Ok(None);
+    };
+    codex_tools::normalize_nullable_mcp_arguments(schema, *budget, input).map_err(str::to_owned)
+}
+fn effective_mcp_text(
+    source: Option<&Arc<ProfileMcpSource>>,
+    name: &ToolName,
+    input: &str,
+) -> Result<Option<Value>, String> {
+    if !source
+        .and_then(|source| source.policy.as_ref())
+        .is_some_and(|policy| {
+            policy.rules.contains_key(name) && policy.nullable_inputs.contains_key(name)
+        })
+    {
+        return Ok(None);
+    }
+    // Reuse the bridge's existing encoded-byte ceiling before allocating a JSON projection.
+    if input.len() > MAX_PAYLOAD_BYTES {
+        return Err(FAILURE.into());
+    }
+    let input = serde_json::from_str(input).map_err(|_| FAILURE.to_owned())?;
+    effective_mcp_input(source, name, &input)
 }
 impl<T: DecisionRequest> DecisionRequest for ProfiledRequest<T> {
     fn owner(&self) -> Option<&Arc<DirectTurn>> {
@@ -1640,6 +1709,7 @@ impl Control {
         }
         ProfileMcpPolicy {
             identities: ProfileMcpPolicy::identities(binding),
+            nullable_inputs: ProfileMcpPolicy::nullable_inputs(binding),
             names,
             rules,
         }
@@ -1658,6 +1728,9 @@ impl Control {
             receipt: None,
             policy: Some(Arc::new(ProfileMcpPolicy {
                 identities: HashMap::new(),
+                // This partial source has no binding; for_binding supplies
+                // the actual immutable schema before dispatch.
+                nullable_inputs: HashMap::new(),
                 names: rules.keys().cloned().collect(),
                 rules,
             })),
@@ -4480,11 +4553,26 @@ impl DirectRequest {
                 .and_then(|admission| admission.step_store()),
         )
         .map_err(|_| rejected())?;
+        let effective_input = match &item {
+            ResponseItem::FunctionCall {
+                namespace,
+                name,
+                arguments,
+                ..
+            } => effective_mcp_text(
+                source.as_ref(),
+                &ToolName::new(namespace.clone(), name.clone()).with_default_namespace(),
+                arguments,
+            )
+            .map_err(|_| rejected())?,
+            _ => None,
+        };
         let decision = self
             .control
             .decide_released(
                 ProfiledRequest {
                     source,
+                    effective_input,
                     request: OwnedRequest {
                         request,
                         owner: &self.owner,
@@ -5091,7 +5179,14 @@ impl ToolLifecycleContributor for Boundary {
                 Err(_) => return,
             };
             let edited = match control
-                .decide(ProfiledRequest { request, source }, &owner.cancelled)
+                .decide(
+                    ProfiledRequest {
+                        request,
+                        source,
+                        effective_input: None,
+                    },
+                    &owner.cancelled,
+                )
                 .await
             {
                 Ok(Decision::Continue) => Some(original),
@@ -5911,9 +6006,18 @@ impl CodeModeSessionDelegate for Delegate {
                 // An originally opted-out cell cannot acquire callback authority.
                 return Err(FAILURE.into());
             }
+            let effective_input = match invocation.input.as_ref() {
+                Some(input) => effective_mcp_input(
+                    self.profile_source.as_ref(),
+                    &invocation.tool_name.clone().with_default_namespace(),
+                    input,
+                )?,
+                None => None,
+            };
             let request = ProfiledRequest {
                 request,
                 source: self.profile_source.clone(),
+                effective_input,
             };
             let decision = if builtin || executor_before {
                 if let Some(lease) = &lease {

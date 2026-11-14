@@ -24,6 +24,7 @@ afterEach(async () => {
 async function application(
   peer: BorrowedPeer,
   approval?: (event: MCPToolStartObservation) => boolean | Promise<boolean>,
+  onToolLifecycle?: Agent['onToolLifecycle'],
 ) {
   const selected = await selectMcpTools(
     { name: 'crm', server: peer },
@@ -53,6 +54,7 @@ async function application(
     programmaticToolCalling: false,
     provider,
     tools: selected,
+    onToolLifecycle,
   }).session();
   sessions.push(session);
   return { session, model };
@@ -65,6 +67,46 @@ async function entered(gate: Promise<void>, completion: Promise<unknown>) {
     }),
   ]);
 }
+
+it.each([false, true])(
+  'runs selected MCP lifecycle observers after approval and before dispatch (deny: %s)',
+  async (deny) => {
+    const peer = new BorrowedPeer();
+    const events: string[] = [];
+    const refusal = new Error('selected tool lifecycle refused');
+    const { session, model } = await application(
+      peer,
+      () => {
+        events.push('approved');
+        expect(peer.callTool).not.toHaveBeenCalled();
+        return true;
+      },
+      (event) => {
+        events.push(event.kind);
+        expect(event.callId).toBe('selected-call');
+        if (event.kind === 'start') {
+          expect(peer.callTool).not.toHaveBeenCalled();
+          if (deny) throw refusal;
+        } else {
+          expect(peer.callTool).toHaveBeenCalledTimes(1);
+          expect(model.requests).toHaveLength(1);
+        }
+      },
+    );
+    const turn = await session.submit('run');
+    if (deny) {
+      await expect(turn.wait()).rejects.toBe(refusal);
+      expect(events).toEqual(['approved', 'start']);
+      expect(model.requests).toHaveLength(1);
+      expect(peer.callTool).not.toHaveBeenCalled();
+    } else {
+      expect((await turn.wait()).finalOutput).toBe('done');
+      expect(events).toEqual(['approved', 'start', 'end']);
+      expect(model.requests).toHaveLength(2);
+      expect(peer.callTool).toHaveBeenCalledTimes(1);
+    }
+  },
+);
 
 it('pauses native execution at approval, start and normalized end before result publication', async () => {
   const peer = new BorrowedPeer();

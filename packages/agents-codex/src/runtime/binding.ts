@@ -64,6 +64,13 @@ export function copyJsonValue(
   }
 }
 
+/** Clone admitted JSON on platforms whose host omits structuredClone. */
+export function cloneJson<T extends JsonValue>(value: T): T {
+  return typeof structuredClone === 'function'
+    ? structuredClone(value)
+    : (copyJsonValue(value) as T);
+}
+
 /** @internal Validate JSON values while preserving every own key without setters. */
 export const losslessJsonValueSchema: z.ZodType<JsonValue> = z
   .unknown()
@@ -227,7 +234,7 @@ function checkJsonCapacity(
   };
   const visit = (parent: object, key: string, raw: unknown): void => {
     const item = replace.call(parent, key, raw);
-    if (JSON.isRawJSON(item)) add(item.rawJSON.length);
+    if (JSON.isRawJSON?.(item)) add(item.rawJSON.length);
     else if (typeof item === 'string') string(item);
     else if (item === null) add(4);
     else if (typeof item === 'number' || typeof item === 'boolean')

@@ -594,11 +594,15 @@ impl EngineState {
         ensure!(
             custom_store.is_none()
                 || (!checkpoint
-                    && config::environment(&runtime_json)?.is_none()
                     && config::native_thread_store(&runtime_json)?.is_none()
                     && !config::native_goal_store_enabled(&runtime_json)?),
             "custom canonical storage cannot combine local, checkpoint, or goal stores"
         );
+        if custom_store.is_some() {
+            if let Some(environment) = config::environment(&runtime_json)? {
+                environment.validate_custom_storage_search()?;
+            }
+        }
         let original: serde_json::Value = serde_json::from_str(&runtime_json)?;
         let injected = [
             "managed_config_path",
@@ -1161,6 +1165,10 @@ impl EngineState {
                 history.history_revision = prepared.history_revision.clone();
                 local_resume_admission = Some(admission);
             } else {
+                if self.custom_store.is_some() {
+                    crate::environment::LocalResumeExecutorPolicy::from_startup(&startup)?
+                        .validate(&history.history, id)?;
+                }
                 if instructions.managed() {
                     let accepted = if let Some(opening) = startup
                         .thread_extension_init
@@ -1218,10 +1226,6 @@ impl EngineState {
             ensure!(
                 !startup.config.agents_enabled
                     && !startup.config.update_plan_enabled
-                    && startup
-                        .environments
-                        .as_ref()
-                        .is_none_or(|environments| environments.is_empty())
                     && !startup.config.features.enabled(Feature::Goals)
                     && !startup.config.features.enabled(Feature::CodeMode)
                     && startup.dynamic_tools.is_empty()
@@ -1456,6 +1460,7 @@ impl EngineState {
             child_instances: RwLock::new(HashMap::new()),
             native_questions: std::sync::Mutex::new(HashMap::new()),
             native_question_gate: tokio::sync::Mutex::new(()),
+            remembered_mcp_approvals: Default::default(),
             child_reader_retired: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             closing: watch::channel(false).0,
@@ -1519,7 +1524,7 @@ impl EngineState {
         let mut metadata = if boundary.is_none() {
             let captured = crate::checkpoint::export(source, None).await?;
             ensure!(
-                crate::python_tools::PythonTools::staged_retry(source, &captured).is_none(),
+                crate::python_tools::PythonTools::staged_retry(source, &captured)?.is_none(),
                 "fork requires settled staged input"
             );
             ensure!(
@@ -2866,6 +2871,7 @@ pub struct ThreadState {
     pub(crate) child_instances: RwLock<HashMap<ThreadId, crate::subagents::Instance>>,
     native_questions: std::sync::Mutex<HashMap<String, OwnedNativeQuestion>>,
     pub(crate) native_question_gate: tokio::sync::Mutex<()>,
+    remembered_mcp_approvals: std::sync::Mutex<Vec<(codex_core::LiveMcpApprovalPolicy, bool)>>,
     child_reader_retired: AtomicBool,
 }
 
@@ -3574,10 +3580,59 @@ impl ThreadState {
         Ok(true)
     }
 
+    // The caller holds the existing question gate. Core derives policy only
+    // from the actual current root MCP sender, never from peer metadata.
+    async fn live_mcp_approval_policy(
+        &self,
+        id: &str,
+    ) -> anyhow::Result<Option<codex_core::LiveMcpApprovalPolicy>> {
+        let Some(question) = self.captured_question(id) else {
+            return Ok(None);
+        };
+        if question.child.is_some()
+            || question.captured.url.is_some()
+            || !self.question_owner_current(&question)
+        {
+            return Ok(None);
+        }
+        let Some(grant) = question.captured.grant else {
+            return Ok(None);
+        };
+        grant.live_mcp_approval_policy().await
+    }
+
+    pub(crate) async fn can_remember_mcp_question(&self, id: &str) -> anyhow::Result<bool> {
+        let _reply_gate = self.native_question_gate.lock().await;
+        let Some(policy) = self.live_mcp_approval_policy(id).await? else {
+            return Ok(false);
+        };
+        let choices = self
+            .remembered_mcp_approvals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(choices.len() < 4096 || choices.iter().any(|(known, _)| known.matches(&policy)))
+    }
+
+    pub(crate) async fn remembered_mcp_decision(&self, id: &str) -> anyhow::Result<Option<bool>> {
+        let _reply_gate = self.native_question_gate.lock().await;
+        let Some(policy) = self.live_mcp_approval_policy(id).await? else {
+            return Ok(None);
+        };
+        let choices = self
+            .remembered_mcp_approvals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(choices
+            .iter()
+            .find(|(known, _)| known.matches(&policy))
+            .map(|(_, choice)| *choice))
+    }
+
     pub(crate) async fn respond_owned_native_question(
         &self,
         id: &str,
         response_json: &str,
+        remember_mcp: Option<bool>,
     ) -> anyhow::Result<bool> {
         let _reply_gate = self.native_question_gate.lock().await;
         let Some(question) = self.captured_question(id) else {
@@ -3600,6 +3655,29 @@ impl ThreadState {
             );
         }
         let current = self.question_owner_current(&question);
+        let remembered = if let Some(approve) = remember_mcp {
+            ensure!(
+                matches!(&response, codex_protocol::protocol::Op::ResolveElicitation { decision, content, meta, .. }
+                if *decision == if approve { codex_protocol::approvals::ElicitationAction::Accept } else { codex_protocol::approvals::ElicitationAction::Decline }
+                    && content.is_none() && meta.is_none()),
+                "Remembered MCP choice requires its ordinary one-shot decision"
+            );
+            let policy = self
+                .live_mcp_approval_policy(id)
+                .await?
+                .context("Remembering requires an actual current root MCP approval")?;
+            let choices = self
+                .remembered_mcp_approvals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            ensure!(
+                choices.len() < 4096 || choices.iter().any(|(known, _)| known.matches(&policy)),
+                "Remembered MCP choice limit exceeded"
+            );
+            Some((policy, approve))
+        } else {
+            None
+        };
         let accepted = if let Some(grant) = &question.captured.grant {
             if let Some(url) = &question.captured.url {
                 if !current
@@ -3641,6 +3719,18 @@ impl ThreadState {
         } else {
             false
         };
+        if accepted && let Some((policy, approve)) = remembered {
+            let mut choices = self
+                .remembered_mcp_approvals
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((_, choice)) = choices.iter_mut().find(|(known, _)| known.matches(&policy))
+            {
+                *choice = approve;
+            } else {
+                choices.push((policy, approve));
+            }
+        }
         if question.captured.url.is_none()
             && (accepted || !current || !self.native_question_pending(id).await)
         {
@@ -4515,6 +4605,10 @@ impl ThreadState {
                 ack_error.get_or_insert(failure);
             }
         }
+        self.remembered_mcp_approvals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         self.closed.store(true, Ordering::Release);
         Ok(ack_error)
     }
@@ -4522,6 +4616,10 @@ impl ThreadState {
     // Called only after Core has joined and the retained native writer has
     // finalized its suspension. Ordinary close must not send a second shutdown.
     pub(crate) async fn retire_suspended(&self) {
+        self.remembered_mcp_approvals
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         self.native_questions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

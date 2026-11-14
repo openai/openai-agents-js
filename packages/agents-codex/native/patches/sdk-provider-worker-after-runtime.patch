@@ -1,0 +1,1874 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 5803eb424bc..ae79cb39ac5 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1716,11 +1716,21 @@ impl ModelClient {
+                 item.set_id(/*new_id*/ None);
+             }
+             match item {
+-                ResponseItem::ShellCall {
+-                    provider_fields, ..
+-                } => {
++                ResponseItem::FileSearchCall { provider_fields, .. }
++                | ResponseItem::CodeInterpreterCall { provider_fields, .. }
++                | ResponseItem::ImageGenerationCall { provider_fields, .. }
++                | ResponseItem::ShellCall { provider_fields, .. } => {
+                     provider_fields.remove("created_by");
+                 }
++                ResponseItem::ApplyPatchCall { fields, .. }
++                | ResponseItem::ComputerCall { fields, .. }
++                | ResponseItem::McpListTools { provider_fields: fields, .. }
++                | ResponseItem::McpCall { provider_fields: fields, .. }
++                | ResponseItem::McpApprovalRequest { provider_fields: fields, .. }
++                | ResponseItem::Program { provider_fields: fields, .. }
++                | ResponseItem::ProgramOutput { provider_fields: fields, .. } => {
++                    fields.remove("created_by");
++                }
+                 ResponseItem::ShellCallOutput {
+                     provider_fields, ..
+                 } => {
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index be10245c82d..617867db2ad 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -1,3 +1,5 @@
++mod request_usage;
++
+ use crate::context::UserGoalUpdate;
+ use crate::context_manager::ContextManager;
+ use std::collections::HashMap;
+@@ -385,6 +387,7 @@ pub(crate) async fn run_custom_post_turn_compaction(
+         .await?;
+     let candidate_indexes = compaction_candidate_indexes(&items);
+     let input = codex_extension_api::CompactionInput {
++        accounting: None,
+         step_store: Some(&step_context.extension_data),
+         thread_id: &thread_id,
+         turn_id: &step_context.turn.sub_id,
+@@ -411,10 +414,13 @@ pub(crate) async fn run_custom_post_turn_compaction(
+         if !contributor.schedules_post_turn_compaction(&thread_id, &step_context.extension_data) {
+             continue;
+         }
+-        let decision = contributor
+-            .post_turn_compaction(input.clone())
+-            .await
+-            .map_err(CodexErr::InvalidRequest)?;
++        let accounting = Arc::new(request_usage::BorrowedCompactionUsage::default());
++        let mut observed_input = input.clone();
++        observed_input.accounting = Some(accounting.clone());
++        let decision = contributor.post_turn_compaction(observed_input).await;
++        // The contributor has joined its physical callback on every result path.
++        accounting.flush(&sess, &step_context.turn).await?;
++        let decision = decision.map_err(CodexErr::InvalidRequest)?;
+         if let Some(admitted) = decision {
+             if !admitted || sess.input_queue.has_pending_input(&sess.active_turn).await {
+                 return Ok(true);
+@@ -498,6 +504,7 @@ async fn try_custom_compaction_with_history(
+             let filtered_handoff = projected.1;
+             indexes = compaction_candidate_indexes(&items);
+             current_input = codex_extension_api::CompactionInput {
++                accounting: None,
+                 step_store: Some(&source_step_context.extension_data),
+                 thread_id: &thread_id,
+                 turn_id: &turn_context.sub_id,
+@@ -527,10 +534,12 @@ async fn try_custom_compaction_with_history(
+         if !contributor.customizes_compaction(&thread_id) {
+             continue;
+         }
+-        let result = contributor
+-            .before_compact_result((*input).clone())
+-            .await
+-            .map_err(CodexErr::InvalidRequest)?;
++        let accounting = Arc::new(request_usage::BorrowedCompactionUsage::default());
++        let mut observed_input = (*input).clone();
++        observed_input.accounting = Some(accounting.clone());
++        let result = contributor.before_compact_result(observed_input).await;
++        accounting.flush(sess, turn_context).await?;
++        let result = result.map_err(CodexErr::InvalidRequest)?;
+         match result {
+             None => continue,
+             Some(codex_extension_api::CompactionResult::Summary(summary)) => {
+diff --git a/codex-rs/core/src/compact/request_usage.rs b/codex-rs/core/src/compact/request_usage.rs
+new file mode 100644
+index 00000000000..e3b13261795
+--- /dev/null
++++ b/codex-rs/core/src/compact/request_usage.rs
+@@ -0,0 +1,136 @@
++use super::{CodexResult, Session, TurnContext};
++use codex_extension_api::CompactionRequestAccounting;
++use codex_protocol::protocol::ReceivedResponseUsage;
++use std::sync::Mutex;
++
++#[derive(Debug)]
++struct Request {
++    id: String,
++    settled: bool,
++    received: bool,
++    usage: Option<ReceivedResponseUsage>,
++}
++
++#[derive(Debug, Default)]
++struct State {
++    closed: bool,
++    request: Option<Request>,
++}
++
++/// Each compaction callback can dispatch at most one borrowed SDK endpoint call.
++#[derive(Debug, Default)]
++pub(super) struct BorrowedCompactionUsage(Mutex<State>);
++
++impl CompactionRequestAccounting for BorrowedCompactionUsage {
++    fn dispatched(&self) -> Result<String, String> {
++        let mut state = self.0.lock().expect("Compaction accounting poisoned");
++        if state.closed || state.request.is_some() {
++            return Err("Compaction request already admitted or retired".into());
++        }
++        let id = uuid::Uuid::now_v7().to_string();
++        state.request = Some(Request {
++            id: id.clone(),
++            settled: false,
++            received: false,
++            usage: None,
++        });
++        Ok(id)
++    }
++
++    fn settled(
++        &self,
++        id: &str,
++        usage: Option<ReceivedResponseUsage>,
++        received: bool,
++    ) -> Result<(), String> {
++        let mut state = self.0.lock().expect("Compaction accounting poisoned");
++        if state.closed {
++            return Err("Compaction request retired".into());
++        }
++        let request = state
++            .request
++            .as_mut()
++            .filter(|request| request.id == id && !request.settled)
++            .ok_or_else(|| "Compaction request receipt expired".to_string())?;
++        if let Some(value) = &usage {
++            if !received
++                || [
++                    value.input_tokens,
++                    value.cached_input_tokens,
++                    value.cache_write_input_tokens,
++                    value.output_tokens,
++                    value.reasoning_output_tokens,
++                    value.total_tokens,
++                ]
++                .into_iter()
++                .flatten()
++                .any(|count| count < 0)
++            {
++                return Err("Invalid compaction usage".into());
++            }
++        }
++        request.settled = true;
++        request.received = received;
++        request.usage = usage;
++        Ok(())
++    }
++}
++
++impl BorrowedCompactionUsage {
++    fn take(&self) -> Option<Request> {
++        let mut state = self.0.lock().expect("Compaction accounting poisoned");
++        state.closed = true;
++        state.request.take()
++    }
++
++    pub(super) async fn flush(&self, sess: &Session, turn: &TurnContext) -> CodexResult<()> {
++        if let Some(request) = self.take() {
++            sess.record_borrowed_compaction_usage(
++                turn,
++                request.id,
++                request.usage,
++                request.received,
++            )
++            .await?;
++        }
++        Ok(())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn one_identity_and_one_settlement() {
++        let owner = BorrowedCompactionUsage::default();
++        let id = owner.dispatched().unwrap();
++        assert!(owner.dispatched().is_err());
++        assert!(owner.settled("foreign", None, false).is_err());
++        owner.settled(&id, None, false).unwrap();
++        assert!(owner.settled(&id, None, false).is_err());
++        assert_eq!(owner.take().unwrap().id, id);
++        assert!(owner.take().is_none());
++        assert!(owner.dispatched().is_err());
++    }
++    #[test]
++    fn joined_unsettled_dispatch_retains_unknown_usage() {
++        let owner = BorrowedCompactionUsage::default();
++        owner.dispatched().unwrap();
++        let record = owner.take().unwrap();
++        assert!(record.usage.is_none());
++        assert!(!record.received);
++    }
++    #[test]
++    fn received_usage_survives_later_callback_failure() {
++        let owner = BorrowedCompactionUsage::default();
++        let id = owner.dispatched().unwrap();
++        let usage = ReceivedResponseUsage {
++            input_tokens: Some(4),
++            output_tokens: Some(2),
++            total_tokens: Some(6),
++            ..Default::default()
++        };
++        owner.settled(&id, Some(usage.clone()), true).unwrap();
++        assert_eq!(owner.take().unwrap().usage, Some(usage));
++    }
++}
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 7289314a2ae..c2806ac8d6b 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -933,7 +933,8 @@ impl Session {
+         destination.agent_profile = Some(Arc::clone(&profile));
+         configuration.agent_profile = Some(profile);
+         configuration.step_settings = Arc::new(destination.selected().clone());
+-        let settings = configuration.thread_settings_snapshot(&configuration.environments);
++        let mut settings = configuration.thread_settings_snapshot(&configuration.environments);
++        settings.request_controls = settings.request_controls.for_persistence();
+         let batch = [
+             RolloutItem::ResponseItem(envelope.clone()),
+             RolloutItem::EventMsg(EventMsg::ThreadSettingsApplied(
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index c3c9432879d..bb570b5a1a2 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -5769,6 +5769,51 @@ impl Session {
+         Ok(Some(retained))
+     }
+ 
++    pub(crate) async fn record_borrowed_compaction_usage(
++        &self,
++        turn_context: &TurnContext,
++        request_id: String,
++        usage: Option<codex_protocol::protocol::ReceivedResponseUsage>,
++        received: bool,
++    ) -> CodexResult<()> {
++        use codex_protocol::protocol::{
++            ResponseObservation, ResponseObservationEndpoint, ResponseObservationRecord,
++            ResponseObservationStatus,
++        };
++        let retained = self.live_thread().is_some();
++        if retained {
++            let record = ResponseObservationRecord {
++                id: request_id.clone(),
++                thread_id: self.thread_id,
++                turn_id: turn_context.sub_id.clone(),
++                compaction: Some(true),
++                endpoint: Some(ResponseObservationEndpoint::ResponsesCompact),
++                observation: ResponseObservation {
++                    // The native invocation identity is not a provider response ID.
++                    response_id: None,
++                    upstream_request_id: None,
++                    status: if received {
++                        ResponseObservationStatus::Completed
++                    } else {
++                        ResponseObservationStatus::Failed
++                    },
++                    incomplete_reason: None,
++                    usage,
++                },
++            };
++            if !self
++                .persist_rollout_items(&[RolloutItem::ResponseObservationRecord(record)])
++                .await
++            {
++                return Err(CodexErr::Fatal(
++                    "Could not retain borrowed compaction usage".into(),
++                ));
++            }
++        }
++        self.ensure_rollout_durable().await?;
++        Ok(())
++    }
++
+     pub(crate) async fn record_response_observation(
+         &self,
+         turn_context: &TurnContext,
+@@ -5785,6 +5830,7 @@ impl Session {
+             thread_id: self.thread_id,
+             turn_id: turn_context.sub_id.clone(),
+             compaction: compaction.then_some(true),
++            endpoint: None,
+             observation,
+         };
+         if !self
+diff --git a/codex-rs/core/src/session/turn_tests.rs b/codex-rs/core/src/session/turn_tests.rs
+index 8771f1e6a32..8678efd9369 100644
+--- a/codex-rs/core/src/session/turn_tests.rs
++++ b/codex-rs/core/src/session/turn_tests.rs
+@@ -336,6 +336,7 @@ fn recovered_batch_fixture() -> (
+             thread_id: thread,
+             turn_id: "recovered".into(),
+             compaction: None,
++            endpoint: None,
+             observation: ResponseObservation {
+                 upstream_request_id: None,
+                 response_id: Some(id.into()),
+diff --git a/codex-rs/core/tests/tool_terminal_recovery.rs b/codex-rs/core/tests/tool_terminal_recovery.rs
+index cac5b75b6ac..4d8b367b458 100644
+--- a/codex-rs/core/tests/tool_terminal_recovery.rs
++++ b/codex-rs/core/tests/tool_terminal_recovery.rs
+@@ -233,6 +233,7 @@ async fn tool_terminal_recovery_request_boundary(case: RecoveryCase) -> anyhow::
+                     thread_id: thread,
+                     turn_id: TURN.into(),
+                     compaction: None,
++                    endpoint: None,
+                     observation: ResponseObservation {
+                         upstream_request_id: None,
+                         response_id: Some("provider-batch".into()),
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index d2f5c837c29..a960c187973 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -172,6 +172,7 @@ pub use codex_api::completed_model_response;
+ pub use model_request::CapturedRunModelOverride;
+ pub use model_request::CapturedRunModelSettingsOverride;
+ pub use model_request::CompactionInput;
++pub use model_request::CompactionRequestAccounting;
+ pub use model_request::CompactionResult;
+ pub use model_request::CompactionWindow;
+ pub use model_request::ModelContextInput;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 97f6d77e907..3da0421144d 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -344,6 +344,8 @@ pub struct ProviderResponseAnchor {
+ /// Captured input before automatic or manual native summarization.
+ #[derive(Clone)]
+ pub struct CompactionInput<'a> {
++    /// Native-owned accounting for the SDK borrowed compact endpoint, never its inner retries.
++    pub accounting: Option<Arc<dyn CompactionRequestAccounting>>,
+     pub step_store: Option<&'a ExtensionData>,
+     pub thread_id: &'a str,
+     pub turn_id: &'a str,
+@@ -357,6 +359,17 @@ pub struct CompactionInput<'a> {
+     pub items: &'a [ResponseItem],
+ }
+ 
++/// One admitted SDK compact endpoint invocation, bounded to its callback lifetime.
++pub trait CompactionRequestAccounting: Send + Sync + std::fmt::Debug {
++    fn dispatched(&self) -> Result<String, String>;
++    fn settled(
++        &self,
++        id: &str,
++        usage: Option<codex_protocol::protocol::ReceivedResponseUsage>,
++        response_received: bool,
++    ) -> Result<(), String>;
++}
++
+ /// Complete canonical window returned by an application-owned compact client.
+ /// The response ID identifies this compact call, never a generation anchor.
+ #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 3451230786e..0113e14df15 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -21,6 +21,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
+ // Per-owner wire budgets. Processor queues still charge the complete encoded
+ // projection, including receipts and retained root descriptors.
+ pub(crate) const MAX_TRACING_OPTIONS_BYTES: usize = 128 * 1024;
++// Only explicit SDK metadata can use the existing native event allowance.
++pub(crate) const MAX_LOCAL_ANNOTATION_BYTES: usize =
++    crate::sdk_trace_routes::MAX_CUSTOM_COMPLETION_WIRE_BYTES;
+ pub(crate) const MAX_COMPLETION_DATA_BYTES: usize = 64 * 1024;
+ // Allow host JSON escaping and outcome framing, then validate compact data below.
+ const MAX_TRACING_OUTCOME_BYTES: usize = 4 * MAX_COMPLETION_DATA_BYTES;
+@@ -577,6 +580,9 @@ fn bounded_metadata_json(
+     encoded: &str,
+     depth: usize,
+ ) -> Result<Box<serde_json::value::RawValue>, String> {
++    if depth == 0 && encoded.len() > MAX_LOCAL_ANNOTATION_BYTES {
++        return Err("Tracing metadata exceeds the native annotation limit".into());
++    }
+     if depth > MAX_TRACING_DATA_DEPTH {
+         return Err(format!(
+             "Tracing metadata exceeds maximum depth of {MAX_TRACING_DATA_DEPTH}"
+@@ -624,9 +630,6 @@ fn metadata_attribute_value(value: &serde_json::value::RawValue) -> Result<Strin
+ // A single SDK-owned carrier avoids the generic OpenTelemetry attribute-count cap.
+ // Both export routes restore the existing per-key shape after native span collection.
+ pub(crate) fn metadata_attributes(encoded: &str) -> Result<Vec<KeyValue>, String> {
+-    if encoded.len() > MAX_TRACING_OPTIONS_BYTES {
+-        return Err("Tracing metadata exceeds 128 KiB".into());
+-    }
+     let bounded = bounded_metadata_json(encoded, 0)?;
+     let metadata: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
+         serde_json::from_str(bounded.get()).map_err(|_| "Tracing metadata must be an object")?;
+@@ -641,12 +644,24 @@ pub(crate) fn metadata_attributes(encoded: &str) -> Result<Vec<KeyValue>, String
+         .collect()
+ }
+ 
+-pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+-    if encoded.len() > MAX_TRACING_OPTIONS_BYTES {
+-        return Err("Tracing options exceed 128 KiB".into());
++fn parse_span_options(encoded: &str) -> Result<Options, String> {
++    if encoded.len() > crate::sdk_trace_routes::MAX_BYTES {
++        return Err("Tracing options exceed the native event limit".into());
+     }
+     let options: Options =
+         serde_json::from_str(encoded).map_err(|_| "Invalid native tracing span options")?;
++    let annotation_bytes = options
++        .metadata
++        .as_deref()
++        .map_or(0, |value| value.get().len());
++    if encoded.len().saturating_sub(annotation_bytes) > MAX_TRACING_OPTIONS_BYTES {
++        return Err("Non-metadata tracing options exceed 128 KiB".into());
++    }
++    Ok(options)
++}
++
++pub fn start_trace_span(encoded: &str) -> Result<String, String> {
++    let options = parse_span_options(encoded)?;
+     start_trace_span_options(options, false).map(|started| started.encoded)
+ }
+ 
+@@ -1146,12 +1161,33 @@ mod tests {
+         assert!(parse_trace_id("00000000000000000000000000000000").is_err());
+         assert!(parse_trace_id("workflow").is_err());
+     }
++    #[test]
++    fn larger_annotations_do_not_expand_non_metadata_options() {
++        let metadata = json!({"payload": "x".repeat(160 * 1024)});
++        let options = json!({"name": "local", "kind": "workflow", "metadata": metadata}).to_string();
++        let parsed = parse_span_options(&options).unwrap();
++        assert!(metadata_attributes(parsed.metadata.as_deref().unwrap().get()).is_ok());
++        let oversized = json!({
++            "name": "local",
++            "kind": "workflow",
++            "group_id": "x".repeat(MAX_TRACING_OPTIONS_BYTES),
++            "metadata": metadata,
++        })
++        .to_string();
++        assert!(
++            parse_span_options(&oversized)
++                .err()
++                .unwrap()
++                .contains("Non-metadata")
++        );
++    }
++
+     #[test]
+     fn validates_expanded_annotation_budgets_without_relaxing_shape_bounds() {
+         let metadata = json!({"x": "x".repeat(100_000)}).to_string();
+         assert!(metadata_attributes(&metadata).is_ok());
+         assert!(
+-            metadata_attributes(&json!({"x": "x".repeat(MAX_TRACING_OPTIONS_BYTES)}).to_string())
++            metadata_attributes(&json!({"x": "x".repeat(MAX_LOCAL_ANNOTATION_BYTES)}).to_string())
+                 .is_err()
+         );
+         let data = json!({"x": "x".repeat(MAX_COMPLETION_DATA_BYTES - 8)});
+diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
+index cc8a74a2073..2196dee21d7 100644
+--- a/codex-rs/otel/src/sdk_trace_routes.rs
++++ b/codex-rs/otel/src/sdk_trace_routes.rs
+@@ -305,15 +305,55 @@ fn sdk_metadata(
+     crate::sdk_trace::metadata_attributes(metadata.encoded()).ok()
+ }
+ 
+-fn export_sdk_metadata(mut span: SpanData, policy: Option<&crate::sdk_trace::ScopePolicy>) -> SpanData {
++fn export_sdk_metadata(
++    mut span: SpanData,
++    policy: Option<&crate::sdk_trace::ScopePolicy>,
++) -> SpanData {
+     if let Some(metadata) = sdk_metadata(&span, policy) {
+         // Configured attributes retain their existing precedence.
+-        let configured: BTreeSet<_> = span.attributes.iter().map(|kv| kv.key.to_string()).collect();
+-        span.attributes.extend(
+-            metadata
+-                .into_iter()
+-                .filter(|kv| !configured.contains(kv.key.as_str())),
+-        );
++        let configured: BTreeSet<_> = span
++            .attributes
++            .iter()
++            .map(|kv| kv.key.to_string())
++            .collect();
++        let local_only = policy
++            .and_then(|policy| policy.annotations.as_deref())
++            .is_some_and(|metadata| {
++                metadata.encoded().len() > crate::sdk_trace::MAX_TRACING_OPTIONS_BYTES
++            });
++        // Existing admitted metadata keeps its export behavior. Larger local
++        // annotations get a bounded projection before the exporter owns the span.
++        let encoded_entry_bytes = |kv: &opentelemetry::KeyValue| {
++            serde_json::to_string(kv.key.as_str())
++                .map_or(usize::MAX, |key| key.len())
++                .saturating_add(
++                    serde_json::to_string(&kv.value.to_string())
++                        .map_or(usize::MAX, |value| value.len()),
++                )
++                .saturating_add(2) // colon and a conservative comma allowance
++        };
++        let mut projected_bytes = span
++            .attributes
++            .iter()
++            .filter(|kv| kv.key.as_str().starts_with("sdk.metadata."))
++            .fold(2usize, |bytes, kv| {
++                bytes.saturating_add(encoded_entry_bytes(kv))
++            });
++        for kv in metadata {
++            if configured.contains(kv.key.as_str()) {
++                continue;
++            }
++            let bytes = encoded_entry_bytes(&kv);
++            if local_only
++                && projected_bytes.saturating_add(bytes)
++                    > crate::sdk_trace::MAX_TRACING_OPTIONS_BYTES
++            {
++                span.dropped_attributes_count = span.dropped_attributes_count.saturating_add(1);
++                continue;
++            }
++            projected_bytes = projected_bytes.saturating_add(bytes);
++            span.attributes.push(kv);
++        }
+     }
+     span
+ }
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 749b6f9df0e..52d9bc57383 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -3052,6 +3052,13 @@ pub struct ResponseObservation {
+     pub usage: Option<ReceivedResponseUsage>,
+ }
+ 
++/// Exact endpoint known by the native SDK request owner.
++#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
++pub enum ResponseObservationEndpoint {
++    #[serde(rename = "responses.compact")]
++    ResponsesCompact,
++}
++
+ /// A retained terminal occurrence with its original native identities.
+ #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema, TS)]
+ pub struct ResponseObservationRecord {
+@@ -3062,6 +3069,9 @@ pub struct ResponseObservationRecord {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[ts(optional)]
+     pub compaction: Option<bool>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[ts(optional)]
++    pub endpoint: Option<ResponseObservationEndpoint>,
+     #[serde(flatten)]
+     pub observation: ResponseObservation,
+ }
+@@ -7383,6 +7393,7 @@ mod response_observation_tests {
+             thread_id: ThreadId::new(),
+             turn_id: "origin-turn".to_string(),
+             compaction: None,
++            endpoint: None,
+             observation: ResponseObservation {
+                 upstream_request_id: None,
+                 response_id: None,
+diff --git a/codex-rs/turn-control/src/lib.rs b/codex-rs/turn-control/src/lib.rs
+index 6157e8db8ef..70baa1c6bef 100644
+--- a/codex-rs/turn-control/src/lib.rs
++++ b/codex-rs/turn-control/src/lib.rs
+@@ -17,6 +17,8 @@ impl ResponseContinuation {
+ 
+ #[cfg(any(test, target_arch = "wasm32"))]
+ mod portable;
++#[cfg(any(test, target_arch = "wasm32"))]
++mod portable_tracing;
+ 
+ #[cfg(target_arch = "wasm32")]
+ mod wasm;
+diff --git a/codex-rs/turn-control/src/portable.rs b/codex-rs/turn-control/src/portable.rs
+index 6d7f7708a86..aedb10e9f49 100644
+--- a/codex-rs/turn-control/src/portable.rs
++++ b/codex-rs/turn-control/src/portable.rs
+@@ -10,10 +10,16 @@ const MAX_ROUNDS: u32 = 100;
+ #[derive(Deserialize)]
+ #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+ enum Command {
++    Trace { request: super::portable_tracing::TraceCommand },
++    History {
++        snapshot: Option<String>,
++        expected_revision: Option<u32>,
++        operation: HistoryOperation,
++    },
+     Start {
+         model: String,
+         instructions: String,
+-        input: Option<String>,
++        input: Option<UserInput>,
+         tools: Vec<Declaration>,
+         max_turns: u32,
+         snapshot: Option<Snapshot>,
+@@ -45,6 +51,136 @@ enum Command {
+     Cancel,
+ }
+ 
++#[derive(Deserialize)]
++#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
++enum HistoryOperation {
++    Read { limit: Option<i64> },
++    Append { items: Vec<Value> },
++    Pop { count: Option<u32> },
++    Clear,
++}
++
++enum RestorePurpose {
++    Turn,
++    History,
++}
++
++#[derive(Deserialize)]
++#[serde(untagged)]
++enum UserInput {
++    Text(String),
++    Content(Vec<UserContent>),
++}
++
++#[derive(Deserialize, Serialize)]
++#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
++enum UserContent {
++    InputText {
++        text: String,
++    },
++    InputImage {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        image_url: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        file_id: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        detail: Option<String>,
++    },
++    InputFile {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        file_id: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        file_data: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        file_url: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        filename: Option<String>,
++    },
++}
++
++// References carry model content only. This owner never fetches media or opens paths.
++fn https_reference(value: &str) -> bool {
++    let Some(rest) = value.strip_prefix("https://") else {
++        return false;
++    };
++    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
++    !authority.is_empty()
++        && !value
++            .chars()
++            .any(|c| c.is_control() || c.is_whitespace() || c == '\\')
++        && !authority.contains('@')
++}
++
++impl UserContent {
++    fn valid(&self) -> bool {
++        let nonempty = |value: &str| !value.trim().is_empty();
++        match self {
++            Self::InputText { .. } => true,
++            Self::InputImage {
++                image_url,
++                file_id,
++                detail,
++            } => {
++                detail.as_ref().is_none_or(|detail| {
++                    matches!(detail.as_str(), "auto" | "low" | "high" | "original")
++                }) && match (image_url, file_id) {
++                    (Some(url), None) => {
++                        https_reference(url)
++                            || url.strip_prefix("data:image/").is_some_and(|data| {
++                                data.split_once(";base64,").is_some_and(|(kind, body)| {
++                                    !kind.is_empty() && !body.is_empty()
++                                })
++                            })
++                    }
++                    (None, Some(id)) => nonempty(id),
++                    _ => false,
++                }
++            }
++            Self::InputFile {
++                file_id,
++                file_data,
++                file_url,
++                ..
++            } => match (file_id, file_data, file_url) {
++                (Some(id), None, None) => nonempty(id),
++                (None, Some(data), None) => nonempty(data),
++                (None, None, Some(url)) => https_reference(url),
++                _ => false,
++            },
++        }
++    }
++}
++
++impl UserInput {
++    fn content(self) -> Result<Vec<Value>, &'static str> {
++        match self {
++            Self::Text(text) => Ok(vec![json!({"type":"input_text","text":text})]),
++            Self::Content(parts) => {
++                if parts.is_empty() || !parts.iter().all(UserContent::valid) {
++                    return Err("Invalid portable user content");
++                }
++                parts
++                    .into_iter()
++                    .map(|part| {
++                        serde_json::to_value(part).map_err(|_| "Invalid portable user content")
++                    })
++                    .collect()
++            }
++        }
++    }
++}
++
++fn valid_tool_output(value: &Value) -> bool {
++    value.is_string()
++        || value.as_array().is_some_and(|parts| {
++            !parts.is_empty()
++                && parts.iter().all(|part| {
++                    serde_json::from_value::<UserContent>(part.clone())
++                        .is_ok_and(|part| part.valid())
++                })
++        })
++}
++
+ #[derive(Deserialize, Serialize)]
+ #[serde(deny_unknown_fields)]
+ struct Snapshot {
+@@ -119,7 +255,7 @@ struct ApprovalCheckpoint {
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     remaining: Vec<(String, Declaration)>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+-    results: Vec<(String, String)>,
++    results: Vec<(String, Value)>,
+     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+     finish_calls: Vec<(String, Declaration)>,
+ }
+@@ -151,6 +287,18 @@ struct Call {
+ #[derive(Serialize)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+ enum Effect {
++    Trace { result: Value },
++    History {
++        previous_revision: u32,
++        revision: u32,
++        pending_approval: bool,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        items: Option<Vec<Value>>,
++        #[serde(skip_serializing_if = "Vec::is_empty")]
++        popped: Vec<Value>,
++        #[serde(skip_serializing_if = "Option::is_none")]
++        checkpoint: Option<String>,
++    },
+     Model {
+         request_id: u32,
+         body: Value,
+@@ -194,7 +342,7 @@ struct Batch {
+     issued: HashSet<String>,
+     effective_arguments: Option<Value>,
+     remaining: Vec<Call>,
+-    results: Vec<(String, Option<String>)>,
++    results: Vec<(String, Option<Value>)>,
+     finish_calls: Vec<String>,
+ }
+ 
+@@ -216,7 +364,7 @@ impl Batch {
+         }
+     }
+ 
+-    fn record(&mut self, id: &str, value: String) -> Result<(), &'static str> {
++    fn record(&mut self, id: &str, value: Value) -> Result<(), &'static str> {
+         let slot = self
+             .results
+             .iter_mut()
+@@ -232,6 +380,7 @@ impl Batch {
+ }
+ 
+ pub(crate) struct PortableTurn {
++    tracing: super::portable_tracing::TraceState,
+     phase: Phase,
+     request_id: u32,
+     max_turns: u32,
+@@ -250,6 +399,7 @@ pub(crate) struct PortableTurn {
+ impl Default for PortableTurn {
+     fn default() -> Self {
+         Self {
++            tracing: super::portable_tracing::TraceState::default(),
+             phase: Phase::New,
+             request_id: 0,
+             max_turns: 0,
+@@ -289,6 +439,17 @@ impl PortableTurn {
+ 
+     fn transition(&mut self, command: Command) -> Result<Option<Effect>, &'static str> {
+         match command {
++            Command::Trace { request } => self.tracing.apply(request).map(|result| Some(Effect::Trace { result })),
++            Command::History {
++                snapshot,
++                expected_revision,
++                operation,
++            } if matches!(self.phase, Phase::New) => {
++                // History operations terminate without model, tool or approval effects.
++                self.phase = Phase::Finished;
++                self.history_operation(snapshot, expected_revision, operation)
++                    .map(Some)
++            }
+             Command::Start {
+                 model,
+                 instructions,
+@@ -357,8 +518,9 @@ impl PortableTurn {
+                     let batch = self.restore_approval(approval)?;
+                     return self.advance_batch(batch).map(Some);
+                 }
+-                let input = input.ok_or("No portable approval is pending")?;
+-                self.history.push(json!({"type":"message","role":"user","content":[{"type":"input_text","text":input}]}));
++                let content = input.ok_or("No portable approval is pending")?.content()?;
++                self.history
++                    .push(json!({"type":"message","role":"user","content":content}));
+                 self.next_request().map(Some)
+             }
+             Command::Model {
+@@ -460,7 +622,7 @@ impl PortableTurn {
+                 if approved {
+                     Ok(Some(self.issue_batch(batch, vec![call])))
+                 } else {
+-                    batch.record(&call_id, "Tool call denied.".to_owned())?;
++                    batch.record(&call_id, json!("Tool call denied."))?;
+                     self.advance_batch(batch).map(Some)
+                 }
+             }
+@@ -472,11 +634,17 @@ impl PortableTurn {
+                 let Phase::Tools(batch) = &mut self.phase else {
+                     return Err("No portable tool results are pending");
+                 };
+-                if !batch.issued.remove(&call_id) {
++                if !batch.issued.contains(&call_id) {
+                     return Err("Unissued or duplicate portable tool result");
+                 }
+-                let output = output.as_str().ok_or("Portable tool result must be text")?;
+-                batch.record(&call_id, output.to_owned())?;
++                if !valid_tool_output(&output) {
++                    return Err("Invalid portable tool content");
++                }
++                if batch.finish_calls.contains(&call_id) && !output.is_string() {
++                    return Err("Portable finishing tools require text output");
++                }
++                batch.issued.remove(&call_id);
++                batch.record(&call_id, output)?;
+                 if !batch.issued.is_empty() {
+                     return Ok(None);
+                 }
+@@ -572,8 +740,16 @@ impl PortableTurn {
+                 .results
+                 .iter()
+                 .find(|(call_id, _)| call_id == id)
+-                .and_then(|(_, result)| result.clone())
++                .and_then(|(_, result)| result.as_ref())
+         });
++        let text = text
++            .map(|value| {
++                value
++                    .as_str()
++                    .map(str::to_owned)
++                    .ok_or("Portable finishing tools require text output")
++            })
++            .transpose()?;
+         for (id, result) in batch.results {
+             let output = result.ok_or("Incomplete portable tool batch")?;
+             self.history
+@@ -624,6 +800,9 @@ impl PortableTurn {
+                 continue;
+             };
+             if let Some(output) = results.remove(id) {
++                if !valid_tool_output(&output) {
++                    return Err("Invalid portable approved tool content");
++                }
+                 batch.results.push((id.to_owned(), Some(output)));
+             } else if let Some(declaration) = declarations.remove(id) {
+                 let name = item["name"]
+@@ -678,6 +857,15 @@ impl PortableTurn {
+         }
+         for (id, _) in &batch.results {
+             if finishing_ids.contains(id) {
++                if batch
++                    .results
++                    .iter()
++                    .find(|(call_id, _)| call_id == id)
++                    .and_then(|(_, value)| value.as_ref())
++                    .is_some_and(|value| !value.is_string())
++                {
++                    return Err("Portable finishing tools require text output");
++                }
+                 batch.finish_calls.push(id.clone());
+             }
+         }
+@@ -692,23 +880,124 @@ impl PortableTurn {
+         Ok(batch)
+     }
+ 
++    fn history_operation(
++        &mut self,
++        snapshot: Option<String>,
++        expected_revision: Option<u32>,
++        operation: HistoryOperation,
++    ) -> Result<Effect, &'static str> {
++        let snapshot = snapshot
++            .map(|raw| {
++                serde_json::from_str::<Option<Snapshot>>(&raw)
++                    .map_err(|_| "Invalid portable history snapshot")
++            })
++            .transpose()?
++            .flatten();
++        let pending_approval = if let Some(snapshot) = snapshot {
++            self.restore_snapshot(snapshot, RestorePurpose::History)?
++                .is_some()
++        } else {
++            false
++        };
++        let previous_revision = self.revision;
++        if expected_revision.is_some_and(|expected| expected != previous_revision) {
++            return Err("Portable history revision changed");
++        }
++        if let HistoryOperation::Read { limit } = operation {
++            let items = match limit {
++                Some(limit) if limit <= 0 => Vec::new(),
++                Some(limit) => {
++                    self.history[self.history.len().saturating_sub(usize::try_from(limit).unwrap_or(usize::MAX))..].to_vec()
++                }
++                None => self.history.clone(),
++            };
++            return Ok(Effect::History {
++                previous_revision,
++                revision: previous_revision,
++                pending_approval,
++                items: Some(items),
++                popped: Vec::new(),
++                checkpoint: None,
++            });
++        }
++        if pending_approval {
++            return Err(
++                "Portable history cannot change while approval or an unknown tool outcome is pending",
++            );
++        }
++        let mut popped = Vec::new();
++        let changed = match operation {
++            HistoryOperation::Append { items } => {
++                let changed = !items.is_empty();
++                self.history.extend(items);
++                changed
++            }
++            HistoryOperation::Pop { count } => {
++                let count = (count.unwrap_or(1) as usize).min(self.history.len());
++                popped = self.history.split_off(self.history.len() - count);
++                self.provider_metadata
++                    .retain(|entry| entry.history_index < self.history.len());
++                count != 0
++            }
++            HistoryOperation::Clear => {
++                let changed = !self.history.is_empty();
++                self.history.clear();
++                self.provider_metadata.clear();
++                changed
++            }
++            HistoryOperation::Read { .. } => unreachable!("history read returned above"),
++        };
++        let checkpoint = if changed {
++            let mut next = self.snapshot(None)?;
++            next.history = self.history.clone();
++            let encoded =
++                serde_json::to_string(&next).map_err(|_| "Invalid portable history checkpoint")?;
++            self.restore_snapshot(next, RestorePurpose::History)?;
++            Some(encoded)
++        } else {
++            None
++        };
++        Ok(Effect::History {
++            previous_revision,
++            revision: self.revision,
++            pending_approval: false,
++            items: None,
++            popped,
++            checkpoint,
++        })
++    }
++
+     fn restore(&mut self, snapshot: Snapshot) -> Result<Option<ApprovalCheckpoint>, &'static str> {
++        self.restore_snapshot(snapshot, RestorePurpose::Turn)
++    }
++
++    fn restore_snapshot(
++        &mut self,
++        snapshot: Snapshot,
++        purpose: RestorePurpose,
++    ) -> Result<Option<ApprovalCheckpoint>, &'static str> {
+         if snapshot.version != 1 || snapshot.revision == 0 {
+             return Err("Unsupported portable session snapshot");
+         }
+         let mut pending = HashSet::new();
++        let mut seen_calls = HashSet::new();
+         for item in &snapshot.history {
+             match item["type"].as_str() {
+                 Some("message") if item["role"] == "user" || item["role"] == "assistant" => {
+                     let valid = item["content"].as_array().is_some_and(|parts| {
+-                        let expected = if item["role"] == "user" {
+-                            "input_text"
+-                        } else {
+-                            "output_text"
+-                        };
+-                        parts
+-                            .iter()
+-                            .all(|part| part["type"] == expected && part["text"].is_string())
++                        parts.iter().all(|part| {
++                            if item["role"] == "user" && part["type"] != "input_text" {
++                                serde_json::from_value::<UserContent>(part.clone())
++                                    .is_ok_and(|part| part.valid())
++                            } else {
++                                let expected = if item["role"] == "user" {
++                                    "input_text"
++                                } else {
++                                    "output_text"
++                                };
++                                part["type"] == expected && part["text"].is_string()
++                            }
++                        })
+                     });
+                     if !valid {
+                         return Err("Invalid portable session message");
+@@ -720,7 +1009,7 @@ impl PortableTurn {
+                         .as_str()
+                         .filter(|id| !id.is_empty())
+                         .ok_or("Invalid portable session call identifier")?;
+-                    if !self.seen_calls.insert(id.to_owned()) || !pending.insert(id) {
++                    if !seen_calls.insert(id.to_owned()) || !pending.insert(id) {
+                         return Err("Duplicate portable session call");
+                     }
+                 }
+@@ -728,7 +1017,7 @@ impl PortableTurn {
+                     let id = item["call_id"]
+                         .as_str()
+                         .ok_or("Invalid portable session tool output")?;
+-                    if !pending.remove(id) || !item["output"].is_string() {
++                    if !pending.remove(id) || !valid_tool_output(&item["output"]) {
+                         return Err("Unexpected portable session tool output");
+                     }
+                 }
+@@ -750,10 +1039,11 @@ impl PortableTurn {
+             _ => return Err("Portable session has unresolved calls"),
+         }
+         if let Some(profile) = snapshot.active_profile {
+-            if !self
+-                .profiles
+-                .as_ref()
+-                .is_some_and(|graph| graph.declarations.contains_key(&profile))
++            if matches!(purpose, RestorePurpose::Turn)
++                && !self
++                    .profiles
++                    .as_ref()
++                    .is_some_and(|graph| graph.declarations.contains_key(&profile))
+             {
+                 return Err("Portable session requires its current Agent profile");
+             }
+@@ -774,6 +1064,7 @@ impl PortableTurn {
+                 return Err("Portable provider metadata requires its unchanged history occurrence");
+             }
+         }
++        self.seen_calls = seen_calls;
+         self.provider_metadata = snapshot.provider_metadata;
+         self.revision = snapshot.revision;
+         self.history = snapshot.history;
+@@ -993,6 +1284,296 @@ mod tests {
+         serde_json::from_slice(&turn.apply(&serde_json::to_vec(&value).unwrap())).unwrap()
+     }
+ 
++    fn history_action(snapshot: Value, operation: Value, expected: Option<u32>) -> Value {
++        command(
++            &mut PortableTurn::default(),
++            json!({"type":"history","snapshot":snapshot.to_string(),"operation":operation,"expected_revision":expected}),
++        )
++    }
++
++    fn history_source() -> Value {
++        let mut turn = PortableTurn::default();
++        media_start(&mut turn, json!("original question"), Value::Null);
++        let message = json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"original answer"}]});
++        command(&mut turn,json!({"type":"model","request_id":1,"output":[message],
++            "provider_metadata":[{"output_index":0,"metadata":{"provider":"fixture","model":"fixture","value":{"counter":9007199254740993_u64}}}]}))["effect"]["snapshot"].clone()
++    }
++
++    #[test]
++    fn history_read_is_passive_and_preserves_normal_profile_admission() {
++        let mut snapshot = history_source();
++        snapshot["active_profile"] = json!("stored-profile");
++        let mut turn = PortableTurn::default();
++        let read = command(
++            &mut turn,
++            json!({"type":"history","snapshot":snapshot.to_string(),"operation":{"type":"read","limit":1}}),
++        );
++        assert_eq!(read["effect"]["type"], "history");
++        assert_eq!(read["effect"]["revision"], snapshot["revision"]);
++        assert_eq!(read["effect"]["items"].as_array().unwrap().len(), 1);
++        assert!(read["effect"].get("checkpoint").is_none());
++        assert!(
++            command(
++                &mut turn,
++                json!({"type":"model","request_id":1,"output":[]})
++            )
++            .get("error")
++            .is_some()
++        );
++        let ordinary = media_start(&mut PortableTurn::default(), json!("new input"), snapshot);
++        assert_eq!(
++            ordinary["error"],
++            "Portable session requires its current Agent profile"
++        );
++    }
++
++    #[test]
++    fn history_edits_keep_opaque_metadata_and_monotonic_revision() {
++        let source = history_source();
++        let added = json!({"type":"message","role":"user","content":[{"type":"input_text","text":"appended"}]});
++        let append = history_action(
++            source.clone(),
++            json!({"type":"append","items":[added]}),
++            Some(1),
++        );
++        assert_eq!(append["effect"]["revision"], 2);
++        let raw = append["effect"]["checkpoint"].as_str().unwrap();
++        assert!(raw.contains("9007199254740993"));
++        let next: Value = serde_json::from_str(raw).unwrap();
++        assert_eq!(next["provider_metadata"], source["provider_metadata"]);
++        let pop = history_action(next, json!({"type":"pop"}), Some(2));
++        assert_eq!(pop["effect"]["popped"][0], added);
++        let next: Value =
++            serde_json::from_str(pop["effect"]["checkpoint"].as_str().unwrap()).unwrap();
++        assert_eq!(next["provider_metadata"], source["provider_metadata"]);
++        let pop = history_action(next, json!({"type":"pop"}), Some(3));
++        let next: Value =
++            serde_json::from_str(pop["effect"]["checkpoint"].as_str().unwrap()).unwrap();
++        assert!(next.get("provider_metadata").is_none());
++        let clear = history_action(next, json!({"type":"clear"}), Some(4));
++        let next: Value =
++            serde_json::from_str(clear["effect"]["checkpoint"].as_str().unwrap()).unwrap();
++        assert_eq!(next["revision"], 5);
++        assert!(next["history"].as_array().unwrap().is_empty());
++    }
++
++    #[test]
++    fn history_refuses_stale_or_pending_mutations_and_invalid_pairs() {
++        let source = history_source();
++        assert_eq!(
++            history_action(source.clone(), json!({"type":"clear"}), Some(0))["error"],
++            "Portable history revision changed"
++        );
++        let invalid = history_action(
++            source,
++            json!({"type":"append","items":[call("forged","media")]}),
++            Some(1),
++        );
++        assert_eq!(invalid["error"], "Portable session has unresolved calls");
++        assert!(invalid.get("effect").is_none());
++        let (_, _, snapshot) = media_tool_checkpoint();
++        for claimed in [false, true] {
++            let mut snapshot = snapshot.clone();
++            snapshot["approval"]["claimed"] = json!(claimed);
++            let read = history_action(snapshot.clone(), json!({"type":"read"}), None);
++            assert_eq!(read["effect"]["pending_approval"], true);
++            assert!(read["effect"].get("checkpoint").is_none());
++            for operation in [
++                json!({"type":"append","items":[]}),
++                json!({"type":"pop"}),
++                json!({"type":"clear"}),
++            ] {
++                let result = history_action(snapshot.clone(), operation, None);
++                assert_eq!(
++                    result["error"],
++                    "Portable history cannot change while approval or an unknown tool outcome is pending"
++                );
++                assert!(result.get("effect").is_none());
++            }
++        }
++    }
++
++    #[test]
++    fn history_noops_do_not_write_and_appended_pairs_never_dispatch() {
++        for operation in [
++            json!({"type":"read","limit":0}),
++            json!({"type":"append","items":[]}),
++            json!({"type":"pop"}),
++            json!({"type":"clear"}),
++        ] {
++            let result = history_action(Value::Null, operation, Some(0));
++            assert_eq!(result["effect"]["revision"], 0);
++            assert!(result["effect"].get("checkpoint").is_none());
++        }
++        let source = history_source();
++        let pair = json!([call("caller-pair","data-only"),{"type":"function_call_output","call_id":"caller-pair","output":"caller data"}]);
++        let result = history_action(
++            source.clone(),
++            json!({"type":"append","items":pair}),
++            Some(1),
++        );
++        assert_eq!(result["effect"]["type"], "history");
++        let next: Value =
++            serde_json::from_str(result["effect"]["checkpoint"].as_str().unwrap()).unwrap();
++        assert_eq!(next["provider_metadata"], source["provider_metadata"]);
++        let broken = history_action(next.clone(), json!({"type":"pop","count":1}), Some(2));
++        assert_eq!(broken["error"], "Portable session has unresolved calls");
++        let valid = history_action(next, json!({"type":"pop","count":2}), Some(2));
++        assert_eq!(valid["effect"]["popped"], pair);
++    }
++
++    fn media_tool_checkpoint() -> (Value, Value, Value) {
++        let tools = json!([
++            {"name":"media","description":"","parameters":{"type":"object"},"strict":false},
++            {"name":"approval","description":"","parameters":{"type":"object"},"strict":false,"requires_approval":true}
++        ]);
++        let mut turn = PortableTurn::default();
++        command(
++            &mut turn,
++            json!({"type":"start","model":"fixture","instructions":"","input":"Use media","tools":tools,"max_turns":4}),
++        );
++        command(
++            &mut turn,
++            json!({"type":"model","request_id":1,"output":[call("media-1","media"),call("approval-1","approval")]}),
++        );
++        let output = json!([{"type":"input_text","text":"media note"},{"type":"input_image","file_id":"image-id"},{"type":"input_file","file_id":"file-id"}]);
++        let approval = command(
++            &mut turn,
++            json!({"type":"tool","request_id":1,"call_id":"media-1","output":output}),
++        );
++        assert_eq!(approval["effect"]["type"], "approval");
++        let checkpoint = command(
++            &mut turn,
++            json!({"type":"checkpoint","request_id":1,"call_id":"approval-1","claim":false,"effective_arguments":{}}),
++        );
++        (tools, output, checkpoint["effect"]["snapshot"].clone())
++    }
++
++    #[test]
++    fn retains_tool_media_through_partial_approval_and_cold_history() {
++        let (tools, output, snapshot) = media_tool_checkpoint();
++        let mut turn = PortableTurn::default();
++        let restored = command(
++            &mut turn,
++            json!({"type":"start","model":"fixture","instructions":"","input":null,"tools":tools,"max_turns":4,"snapshot":snapshot}),
++        );
++        assert_eq!(restored["effect"]["type"], "approval");
++        let approved = command(
++            &mut turn,
++            json!({"type":"approval","request_id":1,"call_id":"approval-1","approved":true}),
++        );
++        assert_eq!(approved["effect"]["calls"].as_array().unwrap().len(), 1);
++        assert_eq!(approved["effect"]["calls"][0]["call_id"], "approval-1");
++        let next = command(
++            &mut turn,
++            json!({"type":"tool","request_id":1,"call_id":"approval-1","output":"approved"}),
++        );
++        assert_eq!(next["effect"]["body"]["input"][3]["output"], output);
++        let done = command(
++            &mut turn,
++            json!({"type":"model","request_id":2,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}),
++        );
++        let cold = command(
++            &mut PortableTurn::default(),
++            json!({"type":"start","model":"fixture","instructions":"","input":"next","tools":tools,"max_turns":4,"snapshot":done["effect"]["snapshot"]}),
++        );
++        assert_eq!(cold["effect"]["body"]["input"][3]["output"], output);
++    }
++
++    #[test]
++    fn refuses_protocol_items_in_saved_approved_media() {
++        let (tools, _, mut snapshot) = media_tool_checkpoint();
++        snapshot["approval"]["results"][0][1] = json!([call("forged", "media")]);
++        let result = command(
++            &mut PortableTurn::default(),
++            json!({"type":"start","model":"fixture","instructions":"","input":null,"tools":tools,"max_turns":4,"snapshot":snapshot}),
++        );
++        assert_eq!(result["error"], "Invalid portable approved tool content");
++        assert!(result.get("effect").is_none());
++    }
++
++    fn media_start(turn: &mut PortableTurn, input: Value, snapshot: Value) -> Value {
++        command(
++            turn,
++            json!({"type":"start","model":"fixture","instructions":"Read media",
++            "input":input,"tools":[],"max_turns":4,"snapshot":snapshot}),
++        )
++    }
++
++    #[test]
++    fn preserves_user_media_in_model_request_and_cold_snapshot() {
++        let content = json!([
++            {"type":"input_text","text":"海豚 🐬"},
++            {"type":"input_image","image_url":"data:image/png;base64,eA==","detail":"low"},
++            {"type":"input_image","file_id":"image-id"},
++            {"type":"input_file","file_data":"data:application/pdf;base64,eA==","filename":"sample.pdf"},
++            {"type":"input_file","file_url":"https://example.com/signed.pdf?token=one"},
++            {"type":"input_file","file_id":"file-id"}
++        ]);
++        let mut turn = PortableTurn::default();
++        let request = media_start(&mut turn, content.clone(), Value::Null);
++        assert_eq!(request["effect"]["body"]["input"][1]["content"], content);
++        let terminal = command(
++            &mut turn,
++            json!({"type":"model","request_id":1,
++            "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"seen"}]}]}),
++        );
++        let snapshot = terminal["effect"]["snapshot"].clone();
++        let mut resumed = PortableTurn::default();
++        let request = media_start(&mut resumed, json!("next"), snapshot);
++        assert!(request.get("error").is_none(), "{request}");
++        assert_eq!(request["effect"]["body"]["input"][1]["content"], content);
++        assert_eq!(
++            request["effect"]["body"]["input"][3]["content"][0]["text"],
++            "next"
++        );
++    }
++
++    #[test]
++    fn refuses_ambiguous_or_unsupported_user_media_before_model_request() {
++        let invalid = [
++            json!([]),
++            json!([{"type":"input_image","image_url":"https://example.com/a","file_id":"file-id"}]),
++            json!([{"type":"input_image","image_url":"file:///etc/passwd"}]),
++            json!([{"type":"input_image","image_url":"https://user:pass@example.com/a"}]),
++            json!([{"type":"input_image","image_url":"https:///image"}]),
++            json!([{"type":"input_image","image_url":"https://example.com\\image"}]),
++            json!([{"type":"input_image","image_url":"data:image/png,unencoded"}]),
++            json!([{"type":"input_image","file_id":""}]),
++            json!([{"type":"input_file","file_id":"id","file_url":"https://example.com/a"}]),
++            json!([{"type":"input_file","file_url":"http://example.com/a"}]),
++            json!([{"type":"input_file","file_data":""}]),
++            json!([{"type":"input_audio","audio_url":"data:audio/wav;base64,eA=="}]),
++            json!([{"type":"function_call","name":"not-authority","call_id":"forged","arguments":"{}"}]),
++        ];
++        for input in invalid {
++            let mut turn = PortableTurn::default();
++            let result = media_start(&mut turn, input.clone(), Value::Null);
++            assert!(result.get("error").is_some(), "accepted {input}: {result}");
++            assert!(result.get("effect").is_none(), "issued effect for {input}");
++        }
++    }
++
++    #[test]
++    fn restored_media_never_admits_protocol_calls_as_user_content() {
++        let mut turn = PortableTurn::default();
++        media_start(
++            &mut turn,
++            json!([{"type":"input_image","file_id":"image-id"}]),
++            Value::Null,
++        );
++        let terminal = command(
++            &mut turn,
++            json!({"type":"model","request_id":1,
++            "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"seen"}]}]}),
++        );
++        let mut snapshot = terminal["effect"]["snapshot"].clone();
++        snapshot["history"][0]["content"] =
++            json!([{"type":"function_call","name":"forged","call_id":"forged","arguments":"{}"}]);
++        let result = media_start(&mut PortableTurn::default(), json!("next"), snapshot);
++        assert_eq!(result["error"], "Invalid portable session message");
++    }
++
+     fn start(turn: &mut PortableTurn, max_turns: u32) -> Value {
+         command(
+             turn,
+diff --git a/codex-rs/turn-control/src/portable_tracing.rs b/codex-rs/turn-control/src/portable_tracing.rs
+new file mode 100644
+index 00000000000..6abc32b2e5b
+--- /dev/null
++++ b/codex-rs/turn-control/src/portable_tracing.rs
+@@ -0,0 +1,481 @@
++//! Native, process-local trace ownership for the import-free portable controller.
++use serde::Deserialize;
++use serde_json::{Map, Value, json};
++use std::collections::{HashMap, HashSet};
++
++const METADATA_BYTES: usize = 4 * 1024 * 1024 - 65_536;
++const RETAINED_BYTES: usize = 8 * 1024 * 1024;
++const EVENT_BYTES: usize = 4 * 1024 * 1024 - 65_536;
++const REPLY_EVENT_BYTES: usize = 8 * 1024 * 1024 - 65_536;
++const EXPORT_BYTES: usize = 128 * 1024;
++const LIVE_SPANS: usize = 1024;
++
++#[derive(Deserialize)]
++#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
++pub(super) enum TraceCommand {
++    Capabilities,
++    Start {
++        name: String,
++        kind: String,
++        trace_id: String,
++        span_id: String,
++        parent: Option<String>,
++        metadata: Value,
++        disabled: bool,
++        include_sensitive_data: bool,
++        time: String,
++        custom_routes: Vec<String>,
++        bounded_routes: Vec<String>,
++    },
++    End {
++        handle: String,
++        time: String,
++        error: bool,
++    },
++    Cancel {
++        handle: String,
++        time: String,
++    },
++    Shutdown {
++        time: String,
++    },
++}
++
++struct Span {
++    handle: String,
++    name: String,
++    kind: String,
++    trace_id: String,
++    span_id: String,
++    parent: Option<String>,
++    parent_span_id: Option<String>,
++    depth: usize,
++    metadata: Value,
++    metadata_bytes: usize,
++    disabled: bool,
++    sensitive: bool,
++    start: String,
++    custom: Vec<String>,
++    bounded: Vec<String>,
++}
++
++#[derive(Default)]
++pub(super) struct TraceState {
++    spans: HashMap<String, Span>,
++    next: u64,
++    sequence: u64,
++    retained: usize,
++    dropped: u64,
++    stopped: bool,
++}
++
++fn metadata(value: &Value, depth: usize) -> Result<(), &'static str> {
++    if depth > 64 {
++        return Err("Tracing metadata exceeds maximum depth");
++    }
++    match value {
++        Value::Array(values) => {
++            for value in values {
++                metadata(value, depth + 1)?;
++            }
++        }
++        Value::Object(values) => {
++            for (key, value) in values {
++                if key.len() > 256 {
++                    return Err("Tracing key exceeds 256 UTF-8 bytes");
++                }
++                metadata(value, depth + 1)?;
++            }
++        }
++        _ => {}
++    }
++    Ok(())
++}
++
++fn timestamp(value: &str) -> Result<(), &'static str> {
++    if value.is_empty()
++        || value.len() > 39
++        || !value.bytes().all(|c| c.is_ascii_digit())
++        || value.parse::<u128>().is_err()
++    {
++        return Err("Invalid native trace timestamp");
++    }
++    Ok(())
++}
++
++fn identity(value: &str, bytes: usize) -> bool {
++    value.len() == bytes
++        && value.bytes().all(|c| c.is_ascii_hexdigit())
++        && value.bytes().any(|c| c != b'0')
++}
++
++fn routes(custom: &[String], bounded: &[String]) -> Result<(), &'static str> {
++    let mut seen = HashSet::new();
++    if custom.len() + bounded.len() > 64 {
++        return Err("Too many trace processor routes");
++    }
++    for route in custom.iter().chain(bounded) {
++        if route.is_empty() || route.len() > 64 || !seen.insert(route) {
++            return Err("Invalid trace processor route");
++        }
++    }
++    Ok(())
++}
++
++impl Span {
++    fn context(&self) -> Value {
++        json!({"handle":self.handle,"trace_id":self.trace_id,"span_id":self.span_id,
++            "parent_span_id":self.parent_span_id,"disabled":self.disabled,
++            "include_sensitive_data":self.sensitive})
++    }
++
++    fn event(&self, sequence: u64, end: Option<&str>, error: bool, bounded: bool) -> Value {
++        let mut event = json!({"sequence":sequence,
++            "processor_ids":if bounded { &self.bounded } else { &self.custom },
++            "lifecycle":if end.is_some() { "end" } else { "start" },
++            "trace_id":self.trace_id,"span_id":self.span_id,
++            "parent_span_id":self.parent_span_id,"name":self.name,"kind":self.kind,
++            "start_time_unix_nanos":self.start,"end_time_unix_nanos":end,
++            "attributes":{},"outcome":if end.is_none() { "unset" } else if error { "error" } else { "ok" },
++            "dropped_attributes_count":0});
++        let mut attributes = Map::new();
++        let mut used = serde_json::to_vec(&event)
++            .expect("native trace event")
++            .len()
++            + 20;
++        let mut dropped = 0u64;
++        // One admitted native value supplies both projections. Strings retain
++        // their value; every other metadata shape retains compact JSON.
++        for (key, value) in self.metadata.as_object().expect("admitted metadata") {
++            let key = format!("sdk.metadata.{key}");
++            let value = value
++                .as_str()
++                .map(str::to_owned)
++                .unwrap_or_else(|| serde_json::to_string(value).expect("admitted metadata"));
++            let cost = serde_json::to_vec(&(&key, &value))
++                .expect("metadata pair")
++                .len()
++                .saturating_sub(2)
++                + usize::from(!attributes.is_empty());
++            if bounded && used.saturating_add(cost) > EXPORT_BYTES {
++                dropped = dropped.saturating_add(1);
++                continue;
++            }
++            used = used.saturating_add(cost);
++            attributes.insert(key, Value::String(value));
++        }
++        event["attributes"] = Value::Object(attributes);
++        event["dropped_attributes_count"] = json!(dropped);
++        event
++    }
++}
++
++impl TraceState {
++    fn push_event(&mut self, events: &mut Vec<Value>, used: &mut usize, event: Value) {
++        let bytes = serde_json::to_vec(&event)
++            .expect("native trace event")
++            .len();
++        if bytes > EVENT_BYTES || used.saturating_add(bytes) > REPLY_EVENT_BYTES {
++            self.dropped = self.dropped.saturating_add(1);
++        } else {
++            *used += bytes;
++            events.push(event);
++        }
++    }
++
++    fn emit(
++        &mut self,
++        span: &Span,
++        end: Option<&str>,
++        error: bool,
++        events: &mut Vec<Value>,
++        used: &mut usize,
++    ) {
++        if span.disabled {
++            return;
++        }
++        self.sequence = self.sequence.saturating_add(1);
++        if !span.custom.is_empty() {
++            self.push_event(events, used, span.event(self.sequence, end, error, false));
++        }
++        if !span.bounded.is_empty() {
++            self.push_event(events, used, span.event(self.sequence, end, error, true));
++        }
++    }
++
++    fn descendant(&self, key: &str, parent: &str) -> bool {
++        let mut current = Some(key);
++        for _ in 0..=64 {
++            let Some(key) = current else { return false };
++            if key == parent {
++                return true;
++            }
++            current = self.spans.get(key).and_then(|span| span.parent.as_deref());
++        }
++        false
++    }
++
++    fn finish(
++        &mut self,
++        parent: Option<&str>,
++        time: &str,
++        error: bool,
++        events: &mut Vec<Value>,
++        used: &mut usize,
++    ) {
++        let mut keys = self
++            .spans
++            .iter()
++            .filter(|(key, _)| parent.is_none_or(|parent| self.descendant(key, parent)))
++            .map(|(key, span)| (span.depth, key.clone()))
++            .collect::<Vec<_>>();
++        keys.sort_by(|a, b| b.cmp(a));
++        for (_, key) in keys {
++            if let Some(span) = self.spans.remove(&key) {
++                self.retained = self.retained.saturating_sub(span.metadata_bytes);
++                let end = if time.parse::<u128>().unwrap() < span.start.parse::<u128>().unwrap() {
++                    &span.start
++                } else {
++                    time
++                };
++                self.emit(&span, Some(end), error, events, used);
++            }
++        }
++    }
++
++    pub(super) fn apply(&mut self, command: TraceCommand) -> Result<Value, &'static str> {
++        let mut events = Vec::new();
++        let mut used = 0;
++        let mut context = Value::Null;
++        match command {
++            TraceCommand::Capabilities => {
++                return Ok(json!({"version":1,"events":[],
++                "metadata_bytes":METADATA_BYTES,"export_bytes":EXPORT_BYTES,
++                "retained_bytes":RETAINED_BYTES,"live_spans":LIVE_SPANS}));
++            }
++            TraceCommand::Start {
++                name,
++                kind,
++                trace_id,
++                span_id,
++                parent,
++                metadata: data,
++                disabled,
++                include_sensitive_data,
++                time,
++                custom_routes,
++                bounded_routes,
++            } => {
++                if self.stopped {
++                    return Err("Native Worker tracing has shut down");
++                }
++                timestamp(&time)?;
++                if name.len() > 1024 || kind.is_empty() || kind.len() > 64 {
++                    return Err("Invalid native trace name or kind");
++                }
++                if !identity(&trace_id, 32) || !identity(&span_id, 16) {
++                    return Err("Invalid native trace identity");
++                }
++                let trace_id = trace_id.to_ascii_lowercase();
++                let span_id = span_id.to_ascii_lowercase();
++                routes(&custom_routes, &bounded_routes)?;
++                if !data.is_object() {
++                    return Err("Tracing metadata must be an object");
++                }
++                let bytes = serde_json::to_vec(&data)
++                    .map_err(|_| "Invalid tracing metadata")?
++                    .len();
++                if bytes > METADATA_BYTES {
++                    return Err("Tracing metadata exceeds native annotation limit");
++                }
++                metadata(&data, 0)?;
++                if self.spans.len() >= LIVE_SPANS
++                    || self.retained.saturating_add(bytes) > RETAINED_BYTES
++                {
++                    return Err("Native trace retention capacity exceeded");
++                }
++                if self
++                    .spans
++                    .values()
++                    .any(|span| span.trace_id == trace_id && span.span_id == span_id)
++                {
++                    return Err("Native trace identity is already active");
++                }
++                let (depth, parent_span_id, blocked, sensitive) = if let Some(key) = &parent {
++                    let old = self
++                        .spans
++                        .get(key)
++                        .ok_or("Native tracing parent is closed or unknown")?;
++                    if old.trace_id != trace_id {
++                        return Err("Native trace parent belongs to another trace");
++                    }
++                    (
++                        old.depth + 1,
++                        Some(old.span_id.clone()),
++                        old.disabled,
++                        old.sensitive,
++                    )
++                } else {
++                    (0, None, false, true)
++                };
++                if depth > 64 {
++                    return Err("Native trace ancestry exceeds maximum depth");
++                }
++                let next = self
++                    .next
++                    .checked_add(1)
++                    .ok_or("Native trace handles exhausted")?;
++                let handle = format!("worker_trace_{next}");
++                let span = Span {
++                    handle: handle.clone(),
++                    name,
++                    kind,
++                    trace_id,
++                    span_id,
++                    parent,
++                    parent_span_id,
++                    depth,
++                    metadata: data,
++                    metadata_bytes: bytes,
++                    disabled: disabled || blocked,
++                    sensitive: include_sensitive_data && sensitive,
++                    start: time,
++                    custom: custom_routes,
++                    bounded: bounded_routes,
++                };
++                context = span.context();
++                self.emit(&span, None, false, &mut events, &mut used);
++                self.next = next;
++                self.retained += bytes;
++                self.spans.insert(handle, span);
++            }
++            TraceCommand::End {
++                handle,
++                time,
++                error,
++            } => {
++                timestamp(&time)?;
++                self.finish(Some(&handle), &time, error, &mut events, &mut used);
++            }
++            TraceCommand::Cancel { handle, time } => {
++                timestamp(&time)?;
++                self.finish(Some(&handle), &time, true, &mut events, &mut used);
++            }
++            TraceCommand::Shutdown { time } => {
++                timestamp(&time)?;
++                self.finish(None, &time, true, &mut events, &mut used);
++                self.stopped = true;
++            }
++        }
++        Ok(
++            json!({"version":1,"span":context,"events":events,"sequence":self.sequence,
++            "dropped_records":self.dropped,"active_spans":self.spans.len(),
++            "retained_bytes":self.retained}),
++        )
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn start(parent: Option<&str>, trace: &str, span: &str, data: Value) -> TraceCommand {
++        serde_json::from_value(json!({"op":"start","name":"native","kind":"custom",
++            "trace_id":trace,"span_id":span,"parent":parent,"metadata":data,
++            "disabled":false,"include_sensitive_data":false,"time":"1",
++            "custom_routes":["full"],"bounded_routes":["export"]}))
++        .unwrap()
++    }
++    const TRACE: &str = "11111111111111111111111111111111";
++    #[test]
++    fn full_and_bounded_share_one_native_admission() {
++        let mut state = TraceState::default();
++        let reply = state
++            .apply(start(
++                None,
++                TRACE,
++                "1111111111111111",
++                json!({"large":"x".repeat(160*1024),"small":{"x":[null,false,"海豚 🐬"]}}),
++            ))
++            .unwrap();
++        let full = &reply["events"][0];
++        let bounded = &reply["events"][1];
++        assert_eq!(
++            full["attributes"]["sdk.metadata.large"]
++                .as_str()
++                .unwrap()
++                .len(),
++            160 * 1024
++        );
++        assert!(bounded["attributes"].get("sdk.metadata.large").is_none());
++        assert!(bounded["attributes"].get("sdk.metadata.small").is_some());
++        assert_eq!(bounded["dropped_attributes_count"], 1);
++        assert!(serde_json::to_vec(bounded).unwrap().len() <= EXPORT_BYTES);
++    }
++    #[test]
++    fn parentage_and_cancellation_are_native_and_cannot_reopen() {
++        let mut state = TraceState::default();
++        let root = state
++            .apply(start(None, TRACE, "1111111111111111", json!({})))
++            .unwrap();
++        let key = root["span"]["handle"].as_str().unwrap();
++        let child = state
++            .apply(start(Some(key), TRACE, "2222222222222222", json!({})))
++            .unwrap();
++        assert_eq!(child["span"]["parent_span_id"], "1111111111111111");
++        let ended = state
++            .apply(TraceCommand::Cancel {
++                handle: key.into(),
++                time: "2".into(),
++            })
++            .unwrap();
++        assert_eq!(ended["active_spans"], 0);
++        assert_eq!(ended["events"][0]["span_id"], "2222222222222222");
++        assert!(
++            state
++                .apply(start(Some(key), TRACE, "3333333333333333", json!({})))
++                .is_err()
++        );
++        assert!(
++            state
++                .apply(TraceCommand::End {
++                    handle: key.into(),
++                    time: "3".into(),
++                    error: false
++                })
++                .unwrap()["events"]
++                .as_array()
++                .unwrap()
++                .is_empty()
++        );
++    }
++    #[test]
++    fn metadata_and_ancestry_refuse_before_state_changes() {
++        let mut state = TraceState::default();
++        assert!(
++            state
++                .apply(start(
++                    None,
++                    TRACE,
++                    "1111111111111111",
++                    json!({"x".repeat(257):0})
++                ))
++                .is_err()
++        );
++        assert!(state.spans.is_empty());
++        let root = state
++            .apply(start(None, TRACE, "1111111111111111", json!({})))
++            .unwrap();
++        let key = root["span"]["handle"].as_str().unwrap();
++        assert!(
++            state
++                .apply(start(
++                    Some(key),
++                    "22222222222222222222222222222222",
++                    "2222222222222222",
++                    json!({})
++                ))
++                .is_err()
++        );
++        assert_eq!(state.spans.len(), 1);
++    }
++}

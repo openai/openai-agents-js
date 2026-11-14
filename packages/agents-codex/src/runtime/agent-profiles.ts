@@ -1,3 +1,9 @@
+import {
+  hostedToolSpecs,
+  type FileSearch,
+  type CodeInterpreter,
+} from './hosted-tools';
+import { hostedWebSearchSpec, type WebSearch } from './web-search';
 import { isDeepStrictEqual } from 'node:util';
 import type { Agent } from './public-agent';
 import {
@@ -31,6 +37,12 @@ export interface CapturedAgentProfile<Context, Output> {
   readonly callbackTools?: readonly import('./tools').FunctionTool<Context>[];
   readonly hostedPromptControls?: JsonObject;
   readonly nativeProviderId?: string;
+  /** @internal Undefined retains the thread contract; null is an explicit absent grant. */
+  readonly scopedHostedSearch?: WebSearch | null;
+  /** @internal Exact captured provider file-search declarations. */
+  readonly scopedHostedFileSearch?: readonly FileSearch[];
+  /** @internal Exact captured provider code execution declarations. */
+  readonly scopedHostedCodeInterpreter?: readonly CodeInterpreter[];
 }
 
 export interface AgentProfileRuntime {
@@ -331,6 +343,23 @@ export function captureProfileRuntimes(
     );
     roster.push({
       id: profile.id,
+      ...(profile.scopedHostedSearch === undefined &&
+      profile.scopedHostedFileSearch === undefined &&
+      profile.scopedHostedCodeInterpreter === undefined
+        ? {}
+        : {
+            hosted_search: {
+              tools: [
+                ...(profile.scopedHostedSearch == null
+                  ? []
+                  : [hostedWebSearchSpec(profile.scopedHostedSearch)]),
+                ...hostedToolSpecs([
+                  ...(profile.scopedHostedFileSearch ?? []),
+                  ...(profile.scopedHostedCodeInterpreter ?? []),
+                ]),
+              ],
+            },
+          }),
       ...(profile.nativeProviderId === undefined
         ? {}
         : { native_provider_id: profile.nativeProviderId }),

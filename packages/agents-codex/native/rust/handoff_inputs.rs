@@ -51,7 +51,7 @@ impl PythonTools {
             .context("Handoff preparation lacks its native turn stop")?;
         let groups: Groups = self.exchange_context(
             Some(&step), thread, turn,
-            cancellation, None,
+            cancellation, None, None,
             json!({"type":"_sdk_handoff_input", "tool_name":request.tool_name,
                 "target_profile_id":request.handoff.target_profile_id,
                 "input":proposed.input,"previous":proposed.previous,"generated":proposed.generated}),

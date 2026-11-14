@@ -1,0 +1,47 @@
+diff --git a/codex-rs/tools/src/hosted_tools.rs b/codex-rs/tools/src/hosted_tools.rs
+index 7cfbc5e0a19..e77dcbcf33a 100644
+--- a/codex-rs/tools/src/hosted_tools.rs
++++ b/codex-rs/tools/src/hosted_tools.rs
+@@ -10,6 +10,7 @@ pub struct HostedModelTools {
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ #[serde(tag = "type", rename_all = "snake_case")]
+ pub enum HostedToolSpec {
++    WebSearch(HostedWebSearchTool),
+     FileSearch(FileSearchTool),
+     CodeInterpreter(CodeInterpreterTool),
+     Shell(HostedShellTool),
+@@ -22,6 +23,15 @@ pub enum HostedToolSpec {
+ impl From<HostedToolSpec> for crate::ToolSpec {
+     fn from(spec: HostedToolSpec) -> Self {
+         match spec {
++            HostedToolSpec::WebSearch(config) => Self::WebSearch {
++                external_web_access: config.external_web_access,
++                indexed_web_access: None,
++                filters: config.filters.map(Into::into),
++                user_location: config.user_location.map(Into::into),
++                search_context_size: config.search_context_size,
++                image_settings: config.image_settings,
++                search_content_types: config.search_content_types,
++            },
+             HostedToolSpec::FileSearch(config) => Self::FileSearch(config),
+             HostedToolSpec::CodeInterpreter(config) => Self::CodeInterpreter(config),
+             HostedToolSpec::Shell(config) => Self::Shell(config),
+@@ -33,6 +43,18 @@ impl From<HostedToolSpec> for crate::ToolSpec {
+     }
+ }
+ 
++/// A server-only search declaration; no standalone search executor is enrolled.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
++#[serde(deny_unknown_fields)]
++pub struct HostedWebSearchTool {
++    pub external_web_access: Option<bool>,
++    pub filters: Option<codex_protocol::config_types::WebSearchFilters>,
++    pub user_location: Option<codex_protocol::config_types::WebSearchUserLocation>,
++    pub search_context_size: Option<codex_protocol::config_types::WebSearchContextSize>,
++    pub image_settings: Option<codex_protocol::config_types::WebSearchImageSettings>,
++    pub search_content_types: Option<Vec<String>>,
++}
++
+ /// An opaque provider declaration with no local executor or approval authority.
+ #[derive(Clone, Serialize, PartialEq)]
+ #[serde(transparent)]

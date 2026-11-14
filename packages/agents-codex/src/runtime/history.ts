@@ -78,9 +78,11 @@ export interface RecordedTokenUsageWire {
   totalTokens: TokenCountWire;
 }
 
-/** One SDK-managed model attempt or native hosted transport request. */
+/** One admitted SDK model/compact invocation or native hosted transport request. */
 export interface RecordedRequestUsage extends RecordedTokenUsage {
   scope: 'sdk_model_attempt' | 'provider_request' | 'compaction';
+  /** Endpoint known by the SDK dispatch owner, independent of provider response IDs. */
+  endpoint?: 'responses.compact';
   threadId: string;
   turnId: string;
   ownerAttemptId: string;
@@ -232,6 +234,7 @@ const recordedUsageWireSchema = z.strictObject({
 });
 const recordedRequestUsageWireSchema = recordedUsageWireSchema.extend({
   scope: z.enum(['sdk_model_attempt', 'provider_request', 'compaction']),
+  endpoint: z.literal('responses.compact').optional(),
   threadId: z.string().min(1),
   turnId: z.string().min(1),
   ownerAttemptId: z.string().min(1),
@@ -1526,6 +1529,7 @@ export function projectHistory(
   sessionId: string,
   subagentId?: string,
   itemRecordIndexes?: Map<HistoryItem, number>,
+  preserveCanonicalOccurrences = false,
 ) {
   const turns = new Map<string, HistoryTurn>();
   const usage = new Map<string, RecordedTokenUsage>();
@@ -1550,6 +1554,36 @@ export function projectHistory(
     }
   >();
   const incompleteCacheWriteUsage = new Set<string>();
+  function recordObservedUsage(id: string, report: JsonObject | null): void {
+    const observed = responseUsage.get(id) ?? {
+      tokens: null,
+      requests: 0,
+      missing: 0,
+    };
+    observed.requests = addTokenCounts(observed.requests, 1);
+    if (!report) observed.missing = addTokenCounts(observed.missing, 1);
+    responseUsage.set(id, observed);
+    if (report?.cache_write_input_tokens === undefined)
+      incompleteCacheWriteUsage.add(id);
+    if (incompleteCacheWriteUsage.has(id)) {
+      const total = observed.tokens;
+      if (total) delete total.cache_write_input_tokens;
+    }
+    if (report) {
+      const total = observed.tokens ?? {};
+      for (const key of usageFields) {
+        const count = usageCount(report, key);
+        if (
+          key === 'cache_write_input_tokens' &&
+          incompleteCacheWriteUsage.has(id)
+        )
+          continue;
+        const sum = addTokenCounts(usageCount(total, key), count);
+        total[key] = tokenCountToWire(sum);
+      }
+      observed.tokens = total;
+    }
+  }
   const modelAttemptUsage = new Map<
     string,
     Map<string | null, CapturedModelAttempt>
@@ -1591,7 +1625,10 @@ export function projectHistory(
       ('callId' in item ? item.callId : undefined) ?? item.id,
     ]);
     const call = latestCalls.get(callKey);
-    let occurrence = identities.get(key);
+    // Detached native transcripts carry one record per occurrence.
+    // Capture preserves repeated provider IDs as separate entries.
+    let occurrence =
+      preserveCanonicalOccurrences && !native ? undefined : identities.get(key);
     if (output && call) {
       if (!call.output) occurrence = undefined;
       else if (occurrence === call.output || native !== call.output.native)
@@ -1686,8 +1723,21 @@ export function projectHistory(
             observation.threadId,
             payload.turn_id,
             observation.usage,
+            payload.endpoint === 'responses.compact'
+              ? payload.endpoint
+              : undefined,
           );
           requestUsage.set(payload.turn_id, entries);
+          if (payload.endpoint === 'responses.compact') {
+            const measured =
+              observation.usage?.inputTokens !== undefined &&
+              observation.usage.outputTokens !== undefined &&
+              observation.usage.totalTokens !== undefined;
+            recordObservedUsage(
+              payload.turn_id,
+              measured ? (object(payload.usage) ?? null) : null,
+            );
+          }
         }
         received.set(payload.id, observation);
         observations.set(payload.turn_id, received);
@@ -1875,34 +1925,7 @@ export function projectHistory(
         typeof payload.model_attempt_id !== 'string'
       ) {
         const report = object(payload.token_usage);
-        const observed = responseUsage.get(id) ?? {
-          tokens: null,
-          requests: 0,
-          missing: 0,
-        };
-        observed.requests = addTokenCounts(observed.requests, 1);
-        if (!report) observed.missing = addTokenCounts(observed.missing, 1);
-        responseUsage.set(id, observed);
-        if (report?.cache_write_input_tokens === undefined)
-          incompleteCacheWriteUsage.add(id);
-        if (incompleteCacheWriteUsage.has(id)) {
-          const total = observed.tokens;
-          if (total) delete total.cache_write_input_tokens;
-        }
-        if (report) {
-          const total = observed.tokens ?? {};
-          for (const key of usageFields) {
-            const count = usageCount(report, key);
-            if (
-              key === 'cache_write_input_tokens' &&
-              incompleteCacheWriteUsage.has(id)
-            )
-              continue;
-            const sum = addTokenCounts(usageCount(total, key), count);
-            total[key] = tokenCountToWire(sum);
-          }
-          observed.tokens = total;
-        }
+        recordObservedUsage(id, report ?? null);
       }
 
       if (native) {

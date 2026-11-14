@@ -756,7 +756,9 @@ function mcpServerConfig(
     ...(server.cacheToolsList === undefined
       ? {}
       : { sdk_cache_tools_list: server.cacheToolsList }),
-    ...(server.strictToolSchemas ? { sdk_strict_tool_schemas: true } : {}),
+    ...(server.strictToolSchemas
+      ? { sdk_strict_tool_schemas: 'omit_synthetic_nulls' }
+      : {}),
   };
   const toolSettings = new Map<string, JsonObject>();
   for (const raw of server.tools) {
@@ -1306,7 +1308,11 @@ export async function applyMcpPrePolicy<Context>(
       ? JSON.parse(request.input as string)
       : request.input,
   );
-  let effective = losslessJsonObjectSchema.parse(original);
+  // Only the current native admission owner supplies this projection. Keep the
+  // sampled input separate for originalArguments and canonical checkpoint binding.
+  let effective = losslessJsonObjectSchema.parse(
+    request.effective_input === undefined ? original : request.effective_input,
+  );
   const check = () => {
     signal.throwIfAborted();
     admit();

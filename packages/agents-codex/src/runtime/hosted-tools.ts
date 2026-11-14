@@ -62,6 +62,22 @@ export function hostedTool(providerData: JsonObject): ProviderHostedTool {
 }
 
 /** @internal Policy identity of an already captured provider declaration. */
+/** @internal Private policy identity; provider wire names remain unchanged. */
+export const HOSTED_FILE_SEARCH_NAMESPACE = '_agents_sdk_hosted';
+
+export function hostedToolPolicyIdentity(
+  tool: HostedTool,
+  distinctFileSearch = false,
+) {
+  return {
+    name: hostedToolType(tool),
+    namespace:
+      distinctFileSearch && tool.kind === 'file_search'
+        ? HOSTED_FILE_SEARCH_NAMESPACE
+        : 'functions',
+  };
+}
+
 export function hostedToolType(tool: HostedTool): string {
   return tool.kind === 'provider_hosted'
     ? (tool.providerData.type as string)

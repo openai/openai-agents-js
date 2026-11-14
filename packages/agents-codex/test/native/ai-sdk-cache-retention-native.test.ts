@@ -11,6 +11,9 @@ it.each([
   { retention: '24h', override: 'in_memory', expected: 'in_memory' },
   { retention: undefined, override: undefined, expected: undefined },
   { retention: undefined, override: '24h', expected: '24h' },
+  { retention: undefined, override: null, expected: null },
+  { retention: '24h', override: null, expected: null },
+  { retention: null, override: null, expected: null },
 ] as const)(
   'projects cache retention $retention with provider override $override through real AI SDK wire',
   async ({ retention, override, expected }) => {

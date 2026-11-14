@@ -7,6 +7,9 @@ use napi::bindgen_prelude::Either;
 use napi_derive::napi;
 use opentelemetry::trace::TraceContextExt as _;
 
+// Current opening-only declaration; saved data never selects this mode.
+struct SelectedPendingInputAdmission(bool);
+
 mod agent_profiles;
 mod application_instructions;
 mod auth;
@@ -297,6 +300,7 @@ pub struct StoredHistoryClose {
     inner: Arc<stored_history::CloseAction>,
     owner: std::sync::Weak<std::sync::Mutex<NativeThreadOwner>>,
 }
+
 
 #[napi]
 impl StoredHistoryClose {
@@ -2120,9 +2124,13 @@ impl NativeThread {
             }
             .map_err(native_error)?;
             if request.is_none()
-                && let Some(retry) = python_tools::PythonTools::staged_retry(&inner, &state)
+                && let Some(retry) = python_tools::PythonTools::staged_retry(&inner, &state).map_err(native_error)?
             {
                 state["_staged_manual_retry"] = retry;
+            }
+            let pending = python_tools::PythonTools::staged_input_data(&inner).map_err(native_error)?;
+            if !pending.is_empty() {
+                state["_pending_staged_input_data"] = serde_json::to_value(pending).map_err(native_error)?;
             }
             if let Some(guard) = inner
                 .thread
@@ -2315,16 +2323,40 @@ impl NativeThread {
             .map_err(native_error)
     }
 
+    #[napi(js_name = "_can_remember_mcp_question")]
+    pub async fn _can_remember_mcp_question(&self, question_id: String) -> napi::Result<bool> {
+        let inner = self.current()?;
+        let _context_operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .can_remember_mcp_question(&question_id)
+            .await
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_remembered_mcp_decision")]
+    pub async fn _remembered_mcp_decision(
+        &self,
+        question_id: String,
+    ) -> napi::Result<Option<bool>> {
+        let inner = self.current()?;
+        let _context_operation = inner.engine.operation(false).map_err(native_error)?;
+        inner
+            .remembered_mcp_decision(&question_id)
+            .await
+            .map_err(input_error)
+    }
+
     #[napi(js_name = "_respond_owned_native_question")]
     pub async fn _respond_owned_native_question(
         &self,
         question_id: String,
         response_json: String,
+        remember_mcp: Option<bool>,
     ) -> napi::Result<bool> {
         let inner = self.current()?;
         let _context_operation = inner.engine.operation(false).map_err(native_error)?;
         inner
-            .respond_owned_native_question(&question_id, &response_json)
+            .respond_owned_native_question(&question_id, &response_json, remember_mcp)
             .await
             .map_err(input_error)
     }
@@ -3396,6 +3428,49 @@ impl NativeThread {
                 &owner.attempt_id,
                 &owner.callback,
                 operation,
+            )
+            .map_err(input_error)
+    }
+
+    #[napi(js_name = "_account_compaction_request")]
+    pub fn account_compaction_request(
+        &self,
+        owner_json: String,
+        operation: String,
+        request_id: Option<String>,
+        usage_json: Option<String>,
+        response_received: Option<bool>,
+    ) -> napi::Result<String> {
+        if owner_json.len() > 65_536
+            || usage_json
+                .as_ref()
+                .is_some_and(|value| value.len() > 65_536)
+        {
+            return Err(input_error("Compaction accounting exceeds capacity"));
+        }
+        let receipt: Value = serde_json::from_str(&owner_json)
+            .map_err(|_| input_error("Invalid compaction accounting owner"))?;
+        let usage = usage_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|_| input_error("Invalid compaction usage"))?;
+        let inner = self
+            .live()?
+            .ok_or_else(|| input_error("Compaction accounting owner expired"))?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Compaction accounting owner expired"))?;
+        tools
+            .account_compaction_request(
+                &inner.id.to_string(),
+                &receipt,
+                &operation,
+                request_id.as_deref(),
+                usage,
+                response_received.unwrap_or(false),
             )
             .map_err(input_error)
     }
@@ -4568,6 +4643,18 @@ impl NativeThread {
             else {
                 return Ok(serde_json::json!({"status":"not_ready"}).to_string());
             };
+            if !restored {
+                frame.lifecycle_start_ack = python_tools::agent_lifecycle::capture_start_ack(
+                    &inner,
+                    &frame.turn_id,
+                )
+                .await
+                .map_err(native_error)?;
+            }
+            if let Some(remaining) = python_tools::PythonTools::remaining_staged_input(&inner, &frame.turn_id)
+                .map_err(native_error)? {
+                frame.pending_input = remaining;
+            }
             checkpoint::check_manual_portability(&inner, &saved)
                 .await
                 .map_err(native_error)?;
@@ -4719,12 +4806,27 @@ impl NativeThread {
         .await
     }
 
+    #[napi(js_name = "_restore_staged_input_data")]
+    pub async fn _restore_staged_input_data(&self, input_json: String, selected: bool) -> napi::Result<()> {
+        if !selected { return Err(input_error("Passive staged data requires current selected-before-send policy")); }
+        let input = serde_json::from_str(&input_json).map_err(input_error)?;
+        let inner = self.current()?;
+        let _operation = inner.engine.operation(false).map_err(native_error)?;
+        let _mutation = inner.mutations.lock().await;
+        graph_stop::check_mutation(&inner).map_err(input_error)?;
+        let tools = inner.thread.thread_extension_data().get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Passive staged data requires a managed Session"))?;
+        tools.check_idle(&inner.thread).await.map_err(input_error)?;
+        python_tools::PythonTools::restore_staged_input_data(&inner, input).map_err(input_error)
+    }
+
     #[napi(js_name = "_restore_manual_continuation")]
     pub async fn _restore_manual_continuation(
         &self,
         continuation_json: String,
         tracing_context: Option<String>,
         operation_tools_json: Option<String>,
+        select_pending_input: Option<bool>,
     ) -> napi::Result<String> {
         let context = tracing_context
             .as_deref()
@@ -4765,6 +4867,7 @@ impl NativeThread {
                 .await
                 .map_err(native_error)?;
             graph.check(&inner, &saved).await.map_err(native_error)?;
+            inner.thread.thread_extension_data().insert(SelectedPendingInputAdmission(select_pending_input == Some(true)));
             let events = tools
                 .restore_manual(&inner, frame, &saved["history"], operation_tools.as_deref())
                 .await
@@ -4823,6 +4926,7 @@ impl NativeThread {
         tracing_context: Option<String>,
         observation_submission_id: Option<String>,
         profile_output_override: Option<bool>,
+        preserve_accepted_replies: Option<bool>,
     ) -> napi::Result<String> {
         let trace = resolve_trace_json(trace_json.as_deref(), tracing_context.as_deref())
             .map_err(input_error)?;
@@ -4872,7 +4976,11 @@ impl NativeThread {
                 .await
                 .map_err(native_error)?;
             let (mut frame, items, settings, canonical_call_ids) = tools
-                .manual_completion(&saved["history"])
+                .manual_completion(
+                    &saved["history"],
+                    &inner.id.to_string(),
+                    preserve_accepted_replies.unwrap_or(false),
+                )
                 .map_err(native_error)?;
             tools
                 .validate_native_mcp_resume(&inner, &frame)
@@ -4919,16 +5027,23 @@ impl NativeThread {
             let terminal = frame
                 .terminal_seed(&saved["history"], reset_tool_choice)
                 .map_err(native_error)?;
-            let staged_input =
-                codex_extension_api::StagedInputBatch::new(frame.turn_id.clone(), staged_input);
+            let selected_pending_input = inner.thread.thread_extension_data()
+                .get::<SelectedPendingInputAdmission>().is_some_and(|mode| mode.0);
+            let staged_input = if selected_pending_input {
+                codex_extension_api::StagedInputBatch::selected_before_send(frame.turn_id.clone(), staged_input)
+            } else {
+                codex_extension_api::StagedInputBatch::new(frame.turn_id.clone(), staged_input)
+            };
             if staged_input.is_pending() {
                 python_tools::PythonTools::retain_staged_retry(
                     &inner,
                     &frame,
                     staged_input.clone(),
                 )
+                .await
                 .map_err(native_error)?;
             }
+            let retained_mcp = frame.retained_native_mcp_owner();
             let mut result = ops::recover_prepared(
                 &inner,
                 frame.turn_id,
@@ -4945,10 +5060,12 @@ impl NativeThread {
                 raise_on_unknown_tool,
                 profile_output_override.unwrap_or_default(),
                 frame.native_mcp.take(),
+                frame.lifecycle_start_ack.take(),
             )
             .await
             .map_err(native_error)?;
             if result.get("status").and_then(Value::as_str) == Some("started") {
+                native_mcp_checkpoint::retain_recovered(&inner, retained_mcp);
                 tools.retire_manual();
                 result["canonical_call_ids"] = serde_json::json!(canonical_call_ids);
                 if raise_on_unknown_tool {
@@ -5059,6 +5176,13 @@ impl NativeThread {
         serde_json::to_string(&value).map_err(native_error)
     }
 
+    #[napi(js_name = "_chaining_history")]
+    pub async fn chaining_history(&self) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::chaining_snapshot(&inner).await.map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
     #[napi(js_name = "_record_memory_input_admission")]
     pub async fn record_memory_input_admission(&self, turn_id: String) -> napi::Result<String> {
         let inner = self.current()?;
@@ -5078,6 +5202,18 @@ impl NativeThread {
         let value = canonical_history::memory_snapshot(&inner, &turn_id, scope_json.as_deref())
             .await
             .map_err(native_error)?;
+        serde_json::to_string(&value).map_err(native_error)
+    }
+
+    #[napi(js_name = "_pending_memory_history")]
+    pub async fn pending_memory_history(
+        &self,
+        request_json: String,
+        scope_json: Option<String>,
+    ) -> napi::Result<String> {
+        let inner = self.current()?;
+        let value = canonical_history::pending_memory_snapshot(&inner, &request_json, scope_json.as_deref())
+            .await.map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 
@@ -5121,13 +5257,20 @@ impl NativeThread {
         expected_revision: String,
         keep: u32,
         items_json: String,
+        allow_rebuild: Option<bool>,
     ) -> napi::Result<String> {
         let inner = self.current()?;
         let items = serde_json::from_str(&items_json)
             .map_err(|_| native_error("Invalid canonical history items"))?;
-        let value = canonical_history::replace(&inner, expected_revision, keep as usize, items)
-            .await
-            .map_err(native_error)?;
+        let value = canonical_history::replace(
+            &inner,
+            expected_revision,
+            keep as usize,
+            items,
+            allow_rebuild.unwrap_or(false),
+        )
+        .await
+        .map_err(native_error)?;
         serde_json::to_string(&value).map_err(native_error)
     }
 

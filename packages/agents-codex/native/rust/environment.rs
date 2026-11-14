@@ -547,6 +547,15 @@ impl EnvironmentOptions {
         Ok(())
     }
 
+    pub(crate) fn validate_custom_storage_search(&self) -> Result<()> {
+        ensure!(
+            !self.local && self.url.is_some() && self.stdio_command.is_none() && self.read_only
+                && self.capability_directories.as_ref().is_none_or(Vec::is_empty),
+            "custom storage requires a concrete remote read-only search Environment"
+        );
+        Ok(())
+    }
+
     pub(crate) fn check_config(&self, config: &Config) -> Result<()> {
         ensure!(
             self.read_only_roots.is_empty() || (self.local && cfg!(target_os = "macos")),

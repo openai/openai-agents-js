@@ -185,6 +185,49 @@ impl Receipt {
         Ok(item)
     }
 
+    fn from_held_terminal(
+        &self,
+        call: &ManualCall,
+        turn: &str,
+        held: &ResponseItemEnvelope,
+        succeeded: bool,
+    ) -> Result<Self> {
+        let Self::Provisional(ResponseItem::FunctionCallOutput {
+            call_id: Some(sent_id),
+            output: sent,
+            ..
+        }) = self
+        else {
+            anyhow::bail!("Held promotion requires a live provisional function reply");
+        };
+        let ResponseItem::FunctionCallOutput {
+            call_id: Some(held_id),
+            output: written,
+            name,
+            namespace,
+            ..
+        } = &held.item
+        else {
+            anyhow::bail!("Held terminal result is not a function reply");
+        };
+        // The caller has checked the native turn-store owner. Core has not yet
+        // persisted this envelope, so it may lack ordinary history turn metadata.
+        ensure!(
+            !call.custom
+                && !call.shell
+                && !call.patch
+                && sent_id == &call.call_id
+                && held_id == sent_id
+                && held.item.turn_id().is_none_or(|value| value == turn)
+                && name.is_none()
+                && namespace.is_none()
+                && sent.body == written.body
+                && sent.success == Some(succeeded)
+                && written.success.is_none_or(|value| value == succeeded),
+            "Held terminal result changed during capture"
+        );
+        Ok(Self::Canonical(CanonicalResult(held.clone())))
+    }
     fn envelope(&self, call: &ManualCall, turn: &str) -> Result<ResponseItemEnvelope> {
         self.item(call, turn)?;
         match self {
@@ -264,6 +307,8 @@ impl Receipt {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Continuation {
+    #[serde(default, rename = "_sdk_lifecycle_start", skip_serializing_if = "Option::is_none")]
+    pub(crate) lifecycle_start_ack: Option<codex_extension_api::AgentLifecycleStartAcknowledgment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) pending_input: Vec<Value>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -467,6 +512,10 @@ struct History {
 }
 
 fn history(value: &Value) -> Result<History> {
+    history_with_staged_retry(value, None)
+}
+
+fn history_with_staged_retry(value: &Value, retry: Option<&StagedRetry>) -> Result<History> {
     let items: Vec<RolloutItem> = serde_json::from_value(value.clone())?;
     let mut result = History {
         programmatic: Default::default(),
@@ -560,8 +609,14 @@ fn history(value: &Value) -> Result<History> {
                 completed = false;
                 interrupted = false;
             }
-            RolloutItem::EventMsg(EventMsg::TurnComplete(_)) => {
-                completed = true;
+            RolloutItem::EventMsg(EventMsg::TurnComplete(completion)) => {
+                // A live staged receipt may retry its same-turn failed preparation.
+                // Ordinary manual parsing keeps its existing terminal behavior.
+                let failed_retry = retry.is_some_and(|retry|
+                    retry.turn == result.turn && completion.turn_id == result.turn
+                        && completion.error.is_some());
+                completed = !failed_retry;
+                interrupted |= failed_retry;
             }
             RolloutItem::TurnContext(context) if !result.turn.is_empty() => {
                 ensure!(
@@ -1755,6 +1810,7 @@ impl PythonTools {
             return Ok(None);
         }
         let mut frame = Continuation {
+            lifecycle_start_ack: None,
             pending_input: Vec::new(),
             staged_retry: false,
             model_settings_override: history
@@ -2116,6 +2172,53 @@ impl PythonTools {
                     .insert(call.call_id.clone(), written.clone());
             }
         }
+        // Shutdown can settle a terminal sibling into the native held-output
+        // owner without persisting it. Promote only the exact live provisional
+        // reply; saved receipt data never supplies this capture proof.
+        if let Some((turn, held)) = &manual.held_results {
+            ensure!(
+                turn == &checked.turn && frame.turn_id == checked.turn,
+                "Held terminal outputs belong to another capture turn"
+            );
+            let mut seen = HashSet::new();
+            for (output, succeeded) in held
+                .outputs
+                .lock()
+                .expect("held terminal outputs poisoned")
+                .iter()
+            {
+                let ResponseItem::FunctionCallOutput {
+                    call_id: Some(id), ..
+                } = &output.item
+                else {
+                    anyhow::bail!("Invalid held terminal result");
+                };
+                ensure!(seen.insert(id.clone()), "Duplicate held terminal result");
+                let Some(receipt @ Receipt::Provisional(_)) = frame.accepted_replies.get(id) else {
+                    continue;
+                };
+                ensure!(
+                    !checked.outputs.contains_key(id)
+                        && !frame.pending_manual.iter().any(|call| &call.call_id == id),
+                    "Held terminal result conflicts with the captured grant"
+                );
+                let call = checked
+                    .calls
+                    .iter()
+                    .find(|call| &call.call_id == id)
+                    .context("Held terminal result has no original call")?;
+                let canonical = receipt.from_held_terminal(call, &checked.turn, output, *succeeded)?;
+                frame.accepted_replies.insert(id.clone(), canonical);
+                let outcomes = frame
+                    .tool_outcomes
+                    .as_mut()
+                    .context("Held terminal result has no sampled batch")?;
+                outcomes.record(id, *succeeded);
+                if !outcomes.held_call_ids.contains(id) {
+                    outcomes.held_call_ids.push(id.clone());
+                }
+            }
+        }
         // Core drains completed native calls behind the cancelled manual slot.
         // Keep their exact receipts in format3, but leave only a strict output
         // prefix in saved history. Never remove matching IDs from older turns.
@@ -2201,6 +2304,11 @@ impl PythonTools {
             );
             None
         };
+        if let Some(ack) = &frame.lifecycle_start_ack {
+            ensure!(ack.turn_id == frame.turn_id
+                && ack.profile.as_ref() == captured.as_ref().map(|source| &source.receipt),
+                "Lifecycle acknowledgment differs from the admitted manual source");
+        }
         let generation = if let Some(captured) = &captured {
             ensure!(
                 plan.as_ref()
@@ -2546,6 +2654,7 @@ impl PythonTools {
         &self,
         data: &codex_core::McpApprovalCheckpointData,
         raw: &Value,
+        lifecycle_start_ack: Option<codex_extension_api::AgentLifecycleStartAcknowledgment>,
     ) -> Result<Continuation> {
         let history = history(raw)?;
         ensure!(
@@ -2555,6 +2664,14 @@ impl PythonTools {
                 && history.outputs.is_empty(),
             "Unsupported native MCP checkpoint batch"
         );
+        if let Some(ack) = &lifecycle_start_ack {
+            ensure!(
+                ack.turn_id == data.turn_id
+                    && ack.profile.as_ref()
+                        == history.sources.get(&data.call_id).map(|source| &source.0),
+                "Lifecycle acknowledgment differs from the sealed native MCP source"
+            );
+        }
         let rows: Vec<RolloutItem> = serde_json::from_value(raw.clone())?;
         ensure!(
             rows.iter()
@@ -2570,6 +2687,7 @@ impl PythonTools {
             "Native MCP checkpoint has an accepted result or unsettled sibling"
         );
         Ok(Continuation {
+            lifecycle_start_ack,
             pending_input: Vec::new(),
             staged_retry: false,
             model_override: history
@@ -2597,6 +2715,8 @@ impl PythonTools {
     pub(crate) fn manual_completion(
         &self,
         raw: &Value,
+        owner: &str,
+        preserve_accepted_replies: bool,
     ) -> Result<(
         Continuation,
         Vec<ResponseItemEnvelope>,
@@ -2683,6 +2803,23 @@ impl PythonTools {
                     && unique.iter().all(|id| held_ids.contains(*id)),
                 "Invalid held terminal identities"
             );
+        }
+        if preserve_accepted_replies && let Some(fresh) = &frame.fresh {
+            // Only the still-live native PendingKey set can release a held reply.
+            // A serialized sibling remains held even beside a fresh live receipt.
+            for call in &history.calls {
+                if !held_ids.contains(&call.call_id) {
+                    continue;
+                }
+                let name = ToolName::new(call.namespace.clone(), call.name.clone())
+                    .with_default_namespace();
+                let slot = generation.entries.iter()
+                    .position(|entry| entry.name.clone().with_default_namespace() == name)
+                    .context("Held result lost its native declaration")?;
+                if fresh.has_current_call(self, generation, owner, &frame.turn_id, &call.call_id, slot)? {
+                    held_ids.remove(&call.call_id);
+                }
+            }
         }
         let mut items = Vec::new();
         let mut canonical_call_ids = Vec::new();
@@ -2934,6 +3071,72 @@ mod canonical_result_tests {
         }
     }
 
+    fn held_output(
+        id: &str,
+        text: &str,
+        turn: Option<&str>,
+        success: bool,
+    ) -> ResponseItemEnvelope {
+        let mut item: ResponseItem = serde_json::from_value(json!({
+            "type":"function_call_output", "call_id":id, "output":text,
+            "internal_chat_message_metadata_passthrough": {"turn_id":turn}
+        }))
+        .unwrap();
+        let ResponseItem::FunctionCallOutput { output, .. } = &mut item else {
+            unreachable!()
+        };
+        output.success = Some(success);
+        item.into()
+    }
+
+    #[test]
+    fn held_promotion_preserves_native_false_output_without_fabricating_turn_metadata() {
+        let sent = held_output("held", "exact body", Some("turn"), false);
+        let held = held_output("held", "exact body", None, false);
+        let receipt = Receipt::Provisional(sent.item);
+        let promoted = receipt
+            .from_held_terminal(&call("held"), "turn", &held, false)
+            .unwrap();
+        let result = promoted.envelope(&call("held"), "turn").unwrap();
+        assert_eq!(
+            serde_json::to_value(&result).unwrap(),
+            serde_json::to_value(&held).unwrap()
+        );
+        assert!(result.item.turn_id().is_none());
+        let ResponseItem::FunctionCallOutput { output, .. } = &result.item else {
+            unreachable!()
+        };
+        assert_eq!(output.success, Some(false));
+    }
+
+    #[test]
+    fn held_promotion_rejects_data_receipts_and_changed_body_call_turn_or_success() {
+        let sent = held_output("held", "exact body", Some("turn"), true);
+        let held = held_output("held", "exact body", None, true);
+        let receipt = Receipt::Provisional(sent.item.clone());
+        assert!(
+            Receipt::Native(sent.item)
+                .from_held_terminal(&call("held"), "turn", &held, true)
+                .is_err()
+        );
+        for changed in [
+            held_output("other", "exact body", None, true),
+            held_output("held", "changed body", None, true),
+            held_output("held", "exact body", Some("other-turn"), true),
+            held_output("held", "exact body", None, false),
+        ] {
+            assert!(
+                receipt
+                    .from_held_terminal(&call("held"), "turn", &changed, true)
+                    .is_err()
+            );
+        }
+        assert!(
+            receipt
+                .from_held_terminal(&call("held"), "turn", &held, false)
+                .is_err()
+        );
+    }
     #[test]
     fn buffered_handoff_receipt_keeps_metadata_through_portable_json() {
         let item: ResponseItem = serde_json::from_value(json!({
@@ -3030,42 +3233,330 @@ mod staged_input_tests {
     }
 }
 
+struct StagedInputData {
+    original: Vec<Value>,
+    batch_turn: String,
+    batch: codex_extension_api::StagedInputBatch,
+    current_turn: Arc<std::sync::Mutex<String>>,
+}
+
 struct StagedRetry {
     turn: String,
     continuation: Value,
     batch: codex_extension_api::StagedInputBatch,
+    // Live native boundary after the accepted reply injection. Portable rows
+    // cannot manufacture an abort suffix beyond this captured occurrence count.
+    original_history_len: usize,
 }
 impl PythonTools {
-    pub(crate) fn retain_staged_retry(
+    pub(crate) async fn retain_staged_retry(
         state: &crate::engine::ThreadState,
         frame: &Continuation,
         batch: codex_extension_api::StagedInputBatch,
     ) -> Result<()> {
+        let original_history_len = state.engine.load_checkpoint_history(state.id).await?.len();
+        if batch.projects_occurrences() {
+            state
+                .thread
+                .thread_extension_data()
+                .insert(StagedInputData {
+                    original: frame.pending_input.clone(),
+                    batch_turn: frame.turn_id.clone(),
+                    batch: batch.clone(),
+                    current_turn: Arc::new(std::sync::Mutex::new(frame.turn_id.clone())),
+                });
+        }
         let mut continuation = serde_json::to_value(frame)?;
         continuation["staged_retry"] = Value::Bool(true);
         state.thread.thread_extension_data().insert(StagedRetry {
             turn: frame.turn_id.clone(),
             continuation,
             batch,
+            original_history_len,
         });
         Ok(())
+    }
+    pub(crate) fn staged_input_data(state: &crate::engine::ThreadState) -> Result<Vec<Value>> {
+        let Some(data) = state.thread.thread_extension_data().get::<StagedInputData>() else { return Ok(Vec::new()); };
+        data.batch.ensure_terminal_settled().map_err(anyhow::Error::msg)?;
+        data.batch.pending_occurrences_for(&data.batch_turn).into_iter().map(|(index, _)|
+            data.original.get(index).cloned().context("Staged data is outside its native owner")).collect()
+    }
+    pub(crate) fn remaining_staged_input(
+        state: &crate::engine::ThreadState, turn: &str,
+    ) -> Result<Option<Vec<Value>>> {
+        let Some(data) = state.thread.thread_extension_data().get::<StagedInputData>() else { return Ok(None); };
+        if *data.current_turn.lock().unwrap_or_else(std::sync::PoisonError::into_inner) != turn { return Ok(None); }
+        Self::staged_input_data(state).map(Some)
+    }
+    pub(crate) fn restore_staged_input_data(state: &crate::engine::ThreadState, original: Vec<Value>) -> Result<()> {
+        let items = original.iter().cloned().map(serde_json::from_value::<ResponseItem>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        for item in &items {
+            crate::checkpoint::validate_external_response_item(item)?;
+            ensure!(matches!(item, ResponseItem::Message { role, content, .. }
+                if role == "user" && content.iter().all(|part| matches!(part,
+                    codex_protocol::models::ContentItem::InputText { .. }))),
+                "Passive staged queue requires text user input");
+        }
+        state.thread.thread_extension_data().insert(StagedInputData {
+            original, batch_turn: String::new(),
+            batch: codex_extension_api::StagedInputBatch::selected_before_send(String::new(), items),
+            current_turn: Arc::new(std::sync::Mutex::new(String::new())),
+        });
+        Ok(())
+    }
+    pub(crate) fn fresh_staged_input(state: &crate::engine::ThreadState)
+        -> Result<Option<Arc<codex_extension_api::FreshStagedInput>>> {
+        let Some(data) = state.thread.thread_extension_data().get::<StagedInputData>() else { return Ok(None); };
+        if !data.batch.is_pending() { return Ok(None); }
+        Ok(Some(Arc::new(codex_extension_api::FreshStagedInput::new(state.id.to_string(),
+            data.batch.clone(), Arc::clone(&data.current_turn)).map_err(anyhow::Error::msg)?)))
     }
     pub(crate) fn staged_retry(
         state: &crate::engine::ThreadState,
         checkpoint: &Value,
-    ) -> Option<Value> {
-        let retry = state.thread.thread_extension_data().get::<StagedRetry>()?;
+    ) -> Result<Option<Value>> {
+        let Some(retry) = state.thread.thread_extension_data().get::<StagedRetry>() else {
+            return Ok(None);
+        };
         if !retry.batch.is_pending() {
-            return None;
+            return Ok(None);
         }
-        let last = checkpoint["history"]
-            .as_array()?
-            .iter()
-            .rev()
-            .find(|record| {
-                record["type"] == "event_msg" && record["payload"]["type"] == "task_started"
-            })?["payload"]["turn_id"]
-            .as_str()?;
-        (last == retry.turn).then(|| retry.continuation.clone())
+        let Some(last) = checkpoint["history"]
+            .as_array()
+            .and_then(|rows| {
+                rows.iter().rev().find(|record| {
+                    record["type"] == "event_msg" && record["payload"]["type"] == "task_started"
+                })
+            })
+            .and_then(|record| record["payload"]["turn_id"].as_str())
+        else {
+            return Ok(None);
+        };
+        if last != retry.turn {
+            return Ok(None);
+        }
+        if retry.batch.projects_occurrences() {
+            let mut complete = false;
+            for row in checkpoint["history"]
+                .as_array()
+                .context("Staged retry lacks history")?
+            {
+                if row["type"] != "event_msg" {
+                    continue;
+                }
+                let event = &row["payload"];
+                if event["turn_id"].as_str() != Some(last) {
+                    continue;
+                }
+                match event["type"].as_str() {
+                    Some("task_started") => complete = false,
+                    // Failed preparation can settle as TurnComplete with an error.
+                    // Only a successful terminal owns the passive-queue transition.
+                    Some("task_complete") => complete = event["error"].is_null(),
+                    _ => {}
+                }
+            }
+            if complete {
+                return Ok(None);
+            }
+        }
+        let mut frame = retry.continuation.clone();
+        if retry.batch.projects_occurrences() {
+            // The old receipt remains usable only while that exact sample remains current.
+            let current = history_with_staged_retry(&checkpoint["history"], Some(retry.as_ref()))?;
+            let rows: Vec<RolloutItem> = serde_json::from_value(checkpoint["history"].clone())?;
+            // Core appends its typed abort context after a failed preparation.
+            // This is not another accepted caller/model item. Require both its
+            // same-turn provenance and a following native interruption event.
+            let mut interrupted = false;
+            let mut last_item = None;
+            for (index, row) in rows.iter().enumerate().rev() {
+                match row {
+                    RolloutItem::EventMsg(EventMsg::TurnAborted(abort))
+                        if abort.turn_id.as_deref() == Some(last) => interrupted = true,
+                    RolloutItem::ResponseItem(envelope) => {
+                        let native_abort = interrupted
+                            && index >= retry.original_history_len
+                            && matches!(&envelope.item,
+                                ResponseItem::Message {
+                                    role, internal_chat_message_metadata_passthrough: Some(metadata), ..
+                                } if role == "user" && metadata.turn_id.as_deref() == Some(last)
+                                    && metadata.content_item_kinds.as_deref().is_some_and(|kinds|
+                                        kinds.len() == 1 && kinds[0].0 == "generic.turn_aborted"));
+                        if native_abort { continue; }
+                        last_item = Some(&envelope.item);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let last_value = last_item.map(serde_json::to_value).transpose()?;
+            let last_id = last_value.as_ref().and_then(|value| {
+                matches!(
+                    value["type"].as_str(),
+                    Some(
+                        "function_call_output"
+                            | "custom_tool_call_output"
+                            | "apply_patch_call_output"
+                            | "shell_call_output"
+                    )
+                )
+                .then(|| value["call_id"].as_str())
+                .flatten()
+            });
+            if last_id.is_none_or(|id| frame["accepted_replies"].get(id).is_none()) {
+                return Ok(None);
+            }
+            let old = frame["reply_order"]
+                .as_array()
+                .context("Staged retry lacks its call roster")?;
+            if !old
+                .iter()
+                .filter_map(Value::as_str)
+                .eq(current.calls.iter().map(|call| call.call_id.as_str()))
+            {
+                return Ok(None);
+            }
+
+            frame["pending_input"] = serde_json::to_value(
+                Self::remaining_staged_input(state, last)?
+                    .context("Staged retry lost its native occurrence owner")?,
+            )?;
+        }
+        Ok(Some(frame))
     }
+}
+
+
+impl PythonTools {
+    pub(crate) fn pending_memory_owner(
+        &self,
+        owner: &str,
+        key: &PendingKey,
+    ) -> Result<PendingMemoryOwner> {
+        ensure!(
+            self.instance.is_none() && self.inherited_source.is_none(),
+            "Interrupted memory supports a current root only"
+        );
+        ensure!(
+            key.reply.thread == owner
+                && key.reply.instance.is_none()
+                && key.reply.manual_grant.is_some(),
+            "Invalid pending memory owner"
+        );
+        let generation = self
+            .resolve_generation(key.reply.generation)
+            .context("Pending memory catalog expired")?;
+        let entry = generation
+            .entries
+            .get(key.reply.slot)
+            .context("Pending memory tool expired")?;
+        ensure!(
+            matches!(&entry.spec, ToolSpec::Function(_)),
+            "Interrupted memory requires a function approval"
+        );
+        let manual = self.manual.lock().expect("manual tools poisoned");
+        ensure!(
+            manual.restored.is_none(),
+            "Interrupted memory requires a fresh approval owner"
+        );
+        let pending = self.pending.lock().expect("JavaScript replies poisoned");
+        ensure!(
+            pending.len() == 1,
+            "Interrupted memory requires exactly one pending function approval"
+        );
+        let call = pending
+            .get(key)
+            .context("Pending memory approval expired")?;
+        let request = call
+            .manual_request
+            .as_ref()
+            .context("Pending memory approval already resolved")?;
+        ensure!(
+            !call.retired
+                && !call.sender.is_closed()
+                && call.callback.is_none()
+                && call.configured.is_none()
+                && request["msg"]["_sdk_approval_required"] == true
+                && request["msg"]["_sdk_managed_approved"] != true
+                && request["msg"]["_sdk_code_origin"].is_null()
+                && call
+                    .deadline
+                    .as_ref()
+                    .is_none_or(|deadline| deadline.admit(|| true).unwrap_or(false)),
+            "Pending memory approval expired"
+        );
+        let profile = match (
+            request["msg"].get("profile_id"),
+            request["msg"].get("profile_epoch"),
+        ) {
+            (None, None) => None,
+            (Some(id), Some(epoch)) => Some(serde_json::from_value::<codex_extension_api::AgentProfileReceipt>(
+                json!({"profile_id": id, "epoch": epoch}),
+            )?),
+            _ => anyhow::bail!("Pending memory profile receipt is incomplete"),
+        };
+        ensure!(
+            self.managed_profiles.load(Ordering::Acquire) == profile.is_some(),
+            "Pending memory profile owner changed"
+        );
+        Ok(PendingMemoryOwner {
+            key: key.clone(),
+            invocation: call.invocation,
+            profile,
+            name: entry.name.clone(),
+            arguments: request["msg"]["arguments"].clone(),
+        })
+    }
+
+    pub(crate) fn check_pending_memory_owner(
+        &self,
+        owner: &str,
+        proof: &PendingMemoryOwner,
+    ) -> Result<()> {
+        let current = self.pending_memory_owner(owner, &proof.key)?;
+        ensure!(
+            current.invocation == proof.invocation && current.profile == proof.profile,
+            "Pending memory invocation changed"
+        );
+        Ok(())
+    }
+}
+
+impl Continuation {
+    pub(crate) fn retained_native_mcp_owner(&self) -> Option<Self> {
+        (self.pending_mcp.len() == 1 && self.native_mcp.is_some()
+            && self.native_mcp_source.is_some()
+            && self.pending_manual.is_empty() && self.accepted_replies.is_empty())
+            .then(|| self.clone())
+    }
+
+    /// Re-export only the sampled call held by a validated native MCP recovery.
+    pub(crate) fn native_mcp_recapture_sample(&self, next: &Continuation) -> Result<String> {
+        ensure!(self.native_mcp.is_some() && self.native_mcp_source.is_some()
+            && self.pending_mcp.len() == 1 && next.pending_mcp.len() == 1
+            && self.pending_manual.is_empty() && self.accepted_replies.is_empty()
+            && self.turn_id == next.turn_id && self.reply_order == next.reply_order
+            && self.model_override == next.model_override
+            && self.model_settings_override == next.model_settings_override,
+            "Native MCP recovery owner changed");
+        let old = &self.pending_mcp[0];
+        let current = &next.pending_mcp[0];
+        ensure!(old.turn_id == current.turn_id && old.call_id == current.call_id
+            && old.server_name == current.server_name && old.tool_name == current.tool_name
+            && old.callable_namespace == current.callable_namespace
+            && old.callable_name == current.callable_name
+            && old.declaration_sha256 == current.declaration_sha256
+            && old.arguments == current.arguments, "Native MCP recovery call changed");
+        let previous = self.tool_outcomes.as_ref().context("Native MCP recovery lost its sample")?;
+        let sampled = next.tool_outcomes.as_ref().context("Native MCP recapture lacks its sample")?;
+        ensure!(previous.response_observation_id == sampled.response_observation_id
+            && previous.call_ids == sampled.call_ids
+            && previous.outcomes.is_empty() && sampled.outcomes.is_empty(),
+            "Native MCP recovery sample changed");
+        Ok(previous.response_observation_id.clone())
+    }
+
 }

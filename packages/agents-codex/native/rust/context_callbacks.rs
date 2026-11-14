@@ -25,8 +25,30 @@ fn run_retry_policy_override(
     }
 }
 
+// Source ordinals bind to this callback's live native rows. Public JSON omits
+// native-only metadata (for example tool success), so retain the original after
+// validating the entire visible value rather than deserializing it as new data.
+fn materialize_mapped_context_items(
+    originals: &[ResponseItem],
+    items: &mut [ResponseItem],
+    indices: &[Option<usize>],
+) -> Result<()> {
+    ensure!(items.len() == indices.len(), "Context source map has the wrong output length");
+    for (item, index) in items.iter_mut().zip(indices) {
+        let Some(index) = index else { continue };
+        let original = originals.get(*index).context("Context source map is outside its captured input")?;
+        ensure!(
+            serde_json::to_value(&*item)? == serde_json::to_value(original)?,
+            "Context source map refers to a changed input item"
+        );
+        *item = original.clone();
+    }
+    Ok(())
+}
+
 pub(super) struct ContextProjection {
     items: Option<Vec<ResponseItem>>,
+    source_indices: Option<Vec<Option<usize>>>,
     hosted_prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
     explicit_tools: bool,
 }
@@ -172,6 +194,7 @@ pub(crate) struct ProviderResponseSpanReply {
 pub(crate) struct ContextReply {
     pub(crate) owner: StepReply,
     items: Option<Vec<Value>>,
+    source_indices: Option<Vec<Option<usize>>>,
     hosted_prompt: Option<codex_protocol::model_request_controls::HostedPromptReference>,
     #[serde(default)]
     explicit_tools: bool,
@@ -273,6 +296,7 @@ impl PythonTools {
             turn,
             cancellation,
             None,
+            None,
             json!({"type":"_sdk_agent_workspace", "target_profile_id":target}),
             PreparationReply::Workspace,
         )
@@ -324,6 +348,7 @@ impl PythonTools {
             input.thread_store.level_id(),
             input.turn_id,
             input.cancellation,
+            None,
             None,
             json!({"type":"_sdk_tool_not_found", "tool":input.tool_name.name,
                 "namespace":input.tool_name.namespace, "call_id":input.call_id,
@@ -412,7 +437,7 @@ impl PythonTools {
             input.admission.thread_id(),
             input.admission.turn_store().level_id(),
             input.cancellation,
-            None,
+            None, None,
             json!({"type":"_sdk_model_retry", "instance":self.instance,
                 "root_turn_id":input.admission.root_turn_id(),
                 "run_retry_policy_override":run_retry_policy_override(input.admission.as_ref()),"data":data}),
@@ -494,7 +519,7 @@ impl PythonTools {
             .context_stop(input.turn_id)?
             .callback_cancellation()
             .context("Expired compaction policy turn")?;
-        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
+        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None, input.accounting.clone(),
             json!({"type":"_sdk_before_compact_policy", "model":input.model,
                 "automatic":input.automatic, "items":input.items, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::CompactionPolicy).await
@@ -515,7 +540,7 @@ impl PythonTools {
             .context_stop(input.turn_id)?
             .callback_cancellation()
             .context("Expired compaction callback turn")?;
-        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None,
+        self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, None, input.accounting.clone(),
             json!({"type":"_sdk_before_compact", "model":input.model, "automatic":input.automatic, "items":input.items,
                 "optional":input.optional, "candidate_indexes":input.candidate_indexes, "model_omitted":input.model_omitted, "provider_response":input.provider_response}),
             PreparationReply::Compaction).await
@@ -612,6 +637,7 @@ impl PythonTools {
         turn: &str,
         cancellation: CancellationToken,
         model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+        compaction: Option<Arc<dyn codex_extension_api::CompactionRequestAccounting>>,
         message: Value,
         prepare: impl FnOnce(oneshot::Sender<std::result::Result<T, ()>>) -> PreparationReply,
     ) -> Result<T> {
@@ -622,6 +648,7 @@ impl PythonTools {
                 turn,
                 cancellation,
                 model_attempt,
+                compaction,
                 message,
                 prepare,
             )
@@ -637,6 +664,7 @@ impl PythonTools {
         turn: &str,
         cancellation: CancellationToken,
         model_attempt: Option<Arc<dyn codex_extension_api::ModelAttemptAdmission>>,
+        compaction: Option<Arc<dyn codex_extension_api::CompactionRequestAccounting>>,
         mut message: Value,
         prepare: impl FnOnce(oneshot::Sender<std::result::Result<T, ()>>) -> PreparationReply,
     ) -> Result<(T, ContextLease)> {
@@ -663,7 +691,7 @@ impl PythonTools {
         if let Some(instance) = &self.instance {
             receipt["instance"] = json!(instance);
         }
-        let callback = CallbackRelease::with_model_attempt(receipt, model_attempt);
+        let callback = CallbackRelease::with_accounting(receipt, model_attempt, compaction);
         let (reply, receive) = oneshot::channel();
         {
             let current = self
@@ -776,8 +804,14 @@ impl PythonTools {
                 .source_catalog(input.step_store)?
                 .is_some_and(|catalog| !catalog.transform_context)
         {
+            if let Some(indices) = input.source_indices {
+                *indices = Some((0..input.items.len()).map(Some).collect());
+            }
             return Ok(());
         }
+        ensure!(input.source_indices.is_none() || input.hosted_prompt.is_none(),
+            "Selected staged admission does not support hosted prompt projection");
+        let source_count = input.items.len();
         if let Some(prompt) = input.hosted_prompt.as_deref_mut() {
             if input
                 .turn_store
@@ -809,8 +843,8 @@ impl PythonTools {
             .step_store
             .and_then(|step| step.get::<codex_extension_api::CapturedModelAttempt>())
             .map(|captured| captured.0.clone());
-        let result = self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, model_attempt,
-            json!({"type":"_sdk_transform_context", "model":input.model, "compaction":input.compaction, "hosted_prompt":input.hosted_prompt.is_some(),
+        let mut result = self.exchange_context(input.step_store, input.thread_id, input.turn_id, cancellation, model_attempt, None,
+            json!({"type":"_sdk_transform_context", "input_source_map":input.source_indices.is_some(), "model":input.model, "compaction":input.compaction, "hosted_prompt":input.hosted_prompt.is_some(),
                 "hosted_prompt_omissions":input.hosted_prompt.as_deref().map(|prompt| json!({
                     "omit_model":prompt.omit_model, "omit_instructions":prompt.omit_instructions,
                     "omit_tools":prompt.omit_tools,
@@ -828,6 +862,22 @@ impl PythonTools {
                 .hosted_prompt
                 .context("Unexpected hosted prompt reply")?;
             target.reference = Some(reference);
+        }
+        if input.source_indices.is_some() {
+            if let Some(items) = result.items.as_mut() {
+                materialize_mapped_context_items(
+                    input.items,
+                    items,
+                    result.source_indices.as_deref().context("Missing live context source map")?,
+                )?;
+            }
+        }
+        if let Some(indices) = input.source_indices {
+            *indices = Some(if result.items.is_some() {
+                result.source_indices.context("Missing live context source map")?
+            } else {
+                (0..source_count).map(Some).collect()
+            });
         }
         if let Some(items) = result.items {
             *input.items = items;
@@ -850,7 +900,7 @@ impl PythonTools {
         let cancellation = stop
             .callback_cancellation()
             .context("Expired completion turn")?;
-        self.exchange_context(input.step_store, input.thread_store.level_id(), input.turn_id, cancellation, None,
+        self.exchange_context(input.step_store, input.thread_store.level_id(), input.turn_id, cancellation, None, None,
             json!({"type":"_sdk_before_complete", "model":input.model, "text":input.last_assistant_message, "continuation_count":input.continuation_count}),
             |reply| PreparationReply::Completion { reply, stop }).await
     }
@@ -864,6 +914,7 @@ impl PythonTools {
             input.admission.thread_id(),
             input.admission.turn_store().level_id(),
             input.cancellation,
+            None,
             None,
             json!({"type":"_sdk_provider_response_span", "parent_context":input.parent_context}),
             PreparationReply::ProviderResponseSpan,
@@ -969,6 +1020,7 @@ impl PythonTools {
             } else {
                 Ok(ContextProjection {
                     items,
+                    source_indices: response.source_indices,
                     hosted_prompt: response.hosted_prompt,
                     explicit_tools: response.explicit_tools,
                 })
@@ -1631,6 +1683,7 @@ impl PythonTools {
                 turn,
                 cancellation,
                 attempt.clone(),
+                None,
                 message,
                 |reply| {
                     PreparationReply::Model(ModelDelivery::Waiting(
@@ -2168,5 +2221,41 @@ mod model_provider_metadata_occurrence_tests {
                 "{field}"
             );
         }
+    }
+}
+
+
+#[cfg(test)]
+mod mapped_context_materialization_tests {
+    use super::*;
+
+    fn output() -> ResponseItem {
+        let mut item: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "function_call_output", "call_id": "owned-call", "output": "accepted"
+        })).unwrap();
+        let ResponseItem::FunctionCallOutput { output, .. } = &mut item else { unreachable!() };
+        output.success = Some(true);
+        item
+    }
+
+    #[test]
+    fn visible_roundtrip_retains_native_tool_metadata() {
+        let original = output();
+        let roundtrip: ResponseItem = serde_json::from_value(serde_json::to_value(&original).unwrap()).unwrap();
+        assert_ne!(roundtrip, original);
+        let mut rows = vec![roundtrip];
+        materialize_mapped_context_items(&[original.clone()], &mut rows, &[Some(0)]).unwrap();
+        assert_eq!(rows, vec![original]);
+    }
+
+    #[test]
+    fn changed_values_and_outside_ordinals_do_not_gain_native_metadata() {
+        let original = output();
+        let changed: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "function_call_output", "call_id": "different-call", "output": "accepted"
+        })).unwrap();
+        assert!(materialize_mapped_context_items(&[original.clone()], &mut [changed], &[Some(0)]).is_err());
+        assert!(materialize_mapped_context_items(&[original.clone()], &mut [original.clone()], &[Some(1)]).is_err());
+        assert!(materialize_mapped_context_items(&[original.clone()], &mut [original], &[]).is_err());
     }
 }

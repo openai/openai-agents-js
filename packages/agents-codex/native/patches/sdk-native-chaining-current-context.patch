@@ -1,0 +1,48 @@
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index 208a1e68524..bf3a3598066 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -319,14 +319,24 @@ impl Session {
+         &self,
+     ) -> codex_protocol::error::Result<Option<Vec<String>>> {
+         use codex_protocol::error::CodexErr;
+-        let originals = self.sdk_load_original_history().await?;
+-        let admitted = originals.items.iter().filter_map(|row| {
+-            row.projection.as_ref().map(|projection| projection.item.clone())
+-        }).collect();
+-        let (items, changed) = self.project_handoff_compaction_input(admitted).await?;
++        let before = self.conversation_history_snapshot().await;
++        // The live context retains the exact internal profile publication used
++        // by the existing native projector. SDK originals deliberately omit it.
++        let context = self.clone_history().await;
++        let input = context.raw_items().cloned().collect();
++        let (items, changed) = self.project_handoff_compaction_input(input).await?;
+         if !changed {
+             return Ok(None);
+         }
++        // The existing streaming replay reader bounds the original catalog
++        // before loading it for exact-byte matching.
++        let (revision, _, _) = self.sdk_replay_history_snapshot().await?;
++        let originals = self.sdk_load_original_history().await?;
++        if originals.revision() != revision {
++            return Err(CodexErr::InvalidRequest(
++                "Native chaining history changed during capture".into(),
++            ));
++        }
+         if originals.items.iter().any(|row| row.projection.is_none()) {
+             return Err(CodexErr::InvalidRequest(
+                 "Changed chaining history requires admitted native records".into(),
+@@ -410,6 +420,13 @@ impl Session {
+         check_budget(serialized.len(), serialized.iter().try_fold(
+             0usize, |bytes, row| bytes.checked_add(row.len()),
+         ))?;
++        if self.conversation_history_snapshot().await.history_version()
++            != before.history_version()
++        {
++            return Err(CodexErr::InvalidRequest(
++                "Native chaining context changed during capture".into(),
++            ));
++        }
+         Ok(Some(serialized))
+     }
+ 

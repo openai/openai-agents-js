@@ -9,6 +9,26 @@ pub(crate) fn enabled(store: &ExtensionData, profile: &str) -> bool {
         .is_some_and(|bindings| bindings.0.iter().any(|id| id == profile))
 }
 
+/// Capture only a completed callback from the current native turn and Agent.
+pub(crate) async fn capture_start_ack(
+    state: &crate::engine::ThreadState,
+    turn_id: &str,
+) -> Result<Option<codex_extension_api::AgentLifecycleStartAcknowledgment>> {
+    let Some(ack) = state.thread
+        .current_turn_extension_data::<codex_extension_api::AgentLifecycleStartAcknowledgment>(turn_id)
+        .await
+    else {
+        return Ok(None);
+    };
+    let profile = state.thread.captured_agent_profile().await?;
+    ensure!(
+        ack.turn_id == turn_id
+            && ack.profile.as_ref() == profile.as_ref().map(|source| &source.receipt),
+        "Lifecycle acknowledgment changed during manual capture"
+    );
+    Ok(Some(ack.as_ref().clone()))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Reply {
@@ -53,7 +73,7 @@ impl PythonTools {
         }
         let exchange = self.exchange_context(
             input.source.map(|_| &step), input.thread_store.level_id(), input.turn_id,
-            combined.clone(), None,
+            combined.clone(), None, None,
             json!({"type":"_sdk_agent_lifecycle", "phase":if input.target_profile_id.is_some(){"handoff"}else{"start"},
                 "target_profile_id": input.target_profile_id}),
             context_callbacks::PreparationReply::AgentLifecycle,
@@ -70,7 +90,15 @@ impl PythonTools {
             !cancellation.is_cancelled(),
             "Agent lifecycle callback cancelled"
         );
-        result
+        result?;
+        ensure!(!input.cancellation.is_cancelled(), "Agent lifecycle callback cancelled");
+        if input.target_profile_id.is_none() {
+            input.turn_store.insert(codex_extension_api::AgentLifecycleStartAcknowledgment {
+                turn_id: input.turn_id.to_owned(),
+                profile: input.source.map(|source| source.receipt.clone()),
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn reply_agent_lifecycle(&self, response: Reply) -> Result<()> {

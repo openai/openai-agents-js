@@ -1455,7 +1455,67 @@
     {
       "path": "sdk-portable-text-tool-finalization.patch",
       "sha256": "fead081483217dd25cbee8ff5ffe2ac77ca90493fd523c9b88a36c14e91c2f02"
+    },
+    {
+      "path": "sdk-agent-lifecycle-resume-ack.patch",
+      "sha256": "82d878c82df52c1164341e768868701785e4cd995f664da95b8930eb9a26f5b4"
+    },
+    {
+      "path": "sdk-staged-input-selected-admission.patch",
+      "sha256": "e16a6c587bb3fd849d9ab5dbd1cdd4c8083d2d9065b66aef4dcc1954b681d116"
+    },
+    {
+      "path": "sdk-canonical-checkpoint-request-controls.patch",
+      "sha256": "912738b57df97106d231adc7a7a8ce943ef738c4cae4217aaa53e4b01e924f07"
+    },
+    {
+      "path": "sdk-history-prefix-rebuild.patch",
+      "sha256": "99ccbc79b8f0505ffcfde2aeb1c8892e8125fd81f814d28ba99ba5daa0145915"
+    },
+    {
+      "path": "sdk-native-remembered-mcp-approval.patch",
+      "sha256": "53041a80cd3ad803bdd39071c937d0c2bd13eab3e2a3c6136685cc1195d22cef"
+    },
+    {
+      "sha256": "3383b3f780847bd60d8f50d2198c2ba67f631422b88299599c0e7250b3ac200e",
+      "path": "sdk-staged-provider-terminal-admission.patch"
+    },
+    {
+      "path": "sdk-staged-provider-terminal-loop-fix.patch",
+      "sha256": "d9489f650b93e119980aac9589de893fd427f6c0a85fdefcba50a025c0fd2a5c"
+    },
+    {
+      "path": "sdk-mcp-optional-null-semantics.patch",
+      "sha256": "ffddef84b721b2fa2e23e5adc7e760b3c4e2baa371fe93fd9c06e701452efa23"
+    },
+    {
+      "path": "sdk-staged-conversation-terminal-admission.patch",
+      "sha256": "7f3ad0f70ae920a3bf538fe44cec169a0843548da5642b24092b7d7d90dfd53a"
+    },
+    {
+      "path": "sdk-profile-hosted-search.patch",
+      "sha256": "dd55b13cea64e6b61222978d43595ebbe78edd855b59bddda1090024e4328213"
+    },
+    {
+      "path": "sdk-native-filtered-result-chaining.patch",
+      "sha256": "f50d39501d578abb37db49c86ca0167e453f36aa8addeacc21e1e8cb3d2419d7"
+    },
+    {
+      "path": "sdk-native-chaining-current-context.patch",
+      "sha256": "8ec2d611c893132ef3dc2ad8bc16d07dc1d02fc7b94fb3f7c72028e5e775c1fc"
+    },
+    {
+      "path": "sdk-native-chaining-message-defaults.patch",
+      "sha256": "c4cb3d699b380b9b8e4632ee0c50e2777906b3145065fc43a7dc0fdc90b9a895"
+    },
+    {
+      "path": "sdk-provider-worker-after-runtime.patch",
+      "sha256": "05acf7def71659f68408d6ed1d8fdd14dff4043bd6996c17a8bb96414bd55039"
+    },
+    {
+      "path": "sdk-hosted-file-search-role-identity.patch",
+      "sha256": "d51143ff580c423fd1aabbe6604b5a1fa49070bf632c4ddf05fc9ad6e732207d"
     }
   ],
-  "result_tree": "a41b1128e9921b768982b696ca0eb12d86088f18"
+  "result_tree": "bddfc0ed186e04942ed219517997ac41293810e2"
 }

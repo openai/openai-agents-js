@@ -19,6 +19,7 @@ import {
   issueNativeQuestion,
   parseNativeQuestion,
   nativeReplyRequest,
+  nativeReplyRememberedMcp,
   negativeQuestionReply,
   urlQuestionPresentation,
   urlQuestionReply,
@@ -56,6 +57,31 @@ function approval() {
 }
 
 describe('native question grants', () => {
+  it.each(['allow_once', 'deny'] as const)(
+    'keeps remembered %s intent outside its wire payload',
+    (decision) => {
+      const { request, grant } = approval();
+      const once = request.reply(decision);
+      expect(nativeReplyRememberedMcp(once)).toBeUndefined();
+      const remembered = request.reply(decision, { always: true });
+      expect(nativeReplyRememberedMcp(remembered)).toBe(
+        decision === 'allow_once',
+      );
+      expect(JSON.parse(grant.take(remembered))).toEqual({ decision });
+      expect(JSON.stringify(remembered)).toBe('{}');
+    },
+  );
+  it('rejects malformed remember intent without consuming its live grant', () => {
+    const { request, grant } = approval();
+    expect(() =>
+      request.reply('allow_once', { always: 'yes' as unknown as boolean }),
+    ).toThrow(/boolean/);
+    expect(grant.current()).toBe(true);
+    expect(JSON.parse(grant.take(request.reply('deny')))).toEqual({
+      decision: 'deny',
+    });
+  });
+
   it('keeps authority private and ordinary inspection free of the prompt', () => {
     const { grant } = approval();
     expect(Object.isFrozen(grant.request)).toBe(true);

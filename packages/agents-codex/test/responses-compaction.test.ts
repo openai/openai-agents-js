@@ -79,14 +79,17 @@ it('uses the captured borrowed method and preserves the complete returned window
   const window = await factory.requestWindow(prepared, undefined, observe);
   expect(bodies).toEqual([{ model: 'compact', input: items }]);
   expect(window.items).toEqual(result().output);
-  expect(observe).toHaveBeenCalledExactlyOnceWith({
-    inputTokens: 4,
-    cachedInputTokens: 1,
-    cacheWriteInputTokens: 0,
-    outputTokens: 2,
-    reasoningOutputTokens: 0,
-    totalTokens: 6,
-  });
+  expect(observe).toHaveBeenCalledExactlyOnceWith(
+    {
+      inputTokens: 4,
+      cachedInputTokens: 1,
+      cacheWriteInputTokens: 0,
+      outputTokens: 2,
+      reasoningOutputTokens: 0,
+      totalTokens: 6,
+    },
+    true,
+  );
 });
 it.each(['auto', 'input', 'previous_response_id'] as const)(
   'resolves %s before predicate or client effects',
@@ -131,9 +134,9 @@ it('reports a completed malformed response once without admitting a window', asy
   await expect(
     factory.requestWindow(prepared, undefined, observe),
   ).rejects.toThrow();
-  expect(observe).toHaveBeenCalledExactlyOnceWith(null);
+  expect(observe).toHaveBeenCalledExactlyOnceWith(null, true);
 });
-it('reports no completion for a failed compact invocation', async () => {
+it('settles a failed compact invocation without a provider response', async () => {
   const client = new OpenAI({
     apiKey: 'synthetic',
     maxRetries: 0,
@@ -150,7 +153,7 @@ it('reports no completion for a failed compact invocation', async () => {
       observe,
     ),
   ).rejects.toThrow();
-  expect(observe).not.toHaveBeenCalled();
+  expect(observe).toHaveBeenCalledExactlyOnceWith(null, false);
 });
 
 it.each([7, false, '', ' '])(

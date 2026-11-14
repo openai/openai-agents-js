@@ -82,6 +82,13 @@ export function borrowedResponsesRequestId(
 ): string | undefined {
   return borrowedResponsesStreams.get(stream)?.upstreamRequestId;
 }
+/** @internal Only the original borrowed Responses iterator carries wire frames. */
+export function isBorrowedResponsesStream(
+  stream: AsyncIterable<JsonObject>,
+): boolean {
+  return borrowedResponsesStreams.has(stream);
+}
+
 const receivedCacheWriteUsage = Symbol('received cache-write usage');
 const rawProviderRequest = Symbol('raw provider observation');
 const rawChatCompletion = Symbol('original Chat Completion');
@@ -1120,6 +1127,19 @@ export class ChatCompletionsModel implements NativeModel {
       }
     >();
     for await (const chunk of chunks) {
+      // Provider status envelopes are observational; known chunks keep validation.
+      if (
+        chunk !== null &&
+        typeof chunk === 'object' &&
+        !Array.isArray(chunk) &&
+        !Object.hasOwn(chunk, 'choices') &&
+        chunk.object !== 'chat.completion.chunk'
+      ) {
+        request.signal.throwIfAborted();
+        if (observeRaw)
+          yield markRawModelPart(copyJsonValue(chunk) as JsonObject);
+        continue;
+      }
       const opening = responseId === undefined;
       if (opening) {
         if (typeof chunk.id !== 'string' || !chunk.id.trim())
@@ -1771,6 +1791,51 @@ function aiSdkToolArguments(input: unknown, schema: any): string | undefined {
   return typeof input === 'string' ? input : JSON.stringify(input);
 }
 
+function incompleteAiSdkText(content: unknown): {
+  text: string;
+  truncated: boolean;
+} {
+  const parts: string[] = [];
+  let remaining = maxChatStreamBytes;
+  for (const part of Array.isArray(content) ? content : []) {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) continue;
+    const value = part as Record<PropertyKey, unknown>;
+    if (value.type !== 'text') continue;
+    const streamed = value[aiSdkStreamTextParts];
+    const textParts = Array.isArray(streamed) ? streamed : [value];
+    for (const textPart of textParts) {
+      const text: unknown = textPart?.text;
+      if (typeof text !== 'string') continue;
+      let end = Math.min(text.length, remaining);
+      if (Buffer.byteLength(text.slice(0, end)) > remaining) {
+        let low = 0;
+        let high = end;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (Buffer.byteLength(text.slice(0, middle)) <= remaining)
+            low = middle;
+          else high = middle - 1;
+        }
+        end = low;
+      }
+      if (
+        end > 0 &&
+        end < text.length &&
+        text.charCodeAt(end - 1) >= 0xd800 &&
+        text.charCodeAt(end - 1) <= 0xdbff &&
+        text.charCodeAt(end) >= 0xdc00 &&
+        text.charCodeAt(end) <= 0xdfff
+      )
+        end--;
+      const prefix = text.slice(0, end);
+      parts.push(prefix);
+      remaining -= Buffer.byteLength(prefix);
+      if (end < text.length) return { text: parts.join(''), truncated: true };
+    }
+  }
+  return { text: parts.join(''), truncated: false };
+}
+
 function aiSdkUsage(usage: any): NonNullable<ModelResponse['usage']> {
   const input =
     typeof usage.inputTokens === 'number'
@@ -1817,13 +1882,48 @@ export type AiSdkPromptProviderOptionsResolver = (input: {
   readonly context: unknown;
 }) => JsonObject | undefined;
 
+function aiSdkCompactionItem(metadata: JsonObject | undefined): JsonObject {
+  const value = metadata?.openai;
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    value.type !== 'compaction' ||
+    typeof value.itemId !== 'string' ||
+    !value.itemId ||
+    typeof value.encryptedContent !== 'string' ||
+    !value.encryptedContent
+  )
+    throw new TypeError('AI SDK compaction requires admitted OpenAI metadata');
+  return {
+    type: 'compaction',
+    id: value.itemId,
+    encrypted_content: value.encryptedContent,
+  };
+}
+
+function aiSdkFunctionName(name: string, namespace?: string): string {
+  if (
+    typeof name !== 'string' ||
+    !name ||
+    (namespace != null && (typeof namespace !== 'string' || !namespace))
+  )
+    throw new TypeError('AiSdkModel requires a captured function identity');
+  return namespace == null || namespace === 'functions'
+    ? name
+    : namespace + '.' + name;
+}
+
 /** AI SDK generation within the native Core turn and tool loop.
  * Streaming: new AiSdkModel(model, {}, {stream: true}).
  * Renamed OpenAI factories: new AiSdkModel(model, {}, {providerFamily: 'openai'}).
  */
+
 export class AiSdkModel implements NativeModel {
   readonly stream?: (request: ModelRequest) => AsyncIterable<JsonObject>;
   readonly #providerOptions: JsonObject;
+  readonly #topK?: number;
+  readonly #stopSequences?: readonly string[];
   readonly #openai: boolean;
   readonly #openaiChat: boolean;
   readonly #openaiResponses: boolean;
@@ -1837,6 +1937,10 @@ export class AiSdkModel implements NativeModel {
     adapterOptions: {
       readonly providerFamily?: 'openai';
       readonly stream?: boolean;
+      /** Provider-specific sampling value; the provider owns its range. */
+      readonly topK?: number;
+      /** Captured stop sequences, copied for each borrowed model request. */
+      readonly stopSequences?: readonly string[];
       /** Supply media type hints and provider options for an admitted file. */
       readonly resolveFileOptions?: AiSdkFileOptionsResolver;
       /** Add provider-only options to admitted messages or parts before each request. */
@@ -1861,6 +1965,22 @@ export class AiSdkModel implements NativeModel {
         return stream;
       };
     }
+    const topK = adapterOptions.topK;
+    if (topK !== undefined && !Number.isFinite(topK))
+      throw new TypeError('AiSdkModel topK must be a finite number');
+    const stopSequences = adapterOptions.stopSequences;
+    if (stopSequences !== undefined && !Array.isArray(stopSequences))
+      throw new TypeError(
+        'AiSdkModel stopSequences must be an array of strings',
+      );
+    const capturedStopSequences =
+      stopSequences === undefined ? undefined : [...stopSequences];
+    if (capturedStopSequences?.some((value) => typeof value !== 'string'))
+      throw new TypeError(
+        'AiSdkModel stopSequences must be an array of strings',
+      );
+    this.#topK = topK;
+    this.#stopSequences = capturedStopSequences;
     this.#providerOptions = copyJsonValue(providerOptions) as JsonObject;
     this.#resolveFileOptions = adapterOptions.resolveFileOptions;
     this.#resolvePromptProviderOptions =
@@ -1902,6 +2022,7 @@ export class AiSdkModel implements NativeModel {
       'tool_choice',
       'parallel_tool_calls',
       'temperature',
+      'seed',
       'top_p',
       'max_output_tokens',
       'frequency_penalty',
@@ -1915,6 +2036,8 @@ export class AiSdkModel implements NativeModel {
       body.store === true
     )
       throw new TypeError('AiSdkModel received unsupported request controls');
+    if (body.seed !== undefined && !Number.isSafeInteger(body.seed))
+      throw new TypeError('AiSdkModel seed must be a safe integer');
     const reasoning = (body.reasoning ?? {}) as JsonObject;
     if (
       Object.keys(reasoning).some(
@@ -2025,6 +2148,31 @@ export class AiSdkModel implements NativeModel {
         this.model.provider,
         this.model.modelId,
       );
+      if (item.type === 'compaction') {
+        if (!this.#openaiResponses || !providerMetadata)
+          throw new TypeError(
+            'AI SDK compaction requires its original provider and model',
+          );
+        const retained = aiSdkCompactionItem(providerMetadata);
+        if (
+          retained.encrypted_content !== item.encrypted_content ||
+          (item.id != null && retained.id !== item.id)
+        )
+          throw new TypeError(
+            'AI SDK compaction changed after native admission',
+          );
+        prompt.push({
+          role: 'assistant',
+          content: [
+            {
+              type: 'custom',
+              kind: 'openai.compaction',
+              providerOptions: providerMetadata,
+            },
+          ],
+        });
+        continue;
+      }
       if (
         providerMetadata &&
         `${this.model.provider}:${this.model.modelId}`
@@ -2207,11 +2355,12 @@ export class AiSdkModel implements NativeModel {
         }
       } else if (toolCall) {
         const patchCall = patchCallReplay(item);
-        if (item.namespace != null && item.namespace !== 'functions')
-          throw new TypeError(
-            'AiSdkModel supports the default function namespace',
-          );
-        const name = patchCall ? 'apply_patch' : (item.name as string);
+        const name = patchCall
+          ? 'apply_patch'
+          : aiSdkFunctionName(
+              item.name as string,
+              item.namespace as string | undefined,
+            );
         names.set(item.call_id as string, name);
         if (patchCall) patchCalls.set(item.call_id as string, patchCall.wire);
         const pending = pendingReasoning;
@@ -2310,6 +2459,34 @@ export class AiSdkModel implements NativeModel {
               return { type: 'text', text: part.text };
             if (
               part.type === 'input_image' &&
+              typeof part.file_id === 'string'
+            ) {
+              captureImage({
+                file_id: part.file_id,
+                ...(part.image_url == null
+                  ? {}
+                  : { image_url: part.image_url }),
+              });
+              if (this.model.specificationVersion === 'v3')
+                return { type: 'image-file-id', fileId: part.file_id };
+              if (this.model.specificationVersion === 'v4')
+                return {
+                  type: 'file',
+                  mediaType: 'image',
+                  data: {
+                    type: 'reference',
+                    reference: {
+                      [this.model.provider.split('.')[0] ||
+                      this.model.provider]: part.file_id,
+                    },
+                  },
+                };
+              throw new TypeError(
+                'AiSdkModel v2 does not support provider image tool outputs',
+              );
+            }
+            if (
+              part.type === 'input_image' &&
               typeof part.image_url === 'string'
             ) {
               const { data, mediaType } = aiSdkImageSource(part.image_url);
@@ -2356,22 +2533,42 @@ export class AiSdkModel implements NativeModel {
         throw new TypeError('AiSdkModel received unsupported native input');
     }
     const tools: any[] = [];
+    const functionBindings = new Map<
+      string,
+      { name: string; namespace?: string }
+    >();
     let applyPatchWire: ApplyPatchWire | undefined;
-    const addTool = (item: JsonObject): void => {
+    const addTool = (item: JsonObject, inheritedNamespace?: string): void => {
       const patchWire = patchWireForTool(item);
-      if (item.namespace != null && item.namespace !== 'functions')
+      const namespace = (item.namespace ?? inheritedNamespace) as
+        string | undefined;
+      if (
+        item.namespace != null &&
+        inheritedNamespace != null &&
+        item.namespace !== inheritedNamespace
+      )
         throw new TypeError(
-          'AiSdkModel supports the default function namespace',
+          'AiSdkModel received conflicting function namespaces',
         );
       if (item.type === 'namespace') {
-        if (item.name !== 'functions')
+        if (inheritedNamespace != null)
           throw new TypeError(
-            'AiSdkModel supports the default function namespace',
+            'AiSdkModel does not support nested function namespaces',
           );
-        for (const tool of item.tools as JsonObject[]) addTool(tool);
+        for (const tool of item.tools as JsonObject[])
+          addTool(tool, item.name as string);
       } else if (patchWire) {
+        if (namespace != null && namespace !== 'functions')
+          throw new TypeError(
+            'AiSdkModel workspace patch requires the default namespace',
+          );
         applyPatchWire = patchWire;
         const declaration = workspacePatchFunction(patchWire);
+        if (functionBindings.has(declaration.name))
+          throw new TypeError(
+            'AiSdkModel cannot disambiguate qualified function names',
+          );
+        functionBindings.set(declaration.name, { name: declaration.name });
         tools.push({
           type: 'function',
           name: declaration.name,
@@ -2384,9 +2581,23 @@ export class AiSdkModel implements NativeModel {
           throw new TypeError(
             'AiSdkModel does not support tool output schemas',
           );
+        const name = aiSdkFunctionName(item.name as string, namespace);
+        if (
+          functionBindings.has(name) ||
+          tools.some((tool) => tool.name === name)
+        )
+          throw new TypeError(
+            'AiSdkModel cannot disambiguate qualified function names',
+          );
+        functionBindings.set(name, {
+          name: item.name as string,
+          ...(namespace == null || namespace === 'functions'
+            ? {}
+            : { namespace }),
+        });
         tools.push({
           type: 'function',
-          name: item.name,
+          name,
           description: item.description,
           inputSchema: item.parameters,
           ...(item.strict == null ? {} : { strict: item.strict }),
@@ -2398,10 +2609,28 @@ export class AiSdkModel implements NativeModel {
     let toolChoice: any;
     if (typeof choice === 'string') toolChoice = { type: choice };
     else if (choice != null) {
+      if (typeof choice !== 'object' || Array.isArray(choice))
+        throw new TypeError(
+          'Named tool choice must select an offered function',
+        );
+      const selected = (choice.function ?? choice) as JsonObject;
+      const name = aiSdkFunctionName(
+        selected.name as string,
+        (selected.namespace ?? choice.namespace) as string | undefined,
+      );
       toolChoice = {
         type: 'tool',
         toolName: selectedFunctionName(
-          choice,
+          {
+            ...choice,
+            namespace: undefined,
+            name,
+            ...(choice.function == null
+              ? {}
+              : {
+                  function: { ...selected, namespace: undefined, name },
+                }),
+          },
           tools.map((tool: any) => tool.name),
           applyPatchWire === 'workspace',
         ),
@@ -2430,18 +2659,24 @@ export class AiSdkModel implements NativeModel {
       ...(tools.length ? { tools, toolChoice } : {}),
       responseFormat,
       temperature: body.temperature,
+      ...(body.seed === undefined ? {} : { seed: body.seed }),
       topP: body.top_p,
+      ...(this.#topK === undefined ? {} : { topK: this.#topK }),
+      ...(this.#stopSequences === undefined
+        ? {}
+        : { stopSequences: [...this.#stopSequences] }),
       maxOutputTokens: body.max_output_tokens,
       frequencyPenalty: body.frequency_penalty,
       presencePenalty: body.presence_penalty,
       providerOptions,
       abortSignal: request.signal,
     };
-    return { options, tools, applyPatchWire };
+    return { options, tools, applyPatchWire, functionBindings };
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
-    const { options, tools, applyPatchWire } = this.#parameters(request);
+    const { options, tools, applyPatchWire, functionBindings } =
+      this.#parameters(request);
     let result: any;
     try {
       result = await this.model.doGenerate(options);
@@ -2475,11 +2710,19 @@ export class AiSdkModel implements NativeModel {
       }
       throw error;
     }
-    return this.#projectResponse(result, tools, applyPatchWire, request, false);
+    return this.#projectResponse(
+      result,
+      tools,
+      applyPatchWire,
+      request,
+      false,
+      functionBindings,
+    );
   }
 
   async *#streamResponse(request: ModelRequest): AsyncIterable<JsonObject> {
-    const { options, tools, applyPatchWire } = this.#parameters(request);
+    const { options, tools, applyPatchWire, functionBindings } =
+      this.#parameters(request);
     request.signal.throwIfAborted();
     const observeRaw = hasRawProviderEvents(request);
     const { stream } = await this.model.doStream!({
@@ -2538,7 +2781,10 @@ export class AiSdkModel implements NativeModel {
         if (
           part.type === 'raw' ||
           part.type === 'source' ||
-          part.type === 'file'
+          part.type === 'file' ||
+          part.type === 'reasoning-file' ||
+          (part.type === 'custom' &&
+            (part.kind !== 'openai.compaction' || !this.#openaiResponses))
         )
           continue;
         if (
@@ -2564,14 +2810,25 @@ export class AiSdkModel implements NativeModel {
         }
         if (
           !started &&
-          ['text-delta', 'tool-call', 'reasoning-start', 'finish'].includes(
-            part.type,
-          )
+          [
+            'text-delta',
+            'tool-call',
+            'reasoning-start',
+            'custom',
+            'finish',
+          ].includes(part.type)
         ) {
           started = true;
           yield { type: 'response.created', response: { id: responseId } };
         }
         switch (part.type) {
+          case 'custom':
+            aiSdkCompactionItem(
+              mergeModelProviderMetadata(undefined, part.providerMetadata),
+            );
+            text = undefined;
+            content.push(copyJsonValue(part));
+            break;
           case 'text-delta': {
             if (typeof part.delta !== 'string')
               throw new TypeError(
@@ -2731,7 +2988,7 @@ export class AiSdkModel implements NativeModel {
                 mergeModelProviderMetadata(undefined, part.providerMetadata)!,
               );
             break;
-          case 'tool-call':
+          case 'tool-call': {
             if (
               typeof part.toolCallId !== 'string' ||
               !part.toolCallId ||
@@ -2744,8 +3001,16 @@ export class AiSdkModel implements NativeModel {
             calls.add(part.toolCallId);
             pendingInputs.delete(part.toolCallId);
             text = undefined;
+            // AI SDK tool-call optional fields may be explicitly undefined.
+            const capturedPart = { ...part };
+            for (const key of [
+              'providerExecuted',
+              'dynamic',
+              'providerMetadata',
+            ])
+              if (capturedPart[key] === undefined) delete capturedPart[key];
             content.push({
-              ...(copyJsonValue(part) as JsonObject),
+              ...(copyJsonValue(capturedPart) as JsonObject),
               ...(toolInputMetadata.has(part.toolCallId)
                 ? {
                     providerMetadata: mergeModelProviderMetadata(
@@ -2757,6 +3022,7 @@ export class AiSdkModel implements NativeModel {
             });
             toolInputMetadata.delete(part.toolCallId);
             break;
+          }
           case 'finish':
             responseProviderMetadata = mergeModelProviderMetadata(
               responseProviderMetadata,
@@ -2843,6 +3109,7 @@ export class AiSdkModel implements NativeModel {
         applyPatchWire,
         request,
         true,
+        functionBindings,
       );
       const output = result.output.map((item, index) => ({
         ...item,
@@ -2956,7 +3223,24 @@ export class AiSdkModel implements NativeModel {
     applyPatchWire: ApplyPatchWire | undefined,
     request: ModelRequest,
     stream: boolean,
+    functionBindings: ReadonlyMap<string, { name: string; namespace?: string }>,
   ): Promise<ModelResponse> {
+    const nativeFunction = (item: JsonObject): JsonObject => {
+      const identity = functionBindings.get(item.name as string);
+      if (
+        !identity &&
+        typeof item.name === 'string' &&
+        (item.name.includes('.') ||
+          [...functionBindings.values()].some(
+            (entry) => entry.namespace != null,
+          ))
+      )
+        throw new TypeError(
+          'AiSdkModel returned an unoffered qualified function',
+        );
+      const { namespace: _untrustedNamespace, ...captured } = item;
+      return identity ? { ...captured, ...identity } : captured;
+    };
     const finishReason =
       typeof result.finishReason === 'string'
         ? result.finishReason
@@ -2975,21 +3259,49 @@ export class AiSdkModel implements NativeModel {
       finishReason !== 'stop' &&
       finishReason !== 'tool-calls' &&
       refusal == null
-    )
+    ) {
+      if (finishReason === 'length') {
+        const usage = result.usage ? aiSdkUsage(result.usage) : undefined;
+        if (!stream && usage)
+          request.reportUsage?.({
+            inputTokens: usage.input_tokens ?? 0,
+            cachedInputTokens: usage.cached_input_tokens ?? 0,
+            cacheWriteInputTokens: usage.cache_write_input_tokens ?? 0,
+            outputTokens: usage.output_tokens ?? 0,
+            reasoningOutputTokens: usage.reasoning_output_tokens ?? 0,
+            totalTokens: usage.total_tokens ?? 0,
+          });
+        const partial = incompleteAiSdkText(result.content);
+        throw new TypeError('AiSdkModel requires a completed response', {
+          cause: Object.freeze({
+            finishReason,
+            ...(typeof result.finishReason?.raw === 'string'
+              ? { rawFinishReason: result.finishReason.raw.slice(0, 512) }
+              : {}),
+            ...(typeof result.response?.id === 'string'
+              ? { responseId: result.response.id.slice(0, 512) }
+              : {}),
+            partialText: partial.text,
+            partialTextTruncated: partial.truncated,
+            ...(usage ? { usage: Object.freeze(usage) } : {}),
+          }),
+        });
+      }
       throw new TypeError('AiSdkModel requires a completed response');
+    }
     if (this.#openaiResponses && raw?.status != null) {
       const projected = projectResponsesResponse({
         ...raw,
         output: raw.output?.map((item: any) =>
           item.type === 'function_call'
             ? functionToolOutput(
-                {
+                nativeFunction({
                   ...item,
                   arguments: aiSdkToolArguments(
                     item.arguments,
                     tools.find((tool) => tool.name === item.name)?.inputSchema,
                   ),
-                },
+                }),
                 applyPatchWire,
               )
             : item,
@@ -3099,7 +3411,24 @@ export class AiSdkModel implements NativeModel {
       if (part.type === 'tool-call') responseToolCalls.add(part.toolCallId);
     }
     for (const part of result.content ?? []) {
-      if (part.type === 'source' || part.type === 'file') continue;
+      if (part.type === 'custom') {
+        if (this.#openaiResponses && part.kind === 'openai.compaction') {
+          const metadata = mergeModelProviderMetadata(
+            undefined,
+            part.providerMetadata,
+          );
+          flushText();
+          output.push(aiSdkCompactionItem(metadata));
+          retainMetadata(output.length - 1, metadata);
+        }
+        continue;
+      }
+      if (
+        part.type === 'source' ||
+        part.type === 'file' ||
+        part.type === 'reasoning-file'
+      )
+        continue;
       if (
         part.type === 'tool-result' &&
         typeof part.toolCallId === 'string' &&
@@ -3184,12 +3513,12 @@ export class AiSdkModel implements NativeModel {
         );
         output.push(
           functionToolOutput(
-            {
+            nativeFunction({
               type: 'function_call',
               call_id: part.toolCallId,
               name: part.toolName,
               ...(args === undefined ? {} : { arguments: args }),
-            },
+            }),
             applyPatchWire,
           ),
         );

@@ -71,6 +71,7 @@ async function providerFor(model: ModelServer) {
 
 function wireTools(
   request: JsonObject,
+  includeStrict = false,
 ): Array<{ namespace: string | null; name: string; parameters: unknown }> {
   const result: Array<{
     namespace: string | null;
@@ -87,6 +88,7 @@ function wireTools(
           namespace,
           name: spec.name as string,
           parameters: spec.parameters,
+          ...(includeStrict ? { strict: spec.strict } : {}),
         });
     }
   }
@@ -593,3 +595,125 @@ it('preserves literal own JSON keys in borrowed schemas and structured output on
   expect(Object.hasOwn(observed, '__proto__')).toBe(true);
   expect(Object.getPrototypeOf(observed)).toBe(Object.prototype);
 });
+
+it('converts a borrowed MCP batch per tool and normalizes optional nulls before approval and dispatch', async () => {
+  const peer = new BorrowedPeer();
+  peer.declarations[0].inputSchema.properties.note = { type: 'string' };
+  peer.declarations.push({
+    name: 'open',
+    description: 'Keep arbitrary keys.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+      additionalProperties: true,
+    },
+  });
+  const original = structuredClone(peer.declarations);
+  const approvals: MCPToolStartObservation[] = [];
+  const selected = await selectMcpTools(
+    { name: 'crm', server: peer },
+    {
+      context: undefined,
+      convertSchemasToStrict: true,
+      toolNameOverrides: { lookup: 'converted_lookup' },
+      approval(event) {
+        approvals.push(event);
+        return true;
+      },
+    },
+  );
+  const model = new ModelServer([
+    [
+      call(
+        'converted_lookup',
+        { value: 'ok', note: null },
+        { namespace: 'crm', callId: 'converted' },
+      ),
+      call(
+        'open',
+        { extra: { preserved: true } },
+        { namespace: 'crm', callId: 'fallback' },
+      ),
+    ],
+    [message('done')],
+  ]);
+  const session = await new Agent({
+    instructions: 'Call the selected tools.',
+    model: 'gpt-5.5',
+    provider: await providerFor(model),
+    tools: selected,
+  }).session();
+  sessions.push(session);
+  expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+    'done',
+  );
+  expect(selected[0].strict).toBe(true);
+  expect(selected[1].strict).toBeUndefined();
+  expect(wireTools(model.requests[0]!, true)).toContainEqual({
+    namespace: 'crm',
+    name: 'converted_lookup',
+    strict: true,
+    parameters: expect.objectContaining({
+      additionalProperties: false,
+      required: ['value', 'note'],
+    }),
+  });
+  expect(wireTools(model.requests[0]!)).toContainEqual({
+    namespace: 'crm',
+    name: 'open',
+    parameters: original[1].inputSchema,
+  });
+  expect(peer.callTool.mock.calls.map(([name, args]) => [name, args])).toEqual([
+    ['lookup', { value: 'ok' }],
+    ['open', { extra: { preserved: true } }],
+  ]);
+  expect(approvals.map((event) => [event.toolName, event.arguments])).toEqual([
+    ['lookup', { value: 'ok' }],
+    ['open', { extra: { preserved: true } }],
+  ]);
+  expect(peer.declarations).toEqual(original);
+  expect(peer.close).not.toHaveBeenCalled();
+});
+
+it.each([undefined, false])(
+  'keeps disabled strict conversion and borrowed argument presentation unchanged (%s)',
+  async (convertSchemasToStrict) => {
+    const peer = new BorrowedPeer();
+    peer.declarations[0].inputSchema.properties.note = { type: 'string' };
+    const original = structuredClone(peer.declarations[0].inputSchema);
+    const selected = await selectMcpTools(
+      { name: 'crm', server: peer },
+      { context: undefined, convertSchemasToStrict },
+    );
+    expect(selected[0].strict).toBeUndefined();
+    const model = new ModelServer([
+      [
+        call(
+          'lookup',
+          { value: 'ok', note: null },
+          { namespace: 'crm', callId: 'raw' },
+        ),
+      ],
+      [message('done')],
+    ]);
+    const session = await new Agent({
+      instructions: 'Call the tool.',
+      model: 'gpt-5.5',
+      provider: await providerFor(model),
+      tools: selected,
+    }).session();
+    sessions.push(session);
+    expect((await (await session.submit('read')).wait()).finalOutput).toBe(
+      'done',
+    );
+    expect(wireTools(model.requests[0]!)).toContainEqual({
+      namespace: 'crm',
+      name: 'lookup',
+      parameters: original,
+    });
+    expect(
+      peer.callTool.mock.calls.map(([name, args]) => [name, args]),
+    ).toEqual([['lookup', { value: 'ok', note: null }]]);
+  },
+);

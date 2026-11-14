@@ -25,6 +25,7 @@ for (const mode of [
   'outcome-string',
   'bounds',
   'otlp',
+  'processor-large-export-bounded',
   'generic',
   'wide',
   'wide-queue',

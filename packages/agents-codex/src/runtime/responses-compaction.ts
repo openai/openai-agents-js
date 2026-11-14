@@ -158,7 +158,10 @@ export class ResponsesCompaction<Context = unknown> {
       assertCurrent: () => void;
       matchesCurrentProvider: () => boolean;
       transformContext?: ContextTransform<Context>;
-      observeUsage: (usage: TokenUsage | null) => void;
+      observeUsage: (
+        usage: TokenUsage | null,
+        responseReceived: boolean,
+      ) => void;
       markDispatch: () => void;
     },
   ): Promise<
@@ -295,7 +298,7 @@ export class ResponsesCompaction<Context = unknown> {
   async requestWindow(
     context: ResponsesCompactionContext<Context>,
     providerResponse: { response_id: string; model?: string } | undefined,
-    observe: (usage: TokenUsage | null) => void,
+    observe: (usage: TokenUsage | null, responseReceived: boolean) => void,
     canonicalItems?: CompactionContext<Context>['items'],
     onDispatch?: () => void,
   ): Promise<{ items: unknown[]; response_id?: string; model: string }> {
@@ -313,13 +316,15 @@ export class ResponsesCompaction<Context = unknown> {
         ? controlAliases(canonicalItems, body.input as unknown[])
         : undefined;
     onDispatch?.();
-    const response = await this.#compact(body, { signal: context.signal });
     let reported = false;
+    let responseReceived = false;
     try {
+      const response = await this.#compact(body, { signal: context.signal });
+      responseReceived = true;
       const value = losslessJsonObjectSchema.parse(response);
       const usage = compactUsage(value.usage);
       reported = true;
-      observe(usage);
+      observe(usage, true);
       if (!Array.isArray(value.output))
         throw new TypeError('Compaction must return a complete output window');
       const responseId = value.id;
@@ -337,7 +342,7 @@ export class ResponsesCompaction<Context = unknown> {
         model,
       };
     } finally {
-      if (!reported) observe(null);
+      if (!reported) observe(null, responseReceived);
     }
   }
 }

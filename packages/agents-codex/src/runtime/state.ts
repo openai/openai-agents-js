@@ -293,6 +293,7 @@ const manualNativeReceiptSchema = z.union([
     .catchall(jsonValue),
 ]);
 const manualContinuationSchema = z.object({
+  _sdk_lifecycle_start: losslessJsonObjectSchema.optional(),
   pending_input: z
     .array(losslessJsonObjectSchema)
     .superRefine((items, context) => {
@@ -431,6 +432,12 @@ const originalInputSchema = jsonValue.transform((value, context) => {
   }
 });
 const manualContextSchema = z.object({
+  produced_items_prefix: z
+    .strictObject({
+      turn_id: stringSchema,
+      records: z.array(losslessJsonObjectSchema).max(4096),
+    })
+    .optional(),
   guardrail_results: z.array(guardrailCheckpointSchema).optional(),
   original_input: originalInputSchema.optional(),
   continuation_trace_id: z
@@ -589,7 +596,7 @@ export function parseNativeCheckpoint(source: unknown): NativeCheckpoint {
   );
 }
 
-export const sessionStateSchema = z
+const legacySessionStateSchema = z
   .discriminatedUnion('format_version', [
     z
       .object({
@@ -957,6 +964,16 @@ export const sessionStateSchema = z
       state.format_version === 20
     ) {
       const continuation = state.manual_continuation;
+      if (
+        state.manual_context.produced_items_prefix?.turn_id !== undefined &&
+        state.manual_context.produced_items_prefix.turn_id !==
+          continuation.turn_id
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Produced item prefix must belong to the manual turn',
+        });
+
       const staged = continuation.pending_input?.length ?? 0;
       if (
         (state.format_version === 19 || state.format_version === 20) !==
@@ -1163,7 +1180,99 @@ function validateCheckpointTree(
     }
   }
 }
+const passiveQueueSchema = z
+  .object({
+    format_version: z.literal(21),
+    pending_input_base_format: z.number().int(),
+    pending_input_queue: z.array(losslessJsonObjectSchema).min(1),
+  })
+  .passthrough()
+  .transform((value, ctx) => {
+    const {
+      format_version: _format,
+      pending_input_base_format: base,
+      pending_input_queue: items,
+      ...body
+    } = value;
+    const parsed = legacySessionStateSchema.safeParse({
+      ...body,
+      format_version: base,
+    });
+    if (
+      !parsed.success ||
+      'manual_continuation' in parsed.data ||
+      items.some(
+        (item) =>
+          item.type !== 'message' ||
+          item.role !== 'user' ||
+          !Array.isArray(item.content) ||
+          item.content.some(
+            (part) =>
+              part === null ||
+              typeof part !== 'object' ||
+              Array.isArray(part) ||
+              part.type !== 'input_text' ||
+              typeof part.text !== 'string',
+          ),
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Invalid passive text input queue or idle checkpoint',
+      });
+      return z.NEVER;
+    }
+    const queued = {
+      ...parsed.data,
+      format_version: 21 as const,
+      pending_input_base_format: base,
+      pending_input_queue: items,
+    };
+    return queued as typeof queued & Record<string, JsonValue>;
+  });
+export const sessionStateSchema = z.union([
+  legacySessionStateSchema,
+  passiveQueueSchema,
+]);
 export type SessionState = z.infer<typeof sessionStateSchema>;
+type LegacySessionState = z.infer<typeof legacySessionStateSchema>;
+
+/** @internal Passive data only; this conversion has been retaining no callback grant. */
+export function withoutPassiveInputQueue(
+  state: SessionState,
+): LegacySessionState {
+  if (state.format_version !== 21) return state;
+  const {
+    pending_input_base_format: base,
+    pending_input_queue: _pending,
+    ...body
+  } = state;
+  return retainStateAuthority(
+    state,
+    legacySessionStateSchema.parse({ ...body, format_version: base }),
+  );
+}
+/** @internal Only actual idle native export has been supplying the checkpoint owner. */
+export function withPassiveInputQueue(
+  state: SessionState,
+  items: readonly PendingInputItem[],
+): SessionState {
+  const base = withoutPassiveInputQueue(state);
+  if (!items.length) return base;
+  if (isManualSessionState(base))
+    throw new TypeError('Passive input queue requires an idle checkpoint');
+  return retainStateAuthority(
+    state,
+    freezePendingSnapshot(
+      passiveQueueSchema.parse({
+        ...base,
+        format_version: 21,
+        pending_input_base_format: base.format_version,
+        pending_input_queue: items,
+      }),
+    ),
+  );
+}
 
 const capturedStateDigests = new WeakMap<SessionState, string>();
 
@@ -1208,6 +1317,32 @@ function containsHandoffPresentation(value: unknown): boolean {
         containsHandoffPresentation(entry?.continuation?.state),
       ))
   );
+}
+
+function containsProducedItemsPrefix(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as {
+    manual_context?: { produced_items_prefix?: unknown };
+    descendants?: unknown[];
+    manual_continuation?: {
+      pending_manual?: { continuation?: { state?: unknown } }[];
+    };
+  };
+  return (
+    state.manual_context?.produced_items_prefix !== undefined ||
+    state.descendants?.some(containsProducedItemsPrefix) === true ||
+    state.manual_continuation?.pending_manual?.some((entry) =>
+      containsProducedItemsPrefix(entry.continuation?.state),
+    ) === true
+  );
+}
+
+/** @internal Native produced rows require the exact authenticated checkpoint. */
+export function assertProducedItemsPrefixAuthority(state: SessionState): void {
+  if (containsProducedItemsPrefix(state) && !hasSessionStateAuthority(state))
+    throw new TypeError(
+      'Restoring produced items requires authenticated SessionState; use parseSessionState with an independently trusted expectedSha256',
+    );
 }
 
 /** @internal Extract only the exact continuation covered by its authenticated parent. */
@@ -1559,6 +1694,7 @@ export function fromNativeCheckpoint(
 }
 /** @internal Strip SDK overlays while preserving the native VM codec version. */
 export function nativeCheckpoint(state: SessionState) {
+  state = withoutPassiveInputQueue(state);
   const {
     manual_continuation: _continuation,
     manual_context: _context,
@@ -1612,9 +1748,11 @@ export function pendingInput(
 ): readonly PendingInputItem[] {
   const state = parseSessionState(encode(source));
   return freezePendingSnapshot(
-    isManualSessionState(state)
-      ? (state.manual_continuation.pending_input ?? [])
-      : [],
+    state.format_version === 21
+      ? state.pending_input_queue
+      : isManualSessionState(state)
+        ? (state.manual_continuation.pending_input ?? [])
+        : [],
   );
 }
 
@@ -1663,6 +1801,8 @@ export function withPendingInput(
 /** Clear staged occurrences while retaining every accepted tool receipt. */
 export function withoutPendingInput(source: SessionState): SessionState {
   const state = parseSessionState(encode(source));
+  if (state.format_version === 21)
+    return withoutPassiveInputQueue(retainStateAuthority(source, state));
   if (!isManualSessionState(state))
     throw new TypeError('Pending input requires a manual checkpoint');
   const { pending_input: _pending, ...continuation } =

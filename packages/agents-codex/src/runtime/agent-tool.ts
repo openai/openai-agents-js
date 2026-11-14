@@ -26,6 +26,8 @@ export interface AgentToolStreamEvent<Output = string> {
 export interface AgentAsToolOptions<Output = string> {
   toolName: string;
   toolDescription?: string;
+  /** Include native produced items in the result passed to customOutputExtractor. */
+  returnItems?: boolean;
   /** Observe the child's existing redacted native turn events. Handler errors are isolated. */
   onStream?: (event: AgentToolStreamEvent<Output>) => void | Promise<void>;
   /** Pending events, excluding the active handler. Defaults to 1024; null opts into unbounded retention. */
@@ -36,6 +38,7 @@ export interface AgentAsToolOptions<Output = string> {
 }
 
 export interface ConfiguredAgentTool {
+  readonly returnItems?: boolean;
   readonly resultSchema: { readonly type: 'string' };
   open(
     context: unknown,
@@ -71,6 +74,7 @@ export function createAgentTool<Context, Output>(
   agent: Agent<Context, Output>,
   options: AgentAsToolOptions<Output>,
 ): FunctionTool<Context> {
+  const returnItems = options.returnItems === true;
   const extract = options.customOutputExtractor;
   const onStream = options.onStream;
   const maxPending =
@@ -94,6 +98,7 @@ export function createAgentTool<Context, Output>(
   });
   bindConfiguredAgentRole(declaration, agent.name ?? options.toolName);
   declarations.set(declaration, {
+    returnItems,
     resultSchema: Object.freeze({ type: 'string' }),
     open: (
       context,

@@ -276,6 +276,41 @@ Callbacks are captured at opening. Restore binds current callbacks from your sup
 
 Use `transformContext` to replace request input across native model work. Use [`prepareRequest`](request-preparation.md) when you also need to edit tool presentation or request instructions within its narrower supported root HTTP profile. Neither callback replaces tool selection, argument validation, or approval policy.
 
+### Read current application policy
+
+For policy changes during a root turn, this factory has been reading current application text at each normal sampling request. The caller has been owning provider setup and cleanup. The callback has been adding an application-authored developer item while keeping the captured Agent instructions and canonical history. Its guard has been leaving native child, compaction, and output-repair requests unchanged.
+
+```ts
+import { Agent, type NativeProvider, type Tool } from '@openai/agents';
+
+export function agentWithCurrentPolicy(
+  provider: NativeProvider,
+  model: string,
+  readPolicy: () => string,
+  tools: readonly Tool[] = [],
+) {
+  return new Agent({
+    provider,
+    model,
+    instructions: 'Follow the application policy supplied for this request.',
+    tools,
+    transformContext: ({ items, purpose, subagentId }) =>
+      purpose === 'turn' && subagentId === undefined
+        ? [
+            ...items,
+            {
+              type: 'message',
+              role: 'developer',
+              content: [{ type: 'input_text', text: readPolicy() }],
+            },
+          ]
+        : undefined,
+  });
+}
+```
+
+For changing tool eligibility, [`beforeStep`](tools.md#select-tools-before-a-model-step) has been selecting a current subset of callbacks registered at opening. Together, these APIs have been supporting live root request policy and admitted-tool changes across native Responses, Responses Lite, and Chat Completions. They have been preserving the opening catalog and saved declarations. This request-only pattern has been leaving direct Agent property mutation and mid-turn model-settings updates outside its scope. Restore has been rebinding callbacks from the supplied Agent; the application has been owning any separately saved policy state.
+
 ## Override opening tools
 
 Open a Session with `agent.session({ tools })` to replace its initial tool declarations, as with Python's `agent.session(tools=...)`. Omit `tools` to inherit `agent.tools`. Pass `[]` to open without those declarations. The SDK captures each Session's opening configuration before its first await. Concurrent Sessions can use the same tool names with different callbacks or MCP connections. Application hooks keep the original Agent, and the SDK does not change `agent.tools`.

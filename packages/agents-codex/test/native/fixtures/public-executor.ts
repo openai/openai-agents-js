@@ -13,6 +13,10 @@ export async function startPublicExecutor(
   options: {
     captureFileSystemDiagnostics?: boolean;
     captureProcessDiagnostics?: boolean;
+    /** Retain a terminal protocol body without invoking the host sandbox. */
+    syntheticTerminal?: boolean;
+    /** Inspect actual output notifications to synchronize native authority tests. */
+    onProcessOutput?: (message: JsonObject) => void;
     /** Observe actual incoming handshake fields only for explicit isolation tests. */
     captureHandshakeHeaders?: boolean;
     /** Gate or replace only a real upstream termination response. */
@@ -38,6 +42,38 @@ export async function startPublicExecutor(
   const handshakeHeaders: JsonObject[] = [];
   const processDiagnostics: JsonObject[] = [];
   let connectionCount = 0;
+  const syntheticStarts: string[] = [];
+  const syntheticProcesses = new Map<
+    string,
+    { socket: WebSocket; chunks: string[]; running: boolean }
+  >();
+  const emitSyntheticOutput = async (processId: string, text: string) => {
+    const process = syntheticProcesses.get(processId);
+    assertSynthetic(process, 'Unknown synthetic process');
+    process.chunks.push(text);
+    const notification = {
+      method: 'process/output',
+      params: {
+        processId,
+        seq: process.chunks.length,
+        stream: 'stdout',
+        chunk: Buffer.from(text).toString('base64'),
+      },
+    };
+    options.onProcessOutput?.(notification);
+    await new Promise<void>((resolve, reject) =>
+      process.socket.send(JSON.stringify(notification), (error) =>
+        error ? reject(error) : resolve(),
+      ),
+    );
+  };
+  function assertSynthetic<T>(
+    value: T | undefined,
+    message: string,
+  ): asserts value is T {
+    if (value === undefined) throw new Error(message);
+  }
+
   const retainProcess = (value: JsonObject) => {
     if (processDiagnostics.length < 128) processDiagnostics.push(value);
   };
@@ -98,7 +134,10 @@ export async function startPublicExecutor(
     await rm(directory, { recursive: true, force: true });
   };
   try {
-    await Promise.all([mkdir(cwd), mkdir(config)]);
+    await Promise.all([
+      mkdir(cwd),
+      mkdir(config, options.syntheticTerminal ? { mode: 0o700 } : undefined),
+    ]);
     const openssl = (...args: string[]) =>
       execFileSync('openssl', args, { stdio: 'ignore' });
     openssl(
@@ -250,6 +289,64 @@ export async function startPublicExecutor(
           const request = JSON.parse(text) as JsonObject;
           requests.push(request);
           if (
+            options.syntheticTerminal &&
+            String(request.method).startsWith('process/')
+          ) {
+            const params = request.params as JsonObject;
+            const processId = String(params.processId);
+            if (request.method === 'process/start') {
+              if (syntheticProcesses.has(processId))
+                throw new Error('Duplicate synthetic process');
+              syntheticStarts.push(processId);
+              syntheticProcesses.set(processId, {
+                socket: downstream,
+                chunks: [],
+                running: true,
+              });
+              downstream.send(
+                JSON.stringify({
+                  id: request.id,
+                  result: { processId, sandboxType: 'none' },
+                }),
+              );
+              void emitSyntheticOutput(processId, 'SOURCE_OUTPUT');
+              return;
+            }
+            const process = syntheticProcesses.get(processId);
+            if (process) {
+              let result: JsonObject;
+              if (request.method === 'process/read') {
+                result = {
+                  chunks: process.chunks.flatMap((text, index) =>
+                    index + 1 > Number(params.afterSeq ?? 0)
+                      ? [
+                          {
+                            seq: index + 1,
+                            stream: 'stdout',
+                            chunk: Buffer.from(text).toString('base64'),
+                          },
+                        ]
+                      : [],
+                  ),
+                  nextSeq: process.chunks.length,
+                  exited: !process.running,
+                  exitCode: process.running ? null : 0,
+                  closed: !process.running,
+                  failure: null,
+                  sandboxDenied: false,
+                };
+              } else if (request.method === 'process/write')
+                result = { status: 'accepted' };
+              else if (request.method === 'process/terminate') {
+                process.running = false;
+                result = { running: false };
+              } else throw new Error('Unexpected synthetic process operation');
+              downstream.send(JSON.stringify({ id: request.id, result }));
+              return;
+            }
+          }
+
+          if (
             options.transformTerminateResponse &&
             request.method === 'process/terminate'
           )
@@ -304,6 +401,11 @@ export async function startPublicExecutor(
           for (const message of queued) upstream.send(message);
         });
         upstream.on('message', async (data, binary) => {
+          if (options.onProcessOutput && !binary) {
+            const notification = JSON.parse(data.toString()) as JsonObject;
+            if (notification.method === 'process/output')
+              options.onProcessOutput(notification);
+          }
           if (options.captureProcessDiagnostics && !binary) {
             const response = JSON.parse(data.toString()) as JsonObject;
             const entry = pendingProcess.get(JSON.stringify(response.id));
@@ -460,6 +562,8 @@ export async function startPublicExecutor(
       processDiagnostics,
       fileSystemDiagnostics,
       rejectedUpgrades,
+      syntheticStarts,
+      emitSyntheticOutput,
       close,
     };
   } catch (error) {

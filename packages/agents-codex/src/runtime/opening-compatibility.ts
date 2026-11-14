@@ -1,3 +1,4 @@
+import { Environment, environmentConfig } from './environment';
 import type { captureThreadStore } from './custom-thread-store';
 import type { splitToolDeclarations } from './tool-declarations';
 import type { ToolCatalog } from './tools';
@@ -7,12 +8,12 @@ export function validateCustomStorageCompatibility(
   customStore: ReturnType<typeof captureThreadStore> | undefined,
   declarations: ReturnType<typeof splitToolDeclarations>,
   catalog: ToolCatalog,
-  hasEnvironment: boolean,
+  environment: unknown,
 ): void {
+  if (customStore) validateCustomStorageEnvironment(environment);
   if (
     customStore &&
-    (hasEnvironment ||
-      (declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
+    ((declarations.webSearch && declarations.webSearch.route !== 'hosted') ||
       declarations.checklist ||
       declarations.nativeGoals ||
       declarations.nativeAgents ||
@@ -20,6 +21,25 @@ export function validateCustomStorageCompatibility(
   )
     throw new TypeError(
       'Custom canonical storage does not support environments, standalone native search, checklists, goals, child agents, or manual tools',
+    );
+}
+
+/** @internal Check the immutable declaration before acquiring an application lease. */
+export function validateCustomStorageEnvironment(environment: unknown): void {
+  if (environment === undefined) return;
+  if (
+    !(environment instanceof Environment) ||
+    environment.kind !== 'remote' ||
+    !environment.readOnly ||
+    environment.tools.length === 0 ||
+    environment.tools.some(
+      (name) => name !== 'project_glob' && name !== 'project_grep',
+    ) ||
+    (environment.capabilityDirectories?.length ?? 0) !== 0 ||
+    'stdio_command' in environmentConfig(environment)
+  )
+    throw new TypeError(
+      'Custom canonical storage does not support environments except concrete remote read-only project search',
     );
 }
 

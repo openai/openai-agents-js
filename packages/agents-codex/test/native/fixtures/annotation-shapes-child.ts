@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { Trace } from '@openai/agents-core';
-import { telemetry, type TraceOptions, type TraceEvent } from '../../../src';
+import * as telemetry from '../../../src/runtime/telemetry';
+import type { TraceOptions, TraceEvent } from '../../../src/runtime/telemetry';
 
 type Metadata = NonNullable<TraceOptions['metadata']>;
 type OtlpSpan = {
   name: string;
   attributes: { key: string; value: { stringValue?: string } }[];
+  droppedAttributesCount?: number;
 };
 type OtlpRecord = { resourceSpans: { scopeSpans: { spans: OtlpSpan[] }[] }[] };
 const shapes = [
@@ -63,6 +64,7 @@ function metadataMatches(
 async function main() {
   const mode = process.argv[2];
   if (mode === 'classic') {
+    const { Trace } = await import('@openai/agents-core');
     for (const shape of shapes) {
       const metadata = payload(shape);
       const trace = new Trace({ metadata });
@@ -77,7 +79,9 @@ async function main() {
   const events: TraceEvent[] = [];
   const records: OtlpRecord[] = [];
   const server =
-    mode === 'otlp' || mode === 'carrier-otlp'
+    mode === 'otlp' ||
+    mode === 'carrier-otlp' ||
+    mode === 'processor-large-export-bounded'
       ? createServer(async (request, response) => {
           const chunks: Buffer[] = [];
           for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -95,13 +99,16 @@ async function main() {
   );
   generic['generic.000-long'] = 'x'.repeat(8192);
   await telemetry.configure({
-    traceProcessors: [
-      {
-        onEvent(event) {
-          events.push(event);
-        },
-      },
-    ],
+    traceProcessors:
+      mode === 'processor-large-export-bounded'
+        ? []
+        : [
+            {
+              onEvent(event) {
+                events.push(event);
+              },
+            },
+          ],
     ...(mode === 'generic' ? { spanAttributes: generic } : {}),
     ...(mode === 'redispatch-configured'
       ? {
@@ -150,7 +157,68 @@ async function main() {
       : {}),
   });
   try {
-    if (mode.startsWith('redispatch-')) {
+    if (mode === 'processor-large-export-bounded') {
+      // Register independently: adding this route must retain native OTLP export.
+      await telemetry.addTraceProcessor({
+        onEvent(event) {
+          events.push(event);
+        },
+      });
+      const metadata = {
+        payload: 'x'.repeat(160 * 1024),
+        marker: 'local-large',
+      };
+      assert(Buffer.byteLength(JSON.stringify(metadata), 'utf8') > 128 * 1024);
+      await telemetry.withTrace(
+        { name: 'bounds.processor-large-export-bounded', metadata },
+        (root) => assert.deepEqual(root.traceMetadata, metadata),
+      );
+      assert.equal(
+        (await telemetry.forceFlush({ timeoutMs: 5000 })).status,
+        'success',
+      );
+      const snapshots = events.filter(
+        (event) => event.name === 'bounds.processor-large-export-bounded',
+      );
+      assert.deepEqual(
+        snapshots.map((event) => event.lifecycle),
+        ['start', 'end'],
+      );
+      for (const snapshot of snapshots)
+        metadataMatches(snapshot.attributes, metadata);
+      const exported = records
+        .flatMap((record) =>
+          record.resourceSpans.flatMap((resource) =>
+            resource.scopeSpans.flatMap((scope) => scope.spans),
+          ),
+        )
+        .filter(
+          (span) => span.name === 'bounds.processor-large-export-bounded',
+        );
+      assert.equal(
+        exported.length,
+        1,
+        'native default exporter must remain active',
+      );
+      for (const span of exported) {
+        const projected = Object.fromEntries(
+          span.attributes
+            .filter((attribute) => attribute.key.startsWith('sdk.metadata.'))
+            .map((attribute) => [attribute.key, attribute.value.stringValue]),
+        );
+        assert(
+          Buffer.byteLength(JSON.stringify(projected), 'utf8') <= 128 * 1024,
+          'large local observations must not enlarge default-export metadata',
+        );
+        assert(
+          !JSON.stringify(span).includes(metadata.payload),
+          'the native default exporter must not receive the full local payload',
+        );
+        assert.equal(projected['sdk.metadata.marker'], metadata.marker);
+        assert(!Object.hasOwn(projected, 'sdk.metadata.payload'));
+        assert((span.droppedAttributesCount ?? 0) >= 1);
+      }
+    } else if (mode.startsWith('redispatch-')) {
       let metadata: Metadata = Object.fromEntries(
         Array.from({ length: 9000 }, (_, i) => ['f' + i, 0]),
       );
@@ -341,9 +409,9 @@ async function main() {
       await assert.rejects(
         telemetry.startTrace({
           name: 'too-large',
-          metadata: { x: 'x'.repeat(131072) },
+          metadata: { x: 'x'.repeat(4 * 1024 * 1024) },
         }),
-        /128 KiB/,
+        /native event limit/,
       );
       const over = await telemetry.startTrace({
         name: 'completion',
