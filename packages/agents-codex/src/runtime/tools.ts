@@ -112,6 +112,44 @@ export class ToolOutput {
   }
 }
 
+/** @internal Detached projection of a canonically recorded native tool result. */
+export function captureSettledToolOutput(
+  output: unknown,
+  succeeded: boolean,
+): ToolOutput {
+  const content =
+    typeof output === 'string'
+      ? [{ type: 'inputText' as const, text: output }]
+      : z
+          .array(z.record(z.string(), z.unknown()))
+          .parse(output)
+          .map((part) => {
+            if (part.type === 'input_text')
+              return captureToolPart({
+                type: 'inputText',
+                text: part.text,
+              });
+            if (part.type === 'input_image')
+              return captureToolPart({
+                type: 'inputImage',
+                ...(part.image_url != null ? { imageUrl: part.image_url } : {}),
+                ...(part.file_id != null ? { fileId: part.file_id } : {}),
+                ...(part.detail != null ? { detail: part.detail } : {}),
+              });
+            if (part.type === 'input_file') {
+              const { type: _type, ...file } = part;
+              return captureToolPart({ type: 'inputFile', ...file });
+            }
+            if (part.type === 'input_audio')
+              return captureToolPart({
+                type: 'inputAudio',
+                audioUrl: part.audio_url,
+              });
+            throw new TypeError('Unsupported settled tool content');
+          });
+  return new ToolOutput(content, succeeded);
+}
+
 /** @internal Detached canonical results; call metadata grants no tool authority. */
 export function captureToolBatchResults(
   owner: Pick<
@@ -141,45 +179,17 @@ export function captureToolBatchResults(
       throw new TypeError('Duplicate settled tool identity');
     return Object.freeze(
       results.map((result) => {
-        const content =
-          typeof result.output === 'string'
-            ? [{ type: 'inputText' as const, text: result.output }]
-            : z
-                .array(z.record(z.string(), z.unknown()))
-                .parse(result.output)
-                .map((part) => {
-                  if (part.type === 'input_text')
-                    return captureToolPart({
-                      type: 'inputText',
-                      text: part.text,
-                    });
-                  if (part.type === 'input_image')
-                    return captureToolPart({
-                      type: 'inputImage',
-                      ...(part.image_url != null
-                        ? { imageUrl: part.image_url }
-                        : {}),
-                      ...(part.file_id != null ? { fileId: part.file_id } : {}),
-                      ...(part.detail != null ? { detail: part.detail } : {}),
-                    });
-                  if (part.type === 'input_file') {
-                    const { type: _type, ...file } = part;
-                    return captureToolPart({ type: 'inputFile', ...file });
-                  }
-                  if (part.type === 'input_audio')
-                    return captureToolPart({
-                      type: 'inputAudio',
-                      audioUrl: part.audio_url,
-                    });
-                  throw new TypeError('Unsupported settled tool content');
-                });
+        const output = captureSettledToolOutput(
+          result.output,
+          result.succeeded,
+        );
         return Object.freeze({
           call: Object.freeze({
             ...terminalCallInfo(owner, { ...result, final_output: null }),
             model,
           }),
           arguments: result.arguments,
-          output: new ToolOutput(content, result.succeeded),
+          output,
         });
       }),
     );

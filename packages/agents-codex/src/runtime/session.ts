@@ -458,6 +458,7 @@ import {
   captureTools,
   captureAdmittedToolUpdate,
   captureToolBatchResults,
+  captureSettledToolOutput,
   isDirectFunctionTool,
   isClientToolSearchTool,
   toolIdentity,
@@ -3242,6 +3243,7 @@ export class Session<OutputT = string, Context = unknown> {
     callback?: ToolLifecycleCallback<any>,
   ): void {
     this.inheritedToolLifecycle = callback;
+    if (callback) this.#native._enable_raw_mcp_tool_lifecycle();
     const restored = this.restoredExecutorTurn;
     // A missing selection here proves there was no captured operation subset,
     // model override, budget, graph source or staged checkpoint to replace.
@@ -3983,6 +3985,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
 
   private configureNative(native: NativeThread): void {
+    if (this.hasManagedToolLifecycle()) native._enable_raw_mcp_tool_lifecycle();
     if (this.hasMcpPolicyReaders) native._enable_native_mcp_results(30);
     const executorPolicy =
       this.environment !== null && hasExecutorPolicy(this.environment);
@@ -6070,7 +6073,8 @@ export class Session<OutputT = string, Context = unknown> {
             ({ profile }) =>
               profile.scopedHostedSearch != null ||
               !!profile.scopedHostedFileSearch?.length ||
-              !!profile.scopedHostedCodeInterpreter?.length,
+              !!profile.scopedHostedCodeInterpreter?.length ||
+              !!profile.scopedHostedImageGeneration?.length,
           ) ||
           !!this.options.hostedTools?.length ||
           this.options.nativeGoals ||
@@ -8457,6 +8461,7 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === '_sdk_before_compact_policy' ||
       msg.type === '_sdk_handoff_input' ||
       msg.type === '_sdk_agent_lifecycle' ||
+      msg.type === '_sdk_mcp_tool_lifecycle' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -8842,6 +8847,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === '_sdk_before_compact_policy' ||
       kind === '_sdk_handoff_input' ||
       kind === '_sdk_agent_lifecycle' ||
+      kind === '_sdk_mcp_tool_lifecycle' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -9989,6 +9995,7 @@ export class Session<OutputT = string, Context = unknown> {
           const responseSpan = msg.type === '_sdk_provider_response_span';
           const handoffInput = msg.type === '_sdk_handoff_input';
           const lifecycle = msg.type === '_sdk_agent_lifecycle';
+          const toolLifecycle = msg.type === '_sdk_mcp_tool_lifecycle';
           const notFound = msg.type === '_sdk_tool_not_found';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
@@ -10018,6 +10025,7 @@ export class Session<OutputT = string, Context = unknown> {
               sourceNative._reply_provider_response_span(data);
             else if (handoffInput) sourceNative._reply_handoff_input(data);
             else if (lifecycle) sourceNative._reply_agent_lifecycle(data);
+            else if (toolLifecycle) sourceNative._reply_tool_lifecycle(data);
             else if (notFound) sourceNative._reply_tool_not_found(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
@@ -10117,6 +10125,75 @@ export class Session<OutputT = string, Context = unknown> {
               );
               check();
               reply({ data: admitted });
+              return;
+            }
+            if (toolLifecycle) {
+              const source = this.messageProfile(msg);
+              const agentCallback = source
+                ? this.callbackProfileRuntime(source.profile_id)!.profile
+                    .declaration.onToolLifecycle
+                : this.options.agentToolLifecycle;
+              const kind = z.enum(['start', 'end']).parse(msg.phase);
+              const argumentsText = z.string().parse(msg.arguments);
+              const args = losslessJsonValueSchema.parse(
+                argumentsText.trim() === '' ? {} : JSON.parse(argumentsText),
+              );
+              const succeeded = z.boolean().parse(msg.succeeded);
+              const recorded =
+                kind === 'end'
+                  ? z.record(z.string(), z.unknown()).parse(msg.output)
+                  : undefined;
+              if (
+                recorded &&
+                (recorded.type !== 'function_call_output' ||
+                  recorded.call_id !== msg.call_id)
+              )
+                throw new NativeError(
+                  'Tool lifecycle output differs from its exact invocation',
+                );
+              const output = recorded
+                ? captureSettledToolOutput(recorded.output, succeeded)
+                : undefined;
+              for (const callback of [
+                this.options.onToolLifecycle ?? this.inheritedToolLifecycle,
+                agentCallback,
+              ]) {
+                if (!callback) continue;
+                check();
+                callback(
+                  Object.freeze({
+                    kind,
+                    context: this.options.context,
+                    agent: this.sourceApplicationAgent(msg),
+                    sessionId: this.id,
+                    turnId: z.string().parse(msg.turn_id),
+                    callId: z.string().parse(msg.call_id),
+                    tool: Object.freeze({
+                      name: z.string().parse(msg.name),
+                      namespace: z.string().nullable().parse(msg.namespace),
+                    }),
+                    arguments: structuredClone(args),
+                    signal,
+                    ...(kind === 'end'
+                      ? {
+                          status: succeeded
+                            ? ('completed' as const)
+                            : ('failed' as const),
+                        }
+                      : {}),
+                    ...(output
+                      ? {
+                          output: new ToolOutput(
+                            structuredClone(output.contentItems),
+                            output.success,
+                          ),
+                        }
+                      : {}),
+                  }),
+                );
+              }
+              check();
+              reply({});
               return;
             }
             if (lifecycle) {

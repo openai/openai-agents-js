@@ -248,6 +248,31 @@ jobs:
           pnpm exec vitest run --pool=forks --project @openai/agents-codex
           packages/agents-codex/test/native/checkpoint-upgrades-native.test.ts
           --maxWorkers=1 --reporter=verbose
+      - name: Qualify native Docker path and identity grants
+        id: native_docker
+        if: >-
+          matrix.platform == 'linux-x64' && github.repository == 'openai/openai-agents-js' &&
+          ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
+           (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository &&
+            (github.event.pull_request.stack.base.ref || github.base_ref) == 'feat/codex-harness'))
+        env:
+          NATIVE_INPUTS: ${{ needs.select.outputs.inputs_hash }}
+          CODEX_DOCKER_TEST_SOCKET: /var/run/docker.sock
+          CODEX_DOCKER_TEST_IMAGE: docker.io/library/python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+          CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
+        run: |
+          test -S "$CODEX_DOCKER_TEST_SOCKET"
+          env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS \
+            docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" pull "$CODEX_DOCKER_TEST_IMAGE"
+          node scripts/qualify-native-docker.mjs
+      - name: Retain native Docker qualification evidence
+        if: always() && steps.native_docker.outcome != 'skipped'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-docker-qualification-${{ matrix.platform }}-${{ github.run_attempt }}
+          path: results/native-docker/
+          if-no-files-found: ignore
       - name: Qualify canonical native storage
         if: runner.os == 'Linux' || runner.os == 'macOS'
         run: >-

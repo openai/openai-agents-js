@@ -1515,7 +1515,11 @@
     {
       "path": "sdk-hosted-file-search-role-identity.patch",
       "sha256": "d51143ff580c423fd1aabbe6604b5a1fa49070bf632c4ddf05fc9ad6e732207d"
+    },
+    {
+      "path": "sdk-raw-mcp-recorded-observers.patch",
+      "sha256": "40df34bc97b15304270fee5b7289e9255d523cfb7095e94ada145b1157480043"
     }
   ],
-  "result_tree": "bddfc0ed186e04942ed219517997ac41293810e2"
+  "result_tree": "dacee51ecdc5803938f8922937751e0f516479bc"
 }

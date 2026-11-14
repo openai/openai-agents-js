@@ -871,6 +871,10 @@ fn history_with_staged_retry(value: &Value, retry: Option<&StagedRetry>) -> Resu
                     );
                     last_output = Some(ordinal);
                 }
+                // Completed provider File Search is passive sampled data. It never
+                // supplies a local pending call, result receipt, or execution grant.
+                ResponseItem::FileSearchCall { id: Some(id), status, .. }
+                    if status == "completed" && !id.is_empty() => {}
                 // Code and other tool protocols cannot certify an ordinary
                 // function-only boundary. They retain their existing live route.
                 item if !result.turn.is_empty() => {
@@ -1846,7 +1850,7 @@ impl PythonTools {
                 turn == &history.turn,
                 "Held terminal outputs belong to another turn"
             );
-            for (output, succeeded) in held
+            for (output, succeeded, _) in held
                 .outputs
                 .lock()
                 .expect("held terminal outputs poisoned")
@@ -2181,7 +2185,7 @@ impl PythonTools {
                 "Held terminal outputs belong to another capture turn"
             );
             let mut seen = HashSet::new();
-            for (output, succeeded) in held
+            for (output, succeeded, _) in held
                 .outputs
                 .lock()
                 .expect("held terminal outputs poisoned")

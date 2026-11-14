@@ -126,6 +126,7 @@ impl ContextLease {
 
 pub(super) enum PreparationReply {
     AgentLifecycle(oneshot::Sender<std::result::Result<(), ()>>),
+    ToolLifecycle(oneshot::Sender<std::result::Result<(), ()>>),
     Workspace(
         oneshot::Sender<std::result::Result<crate::agent_profiles::WorkspacePreparation, ()>>,
     ),
@@ -163,6 +164,7 @@ impl PreparationReply {
             Self::ProviderResponseSpan(reply) => reply.is_closed(),
             Self::HandoffInput(reply) => reply.is_closed(),
             Self::AgentLifecycle(reply) => reply.is_closed(),
+            Self::ToolLifecycle(reply) => reply.is_closed(),
             Self::ToolNotFound(reply) => reply.is_closed(),
             Self::Model(ModelDelivery::Waiting(reply, _)) => reply.is_closed(),
             Self::Model(ModelDelivery::Streaming { events, .. }) => events.is_closed(),
