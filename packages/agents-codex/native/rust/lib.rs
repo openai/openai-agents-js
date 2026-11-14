@@ -4597,12 +4597,12 @@ impl NativeThread {
                 if serde_json::to_value(projected).map_err(native_error)? != saved["history"] {
                     return Ok(serde_json::json!({"status":"not_ready"}).to_string());
                 }
-                Some(serde_json::to_value(raw).map_err(native_error)?)
+                Some(raw)
             };
             graph.check(&inner, &saved).await.map_err(native_error)?;
             if let Some(raw_prefix) = raw_prefix
                 && !store
-                    .begin_manual_capture(inner.id, keys, &raw_prefix)
+                    .begin_manual_capture(inner.id, keys, raw_prefix)
                     .await
                     .map_err(native_error)?
             {
