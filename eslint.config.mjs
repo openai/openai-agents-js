@@ -30,6 +30,7 @@ export default tseslint.config(
     'packages/agents-codex/native/.upstream/**',
     'packages/agents-codex/native/target/**',
     'packages/*/native/codex-realtime-control.{cjs,mjs}',
+    'packages/*/native/codex-turn-control.{cjs,mjs}',
     'tsc-multi.json',
   ]),
   eslint.configs.recommended,
