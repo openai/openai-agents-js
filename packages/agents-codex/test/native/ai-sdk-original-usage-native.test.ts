@@ -139,11 +139,14 @@ it.each([
         outputTokens: 2,
         totalTokens: 5,
       });
-      expect(result.state).not.toContain('__sdk_ai_sdk_original_usage');
+      expect(JSON.stringify(result.state)).not.toContain(
+        '__sdk_ai_sdk_original_usage',
+      );
       // Google's existing replay sidecar includes its SDK usageMetadata even
       // without raw-usage opt-in. Original usage must not change that contract.
-      if (kind === 'google') expect(result.state).toContain('vendorPricing');
-      else expect(result.state).not.toContain('vendorPricing');
+      if (kind === 'google')
+        expect(JSON.stringify(result.state)).toContain('vendorPricing');
+      else expect(JSON.stringify(result.state)).not.toContain('vendorPricing');
       expect(JSON.stringify(result.history)).not.toContain('vendorPricing');
       const restored = await agent.run('Continue.', {
         state: result.state,
@@ -151,9 +154,13 @@ it.each([
         returnState: true,
       });
       expect(restored).not.toHaveProperty('rawUsage');
-      expect(restored.state).not.toContain('__sdk_ai_sdk_original_usage');
-      if (kind === 'google') expect(restored.state).toContain('vendorPricing');
-      else expect(restored.state).not.toContain('vendorPricing');
+      expect(JSON.stringify(restored.state)).not.toContain(
+        '__sdk_ai_sdk_original_usage',
+      );
+      if (kind === 'google')
+        expect(JSON.stringify(restored.state)).toContain('vendorPricing');
+      else
+        expect(JSON.stringify(restored.state)).not.toContain('vendorPricing');
       expect(JSON.stringify(restored.history)).not.toContain('vendorPricing');
       expect(wires).toHaveLength(2);
       expect(JSON.stringify(wires[1])).not.toContain('vendorPricing');
