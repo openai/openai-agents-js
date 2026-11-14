@@ -233,7 +233,7 @@ it('keeps cancellation before the deadline authoritative without late success', 
 }, 15000);
 
 it('keeps the concurrency permit until a timed-out callback physically settles', async () => {
-  const firstEntered = Promise.withResolvers<void>();
+  const firstEntered = Promise.withResolvers<number>();
   const timeoutObserved = Promise.withResolvers<void>();
   const releaseFirst = Promise.withResolvers<void>();
   const effects: string[] = [];
@@ -257,7 +257,7 @@ it('keeps the concurrency permit until a timed-out callback physically settles',
         timeoutSettlement: 'at_deadline',
         async execute({ sequence }, context) {
           effects.push('start ' + sequence);
-          if (sequence === 1) {
+          if (effects.length === 1) {
             context.signal.addEventListener(
               'abort',
               () => timeoutObserved.resolve(),
@@ -265,7 +265,7 @@ it('keeps the concurrency permit until a timed-out callback physically settles',
                 once: true,
               },
             );
-            firstEntered.resolve();
+            firstEntered.resolve(sequence);
             await releaseFirst.promise;
           }
           effects.push('end ' + sequence);
@@ -276,15 +276,22 @@ it('keeps the concurrency permit until a timed-out callback physically settles',
   }).session({ maxFunctionConcurrency: 1 });
   const turn = await session.submit('Run first, then second.');
   const result = turn.wait();
+  let first: number;
   try {
-    await firstEntered.promise;
+    first = await firstEntered.promise;
     await timeoutObserved.promise;
     await sleep(100);
-    expect(effects).toEqual(['start 1']);
+    expect(effects).toEqual(['start ' + first]);
   } finally {
     releaseFirst.resolve();
     await result.catch(() => {});
   }
   expect((await result).finalOutput).toBe('done');
-  expect(effects).toEqual(['start 1', 'end 1', 'start 2', 'end 2']);
+  const second = first === 1 ? 2 : 1;
+  expect(effects).toEqual([
+    'start ' + first,
+    'end ' + first,
+    'start ' + second,
+    'end ' + second,
+  ]);
 });
