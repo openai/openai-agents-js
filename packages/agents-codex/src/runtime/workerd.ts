@@ -734,7 +734,14 @@ async function runTools<Context>(
               ...(typeof output === 'string'
                 ? {}
                 : {
-                    response: Object.freeze(structuredClone(captured.response)),
+                    response: Object.freeze({
+                      success: captured.response.success,
+                      contentItems: captured.response.contentItems.map(
+                        (part) => ({
+                          ...part,
+                        }),
+                      ),
+                    }),
                   }),
             });
             const denial = evaluate('tool_output', guard.name, verdict);
@@ -1050,7 +1057,11 @@ async function runWorkerTextTurn<Context>(
             text,
             ...(currentInput === undefined
               ? {}
-              : { input: structuredClone(currentInput) }),
+              : {
+                  input: cloneJson(
+                    currentInput as unknown as JsonValue,
+                  ) as unknown as WorkerUserInput,
+                }),
             context,
             signal: currentSignal,
             profile,

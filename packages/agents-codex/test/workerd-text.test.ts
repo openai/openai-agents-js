@@ -6,6 +6,7 @@ import {
   AiSdkModel,
   runWorkerText,
   runWorkerTurn,
+  ToolOutput,
   WorkerGuardrailTripwire,
   standaloneTool,
   type NativeModel,
@@ -51,6 +52,15 @@ portableTest(
           model: 'fixture',
           instructions: 'Use lookup.',
           tools: [tool.declaration],
+          inputGuardrails: [
+            {
+              name: 'input view',
+              callback(view) {
+                expect(view.input).toBe(input);
+                return { tripwireTriggered: false };
+              },
+            },
+          ],
           provider: {
             async complete({ body }) {
               if (++calls === 1) {
@@ -86,6 +96,75 @@ portableTest(
     }
   },
 );
+
+portableTest('detaches media tool output for a Hermes guardrail', async () => {
+  const module = new HermesTextControl(
+    () =>
+      new WebAssembly.Instance(control).exports as unknown as ReturnType<
+        HermesTextControl['instantiate']
+      >,
+  );
+  vi.stubGlobal('structuredClone', undefined);
+  try {
+    const media = ToolOutput.image({ fileId: 'guardrail-image' });
+    const after = vi.fn(({ response }) => {
+      expect(response?.contentItems).toEqual(media.contentItems);
+      response.contentItems.pop();
+      return { action: 'allow' } as const;
+    });
+    let requests = 0;
+    await expect(
+      runWorkerText('Get an image.', {
+        control: module,
+        model: 'fixture',
+        instructions: 'Use the image tool.',
+        tools: [
+          standaloneTool({
+            name: 'image',
+            parameters: z.object({}),
+            execute: () => media,
+          }),
+        ],
+        toolGuardrails: { image: [{ name: 'media view', after }] },
+        provider: {
+          complete({ body }) {
+            if (++requests === 1) {
+              return {
+                output: [
+                  {
+                    type: 'function_call',
+                    name: 'image',
+                    arguments: '{}',
+                    call_id: 'media-result',
+                  },
+                ],
+              };
+            }
+            expect(body.input).toContainEqual(
+              expect.objectContaining({
+                type: 'function_call_output',
+                output: [{ type: 'input_image', file_id: 'guardrail-image' }],
+              }),
+            );
+            return {
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'output_text', text: 'done' }],
+                },
+              ],
+            };
+          },
+        },
+      }),
+    ).resolves.toBe('done');
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(media.contentItems).toHaveLength(1);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 function lookup() {
   const execute = vi.fn(({ value }: { value: string }) => 'observed:' + value);
