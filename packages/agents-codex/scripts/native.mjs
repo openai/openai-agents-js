@@ -23,7 +23,7 @@ import { pipeline } from 'node:stream/promises';
 import { setTimeout } from 'node:timers/promises';
 import * as tls from 'node:tls';
 import {
-  prepareSources,
+  auditSources,
   sha256Bytes,
   verifyVendoredHyper,
 } from './native-source.mjs';
@@ -102,11 +102,6 @@ const sources = [
     patches: 'rmcp-patches',
   },
 ];
-function audit(prepare = false) {
-  verifyVendoredHyper(root);
-  return prepareSources(root, sources, prepare);
-}
-
 // One input snapshot and product inventory serve build validation and its receipt.
 function buildInputs() {
   const files = new Set([
@@ -278,8 +273,18 @@ async function verifiedV8(filename, override) {
 async function build() {
   const receiptPath = join(root, 'build-receipt.json');
   rmSync(receiptPath, { force: true });
-  const sourceIdentity = audit();
+  verifyVendoredHyper(root);
+  const { identities: sourceIdentity, verify: verifySources } = auditSources(
+    root,
+    sources,
+    command === 'package',
+  );
   const inputs = buildInputs();
+  const checkInputs = () => {
+    verifyVendoredHyper(root);
+    verifySources();
+    equalSnapshot(buildInputs(), inputs, 'Native inputs');
+  };
   const release = values.release || command === 'package';
   const environment = {
     ...process.env,
@@ -352,8 +357,7 @@ async function build() {
       stdio: 'inherit',
     },
   );
-  equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
-  equalSnapshot(buildInputs(), inputs, 'Native inputs');
+  checkInputs();
   // Restored Cargo fingerprints can otherwise accept SDK files with old timestamps.
   const clean = [
     'clean',
@@ -415,8 +419,7 @@ async function build() {
       { env: environment, stdio: 'inherit' },
     );
   }
-  equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
-  equalSnapshot(buildInputs(), inputs, 'Native inputs');
+  checkInputs();
   const output = join(
     environment.CARGO_TARGET_DIR,
     ...(environment.CARGO_BUILD_TARGET ? [host] : []),
@@ -493,8 +496,7 @@ async function build() {
         throw new Error(`Invalid packaged native artifact: ${destination}`);
       }
     }
-    equalSnapshot(audit(), sourceIdentity, 'Reviewed source');
-    equalSnapshot(buildInputs(), inputs, 'Native inputs');
+    checkInputs();
     const products = Object.fromEntries(
       await Promise.all(
         payload.map(async ([destination]) => [
@@ -542,11 +544,9 @@ async function build() {
   writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
 }
 
-if (command === 'prepare') audit(true);
-else if (command === 'audit') audit();
-else if (command === 'package') {
-  // Never leave a previous receipt qualifying an interrupted packaging attempt.
-  rmSync(join(root, 'build-receipt.json'), { force: true });
-  audit(true);
+if (command === 'prepare' || command === 'audit') {
+  verifyVendoredHyper(root);
+  auditSources(root, sources, command === 'prepare');
+} else {
   await build();
-} else await build();
+}

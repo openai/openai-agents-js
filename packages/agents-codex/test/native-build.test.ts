@@ -619,6 +619,9 @@ for (let i = 0; i < args.length; i++) {
 if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'input') fs.appendFileSync(path.join(process.cwd(), 'rust/lib.rs'), '// Changed during build.\\n');
 if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'fixture') fs.appendFileSync(path.join(process.cwd(), 'tests/fixtures/exec_server.rs'), '// Changed fixture input.\\n');
 if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appendFileSync(path.join(process.cwd(), '.upstream/reviewed-codex/codex-rs/.cargo/config.toml'), '# changed\\n');
+if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'pristine') fs.rmSync(path.join(process.cwd(), '.upstream/codex'), { recursive: true, force: true });
+if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'patch-manifest') fs.appendFileSync(path.join(process.cwd(), 'patches/series.json'), '\\n');
+if (args[0] === 'build' && process.env.TEST_DISABLE_POST_BUILD_GIT === '1') fs.writeFileSync(path.join(path.dirname(process.argv[1]), 'git'), '#!/bin/sh\\nexit 97\\n', { mode: 0o755 });
 `,
           { mode: 0o755 },
         );
@@ -673,9 +676,15 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
               writeFileSync(join(bin, alias + suffix), 'old helper');
             }
           }
-          const result = invoke(args);
+          const result = invoke(
+            args,
+            args === build && host.includes('-apple-')
+              ? { TEST_DISABLE_POST_BUILD_GIT: '1' }
+              : {},
+          );
           expect(result.status, result.stderr).toBe(0);
         }
+        rmSync(join(tools, 'git'), { force: true });
         if (downloads) {
           const requests = readFileSync(fetchLog, 'utf8')
             .trim()
@@ -980,6 +989,24 @@ if (args[0] === 'build' && process.env.TEST_MUTATE_NATIVE === 'source') fs.appen
           readFileSync(join(native, 'build-receipt.json')),
         ).toThrow();
         // A previous receipt cannot qualify a failed build with changed inputs.
+        if (host.includes('-apple-')) {
+          const series = join(native, 'patches/series.json');
+          const original = readFileSync(series);
+          const changed = invoke(build, {
+            TEST_MUTATE_NATIVE: 'patch-manifest',
+          });
+          expect(changed.status).toBe(1);
+          expect(changed.stderr).toContain(
+            'patch manifest changed during native build',
+          );
+          writeFileSync(series, original);
+          const removed = invoke(build, { TEST_MUTATE_NATIVE: 'pristine' });
+          expect(removed.status).toBe(1);
+          expect(removed.stderr).toContain('Native source audit failed');
+          expect(() =>
+            readFileSync(join(native, 'build-receipt.json')),
+          ).toThrow();
+        }
         expect(() =>
           execFileSync(
             process.execPath,

@@ -469,11 +469,14 @@ function extract(repository, tree, destination, files, options = {}) {
     if (mode !== '120000') utimesSync(join(destination, name), now, now);
   verifyTree(destination, files);
 }
-export function prepareSources(root, sources, prepare) {
+export function auditSources(root, sources, prepare) {
   const upstream = join(root, '.upstream');
   const identities = {};
+  const verifySources = [];
   for (const spec of sources) {
-    const series = readSeries(join(root, spec.patches));
+    const patchDirectory = join(root, spec.patches);
+    const series = readSeries(patchDirectory);
+    const { name, revision } = spec;
     const identity = {
       revision: spec.revision,
       result_tree: series.result_tree,
@@ -482,8 +485,11 @@ export function prepareSources(root, sources, prepare) {
     };
     const repository = sourceRepository(upstream, spec);
     const baseFiles = listing(repository, spec.revision);
-    const pristine = join(upstream, spec.name);
-    if (existsSync(pristine) && readdirSync(pristine).length)
+    const pristine = join(upstream, name);
+    const hasPristine = () =>
+      existsSync(pristine) && readdirSync(pristine).length;
+    const expectPristine = Boolean(prepare || hasPristine());
+    if (hasPristine())
       verifyTree(pristine, baseFiles, { pristineRevision: spec.revision });
     // Keep all index/object writes private; the supplied repository only provides immutable objects.
     mkdirSync(upstream, { recursive: true });
@@ -533,14 +539,31 @@ export function prepareSources(root, sources, prepare) {
         renameSync(staged, destination);
       }
       // Preserve the original pristine archive route and its refusal semantics.
-      if (prepare && (!existsSync(pristine) || !readdirSync(pristine).length)) {
+      if (prepare && !hasPristine()) {
         const staged = join(temporary, 'base');
         extract(repository, spec.revision, staged, baseFiles);
         writeFileSync(join(staged, '.sdk-revision'), `${spec.revision}\n`);
         if (existsSync(pristine)) rmSync(pristine, { recursive: true });
         renameSync(staged, pristine);
       }
-      identities[spec.name] = identity;
+      identities[name] = {
+        ...identity,
+        patches: identity.patches.map((patch) => ({ ...patch })),
+      };
+      // The pinned commit and reviewed patch replay already authenticated both
+      // file maps. Recheck the inputs and both disk trees after build steps.
+      verifySources.push(() => {
+        if (
+          readSeries(patchDirectory).manifest_sha256 !==
+          identity.manifest_sha256
+        )
+          throw new Error(
+            `Reviewed ${name} patch manifest changed during native build`,
+          );
+        if (expectPristine || hasPristine())
+          verifyTree(pristine, baseFiles, { pristineRevision: revision });
+        verifyTree(destination, files, { marker, identity });
+      });
       console.log(
         `Verified ${files.size} ${spec.name} source files at reviewed tree ${result}`,
       );
@@ -548,5 +571,10 @@ export function prepareSources(root, sources, prepare) {
       rmSync(temporary, { recursive: true, force: true });
     }
   }
-  return identities;
+  return {
+    identities,
+    verify() {
+      for (const verify of verifySources) verify();
+    },
+  };
 }
