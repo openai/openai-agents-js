@@ -198,6 +198,7 @@ const remoteEnvironmentSchema = z
   })
   .strict();
 const stdioCommandSchema = z.object({
+  require_process_identity: z.literal(true).optional(),
   program: z.string(),
   args: z.array(z.string()),
   env: z.record(z.string(), z.string()),
@@ -222,6 +223,17 @@ const environmentSchema = z.union([
 export type EnvironmentConfig = z.infer<typeof environmentSchema>;
 const dockerEnvironmentAuthority = new WeakMap<Environment, StdioCommand>();
 const dockerOptionsAuthority = new WeakMap<object, StdioCommand>();
+
+/** @internal Read a requirement from the current private launch, never portable input. */
+export function requiresProcessIdentity(
+  environment: Environment | undefined,
+): boolean {
+  return (
+    environment !== undefined &&
+    dockerEnvironmentAuthority.get(environment)?.require_process_identity ===
+      true
+  );
+}
 
 export function captureWritableRoots(roots: readonly string[]): string[] {
   return z.array(capabilityDirectory).parse(roots);

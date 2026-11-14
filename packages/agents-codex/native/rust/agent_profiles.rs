@@ -372,35 +372,38 @@ impl ProfileEnvironments {
     }
 }
 
-fn environment_policy(
+async fn environment_policy(
     environment: &AgentProfileEnvironment,
     config: &codex_core_api::Config,
     manager: &codex_core_api::EnvironmentManager,
 ) -> Result<Option<Value>> {
+    let Some(selection) = environment.0.as_ref() else {
+        return Ok(None);
+    };
     let local_network = crate::environment::local_session_network_policy(config);
-    environment
-        .0
-        .as_ref()
-        .map(|selection| {
-            let remote = manager
-                .get_environment(&selection.environment_id)
-                .context("selected executor was not registered")?
-                .is_remote();
-            let mut policy = codex_protocol::protocol::sdk_executor_policy_receipt(
-                selection,
-                remote,
-                local_network.as_ref(),
-            )
-            .context("Agent executor policy is unavailable")?;
-            // Native IDs are process-local routing keys. A fresh owner supplies
-            // transport, credentials and an independently qualified selection.
-            policy
-                .as_object_mut()
-                .expect("executor policy object")
-                .remove("environment_id");
-            Ok(policy)
-        })
-        .transpose()
+    let remote = manager
+        .get_environment(&selection.environment_id)
+        .context("selected executor was not registered")?
+        .is_remote();
+    let mut policy = codex_protocol::protocol::sdk_executor_policy_receipt(
+        selection,
+        remote,
+        local_network.as_ref(),
+    )
+    .context("Agent executor policy is unavailable")?;
+    // Native IDs remain process-local routing keys, never portable authority.
+    policy
+        .as_object_mut()
+        .expect("executor policy object")
+        .remove("environment_id");
+    crate::environment::bind_process_identity_receipt(
+        manager,
+        selection,
+        environment.requires_process_identity(),
+        &mut policy,
+    )
+    .await?;
+    Ok(Some(policy))
 }
 
 pub(crate) async fn prepare_environments(
@@ -410,11 +413,15 @@ pub(crate) async fn prepare_environments(
     let Some(opening) = startup.thread_extension_init.get::<OpeningProfiles>() else {
         return Ok(());
     };
-    if opening.roster.iter().all(|profile| {
+    let requires_identity = crate::config::environment(&engine.runtime_json)?
+        .as_ref()
+        .is_some_and(crate::environment::EnvironmentOptions::requires_process_identity);
+    let inherited_identity_only = opening.roster.iter().all(|profile| {
         profile.environment.is_none()
             && profile.environment_tools.is_none()
             && !profile.environment_preparation
-    }) {
+    });
+    if inherited_identity_only && !requires_identity {
         return Ok(());
     }
     ensure!(
@@ -422,17 +429,21 @@ pub(crate) async fn prepare_environments(
         "Agent environments require a host-owned executor configuration"
     );
     let inherited = match startup.environments.as_deref().unwrap_or_default() {
-        [] => AgentProfileEnvironment(None),
+        [] => AgentProfileEnvironment(None, false),
         [selection]
             if matches!(
                 selection.config,
                 codex_protocol::protocol::EnvironmentConfigState::Ready(_)
             ) =>
         {
-            AgentProfileEnvironment(Some(selection.clone()))
+            AgentProfileEnvironment(Some(selection.clone()), requires_identity)
         }
         _ => anyhow::bail!("Agent environments require one ready default executor or no default"),
     };
+    ensure!(
+        !requires_identity || inherited.0.is_some(),
+        "Selected user requires a ready current default executor"
+    );
     let manager = engine.manager.environment_manager();
     let mut bindings = BTreeMap::new();
     for profile in &opening.roster {
@@ -451,12 +462,16 @@ pub(crate) async fn prepare_environments(
         .thread_extension_init
         .get::<crate::environment::StrictExecutorWrites>()
         .is_some();
-    let inherited_policy = environment_policy(&inherited, &startup.config, &manager)?;
+    let inherited_policy = environment_policy(&inherited, &startup.config, &manager).await?;
+    // Identity-only inheritance preserves an absent per-profile tool override.
+    // The existing thread tool policy continues enforcing its current ceiling.
+    let inherited_tool_names = HashSet::new();
     for profile in &opening.roster {
         let ready = profile.ready();
         let tools = ready
             .environment_tools
             .as_ref()
+            .or_else(|| inherited_identity_only.then_some(&inherited_tool_names))
             .context("Agent requires its captured executor tool declaration")?;
         ensure!(
             tools.iter().all(|name| matches!(
@@ -473,7 +488,7 @@ pub(crate) async fn prepare_environments(
                 "Pending Agent environment cannot carry executor authority"
             );
             policies.insert(profile.id.clone(), (false, false, None, tool_names));
-            AgentProfileEnvironment(None)
+            AgentProfileEnvironment(None, false)
         } else if let Some(options) = bindings.get(&profile.id) {
             // Each runtime registration is fresh. Portable history selects the
             // profile and cannot name, replace or reconnect an executor.
@@ -490,8 +505,9 @@ pub(crate) async fn prepare_environments(
                 )
                 .await?;
             executor_owners.extend(owner.map(Arc::new));
-            let environment = AgentProfileEnvironment(Some(selection));
-            let policy = environment_policy(&environment, &startup.config, &manager)?;
+            let environment =
+                AgentProfileEnvironment(Some(selection), options.requires_process_identity());
+            let policy = environment_policy(&environment, &startup.config, &manager).await?;
             policies.insert(
                 profile.id.clone(),
                 (true, strict.is_some(), policy, tool_names),
@@ -1306,8 +1322,10 @@ async fn prepare_destination(
         prepare.await?
     };
     environments._executor_owners.extend(owner.map(Arc::new));
-    let environment = AgentProfileEnvironment(Some(selection));
-    let policy = environment_policy(&environment, &config, &environments.preparation.manager)?;
+    let environment =
+        AgentProfileEnvironment(Some(selection), options.requires_process_identity());
+    let policy =
+        environment_policy(&environment, &config, &environments.preparation.manager).await?;
     let mut names: Vec<_> = tools.iter().cloned().collect();
     names.sort_unstable();
     environments
@@ -1433,7 +1451,11 @@ async fn prepare_profile(
         descriptor.selecting_steps,
         descriptor.transform_context,
         descriptor.before_compact,
-        descriptor.before_complete,
+        descriptor.before_complete
+            || crate::python_tools::agent_lifecycle::enabled(
+                thread.thread_extension_data(),
+                &descriptor.id,
+            ),
         descriptor.post_turn_compact,
         descriptor.tool_batch_completion,
     ];
@@ -2645,6 +2667,38 @@ pub(crate) async fn activate(
         .thread
         .activate_agent_profile(Some(expected), candidate)
         .await?)
+}
+
+pub(crate) fn validate_lifecycle_handoff(
+    input: &codex_extension_api::AgentLifecycleInput<'_>,
+) -> Result<()> {
+    let Some(target) = input.target_profile_id else {
+        return Ok(());
+    };
+    let source = input
+        .source
+        .context("Lifecycle handoff has no admitted source")?;
+    let profiles = input
+        .thread_store
+        .get::<Arc<AgentProfiles>>()
+        .context("Lifecycle handoff has no captured graph")?;
+    let declaration = &profiles
+        .profiles
+        .get(&source.receipt.profile_id)
+        .context("Lifecycle source is outside the graph")?
+        .declaration;
+    ensure!(
+        declaration
+            .handoffs
+            .values()
+            .any(|candidate| candidate == target)
+            || declaration
+                .decision_handoffs
+                .values()
+                .any(|entry| entry.targets.iter().any(|candidate| candidate == target)),
+        "Lifecycle handoff target is outside its source declaration"
+    );
+    Ok(())
 }
 
 pub(crate) struct Contributor;

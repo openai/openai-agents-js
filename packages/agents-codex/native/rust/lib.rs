@@ -3586,6 +3586,29 @@ impl NativeThread {
             .map_err(input_error)
     }
 
+    #[napi(js_name = "_reply_agent_lifecycle")]
+    pub fn _reply_agent_lifecycle(&self, response_json: String) -> napi::Result<()> {
+        if response_json.len() > 8 * 1024 * 1024 {
+            return Err(input_error("Agent lifecycle reply exceeds 8 MiB"));
+        }
+        let inner = self.current()?;
+        let response: python_tools::agent_lifecycle::Reply =
+            serde_json::from_str(&response_json).map_err(input_error)?;
+        let tools = inner
+            .thread
+            .thread_extension_data()
+            .get::<python_tools::PythonTools>()
+            .ok_or_else(|| input_error("Agent lifecycle requires a managed Session"))?;
+        let owner = tools
+            .exact_owner(
+                &inner.id.to_string(),
+                &response.owner.thread,
+                &response.owner.instance,
+            )
+            .ok_or_else(|| input_error("Expired Agent lifecycle owner"))?;
+        owner.reply_agent_lifecycle(response).map_err(input_error)
+    }
+
     #[napi(js_name = "_reply_handoff_input")]
     pub fn _reply_handoff_input(&self, response_json: String) -> napi::Result<()> {
         if response_json.len() > 8 * 1024 * 1024 {

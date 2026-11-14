@@ -1371,7 +1371,23 @@
     {
       "path": "sdk-profile-owned-memory-history.patch",
       "sha256": "04512bd707a42bfbadc823894d2d11ee9c1182360f09186fd0159f5f787d3773"
+    },
+    {
+      "path": "sdk-agent-lifecycle.patch",
+      "sha256": "5d47947405653ceebc654e08404bf40677fde7699d3d1e32ef8a7385db17c2c9"
+    },
+    {
+      "path": "sdk-agent-process-identity.patch",
+      "sha256": "a1e5e5e53b122b7dcfd22d05eeb0bca8c5e31096baa1adc21b994e1e0ccd4927"
+    },
+    {
+      "path": "sdk-coupled-input-data.patch",
+      "sha256": "24c7e00afac4d23d0ac849e6c8a641a87e2e769b22c1f8c54e7bac4f54d04904"
+    },
+    {
+      "path": "sdk-agent-lifecycle-cancellation-import.patch",
+      "sha256": "d158ce5029592af74687874af1b4a2ccb7935ede9aa0391795e6563bce3d2088"
     }
   ],
-  "result_tree": "f9c125a889ead28dd406224baded819433738b13"
+  "result_tree": "d639242c8e37cf8f6f6011e2e0ac1fee33ada6c7"
 }

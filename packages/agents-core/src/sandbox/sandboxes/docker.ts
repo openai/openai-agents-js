@@ -349,8 +349,21 @@ export async function openDockerGatewayScope(
         resource: SandboxSessionLike,
         execServerPath: string,
         connectionSignal: AbortSignal,
+        runAs?: string,
       ) {
         connectionSignal.throwIfAborted();
+        if (
+          runAs !== undefined &&
+          (typeof runAs !== 'string' ||
+            runAs.length > 256 ||
+            runAs.trim() !== runAs ||
+            !/^[A-Za-z0-9_][A-Za-z0-9_.-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]*)?$/.test(
+              runAs,
+            ))
+        )
+          throw new TypeError(
+            'Docker runAs must be a container user or user:group',
+          );
         if (
           !(resource instanceof DockerSandboxSession) ||
           dockerGatewayResources.get(resource) !== invocation ||
@@ -415,6 +428,9 @@ export async function openDockerGatewayScope(
               .map((grant) => grant.path),
           ],
           command: {
+            ...(runAs === undefined
+              ? {}
+              : { require_process_identity: true as const }),
             program: '/usr/bin/env',
             args: [
               '-i',
@@ -425,6 +441,7 @@ export async function openDockerGatewayScope(
               ...invocation.args,
               'exec',
               '--interactive',
+              ...(runAs === undefined ? [] : ['--user=' + runAs]),
               '--workdir=' + manifest.root,
               containerId,
               execServerPath,

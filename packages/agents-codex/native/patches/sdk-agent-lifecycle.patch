@@ -1,0 +1,192 @@
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index bde01fafc822ddb32f2346a4b3ff8739913841c4..1d063c73100b9b042dfba3ea9fb01e7995f481ec 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -68,6 +68,73 @@ fn invalid(message: impl Into<String>) -> CodexErr {
+     CodexErr::InvalidRequest(message.into())
+ }
+
++#[derive(Default)]
++struct AgentLifecycleStarted(tokio::sync::Mutex<Option<Option<AgentProfileReceipt>>>);
++
++impl Session {
++    pub(crate) async fn start_agent_activity(
++        &self,
++        context: &Arc<TurnContext>,
++        cancellation: &CancellationToken,
++    ) -> CodexResult<()> {
++        {
++            let active = self.active_turn.lock().or_cancel(cancellation).await?;
++            if !active.as_ref().and_then(|turn| turn.task.as_ref()).is_some_and(|task| {
++                task.kind == crate::state::TaskKind::Regular
++                    && Arc::ptr_eq(&task.turn_context, context)
++                    && !task.cancellation_token.is_cancelled()
++            }) {
++                return Ok(());
++            }
++        }
++        let selected = context.next_step_settings.load_full();
++        let source = selected.agent_profile.as_deref();
++        let receipt = source.map(|profile| profile.receipt.clone());
++        let owner = context.extension_data.get_or_init(AgentLifecycleStarted::default);
++        // Serialize only this turn's notification, without holding history or profile locks.
++        let mut started = owner.0.lock().or_cancel(cancellation).await?;
++        if started.as_ref() == Some(&receipt) {
++            return Ok(());
++        }
++        self.notify_agent_activity(context, source, None, cancellation).await?;
++        if context.next_step_settings.load_full().agent_profile.as_ref()
++            .map(|current| &current.receipt) != receipt.as_ref()
++        {
++            return Err(invalid("Agent lifecycle source changed during start"));
++        }
++        if cancellation.is_cancelled() {
++            return Err(CodexErr::TurnAborted);
++        }
++        *started = Some(receipt);
++        Ok(())
++    }
++
++    async fn notify_agent_activity(
++        &self,
++        context: &Arc<TurnContext>,
++        source: Option<&CapturedAgentProfile>,
++        target_profile_id: Option<&str>,
++        cancellation: &CancellationToken,
++    ) -> CodexResult<()> {
++        for contributor in self.services.extensions.turn_lifecycle_contributors() {
++            let result = contributor.before_agent_lifecycle(codex_extension_api::AgentLifecycleInput {
++                turn_id: &context.sub_id,
++                cancellation,
++                source,
++                target_profile_id,
++                session_store: &self.services.session_extension_data,
++                thread_store: &self.services.thread_extension_data,
++                turn_store: &context.extension_data,
++            }).await;
++            if cancellation.is_cancelled() {
++                return Err(CodexErr::TurnAborted);
++            }
++            result.map_err(invalid)?;
++        }
++        Ok(())
++    }
++}
++
+ fn restored_profile_identity(
+     settings: &codex_extension_api::AgentProfileModelSettings,
+ ) -> codex_extension_api::AgentProfileModelSettings {
+@@ -427,6 +494,13 @@ impl Session {
+                 || (accepted_handoff.is_none() && !request.restored) {
+                 return Err(invalid("Handoff preparation belongs to another accepted call"));
+             }
++        }
++        if let Some(handoff) = accepted_handoff.or_else(|| preparation.as_ref().map(|request| &request.handoff)) {
++            let source = current.agent_profile.as_ref()
++                .ok_or_else(|| invalid("Agent lifecycle handoff has no admitted source"))?;
++            self.notify_agent_activity(context, Some(source), Some(&handoff.target_profile_id), cancellation).await?;
++        }
++        if let Some(request) = &preparation {
+             let prepared = self.prepare_handoff_input(context, current.agent_profile.as_ref(), &request.handoff).await?;
+             context.extension_data.insert(prepared);
+             context.extension_data.insert(request.as_ref().clone());
+@@ -456,6 +530,15 @@ impl Session {
+         let Some(candidate) = candidate else {
+             return Ok(None);
+         };
++        if accepted_handoff.is_none() && preparation.is_none() {
++            let source = current.agent_profile.as_deref()
++                .ok_or_else(|| invalid("Agent lifecycle transition has no admitted source"))?;
++            if candidate.expected != source.receipt {
++                return Err(invalid("Agent lifecycle transition has another source"));
++            }
++            self.notify_agent_activity(context, Some(source), Some(&candidate.target.profile_id), cancellation).await?;
++        }
++
+         if let Some(presentation) = candidate
+             .target
+             .data
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 55d6cc4a5bc119267faffc83605a43bfd9232b9d..ba588728ec518366f060d55300ca365cc4fcd1eb 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -4091,6 +4091,7 @@ impl Session {
+         required_servers: &[String],
+         required_plugins: &HashSet<String>,
+     ) -> CodexResult<Arc<StepContext>> {
++        self.start_agent_activity(&turn_context, cancellation_token).await?;
+         let step_context = self
+             .capture_step_context_inner(
+                 turn_context,
+@@ -4124,6 +4125,7 @@ impl Session {
+         let preparation =
+             codex_extension_api::StagedInputPreparation::new(turn_context.sub_id.clone());
+         let _end = EndPreparation(preparation.clone());
++        self.start_agent_activity(&turn_context, cancellation_token).await?;
+         let step = self
+             .capture_step_context_inner(
+                 turn_context,
+diff --git a/codex-rs/ext/extension-api/src/contributors.rs b/codex-rs/ext/extension-api/src/contributors.rs
+index 2a9e533dabf8e83f8f8b912a18822f3295bcfca7..a7275f791fe1336fc9e20afe377091438872af2a 100644
+--- a/codex-rs/ext/extension-api/src/contributors.rs
++++ b/codex-rs/ext/extension-api/src/contributors.rs
+@@ -65,6 +65,7 @@ pub use turn_input::InitialTurnInput;
+ pub use turn_input::TurnInputContext;
+ pub use turn_input::TurnInputEnvironment;
+ pub use turn_lifecycle::AgentProfile;
++pub use turn_lifecycle::AgentLifecycleInput;
+ pub use turn_lifecycle::AgentProfileActivation;
+ pub use turn_lifecycle::AgentProfileBoundaryInput;
+ pub use turn_lifecycle::AgentProfileDecisionHandoffTools;
+@@ -279,6 +280,15 @@ pub trait TurnLifecycleContributor: Send + Sync {
+         Box::pin(std::future::ready(Ok(None)))
+     }
+
++    /// Acknowledge an Agent start or accepted outgoing handoff before dependent work.
++    /// Errors fail the turn. Replies never select a profile or grant authority.
++    fn before_agent_lifecycle<'a>(
++        &'a self,
++        _input: AgentLifecycleInput<'a>,
++    ) -> ExtensionFuture<'a, Result<(), String>> {
++        Box::pin(std::future::ready(Ok(())))
++    }
++
+     /// Request an admitted Agent transition before real sampling, never during speculative capture.
+     fn before_step_agent_activation<'a>(
+         &'a self,
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 04b8afc79926df96b2375993001415f41e5add43..029a52c692394f107721593727d0ddc14b2a4de6 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -287,6 +287,19 @@ pub struct AgentProfileActivation {
+     pub target: std::sync::Arc<AgentProfile>,
+ }
+
++/// An admitted Agent owner before real work or its accepted outgoing transfer.
++/// A successful reply acknowledges only the callback; it cannot select a target.
++pub struct AgentLifecycleInput<'a> {
++    pub turn_id: &'a str,
++    pub cancellation: &'a CancellationToken,
++    pub source: Option<&'a CapturedAgentProfile>,
++    /// None starts the current owner; Some notifies its admitted outgoing transition.
++    pub target_profile_id: Option<&'a str>,
++    pub session_store: &'a ExtensionData,
++    pub thread_store: &'a ExtensionData,
++    pub turn_store: &'a ExtensionData,
++}
++
+ /// Supplied only at a real sampling boundary after the preceding tool batch settles.
+ pub struct AgentProfileBoundaryInput<'a> {
+     /// Canonical accepted result of the first requested handoff in provider order.
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 1408b0691fbcbf2d9587f0c5c073c2a663b53ba8..aa8c2ccb7b234bba820c0ebea682eac2f923ec91 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -52,6 +52,7 @@ pub use codex_tools::TurnItemEmitter;
+ pub use codex_tools::parse_tool_input_schema;
+ pub use codex_tools::parse_tool_input_schema_without_compaction;
+ pub use contributors::AgentProfile;
++pub use contributors::AgentLifecycleInput;
+ pub use contributors::AgentProfileActivation;
+ pub use contributors::AgentProfileBoundaryInput;
+ pub use contributors::AgentProfileDecisionHandoffTools;

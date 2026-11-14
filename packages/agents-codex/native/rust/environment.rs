@@ -168,6 +168,8 @@ pub struct EnvironmentOptions {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StdioCommandOptions {
+    #[serde(default)]
+    require_process_identity: bool,
     program: String,
     args: Vec<String>,
     #[serde(default)]
@@ -408,6 +410,13 @@ fn environment_registration_error(error: codex_exec_server::ExecServerError) -> 
 }
 
 impl EnvironmentOptions {
+    /// Current private stdio launch declaration, never restored data.
+    pub(crate) fn requires_process_identity(&self) -> bool {
+        self.stdio_command
+            .as_ref()
+            .is_some_and(|command| command.require_process_identity)
+    }
+
     pub(crate) fn id(&self) -> &'static str {
         if self.local {
             LOCAL_ENVIRONMENT_ID
@@ -1191,6 +1200,38 @@ fn check_writable_config(config: &Config, local_session_proxy: bool) -> Result<(
                 .enabled(codex_core_api::Feature::RequestPermissionsTool),
         "strict executor write policy requires the standard sandbox with escalation and permission requests disabled"
     );
+    Ok(())
+}
+
+/// Bind observed credentials only under the current private launch declaration.
+pub(crate) async fn bind_process_identity_receipt(
+    manager: &EnvironmentManager,
+    selection: &TurnEnvironmentSelection,
+    compare_identity: bool,
+    policy: &mut Value,
+) -> Result<()> {
+    if !compare_identity {
+        return Ok(());
+    }
+    let environment = manager
+        .get_environment(&selection.environment_id)
+        .context("Selected user executor is unavailable")?;
+    let info = executor_info(&environment).await?;
+    append_process_identity_receipt(policy, &info)
+}
+
+fn append_process_identity_receipt(policy: &mut Value, info: &EnvironmentInfo) -> Result<()> {
+    let identity = info
+        .process_identity
+        .as_ref()
+        .context("Selected Docker user requires current executor process identity")?;
+    policy
+        .as_object_mut()
+        .context("Selected user executor policy is unavailable")?
+        .insert(
+            "process_identity".to_owned(),
+            serde_json::to_value(identity)?,
+        );
     Ok(())
 }
 
@@ -3917,5 +3958,62 @@ mod terminal_tool_recovery_tests {
         assert!(!has_sampled_model(&[RolloutItem::EventMsg(
             EventMsg::TurnComplete(empty)
         )]));
+    }
+}
+
+#[cfg(test)]
+mod selected_process_identity_tests {
+    #[test]
+    fn comparison_requirement_comes_only_from_current_private_launch() {
+        let mut value = serde_json::json!({
+            "cwd": "/workspace",
+            "stdio_command": {
+                "program": "/usr/bin/env",
+                "args": [],
+                "env": { "USER": "0", "LOGNAME": "root" },
+                "cwd": null
+            }
+        });
+        let options: super::EnvironmentOptions = serde_json::from_value(value.clone()).unwrap();
+        assert!(!options.requires_process_identity());
+        value["stdio_command"]["require_process_identity"] = serde_json::json!(true);
+        let options: super::EnvironmentOptions = serde_json::from_value(value).unwrap();
+        assert!(options.requires_process_identity());
+        assert!(options.clone().requires_process_identity());
+    }
+
+    use super::*;
+
+    fn observed(uid: u32) -> EnvironmentInfo {
+        serde_json::from_value(serde_json::json!({
+            "shell": {"name":"sh", "path":"/bin/sh"},
+            "processIdentity": {"type":"unix", "effectiveUid":uid,
+                "effectiveGid":1000, "supplementaryGids":[1000]},
+        }))
+        .expect("current executor metadata")
+    }
+
+    #[test]
+    fn selected_user_does_not_infer_root_from_legacy_metadata() {
+        let info: EnvironmentInfo = serde_json::from_value(serde_json::json!({
+            "shell": {"name":"sh", "path":"/bin/sh"},
+        }))
+        .expect("legacy metadata");
+        let mut policy = serde_json::json!({"cwd":"/workspace"});
+        let original = policy.clone();
+        assert!(append_process_identity_receipt(&mut policy, &info).is_err());
+        assert_eq!(policy, original);
+    }
+
+    #[test]
+    fn selected_user_policy_distinguishes_actual_effective_credentials() {
+        let mut unprivileged = serde_json::json!({"cwd":"/workspace"});
+        let mut root = unprivileged.clone();
+        append_process_identity_receipt(&mut unprivileged, &observed(1000)).expect("user policy");
+        append_process_identity_receipt(&mut root, &observed(0)).expect("root policy");
+        assert_ne!(
+            digest(&[unprivileged]).expect("policy digest"),
+            digest(&[root]).expect("policy digest")
+        );
     }
 }

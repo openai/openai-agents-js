@@ -1,0 +1,550 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 109f5c15444bccc151754e5c9245e9b0e50fca4f..9946916a14c3da2dd368ce4b18a48577621f64df 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -3549,6 +3549,19 @@ impl ModelClientSession {
+         self.allow_http_fallback = Self::request_transport_mode(prompt) != codex_protocol::model_request_transport::RequestTransportMode::Websocket;
+         let projected_model = request_model_info(prompt, model_info);
+         let model_info = projected_model.as_ref();
++        if prompt.tool_admission.as_ref().is_some_and(|admission| {
++            admission
++                .turn_store()
++                .get::<codex_extension_api::ProjectedUserInputStorage>()
++                .is_some_and(|policy| policy.0)
++        }) && (model_info.use_responses_lite
++            || websocket_enabled
++            || !matches!(self.client.state.provider.info().wire_api, WireApi::Responses))
++        {
++            return Err(CodexErr::InvalidRequest(
++                "Projected input storage requires standard Responses HTTP".into(),
++            ));
++        }
+         if prompt.prefer_buffered_response
+             && (model_info.use_responses_lite || websocket_enabled)
+         {
+@@ -3604,6 +3617,20 @@ impl ModelClientSession {
+             projected.input == prompt.input && projected.request_controls == prompt.request_controls
+         });
+         let prompt = transformed.as_ref().unwrap_or(prompt);
++        if prompt.tool_admission.as_ref().is_some_and(|admission| {
++            admission.turn_store().get::<codex_extension_api::ProjectedUserInputStorage>()
++                .is_some_and(|policy| policy.0)
++        }) {
++            if let Some(admission) = &prompt.prepared_request_admission {
++                admission.admit_request().map_err(CodexErr::Fatal)?;
++            }
++        }
++        crate::session::projected_input::commit(
++            prompt.tool_admission.as_ref().map(|admission| admission.turn_store()),
++            prompt.tool_admission.as_ref().and_then(|admission| admission.step_store()),
++            &prompt.input,
++        )
++        .await?;
+         let websocket_enabled = self.websocket_for_prompt(prompt)?;
+         let wire_api = self.client.state.provider.info().wire_api;
+         match wire_api {
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index ba588728ec518366f060d55300ca365cc4fcd1eb..65565ace08b72a684123b67b91288de3b8bdee84 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -1,4 +1,5 @@
+ mod agent_profile;
++pub(crate) mod projected_input;
+ pub(crate) mod startup;
+
+ use crate::WithTurnExtensionData;
+@@ -2470,6 +2471,9 @@ impl Session {
+         mut msg: EventMsg,
+         strict_terminal: bool,
+     ) -> CodexResult<()> {
++        if matches!(&msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
++            projected_input::join(turn_context).await?;
++        }
+         if !crate::tools::builtin_result_policy::filter_event(
+             &turn_context.extension_data,
+             &mut msg,
+diff --git a/codex-rs/core/src/session/projected_input.rs b/codex-rs/core/src/session/projected_input.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..e013415a452f1e307164786691107da9674ba943
+--- /dev/null
++++ b/codex-rs/core/src/session/projected_input.rs
+@@ -0,0 +1,402 @@
++//! Volatile ownership of new user input until the captured model projection settles.
++
++use std::collections::HashSet;
++use std::sync::Arc;
++use std::sync::Mutex;
++use std::sync::Weak;
++
++use codex_history::CodexHarnessMetadata;
++use codex_history::ResponseItemEnvelope;
++use codex_protocol::error::CodexErr;
++use codex_protocol::models::ContentItem;
++use codex_protocol::models::ResponseItem;
++use codex_protocol::user_input::UserInput;
++use futures::FutureExt;
++use futures::future::BoxFuture;
++use futures::future::Shared;
++
++use super::ModelInfo;
++use super::Session;
++use super::StepContext;
++use super::TurnContext;
++use super::TurnInput;
++use super::TurnItem;
++use super::UserMessageItem;
++
++type WriteJoin = Shared<BoxFuture<'static, Result<(), String>>>;
++
++#[derive(Clone)]
++struct OwnedInput {
++    item: ResponseItem,
++    client_id: Option<String>,
++    acceptance_order: Option<u64>,
++}
++
++pub(crate) struct Pending {
++    session: Weak<Session>,
++    turn: Weak<TurnContext>,
++    model_info: ModelInfo,
++    inputs: Mutex<Vec<OwnedInput>>,
++    write: Mutex<Option<WriteJoin>>,
++    settlement: tokio::sync::Mutex<()>,
++}
++
++/// A sampled step owns a fixed source window even when a later steering input arrives.
++struct Sources {
++    input: Vec<ResponseItem>,
++    owned: Vec<ResponseItem>,
++}
++
++pub(crate) fn stage(
++    session: &Arc<Session>,
++    turn: &Arc<TurnContext>,
++    model_info: &ModelInfo,
++    input: &TurnInput,
++    additional_contexts: &[String],
++) -> Result<bool, CodexErr> {
++    if turn
++        .extension_data
++        .get::<codex_extension_api::ProjectedUserInputStorage>()
++        .is_none_or(|policy| !policy.0)
++    {
++        return Ok(false);
++    }
++    let TurnInput::UserInput {
++        content,
++        client_id,
++        metadata,
++    } = input
++    else {
++        return Ok(false);
++    };
++    if !additional_contexts.is_empty()
++        || !metadata.prompt_cache_breakpoints.is_empty()
++        || content
++            .iter()
++            .any(|part| !matches!(part, UserInput::Text { .. }))
++    {
++        return Err(CodexErr::InvalidRequest(
++            "Projected input storage supports text user input without hook-created context or cache markers".into(),
++        ));
++    }
++    if content.is_empty() {
++        return Ok(true);
++    }
++    let mut item = session.response_item_from_user_input(content.clone());
++    Session::assign_missing_response_item_id(&mut item);
++    let pending = turn.extension_data.get_or_init(|| Pending {
++        session: Arc::downgrade(session),
++        turn: Arc::downgrade(turn),
++        model_info: model_info.clone(),
++        inputs: Mutex::new(Vec::new()),
++        write: Mutex::new(None),
++        settlement: tokio::sync::Mutex::new(()),
++    });
++    pending
++        .inputs
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++        .push(OwnedInput {
++            item,
++            client_id: client_id.clone(),
++            acceptance_order: metadata.acceptance_order,
++        });
++    Ok(true)
++}
++
++pub(crate) fn append_to_prompt(step: &StepContext, input: &mut Vec<ResponseItem>) {
++    let Some(pending) = step.turn.extension_data.get::<Pending>() else {
++        return;
++    };
++    let owned = pending
++        .inputs
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++        .iter()
++        .map(|entry| entry.item.clone())
++        .collect::<Vec<_>>();
++    input.extend(owned.iter().cloned());
++    step.extension_data.insert(Sources {
++        input: input.clone(),
++        owned,
++    });
++}
++
++fn select_owned(
++    sources: &Sources,
++    projected: &[ResponseItem],
++) -> Result<Vec<Option<ResponseItem>>, String> {
++    let known_user_ids = sources
++        .input
++        .iter()
++        .filter_map(|item| match item {
++            ResponseItem::Message { role, .. } if role == "user" => {
++                item.id().map(ToString::to_string)
++            }
++            _ => None,
++        })
++        .collect::<HashSet<_>>();
++    let mut unchanged_without_id = sources
++        .input
++        .iter()
++        .filter(|item| {
++            matches!(item, ResponseItem::Message { role, .. } if role == "user")
++                && item.id().is_none()
++        })
++        .collect::<Vec<_>>();
++    let mut seen = HashSet::new();
++    for item in projected {
++        if matches!(item, ResponseItem::Message { role, .. } if role == "user") {
++            if let Some(id) = item.id() {
++                if !known_user_ids.contains(&id.to_string()) || !seen.insert(id.to_string()) {
++                    return Err(
++                        "Projected input storage requires unique retained user item IDs".into(),
++                    );
++                }
++            } else if let Some(index) = unchanged_without_id
++                .iter()
++                .position(|original| *original == item)
++            {
++                unchanged_without_id.remove(index);
++            } else {
++                return Err("Projected input storage does not support new or replaced user items without source IDs".into());
++            }
++        }
++    }
++    sources
++        .owned
++        .iter()
++        .map(|owned| {
++            let mut matches = projected.iter().filter(|item| item.id() == owned.id());
++            let selected = matches.next();
++            if matches.next().is_some() {
++                return Err("Projected input storage rejects duplicate owned item IDs".into());
++            }
++            match selected {
++                Some(item @ ResponseItem::Message { role, content, .. })
++                    if role == "user"
++                        && content
++                            .iter()
++                            .all(|part| matches!(part, ContentItem::InputText { .. })) =>
++                {
++                    let mut expected = owned.clone();
++                    let ResponseItem::Message {
++                        content: expected_content,
++                        ..
++                    } = &mut expected
++                    else {
++                        unreachable!();
++                    };
++                    *expected_content = content.clone();
++                    if &expected != item {
++                        return Err(
++                            "Projected input storage changes only owned text content".into()
++                        );
++                    }
++                    Ok(Some(expected))
++                }
++                None => Ok(None),
++                _ => Err("Projected input storage preserves the owned text user item type".into()),
++            }
++        })
++        .collect()
++}
++
++pub(crate) async fn commit(
++    turn_store: Option<&codex_extension_api::ExtensionData>,
++    step_store: Option<&codex_extension_api::ExtensionData>,
++    projected: &[ResponseItem],
++) -> Result<(), CodexErr> {
++    let Some(pending) = turn_store.and_then(|store| store.get::<Pending>()) else {
++        return Ok(());
++    };
++    let Some(sources) = step_store.and_then(|store| store.get::<Sources>()) else {
++        return Err(CodexErr::InvalidRequest(
++            "Projected input storage has no sampled source owner".into(),
++        ));
++    };
++    let _settlement = pending.settlement.lock().await;
++    let previous = pending
++        .write
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++        .clone();
++    if let Some(previous) = previous {
++        previous.await.map_err(CodexErr::Fatal)?;
++    }
++    let selected = select_owned(&sources, projected).map_err(CodexErr::InvalidRequest)?;
++    let session = pending.session.upgrade().ok_or(CodexErr::TurnAborted)?;
++    let turn = pending.turn.upgrade().ok_or(CodexErr::TurnAborted)?;
++    let Some((active, cancelled)) = session.active_turn_context_and_cancellation_token().await
++    else {
++        return Err(CodexErr::TurnAborted);
++    };
++    if active.sub_id != turn.sub_id || cancelled.is_cancelled() {
++        return Err(CodexErr::TurnAborted);
++    }
++    let mut writes = Vec::new();
++    {
++        let mut inputs = pending
++            .inputs
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        for (source, selected) in sources.owned.iter().zip(selected) {
++            if let Some(index) = inputs
++                .iter()
++                .position(|entry| entry.item.id() == source.id())
++            {
++                let original = inputs.remove(index);
++                if let Some(selected) = selected {
++                    writes.push((original, selected));
++                }
++            }
++        }
++    }
++    if writes.is_empty() {
++        return Ok(());
++    }
++    let model_info = pending.model_info.clone();
++    // Once admitted, keep the existing canonical writer alive through cancellation.
++    // A retry joins this exact write instead of appending a second occurrence.
++    let write = tokio::spawn(async move {
++        for (original, item) in writes {
++            let ResponseItem::Message { content, .. } = &item else {
++                unreachable!();
++            };
++            let input = content
++                .iter()
++                .map(|part| match part {
++                    ContentItem::InputText { text } => UserInput::Text {
++                        text: text.clone(),
++                        text_elements: Vec::new(),
++                    },
++                    _ => unreachable!(),
++                })
++                .collect::<Vec<_>>();
++            session
++                .record_annotated_conversation_items(
++                    &turn,
++                    &model_info,
++                    vec![ResponseItemEnvelope {
++                        item,
++                        metadata: Some(CodexHarnessMetadata {
++                            client_authored: true,
++                            user_input_order: original.acceptance_order,
++                            ..Default::default()
++                        }),
++                    }],
++                )
++                .await;
++            let mut user_item = UserMessageItem::new(&input);
++            user_item.client_id = original.client_id;
++            let item = TurnItem::UserMessage(user_item);
++            session.emit_turn_item_started(&turn, &item).await;
++            session.emit_turn_item_completed(&turn, item).await;
++        }
++        session
++            .ensure_rollout_durable()
++            .await
++            .map_err(|error| error.to_string())
++    })
++    .map(|result| result.unwrap_or_else(|_| Err("Projected input persistence task failed".into())))
++    .boxed()
++    .shared();
++    *pending
++        .write
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(write.clone());
++    write.await.map_err(CodexErr::Fatal)
++}
++
++/// Join the accepted write before either successful or aborted turn teardown.
++pub(crate) async fn join(turn: &TurnContext) -> Result<(), CodexErr> {
++    let Some(pending) = turn.extension_data.get::<Pending>() else {
++        return Ok(());
++    };
++    let _settlement = pending.settlement.lock().await;
++    let write = pending
++        .write
++        .lock()
++        .unwrap_or_else(std::sync::PoisonError::into_inner)
++        .clone();
++    if let Some(write) = write {
++        write.await.map_err(CodexErr::Fatal)?;
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++
++    fn user(id: &str, text: &str) -> ResponseItem {
++        serde_json::from_value(json!({
++            "type": "message", "id": id, "role": "user",
++            "content": [{"type": "input_text", "text": text}]
++        }))
++        .unwrap()
++    }
++
++    fn sources() -> Sources {
++        let old = user("msg_old", "old");
++        let new = user("msg_new", "secret");
++        Sources {
++            input: vec![old, new.clone()],
++            owned: vec![new],
++        }
++    }
++
++    #[test]
++    fn keeps_owned_occurrence_when_projection_redacts_and_reorders() {
++        let new = user("msg_new", "redacted");
++        let old = user("msg_old", "also redacted for the model");
++        assert_eq!(
++            select_owned(&sources(), &[new.clone(), old]).unwrap(),
++            vec![Some(new)]
++        );
++    }
++
++    #[test]
++    fn permits_removal_without_persisting_prior_history_again() {
++        assert_eq!(
++            select_owned(&sources(), &[user("msg_old", "old")]).unwrap(),
++            vec![None]
++        );
++    }
++
++    #[test]
++    fn refuses_duplicate_or_injected_user_occurrences() {
++        let new = user("msg_new", "redacted");
++        assert!(select_owned(&sources(), &[new.clone(), new]).is_err());
++        assert!(select_owned(&sources(), &[user("msg_injected", "injected")]).is_err());
++    }
++
++    #[test]
++    fn refuses_identity_loss_and_type_change() {
++        let mut new = serde_json::to_value(user("msg_new", "redacted")).unwrap();
++        new.as_object_mut().unwrap().remove("id");
++        assert!(select_owned(&sources(), &[serde_json::from_value(new).unwrap()]).is_err());
++        let mut new = serde_json::to_value(user("msg_new", "redacted")).unwrap();
++        new["role"] = json!("system");
++        assert!(select_owned(&sources(), &[serde_json::from_value(new).unwrap()]).is_err());
++    }
++
++    #[test]
++    fn refuses_owned_native_metadata_changes() {
++        let mut new = serde_json::to_value(user("msg_new", "redacted")).unwrap();
++        new["internal_chat_message_metadata_passthrough"] = json!({"turn_id": "forged"});
++        assert!(select_owned(&sources(), &[serde_json::from_value(new).unwrap()]).is_err());
++    }
++
++    #[test]
++    fn does_not_adopt_an_equal_but_different_owned_occurrence() {
++        let old = user("msg_old", "same");
++        let new = user("msg_new", "same");
++        let source = Sources {
++            input: vec![old.clone(), new.clone()],
++            owned: vec![new],
++        };
++        assert_eq!(select_owned(&source, &[old]).unwrap(), vec![None]);
++    }
++}
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 32cab44276f2840c7f443fe9ce7f591852c071fd..c36223101f2902ea4cb70e78eaaa8983b5cfd3f9 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -1266,6 +1266,15 @@ pub(crate) async fn run_hooks_and_record_inputs(
+             } else {
+                 persist_context
+             };
++            if super::projected_input::stage(
++                sess,
++                turn_context,
++                model_info,
++                input_item,
++                &hook_outcome.additional_contexts,
++            )? {
++                continue;
++            }
+             record_pending_input(
+                 sess,
+                 turn_context,
+@@ -2003,12 +2012,16 @@ async fn run_auto_compact(
+     phase: CompactionPhase,
+ ) -> CodexResult<()> {
+     let turn_context = Arc::clone(&step_context.turn);
+-    if sess
+-        .services
+-        .extensions
+-        .model_request_contributors()
+-        .iter()
+-        .any(|contributor| contributor.prepares_request(&turn_context.extension_data))
++    if turn_context
++        .extension_data
++        .get::<codex_extension_api::ProjectedUserInputStorage>()
++        .is_some_and(|policy| policy.0)
++        || sess
++            .services
++            .extensions
++            .model_request_contributors()
++            .iter()
++            .any(|contributor| contributor.prepares_request(&turn_context.extension_data))
+     {
+         if matches!(phase, CompactionPhase::PostTurn) {
+             return Ok(());
+@@ -2202,6 +2215,7 @@ pub(crate) fn build_prompt(
+ ) -> Prompt {
+     let turn_context = &step_context.turn;
+     let mut input = input;
++    super::projected_input::append_to_prompt(step_context, &mut input);
+     if crate::tools::spec_plan::has_selected_tool_plan(&step_context.extension_data) {
+         input.retain_mut(|item| step_context.tool_router.project_tool_catalog_item(item));
+     }
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index aa8c2ccb7b234bba820c0ebea682eac2f923ec91..aa4fbaa8223c8a9b572a0ba21e16ba0e62e90d1b 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -200,6 +200,7 @@ pub use model_request::{
+ };
+
+ pub use model_request::PreparedRequestAdmission;
++pub use model_request::ProjectedUserInputStorage;
+ pub use model_request::PreparedRequestData;
+ pub use model_request::PreparedRequestInput;
+ pub use model_request::PreparedRequestOutput;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 793c6cd207178d32d11ba7c823746fde7bcc4b3a..13bff3f9ca802ed9c7cedfdc4da7fbb4154a40e3 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -188,6 +188,9 @@ impl StagedInputBatch {
+ /// Core publishes this view only after the next sampling agent has been selected.
+ pub struct SelectedStagedInput(pub Arc<StagedInputBatch>);
+
++/// Opt-in volatile staging of current caller-owned text until model projection.
++pub struct ProjectedUserInputStorage(pub bool);
++
+ /// Request identity and additional metadata supplied before sending to the provider.
+ pub struct ModelContextInput<'a> {
+     pub turn_store: Option<&'a ExtensionData>,

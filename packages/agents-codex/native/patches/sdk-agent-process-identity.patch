@@ -1,0 +1,271 @@
+diff --git a/codex-rs/cli/tests/exec_server.rs b/codex-rs/cli/tests/exec_server.rs
+index 36c16bb56522fc228cdebed0c0eb1ba919bf922c..3de013a37f970fd4dff542cb5f8e7f229973532e 100644
+--- a/codex-rs/cli/tests/exec_server.rs
++++ b/codex-rs/cli/tests/exec_server.rs
+@@ -264,6 +264,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
+         executor_version: "1.2.3-alpha.4".to_string(),
+         // The build identity belongs to the spawned CLI, not this test process.
+         provider_id: environment_info.provider_id.clone(),
++        process_identity: environment_info.process_identity.clone(),
+         prepend_path_dirs: environment_info.prepend_path_dirs.clone(),
+         ..EnvironmentInfo::local()
+     };
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 1d063c73100b9b042dfba3ea9fb01e7995f481ec..059da363610fe4c5a2ff1a5b4276706c14742ec2 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -1837,12 +1837,12 @@ for line in sys.stdin:
+             .await
+             .unwrap();
+         let mut b = profile(&context, "b", "resource-b").as_ref().clone();
+-        b.data.insert(AgentProfileEnvironment(Some(selection.clone())));
++        b.data.insert(AgentProfileEnvironment(Some(selection.clone()), true));
+         let b = Arc::new(b);
+         let mut unavailable = b.as_ref().clone();
+         let mut invalid_selection = selection.clone();
+         invalid_selection.environment_id = "unregistered-profile-environment".into();
+-        unavailable.data.insert(AgentProfileEnvironment(Some(invalid_selection)));
++        unavailable.data.insert(AgentProfileEnvironment(Some(invalid_selection), true));
+         assert!(
+             session
+                 .activate_agent_profile(Some(a.clone()), Arc::new(unavailable))
+@@ -1859,6 +1859,19 @@ for line in sys.stdin:
+         let snapshot = session.services.turn_environments.snapshot().await;
+         assert_eq!(snapshot.primary().unwrap().selection.cwd, destination);
+         assert_eq!(session.configured_environment_selections().await, vec![selection.clone()]);
++        assert!(session
++            .state
++            .lock()
++            .await
++            .session_configuration
++            .agent_profile
++            .as_ref()
++            .unwrap()
++            .profile
++            .data
++            .get::<AgentProfileEnvironment>()
++            .unwrap()
++            .requires_process_identity());
+         assert_eq!(session.agent_profile_receipt().await.unwrap(), Some(b_receipt.clone()));
+
+         // Reopening a bound Agent reselects from the current host graph. History
+@@ -1874,13 +1887,26 @@ for line in sys.stdin:
+             b_receipt
+         );
+         assert_eq!(session.configured_environment_selections().await, vec![selection]);
++        assert!(session
++            .state
++            .lock()
++            .await
++            .session_configuration
++            .agent_profile
++            .as_ref()
++            .unwrap()
++            .profile
++            .data
++            .get::<AgentProfileEnvironment>()
++            .unwrap()
++            .requires_process_identity());
+         assert_eq!(
+             session.services.turn_environments.snapshot().await.primary().unwrap().selection.cwd,
+             destination
+         );
+
+         let mut model_only = profile(&context, "model-only", "no-workspace").as_ref().clone();
+-        model_only.data.insert(AgentProfileEnvironment(None));
++        model_only.data.insert(AgentProfileEnvironment(None, false));
+         session
+             .activate_agent_profile(Some(b_receipt), Arc::new(model_only))
+             .await
+diff --git a/codex-rs/exec-server-protocol/src/protocol.rs b/codex-rs/exec-server-protocol/src/protocol.rs
+index 23dd3bcdd258999bb929ed9b21dff31ab371612b..b040f33a72075ba994c8e80ee8430088ca75ae65 100644
+--- a/codex-rs/exec-server-protocol/src/protocol.rs
++++ b/codex-rs/exec-server-protocol/src/protocol.rs
+@@ -101,11 +101,30 @@ pub struct InitializeResponse {
+     pub environment_info: Option<EnvironmentInfo>,
+ }
+
++/// Observed process credentials, never a request to impersonate another user.
++/// Comparison metadata under the current transport owner, never an attestation.
++#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(
++    tag = "type",
++    rename_all = "snake_case",
++    rename_all_fields = "camelCase"
++)]
++pub enum ExecutorProcessIdentity {
++    Unix {
++        effective_uid: u32,
++        effective_gid: u32,
++        supplementary_gids: Vec<u32>,
++    },
++}
++
+ /// Information about an execution/filesystem environment.
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ #[serde(rename_all = "camelCase")]
+ pub struct EnvironmentInfo {
+     pub shell: ShellInfo,
++    /// Kernel-reported executor identity; absent for legacy and unsupported executors.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub process_identity: Option<ExecutorProcessIdentity>,
+     /// Executor release version for version-based compatibility decisions.
+     /// `0.0.0` when unknown, including responses from legacy executors.
+     #[serde(default = "unknown_executor_version")]
+@@ -297,6 +316,7 @@ impl EnvironmentInfo {
+         Self {
+             shell: codex_shell_command::shell_detect::default_user_shell().into(),
+             executor_version: unknown_executor_version(),
++            process_identity: None,
+             provider_id: None,
+             cwd: cwd.and_then(|cwd| PathUri::from_host_native_path(cwd).ok()),
+             user_home_dir: PathUri::from_host_native_path("~").ok(),
+@@ -1481,6 +1501,7 @@ mod tests {
+                     path: "/bin/zsh".to_string(),
+                 },
+                 executor_version: "0.0.0".to_string(),
++                process_identity: None,
+                 provider_id: None,
+                 cwd: None,
+                 user_home_dir: None,
+@@ -2053,3 +2074,45 @@ mod tests {
+         );
+     }
+ }
++
++#[cfg(test)]
++mod process_identity_tests {
++    use super::*;
++
++    #[test]
++    fn observed_identity_round_trips_without_becoming_a_launch_request() {
++        let mut info = EnvironmentInfo::local();
++        info.process_identity = Some(ExecutorProcessIdentity::Unix {
++            effective_uid: 1234,
++            effective_gid: 2345,
++            supplementary_gids: vec![2345, 3456],
++        });
++        let value = serde_json::to_value(&info).expect("metadata serialization");
++        assert_eq!(
++            value["processIdentity"],
++            serde_json::json!({
++                "type": "unix", "effectiveUid": 1234, "effectiveGid": 2345,
++                "supplementaryGids": [2345, 3456],
++            })
++        );
++        assert_eq!(
++            serde_json::from_value::<EnvironmentInfo>(value).expect("metadata decoding"),
++            info
++        );
++    }
++
++    #[test]
++    fn unknown_legacy_identity_is_absent_instead_of_asserting_root() {
++        let info: EnvironmentInfo = serde_json::from_value(serde_json::json!({
++            "shell": {"name":"sh", "path":"/bin/sh"},
++        }))
++        .expect("legacy metadata");
++        assert_eq!(info.process_identity, None);
++        assert!(
++            serde_json::to_value(info)
++                .expect("metadata serialization")
++                .get("processIdentity")
++                .is_none()
++        );
++    }
++}
+diff --git a/codex-rs/exec-server/Cargo.toml b/codex-rs/exec-server/Cargo.toml
+index 710f34405873bdbef74f8e32242be5b659d9339c..80b1e5a4d1fdbfae9e7dd6397ec8a711e93c2601 100644
+--- a/codex-rs/exec-server/Cargo.toml
++++ b/codex-rs/exec-server/Cargo.toml
+@@ -76,7 +76,7 @@ uuid = { workspace = true, features = ["v4"] }
+ [target.'cfg(unix)'.dependencies]
+ codex-uds = { workspace = true }
+ libc = { workspace = true }
+-rustix = { workspace = true, features = ["fs"] }
++rustix = { workspace = true, features = ["fs", "process"] }
+ tempfile = { workspace = true }
+
+ [target.'cfg(windows)'.dependencies]
+diff --git a/codex-rs/exec-server/src/server/build_identity.rs b/codex-rs/exec-server/src/server/build_identity.rs
+index 691b592535e6362da9219398b8b6b8ea0ba16303..5166fa82a4e8569bd2f76603994451b5c3a1593e 100644
+--- a/codex-rs/exec-server/src/server/build_identity.rs
++++ b/codex-rs/exec-server/src/server/build_identity.rs
+@@ -16,6 +16,53 @@ pub(super) static PROVIDER_ID: LazyLock<Option<String>> = LazyLock::new(|| {
+ pub(super) fn local_environment_info() -> EnvironmentInfo {
+     EnvironmentInfo {
+         provider_id: PROVIDER_ID.clone(),
++        process_identity: current_process_identity(),
+         ..super::release_version::local_environment_info()
+     }
+ }
++
++#[cfg(unix)]
++fn current_process_identity() -> Option<codex_exec_server_protocol::ExecutorProcessIdentity> {
++    let mut supplementary_gids = rustix::process::getgroups()
++        .ok()?
++        .into_iter()
++        .map(|gid| gid.as_raw())
++        .collect::<Vec<_>>();
++    supplementary_gids.sort_unstable();
++    supplementary_gids.dedup();
++    Some(codex_exec_server_protocol::ExecutorProcessIdentity::Unix {
++        effective_uid: rustix::process::geteuid().as_raw(),
++        effective_gid: rustix::process::getegid().as_raw(),
++        supplementary_gids,
++    })
++}
++
++#[cfg(not(unix))]
++fn current_process_identity() -> Option<codex_exec_server_protocol::ExecutorProcessIdentity> {
++    None
++}
++
++#[cfg(all(test, unix))]
++mod process_identity_tests {
++    #[test]
++    fn environment_metadata_reports_current_effective_credentials() {
++        let identity = super::local_environment_info()
++            .process_identity
++            .expect("Unix identity");
++        let codex_exec_server_protocol::ExecutorProcessIdentity::Unix {
++            effective_uid,
++            effective_gid,
++            supplementary_gids,
++        } = identity;
++        assert_eq!(effective_uid, rustix::process::geteuid().as_raw());
++        assert_eq!(effective_gid, rustix::process::getegid().as_raw());
++        let mut expected = rustix::process::getgroups()
++            .expect("current groups")
++            .into_iter()
++            .map(|gid| gid.as_raw())
++            .collect::<Vec<_>>();
++        expected.sort_unstable();
++        expected.dedup();
++        assert_eq!(supplementary_gids, expected);
++    }
++}
+diff --git a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+index 029a52c692394f107721593727d0ddc14b2a4de6..2c3034356ea2a593261ae0f3479506f12c555668 100644
+--- a/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
++++ b/codex-rs/ext/extension-api/src/contributors/turn_lifecycle.rs
+@@ -254,7 +254,18 @@ impl std::fmt::Debug for AgentProfile {
+ /// Trusted environment selection provided by the current host Agent graph.
+ /// Portable history only records the profile identity, never this attachment.
+ #[derive(Clone, Debug)]
+-pub struct AgentProfileEnvironment(pub Option<codex_protocol::protocol::TurnEnvironmentSelection>);
++pub struct AgentProfileEnvironment(
++    pub Option<codex_protocol::protocol::TurnEnvironmentSelection>,
++    /// Comparison requirement from the current private executor launch.
++    /// Never a selected user or an instruction from portable history.
++    pub bool,
++);
++
++impl AgentProfileEnvironment {
++    pub fn requires_process_identity(&self) -> bool {
++        self.1
++    }
++}
+
+ /// Exact executor tools admitted by the current host Agent's Environment.
+ /// The thread-level tool policy remains a ceiling.

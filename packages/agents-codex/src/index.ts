@@ -617,3 +617,5 @@ export type { HostedAgentMetadata } from './runtime/hosted-agent-metadata';
 export type { SandboxAccess } from './runtime/sandbox-context';
 
 export type { SandboxCapability } from './runtime/sandbox-capabilities';
+
+export type { AgentLifecycleEvent, AgentLifecycleCallback } from './runtime/agent-lifecycle';

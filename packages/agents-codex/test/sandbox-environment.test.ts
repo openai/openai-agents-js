@@ -75,6 +75,29 @@ function fixture() {
 }
 
 describe('native sandbox environment', () => {
+  it.each([
+    '',
+    ' root',
+    'root ',
+    '--privileged',
+    'root\n',
+    'a/b',
+    'a'.repeat(257),
+  ])(
+    'rejects an ambiguous current Docker user before resource acquisition: %s',
+    (runAs) => {
+      const { client, events } = fixture();
+      expect(() =>
+        sandboxEnvironment({
+          client,
+          manifest: new Manifest(),
+          dockerGateway: { runAs },
+        }),
+      ).toThrow('Docker runAs must be a container user or user:group');
+      expect(events).toEqual([]);
+    },
+  );
+
   it('rejects a custom provider before creation when selecting Docker stdio', async () => {
     const { client, events } = fixture();
     const source = sandboxEnvironment({

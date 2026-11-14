@@ -212,6 +212,8 @@ pub struct ThreadOptions {
     context_callbacks: crate::python_tools::ContextCallbacks,
     #[serde(rename = "_sdk_profile_provider_keys")]
     profile_provider_keys: std::collections::BTreeMap<String, String>,
+    #[serde(rename = "_agent_lifecycle")]
+    pub(crate) agent_lifecycle: Vec<String>,
     #[serde(rename = "_agent_profiles")]
     pub(crate) agent_profiles: Option<crate::agent_profiles::OpeningProfiles>,
     #[serde(rename = "_sdk_resume_thread_id")]

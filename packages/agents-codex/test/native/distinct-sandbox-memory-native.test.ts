@@ -33,13 +33,20 @@ it('exports only the terminal child resource partition, including its later call
       }),
     ),
   ];
+  const firstRequest = Promise.withResolvers<void>();
+  const releaseFirstRequest = Promise.withResolvers<void>();
   const server = new ModelServer([
-    [
-      message('root-only-output'),
-      call('transfer_to_child', {}, { callId: 'memory-route' }),
-    ],
+    async () => {
+      firstRequest.resolve();
+      await releaseFirstRequest.promise;
+      return [
+        message('root-only-output'),
+        call('transfer_to_child', {}, { callId: 'memory-route' }),
+      ];
+    },
     [call('child_lookup', {}, { callId: 'child-local' })],
     [message('child-owned-output')],
+    [message('child-queued-output')],
     artifact(),
     consolidated(),
     [message('child-second-output')],
@@ -104,14 +111,17 @@ it('exports only the terminal child resource partition, including its later call
   });
   try {
     await using session = await root.session();
-    expect(
-      (await (await session.submit('root-only-caller-input')).wait())
-        .finalOutput,
-    ).toBe('child-owned-output');
+    const firstTurn = await session.submit('root-only-caller-input');
+    await firstRequest.promise;
+    const queued = await session.enqueue('queued-root-only-caller-input');
+    releaseFirstRequest.resolve();
+    expect((await firstTurn.wait()).finalOutput).toBe('child-owned-output');
+    expect((await queued.wait()).finalOutput).toBe('child-queued-output');
     expect(childEffects).toBe(1);
     const allHistory = JSON.stringify(await session.historySnapshot());
     expect(allHistory).toContain('root-only-caller-input');
     expect(allHistory).toContain('root-only-output');
+    expect(allHistory).toContain('queued-root-only-caller-input');
     const native = await binding();
     const read = native.NativeThread.prototype._memory_history;
     let captured:
@@ -150,7 +160,7 @@ it('exports only the terminal child resource partition, including its later call
         }),
       ),
     ).rejects.toThrow('outside the captured Agent graph');
-    expect(server.requests).toHaveLength(5);
+    expect(server.requests).toHaveLength(6);
     const first = await readFile(
       join(workspace, 'sessions', `${session.id}.jsonl`),
       'utf8',
@@ -159,12 +169,15 @@ it('exports only the terminal child resource partition, including its later call
     expect(first).toContain('child-owned-tool-output');
     expect(first).not.toContain('root-only-caller-input');
     expect(first).not.toContain('root-only-output');
-    const phaseRequests = JSON.stringify(server.requests.slice(3, 5));
+    expect(first).not.toContain('queued-root-only-caller-input');
+    expect(first).toContain('child-queued-output');
+    const phaseRequests = JSON.stringify(server.requests.slice(4, 6));
     expect(phaseRequests).toContain('child-owned-output');
     expect(phaseRequests).not.toContain('root-only-caller-input');
     expect(phaseRequests).not.toContain('root-only-output');
+    expect(phaseRequests).not.toContain('queued-root-only-caller-input');
     await session.flushMemory();
-    expect(server.requests).toHaveLength(5);
+    expect(server.requests).toHaveLength(6);
     expect(
       (await (await session.submit('child-owned-caller-input')).wait())
         .finalOutput,
@@ -177,11 +190,12 @@ it('exports only the terminal child resource partition, including its later call
     expect(second).toContain('child-owned-caller-input');
     expect(second).not.toContain('root-only-caller-input');
     expect(second).not.toContain('root-only-output');
-    expect(server.requests).toHaveLength(8);
+    expect(server.requests).toHaveLength(9);
     expect(releases).toBe(0);
     await session.close();
     expect(releases).toBe(1);
   } finally {
+    releaseFirstRequest.resolve();
     await peer.close();
   }
 }, 60_000);

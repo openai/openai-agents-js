@@ -1,3 +1,4 @@
+import type { AgentLifecycleCallback } from './agent-lifecycle';
 import { abortable } from '../voice/abortable';
 import {
   RecoverRun,
@@ -525,6 +526,7 @@ export interface SessionOptions {
   includeRequestAttempts?: boolean;
   includeRawProviderEvents?: boolean;
   beforeComplete?: BeforeComplete<any>;
+  onLifecycle?: AgentLifecycleCallback<any>;
   toolBatchCompletion?: ToolBatchCompletion<any>;
   inputGuardrails?: readonly InputGuardrail<any>[];
   outputGuardrails?: readonly OutputGuardrail<any>[];
@@ -730,10 +732,16 @@ export interface SubmitOptions<
     history: CanonicalHistorySnapshot,
     signal: AbortSignal,
   ) => UserInput | null | Promise<UserInput | null>;
+  /** Persist only this root's text user input after the captured model projection.
+   * Requires Responses HTTP and retained source item IDs. Prior history and tool
+   * results stay unchanged. Source-less user additions/replacements, cache markers,
+   * and automatic compaction are unsupported. */
+  storeProjectedUserInput?: boolean;
 }
 
 export type CapturedInputStoragePolicy = {
-  project: NonNullable<SubmitOptions['inputStoragePolicy']>;
+  project?: NonNullable<SubmitOptions['inputStoragePolicy']>;
+  modelProjection?: true;
   input: UserInput;
   capture?: (input: UserInput) => ReturnType<typeof nativeInput>;
 };
@@ -742,11 +750,21 @@ export type CapturedInputStoragePolicy = {
 export function captureInputStoragePolicy(
   input: UserInput,
   project: SubmitOptions['inputStoragePolicy'],
+  storeProjectedUserInput: SubmitOptions['storeProjectedUserInput'] = false,
 ): CapturedInputStoragePolicy | undefined {
-  if (project === undefined) return;
+  if (typeof storeProjectedUserInput !== 'boolean')
+    throw new TypeError('storeProjectedUserInput must be boolean');
+  if (project === undefined)
+    return storeProjectedUserInput
+      ? { modelProjection: true, input: structuredClone(input) }
+      : undefined;
   if (typeof project !== 'function')
     throw new TypeError('inputStoragePolicy must be callable');
-  return { project, input: structuredClone(input) };
+  return {
+    project,
+    input: structuredClone(input),
+    ...(storeProjectedUserInput ? { modelProjection: true } : {}),
+  };
 }
 /** @internal Validate before opening a provider or allocating a submission. */
 export function validateModelOverride(
@@ -5315,6 +5333,7 @@ export class Session<OutputT = string, Context = unknown> {
     const inputStoragePolicy = captureInputStoragePolicy(
       input,
       options?.inputStoragePolicy,
+      options?.storeProjectedUserInput,
     );
     const output =
       outputType === undefined ? this.defaultOutput : prepareOutput(outputType);
@@ -5333,7 +5352,7 @@ export class Session<OutputT = string, Context = unknown> {
     run.parentTrace = parentTrace;
     run.inputGuardrailsPassed = this.hasInputGuardrails ? false : undefined;
     run.guardrailInput =
-      this.hasInputGuardrails && !inputStoragePolicy
+      this.hasInputGuardrails && !inputStoragePolicy?.project
         ? structuredClone(input)
         : undefined;
     run.selection = selection;
@@ -5400,6 +5419,7 @@ export class Session<OutputT = string, Context = unknown> {
     const inputStoragePolicy = captureInputStoragePolicy(
       input,
       options?.inputStoragePolicy,
+      options?.storeProjectedUserInput,
     );
     const output =
       options?.outputType === undefined
@@ -5422,7 +5442,7 @@ export class Session<OutputT = string, Context = unknown> {
       options?.tracing,
       options?.writableRoots,
       parentTrace,
-      this.hasInputGuardrails && !inputStoragePolicy
+      this.hasInputGuardrails && !inputStoragePolicy?.project
         ? structuredClone(input)
         : undefined,
       undefined,
@@ -6441,6 +6461,9 @@ export class Session<OutputT = string, Context = unknown> {
         : {}),
       ...(run.parentTrace ? { trace: run.parentTrace.toHeaders() } : {}),
       mode: 'start_if_idle',
+      ...(inputStoragePolicy?.modelProjection
+        ? { project_model_inputs: true }
+        : {}),
       profile_output_override: state.outputOverride,
       ...(run.raiseOnUnknownTool === undefined
         ? {}
@@ -6490,7 +6513,8 @@ export class Session<OutputT = string, Context = unknown> {
         if (!tracing && !inputStoragePolicy) return submit(wire!);
         let submission: string;
         try {
-          if (inputStoragePolicy) {
+          if (inputStoragePolicy?.project) {
+            const project = inputStoragePolicy.project;
             const preparation = new AbortController();
             const signal = AbortSignal.any([
               run.controller.signal,
@@ -6519,7 +6543,7 @@ export class Session<OutputT = string, Context = unknown> {
                   );
                 throw error;
               });
-              const { project, input } = inputStoragePolicy;
+              const { input } = inputStoragePolicy;
               await this.invokeCallback(
                 run,
                 async () => {
@@ -8124,6 +8148,7 @@ export class Session<OutputT = string, Context = unknown> {
       msg.type === '_sdk_before_compact' ||
       msg.type === '_sdk_before_compact_policy' ||
       msg.type === '_sdk_handoff_input' ||
+      msg.type === '_sdk_agent_lifecycle' ||
       msg.type === '_sdk_transform_context' ||
       msg.type === '_sdk_before_complete'
     ) {
@@ -8508,6 +8533,7 @@ export class Session<OutputT = string, Context = unknown> {
       kind === '_sdk_before_compact' ||
       kind === '_sdk_before_compact_policy' ||
       kind === '_sdk_handoff_input' ||
+      kind === '_sdk_agent_lifecycle' ||
       kind === '_sdk_transform_context' ||
       kind === '_sdk_before_complete'
     ) {
@@ -9509,7 +9535,6 @@ export class Session<OutputT = string, Context = unknown> {
         ? declaration!.outputGuardrails
         : (this.options.agentOutputGuardrails ?? [])),
     ];
-    if (!guards.length) return;
     const scope = this.decisionScope(message, request.signal);
     try {
       await settleOutputGuardrails({
@@ -9526,6 +9551,14 @@ export class Session<OutputT = string, Context = unknown> {
       });
     } finally {
       await scope.close();
+    }
+    const callback = this.sourceModelCallbacks(message).onLifecycle;
+    if (callback !== undefined) {
+      check();
+      callback(Object.freeze({ kind: 'end', context: this.options.context,
+        agent, sessionId: this.id, turnId: request.turnId,
+        subagentId: request.subagentId, output: request.finalOutput }));
+      check();
     }
   }
 
@@ -9562,6 +9595,7 @@ export class Session<OutputT = string, Context = unknown> {
   }
   private sourceModelCallbacks(message: Record<string, unknown>): {
     beforeComplete?: BeforeComplete<any>;
+    onLifecycle?: AgentLifecycleCallback<any>;
     toolBatchCompletion?: ToolBatchCompletion<any>;
     beforeCompact?: BeforeCompact<any>;
     compaction?: ResponsesCompaction<any>;
@@ -9574,6 +9608,7 @@ export class Session<OutputT = string, Context = unknown> {
     const captured = this.profileRuntimes.get(source.profile_id)!.profile;
     return {
       beforeComplete: captured.declaration.beforeComplete,
+      onLifecycle: captured.declaration.onLifecycle,
       toolBatchCompletion: captured.declaration.toolBatchCompletion,
       beforeCompact: captured.declaration.beforeCompact,
       compaction: captured.declaration.compaction,
@@ -9637,6 +9672,7 @@ export class Session<OutputT = string, Context = unknown> {
           const workspace = msg.type === '_sdk_agent_workspace';
           const responseSpan = msg.type === '_sdk_provider_response_span';
           const handoffInput = msg.type === '_sdk_handoff_input';
+          const lifecycle = msg.type === '_sdk_agent_lifecycle';
           const notFound = msg.type === '_sdk_tool_not_found';
           const contextEdit = msg.type === '_sdk_transform_context';
           const compactPolicy = msg.type === '_sdk_before_compact_policy';
@@ -9665,6 +9701,7 @@ export class Session<OutputT = string, Context = unknown> {
             else if (responseSpan)
               sourceNative._reply_provider_response_span(data);
             else if (handoffInput) sourceNative._reply_handoff_input(data);
+            else if (lifecycle) sourceNative._reply_agent_lifecycle(data);
             else if (notFound) sourceNative._reply_tool_not_found(data);
             else if (retry) sourceNative._reply_model_retry(data);
             else if (produce) sourceNative._reply_model_producer(data);
@@ -9764,6 +9801,25 @@ export class Session<OutputT = string, Context = unknown> {
               );
               check();
               reply({ data: admitted });
+              return;
+            }
+            if (lifecycle) {
+              const callback = this.sourceModelCallbacks(msg).onLifecycle;
+              if (callback !== undefined) {
+                const kind = z.enum(['start', 'handoff']).parse(msg.phase);
+                const agent = this.sourceApplicationAgent(msg);
+                if (!agent) throw new NativeError('Lifecycle callback has no application Agent');
+                const target = kind === 'handoff'
+                  ? this.profileRuntimes.get(z.string().parse(msg.target_profile_id))?.profile.agent
+                  : undefined;
+                if (kind === 'handoff' && target === undefined)
+                  throw new NativeError('Lifecycle target is outside the captured graph');
+                callback(Object.freeze({ kind, context: this.options.context,
+                  agent, target, sessionId: this.id, turnId: z.string().parse(msg.turn_id),
+                  subagentId: child ? owner.childId : undefined }));
+              }
+              check();
+              reply({});
               return;
             }
             if (handoffInput) {
@@ -10336,7 +10392,7 @@ export class Session<OutputT = string, Context = unknown> {
                     (source
                       ? (agent?.outputGuardrails.length ?? 0)
                       : (this.options.agentOutputGuardrails?.length ?? 0)) >
-                  0
+                  0 || this.sourceModelCallbacks(msg).onLifecycle !== undefined
                 ) {
                   let value: unknown = text ?? '';
                   if (!child) {

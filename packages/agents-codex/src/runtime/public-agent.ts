@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AgentLifecycleCallback } from './agent-lifecycle';
 import type { RunErrorHandler } from './run-error-recovery';
 import type { Observation } from './observation';
 import { acquireProfileEnvironments } from './profile-environments';
@@ -119,7 +120,7 @@ import { RunBudgetTracker, type RunBudget } from './run-budget';
 import { validateMaxFunctionConcurrency } from './function-admission';
 import type { ToolErrorFormatter } from './tools';
 
-import { Environment } from './environment';
+import { Environment, requiresProcessIdentity } from './environment';
 import {
   loadInstructionFiles,
   type InstructionFileReceipt,
@@ -208,6 +209,7 @@ export type AgentOptions<Context = undefined, Output = string> = {
    * Cancellation and close join entered callbacks. Do not mutate this Session.
    */
   beforeComplete?: BeforeComplete<Context>;
+  onLifecycle?: AgentLifecycleCallback<Context>;
   /** Reduce settled direct function results before another model request.
    * Finish proposals use the source Agent's output and completion policies.
    * Accepted handoffs and CodeMode calls remain outside this hook.
@@ -390,6 +392,8 @@ export interface RunOptions<Context = undefined, Output = unknown> extends Omit<
   beforeStep?: import('./session').OperationOptions<Context>['beforeStep'];
   /** Replace or omit new user input before native submission and storage. */
   inputStoragePolicy?: SubmitOptions<Context>['inputStoragePolicy'];
+  /** Persist only this run's owned text user input after model projection. */
+  storeProjectedUserInput?: SubmitOptions<Context>['storeProjectedUserInput'];
   returnState?: boolean;
   /** Capture conversation records for replay through another Session's transactHistory.
    * History above 4,096 original records or 8 MiB causes a size error after completion. */
@@ -456,6 +460,7 @@ interface CapturedOpening {
   readonly includeRawProviderEvents?: boolean;
   readonly contextTransformPurpose: 'turn' | 'output_repair';
   readonly beforeComplete?: BeforeComplete<any>;
+  readonly onLifecycle?: AgentLifecycleCallback<any>;
   readonly toolBatchCompletion?: ToolBatchCompletion<any>;
   readonly agentInputGuardrails: readonly InputGuardrail<any>[];
   readonly agentOutputGuardrails: readonly OutputGuardrail<any>[];
@@ -475,6 +480,7 @@ type OwnedSessionOptions<Context> = NativeSessionOptions<Context> & {
   [ownedRun]?: OneShotOptions & {
     decisions?: DecisionProvider;
     beforeComplete?: BeforeComplete<Context>;
+    onLifecycle?: AgentLifecycleCallback<Context>;
     toolBatchCompletion?: ToolBatchCompletion<Context>;
   };
   [deferredOpening]?: {
@@ -597,6 +603,7 @@ export class Agent<Context = undefined, Output = string> {
     })(question, options)) as BoundDecide;
   modelSettings?: ModelSettings;
   beforeComplete?: BeforeComplete<Context>;
+  onLifecycle?: AgentLifecycleCallback<Context>;
   toolBatchCompletion?: ToolBatchCompletion<Context>;
   inputGuardrails: readonly InputGuardrail<Context>[];
   outputGuardrails: readonly OutputGuardrail<Context>[];
@@ -662,6 +669,7 @@ export class Agent<Context = undefined, Output = string> {
         : captureModelSettings(options.modelSettings);
     for (const name of [
       'beforeComplete',
+      'onLifecycle',
       'toolBatchCompletion',
       'beforeCompact',
       'transformContext',
@@ -670,6 +678,7 @@ export class Agent<Context = undefined, Output = string> {
       if (options[name] !== undefined && typeof options[name] !== 'function')
         throw new TypeError(`${name} must be callable`);
     this.beforeComplete = options.beforeComplete;
+    this.onLifecycle = options.onLifecycle;
     this.toolBatchCompletion = options.toolBatchCompletion;
     this.inputGuardrails = captureGuardrails(options.inputGuardrails);
     this.outputGuardrails = captureGuardrails(options.outputGuardrails);
@@ -1051,17 +1060,25 @@ export class Agent<Context = undefined, Output = string> {
         );
       return parts;
     };
+    if (options.storeProjectedUserInput && input === null)
+      throw new TypeError(
+        'storeProjectedUserInput requires a direct text user input',
+      );
     const inputStoragePolicy =
       input === null
         ? undefined
-        : captureInputStoragePolicy(input, options.inputStoragePolicy);
+        : captureInputStoragePolicy(
+            input,
+            options.inputStoragePolicy,
+            options.storeProjectedUserInput,
+          );
     if (inputStoragePolicy) inputStoragePolicy.capture = captureRunInput;
     const preparedInput = input === null ? null : captureRunInput(input);
     const factory = this.session;
     const factoryApply = factory.apply;
     const guardrailInput =
       input !== null &&
-      inputStoragePolicy === undefined &&
+      inputStoragePolicy?.project === undefined &&
       (this.inputGuardrails.length > 0 ||
         (options.inputGuardrails?.length ?? 0) > 0 ||
         (options.state !== undefined && this.handoffs.length > 0) ||
@@ -1071,7 +1088,7 @@ export class Agent<Context = undefined, Output = string> {
         ? structuredClone(input)
         : undefined;
     const errorInput = observeFailure
-      ? inputStoragePolicy
+      ? inputStoragePolicy?.project
         ? null
         : structuredClone(input)
       : undefined;
@@ -1116,6 +1133,7 @@ export class Agent<Context = undefined, Output = string> {
         returnItems: options.returnItems || observeFailure,
         decisions: captureDecisionProvider(this.decisions),
         beforeComplete: this.beforeComplete,
+      onLifecycle: this.onLifecycle,
         toolBatchCompletion: this.toolBatchCompletion,
         input: preparedInput,
         prepareRequest: options.prepareRequest,
@@ -1214,6 +1232,9 @@ export class Agent<Context = undefined, Output = string> {
     const decisions = captureDecisionProvider(
       opening ? opening.decisions : owned ? owned.decisions : this.decisions,
     );
+    const onLifecycle = (options as OwnedSessionOptions<Context>)[correctionOpening]
+      ? undefined
+      : opening ? opening.onLifecycle : owned ? owned.onLifecycle : this.onLifecycle;
     const declaredBeforeComplete = opening
       ? opening.beforeComplete
       : owned
@@ -1506,38 +1527,41 @@ export class Agent<Context = undefined, Output = string> {
       throw new TypeError(
         'Sign in with ChatGPT supports a single Agent with direct local function tools and settled state',
       );
+    const captureCurrentProfiles = () =>
+      captureAgentProfiles(
+        this,
+        new Agent({
+          instructions: baseInstructions,
+          name,
+          model,
+          modelSettings: settings,
+          provider,
+          outputType: outputType as OutputSpec<Output> | undefined,
+          tools: options.tools ?? this.tools,
+          handoffs: this.handoffs,
+          toolNameCollisionPolicy: this.toolNameCollisionPolicy,
+          realtime: this.realtime,
+          decisions,
+          beforeComplete,
+          onLifecycle,
+          toolBatchCompletion,
+          inputGuardrails: agentInputGuardrails,
+          outputGuardrails: agentOutputGuardrails,
+          programmaticToolCalling,
+          beforeCompact,
+          compaction,
+          transformContext,
+          prepareHandoffInput,
+          hostedPrompt,
+        } as AgentOptions<Context, Output>),
+        true,
+        undefined,
+        promptControls,
+      );
     let profiles = opening
       ? opening.profiles
       : this.handoffs.length || this.realtime !== undefined
-        ? captureAgentProfiles(
-            this,
-            new Agent({
-              instructions: baseInstructions,
-              name,
-              model,
-              modelSettings: settings,
-              provider,
-              outputType: outputType as OutputSpec<Output> | undefined,
-              tools: options.tools ?? this.tools,
-              handoffs: this.handoffs,
-              toolNameCollisionPolicy: this.toolNameCollisionPolicy,
-              realtime: this.realtime,
-              decisions,
-              beforeComplete,
-              toolBatchCompletion,
-              inputGuardrails: agentInputGuardrails,
-              outputGuardrails: agentOutputGuardrails,
-              programmaticToolCalling,
-              beforeCompact,
-              compaction,
-              transformContext,
-              prepareHandoffInput,
-              hostedPrompt,
-            } as AgentOptions<Context, Output>),
-            true,
-            undefined,
-            promptControls,
-          )
+        ? captureCurrentProfiles()
         : undefined;
     if (profiles) {
       const selectedTools = splitToolDeclarations(
@@ -1630,6 +1654,11 @@ export class Agent<Context = undefined, Output = string> {
       options.signal,
     );
     acquiredEnvironment(environmentOwner);
+    // Root-only selected-user launches need the same existing policy receipt
+    // owner as graph openings. Ordinary launches keep their previous path.
+    if (!profiles && requiresProcessIdentity(environmentOwner.environment)) {
+      profiles = captureCurrentProfiles();
+    }
     const profileEnvironments = profiles
       ? await acquireProfileEnvironments(
           profiles,
@@ -2423,6 +2452,9 @@ export class Agent<Context = undefined, Output = string> {
                 },
               }
             : {}),
+          _agent_lifecycle: completedGraph
+            ? [...completedGraph.profiles].filter(([, value]) => value.profile.declaration.onLifecycle !== undefined).map(([id]) => id)
+            : onLifecycle === undefined ? [] : [''],
           _context_callbacks: {
             tool_not_found: toolErrorFormatter !== undefined,
             model_producer: provider.modelBackend !== undefined,
@@ -2446,6 +2478,8 @@ export class Agent<Context = undefined, Output = string> {
               ) ??
                 false),
             before_complete:
+              onLifecycle !== undefined ||
+              (completedGraph && [...completedGraph.profiles.values()].some(value => value.profile.declaration.onLifecycle !== undefined)) ||
               beforeComplete !== undefined ||
               agentOutputGuardrails.length > 0 ||
               outputGuardrails.length > 0 ||
@@ -2561,6 +2595,7 @@ export class Agent<Context = undefined, Output = string> {
             } as AgentOptions<Context, Output>),
           ) as Agent<any, any>),
         beforeComplete,
+        onLifecycle,
         toolBatchCompletion,
         inputGuardrails,
         outputGuardrails,
@@ -2645,6 +2680,7 @@ export class Agent<Context = undefined, Output = string> {
             profiles,
             decisions,
             beforeComplete,
+            onLifecycle,
             toolBatchCompletion,
             inputGuardrails,
             outputGuardrails,
@@ -3093,6 +3129,7 @@ export function captureAgentProfiles<Context, Output>(
       toolNameCollisionPolicy: source.toolNameCollisionPolicy,
       programmaticToolCalling: source.programmaticToolCalling,
       beforeComplete: source.beforeComplete,
+      onLifecycle: source.onLifecycle,
       toolBatchCompletion: source.toolBatchCompletion,
       inputGuardrails: source.inputGuardrails,
       outputGuardrails: source.outputGuardrails,
@@ -3368,6 +3405,7 @@ export function openOwnedHistorySession<Context, Output>(
       input,
       decisions: captureDecisionProvider(agent.decisions),
       beforeComplete: agent.beforeComplete,
+      onLifecycle: agent.onLifecycle,
       toolBatchCompletion: agent.toolBatchCompletion,
     },
   } as OwnedSessionOptions<Context>;
