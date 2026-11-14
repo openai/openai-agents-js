@@ -2,7 +2,6 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import OpenAI from 'openai';
-import { ResponsesWS } from 'openai/resources/responses/ws';
 import { WebSocketServer } from 'ws';
 import { expect, it } from 'vitest';
 import {
@@ -20,9 +19,21 @@ it.each(['buffered', 'streamed'] as const)(
     let upgrades = 0;
     let frames = 0;
     let retries = 0;
+    const upgradesSeen: {
+      url: string | undefined;
+      beta: string | string[] | undefined;
+      marker: string | string[] | undefined;
+      removed: string | string[] | undefined;
+    }[] = [];
     const advice: (ModelRetryAdvice | undefined)[] = [];
     http.on('upgrade', (request, socket, head) => {
       upgrades++;
+      upgradesSeen.push({
+        url: request.url,
+        beta: request.headers['openai-beta'],
+        marker: request.headers['x-owned-socket'],
+        removed: request.headers['x-remove'],
+      });
       if (upgrades === 1) {
         socket.destroy();
         return;
@@ -70,11 +81,24 @@ it.each(['buffered', 'streamed'] as const)(
     await once(http, 'listening');
     const client = new OpenAI({
       apiKey: 'synthetic-preopen',
+      defaultQuery: { caller: 'preserved', shared: 'base' },
+      defaultHeaders: { 'X-Remove': 'base' },
       baseURL: `http://127.0.0.1:${(http.address() as AddressInfo).port}/v1`,
     });
-    const model = new HostedResponsesWebSocketModel(
-      () => new ResponsesWS(client),
-    );
+    const model = HostedResponsesWebSocketModel.fromOpenAI(client, undefined, {
+      requestOptions: {
+        headers: {
+          'OpenAI-Beta': 'existing-beta',
+          'X-Owned-Socket': 'selected',
+          'X-Remove': null,
+        },
+        query: {
+          shared: 'request',
+          scoped: 'yes',
+          include: ['first', 'second'],
+        },
+      },
+    });
     const original = model.getRetryAdvice.bind(model);
     model.getRetryAdvice = (request) => {
       const value = original(request);
@@ -115,6 +139,22 @@ it.each(['buffered', 'streamed'] as const)(
       expect(upgrades).toBe(2);
       expect(frames).toBe(1);
       expect(retries).toBe(1);
+      for (const opening of upgradesSeen) {
+        const url = new URL(opening.url!, 'http://fixture');
+        expect(url.searchParams.getAll('include[]')).toEqual([
+          'first',
+          'second',
+        ]);
+        url.searchParams.delete('include[]');
+        expect(Object.fromEntries(url.searchParams)).toEqual({
+          caller: 'preserved',
+          shared: 'request',
+          scoped: 'yes',
+        });
+        expect(opening.beta).toBe('existing-beta,responses_multi_agent=v1');
+        expect(opening.marker).toBe('selected');
+        expect(opening.removed).toBeUndefined();
+      }
       expect(advice).toEqual([
         expect.objectContaining({
           suggested: true,
@@ -148,9 +188,7 @@ it('keeps a hosted create unsafe after a physical write and close', async () => 
     apiKey: 'synthetic-dispatched',
     baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`,
   });
-  const model = new HostedResponsesWebSocketModel(
-    () => new ResponsesWS(client),
-  );
+  const model = HostedResponsesWebSocketModel.fromOpenAI(client);
   try {
     await using provider = new NativeProvider({ modelBackend: model });
     await expect(
@@ -205,9 +243,7 @@ it.each(['cancel', 'timeout'] as const)(
       apiKey: 'synthetic-connecting',
       baseURL: `http://127.0.0.1:${(http.address() as AddressInfo).port}/v1`,
     });
-    const model = new HostedResponsesWebSocketModel(
-      () => new ResponsesWS(client),
-    );
+    const model = HostedResponsesWebSocketModel.fromOpenAI(client);
     try {
       await using provider = new NativeProvider({ modelBackend: model });
       const started = Date.now();
@@ -257,7 +293,7 @@ it.each(['cancel', 'timeout'] as const)(
   15_000,
 );
 
-it('keeps retry advice local when separate socket owners reuse one error', async () => {
+it('keeps caller-owned factories unsafe even when readyState claims no dispatch', async () => {
   const { EventEmitter } = await import('node:events');
   const { bindProviderRequestAccounting } =
     await import('../../src/runtime/provider-request-accounting');
@@ -313,8 +349,6 @@ it('keeps retry advice local when separate socket owners reuse one error', async
     model.getRetryAdvice({ error } as Parameters<
       typeof model.getRetryAdvice
     >[0]);
-  expect(failures[0]).not.toBe(shared);
-  expect(failures[0]).toHaveProperty('cause', shared);
-  expect(advice(failures[0])).toMatchObject({ replaySafety: 'safe' });
+  expect(advice(failures[0])).toMatchObject({ replaySafety: 'unsafe' });
   expect(advice(failures[1])).toMatchObject({ replaySafety: 'unsafe' });
 });

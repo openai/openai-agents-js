@@ -6,13 +6,14 @@ import { createGateway } from '@ai-sdk/gateway';
 import { expect, it } from 'vitest';
 import { Agent, AiSdkModel, NativeProvider } from '../../src';
 it.each([
-  ['google', false],
-  ['google', true],
-  ['gateway', false],
-  ['gateway', true],
+  ['google', false, false],
+  ['google', true, false],
+  ['gateway', false, false],
+  ['gateway', true, false],
+  ['google', false, true],
 ] as const)(
-  'retains %s original SDK usage, stream=%s',
-  async (kind, stream) => {
+  'settles %s original SDK usage, stream=%s, forgedID=%s',
+  async (kind, stream, forgedID) => {
     const wires: unknown[] = [];
     const vendor = { microUnits: 21, nested: [0, null, false] };
     const googleUsage = {
@@ -96,14 +97,30 @@ it.each([
               raw: googleUsage,
             }
           : gatewayUsage;
-      await using provider = new NativeProvider({
-        modelBackend: new AiSdkModel(peer, {}, { stream }),
-      });
+      const model = new AiSdkModel(peer, {}, { stream });
+      if (forgedID) {
+        const complete = model.complete.bind(model);
+        Object.defineProperty(model, 'complete', {
+          value: async (request: Parameters<typeof complete>[0]) => {
+            const response = await complete(request);
+            Object.assign(response, { responseId: 'forged-provider-id' });
+            return response;
+          },
+        });
+      }
+      await using provider = new NativeProvider({ modelBackend: model });
       const agent = new Agent({
         provider,
         model: 'usage-fixture',
         instructions: 'Respond.',
       });
+      if (forgedID) {
+        await expect(
+          agent.run('Begin.', { returnRawUsage: true }),
+        ).rejects.toThrow('Native model producer failed');
+        expect(wires).toHaveLength(1);
+        return;
+      }
       const result = await agent.run('Begin.', {
         returnRawUsage: true,
         returnHistory: true,
@@ -122,7 +139,11 @@ it.each([
         outputTokens: 2,
         totalTokens: 5,
       });
-      expect(JSON.stringify(result.state)).not.toContain('vendorPricing');
+      expect(result.state).not.toContain('__sdk_ai_sdk_original_usage');
+      // Google's existing replay sidecar includes its SDK usageMetadata even
+      // without raw-usage opt-in. Original usage must not change that contract.
+      if (kind === 'google') expect(result.state).toContain('vendorPricing');
+      else expect(result.state).not.toContain('vendorPricing');
       expect(JSON.stringify(result.history)).not.toContain('vendorPricing');
       const restored = await agent.run('Continue.', {
         state: result.state,
@@ -130,7 +151,9 @@ it.each([
         returnState: true,
       });
       expect(restored).not.toHaveProperty('rawUsage');
-      expect(JSON.stringify(restored.state)).not.toContain('vendorPricing');
+      expect(restored.state).not.toContain('__sdk_ai_sdk_original_usage');
+      if (kind === 'google') expect(restored.state).toContain('vendorPricing');
+      else expect(restored.state).not.toContain('vendorPricing');
       expect(JSON.stringify(restored.history)).not.toContain('vendorPricing');
       expect(wires).toHaveLength(2);
       expect(JSON.stringify(wires[1])).not.toContain('vendorPricing');

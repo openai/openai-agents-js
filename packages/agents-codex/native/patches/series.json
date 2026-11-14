@@ -1527,7 +1527,11 @@
     {
       "path": "sdk-native-mcp-recovery-recorded-observers.patch",
       "sha256": "7ffbc08c239155999a857f9981f738b360bf940bbc39abba2c36dd64f1f0ee23"
+    },
+    {
+      "path": "sdk-ai-sdk-anonymous-original-usage.patch",
+      "sha256": "b130d021f7f35c0ff56dd4cfaaed4f6821f16f6a99faa0a076508f35bb1999d6"
     }
   ],
-  "result_tree": "3ef79547d68e3680f279488819762565c969ec43"
+  "result_tree": "3f30c7129e6369012e6a28297c89a5e4b7cf51bf"
 }

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import type OpenAI from 'openai';
 import {
   copyJsonValue,
   losslessJsonObjectSchema,
@@ -23,6 +24,8 @@ import {
   markResponsesSocketFrame,
   responsesSocketFrameKind,
   responsesSocketScope,
+  ownedResponsesSocketFactory,
+  retainOwnedResponsesSocketOpening,
   type ResponsesSocket,
   type ResponsesSocketFactory,
 } from './responses-websocket-model';
@@ -82,6 +85,18 @@ const maxResponseItems = 4096;
 
 /** Provider beta transport; native Core retains local function execution. */
 export class HostedResponsesWebSocketModel implements NativeModel {
+  /** Own the physical OpenAI socket so an unopened request can safely retry. */
+  static fromOpenAI(
+    client: OpenAI,
+    model?: string,
+    options: HostedResponsesWebSocketModelOptions = {},
+  ): HostedResponsesWebSocketModel {
+    return new HostedResponsesWebSocketModel(
+      ownedResponsesSocketFactory(client),
+      model,
+      options,
+    );
+  }
   readonly #transport: ResponsesWebSocketModel;
   readonly #runs = new WeakMap<ModelRunOwner, Run>();
   constructor(
@@ -860,6 +875,7 @@ function hostedSocket(
       })());
     },
   };
+  retainOwnedResponsesSocketOpening(socket, transport);
   return bindResponsesSocketReplacementCheck(
     transport,
     (frame, scopeChanged) => {

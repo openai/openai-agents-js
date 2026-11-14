@@ -71,7 +71,10 @@ function selectedFunctionName(
 }
 
 const originalResponsesUsage = Symbol('original Responses usage');
-const originalAiSdkUsage = new WeakMap<object, JsonObject>();
+const originalAiSdkUsage = new WeakMap<
+  object,
+  { usage: JsonObject; providerResponseId: string | undefined }
+>();
 const rawUsageRequests = new WeakSet<object>();
 const originalAiSdkFrames = new WeakMap<
   object,
@@ -393,9 +396,9 @@ export function captureModelResponse(
             original_usage: {
               response_id: responseId,
               upstream_request_id: null,
-              usage: sdkOriginal,
+              usage: sdkOriginal.usage,
               ai_sdk: true,
-              provider_response_id: response.responseId ?? null,
+              provider_response_id: sdkOriginal.providerResponseId ?? null,
             },
           }
         : {}),
@@ -2016,7 +2019,8 @@ export class AiSdkModel implements NativeModel {
         if (
           (request as ModelRequest & { [rawProviderRequest]?: boolean })[
             rawProviderRequest
-          ]
+          ] ||
+          rawUsageRequests.has(request)
         )
           aiSdkModelStreams.add(stream);
         return stream;
@@ -3321,6 +3325,8 @@ export class AiSdkModel implements NativeModel {
     const originalUsage = rawUsageRequests.has(request)
       ? snapshotAiSdkUsage(result.usage)
       : undefined;
+    const originalProviderResponseId =
+      typeof result.response?.id === 'string' ? result.response.id : undefined;
     const finishReason =
       typeof result.finishReason === 'string'
         ? result.finishReason
@@ -3635,7 +3641,11 @@ export class AiSdkModel implements NativeModel {
         value,
       })),
     );
-    if (originalUsage) originalAiSdkUsage.set(normalized, originalUsage);
+    if (originalUsage)
+      originalAiSdkUsage.set(normalized, {
+        usage: originalUsage,
+        providerResponseId: originalProviderResponseId,
+      });
     return normalized;
   }
 }

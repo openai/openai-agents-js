@@ -4,6 +4,7 @@ import {
   AiSdkModel,
   captureModelResponse,
   markRawUsageRequest,
+  isAiSdkModelStream,
   markRawProviderRequest,
   captureAiSdkOriginalUsageFrame,
   type AiSdkLanguageModel,
@@ -137,7 +138,9 @@ it.each([undefined, 'provider-real'])(
     markRawUsageRequest(req);
     const adapter = new AiSdkModel(f.model, {}, { stream: true });
     let completed: JsonObject | undefined;
-    for await (const e of adapter.stream!(req))
+    const stream = adapter.stream!(req);
+    expect(isAiSdkModelStream(stream)).toBe(true);
+    for await (const e of stream)
       if (e.type === 'response.completed') completed = e;
     expect(completed).toBeDefined();
     const event = completed!;
@@ -198,3 +201,18 @@ it('discards invalid optional raw data without changing valid normalized output'
     'original_usage',
   );
 });
+
+it.each([undefined, 'provider-real'])(
+  'keeps captured provider identity after the caller changes the buffered response: %s',
+  async (id) => {
+    const req = request();
+    markRawUsageRequest(req);
+    const response = await new AiSdkModel(fixture(id).model).complete(req);
+    Object.assign(response, { responseId: 'forged-provider-id' });
+    const captured = captureModelResponse(response, true);
+    expect((captured.original_usage as JsonObject).provider_response_id).toBe(
+      id ?? null,
+    );
+    expect(captured.response_id).toBe('forged-provider-id');
+  },
+);

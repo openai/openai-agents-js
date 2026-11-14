@@ -1,0 +1,15 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 16ad15a887a..ecdd20edfa4 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -5726,7 +5726,9 @@ async fn try_run_sampling_request(
+                     }
+                     if let (Some(capture), Some((observed_id, request_id))) =
+                         (&raw_usage_capture, pending_raw_usage.take())
+-                        && observed_id.as_deref() == Some(response_id.as_str())
++                        && observed_id
++                            .as_deref()
++                            .is_none_or(|id| id == response_id.as_str())
+                         && let Some(usage) = usage_metadata
+                             .and_then(|metadata| metadata.metadata)
+                             .filter(serde_json::Value::is_object)
