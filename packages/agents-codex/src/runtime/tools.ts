@@ -1,26 +1,26 @@
-import { inheritSandboxContext, type SandboxAccess } from "./sandbox-context";
-import type { StandardSchemaWithJSON } from "@openai/agents-core";
-import type { SandboxSkillLease } from "./sandbox-skills";
+import { inheritSandboxContext, type SandboxAccess } from './sandbox-context';
+import type { StandardSchemaWithJSON } from '@openai/agents-core';
+import type { SandboxSkillLease } from './sandbox-skills';
 import {
   getSchemaAndParserFromInputType,
   isZodObject,
   stripStrictNullsForZodSchema,
-} from "@openai/agents-core/utils/tool-schema";
-import type { ApprovedArguments } from "./manual";
+} from '@openai/agents-core/utils/tool-schema';
+import type { ApprovedArguments } from './manual';
 import {
   decisionBinding,
   withDecisionSignal,
   type BoundDecide,
-} from "./decisions";
-import { captureToolPart, mediaRecord } from "./media";
-import type { FileReference, ImageDetail } from "./media";
-import { z } from "zod";
+} from './decisions';
+import { captureToolPart, mediaRecord } from './media';
+import type { FileReference, ImageDetail } from './media';
+import { z } from 'zod';
 import {
   isBackgroundResult,
   markBackgroundToolResponse,
   type BackgroundResult,
-} from "./background-result";
-import { handoffResultTarget, withHandoffResultTarget } from "./handoff-result";
+} from './background-result';
+import { handoffResultTarget, withHandoffResultTarget } from './handoff-result';
 import {
   decode,
   encode,
@@ -29,33 +29,33 @@ import {
   losslessJsonValueSchema,
   type JsonValue,
   type JsonObject,
-} from "./binding";
-import type { Turn } from "./session";
-import { usageReportBinding, type UsageReporter } from "./run-events";
-import type { WebSearch } from "./web-search";
-import type { HostedTool, ClientToolSearchExecutor } from "./hosted-tools";
-import type { ChildInvocation, NativeAgents } from "./native-agents";
-import type { HttpMCP, StdioMCP } from "./mcp";
+} from './binding';
+import type { Turn } from './session';
+import { usageReportBinding, type UsageReporter } from './run-events';
+import type { WebSearch } from './web-search';
+import type { HostedTool, ClientToolSearchExecutor } from './hosted-tools';
+import type { ChildInvocation, NativeAgents } from './native-agents';
+import type { HttpMCP, StdioMCP } from './mcp';
 import {
   assembleManualTool,
   copyApprovalInput,
   type ManualTool,
-} from "./manual";
-import type { NativeGoals } from "./goals";
-import { terminalCallInfo, type ToolCallInfo } from "./call-metadata";
-import type { ToolBatchResult } from "./model-callbacks";
+} from './manual';
+import type { NativeGoals } from './goals';
+import { terminalCallInfo, type ToolCallInfo } from './call-metadata';
+import type { ToolBatchResult } from './model-callbacks';
 import {
   assertHostedMcpConfigurations,
   hostedMcpBinding,
-} from "./hosted-mcp-binding";
+} from './hosted-mcp-binding';
 
 const toolContentSchema = z.unknown().transform((value, context) => {
   try {
     return captureToolPart(value);
   } catch (error) {
     context.addIssue({
-      code: "custom",
-      message: error instanceof Error ? error.message : "Invalid tool content",
+      code: 'custom',
+      message: error instanceof Error ? error.message : 'Invalid tool content',
     });
     return z.NEVER;
   }
@@ -79,7 +79,7 @@ export class ToolOutput {
   declare readonly applicationData?: JsonObject;
 
   constructor(
-    readonly contentItems: z.infer<typeof toolOutputSchema>["contentItems"],
+    readonly contentItems: z.infer<typeof toolOutputSchema>['contentItems'],
     readonly success = true,
     applicationData?: JsonObject | null,
   ) {
@@ -92,16 +92,16 @@ export class ToolOutput {
   /** Preserve legacy string construction and allow an explicit provider reference. */
   static image(reference: string | ToolImageReference): ToolOutput {
     const part =
-      typeof reference === "string"
+      typeof reference === 'string'
         ? { imageUrl: reference }
         : mediaRecord(reference);
-    return new ToolOutput([captureToolPart({ type: "inputImage", ...part })]);
+    return new ToolOutput([captureToolPart({ type: 'inputImage', ...part })]);
   }
 
   /** Exactly one opaque ID, inline data or HTTPS URL; never read a host path. */
   static file(reference: FileReference): ToolOutput {
     return new ToolOutput([
-      captureToolPart({ type: "inputFile", ...mediaRecord(reference) }),
+      captureToolPart({ type: 'inputFile', ...mediaRecord(reference) }),
     ]);
   }
 }
@@ -110,7 +110,7 @@ export class ToolOutput {
 export function captureToolBatchResults(
   owner: Pick<
     ToolCallInfo,
-    "sessionId" | "turnId" | "childId" | "childIncarnation"
+    'sessionId' | 'turnId' | 'childId' | 'childIncarnation'
   >,
   model: string,
   value: unknown,
@@ -132,40 +132,40 @@ export function captureToolBatchResults(
     if (
       new Set(results.map((result) => result.call_id)).size !== results.length
     )
-      throw new TypeError("Duplicate settled tool identity");
+      throw new TypeError('Duplicate settled tool identity');
     return Object.freeze(
       results.map((result) => {
         const content =
-          typeof result.output === "string"
-            ? [{ type: "inputText" as const, text: result.output }]
+          typeof result.output === 'string'
+            ? [{ type: 'inputText' as const, text: result.output }]
             : z
                 .array(z.record(z.string(), z.unknown()))
                 .parse(result.output)
                 .map((part) => {
-                  if (part.type === "input_text")
+                  if (part.type === 'input_text')
                     return captureToolPart({
-                      type: "inputText",
+                      type: 'inputText',
                       text: part.text,
                     });
-                  if (part.type === "input_image")
+                  if (part.type === 'input_image')
                     return captureToolPart({
-                      type: "inputImage",
+                      type: 'inputImage',
                       ...(part.image_url != null
                         ? { imageUrl: part.image_url }
                         : {}),
                       ...(part.file_id != null ? { fileId: part.file_id } : {}),
                       ...(part.detail != null ? { detail: part.detail } : {}),
                     });
-                  if (part.type === "input_file") {
+                  if (part.type === 'input_file') {
                     const { type: _type, ...file } = part;
-                    return captureToolPart({ type: "inputFile", ...file });
+                    return captureToolPart({ type: 'inputFile', ...file });
                   }
-                  if (part.type === "input_audio")
+                  if (part.type === 'input_audio')
                     return captureToolPart({
-                      type: "inputAudio",
+                      type: 'inputAudio',
                       audioUrl: part.audio_url,
                     });
-                  throw new TypeError("Unsupported settled tool content");
+                  throw new TypeError('Unsupported settled tool content');
                 });
         return Object.freeze({
           call: Object.freeze({
@@ -178,12 +178,12 @@ export function captureToolBatchResults(
       }),
     );
   } catch {
-    throw new TypeError("Invalid settled tool batch");
+    throw new TypeError('Invalid settled tool batch');
   }
 }
 
 // This transient carrier never survives JSON or structuredClone into native replies.
-const applicationDataBinding = Symbol("application tool output");
+const applicationDataBinding = Symbol('application tool output');
 type ApplicationToolResponse = ToolResponse & {
   readonly [applicationDataBinding]?: JsonObject;
 };
@@ -227,17 +227,17 @@ export class ToolTimeoutError extends Error {
     readonly timeoutSeconds: number,
   ) {
     super(`Tool ${toolName} exceeded its callback timeout`);
-    this.name = "ToolTimeoutError";
+    this.name = 'ToolTimeoutError';
   }
 }
 
-type FunctionToolCaller = "direct" | "code" | "programmatic";
+type FunctionToolCaller = 'direct' | 'code' | 'programmatic';
 
-export type FunctionToolTimeoutBehavior = "raise_exception" | "error_as_result";
+export type FunctionToolTimeoutBehavior = 'raise_exception' | 'error_as_result';
 
 class FunctionBodyError extends Error {
   constructor(readonly original: unknown) {
-    super("Function callback failed");
+    super('Function callback failed');
   }
 }
 
@@ -253,9 +253,9 @@ export interface ToolErrorContext<Context = unknown> {
   readonly call: ToolCallInfo;
   /** Cancellation of the owning invocation; formatting joins its cleanup. */
   readonly signal: AbortSignal;
-  readonly phase: "arguments" | "execution";
+  readonly phase: 'arguments' | 'execution';
   /** Unknown execution routing; presentation cannot authorize a tool. */
-  readonly reason?: "tool_not_found";
+  readonly reason?: 'tool_not_found';
   readonly defaultMessage: string;
   readonly error: unknown;
 }
@@ -266,7 +266,7 @@ export type ToolErrorFormatter<Context = unknown> = (
 ) => string | undefined | Promise<string | undefined>;
 
 /** @internal Live Session callback; never persisted or supplied by tool declarations. */
-export const toolErrorFormatterBinding = Symbol("toolErrorFormatter");
+export const toolErrorFormatterBinding = Symbol('toolErrorFormatter');
 
 export type ToolTimeoutErrorFunction<Context = unknown> = (
   context: ToolContext<Context>,
@@ -300,13 +300,13 @@ export interface ToolCallContext<
   /** Provider conversation snapshot captured when this Realtime call was issued. */
   readonly history?: readonly Readonly<Record<string, unknown>>[];
   /** Detached speech usage at callback creation; excludes backend thread usage. */
-  readonly realtimeUsage?: import("./realtime-usage").NativeRealtimeUsage;
-  readonly realtimeUsageAccounting?: import("./realtime-usage").NativeRealtimeUsageAccounting;
+  readonly realtimeUsage?: import('./realtime-usage').NativeRealtimeUsage;
+  readonly realtimeUsageAccounting?: import('./realtime-usage').NativeRealtimeUsageAccounting;
   readonly decide?: BoundDecide;
   /** @internal */
   readonly [decisionBinding]?: (signal: AbortSignal) => BoundDecide;
   /** Exact issuing native span, when native tracing has an active context. */
-  readonly traceContext?: import("./trace-context").TraceContext;
+  readonly traceContext?: import('./trace-context').TraceContext;
   /** SDK-issued contexts include frozen observed metadata. */
   readonly call?: ToolCallInfo;
   /** @internal Captured Session formatter. */
@@ -358,14 +358,14 @@ export function invokeConfiguredAgentTool(
 ): Promise<string> {
   const invoke = toolSessionOwners.get(context)?.configuredAgent;
   if (!invoke)
-    throw new TypeError("Configured child has no admitted parent tool owner");
+    throw new TypeError('Configured child has no admitted parent tool owner');
   return invoke(input);
 }
 
 // Private extension hook; retained in declarations for the sibling package.
 export function _nativeToolSessionOwner(context: ToolCallContext): object {
   const owner = toolSessionOwners.get(context);
-  if (!owner) throw new TypeError("Tool context has no native Session owner");
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
   return owner.owner;
 }
 
@@ -374,7 +374,7 @@ export function _nativeSandboxSkillLease(
   context: ToolCallContext,
 ): SandboxSkillLease | undefined {
   const owner = toolSessionOwners.get(context);
-  if (!owner) throw new TypeError("Tool context has no native Session owner");
+  if (!owner) throw new TypeError('Tool context has no native Session owner');
   return owner.skillLease;
 }
 
@@ -400,14 +400,14 @@ export interface ToolContext<
 
 /** A name resolves only to a binding admitted when the Session opened. */
 export interface ToolRef {
-  readonly kind: "tool_ref";
+  readonly kind: 'tool_ref';
   readonly name: string;
   /** Native tool namespace; omitted or null references use the function namespace. */
   readonly namespace?: string | null;
 }
 export function toolRef(name: string, namespace?: string | null): ToolRef {
   return Object.freeze({
-    kind: "tool_ref",
+    kind: 'tool_ref',
     name,
     ...(namespace === undefined ? {} : { namespace }),
   });
@@ -430,27 +430,27 @@ export interface ToolDeclaration {
   readonly outputSchema?: JsonObject;
 }
 
-const prepareInvocation = Symbol("function tool binding");
-const inputRecovery = Symbol("original input recovery");
+const prepareInvocation = Symbol('function tool binding');
+const inputRecovery = Symbol('original input recovery');
 
 /** @internal Recovery belongs to the captured function declaration. */
 export function supportsInputErrorRecovery(tool: SessionTool): boolean {
   const source = managedApproval(tool)?.function ?? tool;
-  return source.kind !== "manual" && source[inputRecovery] === true;
+  return source.kind !== 'manual' && source[inputRecovery] === true;
 }
 
-const nativeCallbackDeclaration = Symbol("native computer declaration");
+const nativeCallbackDeclaration = Symbol('native computer declaration');
 const clientToolSearchDeclaration = Symbol(
-  "native client tool search declaration",
+  'native client tool search declaration',
 );
-const shellDeclaration = Symbol("native shell declaration");
+const shellDeclaration = Symbol('native shell declaration');
 
 /** @internal The plan route admits only direct local function declarations. */
 export function isDirectFunctionTool(tool: SessionTool): boolean {
   return (
-    tool.kind !== "manual" &&
+    tool.kind !== 'manual' &&
     !tool.deferLoading &&
-    tool.allowedCallers?.includes("direct") !== false &&
+    tool.allowedCallers?.includes('direct') !== false &&
     !tool[nativeCallbackDeclaration] &&
     !tool[clientToolSearchDeclaration] &&
     !hostedMcpBinding(tool) &&
@@ -461,11 +461,11 @@ export function isDirectFunctionTool(tool: SessionTool): boolean {
 export function isSandboxCapabilityTool(tool: SessionTool): boolean {
   if (isDirectFunctionTool(tool)) return true;
   return (
-    tool.kind !== "manual" &&
+    tool.kind !== 'manual' &&
     !tool.deferLoading &&
-    tool.allowedCallers?.includes("direct") !== false &&
+    tool.allowedCallers?.includes('direct') !== false &&
     (tool[shellDeclaration] !== undefined ||
-      tool[nativeCallbackDeclaration]?.type === "applyPatch")
+      tool[nativeCallbackDeclaration]?.type === 'applyPatch')
   );
 }
 
@@ -473,9 +473,9 @@ export function isSandboxCapabilityTool(tool: SessionTool): boolean {
 export function isBareFunctionCollisionCandidate(tool: SessionTool): boolean {
   const source = managedApproval(tool)?.function ?? tool;
   return (
-    source.kind !== "manual" &&
+    source.kind !== 'manual' &&
     source.namespace === undefined &&
-    typeof source[prepareInvocation] === "function" &&
+    typeof source[prepareInvocation] === 'function' &&
     isDirectFunctionTool(source)
   );
 }
@@ -493,11 +493,11 @@ type Invocation<Context> = (
 
 /** A tool-local decision made before its execution callback runs. */
 export type ToolDecision<Arguments = unknown> =
-  | { readonly action: "allow" }
-  | { readonly action: "deny"; readonly reason: string }
-  | { readonly action: "replaceArguments"; readonly arguments: Arguments };
+  | { readonly action: 'allow' }
+  | { readonly action: 'deny'; readonly reason: string }
+  | { readonly action: 'replaceArguments'; readonly arguments: Arguments };
 
-const approvalDefinition = Symbol("managed function approval");
+const approvalDefinition = Symbol('managed function approval');
 interface ManagedApproval<Context = unknown> {
   readonly portable?: { readonly key: string; readonly policy: JsonValue };
   prepareOriginalInput?: (
@@ -540,10 +540,10 @@ export interface FunctionTool<Context = unknown> extends ToolDeclaration {
   readonly namespaceDescription?: string;
   readonly callbackTimeout?: number;
   readonly timeoutBehavior?: FunctionToolTimeoutBehavior;
-  readonly timeoutSettlement?: "after_cleanup" | "at_deadline";
+  readonly timeoutSettlement?: 'after_cleanup' | 'at_deadline';
   readonly timeoutErrorFunction?: ToolTimeoutErrorFunction<Context>;
   readonly errorFunction?: ToolErrorFunction<Context> | null;
-  readonly kind?: "function";
+  readonly kind?: 'function';
   readonly [nativeCallbackDeclaration]?: JsonObject;
   readonly [clientToolSearchDeclaration]?: JsonObject;
   readonly [shellDeclaration]?: JsonObject;
@@ -564,8 +564,8 @@ export interface StandaloneFunctionTool<
 }
 /** @internal The native receipt preserves the declared namespace, including null. */
 export function toolNamespace(tool: SessionTool): string | null {
-  if (hostedMcpBinding(tool)) return "hosted_mcp";
-  return tool.kind === "manual" ? null : (tool.namespace ?? null);
+  if (hostedMcpBinding(tool)) return 'hosted_mcp';
+  return tool.kind === 'manual' ? null : (tool.namespace ?? null);
 }
 
 /** @internal Core treats unnamespaced functions as the functions namespace. */
@@ -573,7 +573,7 @@ export function toolIdentity(tool: SessionTool): {
   name: string;
   namespace: string;
 } {
-  return { name: tool.name, namespace: toolNamespace(tool) ?? "functions" };
+  return { name: tool.name, namespace: toolNamespace(tool) ?? 'functions' };
 }
 
 /** @internal Executable slot for an already captured provider declaration. */
@@ -582,8 +582,8 @@ export function createClientToolSearchTool<Context>(
   execute?: ClientToolSearchExecutor<Context>,
 ): FunctionTool<Context> {
   return Object.freeze({
-    name: "tool_search",
-    description: "Load tools selected by the application",
+    name: 'tool_search',
+    description: 'Load tools selected by the application',
     parameters: {},
     [clientToolSearchDeclaration]: declaration,
     async [prepareInvocation](
@@ -596,7 +596,7 @@ export function createClientToolSearchTool<Context>(
       const invoke = toolSessionOwners.get(context)?.clientToolSearch;
       if (!invoke)
         throw new TypeError(
-          "Client tool search has no admitted callback owner",
+          'Client tool search has no admitted callback owner',
         );
       return invoke(args, context, execute, admit);
     },
@@ -606,7 +606,7 @@ export function createClientToolSearchTool<Context>(
 /** @internal Distinguish the internal slot from an application function of the same name. */
 export function isClientToolSearchTool(tool: SessionTool): boolean {
   return (
-    tool.kind !== "manual" && tool[clientToolSearchDeclaration] !== undefined
+    tool.kind !== 'manual' && tool[clientToolSearchDeclaration] !== undefined
   );
 }
 
@@ -621,7 +621,7 @@ export function createComputerTool<Context>(
   ) => Promise<ToolResponse>,
 ): FunctionTool<Context> {
   return createNativeCallbackTool(
-    "computer",
+    'computer',
     "Operate the application's computer",
     declaration,
     execute,
@@ -630,7 +630,7 @@ export function createComputerTool<Context>(
 
 /** @internal Bind a typed native declaration to the existing callback owner. */
 export function createNativeCallbackTool<Context>(
-  name: "computer" | "apply_patch",
+  name: 'computer' | 'apply_patch',
   description: string,
   declaration: JsonObject,
   execute: (
@@ -685,13 +685,13 @@ function liveToolContext<Context>(
   context: ToolInvocationInputContext<Context>,
 ): ToolCallContext<Context> | undefined {
   // Only SDK-owned contexts reach the bound invocation.
-  return Object.hasOwn(context, "submission")
+  return Object.hasOwn(context, 'submission')
     ? (context as ToolCallContext<Context>)
     : undefined;
 }
 
 async function recoverRunToolError<Context>(
-  phase: ToolErrorContext["phase"],
+  phase: ToolErrorContext['phase'],
   error: unknown,
   context: ToolInvocationInputContext<Context>,
   admit: () => void,
@@ -702,7 +702,7 @@ async function recoverRunToolError<Context>(
   const formatter = live?.[toolErrorFormatterBinding];
   if (errorFunction === null || !formatter || !live?.call) throw error;
   const defaultMessage =
-    phase === "arguments"
+    phase === 'arguments'
       ? `Invalid arguments for function '${name}'.`
       : `Function '${name}' failed.`;
   admit();
@@ -728,7 +728,7 @@ async function recoverRunToolError<Context>(
     return defaultMessage;
   }
   admit();
-  return typeof formatted === "string" ? formatted : defaultMessage;
+  return typeof formatted === 'string' ? formatted : defaultMessage;
 }
 
 async function recoverFunctionBodyError<
@@ -751,7 +751,7 @@ async function recoverFunctionBodyError<
   const text = errorFunction
     ? await errorFunction(context, error)
     : await recoverRunToolError(
-        "execution",
+        'execution',
         error,
         context,
         admit,
@@ -759,8 +759,8 @@ async function recoverFunctionBodyError<
         errorFunction,
       );
   admit();
-  if (typeof text !== "string")
-    throw new TypeError("errorFunction must return a string");
+  if (typeof text !== 'string')
+    throw new TypeError('errorFunction must return a string');
   return text;
 }
 
@@ -779,7 +779,7 @@ function captureFunctionContext<Context, Arguments>(
       )[usageReportBinding];
       if (!reporter)
         throw new Error(
-          "Usage reporting requires an admitted native ToolContext",
+          'Usage reporting requires an admitted native ToolContext',
         );
       context.signal.throwIfAborted();
       reporter(usage, options);
@@ -788,7 +788,7 @@ function captureFunctionContext<Context, Arguments>(
       context.decide ??
       ((() =>
         Promise.reject(
-          new Error("Decision helper requires an admitted callback"),
+          new Error('Decision helper requires an admitted callback'),
         )) as BoundDecide),
     originalArguments,
     effectiveArguments,
@@ -826,9 +826,9 @@ export function createNamespacedFunctionTool<Context>(options: {
       admit();
       if (
         this.errorFunction != null &&
-        typeof this.errorFunction !== "function"
+        typeof this.errorFunction !== 'function'
       )
-        throw new TypeError("errorFunction must be a function");
+        throw new TypeError('errorFunction must be a function');
       const parsed = losslessJsonObjectSchema.parse(args);
       const original = Object.freeze(structuredClone(parsed));
       const effective = Object.freeze(structuredClone(parsed));
@@ -853,7 +853,7 @@ export function createNamespacedFunctionTool<Context>(options: {
                 name,
                 this.errorFunction,
               );
-              return new ToolOutput([{ type: "inputText", text }], false);
+              return new ToolOutput([{ type: 'inputText', text }], false);
             },
           );
         },
@@ -870,12 +870,12 @@ export function createNamespacedFunctionTool<Context>(options: {
 
 /** Grant Core's update_plan when the Session opens. */
 export interface Checklist {
-  readonly kind: "checklist";
+  readonly kind: 'checklist';
 }
 
 /** Capture native checklist authority at opening; saved data grants no updates. */
 export function checklist(): Checklist {
-  return Object.freeze({ kind: "checklist" });
+  return Object.freeze({ kind: 'checklist' });
 }
 
 export type SessionTool<Context = any> = FunctionTool<Context> | ManualTool;
@@ -940,7 +940,7 @@ type FunctionToolOptions<
   /** Root application functions may settle at the deadline while the Session retains cleanup.
    * Standalone calls have been retaining cleanup before settlement.
    */
-  timeoutSettlement?: "after_cleanup" | "at_deadline";
+  timeoutSettlement?: 'after_cleanup' | 'at_deadline';
   /** Format timeout failure text; bypasses result validation and after. */
   timeoutErrorFunction?: (
     context: ErrorContext,
@@ -1075,14 +1075,14 @@ function createFunctionTool<
 ): FunctionTool<Context> {
   if (
     options.finishTurn !== undefined &&
-    typeof options.finishTurn !== "boolean"
+    typeof options.finishTurn !== 'boolean'
   )
-    throw new TypeError("finishTurn must be a boolean");
+    throw new TypeError('finishTurn must be a boolean');
   if (
     options.deferLoading !== undefined &&
-    typeof options.deferLoading !== "boolean"
+    typeof options.deferLoading !== 'boolean'
   )
-    throw new TypeError("deferLoading must be a boolean");
+    throw new TypeError('deferLoading must be a boolean');
   const allowedCallers = options.allowedCallers;
   if (
     allowedCallers !== undefined &&
@@ -1090,19 +1090,19 @@ function createFunctionTool<
       allowedCallers.length === 0 ||
       [...allowedCallers].some(
         (route) =>
-          route !== "direct" && route !== "code" && route !== "programmatic",
+          route !== 'direct' && route !== 'code' && route !== 'programmatic',
       ) ||
       new Set(allowedCallers).size !== allowedCallers.length)
   ) {
     throw new TypeError(
-      "allowedCallers must select distinct direct, code, or programmatic callers",
+      'allowedCallers must select distinct direct, code, or programmatic callers',
     );
   }
   const capturedCallers =
     allowedCallers === undefined
       ? undefined
       : Object.freeze<FunctionToolCaller[]>(
-          (["direct", "code", "programmatic"] as const).filter((value) =>
+          (['direct', 'code', 'programmatic'] as const).filter((value) =>
             allowedCallers.includes(value),
           ),
         );
@@ -1112,33 +1112,33 @@ function createFunctionTool<
       options.callbackTimeout <= 0 ||
       options.callbackTimeout > 2_147_483_647 / 1000)
   )
-    throw new TypeError("callbackTimeout must be in (0, 2147483.647] seconds");
+    throw new TypeError('callbackTimeout must be in (0, 2147483.647] seconds');
   if (
     options.namespaceDescription !== undefined &&
     options.namespace === undefined
   )
-    throw new TypeError("namespaceDescription requires namespace");
+    throw new TypeError('namespaceDescription requires namespace');
   if (
     options.needsApproval !== undefined &&
-    typeof options.needsApproval !== "boolean" &&
-    typeof options.needsApproval !== "function"
+    typeof options.needsApproval !== 'boolean' &&
+    typeof options.needsApproval !== 'function'
   )
-    throw new TypeError("needsApproval must be a boolean or function");
+    throw new TypeError('needsApproval must be a boolean or function');
   const approvalKey = options.approvalKey;
   if (
     approvalKey !== undefined &&
-    (typeof approvalKey !== "string" || !approvalKey)
+    (typeof approvalKey !== 'string' || !approvalKey)
   )
-    throw new TypeError("approvalKey must be a nonempty string");
+    throw new TypeError('approvalKey must be a nonempty string');
   if (
     options.runBeforeApproval !== undefined &&
-    typeof options.runBeforeApproval !== "boolean"
+    typeof options.runBeforeApproval !== 'boolean'
   )
-    throw new TypeError("runBeforeApproval must be a boolean");
+    throw new TypeError('runBeforeApproval must be a boolean');
   if (options.needsApproval && options.namespace !== undefined)
-    throw new TypeError("Managed approvals require an unnamespaced function");
+    throw new TypeError('Managed approvals require an unnamespaced function');
   if (options.runBeforeApproval && !options.needsApproval)
-    throw new TypeError("runBeforeApproval requires needsApproval");
+    throw new TypeError('runBeforeApproval requires needsApproval');
   const {
     name,
     parameters,
@@ -1147,30 +1147,30 @@ function createFunctionTool<
     before,
     after,
     callbackTimeout,
-    timeoutBehavior = "raise_exception",
-    timeoutSettlement = "after_cleanup",
+    timeoutBehavior = 'raise_exception',
+    timeoutSettlement = 'after_cleanup',
     timeoutErrorFunction,
     inputErrorFunction,
     errorFunction,
   } = options as FunctionToolOptions<T, Context, Result, true>;
-  if (!["after_cleanup", "at_deadline"].includes(timeoutSettlement))
-    throw new TypeError("Invalid timeoutSettlement");
+  if (!['after_cleanup', 'at_deadline'].includes(timeoutSettlement))
+    throw new TypeError('Invalid timeoutSettlement');
   if (
     inputErrorFunction !== undefined &&
-    typeof inputErrorFunction !== "function"
+    typeof inputErrorFunction !== 'function'
   )
-    throw new TypeError("inputErrorFunction must be a function");
-  if (errorFunction != null && typeof errorFunction !== "function")
-    throw new TypeError("errorFunction must be a function");
+    throw new TypeError('inputErrorFunction must be a function');
+  if (errorFunction != null && typeof errorFunction !== 'function')
+    throw new TypeError('errorFunction must be a function');
   const strict = options.strict ?? false;
-  if (options.strict !== undefined && typeof options.strict !== "boolean")
-    throw new TypeError("strict must be a boolean");
+  if (options.strict !== undefined && typeof options.strict !== 'boolean')
+    throw new TypeError('strict must be a boolean');
   const outputSchema =
     options.outputSchema === undefined
       ? undefined
       : losslessJsonObjectSchema.parse(options.outputSchema);
-  if (outputSchema !== undefined && outputSchema.type !== "object")
-    throw new TypeError("outputSchema must define a JSON object");
+  if (outputSchema !== undefined && outputSchema.type !== 'object')
+    throw new TypeError('outputSchema must define a JSON object');
   let inputSchema: unknown;
   let parseInput: (value: unknown) => ToolParameterOutput<T>;
   const standardSchema =
@@ -1181,12 +1181,12 @@ function createFunctionTool<
     const zodParameters = parameters as z.ZodType;
     if (strict) {
       if (!isZodObject(parameters))
-        throw new TypeError("Strict tool parameters must be a Zod object");
+        throw new TypeError('Strict tool parameters must be a Zod object');
       inputSchema = getSchemaAndParserFromInputType(parameters, name, {
         strict,
       }).schema;
     } else {
-      inputSchema = z.toJSONSchema(zodParameters, { io: "input" });
+      inputSchema = z.toJSONSchema(zodParameters, { io: 'input' });
     }
     parseInput = (value) =>
       zodParameters.parse(
@@ -1213,7 +1213,7 @@ function createFunctionTool<
     ) as Readonly<ToolContextArguments<T>>;
   };
   const recoverRunError = (
-    phase: ToolErrorContext["phase"],
+    phase: ToolErrorContext['phase'],
     error: unknown,
     context: ToolInvocationInputContext<Context>,
     admit: () => void,
@@ -1226,8 +1226,8 @@ function createFunctionTool<
   ): Promise<string> => {
     if (!inputErrorFunction) {
       if (!liveToolContext(context))
-        throw new TypeError("Tool arguments failed validation");
-      return recoverRunError("arguments", error, context, admit);
+        throw new TypeError('Tool arguments failed validation');
+      return recoverRunError('arguments', error, context, admit);
     }
     admit();
     const text = await inputErrorFunction(
@@ -1236,8 +1236,8 @@ function createFunctionTool<
       structuredClone(original),
     );
     admit();
-    if (typeof text !== "string")
-      throw new TypeError("inputErrorFunction must return a string");
+    if (typeof text !== 'string')
+      throw new TypeError('inputErrorFunction must return a string');
     return text;
   };
   const needsApproval = options.needsApproval;
@@ -1254,11 +1254,11 @@ function createFunctionTool<
   const native = (
     options as typeof options & { [nativeCallbackDeclaration]?: JsonObject }
   )[nativeCallbackDeclaration];
-  if (timeoutSettlement === "at_deadline" && (shell || native))
-    throw new TypeError("Deadline settlement requires an application function");
+  if (timeoutSettlement === 'at_deadline' && (shell || native))
+    throw new TypeError('Deadline settlement requires an application function');
   if (standalone && (needsApproval || shell || native))
     throw new TypeError(
-      "Standalone invocation requires an application function without approval",
+      'Standalone invocation requires an application function without approval',
     );
 
   async function invokeStandalone(
@@ -1273,7 +1273,7 @@ function createFunctionTool<
     admit();
     let args: JsonValue = argumentsValue;
     let argumentError: SyntaxError | undefined;
-    if (typeof argumentsValue === "string") {
+    if (typeof argumentsValue === 'string') {
       try {
         args = JSON.parse(argumentsValue);
       } catch (error) {
@@ -1308,7 +1308,7 @@ function createFunctionTool<
     admit();
     const live = liveToolContext(context);
     const failed = (text: string) => {
-      const contentItems = [{ type: "inputText" as const, text }];
+      const contentItems = [{ type: 'inputText' as const, text }];
       return live
         ? { success: false, contentItems }
         : new ToolOutput(contentItems, false);
@@ -1316,10 +1316,10 @@ function createFunctionTool<
     if (argumentError !== undefined) {
       if (approved || effectiveArgs !== undefined)
         throw new TypeError(
-          "Original input recovery cannot replace approved arguments",
+          'Original input recovery cannot replace approved arguments',
         );
       const text = await recoverOriginalInput(
-        typeof argumentError === "string"
+        typeof argumentError === 'string'
           ? new SyntaxError(argumentError)
           : argumentError,
         args,
@@ -1356,15 +1356,15 @@ function createFunctionTool<
     if (before) {
       const decision = await before(callContext);
       admit();
-      if (decision?.action === "deny") {
-        if (typeof decision.reason !== "string")
-          throw new TypeError("Tool denial requires a reason");
+      if (decision?.action === 'deny') {
+        if (typeof decision.reason !== 'string')
+          throw new TypeError('Tool denial requires a reason');
         return failed(decision.reason);
       }
-      if (decision?.action === "replaceArguments") {
+      if (decision?.action === 'replaceArguments') {
         if (shell)
           throw new TypeError(
-            "Shell before policies only allow or deny execution",
+            'Shell before policies only allow or deny execution',
           );
         parsed = parseInput(decision.arguments);
         callContext = {
@@ -1372,15 +1372,15 @@ function createFunctionTool<
           effectiveArguments: snapshotEffectiveArguments(parsed),
         };
         inheritToolSessionOwner(callContext, context);
-      } else if (decision?.action !== "allow") {
+      } else if (decision?.action !== 'allow') {
         throw new TypeError(
-          "Tool before must allow, deny, or replace arguments",
+          'Tool before must allow, deny, or replace arguments',
         );
       }
     }
     admit();
     if (approved && !approved.matches(parsed))
-      return failed("Tool input policy changed approved arguments");
+      return failed('Tool input policy changed approved arguments');
     if (approved) {
       parsed = approved.value as typeof parsed;
       callContext = {
@@ -1412,7 +1412,7 @@ function createFunctionTool<
         context.signal,
         callbackTimeout,
         name,
-        timeoutBehavior === "raise_exception" ? onTimeout : () => {},
+        timeoutBehavior === 'raise_exception' ? onTimeout : () => {},
         timeoutError,
         timeoutBehavior,
         errorFunction ||
@@ -1439,7 +1439,7 @@ function createFunctionTool<
         return failed(text);
       }
       if (
-        timeoutBehavior !== "error_as_result" ||
+        timeoutBehavior !== 'error_as_result' ||
         !timeoutError ||
         error !== timeoutError
       )
@@ -1462,7 +1462,7 @@ function createFunctionTool<
       response = outputOf(validated);
     } catch {
       admit();
-      throw new TypeError("Tool result failed validation");
+      throw new TypeError('Tool result failed validation');
     }
     admit();
     if (after) {
@@ -1479,11 +1479,11 @@ function createFunctionTool<
         ? accepted.content
         : accepted;
       if (!(output instanceof ToolOutput))
-        throw new TypeError("Tool after must return ToolOutput");
+        throw new TypeError('Tool after must return ToolOutput');
       try {
         response = captureToolResponse(output);
       } catch {
-        throw new TypeError("Tool result failed validation");
+        throw new TypeError('Tool result failed validation');
       }
     }
     admit();
@@ -1505,7 +1505,7 @@ function createFunctionTool<
     name: options.name,
     namespace: options.namespace,
     namespaceDescription: options.namespaceDescription,
-    description: options.description ?? "",
+    description: options.description ?? '',
     callbackTimeout,
     timeoutBehavior,
     timeoutSettlement,
@@ -1588,8 +1588,8 @@ function createFunctionTool<
           // metadata need not represent non-JSON instance validators.
           JSON.stringify(
             z.toJSONSchema(portableResult, {
-              io: "input",
-              unrepresentable: "any",
+              io: 'input',
+              unrepresentable: 'any',
             }),
           ),
         )
@@ -1611,7 +1611,7 @@ function createFunctionTool<
           )[usageReportBinding];
           if (!reporter)
             throw new Error(
-              "Usage reporting requires an admitted native ToolContext",
+              'Usage reporting requires an admitted native ToolContext',
             );
           context.signal.throwIfAborted();
           reporter(usage, options);
@@ -1620,7 +1620,7 @@ function createFunctionTool<
           context.decide ??
           ((() =>
             Promise.reject(
-              new Error("Decision helper requires an admitted callback"),
+              new Error('Decision helper requires an admitted callback'),
             )) as BoundDecide),
         originalArguments: Object.freeze(structuredClone(args) as JsonObject),
         effectiveArguments: snapshotEffectiveArguments(parsed),
@@ -1634,15 +1634,15 @@ function createFunctionTool<
       ) {
         const decision = await before(callContext);
         admit();
-        if (decision.action === "deny") {
-          if (typeof decision.reason !== "string")
-            throw new TypeError("Tool denial requires a reason");
+        if (decision.action === 'deny') {
+          if (typeof decision.reason !== 'string')
+            throw new TypeError('Tool denial requires a reason');
           return { required: false, denial: decision.reason };
         }
-        if (decision.action === "replaceArguments") {
+        if (decision.action === 'replaceArguments') {
           if (shell)
             throw new TypeError(
-              "Shell before policies only allow or deny execution",
+              'Shell before policies only allow or deny execution',
             );
           effective = losslessJsonValueSchema.parse(decision.arguments);
           parsed = parseInput(structuredClone(effective));
@@ -1651,24 +1651,24 @@ function createFunctionTool<
             effectiveArguments: snapshotEffectiveArguments(parsed),
           };
           inheritToolSessionOwner(callContext, context);
-        } else if (decision.action !== "allow")
+        } else if (decision.action !== 'allow')
           throw new TypeError(
-            "Tool before must allow, deny, or replace arguments",
+            'Tool before must allow, deny, or replace arguments',
           );
       }
       const required = skipPredicate
         ? true
-        : typeof needsApproval === "function"
+        : typeof needsApproval === 'function'
           ? await needsApproval(callContext)
           : needsApproval;
       admit();
-      if (typeof required !== "boolean")
-        throw new TypeError("needsApproval must return a boolean");
+      if (typeof required !== 'boolean')
+        throw new TypeError('needsApproval must return a boolean');
       return { required, effective, validated: parsed };
     },
   };
   if (approvalKey !== undefined)
-    Object.defineProperty(approval, "portable", {
+    Object.defineProperty(approval, 'portable', {
       value: Object.freeze({
         key: approvalKey,
         policy: structuredClone([
@@ -1677,7 +1677,7 @@ function createFunctionTool<
           declaration.description,
           declaration.parameters,
           approval.resultSchema,
-          typeof needsApproval === "function" ? "predicate" : needsApproval,
+          typeof needsApproval === 'function' ? 'predicate' : needsApproval,
           runBeforeApproval,
           before !== undefined,
           after !== undefined,
@@ -1694,9 +1694,9 @@ export function outputOf(value: unknown): ToolResponse {
     success: true,
     contentItems: [
       {
-        type: "inputText",
+        type: 'inputText',
         text:
-          typeof value === "string"
+          typeof value === 'string'
             ? value
             : JSON.stringify(losslessJsonValueSchema.parse(value)),
       },
@@ -1748,26 +1748,26 @@ export function captureTools(
 ): ToolCatalog {
   const captured = tools.map((tool) => {
     if (
-      tool.kind !== "manual" &&
-      typeof tool[prepareInvocation] !== "function"
+      tool.kind !== 'manual' &&
+      typeof tool[prepareInvocation] !== 'function'
     ) {
       throw new TypeError(
-        "Native function tools must use tool() from @openai/agents in the same loaded SDK instance as the Session. Use @openai/agents/classic for Classic tools.",
+        'Native function tools must use tool() from @openai/agents in the same loaded SDK instance as the Session. Use @openai/agents/classic for Classic tools.',
       );
     }
     if (
-      tool.kind !== "manual" &&
+      tool.kind !== 'manual' &&
       tool.finishTurn !== undefined &&
-      typeof tool.finishTurn !== "boolean"
+      typeof tool.finishTurn !== 'boolean'
     )
-      throw new TypeError("finishTurn must be a boolean");
+      throw new TypeError('finishTurn must be a boolean');
     const shell = (
       tool as SessionTool & { readonly [shellDeclaration]?: JsonObject }
     )[shellDeclaration];
     if (
-      tool.kind !== "manual" &&
+      tool.kind !== 'manual' &&
       shell &&
-      (tool.name !== "shell" ||
+      (tool.name !== 'shell' ||
         tool.namespace !== undefined ||
         tool.deferLoading ||
         tool.finishTurn ||
@@ -1775,7 +1775,7 @@ export function captureTools(
         tool.outputSchema !== undefined)
     )
       throw new TypeError(
-        "Shell declarations retain their native identity and policies",
+        'Shell declarations retain their native identity and policies',
       );
     const approval = managedApproval(tool);
     const native = (
@@ -1787,7 +1787,7 @@ export function captureTools(
             resultSchema: approval.resultSchema,
             parseInput: approval.parseInput,
             parseResult: () => {
-              throw new TypeError("Use an approval decision");
+              throw new TypeError('Use an approval decision');
             },
           }),
           [approvalDefinition]: approval,
@@ -1797,7 +1797,7 @@ export function captureTools(
       ...source,
       ...(shell === undefined ? {} : { [shellDeclaration]: shell }),
       ...(native === undefined ? {} : { [nativeCallbackDeclaration]: native }),
-      ...(tool.kind === "manual"
+      ...(tool.kind === 'manual'
         ? {}
         : { finishTurn: tool.finishTurn ?? false }),
       parameters: losslessJsonValueSchema.parse(tool.parameters),
@@ -1816,19 +1816,19 @@ export function captureTools(
     if (names.has(key))
       throw new TypeError(`Duplicate tool ${identity.namespace}.${tool.name}`);
     names.add(key);
-    if (tool.kind !== "manual" && tool[clientToolSearchDeclaration]) {
+    if (tool.kind !== 'manual' && tool[clientToolSearchDeclaration]) {
       if (
-        tool.name !== "tool_search" ||
+        tool.name !== 'tool_search' ||
         tool.namespace !== undefined ||
         tool.deferLoading ||
         tool.finishTurn ||
         tool.callbackTimeout !== undefined
       )
         throw new TypeError(
-          "Client search declarations retain their native identity and policies",
+          'Client search declarations retain their native identity and policies',
         );
       return {
-        type: "toolSearch",
+        type: 'toolSearch',
         declaration: losslessJsonObjectSchema.parse(
           tool[clientToolSearchDeclaration],
         ),
@@ -1839,13 +1839,13 @@ export function captureTools(
       if (
         tool.name !== mcp.serverLabel ||
         tool.deferLoading ||
-        (tool.kind !== "manual" &&
-          (tool.namespace !== "hosted_mcp" || tool.finishTurn))
+        (tool.kind !== 'manual' &&
+          (tool.namespace !== 'hosted_mcp' || tool.finishTurn))
       )
         throw new TypeError(
-          "Hosted MCP declarations retain their server identity",
+          'Hosted MCP declarations retain their server identity',
         );
-      return { type: "hostedMcp", serverLabel: mcp.serverLabel };
+      return { type: 'hostedMcp', serverLabel: mcp.serverLabel };
     }
     if (tool[shellDeclaration])
       return losslessJsonObjectSchema.parse(tool[shellDeclaration]);
@@ -1855,26 +1855,26 @@ export function captureTools(
     if (native) {
       const declaration = losslessJsonObjectSchema.parse(native);
       const expectedName =
-        declaration.type === "computer"
-          ? "computer"
-          : declaration.type === "applyPatch"
-            ? "apply_patch"
+        declaration.type === 'computer'
+          ? 'computer'
+          : declaration.type === 'applyPatch'
+            ? 'apply_patch'
             : undefined;
       if (
         expectedName === undefined ||
         tool.name !== expectedName ||
-        (tool.kind !== "manual" && tool.namespace !== undefined) ||
+        (tool.kind !== 'manual' && tool.namespace !== undefined) ||
         tool.deferLoading ||
         tool.finishTurn ||
-        (tool.kind !== "manual" && tool.callbackTimeout !== undefined)
+        (tool.kind !== 'manual' && tool.callbackTimeout !== undefined)
       )
         throw new TypeError(
-          "Computer declarations retain their native identity and policies",
+          'Computer declarations retain their native identity and policies',
         );
       return declaration;
     }
     const spec = {
-      type: "function",
+      type: 'function',
       name: tool.name,
       description: tool.description,
       inputSchema: tool.parameters,
@@ -1884,19 +1884,19 @@ export function captureTools(
         ? {}
         : { outputSchema: tool.outputSchema }),
     };
-    const namespace = tool.kind === "manual" ? undefined : tool.namespace;
+    const namespace = tool.kind === 'manual' ? undefined : tool.namespace;
     const declaration =
       namespace !== undefined
         ? {
-            type: "namespace",
+            type: 'namespace',
             name: namespace,
             description:
-              tool.kind === "manual" ? "" : (tool.namespaceDescription ?? ""),
+              tool.kind === 'manual' ? '' : (tool.namespaceDescription ?? ''),
             tools: [spec],
           }
         : spec;
     const source = managedApproval(tool)?.function ?? tool;
-    return source.kind === "manual" || source.allowedCallers === undefined
+    return source.kind === 'manual' || source.allowedCallers === undefined
       ? declaration
       : { ...declaration, allowedCallers: [...source.allowedCallers] };
   });
@@ -1929,11 +1929,11 @@ export function captureAdmittedToolUpdate(
       expected !== undefined &&
       toolDeclarationIdentity(tool) !== toolDeclarationIdentity(expected)
     )
-      throw new TypeError("A captured handoff callback cannot be replaced");
+      throw new TypeError('A captured handoff callback cannot be replaced');
   }
-  if (customStore && replacements.tools.some((tool) => tool.kind === "manual"))
+  if (customStore && replacements.tools.some((tool) => tool.kind === 'manual'))
     throw new TypeError(
-      "Custom canonical storage does not support manual tools",
+      'Custom canonical storage does not support manual tools',
     );
   const byName = new Map(
     replacements.tools.map((tool) => [
@@ -1988,10 +1988,10 @@ export async function invokeWithTimeout<T>(
   name: string,
   onTimeout: (error: Error) => void,
   timeoutError?: Error,
-  timeoutBehavior: FunctionToolTimeoutBehavior = "raise_exception",
+  timeoutBehavior: FunctionToolTimeoutBehavior = 'raise_exception',
   wrapBodyError?: (error: unknown) => unknown,
   enterBody?: (signal: AbortSignal) => void,
-  settlement: "after_cleanup" | "at_deadline" = "after_cleanup",
+  settlement: 'after_cleanup' | 'at_deadline' = 'after_cleanup',
   retainBody?: (body: Promise<unknown>) => void,
 ): Promise<T> {
   if (timeoutSeconds === undefined) {
@@ -2007,10 +2007,10 @@ export async function invokeWithTimeout<T>(
   const signal = AbortSignal.any([parentSignal, controller.signal]);
   const timeout =
     timeoutError ?? new Error(`Tool ${name} exceeded its callback timeout`);
-  if (!timeoutError) timeout.name = "TimeoutError";
+  if (!timeoutError) timeout.name = 'TimeoutError';
   const deadline = performance.now() + timeoutSeconds * 1000;
   const deadlineResult =
-    settlement === "at_deadline" && retainBody !== undefined
+    settlement === 'at_deadline' && retainBody !== undefined
       ? Promise.withResolvers<never>()
       : undefined;
   void deadlineResult?.promise.catch(() => {});
@@ -2036,7 +2036,7 @@ export async function invokeWithTimeout<T>(
       const result = invoke(signal);
       // Check synchronous completion before unrelated queued work can delay us.
       value =
-        result && typeof (result as Promise<T>).then === "function"
+        result && typeof (result as Promise<T>).then === 'function'
           ? await ((body = Promise.resolve(result)),
             deadlineResult
               ? Promise.race([body, deadlineResult.promise])
@@ -2045,7 +2045,7 @@ export async function invokeWithTimeout<T>(
     } catch (error) {
       if (timeoutError) {
         if (performance.now() >= deadline) expire();
-        if (timeoutBehavior !== "error_as_result" || !parentSignal.aborted)
+        if (timeoutBehavior !== 'error_as_result' || !parentSignal.aborted)
           controller.signal.throwIfAborted();
       }
       throw wrapBodyError ? wrapBodyError(error) : error;
