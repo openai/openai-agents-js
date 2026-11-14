@@ -388,6 +388,13 @@ async function build() {
       '--locked',
       '--lib',
       ...(windows ? ['--package', 'codex-agents-node'] : helpers),
+      // Split code generation only for the x64 Windows release addon.
+      ...(release && host === 'x86_64-pc-windows-msvc'
+        ? [
+            '--config',
+            'profile.release.package.codex-agents-node.codegen-units=2',
+          ]
+        : []),
       ...profile,
       ...timings,
     ],

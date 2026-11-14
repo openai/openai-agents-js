@@ -2,4 +2,4 @@
 '@openai/agents-codex': patch
 ---
 
-perf: Reduce native release binary size and memory use, and avoid compiling the Node addon's Rust Core a second time for Windows helpers.
+perf: Reduce native release binary size and memory use, skip the duplicate Rust Core build for Windows helpers, and speed up Windows x64 addon compilation.
