@@ -393,7 +393,12 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   expect(staged.summary).toContain(inputs);
   expect(
     staged.requests.filter((args) => args.at(-1).includes('/steps/12/logs')),
-  ).toHaveLength(1);
+  ).toEqual([
+    [
+      'api',
+      `repos/openai/openai-agents-js/actions/jobs/${qualified.jobs[0].id}/steps/12/logs`,
+    ],
+  ]);
   expect(run({ ...qualified, publicationStatus: 404 }).output).toContain(
     key + '_hit=false',
   );

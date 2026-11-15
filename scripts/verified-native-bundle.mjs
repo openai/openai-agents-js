@@ -146,7 +146,6 @@ function readPublicationStep(job, step) {
       'gh',
       [
         'api',
-        '--allow-escape-sequences',
         'repos/' + repo + '/actions/jobs/' + job + '/steps/' + step + '/logs',
       ],
       {
