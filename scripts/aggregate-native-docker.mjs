@@ -107,6 +107,7 @@ export function aggregate(directory, context) {
   }; // Existing parent-side probe inspection owns all namespace/capability predicates.
   witnessed(positive);
   assert.equal(positive.procMode, 'inherited');
+  assert.equal(positive.outerProcLinks, 'denied');
   const names = [
     'metadata-within-root',
     'workspace-proc',

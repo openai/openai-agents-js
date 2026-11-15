@@ -79,6 +79,7 @@ function fixture(t) {
     name: 'bwrap-positive-and-protected-access',
     passed: true,
     procMode: 'inherited',
+    outerProcLinks: 'denied',
     inner: { pid: 9, apparmor: name + ' (enforce)' },
   });
   for (const location of ['workspace', 'oldroot', 'newroot'])
@@ -189,6 +190,15 @@ test('diagnostic policy, stale source and unclassified controls remain red', (t)
       'probes.stdout',
       (x) => {
         x.checks[11].denialStage = 'startup-failed';
+      },
+    ],
+    [
+      'probes.stdout',
+      (x) => {
+        const positive = x.checks.find(
+          (check) => check.name === 'bwrap-positive-and-protected-access',
+        );
+        delete positive.outerProcLinks;
       },
     ],
   ]) {
