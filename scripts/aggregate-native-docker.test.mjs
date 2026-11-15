@@ -73,6 +73,7 @@ function fixture(t) {
     name: 'bwrap-positive-and-protected-access',
     passed: true,
     procMode: 'inherited',
+    outerProcLinks: 'denied',
     inner: { pid: 9, apparmor: name + ' (enforce)' },
   });
   for (const location of ['workspace', 'oldroot', 'newroot'])
@@ -193,6 +194,19 @@ test('diagnostic policy, stale source and unclassified controls remain red', (t)
   const f = fixture(t);
   f.context.sha = 'f'.repeat(40);
   assert.throws(() => aggregate(f.directory, f.context));
+});
+
+test('positive probe requires explicit outer proc link denial', (t) => {
+  for (const outerProcLinks of [undefined, 'allowed']) {
+    const f = fixture(t);
+    f.change('probes.stdout', (x) => {
+      const positive = x.checks.find(
+        (row) => row.name === 'bwrap-positive-and-protected-access',
+      );
+      positive.outerProcLinks = outerProcLinks;
+    });
+    assert.throws(() => aggregate(f.directory, f.context));
+  }
 });
 
 test('startup or protected-source audit cannot replace protected-target remount denial', (t) => {
