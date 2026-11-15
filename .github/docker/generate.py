@@ -98,12 +98,15 @@ rules = '''  # Diagnostic: fresh child userns, then only bwrap setup mount class
 '''
 # Fixed fixture/runtime pairs block generic cross-root aliases; suffix aliases remain.
 # Every pair keeps its top-level identity; proc/sys receive no generic pair.
-for root in ('workspace', 'tools', 'data-write', 'mnt/native-readonly',
+for root in ('workspace', 'data-write', 'mnt/native-readonly',
              'mnt/native-writable', 'bin', 'sbin', 'usr', 'etc', 'lib', 'lib64'):
     for option in ('bind', 'rbind'):
         rules += f'  mount options=(rw,{option},silent) /oldroot/{root}{{,/**}} -> /newroot/{root}{{,/**}},\n'
+# The fixture grants the whole tools directory, never a writable suffix alias.
+for option in ('bind', 'rbind'):
+    rules += f'  mount options=(rw,{option},silent) /oldroot/tools/ -> /newroot/tools/,\n'
 for device in ('null', 'zero', 'full', 'random', 'urandom', 'tty'):
-    rules += f'  mount options=(rw,bind,silent) /oldroot/dev/{device} -> /newroot/dev/{device},\n'
+    rules += f'  mount options=(rw,rbind,silent) /oldroot/dev/{device} -> /newroot/dev/{device},\n'
 apparmor = template.replace('  deny mount,', rules.rstrip()).encode()
 (out / 'apparmor.profile').write_bytes(apparmor)
 manifest = {
