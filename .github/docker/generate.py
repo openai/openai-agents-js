@@ -122,7 +122,7 @@ manifest = {
               'apparmorTemplateSha256': EXPECTED['apparmor/template.go']},
  'seccomp': {'path': '/etc/openai-agents-native-docker/seccomp.json', 'sha256': digest(seccomp)},
  'apparmor': {'name': name, 'path': '/etc/openai-agents-native-docker/apparmor.profile', 'sha256': digest(apparmor)},
- 'diagnosticOnly': True,
+ 'diagnosticOnly': False,
 }
 (out / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(out / 'manifest.json')

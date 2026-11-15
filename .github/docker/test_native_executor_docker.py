@@ -1,10 +1,13 @@
 """Offline admission tests; no Docker daemon or kernel policy load."""
 
+import ast
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +15,63 @@ SOURCE = Path(__file__).with_name("native-executor-docker.py")
 SPEC = importlib.util.spec_from_file_location("qualification_docker", SOURCE)
 WRAPPER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(WRAPPER)
+
+
+class AliasMountDenialTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Execute the actual classifier without running live confinement probes.
+        source = SOURCE.with_name("native-executor-probes.py")
+        tree = ast.parse(source.read_text(), filename=str(source))
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "is_alias_mount_denial"
+        )
+        namespace = {"os": os}
+        exec(
+            compile(ast.Module(body=[function], type_ignores=[]), str(source), "exec"),
+            namespace,
+        )
+        cls.classify = staticmethod(namespace["is_alias_mount_denial"])
+
+    def test_exact_canonical_source_destination_and_permission_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = Path(directory) / "metadata"
+            canonical.mkdir()
+            source = Path(directory) / "source-link"
+            source.symlink_to(canonical, target_is_directory=True)
+            alias = Path("/tools/policy-probe-test/metadata-alias")
+            prefix = f"bwrap: Can't bind mount {canonical} on {alias}: Unable to mount source on destination: "
+            for reason in (
+                "Permission denied",
+                "Operation not permitted",
+                "Read-only file system",
+            ):
+                with self.subTest(reason=reason):
+                    result = SimpleNamespace(
+                        returncode=1, stderr=prefix + reason + "\n"
+                    )
+                    self.assertTrue(self.classify(result, source, alias))
+                    result.returncode = 0
+                    self.assertFalse(self.classify(result, source, alias))
+            for stderr in (
+                prefix + "No such file or directory",
+                prefix + "Invalid argument",
+                prefix + "Permission denied trailing text",
+                prefix.replace(str(canonical), str(source)) + "Permission denied",
+                prefix.replace(str(canonical), str(canonical) + "-other")
+                + "Permission denied",
+                prefix.replace(str(alias), str(alias) + "-other") + "Permission denied",
+                "bwrap: Creating new namespace failed: Operation not permitted",
+            ):
+                with self.subTest(stderr=stderr):
+                    self.assertFalse(
+                        self.classify(
+                            SimpleNamespace(returncode=1, stderr=stderr), source, alias
+                        )
+                    )
 
 
 class QualificationDockerTest(unittest.TestCase):

@@ -228,6 +228,19 @@ test('qualification requires strict mapped execution and the exact test report',
   );
 });
 
+test('positive probe requires explicit outer proc link denial', (t) => {
+  for (const outerProcLinks of [undefined, 'allowed']) {
+    const f = fixture(t);
+    f.change('probes.stdout', (x) => {
+      const positive = x.checks.find(
+        (row) => row.name === 'bwrap-positive-and-protected-access',
+      );
+      positive.outerProcLinks = outerProcLinks;
+    });
+    assert.throws(() => aggregate(f.directory, f.context));
+  }
+});
+
 test('startup or protected-source audit cannot replace protected-target remount denial', (t) => {
   const f = fixture(t),
     path = join(f.directory, 'profile-audit.log');
