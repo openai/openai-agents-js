@@ -211,48 +211,21 @@ jobs:
           path: results/native-docker/
           if-no-files-found: ignore
 
-  package:
+  package-linux:
     name: Package and test (${{ matrix.platform }})
-    # Trusted donor runs publish every native transfer before SDK code starts.
-    needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]
+    needs: [select, produce-linux]
     if: >-
-      github.event_name != 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
-       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success')) &&
-      ((needs.select.outputs.linux-arm64_hit == 'true' && needs.produce-linux-arm64.result == 'skipped') ||
-       (needs.select.outputs.linux-arm64_hit != 'true' && needs.produce-linux-arm64.result == 'success')) &&
-      ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
-       (needs.select.outputs.macos_hit != 'true' && needs.produce-macos.result == 'success')) &&
-      ((needs.select.outputs.windows_hit == 'true' && needs.produce-windows.result == 'skipped') ||
-       (needs.select.outputs.windows_hit != 'true' && needs.produce-windows.result == 'success'))
+       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success'))
     strategy:
-      fail-fast: false
       matrix:
         include:
-          - &linux_package
-            platform: linux-x64
+          - platform: linux-x64
             runner: ubuntu-24.04
             cargo_jobs: 64
             managed_arm: false
             artifact: ${{ needs.select.outputs.linux_hit == 'true' && needs.select.outputs.linux_artifact || needs.produce-linux.outputs.artifact }}
-          - &linux-arm64_package
-            platform: linux-arm64
-            runner: ubuntu-24.04-arm
-            cargo_jobs: 4
-            managed_arm: *managed_arm
-            artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
-          - &macos_package
-            platform: darwin-arm64
-            runner: macos-15
-            cargo_jobs: 5
-            managed_arm: false
-            artifact: ${{ needs.select.outputs.macos_hit == 'true' && needs.select.outputs.macos_artifact || needs.produce-macos.outputs.artifact }}
-          - &windows_package
-            platform: win32-x64
-            runner: windows-2025
-            cargo_jobs: 16
-            managed_arm: false
-            artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
     runs-on: &package_runs_on >-
       ${{ fromJSON(
         github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64' &&
@@ -313,6 +286,7 @@ jobs:
           cache: ${{ matrix.platform != 'darwin-arm64' && 'pnpm' || '' }}
       - name: Build the current SDK
         id: build_sdk
+        timeout-minutes: 15
         run: |
           pnpm install --frozen-lockfile
           pnpm build
@@ -339,7 +313,7 @@ jobs:
           packages/agents-codex/test/native/checkpoint-upgrades-native.test.ts
           --maxWorkers=1 --reporter=verbose
       - name: Qualify canonical native storage
-        if: runner.os == 'Linux' || runner.os == 'macOS'
+        if: runner.os == 'macOS'
         run: >-
           pnpm test:native
           packages/agents-codex/test/native/custom-storage-durability-native.test.ts
@@ -359,20 +333,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: |
-          pnpm test:native \
-            packages/agents-codex/test/native/supervised-worker-example.test.ts \
-            packages/agents-codex/test/native/supervised-worker-cleanup.test.ts \
-            --reporter=verbose
-          pnpm test:native \
-            packages/agents-codex/test/native/local-executor-policy-native.test.ts \
-            -t 'joins an interrupted local command|ignores sandbox helper candidates|isolates local command reads and environment|rejects a missing write root|rejects an alias to the installed helpers|applies a per-turn write policy|keeps relocated (sessions|dated sessions|archives) outside local grants on open and replacement|keeps a selected local rollout outside grants on resume and replacement|rejects a profile database hard link in a local grant|keeps relocated checklist state outside local grants|rejects unverifiable directory aliases in the private native runtime home' \
-            --reporter=verbose
-          pnpm test:native \
-            packages/agents-codex/test/native/storage-mounts.test.ts \
-            packages/agents-codex/test/native/storage-mounts-native.test.ts \
-            --reporter=verbose
-          pnpm test:native --mode full --maxWorkers=${{ matrix.managed_arm && 8 || 4 }} --reporter=verbose
+        run: >-
+          pnpm test:native --mode full
+          --maxWorkers=${{ (matrix.managed_arm || (github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64')) && 8 || 4 }}
+          --reporter=verbose
       - name: Qualify local executor grants on macOS
         if: ${{ !cancelled() && runner.os == 'macOS' && steps.build_sdk.outcome == 'success' }}
         env:
@@ -430,68 +394,63 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  # PR artifacts cannot donate to other runs; qualification waits for this platform.
-  package-linux:
-    name: ${{ github.event_name == 'pull_request' && 'Package and test' || 'PR package and test' }} (${{ matrix.platform }})
-    needs: [select, produce-linux]
-    if: >-
-      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
-      ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
-       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success'))
-    strategy:
-      matrix:
-        include: [*linux_package]
-    runs-on: *package_runs_on
-    timeout-minutes: 180
-    defaults: *package_defaults
-    env: *package_env
-    steps: *package_steps
-
-  # PR artifacts cannot donate to other runs; qualification waits for this platform.
   package-linux-arm64:
-    name: ${{ github.event_name == 'pull_request' && 'Package and test' || 'PR package and test' }} (${{ matrix.platform }})
+    name: Package and test (${{ matrix.platform }})
     needs: [select, produce-linux-arm64]
     if: >-
-      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.linux-arm64_hit == 'true' && needs.produce-linux-arm64.result == 'skipped') ||
        (needs.select.outputs.linux-arm64_hit != 'true' && needs.produce-linux-arm64.result == 'success'))
     strategy:
       matrix:
-        include: [*linux-arm64_package]
+        include:
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            cargo_jobs: 4
+            managed_arm: *managed_arm
+            artifact: ${{ needs.select.outputs.linux-arm64_hit == 'true' && needs.select.outputs.linux-arm64_artifact || needs.produce-linux-arm64.outputs.artifact }}
     runs-on: *package_runs_on
     timeout-minutes: 180
     defaults: *package_defaults
     env: *package_env
     steps: *package_steps
 
-  # PR artifacts cannot donate to other runs; qualification waits for this platform.
   package-macos:
-    name: ${{ github.event_name == 'pull_request' && 'Package and test' || 'PR package and test' }} (${{ matrix.platform }})
+    name: Package and test (${{ matrix.platform }})
     needs: [select, produce-macos]
     if: >-
-      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
        (needs.select.outputs.macos_hit != 'true' && needs.produce-macos.result == 'success'))
     strategy:
       matrix:
-        include: [*macos_package]
+        include:
+          - platform: darwin-arm64
+            runner: macos-15
+            cargo_jobs: 5
+            managed_arm: false
+            artifact: ${{ needs.select.outputs.macos_hit == 'true' && needs.select.outputs.macos_artifact || needs.produce-macos.outputs.artifact }}
     runs-on: *package_runs_on
     timeout-minutes: 180
     defaults: *package_defaults
     env: *package_env
     steps: *package_steps
 
-  # PR artifacts cannot donate to other runs; qualification waits for this platform.
   package-windows:
-    name: ${{ github.event_name == 'pull_request' && 'Package and test' || 'PR package and test' }} (${{ matrix.platform }})
+    name: Package and test (${{ matrix.platform }})
     needs: [select, produce-windows]
     if: >-
-      github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success' &&
+      !cancelled() && needs.select.result == 'success' &&
       ((needs.select.outputs.windows_hit == 'true' && needs.produce-windows.result == 'skipped') ||
        (needs.select.outputs.windows_hit != 'true' && needs.produce-windows.result == 'success'))
     strategy:
       matrix:
-        include: [*windows_package]
+        include:
+          - platform: win32-x64
+            runner: windows-2025
+            cargo_jobs: 16
+            managed_arm: false
+            artifact: ${{ needs.select.outputs.windows_hit == 'true' && needs.select.outputs.windows_artifact || needs.produce-windows.outputs.artifact }}
     runs-on: *package_runs_on
     timeout-minutes: 180
     defaults: *package_defaults

@@ -24,6 +24,8 @@ import { setTimeout } from 'node:timers/promises';
 import * as tls from 'node:tls';
 import {
   auditSources,
+  readSeries,
+  reviewedSourceIdentity,
   sha256Bytes,
   verifyVendoredHyper,
 } from './native-source.mjs';
@@ -38,21 +40,42 @@ const { values, positionals } = parseArgs({
     'rmcp-source': { type: 'string' },
     release: { type: 'boolean', default: false },
     'test-fixture': { type: 'boolean', default: false },
+    'windows-component': { type: 'string' },
+    'windows-parts': { type: 'string' },
   },
   allowPositionals: true,
 });
 const [command] = positionals;
+const component = values['windows-component'];
+const parts = values['windows-parts'];
 if (
   positionals.length !== 1 ||
-  !['prepare', 'audit', 'build', 'package'].includes(command) ||
-  ((values.release || values['test-fixture']) && command !== 'build')
+  !['prepare', 'audit', 'build', 'package', 'assemble-windows'].includes(
+    command,
+  ) ||
+  ((values.release || values['test-fixture']) && command !== 'build') ||
+  (component !== undefined &&
+    (command !== 'package' || !['addon', 'helpers'].includes(component))) ||
+  (command === 'assemble-windows') !== Boolean(parts)
 ) {
   throw new Error(
-    'Usage: node scripts/native.mjs prepare|audit|build|package [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture]',
+    'Usage: node scripts/native.mjs prepare|audit|build|package|assemble-windows [--source <codex-git-repository>] [--rmcp-source <rust-sdk-git-repository>] [--release] [--test-fixture] [--windows-component addon|helpers] [--windows-parts <directory>]',
   );
 }
-if (command === 'build' || command === 'package')
-  rmSync(join(root, 'build-receipt.json'), { force: true });
+const receiptPath = join(root, 'build-receipt.json');
+if (['build', 'package', 'assemble-windows'].includes(command))
+  rmSync(receiptPath, { force: true });
+const addonPath = 'native/codex.node';
+const fixturePath = 'native/test-bin/exec-server-fixture.exe';
+const windowsProducts = {
+  addon: [addonPath],
+  helpers: [
+    'bin/codex-sdk-runtime.exe',
+    'bin/codex-code-mode-host.exe',
+    fixturePath,
+  ],
+};
+const windowsHost = 'x86_64-pc-windows-msvc';
 const revision = readFileSync(join(root, 'CODEX_REVISION'), 'utf8').trim();
 const v8Release = JSON.parse(
   readFileSync(new URL('./v8-release.json', import.meta.url), 'utf8'),
@@ -271,8 +294,6 @@ async function verifiedV8(filename, override) {
 }
 
 async function build() {
-  const receiptPath = join(root, 'build-receipt.json');
-  rmSync(receiptPath, { force: true });
   verifyVendoredHyper(root);
   const { identities: sourceIdentity, verify: verifySources } = auditSources(
     root,
@@ -309,6 +330,10 @@ async function build() {
       'Verified V8 assets currently support native host builds only',
     );
   }
+  if (component && (host !== windowsHost || environment.CARGO_BUILD_TARGET))
+    throw new Error(
+      'Windows partial builds require the Windows x64 Rust target',
+    );
   if (['1', 'true', 'yes'].includes(environment.V8_FORCE_DEBUG)) {
     throw new Error(
       'Verified Codex V8 assets require V8_FORCE_DEBUG to be disabled',
@@ -336,27 +361,32 @@ async function build() {
     bindingName,
     environment.RUSTY_V8_SRC_BINDING_PATH,
   );
-  // Keep the regression graph and its outputs separate from the Core build.
-  run(
-    'cargo',
-    [
-      'test',
-      '--locked',
-      '--target',
-      host,
-      '--manifest-path',
-      join(root, 'rust/tests/hyper-readiness/Cargo.toml'),
-      '--test',
-      'readiness',
-    ],
-    {
-      env: {
-        ...environment,
-        CARGO_TARGET_DIR: join(environment.CARGO_TARGET_DIR, 'hyper-readiness'),
+  if (component !== 'helpers') {
+    // Keep the regression graph and its outputs separate from the Core build.
+    run(
+      'cargo',
+      [
+        'test',
+        '--locked',
+        '--target',
+        host,
+        '--manifest-path',
+        join(root, 'rust/tests/hyper-readiness/Cargo.toml'),
+        '--test',
+        'readiness',
+      ],
+      {
+        env: {
+          ...environment,
+          CARGO_TARGET_DIR: join(
+            environment.CARGO_TARGET_DIR,
+            'hyper-readiness',
+          ),
+        },
+        stdio: 'inherit',
       },
-      stdio: 'inherit',
-    },
-  );
+    );
+  }
   checkInputs();
   // Restored Cargo fingerprints can otherwise accept SDK files with old timestamps.
   const clean = [
@@ -375,29 +405,32 @@ async function build() {
       stdio: 'inherit',
     });
   }
+  const includeFixture = values['test-fixture'] || component === 'helpers';
   const helpers = [
     '--bin',
     'codex-sdk-runtime',
     '--bin',
     'codex-code-mode-host',
-    ...(values['test-fixture'] ? ['--example', 'exec-server-fixture'] : []),
+    ...(includeFixture ? ['--example', 'exec-server-fixture'] : []),
   ];
   const profile = release ? ['--release'] : [];
   const timings =
     environment.OPENAI_AGENTS_NATIVE_TIMINGS === '1' ? ['--timings'] : [];
-  run(
-    'cargo',
-    [
-      'build',
-      '--locked',
-      '--lib',
-      ...(windows ? ['--package', 'codex-agents-node'] : helpers),
-      ...profile,
-      ...timings,
-    ],
-    { env: environment, stdio: 'inherit' },
-  );
-  if (windows) {
+  if (component !== 'helpers') {
+    run(
+      'cargo',
+      [
+        'build',
+        '--locked',
+        '--lib',
+        ...(windows ? ['--package', 'codex-agents-node'] : helpers),
+        ...profile,
+        ...timings,
+      ],
+      { env: environment, stdio: 'inherit' },
+    );
+  }
+  if (windows && component !== 'addon') {
     // V8 executables need Codex's MSVC settings. Keep them off the Node addon:
     // its cdylib must retain the DLL-compatible CRT. Dependency Cargo configs
     // are not inherited, so select the unchanged upstream config explicitly.
@@ -434,18 +467,61 @@ async function build() {
       ? 'libagents_codex.dylib'
       : 'libagents_codex.so';
   const suffix = windows ? '.exe' : '';
-  // Existing Node processes may still have the old addon mapped into memory.
-  const stagedAddon = join(root, `codex.${process.pid}.node`);
-  copyFileSync(join(output, library), stagedAddon);
-  renameSync(stagedAddon, join(root, 'codex.node'));
+  const payload = [];
+  if (component !== 'helpers') {
+    // Existing Node processes may still have the old addon mapped into memory.
+    const stagedAddon = join(root, `codex.${process.pid}.node`);
+    copyFileSync(join(output, library), stagedAddon);
+    renameSync(stagedAddon, join(root, 'codex.node'));
+    payload.push([join(root, 'codex.node'), join(output, library)]);
+  }
+  if (component !== 'addon')
+    copyHelpers(payload, helperOutput, host, suffix, includeFixture);
+  const products = Object.fromEntries(
+    await Promise.all(
+      payload.map(async ([destination, built]) => {
+        const name = destination
+          .slice(packageRoot.length + 1)
+          .replaceAll('\\', '/');
+        const digest = await productDigest(
+          destination,
+          !windows && name !== addonPath,
+        );
+        if (digest !== (await sha256(built)))
+          throw new Error(
+            `Packaged native artifact differs from build: ${name}`,
+          );
+        return [name, digest];
+      }),
+    ),
+  );
+  checkInputs();
+  if (command === 'package' && !component) smoke();
+  writeFileSync(
+    receiptPath,
+    JSON.stringify(
+      {
+        format: 'reviewed-native-v1',
+        sources: sourceIdentity,
+        inputs,
+        host,
+        release,
+        products,
+      },
+      null,
+      2,
+    ) + '\n',
+  );
+}
+
+function copyHelpers(payload, helperOutput, host, suffix, includeFixture) {
   const bin = join(packageRoot, 'bin');
   mkdirSync(bin, { recursive: true });
   const runtime = join(helperOutput, `codex-sdk-runtime${suffix}`);
-  const payload = [[join(root, 'codex.node'), join(output, library)]];
   const runtimeNames = [
     'codex-sdk-runtime',
     ...(host.includes('-linux-') ? ['codex-linux-sandbox'] : []),
-    ...(!windows ? ['codex-execve-wrapper'] : []),
+    ...(!suffix ? ['codex-execve-wrapper'] : []),
   ];
   // Remove obsolete aliases from builds made before helper selection was
   // restricted by host. Only remove paths that this build script has owned.
@@ -468,7 +544,7 @@ async function build() {
   const codeModeDestination = join(bin, `codex-code-mode-host${suffix}`);
   copyFileSync(codeMode, codeModeDestination);
   payload.push([codeModeDestination, codeMode]);
-  if (values['test-fixture']) {
+  if (includeFixture) {
     const testBin = join(root, 'test-bin');
     mkdirSync(testBin, { recursive: true });
     const fixture = join(
@@ -480,47 +556,26 @@ async function build() {
     copyFileSync(fixture, destination);
     payload.push([destination, fixture]);
   }
-  console.log(`Built native/codex.node and matching helpers in ${bin}`);
-  let receipt;
-  {
-    for (const [destination, built] of payload) {
-      const metadata = lstatSync(destination);
-      if (
-        !metadata.isFile() ||
-        metadata.size === 0 ||
-        (!windows &&
-          destination !== join(root, 'codex.node') &&
-          !(metadata.mode & 0o111)) ||
-        (await sha256(destination)) !== (await sha256(built))
-      ) {
-        throw new Error(`Invalid packaged native artifact: ${destination}`);
-      }
-    }
-    checkInputs();
-    const products = Object.fromEntries(
-      await Promise.all(
-        payload.map(async ([destination]) => [
-          destination.slice(packageRoot.length + 1).replaceAll('\\', '/'),
-          await sha256(destination),
-        ]),
-      ),
-    );
-    receipt = {
-      format: 'reviewed-native-v1',
-      sources: sourceIdentity,
-      inputs,
-      host,
-      release,
-      products,
-    };
-  }
-  if (command === 'package') {
-    // Load in a child so the producer never retains a mapped addon across builds.
-    run(
-      process.execPath,
-      [
-        '-e',
-        `
+}
+
+async function productDigest(file, executable = false) {
+  const metadata = lstatSync(file);
+  if (
+    !metadata.isFile() ||
+    !metadata.size ||
+    (executable && !(metadata.mode & 0o111))
+  )
+    throw new Error(`Invalid packaged native artifact: ${file}`);
+  return sha256(file);
+}
+
+function smoke() {
+  // Load in a child so the producer never retains a mapped addon across builds.
+  run(
+    process.execPath,
+    [
+      '-e',
+      `
         const binding = require(process.argv[1]);
         if (binding.CODEX_REVISION !== process.argv[2] ||
             typeof binding.create_engine !== 'function' ||
@@ -532,21 +587,85 @@ async function build() {
           fs.accessSync(helper, fs.constants.F_OK | fs.constants.X_OK);
         }
       `,
-        join(root, 'index.js'),
-        revision,
-      ],
-      { timeout: 30_000 },
+      join(root, 'index.js'),
+      revision,
+    ],
+    { timeout: 30_000 },
+  );
+  console.log('Verified native addon and matching helpers for packaging');
+}
+
+async function assembleWindows() {
+  if (process.platform !== 'win32' || process.arch !== 'x64')
+    throw new Error('Windows release assembly requires a Windows x64 runner');
+  verifyVendoredHyper(root);
+  const inputs = buildInputs();
+  const sourceIdentity = Object.fromEntries(
+    sources.map(({ name, revision, patches }) => [
+      name,
+      reviewedSourceIdentity(revision, readSeries(join(root, patches))),
+    ]),
+  );
+  const products = {};
+  for (const [lane, names] of Object.entries(windowsProducts)) {
+    const directory = resolve(parts, lane);
+    const transfer = JSON.parse(
+      readFileSync(join(directory, 'native/build-receipt.json'), 'utf8'),
     );
-    console.log(
-      `Verified native addon and ${payload.length - 1} matching helpers for packaging`,
+    if (
+      transfer.format !== 'reviewed-native-v1' ||
+      transfer.release !== true ||
+      transfer.host !== windowsHost
+    )
+      throw new Error(`Invalid Windows ${lane} build receipt`);
+    equalSnapshot(transfer.sources, sourceIdentity, 'Reviewed sources');
+    equalSnapshot(transfer.inputs, inputs, 'Native inputs');
+    equalSnapshot(
+      Object.keys(transfer.products).sort(),
+      [...names].sort(),
+      'Windows product inventory',
     );
+    for (const name of names) {
+      const file = join(directory, name);
+      const digest = await productDigest(file);
+      if (digest !== transfer.products[name])
+        throw new Error(`Windows product digest differs: ${name}`);
+      products[name] = digest;
+    }
   }
-  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
+  for (const [lane, names] of Object.entries(windowsProducts)) {
+    for (const name of names) {
+      const file = join(packageRoot, name);
+      mkdirSync(dirname(file), { recursive: true });
+      copyFileSync(join(parts, lane, name), file);
+      if ((await productDigest(file)) !== products[name])
+        throw new Error(`Assembled Windows product digest differs: ${name}`);
+    }
+  }
+  smoke();
+  delete products[fixturePath];
+  writeFileSync(
+    receiptPath,
+    JSON.stringify(
+      {
+        format: 'reviewed-native-v1',
+        sources: sourceIdentity,
+        inputs,
+        host: windowsHost,
+        release: true,
+        products,
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 }
 
 if (command === 'prepare' || command === 'audit') {
   verifyVendoredHyper(root);
   auditSources(root, sources, command === 'prepare');
+} else if (command === 'assemble-windows') {
+  await assembleWindows();
 } else {
   await build();
 }

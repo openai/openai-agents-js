@@ -469,6 +469,15 @@ function extract(repository, tree, destination, files, options = {}) {
     if (mode !== '120000') utimesSync(join(destination, name), now, now);
   verifyTree(destination, files);
 }
+export function reviewedSourceIdentity(revision, series) {
+  return {
+    revision,
+    result_tree: series.result_tree,
+    manifest_sha256: series.manifest_sha256,
+    patches: series.patches.map(({ path, sha256 }) => ({ path, sha256 })),
+  };
+}
+
 export function auditSources(root, sources, prepare) {
   const upstream = join(root, '.upstream');
   const identities = {};
@@ -477,12 +486,7 @@ export function auditSources(root, sources, prepare) {
     const patchDirectory = join(root, spec.patches);
     const series = readSeries(patchDirectory);
     const { name, revision } = spec;
-    const identity = {
-      revision: spec.revision,
-      result_tree: series.result_tree,
-      manifest_sha256: series.manifest_sha256,
-      patches: series.patches.map(({ path, sha256 }) => ({ path, sha256 })),
-    };
+    const identity = reviewedSourceIdentity(revision, series);
     const repository = sourceRepository(upstream, spec);
     const baseFiles = listing(repository, spec.revision);
     const pristine = join(upstream, name);

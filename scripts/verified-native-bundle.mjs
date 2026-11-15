@@ -33,27 +33,76 @@ export function isProducer(run, workflowId) {
   );
 }
 
-export function isNativePublication(asset, run, jobs, platform) {
-  const latest = (name) =>
-    jobs
-      .filter((job) => job.name === name)
-      .sort((a, b) => b.run_attempt - a.run_attempt)[0];
+const uploader = 'cf430e030ddbb5b0abf93d22962f4752f3646cd9';
+const prefix = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z /;
+
+export function uploadStepMatches(log, asset, runId) {
   if (
-    jobs.some((job) => job.run_attempt > run.run_attempt) ||
-    latest('Package and test (' + platform + ')')?.conclusion !== 'success'
-  )
-    return false;
-  // Include prior attempts: SDK code must never precede a trusted publication.
-  const starts = jobs
-    .filter(
-      (job) =>
-        job.name.startsWith('Package and test (') &&
-        job.conclusion !== 'skipped',
+    typeof log !== 'string' ||
+    Buffer.byteLength(log) > 64 * 1024 ||
+    !Number.isSafeInteger(asset.id) ||
+    asset.id <= 0 ||
+    !Number.isSafeInteger(runId) ||
+    runId <= 0 ||
+    !/^sha256:[0-9a-f]{64}$/.test(asset.digest ?? '') ||
+    !/^native-[0-9a-f]{64}-(linux-x64|linux-arm64|darwin-arm64|win32-x64)\.tar\.gz$/.test(
+      asset.name ?? '',
     )
+  ) {
+    return false;
+  }
+
+  const lines = log.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const contents = lines
+    .filter((line) => prefix.test(line))
+    .map((line) => line.replace(prefix, ''));
+  const markers = [
+    `##[group]Run actions/upload-artifact@${uploader}`,
+    'SHA256 digest of uploaded artifact is ' + asset.digest.slice(7),
+    `Artifact ${asset.name} successfully finalized. Artifact ID ${asset.id}`,
+    `Artifact download URL: https://github.com/${repo}/actions/runs/${runId}/artifacts/${asset.id}`,
+  ];
+  const receiptLines = contents.filter(
+    (line) =>
+      line.startsWith('##[group]Run actions/upload-artifact@') ||
+      line.startsWith('SHA256 digest of uploaded artifact is ') ||
+      /^Artifact .+ successfully finalized\. Artifact ID /.test(line) ||
+      line.startsWith('Artifact download URL: '),
+  );
+  return (
+    contents[0] === markers[0] &&
+    receiptLines.length === markers.length &&
+    markers.every((marker, index) => receiptLines[index] === marker)
+  );
+}
+
+export function publicationStep(asset, run, jobs, platform) {
+  // A newer job attempt can appear after the completed run was read.
+  if (jobs.some((job) => job.run_attempt > run.run_attempt)) return undefined;
+  const matching = (name) => jobs.filter((job) => job.name === name);
+  const latest = (entries) => {
+    const latestAttempt = Math.max(...entries.map((job) => job.run_attempt));
+    const matches = entries.filter((job) => job.run_attempt === latestAttempt);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+  const packageJobs = matching('Package and test (' + platform + ')');
+  if (
+    packageJobs.some(
+      (job) =>
+        job.run_id !== run.id ||
+        job.head_sha !== run.head_sha ||
+        !Number.isSafeInteger(job.run_attempt) ||
+        job.run_attempt < 1,
+    ) ||
+    latest(packageJobs)?.conclusion !== 'success'
+  )
+    return undefined;
+  const starts = packageJobs
+    .filter((job) => job.conclusion !== 'skipped')
     .map((job) => Date.parse(job.started_at));
   if (!starts.length || starts.some((time) => !Number.isFinite(time)))
-    return false;
-  const earliestSdk = Math.min(...starts);
+    return undefined;
+  const earliestPackage = Math.min(...starts);
   const key = Object.keys(nativePlatforms).find(
     (key) => nativePlatforms[key] === platform,
   );
@@ -64,18 +113,53 @@ export function isNativePublication(asset, run, jobs, platform) {
       'Publish native bundle',
     ],
   ];
+  const candidates = [];
   for (const [name, stepName] of owners) {
-    const job = latest(name);
-    const step = job?.steps?.find((entry) => entry.name === stepName);
-    if (job?.conclusion !== 'success' || step?.conclusion !== 'success')
+    const job = latest(matching(name));
+    if (
+      job?.conclusion !== 'success' ||
+      job.run_id !== run.id ||
+      job.head_sha !== run.head_sha ||
+      !Number.isSafeInteger(job.id) ||
+      job.id <= 0 ||
+      !Number.isSafeInteger(job.run_attempt) ||
+      job.run_attempt < 1
+    )
       continue;
-    assert.equal(job.run_id, run.id);
+    const steps = job.steps.filter((entry) => entry.name === stepName);
+    if (steps.length !== 1 || steps[0].conclusion !== 'success') continue;
+    const step = steps[0];
+    if (!Number.isSafeInteger(step.number) || step.number <= 0) continue;
     const created = Date.parse(asset.created_at);
     const start = Date.parse(step.started_at);
     const end = Date.parse(step.completed_at);
-    if (start <= created && created <= end && end < earliestSdk) return true;
+    // This time bound selects the prospective uploader. Its log still supplies the proof.
+    if (start <= created && created <= end + 1000 && end < earliestPackage)
+      candidates.push({ job: job.id, step: step.number });
   }
-  return false;
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function readPublicationStep(job, step) {
+  try {
+    return execFileSync(
+      'gh',
+      [
+        'api',
+        'repos/' + repo + '/actions/jobs/' + job + '/steps/' + step + '/logs',
+      ],
+      {
+        encoding: 'utf8',
+        timeout: 5000,
+        maxBuffer: 64 * 1024,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+  } catch (error) {
+    if (/\bHTTP (404|410)\b/.test(error.stderr ?? '')) return '';
+    // Match the other selector API calls: unknown service errors stop fanout.
+    throw error;
+  }
 }
 
 export async function downloadNativeBundle(asset) {
@@ -167,8 +251,17 @@ export function findNativeBundle(inputs, platform) {
       '--slurp',
       path + '/jobs?filter=all&per_page=100',
     ).flatMap((page) => page.jobs);
-    if (!isNativePublication(asset, run, jobs, platform)) continue;
-    assert.match(asset.digest, /^sha256:[a-f0-9]{64}$/);
+    const owner = publicationStep(asset, run, jobs, platform);
+    if (!owner) continue;
+    assert.match(asset.digest, /^sha256:[0-9a-f]{64}$/);
+    if (
+      !uploadStepMatches(
+        readPublicationStep(owner.job, owner.step),
+        asset,
+        run.id,
+      )
+    )
+      continue;
     return { id: asset.id, sha256: asset.digest.slice(7), run: run.id };
   }
   return undefined;
