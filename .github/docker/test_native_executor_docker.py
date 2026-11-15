@@ -3,6 +3,8 @@
 import importlib.util
 import json
 from pathlib import Path
+import socket
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -47,6 +49,35 @@ class QualificationDockerTest(unittest.TestCase):
         ):
             original = self.global_arguments + command
             self.assertEqual(WRAPPER.invocation(original, self.config), (original, False))
+
+    def test_gateway_daemon_inspection_accepts_only_selected_socket_canonical_path(self):
+        # openDockerGatewayScope realpaths /var/run/docker.sock before inspection.
+        with tempfile.TemporaryDirectory() as directory, socket.socket(socket.AF_UNIX) as daemon, socket.socket(socket.AF_UNIX) as other:
+            root = Path(directory)
+            selected = root / "docker.sock"
+            alias = root / "selected.sock"
+            other_path = root / "other.sock"
+            daemon.bind(str(selected))
+            other.bind(str(other_path))
+            alias.symlink_to(selected)
+            self.config["host"] = "unix://" + str(alias)
+            arguments = ["--config", "/private/config", "--host", "unix://" + str(selected), "info", "--format", "{{json .}}"]
+            self.assertEqual(WRAPPER.invocation(arguments, self.config), (arguments, False))
+            for host in ("unix://" + str(other_path), "tcp://127.0.0.1:2375", "unix://" + str(selected) + "?changed"):
+                with self.subTest(host=host), self.assertRaises(RuntimeError):
+                    WRAPPER.invocation([*arguments[:3], host, *arguments[4:]], self.config)
+            daemon.close()
+            selected.unlink()
+            selected.write_text("not a socket")
+            with self.assertRaises(RuntimeError):
+                WRAPPER.invocation(arguments, self.config)
+
+    def test_gateway_daemon_inspection_preserves_exact_readonly_request(self):
+        original = self.global_arguments + ["info", "--format", "{{json .}}"]
+        self.assertEqual(WRAPPER.invocation(original, self.config), (original, False))
+        for tail in ([], ["--format", "{{json .ID}}"], ["--format", "{{json .}}", "--extra"]):
+            with self.subTest(tail=tail), self.assertRaises(RuntimeError):
+                WRAPPER.invocation(self.global_arguments + ["info", *tail], self.config)
 
     def test_native_gateway_exec_preserves_existing_long_form_transport(self):
         # openDockerGatewayScope emits these literal options for native stdio.

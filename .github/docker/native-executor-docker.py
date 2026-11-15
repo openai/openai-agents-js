@@ -50,6 +50,23 @@ def bind_grant(value):
     require(value == ",".join(encoded), "Noncanonical bind grant CSV")
 
 
+def selected_daemon(host, expected):
+    """Admit the selected Unix socket and its provider-resolved canonical path."""
+    if host == expected:
+        return True
+    if not expected.startswith("unix:///"):
+        return False
+    path = expected.removeprefix("unix://")
+    if host != "unix://" + os.path.realpath(path):
+        return False
+    try:
+        selected = os.stat(path)
+        canonical = os.stat(host.removeprefix("unix://"))
+    except OSError:
+        return False
+    return stat.S_ISSOCK(selected.st_mode) and stat.S_ISSOCK(canonical.st_mode) and (selected.st_dev, selected.st_ino) == (canonical.st_dev, canonical.st_ino)
+
+
 def invocation(arguments, config):
     """Preserve the SDK's exact daemon selection and all ordinary arguments."""
     index = 0
@@ -65,11 +82,13 @@ def invocation(arguments, config):
         else:
             require(os.path.isabs(value), "Relative Docker config directory")
         index += 2
-    require(host == config["host"], "Docker daemon changed")
+    require(selected_daemon(host, config["host"]), "Docker daemon changed")
     require(index < len(arguments), "Missing Docker operation")
     operation = arguments[index]
     require(operation in {"run", "exec", "inspect", "info", "version", "rm", "cp", "ps", "stop", "kill", "wait", "logs"}, "Unsupported qualification Docker operation")
     if operation != "run":
+        if operation == "info":
+            require(arguments[index + 1:] == ["--format", "{{json .}}"], "Unsupported qualification Docker daemon inspection")
         if operation == "exec":
             cursor = index + 1
             while cursor < len(arguments) and arguments[cursor].startswith("-"):

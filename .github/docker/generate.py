@@ -92,7 +92,7 @@ rules = '''  # Diagnostic: fresh child userns, then only bwrap setup mount class
   mount options=(rw,rbind,silent) /oldroot/ -> /newroot/,
   # Temporary files created by SETUP_MAKE_RO_BIND_FILE carry supplied bind data.
   mount options=(rw,bind,silent) /bindfile?????? -> /newroot/**,
-  remount options in (ro,rw,remount,bind,silent,nosuid,nodev,noexec,noatime,nodiratime,relatime,strictatime) /newroot/**,
+  remount options in (ro,rw,remount,bind,silent,nosuid,nodev,noexec,noatime,nodiratime,relatime,strictatime) /newroot/{,**},
   mount options=(rw,rprivate,silent) -> /oldroot/,
   pivot_root oldroot=/newroot/ /newroot/,
 '''
