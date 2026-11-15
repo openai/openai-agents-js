@@ -282,6 +282,7 @@ jobs:
           cache: ${{ matrix.platform != 'darwin-arm64' && 'pnpm' || '' }}
       - name: Build the current SDK
         id: build_sdk
+        timeout-minutes: 15
         run: |
           pnpm install --frozen-lockfile
           pnpm build
