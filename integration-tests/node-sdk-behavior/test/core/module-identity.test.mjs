@@ -52,6 +52,21 @@ test('installed Core shares classes and tracing across Node module formats', asy
   );
 });
 
+test('installed Realtime shares Node exports across module formats', async () => {
+  for (const subpath of ['', '/testing']) {
+    const specifier = `@openai/agents-realtime${subpath}`;
+    const esm = await import(specifier);
+    const commonJS = require(specifier);
+    const facade = await import(`@openai/agents/realtime${subpath}`);
+
+    assert.deepEqual(Object.keys(esm), Object.keys(commonJS).sort());
+    for (const name of Object.keys(esm)) {
+      assert.equal(esm[name], commonJS[name], name);
+      assert.equal(esm[name], facade[name], name);
+    }
+  }
+});
+
 for (const [producerName, producer] of Object.entries(modules)) {
   for (const [consumerName, consumer] of Object.entries(modules)) {
     test(`${producerName} objects compose with ${consumerName} and close cleanly`, async () => {
@@ -108,6 +123,8 @@ test('ESM imports work when require(esm) is disabled', () => {
        assert.ok(scriptedSandboxSession().state.manifest instanceof Manifest);
        assert.match(import.meta.resolve('@openai/agents-codex'), /\\.mjs$/);
        assert.match(import.meta.resolve('@openai/agents-core'), /\\.mjs$/);
+       assert.ok(import.meta.resolve('@openai/agents-realtime').endsWith('/dist/index.mjs'));
+       assert.ok(import.meta.resolve('@openai/agents-realtime/testing').endsWith('/dist/testing/index.mjs'));
        assert.equal(facade.NativeRuntime, owner.NativeRuntime);
        const runtime = new owner.NativeRuntime();
        const provider = new facade.NativeProvider({ runtime, apiKey: 'synthetic' });
