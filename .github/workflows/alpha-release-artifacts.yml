@@ -139,7 +139,6 @@ jobs:
     env:
       NATIVE_INPUTS: ${{ needs.select.outputs.inputs_hash }}
       CODEX_DOCKER_TEST_SOCKET: /var/run/docker.sock
-      CODEX_DOCKER_TEST_IMAGE: docker.io/library/python:3.14-slim@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
       CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -153,6 +152,10 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      - name: Verify confined gate and cleanup regressions
+        run: |
+          node --test scripts/aggregate-native-docker.test.mjs
+          python3 -m unittest discover -s .github/docker -p 'test_*.py'
       - name: Restore the current-run Linux native transfer
         id: native_transfer
         env:
@@ -164,14 +167,42 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-      - name: Test strict Docker path and identity grants
-        env:
-          NATIVE_FIXTURE_SHA256: ${{ steps.native_transfer.outputs.fixture_sha256 }}
+      - name: Build the native Docker fixture
         run: |
           test -S "$CODEX_DOCKER_TEST_SOCKET"
+          mkdir -p results/native-docker
+          date --iso-8601=seconds > "$RUNNER_TEMP/native-docker-profile-start"
           env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS \
-            docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" pull "$CODEX_DOCKER_TEST_IMAGE"
-          node scripts/qualify-native-docker.mjs
+            docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" build --pull \
+            --iidfile results/native-docker/image.id \
+            --file .github/docker/native-executor.Dockerfile .github/docker
+          CODEX_DOCKER_TEST_IMAGE=$(cat results/native-docker/image.id)
+          [[ $CODEX_DOCKER_TEST_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "CODEX_DOCKER_TEST_IMAGE=$CODEX_DOCKER_TEST_IMAGE" >> "$GITHUB_ENV"
+          docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" version --format '{{json .Server.Version}}' > results/native-docker/docker-version.json
+          docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" info --format '{{json .SecurityOptions}}' > results/native-docker/docker-security.json
+          docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" run --rm --network none --entrypoint /usr/bin/bwrap "$CODEX_DOCKER_TEST_IMAGE" --version > results/native-docker/bubblewrap-version.txt
+          uname -r > results/native-docker/kernel-version.txt
+      - name: Install the diagnostic-only confined runner profiles
+        run: |
+          command -v apparmor_parser
+          CODEX_DOCKER_TEST_IMAGE=$(docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" image inspect "$CODEX_DOCKER_TEST_IMAGE" --format '{{.Id}}') \
+            NATIVE_DOCKER_RECIPE=.github/docker/native-executor.Dockerfile \
+            bash .github/docker/install-hosted-diagnostic.sh
+      - name: Diagnose strict Docker path and identity grants
+        env:
+          NATIVE_FIXTURE_SHA256: ${{ steps.native_transfer.outputs.fixture_sha256 }}
+        run: node scripts/diagnose-native-docker.mjs
+      - name: Collect unique-profile audit and unload the diagnostic policy
+        if: always()
+        run: bash .github/docker/finish-hosted-diagnostic.sh
+      - name: Aggregate current-job qualification after cleanup
+        if: always()
+        run: |
+          rm -f results/native-docker/qualification.json
+          node scripts/aggregate-native-docker.mjs results/native-docker \
+            > "$RUNNER_TEMP/native-docker-aggregation.json"
+          mv "$RUNNER_TEMP/native-docker-aggregation.json" results/native-docker/qualification.json
       - name: Retain native Docker qualification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
