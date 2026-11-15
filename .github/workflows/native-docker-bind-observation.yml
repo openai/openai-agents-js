@@ -1,0 +1,94 @@
+name: Native Docker bind metadata (diagnostic)
+
+on:
+  push:
+    branches: [ci/hillclimb/js-docker-bind-fixture]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  observe:
+    if: >-
+      github.repository == 'openai/openai-agents-js' &&
+      github.ref == 'refs/heads/ci/hillclimb/js-docker-bind-fixture' &&
+      !github.event.deleted
+    # Keep the Docker daemon inside a dedicated, ephemeral GitHub-hosted VM.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NATIVE_INPUTS: 9995673270ecb5f4c8f02a7509d50f7a4b8b289b635223c6b0d488b58520581d
+      CODEX_DOCKER_TEST_SOCKET: /var/run/docker.sock
+      CODEX_EXEC_SERVER_TEST_BINARY: ${{ github.workspace }}/packages/agents-codex/native/test-bin/exec-server-fixture
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+        with:
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Verify and restore the pinned previous Linux native transfer
+        id: native_transfer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLATFORM: linux-x64
+          NATIVE_ARTIFACT: '{"artifact-id":"14142864204","artifact-digest":"a375c32585d0746782a40e8bf6ff66a1d255ecb9f0d8305dd37e6de2f2e25a5e"}'
+        run: node scripts/restore-native-bundle.mjs
+      - name: Verify the three original Docker native inputs
+        run: |
+          sha256sum --check --strict <<'CHECKSUMS'
+          17f1c50e55cb503cd1833d001b637b998cf4fb57997da30963c1a6f914660539  packages/agents-codex/native/codex.node
+          15528353b31f08e51a85434486faf530dba77e60ebf69c4dddc9c2cb63dca3f8  packages/agents-codex/native/test-bin/exec-server-fixture
+          e7b88491378ac9f5d95fa89f6b8f2005019b8ec68172bceec0959119baae797f  packages/agents-codex/native/build-receipt.json
+          CHECKSUMS
+      - name: Install packages and build the current SDK
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Build the native Docker fixture
+        run: |
+          test -S "$CODEX_DOCKER_TEST_SOCKET"
+          mkdir -p results/native-docker
+          date --iso-8601=seconds > "$RUNNER_TEMP/native-docker-profile-start"
+          env -u DOCKER_HOST -u DOCKER_CONTEXT -u DOCKER_CUSTOM_HEADERS \
+            docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" build --pull \
+            --iidfile results/native-docker/image.id \
+            --file .github/docker/native-executor.Dockerfile .github/docker
+          CODEX_DOCKER_TEST_IMAGE=$(cat results/native-docker/image.id)
+          [[ $CODEX_DOCKER_TEST_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "CODEX_DOCKER_TEST_IMAGE=$CODEX_DOCKER_TEST_IMAGE" >> "$GITHUB_ENV"
+          docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" version --format '{{json .Server.Version}}' > results/native-docker/docker-version.json
+          docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" info --format '{{json .SecurityOptions}}' > results/native-docker/docker-security.json
+          docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" run --rm --network none --entrypoint /usr/bin/bwrap "$CODEX_DOCKER_TEST_IMAGE" --version > results/native-docker/bubblewrap-version.txt
+          uname -r > results/native-docker/kernel-version.txt
+      - name: Install the diagnostic-only confined runner profiles
+        run: |
+          command -v apparmor_parser
+          CODEX_DOCKER_TEST_IMAGE=$(docker --host "unix://$CODEX_DOCKER_TEST_SOCKET" image inspect "$CODEX_DOCKER_TEST_IMAGE" --format '{{.Id}}') \
+            NATIVE_DOCKER_RECIPE=.github/docker/native-executor.Dockerfile \
+            bash .github/docker/install-hosted-diagnostic.sh
+      - name: Diagnose strict Docker path and identity grants
+        env:
+          NATIVE_FIXTURE_SHA256: ${{ steps.native_transfer.outputs.fixture_sha256 }}
+        run: |
+          mkdir -p results/native-docker
+          sha256sum scripts/diagnose-native-docker.mjs scripts/qualify-native-docker.mjs \
+            > results/native-docker/diagnostic-steps.sha256
+          node scripts/diagnose-native-docker.mjs
+      - name: Collect unique-profile audit and unload the diagnostic policy
+        if: always()
+        run: bash .github/docker/finish-hosted-diagnostic.sh
+      - name: Retain native Docker qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: native-docker-bind-observation-linux-x64-${{ github.run_attempt }}
+          path: results/native-docker/
+          if-no-files-found: error
+          retention-days: 1

@@ -42,6 +42,9 @@ it.runIf(
       const writable = join(host, 'writable');
       await mkdir(readonly);
       await mkdir(writable);
+      // A nested user namespace does not map the owner of the host test directory.
+      // Only the writable bind under the private mkdtemp needs this mode.
+      await chmod(writable, 0o1777);
       const label = { 'agents-sdk-docker-native-test': host.split('/').pop()! };
       const docker = (args: string[]) =>
         exec('/usr/bin/docker', ['--host', 'unix://' + socketPath!, ...args], {
@@ -184,6 +187,15 @@ it.runIf(
       )?.output;
       expect(JSON.stringify(nativeOutput)).toContain('native-witness.txt');
       const output = JSON.stringify(server.requests[2]?.input);
+      console.log(
+        'Docker mapped fixture outcome: ' +
+          JSON.stringify({
+            mappedRead: output.includes('trusted mapped input'),
+            gitPermissionDenied: output.includes('.git: Permission denied'),
+            procMountDenied: output.includes("Can't mount proc on /proc"),
+            readOnlyDenied: output.includes('native-mapped-ro-denied'),
+          }),
+      );
       expect(output).toContain('trusted mapped input');
       expect(output).toContain('native-mapped-ro-denied');
       expect(output).toContain('trusted mapped input');
@@ -201,6 +213,7 @@ it.runIf(
       const currentWritable = join(host, 'current-writable');
       await cp(readonly, currentReadonly, { recursive: true });
       await mkdir(currentWritable);
+      await chmod(currentWritable, 0o1777);
       await writeFile(
         join(currentReadonly, 'marker.txt'),
         'current restored input',
