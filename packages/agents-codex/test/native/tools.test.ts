@@ -757,20 +757,24 @@ describe('native function callback timeout policy', () => {
         timeoutErrorFunction: formatter,
         execute: () => 'on-time success',
       });
-      queueMicrotask(() => {
-        const end = performance.now() + 60;
-        while (performance.now() < end) {
-          /* Separate ready work can delay the SDK after the body returns. */
-        }
-      });
-      await expect(
-        invokeFunctionTool(defined, {}, context, onTimeout),
-      ).resolves.toEqual({
-        success: true,
-        contentItems: [{ type: 'inputText', text: 'on-time success' }],
-      });
-      expect(formatter).not.toHaveBeenCalled();
-      expect(onTimeout).not.toHaveBeenCalled();
+      let now = performance.now();
+      const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+      try {
+        queueMicrotask(() => {
+          // Separate ready work can delay the SDK after the body returns.
+          now += 60;
+        });
+        await expect(
+          invokeFunctionTool(defined, {}, context, onTimeout),
+        ).resolves.toEqual({
+          success: true,
+          contentItems: [{ type: 'inputText', text: 'on-time success' }],
+        });
+        expect(formatter).not.toHaveBeenCalled();
+        expect(onTimeout).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+      }
     },
   );
 

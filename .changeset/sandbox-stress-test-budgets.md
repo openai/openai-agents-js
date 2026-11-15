@@ -1,5 +1,6 @@
 ---
 '@openai/agents-core': patch
+'@openai/agents-codex': patch
 ---
 
-fix: Sandbox filesystem and memory stress tests have been receiving explicit time budgets to finish under full-suite load.
+fix: Sandbox stress tests have been receiving longer time budgets, and tool timeout tests have been using controlled completion to avoid timing races.
