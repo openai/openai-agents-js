@@ -1567,7 +1567,11 @@
     {
       "path": "sdk-settle-rejected-remote-start.patch",
       "sha256": "0fc2a64c33f3457067ae8e4e3f0a8d59db84b8a60f993e3116d03be84ddc42c3"
+    },
+    {
+      "path": "sdk-reconcile-remote-exit-receipts.patch",
+      "sha256": "69c07a5b8bc22f5b12ac9d53988501ff0275c54bc89c636392f5ff56c404bd66"
     }
   ],
-  "result_tree": "764b42444bb456423b2ef0d903faaf833b0b5185"
+  "result_tree": "cfe5bbcd2c3f14295432add23b6876777789100c"
 }
