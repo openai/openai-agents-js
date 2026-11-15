@@ -2,4 +2,4 @@
 '@openai/agents-core': patch
 ---
 
-fix: Three sandbox stress tests have been timing out during full verification and have been receiving explicit time budgets.
+fix: Sandbox filesystem and memory stress tests have been receiving explicit time budgets to finish under full-suite load.
