@@ -18,10 +18,25 @@ import { Manifest, sandboxEnvironment } from '@openai/agents/sandbox';
 import { Agent, NativeProvider } from '../../src';
 import { call, message, ModelServer } from './fixtures/model-server';
 
+function addFile(callId: string, path: string, content: string) {
+  return {
+    type: 'custom_tool_call',
+    name: 'apply_patch',
+    call_id: callId,
+    input: [
+      '*** Begin Patch',
+      `*** Add File: ${path}`,
+      `+${content}`,
+      '*** End Patch',
+    ].join('\n'),
+  };
+}
+
 const exec = promisify(execFile);
 const image = process.env.CODEX_DOCKER_TEST_IMAGE;
 const socketPath = process.env.CODEX_DOCKER_TEST_SOCKET;
 const fixture = process.env.CODEX_EXEC_SERVER_TEST_BINARY;
+const strictPositive = process.env.CODEX_DOCKER_STRICT_POSITIVE_PROOF === '1';
 afterEach(async () => {
   vi.unstubAllEnvs();
   await ModelServer.closeAll();
@@ -47,6 +62,9 @@ it.runIf(
         exec('/usr/bin/docker', ['--host', 'unix://' + socketPath!, ...args], {
           env: { PATH: '/usr/bin:/bin' },
         });
+      if (strictPositive) {
+        await docker(['image', 'inspect', image!]);
+      }
       const active = async () =>
         (
           await docker([
@@ -97,6 +115,17 @@ it.runIf(
             { callId: 'native-mapped-exec' },
           ),
         ],
+        ...(strictPositive
+          ? [
+              [
+                addFile(
+                  'native-mapped-patch',
+                  '/data-write/patch.txt',
+                  'native-patch',
+                ),
+              ],
+            ]
+          : []),
         [message('Docker native execution complete')],
         [
           call(
@@ -112,6 +141,24 @@ it.runIf(
             { callId: 'native-restored-exec' },
           ),
         ],
+        ...(strictPositive
+          ? [
+              [
+                addFile(
+                  'native-restored-patch',
+                  '/data-write/patch.txt',
+                  'restored-patch',
+                ),
+              ],
+              [
+                addFile(
+                  'native-denied-patch',
+                  '/tools/patch-denied.txt',
+                  'denied',
+                ),
+              ],
+            ]
+          : []),
         [message('Docker native restore complete')],
       ]);
       vi.stubEnv('DOCKER_HOST', 'unix:///unselected-synthetic-socket');
@@ -153,7 +200,9 @@ it.runIf(
           dockerGateway: {
             socketPath: socketPath!,
             execServerPath: '/tools/launch',
-            tools: ['project_glob', 'exec_command'],
+            tools: strictPositive
+              ? ['project_glob', 'exec_command', 'apply_patch']
+              : ['project_glob', 'exec_command'],
           },
         });
       const agent = new Agent({ provider, instructions: 'Read the marker.' });
@@ -190,6 +239,11 @@ it.runIf(
       expect(await readFile(join(writable, 'native-output.txt'), 'utf8')).toBe(
         'native-retained',
       );
+      if (strictPositive) {
+        expect(await readFile(join(writable, 'patch.txt'), 'utf8')).toBe(
+          'native-patch\n',
+        );
+      }
       await expect(
         readFile(join(readonly, 'native-denied.txt'), 'utf8'),
       ).rejects.toMatchObject({
@@ -207,7 +261,8 @@ it.runIf(
       );
       // Current host paths are explicit authority, but changing a recorded
       // target's write policy must still fail before another model request.
-      expect(server.requests).toHaveLength(3);
+      const requestsBeforeRestore = strictPositive ? 4 : 3;
+      expect(server.requests).toHaveLength(requestsBeforeRestore);
       await expect(
         agent
           .session({
@@ -221,7 +276,7 @@ it.runIf(
       ).rejects.toThrow(
         /recorded executor write and network policy|recorded Agent environment grants/,
       );
-      expect(server.requests).toHaveLength(3);
+      expect(server.requests).toHaveLength(requestsBeforeRestore);
       expect(await active()).toEqual([]);
       const restored = await agent.session({
         state,
@@ -241,7 +296,10 @@ it.runIf(
       }
       expect(await active()).toEqual([]);
       const restoredOutput = (
-        server.requests[4]?.input as { call_id?: string; output?: unknown }[]
+        server.requests[requestsBeforeRestore + 1]?.input as {
+          call_id?: string;
+          output?: unknown;
+        }[]
       ).find(
         (item) =>
           item.call_id === 'native-restored-exec' && item.output !== undefined,
@@ -264,6 +322,30 @@ it.runIf(
       await expect(
         readFile(join(currentReadonly, 'native-denied.txt'), 'utf8'),
       ).rejects.toMatchObject({ code: 'ENOENT' });
+      if (strictPositive) {
+        expect(await readFile(join(currentWritable, 'patch.txt'), 'utf8')).toBe(
+          'restored-patch\n',
+        );
+        expect(await readFile(join(writable, 'patch.txt'), 'utf8')).toBe(
+          'native-patch\n',
+        );
+        const finalInput = server.requests.at(-1)?.input;
+        expect(Array.isArray(finalInput)).toBe(true);
+        const deniedPatchOutputs = (
+          finalInput as { type?: string; call_id?: string; output?: unknown }[]
+        ).filter(
+          (item) =>
+            item.type === 'custom_tool_call_output' &&
+            item.call_id === 'native-denied-patch',
+        );
+        expect(deniedPatchOutputs).toHaveLength(1);
+        expect(deniedPatchOutputs[0]?.output).toContain(
+          'patch rejected: writing outside of the project',
+        );
+        await expect(
+          readFile(join(currentReadonly, 'patch-denied.txt'), 'utf8'),
+        ).rejects.toMatchObject({ code: 'ENOENT' });
+      }
       server.assertExhausted();
     } finally {
       await rm(host, { recursive: true, force: true });

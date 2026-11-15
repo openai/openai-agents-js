@@ -1,0 +1,94 @@
+diff --git a/codex-rs/core/src/unified_exec/process.rs b/codex-rs/core/src/unified_exec/process.rs
+index f96306a..e7e1d9b 100644
+--- a/codex-rs/core/src/unified_exec/process.rs
++++ b/codex-rs/core/src/unified_exec/process.rs
+@@ -538,7 +538,7 @@ impl UnifiedExecProcess {
+             let ProcessHandle::ExecServer(process) = &self.process_handle else {
+                 unreachable!("remote turn cleanup requires an exec-server process");
+             };
+-            let mut events = process.subscribe_events();
++            let events = process.subscribe_events();
+             let state = self.state_rx.clone();
+             let (result, receiver) = watch::channel(None);
+             let ack = if state.borrow().peer_exit_confirmed {
+@@ -564,29 +564,7 @@ impl UnifiedExecProcess {
+                     {
+                         return false;
+                     }
+-                    if state.borrow().peer_exit_confirmed {
+-                        return true;
+-                    }
+-                    loop {
+-                        match events.recv().await {
+-                            Ok(ExecProcessEvent::Exited { .. }) => return true,
+-                            Ok(ExecProcessEvent::Output(_)) => {}
+-                            Ok(ExecProcessEvent::Failed(_))
+-                            | Ok(ExecProcessEvent::Closed { .. })
+-                            | Err(broadcast::error::RecvError::Closed) => return false,
+-                            Err(broadcast::error::RecvError::Lagged(_)) => {
+-                                let Ok(read) = process.read(Some(u64::MAX), None, Some(0)).await
+-                                else {
+-                                    return false;
+-                                };
+-                                if read.failure.is_some() || read.exited || read.closed {
+-                                    return read.failure.is_none()
+-                                        && read.exited
+-                                        && read.exit_code.is_some();
+-                                }
+-                            }
+-                        }
+-                    }
++                    wait_for_remote_exit(process.as_ref(), state, events).await
+                 })
+                 .await
+                 .unwrap_or(false);
+@@ -1156,6 +1134,49 @@ impl UnifiedExecProcess {
+     }
+ }
+ 
++async fn wait_for_remote_exit(
++    process: &dyn codex_exec_server::ExecProcess,
++    mut state: watch::Receiver<ProcessState>,
++    mut events: codex_exec_server::ExecProcessEventReceiver,
++) -> bool {
++    // Replay is bounded. The output watcher can already own an exit that
++    // this new subscriber never sees.
++    let confirmed = tokio::select! {
++        biased;
++        Ok(_) = state.wait_for(|state| state.peer_exit_confirmed) => true,
++        confirmed = async {
++            let mut saw_output = false;
++            loop {
++                let closed = match events.recv().await {
++                    Ok(ExecProcessEvent::Exited { .. }) => return true,
++                    Ok(ExecProcessEvent::Output(chunk)) => {
++                        let has_replay_gap = !saw_output && chunk.seq > 1;
++                        saw_output = true;
++                        if !has_replay_gap {
++                            continue;
++                        }
++                        false
++                    }
++                    Ok(ExecProcessEvent::Closed { .. }) => true,
++                    Err(broadcast::error::RecvError::Lagged(_)) => false,
++                    Ok(ExecProcessEvent::Failed(_))
++                    | Err(broadcast::error::RecvError::Closed) => return false,
++                };
++                let exit_confirmed = process
++                    .read(Some(u64::MAX), None, Some(0))
++                    .await
++                    .is_ok_and(|receipt| {
++                        receipt.failure.is_none() && receipt.exited && receipt.exit_code.is_some()
++                    });
++                if exit_confirmed || closed {
++                    return exit_confirmed;
++                }
++            }
++        } => confirmed,
++    };
++    confirmed || state.borrow().peer_exit_confirmed
++}
++
+ impl Drop for UnifiedExecProcess {
+     fn drop(&mut self) {
+         self.terminate();

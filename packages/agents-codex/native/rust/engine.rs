@@ -77,6 +77,7 @@ pub struct EngineState {
     trusted_command_temp: std::sync::Mutex<Option<tempfile::TempDir>>,
     private_system_origin: Option<std::path::PathBuf>,
     pub(crate) closed: AtomicBool,
+    unconfirmed_process_shutdown: AtomicBool,
     pub(crate) retired: AtomicBool,
     pub(crate) context_gate: Arc<tokio::sync::RwLock<()>>,
     pub(crate) lifecycle: Mutex<()>,
@@ -1006,6 +1007,7 @@ impl EngineState {
             trusted_command_temp: std::sync::Mutex::new(trusted_command_temp),
             private_system_origin,
             closed: AtomicBool::new(false),
+            unconfirmed_process_shutdown: AtomicBool::new(false),
             retired: AtomicBool::new(false),
             context_gate: Arc::new(tokio::sync::RwLock::new(())),
             native_threads: std::sync::Mutex::new(Vec::new()),
@@ -1945,6 +1947,14 @@ impl EngineState {
         let _guard = self.lifecycle.lock().await;
         let _observations = self.manual_observations.write().await;
         let report = self.close_locked().await?;
+        if self.unconfirmed_process_shutdown.load(Ordering::Acquire) {
+            // Thread shutdown has fenced new work. An unresolved start can
+            // still retain a connection, including one owned by an Agent profile.
+            self.manager
+                .environment_manager()
+                .retire_owned_executor_connections()
+                .await;
+        }
         if report.diagnostic.is_none() {
             self.telemetry_lease.retire();
         }
@@ -1977,6 +1987,8 @@ impl EngineState {
                 .await
                 .context("Codex process cleanup timed out")?
                 {
+                    self.unconfirmed_process_shutdown
+                        .store(true, Ordering::Release);
                     diagnostics.push(error.to_string());
                 }
             }
@@ -2069,6 +2081,8 @@ impl EngineState {
             .context("Codex process cleanup timed out")?;
             if let Err(error) = checked {
                 // Preserve rejected confirmations through later cleanup/caller cancellation.
+                self.unconfirmed_process_shutdown
+                    .store(true, Ordering::Release);
                 fork_diagnostics.push(error.to_string());
             } else {
                 self.pending_process_cleanup
@@ -3206,8 +3220,20 @@ fn skip_live_native_event(event: &Event) -> bool {
 fn native_event(
     source: Option<(ThreadId, u64)>,
     event: &Event,
+    tools: Option<&crate::python_tools::PythonTools>,
 ) -> anyhow::Result<serde_json::Value> {
     let mut value = event.sdk_json()?;
+    if matches!(&event.msg, EventMsg::SdkSemanticToolItem(_)) {
+        let item = &mut value["msg"]["item"]["item"];
+        if item["type"] == "tool_search_output"
+            && item["execution"] == "client"
+            && let Some(declarations) = item["tools"].as_array_mut()
+            && !crate::python_tools::restore_live_search_tools(tools, declarations)
+        {
+            // Keep the reader alive without exposing unverified private receipts.
+            *item = serde_json::Value::Null;
+        }
+    }
     crate::usage::event_to_wire(&mut value["msg"])?;
     if let EventMsg::RealtimeConversationRealtime(realtime) = &event.msg
         && let codex_protocol::protocol::RealtimeEvent::HandoffRequested(handoff) =
@@ -3341,7 +3367,11 @@ impl ThreadState {
         } else {
             None
         };
-        let mut value = native_event(None, &event)?;
+        let owner = self
+            .thread
+            .thread_extension_data()
+            .get::<crate::python_tools::PythonTools>();
+        let mut value = native_event(None, &event, owner.as_deref())?;
         if let Some(reason) = reason {
             value["msg"]["_sdk_response_integrity_reason"] = serde_json::json!(reason);
         }
@@ -3929,7 +3959,7 @@ impl ThreadState {
         let mut retained_error = None;
         let mut incarnation = None;
         let mut turn_failed = None;
-        let mut managed_tools = false;
+        let mut owner = None;
         if let Some(instance) = self
             .child_instances
             .write()
@@ -3947,10 +3977,9 @@ impl ThreadState {
                         {
                             settlement.delivered(&event.msg);
                         }
-                        managed_tools = thread
+                        owner = thread
                             .thread_extension_data()
-                            .get::<crate::python_tools::PythonTools>()
-                            .is_some();
+                            .get::<crate::python_tools::PythonTools>();
                         thread
                             .thread_extension_data()
                             .get::<crate::native_interception::Control>()
@@ -3960,14 +3989,14 @@ impl ThreadState {
                 retained_error = terminal_error;
             }
         }
-        let mut value = native_event(Some(source), &event)?;
+        let mut value = native_event(Some(source), &event, owner.as_deref())?;
         self.attach_question(&mut value, Some(source), question);
         if let Some(error) = retained_error {
             value["msg"]["error"] = error;
         }
         if let Some(incarnation) = incarnation {
             value["subagent_incarnation"] = serde_json::json!(incarnation);
-            value["subagent_managed_tools"] = serde_json::json!(managed_tools);
+            value["subagent_managed_tools"] = serde_json::json!(owner.is_some());
         }
         if let Some(failed) = turn_failed {
             value["subagent_turn_failed"] = serde_json::json!(failed);
@@ -4531,6 +4560,9 @@ impl ThreadState {
                 // Confirm both managed-local and remote cleanup across the exact tree
                 // before releasing ownership, including detached startup cleanup.
                 if let Err(error) = self.thread.shutdown_agent_tree_and_check_processes().await {
+                    self.engine
+                        .unconfirmed_process_shutdown
+                        .store(true, Ordering::Release);
                     ack_error = Some(match ack_error.take() {
                         Some(message) => format!("{message}; {error}"),
                         None => error.to_string(),

@@ -1,6 +1,7 @@
 // Same-job aggregation only; native-product and isolation checks stay with owners.
 import assert from 'node:assert/strict';
 import console from 'node:console';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import process from 'node:process';
@@ -67,8 +68,16 @@ export function aggregate(directory, context) {
       controls.image.dockerfileSha256,
       controls.passed,
       controls.skipped,
+      controls.strictMappedShellAndApplyPatch,
     ],
-    [context.sha, profile.imageId, profile.recipeSha256, 2, 0],
+    [context.sha, profile.imageId, profile.recipeSha256, 2, 0, true],
+  );
+  assert.equal(
+    controls.reportSha256,
+    createHash('sha256')
+      .update(readFileSync(join(directory, 'vitest.json')))
+      .digest('hex'),
+    'Native test report changed after validation',
   );
   const result = json('diagnostic-result.json');
   assert.deepEqual(result, {

@@ -271,6 +271,77 @@ async function cancellationFixture() {
   };
 }
 
+it('delivers hosted tool search only to the owning child turn', async () => {
+  const { session, child, native, owner, successor } =
+    await cancellationFixture();
+  const msg = {
+    type: 'item_completed',
+    thread_id: native.child_id,
+    turn_id: native.turn_id,
+    item: {
+      type: 'hosted_tool_call',
+      id: 'native-search',
+      item: {
+        type: 'tool_search_output',
+        call_id: null,
+        execution: 'server',
+        tools: [{ type: 'function', name: 'private-child-tool' }],
+      },
+    },
+  };
+  const event = {
+    id: native.turn_id,
+    subagent_id: native.child_id,
+    subagent_instance_id: native.instance_id,
+    subagent_incarnation: native.incarnation,
+    msg,
+  };
+  const turn = child.turn!;
+  const next = await successor();
+  try {
+    const dispatch = (wire: typeof event) =>
+      session['processChild'](
+        wire,
+        {} as Parameters<(typeof session)['processChild']>[1],
+        owner.observationProducer,
+      );
+    dispatch({ ...event, subagent_instance_id: '8' });
+    dispatch(event);
+    await session.close();
+    const detailed = await Array.fromAsync(
+      turn.events({ includeExecutionDetails: true }),
+    );
+    const summaries = await Array.fromAsync(turn.events());
+    const nextEvents = await Array.fromAsync(
+      next.turn!.events({ includeExecutionDetails: true }),
+    );
+    const hostedItems = (event: (typeof detailed)[number]) =>
+      event.type === 'hosted_tool_item_completed';
+    expect(detailed.filter(hostedItems)).toMatchObject([
+      {
+        type: 'hosted_tool_item_completed',
+        submissionId: turn.submissionId,
+        item: {
+          type: 'tool_search_output',
+          tools: [{ name: 'private-child-tool' }],
+        },
+      },
+    ]);
+    expect(summaries.filter(hostedItems)).toMatchObject([
+      {
+        type: 'hosted_tool_item_completed',
+        item: {
+          id: 'native-search',
+          type: 'tool_search_output',
+        },
+      },
+    ]);
+    expect(nextEvents.filter(hostedItems)).toEqual([]);
+  } finally {
+    await session.close();
+  }
+});
+
 it.each([true, null] as const)(
   'joins exact callbacks after confirmed native cleanup (%s) without stopping a successor',
   async (confirmation) => {

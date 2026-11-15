@@ -526,9 +526,14 @@ type AudioPart = z.infer<typeof historyAudioPartSchema>;
 type ImagePart = z.infer<typeof historyImagePartSchema>;
 type FilePart = z.infer<typeof historyFilePartSchema>;
 
+type HostedHistoryItem = Exclude<
+  HostedToolItem,
+  { type: 'tool_search_call' | 'tool_search_output' }
+>;
+
 export type SessionItem = ItemIdentity &
   (
-    | HostedToolItem
+    | HostedHistoryItem
     | {
         type: 'message';
         role: 'user' | 'assistant';
@@ -1398,7 +1403,7 @@ function nativeItems(
       return item ? [{ ...item, data: raw }] : [];
     }
     case 'ImageGeneration': {
-      const item = projectNativeHostedToolItem(raw, turnId);
+      const item = projectNativeImageGenerationItem(raw, turnId);
       return item ? [{ ...item, data: raw }] : [];
     }
     case 'WebSearch':
@@ -2142,7 +2147,7 @@ type HistoryOccurrence = {
 export function projectHostedToolItem(
   value: JsonValue | undefined,
   turnId: string,
-): HostedToolItem | undefined {
+): HostedHistoryItem | undefined {
   const raw = object(value);
   if (!raw) return;
   const shell = raw.type === 'shell_call' || raw.type === 'shell_call_output';
@@ -2285,22 +2290,63 @@ export function projectNativeHostedToolItem(
   turnId: string,
 ): HostedToolItem | undefined {
   const raw = object(value);
-  if (raw?.type === 'hosted_tool_call')
-    return projectHostedToolItem(raw.item, turnId);
-  if (raw?.type === 'ImageGeneration') {
-    const preserved = object(raw.provider_data);
-    if (preserved) return projectHostedToolItem(preserved, turnId);
+  if (raw?.type === 'hosted_tool_call') {
+    const item = object(raw.item);
+    if (
+      item?.type !== 'tool_search_call' &&
+      item?.type !== 'tool_search_output'
+    )
+      return projectHostedToolItem(raw.item, turnId);
+
+    // Fall back to the live occurrence id when the item carries no id.
+    // Leave provider data and history free of the observation id.
+    const id = text(item.id) || text(raw.id);
+    if (!id || typeof item.execution !== 'string') return;
+    const callId = text(item.call_id);
     const {
-      saved_path: _savedPath,
-      provider_data: _providerData,
-      type: _nativeType,
+      internal_chat_message_metadata_passthrough: _coreMetadata,
       ...provider
-    } = raw;
-    return projectHostedToolItem(
-      { ...provider, type: 'image_generation_call' },
+    } = item;
+    const common = {
+      id,
       turnId,
-    );
+      turn_id: turnId,
+      status: status(item.status, true),
+      call_id: callId,
+      callId,
+      execution: item.execution,
+      provider_data: structuredClone(provider),
+    };
+    if (item.type === 'tool_search_call')
+      return {
+        ...common,
+        type: item.type,
+        arguments: structuredClone(item.arguments ?? null),
+      };
+    if (Array.isArray(item.tools))
+      return { ...common, type: item.type, tools: structuredClone(item.tools) };
+    return;
   }
+  if (raw?.type === 'ImageGeneration')
+    return projectNativeImageGenerationItem(raw, turnId);
+}
+
+function projectNativeImageGenerationItem(
+  raw: JsonObject,
+  turnId: string,
+): HostedHistoryItem | undefined {
+  const preserved = object(raw.provider_data);
+  if (preserved) return projectHostedToolItem(preserved, turnId);
+  const {
+    saved_path: _savedPath,
+    provider_data: _providerData,
+    type: _nativeType,
+    ...provider
+  } = raw;
+  return projectHostedToolItem(
+    { ...provider, type: 'image_generation_call' },
+    turnId,
+  );
 }
 
 /** Core has been retaining original JSON object records separately from model projections. */

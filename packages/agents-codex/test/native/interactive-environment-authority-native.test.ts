@@ -28,6 +28,7 @@ it.each([
     let collected = '';
     const executor = await startPublicExecutor({
       syntheticTerminal: true,
+      syntheticTerminalCompletesOnTerminate: true,
       onProcessOutput(notification) {
         const params = notification.params as JsonObject;
         if (typeof params.chunk === 'string') {

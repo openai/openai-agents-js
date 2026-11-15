@@ -6,6 +6,7 @@ import {
   constants,
   mkdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -21,6 +22,13 @@ assert.deepEqual(
 );
 const directory = resolve('results/native-docker');
 mkdirSync(directory, { recursive: true });
+const report = join(directory, 'vitest.json');
+const receipt = join(
+  directory,
+  diagnosticOnly ? 'diagnostic-native-controls.json' : 'qualification.json',
+);
+rmSync(report, { force: true });
+rmSync(receipt, { force: true });
 const image = process.env.CODEX_DOCKER_TEST_IMAGE;
 const dockerfile = resolve('.github/docker/native-executor.Dockerfile');
 const baseImage = readFileSync(dockerfile, 'utf8').match(/^FROM (\S+)$/m)?.[1];
@@ -100,6 +108,7 @@ writeFileSync(
 
 const environment = {
   ...process.env,
+  CODEX_DOCKER_STRICT_POSITIVE_PROOF: '1',
   OPENAI_AGENTS_NATIVE_TESTS: '1',
   OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1',
 };
@@ -113,7 +122,6 @@ for (const name of [
   'all_proxy',
 ])
   delete environment[name];
-const report = join(directory, 'vitest.json');
 const result = spawnSync(
   process.execPath,
   [
@@ -156,16 +164,14 @@ for (const suite of output.testResults) {
   assert.equal(suite.assertionResults[0].status, 'passed');
 }
 writeFileSync(
-  join(
-    directory,
-    diagnosticOnly ? 'diagnostic-native-controls.json' : 'qualification.json',
-  ),
+  receipt,
   JSON.stringify(
     {
       ...product,
       ...(diagnosticOnly ? { diagnosticOnly: true } : {}),
       passed: 2,
       skipped: 0,
+      strictMappedShellAndApplyPatch: true,
       reportSha256: hash(report),
     },
     null,

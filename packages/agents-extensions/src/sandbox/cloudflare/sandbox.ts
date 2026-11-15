@@ -9,10 +9,13 @@ import {
   SandboxUnsupportedFeatureError,
   SandboxWorkspaceReadNotFoundError,
   normalizeSandboxClientCreateArgs,
+  normalizeExposedPort,
   type SandboxClient,
   type SandboxClientCreateArgs,
   type SandboxClientOptions,
   type SandboxClientResumeOptions,
+  type SandboxSessionResumeValidationInput,
+  type SandboxSessionLike,
   type SandboxPreservedSessionReuseOptions,
   type SandboxArchiveLimits,
   type SandboxConcurrencyLimits,
@@ -1268,10 +1271,63 @@ export class CloudflareSandboxClient implements SandboxClient<
       ...this.options,
       ...options.clientOptions,
     };
+    try {
+      this.validateSessionStateForResume(
+        { source: 'explicit', state },
+        { clientOptions: options.clientOptions },
+      );
+    } catch {
+      return false;
+    }
     return (
       stableJsonStringify(state.mounts ?? []) ===
       stableJsonStringify(resolvedOptions.mounts ?? [])
     );
+  }
+
+  assertBorrowedSessionManifestAuthority(
+    session: SandboxSessionLike<CloudflareSandboxSessionState>,
+    _manifest: Manifest,
+    options?: CloudflareSandboxClientOptions,
+  ): void {
+    this.validateSessionStateForResume(
+      { source: 'explicit', state: session.state },
+      { clientOptions: options },
+    );
+  }
+
+  validateSessionStateForResume(
+    input: SandboxSessionResumeValidationInput<CloudflareSandboxSessionState>,
+    options: SandboxClientResumeOptions<CloudflareSandboxClientOptions> = {},
+  ): void {
+    const current = { ...this.options, ...options.clientOptions };
+    if (
+      current.workerUrl !== undefined &&
+      normalizeCloudflareWorkerUrl(current.workerUrl, 'options.workerUrl') !==
+        normalizeCloudflareWorkerUrl(
+          readString(input.state, 'workerUrl'),
+          'persisted workerUrl',
+        )
+    ) {
+      throw new UserError(
+        'Cloudflare sandbox resume workerUrl must match options.workerUrl.',
+      );
+    }
+    if (current.exposedPorts === undefined) return;
+    const recorded = new Set(
+      (readOptionalNumberArray(input.state.configuredExposedPorts) ?? []).map(
+        normalizeExposedPort,
+      ),
+    );
+    const requested = new Set(current.exposedPorts.map(normalizeExposedPort));
+    if (
+      requested.size !== recorded.size ||
+      [...requested].some((port) => !recorded.has(port))
+    ) {
+      throw new UserError(
+        'Current Cloudflare networking options require a fresh sandbox session',
+      );
+    }
   }
 
   async create(
@@ -1466,6 +1522,7 @@ export class CloudflareSandboxClient implements SandboxClient<
       );
     }
     assertRemoteSandboxSessionStateCanResume(state);
+    this.validateSessionStateForResume({ source: 'explicit', state }, options);
     const sandboxId = normalizeCloudflarePersistedSandboxId(
       (state as Record<string, unknown>).sandboxId,
     );

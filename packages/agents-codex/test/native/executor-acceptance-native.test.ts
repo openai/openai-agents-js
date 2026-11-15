@@ -169,6 +169,7 @@ it.skipIf(
     ]);
     const provider = await providerFor(model, 'synthetic-lost-ack-model');
     let session: Awaited<ReturnType<Agent['session']>> | undefined;
+    let closing: Promise<unknown> | undefined;
     try {
       session = await new Agent({
         instructions: 'Use the selected executor.',
@@ -184,38 +185,42 @@ it.skipIf(
         executor.droppedStartReply,
         JSON.stringify(executor.requests),
       ).toBe(true);
-      await turn.cancel();
-      const failure = await outcome;
-      // Cancellation settles this admitted operation; it does not undo the remote write.
-      expect(turn.turnId).toEqual(expect.any(String));
-      expect(failure).toBeInstanceOf(NativeError);
-      expect(failure).toMatchObject({ name: 'TurnAborted', retryable: null });
-      const history = [];
-      for await (const recorded of session.turns()) history.push(recorded);
-      expect(
-        history.find((recorded) => recorded.id === turn.turnId),
-      ).toMatchObject({
-        status: 'cancelled',
+      const cancelled = turn.cancel().catch((error: unknown) => error);
+      const [cancelError, turnError] = await Promise.all([cancelled, outcome]);
+      // A dropped start reply leaves process termination unconfirmed on close.
+      closing = session.close().catch((error: unknown) => error);
+      const closeError = await closing;
+      expect(cancelError).toBeInstanceOf(Error);
+      expect(cancelError).toMatchObject({
+        message: 'Native local command cleanup could not confirm exit',
       });
-      expectNoSecrets(failure, [
-        executor.headers.Authorization,
-        'synthetic-lost-ack-model',
-      ]);
+      expect(turnError).toBeInstanceOf(Error);
+      expect(closeError).toBeInstanceOf(AggregateError);
+      expect(closeError).toMatchObject({ message: 'Session cleanup failed' });
+      const [terminationError, stopError] = (closeError as AggregateError)
+        .errors;
+      expect(stopError).toBe(cancelError);
+      expect(terminationError).toBeInstanceOf(NativeError);
+      expect(terminationError).toMatchObject({
+        message:
+          'Fatal error: A remote process termination attempt was not acknowledged',
+        effects: 'unknown',
+      });
+      expectNoSecrets(
+        [cancelError, turnError, closeError],
+        [executor.headers.Authorization, 'synthetic-lost-ack-model'],
+      );
       expect(await readFile(join(executor.cwd, 'started.txt'), 'utf8')).toBe(
         'started',
       );
       expect(starts(executor), JSON.stringify(executor.requests)).toHaveLength(
         1,
       );
-      // No receipt claims that transport loss rolled back the observed remote effect.
-      expectNoSecrets(await session.saveState(), [
-        executor.headers.Authorization,
-        'synthetic-lost-ack-model',
-      ]);
     } finally {
       releaseModel.resolve();
       try {
-        await session?.close();
+        if (closing) await closing;
+        else await session?.close();
       } finally {
         try {
           await provider.close();

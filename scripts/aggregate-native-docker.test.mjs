@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { URL } from 'node:url';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,11 +47,16 @@ function fixture(t) {
       parents: ['f'.repeat(40)],
     },
   });
+  put('vitest.json', { numPassedTests: 2, numPendingTests: 0 });
   put('diagnostic-native-controls.json', {
     sdk: sha,
     image: { id: profile.imageId, dockerfileSha256: profile.recipeSha256 },
     passed: 2,
     skipped: 0,
+    strictMappedShellAndApplyPatch: true,
+    reportSha256: createHash('sha256')
+      .update(readFileSync(join(directory, 'vitest.json')))
+      .digest('hex'),
   });
   put('diagnostic-result.json', {
     diagnosticOnly: true,
@@ -186,6 +192,15 @@ test('diagnostic policy, stale source and unclassified controls remain red', (t)
         x.checks[11].denialStage = 'startup-failed';
       },
     ],
+    [
+      'probes.stdout',
+      (x) => {
+        const positive = x.checks.find(
+          (check) => check.name === 'bwrap-positive-and-protected-access',
+        );
+        delete positive.outerProcLinks;
+      },
+    ],
   ]) {
     const f = fixture(t);
     f.change(file, update);
@@ -194,6 +209,23 @@ test('diagnostic policy, stale source and unclassified controls remain red', (t)
   const f = fixture(t);
   f.context.sha = 'f'.repeat(40);
   assert.throws(() => aggregate(f.directory, f.context));
+});
+
+test('qualification requires strict mapped execution and the exact test report', (t) => {
+  const basic = fixture(t);
+  basic.change('diagnostic-native-controls.json', (value) => {
+    delete value.strictMappedShellAndApplyPatch;
+  });
+  assert.throws(() => aggregate(basic.directory, basic.context));
+
+  const changed = fixture(t);
+  changed.change('vitest.json', (value) => {
+    value.numPassedTests = 1;
+  });
+  assert.throws(
+    () => aggregate(changed.directory, changed.context),
+    /Native test report changed after validation/,
+  );
 });
 
 test('positive probe requires explicit outer proc link denial', (t) => {

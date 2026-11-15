@@ -1,0 +1,52 @@
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -2574,7 +2574,7 @@
+             if entry.process.uses_managed_local_sandbox() {
+                 starting.push((None, entry.process));
+             } else if entry.process.owns_remote_termination() {
+-                owned_remote.push((None, entry.process));
++                owned_remote.push(entry.process);
+             } else if let Some(failed) = &remote_failure {
+                 // Match terminate_process: an already exited remote process needs no new attempt.
+                 if (!entry.process.has_exited() || entry.process.needs_remote_cleanup())
+@@ -2591,7 +2591,19 @@
+         }
+         let (local, registered, launching) = tokio::join!(
+             self.join_owned_processes(starting),
+-            self.join_owned_processes(owned_remote),
++            async {
++                futures::future::join_all(owned_remote.into_iter().map(|process| async move {
++                    let confirmed = process.join_remote_termination().await;
++                    // The exit receipt and output closure are independent. Start the
++                    // existing trailing-output drain so a delayed Closed cannot keep
++                    // the process's tree membership alive after checked shutdown.
++                    process.cancellation_token().cancel();
++                    confirmed
++                }))
++                .await
++                .into_iter()
++                .all(|confirmed| confirmed)
++            },
+             self.join_starting_remote_processes(starting_remote, true),
+         );
+         let remote = registered && launching;
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -1250,6 +1250,7 @@
+     )
+     .await;
+     process.enable_remote_turn_cleanup_for_test(policy.clone());
++    let output_stop = process.cancellation_token();
+     // The fixture records the handle as delivered and never reports an exit.
+     insert_remote_shutdown_process_instance(&session, &turn, Arc::new(process)).await;
+     assert_eq!(
+@@ -1257,6 +1258,7 @@
+         (true, false)
+     );
+     assert!(policy.failed());
++    assert!(output_stop.is_cancelled());
+ }
+ 
+ #[tokio::test]
