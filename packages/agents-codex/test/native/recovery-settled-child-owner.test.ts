@@ -263,13 +263,33 @@ it.each([
       if (holdSettlement || lateSettlement) await childHeld.promise;
       expect((await Array.fromAsync(owned!.subagents())).length).toBe(1);
       const revision = await owned!.historySnapshot({ limit: 0 });
-      await expect(
-        owned!.transactHistory({
-          expectedRevision: revision.revision,
-          keep: revision.total,
-          items: [],
-        }),
-      ).rejects.toThrow(/native children|child graphs/);
+      const rejection = await vi.waitFor(
+        async () => {
+          const result = await owned!
+            .transactHistory({
+              expectedRevision: revision.revision,
+              keep: revision.total,
+              items: [],
+            })
+            .then(
+              () => undefined,
+              (error: unknown) => error,
+            );
+          // A child continuation can still hold the native operation gate.
+          if (
+            result instanceof Error &&
+            result.message === 'native operations are in progress'
+          ) {
+            throw result;
+          }
+          return result;
+        },
+        { timeout: 5_000 },
+      );
+      expect(rejection).toBeInstanceOf(Error);
+      expect((rejection as Error).message).toMatch(
+        /native children|child graphs/,
+      );
     } finally {
       release.resolve();
     }

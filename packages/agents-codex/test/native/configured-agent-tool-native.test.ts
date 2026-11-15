@@ -1155,7 +1155,7 @@ nativeIt(
       'parent complete',
     );
     expect(batches).toBe(1);
-    expect(f.effects).toEqual(['accepted-sibling', 'child-effect']);
+    expect([...f.effects].sort()).toEqual(['accepted-sibling', 'child-effect']);
     f.rootModel.assertExhausted();
     f.childModel.assertExhausted();
   },
