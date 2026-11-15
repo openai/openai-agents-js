@@ -21,6 +21,7 @@ class QualificationDockerTest(unittest.TestCase):
             "image": "sha256:" + "a" * 64,
             "imageId": "sha256:" + "b" * 64,
             "profile": {
+                "sourceCommit": "e" * 40, "runId": "1", "runAttempt": "1",
                 "apparmor": {"name": "agents-native-ci-1-1"},
                 "seccomp": {"path": "/etc/openai-agents-native-docker/seccomp.json", "sha256": "c" * 64},
             },
@@ -144,7 +145,7 @@ class QualificationDockerTest(unittest.TestCase):
 
     def test_inspection_requires_enforced_profiles_and_unchanged_authority(self):
         self.assertEqual(self.inspect(self.inspected())["seccomp"], 2)
-        for key, value in [("Privileged", True), ("CapAdd", ["SYS_ADMIN"]), ("Devices", [{"PathOnHost": "/dev/fuse"}]), ("NetworkMode", "bridge"), ("SecurityOpt", ["seccomp=unconfined"])]:
+        for key, value in [("Privileged", True), ("CapAdd", ["SYS_ADMIN"]), ("Devices", [{"PathOnHost": "/dev/fuse"}]), ("DeviceRequests", [{"Count": -1, "Capabilities": [["gpu"]]}]), ("NetworkMode", "bridge"), ("SecurityOpt", ["seccomp=unconfined"])]:
             record = self.inspected()
             record["HostConfig"][key] = value
             with self.subTest(key=key), self.assertRaises((RuntimeError, ValueError)):
@@ -153,6 +154,13 @@ class QualificationDockerTest(unittest.TestCase):
             self.inspect(self.inspected(), current="agents-native-ci-1-1 (complain)\n")
         with self.assertRaises(RuntimeError):
             self.inspect(self.inspected(), status="Seccomp:\t0\n")
+
+    def test_inspection_receipt_binds_run_source_and_workload_after_live_assertions(self):
+        record = self.inspect(self.inspected())
+        self.assertEqual((record["inspectionPassed"], record["sourceCommit"], record["runId"], record["runAttempt"], record["workload"]), (True, "e" * 40, "1", "1", "native"))
+        probe = self.inspected()
+        probe["Config"]["Labels"]["agents-native-ci-probe"] = "true"
+        self.assertEqual(self.inspect(probe)["workload"], "probe")
 
     def test_rejects_noncanonical_policy_path_before_reading_it(self):
         with self.assertRaises(RuntimeError):

@@ -90,6 +90,11 @@ rules = '''  # Diagnostic: fresh child userns, then only bwrap setup mount class
   mount fstype=devpts options=(rw,nosuid,noexec) -> /newroot/dev/pts/,
   mount options=(rw,bind,silent) /oldroot/ -> /newroot/,
   mount options=(rw,rbind,silent) /oldroot/ -> /newroot/,
+  # Pinned image usrmerge aliases used by the native minimal proc preflight.
+  mount options=(rw,rbind,silent) /oldroot/usr/bin/ -> /newroot/bin/,
+  mount options=(rw,rbind,silent) /oldroot/usr/lib/ -> /newroot/lib/,
+  mount options=(rw,rbind,silent) /oldroot/usr/lib64/ -> /newroot/lib64/,
+  mount options=(rw,rbind,silent) /oldroot/usr/sbin/ -> /newroot/sbin/,
   # Temporary files created by SETUP_MAKE_RO_BIND_FILE carry supplied bind data.
   mount options=(rw,bind,silent) /bindfile?????? -> /newroot/**,
   remount options in (ro,rw,remount,bind,silent,nosuid,nodev,noexec,noatime,nodiratime,relatime,strictatime) /newroot/{,**},

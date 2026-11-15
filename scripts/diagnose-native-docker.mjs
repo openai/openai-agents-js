@@ -49,6 +49,51 @@ assert.equal(process.env.GITHUB_REPOSITORY, 'openai/openai-agents-js');
 const sdk = execFileSync('git', ['rev-parse', 'HEAD'], {
   encoding: 'utf8',
 }).trim();
+assert.equal(
+  sdk,
+  process.env.GITHUB_SHA,
+  'Checkout must match tested merge/push',
+);
+const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+const parents = execFileSync('git', ['cat-file', '-p', sdk], {
+  encoding: 'utf8',
+})
+  .split('\n\n', 1)[0]
+  .split('\n')
+  .filter((line) => line.startsWith('parent '))
+  .map((line) => line.slice(7));
+if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+  assert.equal(
+    event.pull_request.head.repo.full_name,
+    process.env.GITHUB_REPOSITORY,
+  );
+  assert.equal(
+    event.pull_request.base.repo.full_name,
+    process.env.GITHUB_REPOSITORY,
+  );
+  assert.equal(event.pull_request.base.ref, 'feat/codex-harness');
+  assert.equal(process.env.GITHUB_REF, `refs/pull/${event.number}/merge`);
+  assert.deepEqual(parents, [
+    event.pull_request.base.sha,
+    event.pull_request.head.sha,
+  ]);
+} else {
+  assert.equal(process.env.GITHUB_EVENT_NAME, 'push');
+  assert.equal(process.env.GITHUB_REF, 'refs/heads/feat/codex-harness');
+  assert.equal(event.ref, process.env.GITHUB_REF);
+  assert.equal(event.after, sdk);
+  assert.equal(event.deleted, false);
+}
+assert.equal(event.repository.full_name, process.env.GITHUB_REPOSITORY);
+const lineage = {
+  ref: process.env.GITHUB_REF,
+  sourceCommit: sdk,
+  parents,
+  repository: process.env.GITHUB_REPOSITORY,
+  runId: process.env.GITHUB_RUN_ID,
+  runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+  eventName: process.env.GITHUB_EVENT_NAME,
+};
 const profile = JSON.parse(rootFile(join(profileDirectory, 'manifest.json')));
 assert.equal(profile.format, 'native-docker-runner-profile-v1');
 assert.equal(profile.runId, process.env.GITHUB_RUN_ID);
@@ -85,6 +130,7 @@ writeFileSync(
   JSON.stringify(
     {
       profile,
+      lineage,
       wrapperSha256: hash('.github/docker/native-executor-docker.py'),
       probesSha256: hash('.github/docker/native-executor-probes.py'),
     },
@@ -198,12 +244,4 @@ try {
     );
   }
 }
-assert.equal(
-  profile.diagnosticOnly,
-  false,
-  'Diagnostic runner profile must remain red until hosted denial/audit qualification and independent promotion',
-);
-assert.ok(
-  result.probesPassed && result.nativeControlsPassed,
-  'Runner profile controls failed',
-);
+// The final in-job aggregation owns success only after cleanup.

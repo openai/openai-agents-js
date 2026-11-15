@@ -148,7 +148,10 @@ def inspect_container(global_arguments, container, config):
     require(current == profile["apparmor"]["name"] + " (enforce)", "AppArmor is not enforcing")
     status = subprocess.check_output([DOCKER, *global_arguments, "exec", container, "/bin/cat", "/proc/self/status"], text=True)
     require(re.search(r"^Seccomp:\s+2$", status, re.MULTILINE) is not None, "Seccomp is not filtering")
-    return {"id": container, "imageId": record["Image"], "labels": record["Config"].get("Labels", {}), "hostConfig": host, "apparmor": current, "seccomp": 2}
+    return {"id": container, "imageId": record["Image"], "labels": record["Config"].get("Labels", {}), "hostConfig": host, "apparmor": current, "seccomp": 2,
+            "inspectionPassed": True, "sourceCommit": profile["sourceCommit"],
+            "runId": profile["runId"], "runAttempt": profile["runAttempt"],
+            "workload": "probe" if record["Config"].get("Labels", {}).get("agents-native-ci-probe") == "true" else "native"}
 
 
 def main():

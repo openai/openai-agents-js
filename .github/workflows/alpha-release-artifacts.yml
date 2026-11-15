@@ -152,6 +152,10 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      - name: Verify confined gate and cleanup regressions
+        run: |
+          node --test scripts/aggregate-native-docker.test.mjs
+          python3 -m unittest discover -s .github/docker -p 'test_*.py'
       - name: Restore the current-run Linux native transfer
         id: native_transfer
         env:
@@ -192,6 +196,13 @@ jobs:
       - name: Collect unique-profile audit and unload the diagnostic policy
         if: always()
         run: bash .github/docker/finish-hosted-diagnostic.sh
+      - name: Aggregate current-job qualification after cleanup
+        if: always()
+        run: |
+          rm -f results/native-docker/qualification.json
+          node scripts/aggregate-native-docker.mjs results/native-docker \
+            > "$RUNNER_TEMP/native-docker-aggregation.json"
+          mv "$RUNNER_TEMP/native-docker-aggregation.json" results/native-docker/qualification.json
       - name: Retain native Docker qualification evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
