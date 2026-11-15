@@ -1,6 +1,4 @@
-# SDK examples
-
-Read the [native voice guide](guides/native-voice.md) for Session-owned Realtime, per-connection credentials, custom adapters, and speech pipelines. Run [native-realtime-voice.ts](native-realtime-voice.ts) to record a reply.
+# Native SDK examples
 
 Use Node.js 24 and [build the SDK and native runtime](guides/building.md) from the same checkout as the examples. Run commands from the repository root. For a released starter bundle, use the [installation guide](guides/installation.md).
 
@@ -22,6 +20,7 @@ For a live example, set `OPENAI_API_KEY` and run [basic.ts](basic.ts) the same w
 | Inspect the settings used by a Turn | **Run** [session-configuration.ts](session-configuration.ts) with scripted responses. It loads ordered instruction files and checks the effective settings and instruction hashes in the Turn receipt. |
 | Submit an image | Run [image-input.ts](image-input.ts) for a live response with a validated dominant color. [Scripted image input](input-retrieval-specialist/README.md) exercises the same kind of request locally. |
 | Stream and continue a conversation | Run [conversation.ts](conversation.ts) to wait for a captured Turn, read its history, and restore a checkpoint. See [session state](guides/state.md). |
+| Record a spoken reply | [native-realtime-voice.ts](native-realtime-voice.ts), with setup in the [native voice guide](guides/native-voice.md): Session-owned Realtime, per-connection credentials, custom adapters, and speech pipelines. |
 | Reopen a local profile | Run [local-storage.ts](local-storage.ts) with model credentials. It reopens the same Session ID, prints the remembered meal preference, and removes its temporary profile. |
 | <a name="store-canonical-conversation-state-in-application-owned-files"></a>Store a conversation in application-owned files | Run [custom-storage.ts](custom-storage.ts) to create and resume a Session in separate processes. Follow [file storage and recovery](guides/session-store.md) to recover a crashed writer or reconcile a pending tool call. |
 | Recover callback identities after a crash | **Import** [custom-storage-recovery.ts](custom-storage-recovery.ts) to journal the callback identity before dispatch. Follow [recovery identities](guides/session-store.md#record-recovery-identities-before-dispatch) for the remaining crash window and recovery test. |

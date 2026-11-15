@@ -132,12 +132,10 @@ it('drains genuine usage after manual suspension overtakes the next native read'
     expect(state.manual_continuation.turn_id).toBe(turn.turnId);
     expect(await outcome).toBeInstanceOf(InteractionRequired);
     if (!target) throw new Error('Missing native event reader');
-    // Explicit close must also release a read after Core has retired.
-    const remainingRead = target._next_session_events();
-    void remainingRead.catch(() => {});
+    // Leave queued usage with the session reader until shutdown completes.
     await session.close();
-    await expect(remainingRead).rejects.toThrow(/closed/i);
     await observing;
+    await expect(target._next_session_events()).rejects.toThrow(/closed/i);
 
     const actionIndex = events.findIndex(
       (event) =>

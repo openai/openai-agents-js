@@ -10,16 +10,12 @@ import {
   ResponsesModel,
 } from '@openai/agents/worker';
 import OpenAI from 'openai';
+import { z } from 'zod';
 
 const lookup = standaloneTool({
   name: 'lookup',
   description: 'Look up a value in this Worker.',
-  parameters: {
-    type: 'object',
-    properties: { key: { type: 'string' } },
-    required: ['key'],
-    additionalProperties: false,
-  },
+  parameters: z.strictObject({ key: z.string() }),
   execute: ({ key }) => `Value for ${key}`,
 });
 
@@ -41,12 +37,27 @@ export default {
 };
 ```
 
-Use `AiSdkModel` to borrow an AI SDK language model. Worker text runs accept a text prompt and direct standalone functions with text output. Pass an `observe` callback to receive normalized model events from a streaming adapter as they arrive. Pass `session: { id, store }` to save completed turns and reuse their history. The `SessionStore` grants an exclusive writer lease and atomically commits each revision. Keep the stored snapshots private to the application. Worker snapshots are distinct from Node session snapshots. Use the `agents` option to give each Worker Agent profile its own model, instructions, and tools. Each profile lists its named handoffs to other current profiles. The Rust controller checks the transfer against those declarations and stores the active profile with the completed turn. A handoff must be the only call in a model response. Sandbox tools require a native Node runtime.
+## Choose model input and tools
 
+Worker runs have been accepting a text prompt or a user message containing text, images, and files. The SDK has been accepting remote media URLs only over HTTPS without embedded credentials. It has not been fetching media, uploading files, or reading local paths for the application.
+
+Direct standalone functions have been returning text or supported media content. Tools with `finishTurn: true` have been requiring text output. Sandbox tools have been requiring a native Node runtime.
+
+`AiSdkModel` has been adapting an AI SDK language model. An `observe` callback has been receiving normalized model events from a streaming adapter as they arrive.
+
+## Retain conversation history
+
+The `session: { id, store }` option has been saving completed turns and reusing their history. The application-supplied `SessionStore` has been granting an exclusive writer lease and committing each revision atomically. Keep the stored snapshots private to the application. Worker snapshots have been using a separate format from Node session snapshots.
+
+## Transfer between Agent profiles
+
+The `agents` option has been giving each Worker Agent profile its own model, instructions, and tools. Each profile has been declaring named handoffs to other current profiles. The Rust controller has been checking transfers against those declarations and saving the active profile with the completed turn. A handoff has been requiring a model response containing only that call.
 
 ## Pause a turn for approval
 
 Set `approve` to a map from tool names to callbacks. Return `true` to run a tool, or `false` to send a denial to the model without running the tool. When you use `runWorkerTurn` with a session store, you can return `null` to pause before the tool runs.
+
+The following fragment has been assuming the preceding `control` and `lookup` declarations, a model `provider` created in the request handler, and an application-owned `sessionId` and `store`.
 
 ```ts
 import { runWorkerTurn } from '@openai/agents/worker';
@@ -75,8 +86,14 @@ Pass the same session ID and tool declarations when resuming from another reques
 
 ## Guard input and output
 
-Use `inputGuardrails` to check a new text prompt before the first model request. An input check with `runInParallel: true` can overlap the first model request. Its result still gates tool execution and turn acceptance. Use `outputGuardrails` to check final text before the SDK returns it or commits the completed turn. Each check declares a `name` and a `callback` that receives the text, context, signal, and current profile. Return `{ tripwireTriggered: true, outputInfo }` to stop the turn. Catch `WorkerGuardrailTripwire` to inspect the check and its result.
+`inputGuardrails` have been checking new input before the first model request. An input check with `runInParallel: true` has been overlapping that request while still gating tool execution and turn acceptance. `outputGuardrails` have been checking final text before the SDK returns it or commits the completed turn.
+
+Each check has been declaring a `name` and a `callback`. The callback has been receiving `text`, application `context`, an abort `signal`, the current `profile`, `sessionId`, and `turnId`. Input checks have also been receiving detached `input` containing the complete submitted user message. For media messages, `text` has been joining only text parts with newlines; media-only input has been producing an empty string. Inspect `input` when checking images or files. Output checks have been receiving final text without an `input` field.
+
+Returning `{ tripwireTriggered: true, outputInfo }` has been stopping the turn with `WorkerGuardrailTripwire`, which has been identifying the check and its result.
 
 You can attach checks to the run or to an Agent profile. Input checks use the profile active at submission. Output checks use the profile that finishes the turn. A streaming observer can receive model events before the output checks finish, so display accepted text from the run result.
 
-Use `toolGuardrails` to check calls to a named local tool. A `before` callback receives the admitted call before the function body, and an `after` callback also receives its text output. Return `{ action: 'allow' }` to continue, `{ action: 'deny', reason }` to send a replacement message to the model, or `{ action: 'stop', outputInfo }` to stop the turn. An output check runs after the function, so any external effects have already happened.
+`toolGuardrails` have been checking calls to a named local tool. A `before` callback has been receiving the admitted call before the function body. An `after` callback has also been receiving string `output`; for media results, it has been receiving the serialized provider content in `output` and detached native content in `response.contentItems`.
+
+Returning `{ action: 'allow' }` has been allowing execution or output delivery. Returning `{ action: 'deny', reason }` has been sending a replacement message to the model, and `{ action: 'stop', outputInfo }` has been stopping the turn. An `after` check has been running after the function and any external effects.

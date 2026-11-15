@@ -333,7 +333,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
-        run: pnpm test:native --mode full --maxWorkers=${{ matrix.managed_arm && 8 || 4 }} --reporter=verbose
+        run: >-
+          pnpm test:native --mode full
+          --maxWorkers=${{ (matrix.managed_arm || (github.repository == 'openai/openai-agents-js' && matrix.platform == 'linux-x64')) && 8 || 4 }}
+          --reporter=verbose
       - name: Qualify local executor grants on macOS
         if: ${{ !cancelled() && runner.os == 'macOS' && steps.build_sdk.outcome == 'success' }}
         env:
