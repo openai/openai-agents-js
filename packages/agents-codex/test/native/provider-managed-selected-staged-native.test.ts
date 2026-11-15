@@ -6,6 +6,7 @@ import {
   NativeProvider,
   manualTool,
   tool,
+  toolSearch,
   pendingInput,
   withPendingInput,
   parseSessionState,
@@ -30,6 +31,7 @@ afterEach(async () => {
 const kept = 'SELECTED_ORIGINAL_OCCURRENCE';
 const omitted = 'OMITTED_ORIGINAL_OCCURRENCE';
 const live = 'LIVE_BEFORE_PROVIDER_TERMINAL';
+const unsupportedSearch = 'SELECTED_STAGED_SERVER_SEARCH';
 function emit(response: ServerResponse, frame: object) {
   response.write('data: ' + JSON.stringify(frame) + '\n\n');
 }
@@ -48,7 +50,7 @@ function message(text: string, id: string) {
     content: [{ type: 'output_text', text }],
   };
 }
-async function endpoint(failure: boolean) {
+async function endpoint(failure: boolean, search: boolean) {
   const requests: Record<string, unknown>[] = [];
   const reads: string[] = [];
   const failures: unknown[] = [];
@@ -124,6 +126,32 @@ async function endpoint(failure: boolean) {
           },
           1,
         );
+        if (search) {
+          output(
+            response,
+            {
+              type: 'tool_search_call',
+              id: 'staged-search-call',
+              call_id: null,
+              execution: 'server',
+              status: 'completed',
+              arguments: { query: unsupportedSearch },
+            },
+            2,
+          );
+          output(
+            response,
+            {
+              type: 'tool_search_output',
+              id: 'staged-search-output',
+              call_id: null,
+              execution: 'server',
+              status: 'completed',
+              tools: [],
+            },
+            3,
+          );
+        }
         prefix.resolve();
         await terminal.promise;
         if (failure) {
@@ -171,6 +199,7 @@ const modes = [
   'selected-success',
   'selected-failure',
   'selected-cancel',
+  'selected-reject-search',
   'ordinary-early',
 ] as const;
 it.each(
@@ -187,7 +216,8 @@ it.each(
     const selected = mode !== 'ordinary-early';
     const failed = mode === 'selected-failure';
     const cancelled = mode === 'selected-cancel';
-    const remote = await endpoint(failed);
+    const rejectSearch = mode === 'selected-reject-search';
+    const remote = await endpoint(failed, rejectSearch);
     const effects: string[] = [];
     await using provider = new NativeProvider({
       baseUrl: remote.baseUrl,
@@ -201,6 +231,7 @@ it.each(
       modelSettings: { store: true },
       instructions: 'Answer after each decision.',
       tools: [
+        ...(rejectSearch ? [toolSearch({ execution: 'server' })] : []),
         manualTool({
           name: 'decision',
           description: 'Owned decision',
@@ -246,10 +277,16 @@ it.each(
     });
     const turn = resumed.restoredTurn!;
     const delta = latch();
+    const searchItems: string[] = [];
     const observations = (async () => {
-      for await (const event of turn.events())
+      for await (const event of turn.events({
+        includeExecutionDetails: rejectSearch,
+      })) {
         if (event.type === 'output_text_delta' && event.delta === live)
           delta.resolve();
+        if (event.type === 'hosted_tool_item_completed')
+          searchItems.push(event.item.type);
+      }
     })();
     const settled = turn.wait().then(
       (value) => ({ value, error: undefined }),
@@ -303,13 +340,27 @@ it.each(
         : '/v1/responses/response-1',
     );
     expect(remote.failures).toEqual([]);
-    if (failed || cancelled) {
+    if (failed || cancelled || rejectSearch) {
       expect(result.error).toBeDefined();
+      if (rejectSearch) {
+        expect(result.error).toMatchObject({
+          message:
+            'Fatal error: Selected staged input cannot admit this model output kind',
+        });
+        expect(searchItems).toEqual([]);
+      }
       expect(effects).toEqual([]);
       const retry = await resumed.saveState();
       expect(pendingInput(retry)).toHaveLength(2);
       expect(JSON.stringify(retry.history)).not.toContain(kept);
       expect(JSON.stringify(retry.history)).not.toContain(live);
+      if (rejectSearch) {
+        expect(pendingInput(retry)).toEqual(pendingInput(portable));
+        expect(JSON.stringify(retry.history)).not.toContain(unsupportedSearch);
+        expect(JSON.stringify(retry.history)).not.toContain(
+          'staged-search-output',
+        );
+      }
       expect(remote.requests).toHaveLength(2);
       return;
     }
