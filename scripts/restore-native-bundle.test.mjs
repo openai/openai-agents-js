@@ -87,6 +87,7 @@ test('only successful direct Alpha producers in approved branches are eligible',
     { status: 'in_progress' },
     { conclusion: 'failure' },
     { head_branch: 'other' },
+    { repository: { full_name: 'fork/openai-agents-js' } },
     { head_repository: { full_name: 'fork/openai-agents-js' } },
   ])
     expect(isProducer({ ...producer, ...change }, 1)).toBe(false);
