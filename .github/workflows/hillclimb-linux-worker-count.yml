@@ -1,0 +1,173 @@
+name: Compare Linux native test worker counts
+'on':
+  push:
+    branches:
+    - ci/hillclimb/js-linux-worker-count-current
+permissions:
+  contents: read
+  actions: read
+jobs:
+  select:
+    name: Select native bundles
+    if: ${{ github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/ci/hillclimb/js-linux-worker-count-current' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      inputs_hash: ${{ steps.select.outputs.inputs_hash }}
+      linux_hit: ${{ steps.select.outputs.linux_hit }}
+      linux_artifact: ${{ toJSON(steps.upload_linux.outputs) }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 2
+        persist-credentials: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        package-manager-cache: false
+    - name: Select retained native bundles
+      id: select
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: node scripts/select-native-bundles.mjs
+    - name: Publish native bundle (linux-x64)
+      id: upload_linux
+      if: steps.select.outputs.linux_hit == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        path: ${{ runner.temp }}/native-${{ steps.select.outputs.inputs_hash }}-linux-x64.tar.gz
+        archive: false
+        if-no-files-found: error
+        retention-days: 90
+    - name: Require the Linux native cache hit
+      env:
+        LINUX_HIT: ${{ steps.select.outputs.linux_hit }}
+      run: test "$LINUX_HIT" = true
+    timeout-minutes: 5
+  qualify:
+    name: Linux native tests (${{ matrix.first }} then ${{ matrix.second }})
+    if: ${{ github.repository == 'openai/openai-agents-js' && github.ref == 'refs/heads/ci/hillclimb/js-linux-worker-count-current' && needs.select.outputs.linux_hit == 'true' }}
+    needs:
+    - select
+    runs-on:
+      group: codex-runners
+      labels: codex-linux-x64-xl
+    timeout-minutes: 38
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - first: 4
+          second: 8
+        - first: 8
+          second: 4
+    env:
+      ALPHA_VERSION: 0.22.0-alpha.2
+      EXPECTED_PLATFORM: linux-x64
+      RUSTUP_TOOLCHAIN: 1.95.0
+      CARGO_BUILD_JOBS: '64'
+      CARGO_INCREMENTAL: '0'
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 2
+        persist-credentials: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        package-manager-cache: false
+    - name: Check runner platform
+      run: |
+        node -e 'require("node:assert/strict").equal(process.platform + "-" + process.arch, process.env.EXPECTED_PLATFORM)'
+        node -e 'const os = require("node:os"); console.log(JSON.stringify({ cpus: os.availableParallelism(), memory: os.totalmem(), model: os.cpus()[0].model }));'
+    - name: Restore the current-run native transfer
+      env:
+        GH_TOKEN: ${{ github.token }}
+        NATIVE_ARTIFACT: ${{ needs.select.outputs.linux_artifact }}
+        NATIVE_INPUTS: ${{ needs.select.outputs.inputs_hash }}
+      run: node scripts/restore-native-bundle.mjs
+    - name: Install Linux worker prerequisites
+      if: runner.os == 'Linux'
+      run: |
+        bash scripts/use-ubuntu-archive-if-needed.sh
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends apparmor-profiles bubblewrap
+        if ! bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true; then
+          sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict \
+            /etc/apparmor.d/bwrap-userns-restrict
+          sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+        fi
+        uname -sr
+        bwrap --version
+        bwrap --unshare-user --unshare-net --ro-bind / / -- /bin/true
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413
+      with:
+        run_install: false
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      with:
+        node-version: '24'
+        cache: pnpm
+    - name: Build the current SDK
+      id: build_sdk
+      timeout-minutes: 15
+      run: |
+        pnpm install --frozen-lockfile
+        pnpm build
+    - name: Save the initial Vitest scheduling state
+      run: |
+        test ! -L node_modules
+        test ! -L node_modules/.vite
+        test ! -L node_modules/.vite/vitest
+        mkdir "$RUNNER_TEMP/initial-vitest"
+        if [ -d node_modules/.vite/vitest ]; then
+          cp -a node_modules/.vite/vitest "$RUNNER_TEMP/initial-vitest/cache"
+        fi
+    - name: Qualify the Linux worker (first)
+      env:
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      run: pnpm test:native --mode full --maxWorkers=${{ matrix.first }} --reporter=verbose
+      id: first
+      continue-on-error: true
+    - name: Restore the initial Vitest scheduling state
+      run: |
+        test ! -L node_modules
+        test ! -L node_modules/.vite
+        test ! -L node_modules/.vite/vitest
+        rm -rf node_modules/.vite/vitest
+        if [ -d "$RUNNER_TEMP/initial-vitest/cache" ]; then
+          mkdir -p node_modules/.vite
+          cp -a "$RUNNER_TEMP/initial-vitest/cache" node_modules/.vite/vitest
+          diff -qr "$RUNNER_TEMP/initial-vitest/cache" node_modules/.vite/vitest
+        else
+          test ! -e node_modules/.vite/vitest
+        fi
+    - name: Qualify the Linux worker (second)
+      env:
+        OPENAI_AGENTS_REQUIRE_LOCAL_SANDBOX: '1'
+      run: pnpm test:native --mode full --maxWorkers=${{ matrix.second }} --reporter=verbose
+      id: second
+      continue-on-error: true
+    - name: Require both Linux test passes
+      env:
+        FIRST: ${{ steps.first.outcome }}
+        SECOND: ${{ steps.second.outcome }}
+      run: |
+        printf "Linux test outcomes %s %s\n" "$FIRST" "$SECOND"
+        test "$FIRST" = success && test "$SECOND" = success
+    - name: Qualify native tracing and decoded OTLP transports
+      env:
+        AGENTS_REQUIRE_TRACING_QUALIFICATION: '1'
+        OPENAI_AGENTS_NATIVE_TESTS: '1'
+      run: |
+        python3 -m venv "$RUNNER_TEMP/agents-otel-collector"
+        "$RUNNER_TEMP/agents-otel-collector/bin/python" -m pip install grpcio==1.85.0 opentelemetry-proto==1.45.1
+        OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/tracing-parity.test.ts packages/agents-codex/test/native/telemetry-transports.test.ts
+        pnpm test:native packages/agents-codex/test/native/mcp-policy-native.test.ts -t 'restores the native MCP carrier'
+    - name: Create the release bundles
+      run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+    - name: Test the extracted bundles
+      run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
