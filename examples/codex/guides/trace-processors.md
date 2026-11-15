@@ -96,7 +96,7 @@ Both delay options: integer milliseconds from 0 through 60000, with the maximum 
 
 ## Export credential lifetime
 
-Current source builds: explicit `TraceExportCredentials` for one workflow, independent of model credentials and the exporter's fallback API key. Private headers, excluded from span records and portable Session state.
+Current source builds have been accepting explicit `TraceExportCredentials` for one workflow, independently of model credentials and the exporter's fallback API key. The SDK has been keeping their headers private, excluding them from span records and portable Session state.
 
 With built-in OTLP and JavaScript processors active, the SDK has been reserving each newly admitted span credential for built-in OTLP. The host `OpenAITraceExporter` has been using its configured fallback credentials for that span and descendants inheriting the credential, including after built-in OTLP removal through `setTraceProcessors()`. After replacement with host processors, a new explicit `exportCredential` admission has been authorizing host export.
 
@@ -137,9 +137,9 @@ try {
 }
 ```
 
-`close()`: release of caller ownership; admitted spans and queued exports retain their captured credentials. New registration with a closed credential: rejection. `exporter.setApiKey(nextKey)`: new fallback credentials for subsequent delivery batches, without changing already captured batches or explicit workflow credential routes.
+`credential.close()` has been releasing caller ownership while admitted spans and queued exports have been retaining their captured credentials. New registrations have been rejecting a closed credential. `exporter.setApiKey(nextKey)` has been changing fallback credentials for subsequent delivery batches, while already captured batches and explicit workflow credential routes have been keeping their credentials.
 
-Delegating processors: original immutable event objects for `onEvent` or `onEvents`. JSON copies without private credential authority, even with a retained public `credential_required` marker. Flush receipts and application destination receipts for delivery verification; successful agent output alone without export confirmation.
+A delegating processor has been forwarding the original immutable event objects to `onEvent` or `onEvents`. JSON copies have not been carrying private credential authority, even with a retained public `credential_required` marker. Flush receipts and application destination receipts have been providing delivery evidence; successful Agent output alone has not been confirming export.
 
 ## Read inherited root metadata
 
