@@ -16,7 +16,7 @@ import { fileURLToPath, URL } from 'node:url';
 import { expect, onTestFinished, test } from 'vitest';
 import {
   isProducer,
-  isNativePublication,
+  publicationStep,
   nativePlatforms,
 } from './verified-native-bundle.mjs';
 
@@ -36,14 +36,15 @@ const producer = {
 };
 const at = (second) =>
   '2026-01-01T00:00:' + String(second).padStart(2, '0') + 'Z';
-function publicationJobs(platform, preflight = false) {
+function publicationJobs(platform, preflight = false, run = producer) {
   const key = Object.keys(nativePlatforms).find(
     (key) => nativePlatforms[key] === platform,
   );
   return [
     {
-      id: 2,
-      run_id: 1,
+      id: 2 + Object.values(nativePlatforms).indexOf(platform) * 2,
+      run_id: run.id,
+      head_sha: run.head_sha,
       run_attempt: 1,
       conclusion: 'success',
       name: preflight
@@ -55,14 +56,16 @@ function publicationJobs(platform, preflight = false) {
             ? 'Publish native bundle (' + platform + ')'
             : 'Publish native bundle',
           conclusion: 'success',
+          number: 12,
           started_at: at(1),
           completed_at: at(3),
         },
       ],
     },
     {
-      id: 3,
-      run_id: 1,
+      id: 3 + Object.values(nativePlatforms).indexOf(platform) * 2,
+      run_id: run.id,
+      head_sha: run.head_sha,
       run_attempt: 1,
       conclusion: 'success',
       name: 'Package and test (' + platform + ')',
@@ -89,81 +92,59 @@ test('only successful direct Alpha producers in approved branches are eligible',
     expect(isProducer({ ...producer, ...change }, 1)).toBe(false);
 });
 
-test('native publication precedes all SDK execution, including other platforms and prior attempts', () => {
+test('selects only the exact owner step before the first same-platform package', () => {
   const asset = { created_at: at(2) };
   for (const platform of Object.values(nativePlatforms)) {
     for (const preflight of [false, true]) {
-      const jobs = publicationJobs(platform, preflight);
-      expect(isNativePublication(asset, producer, jobs, platform)).toBe(true);
-      for (const created_at of [at(0), at(4)])
-        expect(
-          isNativePublication({ created_at }, producer, jobs, platform),
-        ).toBe(false);
-      const earlierSdk = {
-        ...jobs[1],
-        name: `Package and test (${platform === 'linux-arm64' ? 'linux-x64' : 'linux-arm64'})`,
-        started_at: at(2),
+      const [owner, packaged] = publicationJobs(platform, preflight);
+      const otherPlatform = {
+        ...packaged,
+        name:
+          platform === 'linux-x64'
+            ? 'Package and test (linux-arm64)'
+            : 'Package and test (linux-x64)',
+        started_at: at(1),
+      };
+      const select = (jobs, run = producer) =>
+        publicationStep(asset, run, jobs, platform);
+      expect(select([owner, packaged, otherPlatform])).toEqual({
+        job: owner.id,
+        step: 12,
+      });
+      expect(
+        select([owner, packaged, { ...otherPlatform, run_attempt: 2 }]),
+      ).toBeUndefined();
+      expect(
+        select([owner, { ...packaged, started_at: at(2) }]),
+      ).toBeUndefined();
+      expect(select([owner, packaged, owner])).toBeUndefined();
+      expect(
+        select([{ ...owner, head_sha: 'wrong' }, packaged]),
+      ).toBeUndefined();
+      const retry = { ...producer, run_attempt: 2 };
+      const rerun = { ...packaged, run_attempt: 2, started_at: at(20) };
+      expect(select([owner, packaged, rerun], retry)).toEqual({
+        job: owner.id,
+        step: 12,
+      });
+      expect(
+        select([owner, packaged, { ...rerun, conclusion: 'failure' }], retry),
+      ).toBeUndefined();
+      const lateOwner = {
+        ...owner,
+        run_attempt: 2,
+        steps: [
+          { ...owner.steps[0], started_at: at(11), completed_at: at(15) },
+        ],
       };
       expect(
-        isNativePublication(asset, producer, [...jobs, earlierSdk], platform),
-      ).toBe(false);
-      expect(
-        isNativePublication(
-          asset,
-          { ...producer, run_attempt: 2 },
-          [
-            ...jobs.map((j) => ({ ...j, run_attempt: 2 })),
-            { ...jobs[1], started_at: at(0) },
-          ],
+        publicationStep(
+          { created_at: at(14) },
+          retry,
+          [owner, packaged, lateOwner, rerun],
           platform,
         ),
-      ).toBe(false);
-      expect(
-        isNativePublication(
-          asset,
-          producer,
-          [
-            ...jobs,
-            {
-              ...jobs[1],
-              run_attempt: 2,
-              conclusion: null,
-            },
-          ],
-          platform,
-        ),
-      ).toBe(false);
-      expect(
-        isNativePublication(
-          asset,
-          { ...producer, run_attempt: 2 },
-          [
-            ...jobs,
-            {
-              ...jobs[1],
-              run_attempt: 2,
-              conclusion: 'failure',
-            },
-          ],
-          platform,
-        ),
-      ).toBe(false);
-      expect(
-        isNativePublication(
-          asset,
-          producer,
-          [{ ...jobs[0], steps: [] }, jobs[1]],
-          platform,
-        ),
-      ).toBe(false);
-      expect(
-        isNativePublication(
-          asset,
-          producer,
-          [jobs[0], { ...jobs[1], started_at: undefined }],
-          platform,
-        ),
-      ).toBe(false);
+      ).toBeUndefined();
     }
   }
 });
@@ -258,6 +239,8 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
       runs: options.runs ?? {},
       jobs: options.jobs ?? [],
       jobsByRun: options.jobsByRun ?? {},
+      publicationStatus: options.publicationStatus ?? 200,
+      publicationLog: options.publicationLog,
       bytes:
         options.bytes?.toString('base64') ??
         Buffer.from('wrong bytes').toString('base64'),
@@ -276,8 +259,6 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
       cp.execFileSync = (command, args, options) => {
         if (command !== 'gh') return original(command, args, options);
         appendFileSync(${JSON.stringify(requests)}, JSON.stringify(args) + '\\n');
-        // Fresh provider logs have UNKNOWN STEP. They are not publication proof.
-        if (args[0] === 'run') throw new Error('Step logs are unavailable');
         const endpoint = args.at(-1);
         if (endpoint.includes('/actions/workflows/')) return JSON.stringify({id: 1});
         if (endpoint.includes('/actions/artifacts?')) {
@@ -285,6 +266,26 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
           return JSON.stringify({artifacts: fixture.assets.filter(a => a.name === params.get('name')).slice(0, Number(params.get('per_page')))});
         }
         if (endpoint.includes('/jobs?')) return JSON.stringify([{jobs: fixture.jobsByRun[endpoint.split('/').at(-2)] ?? fixture.jobs}]);
+        if (endpoint.includes('/steps/12/logs')) {
+          if (fixture.publicationStatus !== 200) {
+            const error = new Error('publication log unavailable');
+            error.stderr = 'gh: (HTTP ' + fixture.publicationStatus + ')';
+            throw error;
+          }
+          if (fixture.publicationLog !== undefined) return fixture.publicationLog;
+          const jobId = Number(endpoint.split('/').at(-4));
+          const owner = fixture.jobs.find(job => job.id === jobId);
+          const platform = owner.name.split('(').at(-1).replace(')', '');
+          const artifact = fixture.assets.find(asset =>
+              asset.workflow_run.id === owner.run_id && asset.name.endsWith('-' + platform + '.tar.gz'));
+          if (!artifact) throw new Error('Unexpected uploader: ' + endpoint);
+          return [
+            '##[group]Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
+            'SHA256 digest of uploaded artifact is ' + artifact.digest.slice(7),
+            'Artifact ' + artifact.name + ' successfully finalized. Artifact ID ' + artifact.id,
+            'Artifact download URL: https://github.com/openai/openai-agents-js/actions/runs/' + owner.run_id + '/artifacts/' + artifact.id,
+          ].map(line=>'2026-01-01T00:00:02.0Z '+line).join('\\n');
+        }
         if (endpoint.includes('/actions/runs/')) return JSON.stringify(fixture.runs[endpoint.split('/').at(-1)] ?? fixture.run);
         throw new Error('Unexpected endpoint: ' + endpoint);
       };
@@ -380,7 +381,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   const qualified = {
     assets: [asset],
     run: { ...producer, head_sha: source },
-    jobs: publicationJobs(platform),
+    jobs: publicationJobs(platform, false, { ...producer, head_sha: source }),
     bytes: archive,
   };
   writeFileSync(join(repo, 'sdk.js'), 'export default 1;\n');
@@ -390,7 +391,46 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
   expect(staged.output).toContain(key + '_hit=true');
   expect(staged.summary).toContain('Verified native artifact 12 from run 1');
   expect(staged.summary).toContain(inputs);
-  expect(staged.requests.some((args) => args[0] === 'run')).toBe(false);
+  expect(
+    staged.requests.filter((args) => args.at(-1).includes('/steps/12/logs')),
+  ).toHaveLength(1);
+  expect(run({ ...qualified, publicationStatus: 404 }).output).toContain(
+    key + '_hit=false',
+  );
+  const recordedUpload = [
+    '##[group]Run actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9',
+    'SHA256 digest of uploaded artifact is ' + asset.digest.slice(7),
+    'Artifact ' + asset.name + ' successfully finalized. Artifact ID 12',
+    'Artifact download URL: https://github.com/openai/openai-agents-js/actions/runs/1/artifacts/12',
+  ];
+  const uploadLog = (lines) =>
+    lines.map((line) => '2026-01-01T00:00:02.0Z ' + line).join('\n');
+  for (const changedLines of [
+    recordedUpload.map((line) =>
+      line.replace('Artifact ID 12', 'Artifact ID 13'),
+    ),
+    recordedUpload.map((line) =>
+      line.replace(asset.digest.slice(7), '0'.repeat(64)),
+    ),
+    [
+      ...recordedUpload,
+      'SHA256 digest of uploaded artifact is ' + '0'.repeat(64),
+    ],
+  ]) {
+    const unverified = run({
+      ...qualified,
+      publicationLog: uploadLog(changedLines),
+    });
+    expect(unverified.output).toContain(key + '_hit=false');
+    expect(unverified.requests.some((args) => args[0] === 'download')).toBe(
+      false,
+    );
+  }
+  const limited = run({ ...qualified, publicationStatus: 429 });
+  expect(limited.status).toBe(1);
+  expect(
+    limited.requests.filter((args) => args.at(-1).includes('/steps/12/logs')),
+  ).toHaveLength(1);
   expect(readFileSync(join(temp, asset.name))).toEqual(archive);
   expect(existsSync(join(native, 'codex.node'))).toBe(false);
 
@@ -400,7 +440,7 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
     name: 'native-' + inputs + '-' + p + '.tar.gz',
   }));
   const allJobs = Object.values(nativePlatforms).flatMap((p) =>
-    publicationJobs(p),
+    publicationJobs(p, false, qualified.run),
   );
   const all = run({ ...qualified, assets: allAssets, jobs: allJobs });
   expect(all.status, all.error).toBe(0);
@@ -563,6 +603,10 @@ test('preflight stages verified opaque archives and current-run transfers pin ex
         head_branch: 'ci/native-bundle/test',
         head_sha: git('rev-parse', 'HEAD'),
       },
+      jobs: publicationJobs(platform, false, {
+        ...producer,
+        head_sha: git('rev-parse', 'HEAD'),
+      }),
     }).output,
   ).toContain(key + '_hit=true');
   expect(
@@ -699,7 +743,7 @@ test('restores only regular Windows parts from the specified artifact outputs', 
   expect(readFileSync(join(output, 'helpers', fixture), 'utf8')).toBe(fixture);
 });
 
-test('workflow keeps the publication barrier and qualification coverage on explicit protected transfers', () => {
+test('workflow preserves qualification coverage on explicit protected transfers', () => {
   const path = (name) =>
     fileURLToPath(new URL('../.github/workflows/' + name, import.meta.url));
   const workflow = readFileSync(path('alpha-release-artifacts.yml'), 'utf8');
@@ -708,16 +752,7 @@ test('workflow keeps the publication barrier and qualification coverage on expli
     workflow.indexOf('  select:'),
     workflow.indexOf('  produce-linux:'),
   );
-  const qualify = workflow.slice(
-    workflow.indexOf('  package:'),
-    workflow.indexOf('  package-linux:'),
-  );
-  expect(qualify).toContain(
-    'needs: [select, produce-linux, produce-linux-arm64, produce-macos, produce-windows]',
-  );
-  expect(qualify).toContain(
-    "github.event_name != 'pull_request' && !cancelled() && needs.select.result == 'success'",
-  );
+  const qualify = workflow.slice(workflow.indexOf('  package-linux:'));
   for (const [key, platform] of Object.entries(nativePlatforms)) {
     expect(workflow).toContain('toJSON(steps.upload_' + key + '.outputs)');
     const hit = `needs.select.outputs.${key}_hit`;
@@ -796,7 +831,7 @@ test('workflow keeps the publication barrier and qualification coverage on expli
 });
 
 test.each(Object.keys(nativePlatforms))(
-  'PR qualification for %s keeps the exact transfer and shared coverage',
+  'qualification for %s keeps the exact transfer and shared coverage',
   (key) => {
     const workflow = readFileSync(
       new URL(
@@ -810,7 +845,7 @@ test.each(Object.keys(nativePlatforms))(
       .split(/^ {2}package-/m)[0];
     expect(qualify).toContain(`needs: [select, produce-${key}]`);
     expect(qualify).toContain(
-      "github.event_name == 'pull_request' && !cancelled() && needs.select.result == 'success'",
+      "!cancelled() && needs.select.result == 'success'",
     );
     expect(qualify).toContain(
       `needs.select.outputs.${key}_hit == 'true' && needs.produce-${key}.result == 'skipped'`,
@@ -818,10 +853,12 @@ test.each(Object.keys(nativePlatforms))(
     expect(qualify).toContain(
       `needs.select.outputs.${key}_hit != 'true' && needs.produce-${key}.result == 'success'`,
     );
-    expect(qualify).toContain(`include: [*${key}_package]`);
-    expect(qualify).toContain('steps: *package_steps');
+    expect(qualify).toContain(`- platform: ${nativePlatforms[key]}`);
     expect(qualify).toContain(
-      "github.event_name == 'pull_request' && 'Package and test' || 'PR package and test'",
+      key === 'linux' ? 'steps: &package_steps' : 'steps: *package_steps',
+    );
+    expect(qualify).toContain(
+      'name: Package and test (${{ matrix.platform }})',
     );
   },
 );

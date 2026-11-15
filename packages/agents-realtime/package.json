@@ -21,6 +21,12 @@
         "import": "./dist/index.mjs"
       },
       "types": "./dist/index.d.ts",
+      "node": {
+        "import": {
+          "module-sync": "./node/index.mjs"
+        },
+        "module-sync": "./dist/index.js"
+      },
       "require": "./dist/index.js",
       "import": "./dist/index.mjs"
     },
@@ -36,6 +42,12 @@
         "import": "./dist/testing/index.mjs"
       },
       "types": "./dist/testing/index.d.ts",
+      "node": {
+        "import": {
+          "module-sync": "./node/testing.mjs"
+        },
+        "module-sync": "./dist/testing/index.js"
+      },
       "require": "./dist/testing/index.js",
       "import": "./dist/testing/index.mjs"
     },
@@ -103,6 +115,7 @@
     "zod": "^4.3.5"
   },
   "files": [
-    "dist"
+    "dist",
+    "node"
   ]
 }

@@ -14,15 +14,23 @@ import process from 'node:process';
 import { nativeInputs } from './native-bundle-inputs.mjs';
 
 assert.equal(process.platform + '-' + process.arch, 'linux-x64');
+const diagnosticOnly = process.argv[2] === '--diagnostic-only';
+assert.deepEqual(
+  process.argv.slice(2),
+  diagnosticOnly ? ['--diagnostic-only'] : [],
+);
 const directory = resolve('results/native-docker');
 mkdirSync(directory, { recursive: true });
 const image = process.env.CODEX_DOCKER_TEST_IMAGE;
+const dockerfile = resolve('.github/docker/native-executor.Dockerfile');
+const baseImage = readFileSync(dockerfile, 'utf8').match(/^FROM (\S+)$/m)?.[1];
 const socket = process.env.CODEX_DOCKER_TEST_SOCKET;
 const fixture = process.env.CODEX_EXEC_SERVER_TEST_BINARY;
 assert.match(
-  image ?? '',
+  baseImage ?? '',
   /^docker\.io\/library\/python:3\.14-slim@sha256:[a-f0-9]{64}$/,
 );
+assert.match(image ?? '', /^sha256:[a-f0-9]{64}$/);
 assert.ok(
   socket && statSync(socket).isSocket(),
   'An explicit Docker socket is required',
@@ -75,6 +83,8 @@ const product = {
   fixtureSha256,
   buildReceiptSha256: hash(join(packageRoot, 'native/build-receipt.json')),
   image: {
+    base: baseImage,
+    dockerfileSha256: hash(dockerfile),
     requested: image,
     id: selectedImage.Id,
     repoDigests: selectedImage.RepoDigests,
@@ -146,10 +156,14 @@ for (const suite of output.testResults) {
   assert.equal(suite.assertionResults[0].status, 'passed');
 }
 writeFileSync(
-  join(directory, 'qualification.json'),
+  join(
+    directory,
+    diagnosticOnly ? 'diagnostic-native-controls.json' : 'qualification.json',
+  ),
   JSON.stringify(
     {
       ...product,
+      ...(diagnosticOnly ? { diagnosticOnly: true } : {}),
       passed: 2,
       skipped: 0,
       reportSha256: hash(report),
