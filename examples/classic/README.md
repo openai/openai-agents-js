@@ -2,7 +2,9 @@
 
 These examples use the retained classic SDK. See the [classic API guide](../../packages/agents/CLASSIC.md) for its entry points.
 
-Use Node.js 24 and the [pnpm version pinned in `package.json`](../../package.json). Each example directory has its own `package.json` with setup and start commands. From the repository root, install dependencies and build the SDK:
+Building these examples has been requiring Node.js 24, the [pnpm version pinned in `package.json`](../../package.json), and the [native build prerequisites](../codex/guides/building.md#build-from-source), including Rust 1.95 through rustup. The package build has been compiling portable Realtime assets even for classic-only development.
+
+Each example's `package.json` has been listing its start commands. The following commands have been installing dependencies and building the SDK from the repository root:
 
 ```sh
 pnpm install --frozen-lockfile

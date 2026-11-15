@@ -1,14 +1,8 @@
 # Cloud Sandbox Extension Examples
 
-These examples mirror the Python sandbox extension runners and keep the same environment-variable names and flag shapes where that makes sense.
+Each example has been building a manifest in memory and running a `SandboxAgent` that inspects the workspace through one shell tool. The runners have been following the Python examples' environment-variable names and flags where applicable.
 
-They intentionally stay small:
-
-1. Build a tiny manifest in memory.
-2. Create a `SandboxAgent` that inspects that workspace through one shell tool.
-3. Run the agent against the requested cloud backend.
-
-Unlike the first-party Unix-local and Docker examples, these scripts depend on provider clients under dedicated subpaths such as `@openai/agents-extensions/sandbox/cloudflare`. Each example also depends on the matching provider SDK and credentials or endpoint configuration.
+These scripts have been using provider clients under dedicated subpaths such as `@openai/agents-extensions/sandbox/cloudflare`. Each example has been requiring the matching provider SDK and credentials or endpoint configuration.
 
 Sandbox-specific SDK types such as `SandboxAgent` and `Manifest` now come from `@openai/agents/classic/sandbox`, while the classic `Runner` comes from `@openai/agents/classic`.
 
@@ -108,11 +102,13 @@ npm create cloudflare@latest -- my-sandbox --template=cloudflare/sandbox-sdk/bri
 
 Cloudflare's Sandbox SDK guides also require Docker locally when you deploy with Wrangler because the container image is built during `wrangler deploy`.
 
-After creating the project, deploy it and copy the worker URL:
+The following subshell has been deploying the Worker while keeping the parent shell in the SDK repository root:
 
 ```bash
-cd my-sandbox
-npx wrangler deploy
+(
+  cd my-sandbox
+  npx wrangler deploy
+)
 ```
 
 Point `CLOUDFLARE_SANDBOX_WORKER_URL` at that deployed worker. A generic Worker URL will not expose the bridge endpoints this example expects.

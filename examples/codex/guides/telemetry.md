@@ -53,7 +53,7 @@ await telemetry.configure({
 | Default `includeFields: false` | Static `kind`, `level`, `target`, `name`, `file`, and `line` metadata. |
 | Explicit `includeFields: true` | Additional `fields`, potentially including messages, errors, arguments, or application data. |
 
-Default level: `warn`. Target filters: exact names or `::` descendants; an empty target list for all targets. Explicit fields independent of workflow `includeSensitiveData` and OTLP payload switches. Application-owned stdout access and retention, especially with fields enabled. Inherited workflow JSON metadata: the separate [`TraceSpan.traceMetadata`](trace-processors.md#read-inherited-root-metadata) accessor.
+Diagnostics have been defaulting to `warn`. Target filters have been matching exact names and their `::` descendants; an empty list has been selecting all targets. Explicit fields have been remaining independent of workflow `includeSensitiveData` and OTLP payload switches. The application has been controlling stdout access and retention, especially with fields enabled. The separate [`TraceSpan.traceMetadata`](trace-processors.md#read-inherited-root-metadata) accessor has been exposing inherited workflow JSON metadata.
 
 ## Trace one workflow
 
