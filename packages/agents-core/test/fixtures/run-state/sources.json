@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.24",
+  "currentSchemaAtCreation": "1.25",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -385,6 +385,13 @@
       "tag": "v0.21.0",
       "commit": "304e436185ad5d7e54d240896efa728533147cf3",
       "npmIntegrity": "sha512-P2jJhc85xrKpe9GUOHAVfPHqK52my49fD1CI0LnfYEvBUwZxJXQI6lgSwby9nWhvQECveM9OvBUglAXuArsHXw==",
+      "sessionCaptures": [
+        {
+          "scenario": "split-terminal-append",
+          "path": "v0.21.0-split-terminal-append.json",
+          "sha256": "f2c0f66bff3067434f2b5d2a29daa55f9385da193de5f6d6a9f5bd2b1a8e61fe"
+        }
+      ],
       "fixtures": [
         {
           "scenario": "minimal",
@@ -396,8 +403,24 @@
     },
     {
       "schemaVersion": "1.24",
+      "status": "published_writer",
+      "packageVersion": "0.22.0",
+      "tag": "v0.22.0",
+      "commit": "8aeac0eb255dbdff9adcdc65a0eae638cbcea74f",
+      "npmIntegrity": "sha512-gz7z2eIG+6mlScUdBG7v1k0w9SGC3KGBU5Wko9YXs8gMynBroQR6qnDGuKRzOgq2x8N9UJzn3b/KQpIAtvN9pA==",
+      "fixtures": [
+        {
+          "scenario": "minimal",
+          "kind": "minimal",
+          "path": "historical/v1.24-minimal.json",
+          "sha256": "6211080349ce98f7b75b93304b837156c9bc6b50c58b54ca39e92595d531d2b5"
+        }
+      ]
+    },
+    {
+      "schemaVersion": "1.25",
       "status": "current_unreleased",
-      "reason": "Preserves bounded JSON token usage metadata and adds sandbox envelope version 6 for client-owned environment preparation."
+      "reason": "Records whether a retained function-tool output string can be passed to a custom callback after approval resume."
     }
   ],
   "expectedNormalizedFixtures": [

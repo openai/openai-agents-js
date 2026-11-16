@@ -1545,6 +1545,36 @@ async function runApprovedFunctionTool<TContext>(
         executionStatus,
       );
 
+      const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
+        RunResult<TContext, Agent<TContext, any>> | undefined;
+      const nestedInterruptions = nestedRunResult?.interruptions;
+      let saveNestedCheckpoint: (() => void) | undefined;
+      if (nestedRunResult && nestedInterruptions?.length) {
+        const checkpoint = nestedRunResult.state.toJSON();
+        const [stateKey, ...aliases] =
+          stateKeys.length > 0 ? stateKeys : [toolName];
+        saveNestedCheckpoint = () =>
+          state.setPendingAgentToolRun(
+            stateKey,
+            toolRun.toolCall.callId,
+            JSON.stringify(checkpoint),
+            aliases,
+          );
+        if (
+          checkpoint.generatedItems.some(
+            (item) =>
+              item.type === 'tool_call_output_item' &&
+              item.callbackOutputFormat === 'display',
+          )
+        ) {
+          // Replace the previous child checkpoint so a retry cannot replay completed work.
+          saveNestedCheckpoint();
+          throw new UserError(
+            'Cannot request approval for the nested agent tool because its checkpoint cannot preserve a completed tool result for the toolUseBehavior callback. Return a JSON-compatible value from the child tool.',
+          );
+        }
+      }
+
       const redactedBeforeToolEnd = refreshRedaction();
       try {
         emitFunctionToolEnd(
@@ -1595,22 +1625,11 @@ async function runApprovedFunctionTool<TContext>(
         runItem: committedRunItem,
       };
 
-      const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
-        RunResult<TContext, Agent<TContext, any>> | undefined;
       if (nestedRunResult) {
         functionResult.agentRunResult = nestedRunResult;
-        const nestedInterruptions = nestedRunResult.interruptions;
-        if (nestedInterruptions.length > 0) {
+        if (saveNestedCheckpoint) {
           functionResult.interruptions = nestedInterruptions;
-          const nestedRunStateJson = nestedRunResult.state.toJSON();
-          const [stateKey, ...aliases] =
-            stateKeys.length > 0 ? stateKeys : [toolName];
-          state.setPendingAgentToolRun(
-            stateKey,
-            toolRun.toolCall.callId,
-            JSON.stringify(nestedRunStateJson),
-            aliases,
-          );
+          saveNestedCheckpoint();
         } else {
           for (const stateKey of stateKeys) {
             state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);

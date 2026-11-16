@@ -382,6 +382,72 @@ describe('local MCP approval recipient binding', () => {
     expect(JSON.stringify(result.newItems)).toContain('local done');
   });
 
+  it.each(['live', 'matching', 'replacement', 'missing'] as const)(
+    'supplies the completed MCP recipient to a resumed callback (%s)',
+    async (mode) => {
+      const listed = {
+        ...definition(),
+        annotations: { title: 'Catalog lookup' },
+      };
+      const catalog = server('catalog', [listed]);
+      const archive = server('archive', [
+        { ...definition(), annotations: { title: 'Archive lookup' } },
+      ]);
+      const approve = vi.fn(async () => 'approved');
+      const local = tool({
+        name: 'local',
+        description: 'Requires approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: approve,
+      });
+      const current = agent([local], [[call(), call('local', 'local-call')]]);
+      current.mcpServers = [catalog];
+      const seen = vi.fn();
+      current.toolUseBehavior = async (_context, results) => {
+        for (const result of results) {
+          if (result.type === 'function_output')
+            seen(result.tool.mcpAnnotations?.title);
+        }
+        return {
+          isFinalOutput: true,
+          isInterrupted: undefined,
+          finalOutput: 'finished',
+        };
+      };
+      const paused = await execute(current, 'lookup', false);
+      expect(catalog.callTool).toHaveBeenCalledOnce();
+      const saved = paused.state.toString();
+      current.mcpServers =
+        mode === 'matching'
+          ? [server('catalog', [listed])]
+          : mode === 'missing'
+            ? []
+            : [archive];
+      const state =
+        mode === 'live'
+          ? paused.state
+          : await RunState.fromString(current, saved);
+      state.approve(state.getInterruptions()[0]!);
+
+      if (mode === 'replacement' || mode === 'missing') {
+        await expect(execute(current, state, false)).rejects.toThrow(
+          /recipient binding/,
+        );
+        expect(approve).not.toHaveBeenCalled();
+        expect(seen).not.toHaveBeenCalled();
+      } else {
+        expect((await execute(current, state, false)).finalOutput).toBe(
+          'finished',
+        );
+        expect(approve).toHaveBeenCalledOnce();
+        expect(seen.mock.calls).toEqual([['Catalog lookup'], [undefined]]);
+      }
+      expect(catalog.callTool).toHaveBeenCalledOnce();
+      expect(archive.callTool).not.toHaveBeenCalled();
+    },
+  );
+
   it('preserves bindings through supported namespace wrappers', async () => {
     const original = await converted(server('A'));
     const namespacedCall = { ...call(), namespace: 'lookup' };
