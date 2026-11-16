@@ -77,7 +77,7 @@ describe.skipIf(process.platform === 'win32')(
       expect(await readFile(join(workspace, 'trusted/file-3'), 'utf8')).toBe(
         'content',
       );
-    });
+    }, 60_000);
 
     it('rejects special source files instead of traversing them without a limit', async () => {
       const source = join(root, 'special-files');

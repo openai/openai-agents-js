@@ -3036,6 +3036,7 @@ describe('tool.invoke', () => {
   });
 
   it('raises ToolTimeoutError when timeoutBehavior is raise_exception', async () => {
+    const execution = Promise.withResolvers<void>();
     const t = tool({
       name: 'slow',
       description: 'slow',
@@ -3043,21 +3044,26 @@ describe('tool.invoke', () => {
       timeoutMs: 5,
       timeoutBehavior: 'raise_exception',
       execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await execution.promise;
         return 'done';
       },
     });
 
-    await expect(
-      invokeFunctionTool({
-        tool: t,
-        runContext: new RunContext(),
-        input: '{}',
-      }),
-    ).rejects.toBeInstanceOf(ToolTimeoutError);
+    try {
+      await expect(
+        invokeFunctionTool({
+          tool: t,
+          runContext: new RunContext(),
+          input: '{}',
+        }),
+      ).rejects.toBeInstanceOf(ToolTimeoutError);
+    } finally {
+      execution.resolve();
+    }
   });
 
   it('raises ToolTimeoutError when invoking FunctionTool directly with raise_exception', async () => {
+    const execution = Promise.withResolvers<void>();
     const t = tool({
       name: 'direct_raise',
       description: 'direct invoke with raise_exception',
@@ -3065,14 +3071,18 @@ describe('tool.invoke', () => {
       timeoutMs: 5,
       timeoutBehavior: 'raise_exception',
       execute: async () => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
+        await execution.promise;
         return 'done';
       },
     });
 
-    await expect(t.invoke(new RunContext(), '{}')).rejects.toBeInstanceOf(
-      ToolTimeoutError,
-    );
+    try {
+      await expect(t.invoke(new RunContext(), '{}')).rejects.toBeInstanceOf(
+        ToolTimeoutError,
+      );
+    } finally {
+      execution.resolve();
+    }
   });
 
   it('preserves receiver context for custom FunctionTool implementations', async () => {

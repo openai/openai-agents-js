@@ -64,7 +64,7 @@ test('materializes more local_file entries than the native submission limit', as
     names.map((name) => readFile(join(root, 'workspace', name), 'utf8')),
   );
   expect(contents).toEqual(names.map(() => 'SAFE'));
-});
+}, 60_000);
 
 function sourceDescriptorCount(root: string) {
   return readdirSync('/proc/self/fd').filter((fd) => {

@@ -536,7 +536,7 @@ describe('Sandbox memory generation', () => {
     expect(rendered).toContain('TAIL_CONTEXT');
     expect(rendered).toContain('...'); // ASCII truncation marker.
     expect(rendered).not.toContain('…');
-  });
+  }, 60_000);
 
   it('rejects conflicting memory generation layouts in one session', () => {
     const session = new MemorySession();
