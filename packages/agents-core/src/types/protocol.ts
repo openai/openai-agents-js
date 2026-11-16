@@ -1089,6 +1089,24 @@ export type StreamEventResponseCompleted = z.infer<
 export const StreamEventGenericItem = SharedBase.extend({
   type: z.literal('model'),
   event: z.any().describe('The event from the model'),
+  /**
+   * Incremental input for a recognized function tool. The completed run item
+   * supplies the final arguments used by the runner.
+   */
+  toolInput: z
+    .discriminatedUnion('type', [
+      z.object({
+        type: z.literal('start'),
+        callId: z.string(),
+        name: z.string(),
+      }),
+      z.object({
+        type: z.literal('delta'),
+        callId: z.string(),
+        delta: z.string(),
+      }),
+    ])
+    .optional(),
 });
 export type StreamEventGenericItem = z.infer<typeof StreamEventGenericItem>;
 

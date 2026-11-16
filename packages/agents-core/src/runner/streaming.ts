@@ -1,5 +1,9 @@
 import logger from '../logger';
-import { RunItemStreamEvent, RunItemStreamEventName } from '../events';
+import {
+  RunItemStreamEvent,
+  RunItemStreamEventName,
+  RunRawModelStreamEvent,
+} from '../events';
 import {
   RunCompactionItem,
   RunHandoffCallItem,
@@ -14,8 +18,27 @@ import {
   RunToolSearchOutputItem,
 } from '../items';
 import { StreamedRunResult } from '../result';
+import type { ResponseStreamEvent } from '../types';
 
 export { isAbortError } from '../utils/abortSignals';
+
+export function streamRawModelEventToRunResult(
+  result: StreamedRunResult<any, any>,
+  event: ResponseStreamEvent,
+): void {
+  // A replay still has raw frames, but no new tool call for the UI to finalize.
+  if (
+    event.type === 'model' &&
+    event.toolInput &&
+    result.state._completedToolInvocations
+      .get(result.state._currentAgent)
+      ?.has(event.toolInput.callId)
+  ) {
+    const { toolInput: _preview, ...rawEvent } = event;
+    event = rawEvent;
+  }
+  result._addItem(new RunRawModelStreamEvent(event));
+}
 
 function getRunItemStreamEventName(
   item: RunItem,

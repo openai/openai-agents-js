@@ -238,6 +238,7 @@ async function* buildUiMessageStream(
   let responseHasText = false;
   let responseHasUnkeyedText = false;
   let stepHasTextOutput = false;
+  let stepHasStreamedToolInput = false;
   let textOpen = false;
   let currentTextId = '';
   const streamedTextItemIds = new Set<string>();
@@ -263,6 +264,7 @@ async function* buildUiMessageStream(
       stepOpen = true;
       pendingStepClose = false;
       stepHasTextOutput = false;
+      stepHasStreamedToolInput = false;
       yield { type: 'start-step' };
     }
   };
@@ -275,10 +277,30 @@ async function* buildUiMessageStream(
     }
   };
 
+  const ensureToolInputStart = function* (
+    toolCallId: string,
+    toolName: string,
+  ): Generator<UIMessageChunk, void, void> {
+    if (!startedToolCalls.has(toolCallId)) {
+      startedToolCalls.add(toolCallId);
+      yield { type: 'tool-input-start', toolCallId, toolName, dynamic: true };
+    }
+  };
+
   for await (const event of events) {
+    if (event.type === 'agent_updated_stream_event') {
+      // Call IDs belong to an agent; the handoff target can reuse them.
+      yield* finishStep();
+      startedToolCalls.clear();
+      emittedToolOutputs.clear();
+    }
+
     if (event.type === 'raw_model_stream_event') {
       const data = event.data;
       if (data.type === 'response_started') {
+        if (stepHasStreamedToolInput) {
+          yield* finishStep();
+        }
         yield* ensureMessageStart();
         responseHasText = false;
         responseHasUnkeyedText = false;
@@ -314,12 +336,29 @@ async function* buildUiMessageStream(
         };
       }
 
+      if (data.type === 'model' && data.toolInput) {
+        const input = data.toolInput;
+        if (input.type === 'start') {
+          yield* ensureMessageStart();
+          yield* ensureStepStart();
+          stepHasStreamedToolInput = true;
+          yield* ensureToolInputStart(input.callId, input.name);
+        } else if (startedToolCalls.has(input.callId)) {
+          yield {
+            type: 'tool-input-delta',
+            toolCallId: input.callId,
+            inputTextDelta: input.delta,
+          };
+        }
+      }
+
       if (data.type === 'response_done') {
         if (textOpen) {
           textOpen = false;
           yield { type: 'text-end', id: currentTextId };
         }
-        if (stepOpen) {
+        // Late tool_called items must finalize their partial inputs in the same UI step.
+        if (stepOpen && !stepHasStreamedToolInput) {
           if (stepHasTextOutput) {
             yield* finishStep();
           } else {
@@ -360,15 +399,7 @@ async function* buildUiMessageStream(
         yield* ensureMessageStart();
         const payload = extractToolInput(event.item as RunToolCallItem);
         if (payload) {
-          if (!startedToolCalls.has(payload.toolCallId)) {
-            startedToolCalls.add(payload.toolCallId);
-            yield {
-              type: 'tool-input-start',
-              toolCallId: payload.toolCallId,
-              toolName: payload.toolName,
-              dynamic: true,
-            };
-          }
+          yield* ensureToolInputStart(payload.toolCallId, payload.toolName);
           yield {
             type: 'tool-input-available',
             toolCallId: payload.toolCallId,
@@ -407,15 +438,7 @@ async function* buildUiMessageStream(
           } else {
             pendingServerToolSearchCallIds.push(payload.toolCallId);
           }
-          if (!startedToolCalls.has(payload.toolCallId)) {
-            startedToolCalls.add(payload.toolCallId);
-            yield {
-              type: 'tool-input-start',
-              toolCallId: payload.toolCallId,
-              toolName: payload.toolName,
-              dynamic: true,
-            };
-          }
+          yield* ensureToolInputStart(payload.toolCallId, payload.toolName);
           yield {
             type: 'tool-input-available',
             toolCallId: payload.toolCallId,

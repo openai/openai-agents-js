@@ -4,6 +4,7 @@ import {
   MemorySession,
   Runner,
   hostedMcpTool,
+  tool,
   toolSearchTool,
   RunItemStreamEvent,
   RunRawModelStreamEvent,
@@ -16,8 +17,17 @@ import {
   RunToolSearchOutputItem,
 } from '@openai/agents';
 import type { RunStreamEvent } from '@openai/agents';
-import type { UIMessageChunk } from 'ai';
-import { ScriptedModel, assistantMessage } from '@openai/agents-core/testing';
+import type { LanguageModelV2StreamPart } from '@ai-sdk/provider';
+import { readUIMessageStream, type UIMessageChunk } from 'ai';
+import { z } from 'zod';
+import { aisdk } from '../../src/ai-sdk';
+import { stubModel } from '../ai-sdk/fixtures';
+import {
+  ScriptedModel,
+  assistantMessage,
+  functionCall,
+  modelStream,
+} from '@openai/agents-core/testing';
 import {
   createAiSdkUiMessageStream,
   createAiSdkUiMessageStreamResponse,
@@ -139,6 +149,231 @@ describe('createAiSdkUiMessageStreamResponse', () => {
 
     const textDelta = chunks.find((chunk) => chunk.type === 'text-delta');
     expect(textDelta).toMatchObject({ delta: 'Raw stream message' });
+  });
+
+  test('streams interleaved function arguments before the provider completes', async () => {
+    // Control the provider stream so the UI must render progress before the final calls exist.
+    let provider!: ReadableStreamDefaultController<LanguageModelV2StreamPart>;
+    const wire = new ReadableStream<LanguageModelV2StreamPart>({
+      start(controller) {
+        provider = controller;
+      },
+    });
+    const agent = new Agent({
+      name: 'Weather',
+      model: aisdk(stubModel({ doStream: async () => ({ stream: wire }) })),
+      tools: [
+        tool({
+          name: 'weather',
+          description: 'Look up the weather for a city.',
+          parameters: z.object({ city: z.string() }),
+          execute: ({ city }) => city,
+        }),
+      ],
+      toolUseBehavior: 'stop_on_first_tool',
+    });
+    const runner = new Runner({ tracingDisabled: true });
+    const result = await runner.run(agent, 'Compare the weather.', {
+      stream: true,
+    });
+    const [frames, clientStream] = createAiSdkUiMessageStream(result).tee();
+    const allChunks = readUiMessageStream(frames);
+    const messages = readUIMessageStream({
+      stream: clientStream,
+      terminateOnError: true,
+    });
+    const reader = messages.getReader();
+    const calls = [
+      { id: 'b', city: 'Oslo' },
+      { id: 'a', city: 'Lima' },
+    ];
+    for (const id of ['a', 'b']) {
+      provider.enqueue({ type: 'tool-input-start', id, toolName: 'weather' });
+    }
+    for (const { id, city } of calls) {
+      provider.enqueue({
+        type: 'tool-input-delta',
+        id,
+        delta: `{"city":"${city}"`,
+      });
+    }
+
+    for (;;) {
+      const { value: message, done } = await reader.read();
+      if (done)
+        throw new Error(
+          'The stream closed before rendering partial tool input.',
+        );
+      const parts = message.parts.filter(
+        (part) => part.type === 'dynamic-tool',
+      );
+      if (
+        parts.length === 2 &&
+        parts.every((part) => part.input !== undefined)
+      ) {
+        expect(parts).toMatchObject([
+          {
+            toolCallId: 'a',
+            toolName: 'weather',
+            state: 'input-streaming',
+            input: { city: 'Lima' },
+          },
+          {
+            toolCallId: 'b',
+            toolName: 'weather',
+            state: 'input-streaming',
+            input: { city: 'Oslo' },
+          },
+        ]);
+        break;
+      }
+    }
+    reader.releaseLock();
+
+    provider.enqueue({ type: 'text-delta', id: 'text', delta: 'Checking.' });
+    for (const { id, city } of calls) {
+      provider.enqueue({ type: 'tool-input-delta', id, delta: '}' });
+      provider.enqueue({ type: 'tool-input-end', id });
+      provider.enqueue({
+        type: 'tool-call',
+        toolCallId: id,
+        toolName: 'weather',
+        input: JSON.stringify({ city }),
+      });
+    }
+    provider.enqueue({
+      type: 'finish',
+      finishReason: 'tool-calls',
+      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+    });
+    provider.close();
+
+    let finalParts;
+    for await (const message of messages) {
+      finalParts = message.parts.filter((part) => part.type === 'dynamic-tool');
+    }
+    expect(finalParts).toMatchObject([
+      {
+        toolCallId: 'a',
+        state: 'output-available',
+        input: { city: 'Lima' },
+        output: 'Lima',
+      },
+      {
+        toolCallId: 'b',
+        state: 'output-available',
+        input: { city: 'Oslo' },
+        output: 'Oslo',
+      },
+    ]);
+    const chunks = await allChunks;
+    expect(
+      chunks.filter((chunk) => chunk.type === 'tool-input-start'),
+    ).toHaveLength(2);
+    expect(
+      chunks
+        .filter((chunk) => chunk.type === 'tool-input-available')
+        .map((chunk) => chunk.toolCallId),
+    ).toEqual(['b', 'a']);
+    expect(chunks.slice(-2).map((chunk) => chunk.type)).toEqual([
+      'finish-step',
+      'finish',
+    ]);
+    await result.completed;
+  });
+
+  test('ignores replayed input and renders a new call with the same ID after a handoff', async () => {
+    const sameId = { callId: 'call-1' };
+    const weather = functionCall('weather', { city: 'Oslo' }, sameId);
+    const trains = functionCall('trains', { city: 'Lima' }, sameId);
+    const toolTurn = (id: string, call: typeof weather) =>
+      modelStream([
+        { type: 'response_started' },
+        {
+          type: 'model',
+          event: {},
+          toolInput: { type: 'start', callId: call.callId, name: call.name },
+        },
+        {
+          type: 'model',
+          event: {},
+          toolInput: {
+            type: 'delta',
+            callId: call.callId,
+            delta: call.arguments,
+          },
+        },
+        {
+          type: 'response_done',
+          response: {
+            id,
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            output: [call],
+          },
+        },
+      ]);
+    const model = new ScriptedModel([
+      toolTurn('first', weather),
+      toolTurn('replay', weather),
+      [functionCall('transfer_to_travel', {}, { callId: 'handoff' })],
+      toolTurn('after-handoff', trains),
+      [assistantMessage('Done')],
+    ]);
+    const cityTool = (name: string, output: string) =>
+      tool({
+        name,
+        description: `Look up ${name} for a city.`,
+        parameters: z.object({ city: z.string() }),
+        execute: () => output,
+      });
+    const travel = new Agent({
+      name: 'travel',
+      model,
+      tools: [cityTool('trains', 'On time')],
+    });
+    const agent = new Agent({
+      name: 'Weather',
+      model,
+      tools: [cityTool('weather', 'Sunny')],
+      handoffs: [travel],
+    });
+    const runner = new Runner({ tracingDisabled: true });
+    const result = await runner.run(agent, 'Weather in Oslo?', {
+      stream: true,
+    });
+
+    let finalParts;
+    let travelPreview;
+    for await (const message of readUIMessageStream({
+      stream: createAiSdkUiMessageStream(result),
+      terminateOnError: true,
+    })) {
+      finalParts = message.parts.filter((part) => part.type === 'dynamic-tool');
+      const preview = finalParts.find(
+        (part) =>
+          part.toolName === 'trains' && part.state === 'input-streaming',
+      );
+      if (preview?.input !== undefined) travelPreview = preview.input;
+    }
+    await result.completed;
+    expect(result.finalOutput).toBe('Done');
+    expect(travelPreview).toEqual({ city: 'Lima' });
+    expect(finalParts).toMatchObject([
+      {
+        toolCallId: 'call-1',
+        toolName: 'weather',
+        state: 'output-available',
+        input: { city: 'Oslo' },
+        output: 'Sunny',
+      },
+      {
+        toolCallId: 'call-1',
+        toolName: 'trains',
+        state: 'output-available',
+        input: { city: 'Lima' },
+        output: 'On time',
+      },
+    ]);
   });
 
   test('cancels the underlying event iterator when a raw stream is cancelled', async () => {
