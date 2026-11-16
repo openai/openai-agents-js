@@ -240,7 +240,7 @@ jobs:
       run:
         shell: bash
     env: &package_env
-      ALPHA_VERSION: 0.22.0-alpha.2
+      ALPHA_VERSION: 0.22.0-alpha.3
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: ${{ matrix.managed_arm && 16 || matrix.cargo_jobs }}

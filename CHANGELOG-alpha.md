@@ -2,6 +2,21 @@
 
 Release notes for alpha versions of the OpenAI Agents SDK for JavaScript and TypeScript.
 
+## 0.22.0-alpha.3
+
+### Highlights
+
+- Native agents have been gaining [typed Decisions](examples/codex/guides/decisions.md) and [application-owned model backends](examples/codex/guides/session-configuration.md).
+- Native [Realtime and voice](examples/codex/guides/native-voice.md) have been gaining audio input, response controls, history edits, and usage data.
+- Native Responses HTTP requests, history reads, and WebSocket handshakes have been reporting the installed SDK version in their `User-Agent`. The bundle workflow has been adding Linux ARM64 to its platform matrix.
+
+### Upgrade actions
+
+- **Tool callbacks can now overlap.** Native catalogs with only automatic tools have been admitting callbacks concurrently by default. Shared mutable state or side effects can race. Setting `maxFunctionConcurrency: 1` on `agent.run()` or `agent.session()` has been preserving one-at-a-time admission per turn. [Function admission](examples/codex/guides/tools.md#function-admission)
+- `Session.enqueue()` has been rejecting the previously ignored `ifBusy` option. Calling `enqueue(input)` has been keeping queueing semantics. Calling `submit(input, { ifBusy: 'reject' })` has been rejecting busy work. [Agents and sessions](examples/codex/guides/sessions.md)
+- Native Agents with a non-string `Output` type have been requiring a matching `outputType` schema. [Output contracts](examples/codex/guides/output.md)
+- Serialized Classic sandbox restores have been requiring trusted `resumeAuthority` bindings. UnixLocal restores have been checking trusted workspace or local snapshot paths. UnixLocal and Docker remote snapshot restores have been checking a trusted snapshot ID. [Sandbox resume and snapshots](docs/src/content/docs/guides/sandbox-agents/clients.mdx#resume-and-snapshots)
+
 ## 0.22.0-alpha.2
 
 [GitHub prerelease and prebuilt bundles](https://github.com/openai/openai-agents-js/releases/tag/v0.22.0-alpha.2)
