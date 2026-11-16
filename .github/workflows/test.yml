@@ -307,7 +307,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           architecture: ${{ matrix.arch == 'ia32' && 'x86' || matrix.arch }}
-          cache: 'pnpm'
+          cache: ${{ runner.os != 'macOS' && 'pnpm' || '' }}
       - name: Install dependencies
         if: ${{ needs.changes.outputs.run_ci == 'true' && matrix.arch != 'ia32' }}
         run: pnpm install --frozen-lockfile --cpu=${{ matrix.arch }}

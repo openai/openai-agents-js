@@ -379,6 +379,13 @@ impl Receipts {
     }
 }
 
+/// Restore the same application schemas presented in the accepted provider request.
+pub(crate) fn restore_live_search_tools(owner: Option<&PythonTools>, tools: &mut [Value]) -> bool {
+    let empty = Receipts::default();
+    let receipts = owner.map_or(&empty, |tools| &tools.schema_receipts);
+    receipts.declarations(tools, "functions").is_ok()
+}
+
 impl PythonTools {
     /// Called only after the existing provider carrier admits the native request.
     pub(crate) fn restore_schema_request(&self, request: &mut Value) -> Result<()> {

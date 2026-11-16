@@ -60,11 +60,11 @@ For created or explicitly resumed resources, native retirement has been finishin
 
 ### Current workspace descriptions
 
-Current source builds with `sandboxEnvironment`: one native workspace description from the successfully prepared provider resource. Current working directory, prepared filesystem layout, declared storage access, and remote mount guidance. Provider rebases reflected in that prepared snapshot.
+In current source builds, `sandboxEnvironment` has been supplying one native workspace description from the prepared provider resource. That description has been including the current working directory, prepared filesystem layout, declared storage access, remote mount guidance, and any provider-rebased paths.
 
-A newly opened or restored Session: the current source's description, replacing earlier automatic SDK workspace descriptions while retaining original application and global instructions. Description lifetime tied to that exact current resource; no selection of an unrelated live sandbox from its path or display name. Current executor and write grants still required; descriptions alone without resource or filesystem authority.
+A newly opened or restored Session has been replacing earlier automatic SDK workspace descriptions with the current resource's description while retaining original application and global instructions. The description has been remaining tied to that resource. A matching path or display name has not been selecting another live sandbox or granting executor or filesystem access.
 
-`renderStorageLayout(manifest)`: a separate application-facing rendering helper. A manifest before provider preparation can lack the final rebased paths. Mount paths and descriptions: intentional model-facing text; source credentials and file contents excluded from the automatic layout.
+`renderStorageLayout(manifest)` has been providing a separate rendering helper for application instructions. A manifest from before provider preparation has sometimes been lacking the final rebased paths. Both layouts have been exposing intentional model-facing mount paths and descriptions while excluding source credentials and file contents.
 
 ### Borrow or explicitly resume provider storage
 

@@ -50,6 +50,7 @@ pub(crate) use manual::{Continuation, ManualLedger, ManualSlot};
 
 #[path = "schema_fidelity.rs"]
 mod schema_fidelity;
+pub(crate) use schema_fidelity::restore_live_search_tools;
 
 #[path = "recovered_completion.rs"]
 mod recovered_completion;
@@ -4469,6 +4470,9 @@ impl<'call> ToolExecutor<ToolCall<'call>> for PythonExecutor {
                     if expected.is_some()
                         && expected == client_search_output_digest(result, call_id)
                     {
+                        self.tools
+                            .schema_receipts
+                            .retain_search_schema(&catalog.generation);
                         catalog.accepted.store(true, Ordering::Release);
                     }
                 }

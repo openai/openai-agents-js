@@ -81,9 +81,9 @@ Matching source builds have been exposing original JSON object records independe
 | `keep: 0` | Explicit replacement of all original history and model context. |
 | `0 < keep < total` | First `keep` original records, including inspection-only objects, with their current model content. Ambiguous partial edits across a compaction summary: rejection before commit. |
 
-Imported objects: unknown fields and missing IDs unchanged on read and restore. Records with unknown, missing, or non-string types: inspection only, without model input or tool execution. Known malformed executable records and incomplete client tool call/result pairs: rejection before commit. Object records only; scalar, array, and null records unsupported.
+For imported objects, the SDK has been preserving unknown fields and missing IDs on read and restore. It has been retaining records with unknown, missing, or non-string types for inspection, without using them as model input or executing tools. It has been rejecting malformed known executable records and incomplete client tool call/result pairs before commit. Import has been accepting object records only, rejecting scalars, arrays, and null.
 
-Native capture: after provider decoding, native identity assignment, and tool-result processing, before model-context truncation. No recovery of fields discarded before that boundary or in older checkpoints. Imported originals: no added execution IDs. JSON number precision: JavaScript's existing number representation.
+Native capture has been recording objects after provider decoding, native identity assignment, and tool-result processing, before model-context truncation. It has not been recovering fields discarded earlier or in older checkpoints. Import has not been adding execution IDs to original objects. JSON numbers have been retaining JavaScript's existing precision.
 
 Example fragment in an ES module, with the application's configured `agent`:
 
@@ -113,9 +113,9 @@ await using restored = await agent.session({ state: saved.state });
 assert.deepEqual(await restored.historySnapshot({ limit: 1 }), saved.tail);
 ```
 
-Current application bindings and an idle Session required. Revision conflicts: unchanged accepted state. Uncertain persistence: Session retirement, followed by closure and restore before further work. Storage audit records retained after edits. Existing restrictions for child graphs, goals, background work, and unresolved tool effects.
+History edits have been requiring current application bindings and an idle Session. A revision conflict has been leaving accepted state unchanged. An uncertain persistence outcome has been retiring the Session, requiring closure and restore before further work. Edits have been retaining storage audit records and the existing restrictions for child graphs, goals, background work, and unresolved tool effects.
 
-Hot limited reads: copies of selected records only. Durable reopen: full stored-history loading.
+Limited reads from an open Session have been copying only the selected records. Reopening stored history has been loading the full history.
 
 ## Save or suspend a session
 
@@ -147,13 +147,13 @@ Fork retains those accepted settings too. A different model or setting on the de
 
 ### Output and checkpoint versions
 
-Treat checkpoints as opaque data for this SDK and language. The matching source reader has been accepting SDK envelope versions 2 through 16, subject to each version's restore checks below, and rejecting unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
+Treat checkpoints as opaque data for this SDK and language. The matching source reader has been accepting SDK envelope versions 2 through 21, subject to each version's restore checks below, and rejecting unknown versions. SDK envelope versions and native checkpoint codec versions are separate. Do not edit a version or `codex_revision` to bypass validation.
 
 The destination SDK must use the exact Codex revision that saved the checkpoint. A recognized envelope does not permit another native revision. Current trusted host configuration still supplies credentials, callbacks, tool bindings, the matching output contract, and executor policy; a recognized version grants none of those permissions.
 
 Portable checkpoints retain native history, including platform-specific absolute paths. Restore validates those paths on the destination platform, so moving a checkpoint between operating systems is not guaranteed. Do not rewrite saved paths to bypass validation.
 
-The [checkpoint capture provenance](../../../packages/agents-codex/test/native/fixtures/checkpoint-upgrades/README.md) records real idle, manual, and Code Mode captures from a preview source snapshot and its matching native artifact. Retained captures qualify later candidates by replaying accepted history and checking current restore refusals. They do not establish a stable-release upgrade, coverage of every historical preview, cross-language conversion, downgrade support, or arbitrary native-revision portability. Keep the producer SDK available until your candidate passes the relevant continuation tests.
+The [saved checkpoints and their source builds](../../../packages/agents-codex/test/native/fixtures/checkpoint-upgrades/README.md) reference has been recording real idle, manual, and Code Mode captures from a preview source snapshot and its matching native artifact. Retained captures qualify later candidates by replaying accepted history and checking current restore refusals. They do not establish a stable-release upgrade, coverage of every historical preview, cross-language conversion, downgrade support, or arbitrary native-revision portability. Keep the producer SDK available until your candidate passes the relevant continuation tests.
 
 For a pending manual checkpoint, instructions and pending tool declarations/result schemas must match. Output-aware versions also require the same effective mode, JSON schema, and repair budget. Omitted, `undefined`, and zero repair budgets have the same output identity. Supply the matching output declaration on the destination Agent before restoring.
 
@@ -168,6 +168,9 @@ For a pending manual checkpoint, instructions and pending tool declarations/resu
 | v12 / v13 | Explicit network policy identity for ordinary idle/manual state, with the same optional selection data. |
 | v14 / v15 | Explicit network policy identity with settled Code Mode state and the same optional selection data. |
 | Source-only idle v16 | Settled single-agent [Sign in with ChatGPT](session-configuration.md#use-sign-in-with-chatgpt) state, without pending manual work, descendants, passive repair receipts, Code Mode, or network-policy identity. Current credentials required on restore. |
+| Source-only pending v17 / v18 | Request or token [run budgets](recovery.md#budgets-while-waiting-and-recovering), retaining prior consumption and the required current limits. v18 has also been retaining settled Code Mode state. |
+| Source-only pending v19 / v20 | Staged input or a staged retry for a manual continuation, with optional saved run budgets. v20 has also been retaining settled Code Mode state. Staged input has been adding neither a manual reply nor tool authority. |
+| Source-only idle v21 | Passive queued user text around a supported idle checkpoint. The underlying checkpoint has been retaining its own restore requirements; the queue has not been adding callback authority. |
 
 Code Mode capture refuses active cells. It preserves stored JSON object keys as data, including `__proto__`, without changing object prototypes. It does not serialize JavaScript stacks, arbitrary globals, or old reply grants. The destination supplies current trusted declarations and callback implementations.
 

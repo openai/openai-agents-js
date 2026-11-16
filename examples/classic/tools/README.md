@@ -33,7 +33,7 @@ These examples use hosted tools, local execution, and the Codex CLI with the cla
   pnpm examples:tools-programmatic-tool-calling
   ```
 
-- `codex.ts` – Runs the Codex CLI via the codex tool wrapper with streaming event logs and skill usage. Requires `CODEX_API_KEY` or `OPENAI_API_KEY` (Codex falls back to this unless `CODEX_API_KEY` is set). You can set `CODEX_PATH` to override the Codex CLI path.
+- `codex.ts` has been running the Codex CLI through the codex tool wrapper with streaming event logs and skill usage. The outer Agent has been requiring `OPENAI_API_KEY`. Codex has been using that key by default, with `CODEX_API_KEY` providing an optional override for Codex only. `CODEX_PATH` has been selecting an optional Codex CLI path override.
 
   ```bash
   pnpm examples:tools-codex

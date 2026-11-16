@@ -15,6 +15,8 @@ export async function startPublicExecutor(
     captureProcessDiagnostics?: boolean;
     /** Retain a terminal protocol body without invoking the host sandbox. */
     syntheticTerminal?: boolean;
+    /** Publish a synthetic terminal's exit and closed receipts after stopping it. */
+    syntheticTerminalCompletesOnTerminate?: boolean;
     /** Inspect actual output notifications to synchronize native authority tests. */
     onProcessOutput?: (message: JsonObject) => void;
     /** Observe actual incoming handshake fields only for explicit isolation tests. */
@@ -315,6 +317,7 @@ export async function startPublicExecutor(
             const process = syntheticProcesses.get(processId);
             if (process) {
               let result: JsonObject;
+              let completes = false;
               if (request.method === 'process/read') {
                 result = {
                   chunks: process.chunks.flatMap((text, index) =>
@@ -338,10 +341,33 @@ export async function startPublicExecutor(
               } else if (request.method === 'process/write')
                 result = { status: 'accepted' };
               else if (request.method === 'process/terminate') {
+                completes =
+                  process.running &&
+                  options.syntheticTerminalCompletesOnTerminate === true;
                 process.running = false;
                 result = { running: false };
               } else throw new Error('Unexpected synthetic process operation');
               downstream.send(JSON.stringify({ id: request.id, result }));
+              if (completes) {
+                const seq = process.chunks.length + 1;
+                downstream.send(
+                  JSON.stringify({
+                    method: 'process/exited',
+                    params: {
+                      processId,
+                      seq,
+                      exitCode: 0,
+                      sandboxDenied: false,
+                    },
+                  }),
+                );
+                downstream.send(
+                  JSON.stringify({
+                    method: 'process/closed',
+                    params: { processId, seq: seq + 1 },
+                  }),
+                );
+              }
               return;
             }
           }

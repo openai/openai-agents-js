@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { Manifest, file, sandboxEnvironment } from '@openai/agents/sandbox';
@@ -8,6 +9,7 @@ import {
   Agent,
   Environment,
   NativeProvider,
+  localStorage,
   applyPatchTool,
   isFunctionApprovalRequest,
   tool,
@@ -331,3 +333,193 @@ it('revokes a managed editor on callback cancellation and joins its resource', a
   expect(retained).toBe('before');
   expect(releases).toBe(1);
 }, 60_000);
+
+it.each(['editor', 'plain-source', 'plain-environment'] as const)(
+  'has been rebinding the public selected-child editor after settled durable resume (%s)',
+  async (mode) => {
+    const home = await mkdtemp(join(tmpdir(), 'sdk-editor-cold-'));
+    const client = new UnixLocalSandboxClient();
+    const manifests = [
+      new Manifest({
+        entries: { 'target.txt': file({ content: 'root-before' }) },
+      }),
+      new Manifest({
+        entries: { 'target.txt': file({ content: 'child-before' }) },
+      }),
+    ] as const;
+    const resources: Awaited<ReturnType<typeof client.create>>[] = [];
+    const samples = new ModelServer([
+      [call('transfer_to_child', {}, { callId: 'cold-transfer' })],
+      [call('edit', { append: '-first' }, { callId: 'cold-edit-first' })],
+      [message('Child settled.')],
+      [call('edit', { append: '-second' }, { callId: 'cold-edit-second' })],
+      [message('Child rebound.')],
+    ]);
+    let saved:
+      { editor: ApplyPatchEditor; context: ToolCallContext } | undefined;
+    const effects: string[] = [];
+    let phase = 'resource-create';
+    try {
+      for (const manifest of manifests)
+        resources.push(await client.create({ manifest }));
+      const source = (index: 0 | 1, changedSource = false) =>
+        mode === 'plain-environment'
+          ? new Environment({
+              url: peer.url,
+              headers: peer.headers,
+              cwd: resources[index]!.state.workspaceRootPath,
+              tools: [],
+            })
+          : sandboxEnvironment({
+              client,
+              session: resources[index]!,
+              manifest: manifests[index],
+              capabilities: [],
+              connect: async ({ state }) =>
+                Environment.lease(
+                  new Environment({
+                    url: peer.url,
+                    headers: peer.headers,
+                    cwd: state.workspaceRootPath,
+                    tools: [],
+                    readOnly: changedSource,
+                  }),
+                  () => {},
+                ),
+            });
+      const graph = (
+        provider: NativeProvider,
+        owner: string,
+        changedSource = false,
+      ) => {
+        const child = new Agent({
+          name: 'child',
+          instructions: 'Edit the selected workspace.',
+          model: 'gpt-5.5',
+          provider,
+          environment: source(1, changedSource),
+          tools: [
+            tool({
+              name: 'edit',
+              description:
+                'Apply the supplied suffix through the current managed editor.',
+              parameters: z.object({ append: z.string() }),
+              async execute({ append }, context) {
+                if (mode !== 'editor') {
+                  effects.push(owner);
+                  return 'plain callback';
+                }
+                const editor = context.sandbox!.createEditor({
+                  format: {
+                    applyDiff(input, diff) {
+                      effects.push(owner);
+                      return input + JSON.parse(diff).append;
+                    },
+                  },
+                });
+                saved = { editor, context };
+                await editor.updateFile(
+                  {
+                    type: 'update_file',
+                    path: 'target.txt',
+                    diff: JSON.stringify({ append }),
+                  },
+                  context,
+                );
+                return 'edited';
+              },
+            }),
+          ],
+        });
+        return new Agent({
+          name: 'root',
+          instructions: 'Transfer to child.',
+          model: 'gpt-5.5',
+          provider,
+          environment: source(0),
+          handoffs: [child],
+        });
+      };
+      const storage = localStorage(join(home, 'history'));
+      let id: string;
+      {
+        await using provider = await providerFor(samples);
+        phase = 'open-first-session';
+        await using session = await graph(provider, 'first-owner').session({
+          storage,
+        });
+        id = session.id;
+        phase = 'first-turn';
+        expect(
+          (await (await session.submit('Transfer and edit.')).wait())
+            .finalOutput,
+        ).toBe('Child settled.');
+      }
+      phase = 'first-session-closed';
+      const stale = saved!;
+      if (mode === 'editor')
+        await expect(
+          stale.editor.updateFile(
+            {
+              type: 'update_file',
+              path: 'target.txt',
+              diff: '{"append":"-stale"}',
+            },
+            stale.context,
+          ),
+        ).rejects.toThrow();
+      expect(effects).toEqual(['first-owner']);
+      if (mode === 'editor') {
+        phase = 'reject-changed-source';
+        await using provider = await providerFor(samples);
+        await expect(
+          graph(provider, 'rejected-owner', true).session({
+            storage,
+            resume: id,
+          }),
+        ).rejects.toThrow(/recorded Agent environment grants/);
+        expect(samples.requests).toHaveLength(3);
+        expect(effects).toEqual(['first-owner']);
+      }
+      {
+        await using provider = await providerFor(samples);
+        phase = 'open-resumed-session';
+        await using session = await graph(provider, 'fresh-owner').session({
+          storage,
+          resume: id,
+        });
+        phase = 'resumed-turn';
+        expect(
+          (
+            await (
+              await session.submit('Edit the selected child again.')
+            ).wait()
+          ).finalOutput,
+        ).toBe('Child rebound.');
+      }
+      expect(effects).toEqual(['first-owner', 'fresh-owner']);
+      expect(
+        await readFile(
+          join(resources[1]!.state.workspaceRootPath, 'target.txt'),
+          'utf8',
+        ),
+      ).toBe(mode === 'editor' ? 'child-before-first-second' : 'child-before');
+      expect(
+        await readFile(
+          join(resources[0]!.state.workspaceRootPath, 'target.txt'),
+          'utf8',
+        ),
+      ).toBe('root-before');
+      samples.assertExhausted();
+    } catch (error) {
+      throw new Error(
+        `Editor cold ${phase}; requests=${samples.requests.length}; effects=${effects.join(',')}; resumedTools=${JSON.stringify(samples.requests[3]?.tools)}; secondOutputs=${JSON.stringify(samples.requests.flatMap((request) => (Array.isArray(request.input) ? request.input.filter((item) => item && typeof item === 'object' && !Array.isArray(item) && item.call_id === 'cold-edit-second') : [])))}`,
+        { cause: error },
+      );
+    } finally {
+      for (const resource of resources.reverse()) await resource.delete();
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+  60_000,
+);
