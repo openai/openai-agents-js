@@ -751,6 +751,49 @@ describe('ConsoleSpanExporter', () => {
     setTracingDisabled(true);
   });
 
+  it('logs valid spans around a serialization failure when flushing a batch', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('OPENAI_AGENTS_DISABLE_TRACING', '0');
+    vi.stubEnv('OPENAI_AGENTS_DONT_LOG_MODEL_DATA', '0');
+    vi.stubEnv('OPENAI_AGENTS_DONT_LOG_TOOL_DATA', '0');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(coreLogger, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(coreLogger, 'error').mockImplementation(() => {});
+    const processor = new BatchTraceProcessor(new ConsoleSpanExporter());
+
+    function startSpan(name: string) {
+      const span = new Span<CustomSpanData>(
+        { traceId: 'trace_console', data: { type: 'custom', name, data: {} } },
+        processor,
+      );
+      span.start();
+      return span;
+    }
+
+    try {
+      startSpan('before').end();
+      const bad = startSpan('bad');
+      bad.spanData.data.durationNs = 1n;
+      bad.end();
+      startSpan('after').end();
+
+      await processor.forceFlush();
+
+      expect(log.mock.calls).toEqual([
+        [expect.stringContaining('"name":"before"')],
+        [expect.stringContaining('"name":"after"')],
+      ]);
+      expect(warn.mock.calls).toEqual([
+        ['[non-fatal] Tracing: skipped 1 of 3 items during serialization.'],
+      ]);
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      await processor.shutdown();
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([
     [true, false],
     [false, true],
