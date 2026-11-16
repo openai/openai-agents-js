@@ -240,7 +240,6 @@ jobs:
       run:
         shell: bash
     env: &package_env
-      ALPHA_VERSION: 0.22.0-alpha.3
       EXPECTED_PLATFORM: ${{ matrix.platform }}
       RUSTUP_TOOLCHAIN: '1.95.0'
       CARGO_BUILD_JOBS: ${{ matrix.managed_arm && 16 || matrix.cargo_jobs }}
@@ -378,7 +377,9 @@ jobs:
           OTLP_TEST_PYTHON="$RUNNER_TEMP/agents-otel-collector/bin/python" pnpm exec vitest run --project @openai/agents-codex packages/agents-codex/test/native/tracing-parity.test.ts packages/agents-codex/test/native/telemetry-transports.test.ts
           pnpm test:native packages/agents-codex/test/native/mcp-policy-native.test.ts -t 'restores the native MCP carrier'
       - name: Create the release bundles
-        run: node scripts/alpha-package.mjs --version "$ALPHA_VERSION" --output "$RUNNER_TEMP/agents-alpha"
+        run: |
+          version=$(node -p "require('node:fs').readFileSync('.github/alpha-version.txt', 'utf8').trim()")
+          node scripts/alpha-package.mjs --version "$version" --output "$RUNNER_TEMP/agents-alpha"
       - name: Test the extracted bundles
         run: node scripts/verify-alpha-package.mjs --directory "$RUNNER_TEMP/agents-alpha"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
