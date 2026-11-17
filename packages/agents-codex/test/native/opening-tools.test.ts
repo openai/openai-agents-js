@@ -508,7 +508,16 @@ describe('opening tool declarations', () => {
       model: 'gpt-5',
       provider,
     });
-    const source = await agent.session({ tools: [lookup('source')] });
+    const source = await agent.session({
+      tools: [
+        tool({
+          name: 'lookup',
+          namespace: 'qualified',
+          parameters: z.object({}),
+          execute: () => 'source',
+        }),
+      ],
+    });
     const state = await source.saveState();
     await source.close();
     await expect(agent.session({ state, tools: [] })).rejects.toThrow(

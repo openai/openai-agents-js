@@ -230,9 +230,15 @@ it('resolves stale selectors to acknowledged bindings and keeps defaults and FIF
   ]);
   expect(state).toMatchObject({ format_version: 8, default_tools: [] });
   await session.close();
+  await using withoutTools = await new Agent({
+    instructions: 'Answer.',
+    provider,
+  }).session({ state });
   await expect(
-    new Agent({ instructions: 'Answer.', provider }).session({ state }),
-  ).rejects.toThrow('matching managed tools');
+    withoutTools.submit('use removed tool', { tools: [toolRef('a')] }),
+  ).rejects.toThrow('not admitted');
+  expect(server.requests).toHaveLength(3);
+  await withoutTools.close();
   await using restored = await new Agent({
     instructions: 'Answer.',
     provider,
