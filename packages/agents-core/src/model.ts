@@ -622,6 +622,7 @@ export type ModelRequest = {
     runnerManagedRetry?: boolean;
     // Undefined when the merged settings supplied no effort before legacy cleanup.
     reasoningEffortImplicit?: boolean;
+    textVerbosityImplicit?: boolean;
     tracingParent?: Span<any> | Trace;
     toolNameCollisionPolicy?: 'warn' | 'error';
   };

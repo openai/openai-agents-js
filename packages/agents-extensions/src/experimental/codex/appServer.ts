@@ -139,7 +139,14 @@ export async function openCodexAppServer({
         pathDir: undefined,
       }
     : resolveExecutable();
-  const args = ['app-server', ...configArguments(codexOptions.config)];
+  const args = [
+    'app-server',
+    '--config',
+    'features.apps=false',
+    '--config',
+    'web_search="disabled"',
+    ...configArguments(codexOptions.config),
+  ];
   for (const override of codexOptions.configOverrides ?? []) {
     args.push('--config', override);
   }

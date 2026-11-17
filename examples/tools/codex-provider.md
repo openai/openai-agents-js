@@ -67,11 +67,25 @@ const runner = new Runner({
 
 In the workspace example, OpenAI mode has been supplying application-owned SDK tools, while Codex mode has been using native tools. The capabilities example has been supplying the same SDK tools and handoff in both modes. OpenAI mode has been omitting `modelProvider`. Both modes have been disabling SDK tracing; Codex has been handling its own diagnostics.
 
-The provider has been passing agent instructions to Codex as developer instructions. It has been accepting SDK function tools, handoffs, structured output, and image data URLs. App Server text deltas have been reaching the Runner during generation. Codex has been reporting token usage through the provider.
+The provider has been passing agent instructions to Codex as developer instructions. It has been accepting SDK function tools, handoffs, structured output, and image data URLs. SDK tool history has also been accepting inline image bytes or base64 with a supported image media type. App Server text deltas have been reaching the Runner during generation. Codex has been reporting token usage through the provider.
 
 The Runner has been executing SDK function tools and handoffs, including SDK tool approvals and guardrails. The provider has been returning one SDK callback request per model step. Codex has been executing native tools separately under its own permissions. Native approval requests have been producing errors; the examples have been selecting `approvalPolicy: 'never'`. Each model step has been starting a fresh ephemeral Codex thread. The Runner has been replaying prior messages, SDK tool calls, and tool results as context.
 
-Responses API response or conversation IDs, prompt IDs, hosted tools, and unsupported model settings have been remaining exclusive to the default OpenAI provider. The Runner has been supporting `modelSettings.timeoutMs` for Codex calls; Codex-specific configuration has been going through `CodexProvider` options.
+The provider has been disabling Codex connected apps and native web search by default. Applications have been able to enable connected apps with `codexOptions.config.features.apps` and choose native web search with `threadOptions.webSearchMode`. The native shell has been following the selected sandbox policy.
+
+### Model settings
+
+Codex has been honoring explicit `reasoning.effort`, `reasoning.summary`, and `text.verbosity` through its own configuration. Available values have been depending on the selected Codex model. When the SDK only supplies implicit defaults, Codex has been using the provider's configured effort and verbosity.
+
+With `reasoning.summary`, Codex has been returning any available summary as `providerData.codexReasoningSummary` on the last output item of the model step. With `preserveRawUsage: true`, the Runner has been including Codex's original token usage in `result.rawResponses[n].rawUsage` alongside the SDK's normalized usage.
+
+Codex has been using automatic tool selection and ephemeral threads. It has been accepting `toolChoice: 'auto'` and `store: false` to match that behavior. The Runner has been applying `timeoutMs` and `retry` to Codex calls. It has been treating Codex calls as unsafe to replay because native tools can change the workspace.
+
+### Current limits
+
+Codex has been rejecting Responses API response IDs, conversation IDs, prompt IDs, and hosted tools. It has also been rejecting forced or disabled tool selection, parallel tool settings, and deferred or programmatic tools. Sampling controls and output token limits have been requiring a different provider.
+
+Codex has been replaying ordinary messages and SDK tool exchanges between model steps. Reasoning summaries have been available as Codex output metadata. Responses API reasoning replay controls, remote image URLs, and file inputs have been remaining unsupported.
 
 Input guardrails using `runInParallel: false` have been completing their checks before Codex execution. Workspace writes have been surviving some failures, timeouts, cancellations, and output guardrail rejections.
 

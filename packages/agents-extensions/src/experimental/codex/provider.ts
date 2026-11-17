@@ -1,8 +1,6 @@
 import { stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import {
-  getDefaultModelSettings,
   Usage,
   UserError,
   type AssistantMessageItem,
@@ -43,6 +41,7 @@ type CodexStreamEvent =
         id: string;
         output: (AssistantMessageItem | FunctionCallItem)[];
         usage: Usage;
+        rawUsage?: Record<string, unknown>;
       };
     };
 
@@ -67,8 +66,8 @@ class CodexModel implements Model {
   async getResponse(request: ModelRequest) {
     for await (const event of this.getStreamedResponse(request)) {
       if (event.type === 'response_done') {
-        const { id, output, usage } = event.response;
-        return { responseId: id, output, usage };
+        const { id, ...response } = event.response;
+        return { responseId: id, ...response };
       }
     }
     throw new Error('Codex finished without a response.');
@@ -77,7 +76,7 @@ class CodexModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncGenerator<CodexStreamEvent> {
-    this.validateRequest(request);
+    const { effort, summary, verbosity } = prepareModelSettings(request);
     const { history, turnInput } = prepareCodexHistory(request.input);
     const { tools, identities } = prepareDynamicTools(request);
     const threadOptions = this.options.threadOptions;
@@ -92,6 +91,8 @@ class CodexModel implements Model {
     });
     let threadId: string;
     let usage = new Usage();
+    let rawUsage: Record<string, unknown> | undefined;
+    const reasoningSummaries: string[] = [];
     const output = new Map<string, AssistantMessageItem>();
     const streamedItems = new Set<string>();
     let sdkCall: FunctionCallItem | undefined;
@@ -111,6 +112,9 @@ class CodexModel implements Model {
           approvalPolicy: threadOptions?.approvalPolicy,
           sandbox: threadOptions?.sandboxMode,
           threadSource: threadOptions?.threadSource,
+          ...(verbosity !== undefined && {
+            config: { model_verbosity: verbosity },
+          }),
           ...(tools.length && { dynamicTools: tools }),
           ...(threadOptions?.additionalDirectories?.length && {
             runtimeWorkspaceRoots: [
@@ -133,7 +137,8 @@ class CodexModel implements Model {
         await server.request('turn/start', {
           threadId,
           input: turnInput,
-          effort: threadOptions?.modelReasoningEffort,
+          effort: effort ?? threadOptions?.modelReasoningEffort,
+          summary,
           outputSchema:
             request.outputType === 'text'
               ? undefined
@@ -186,6 +191,16 @@ class CodexModel implements Model {
           };
         } else if (event.method === 'item/completed') {
           const item = record(params.item);
+          if (item?.type === 'reasoning' && summary !== undefined) {
+            if (Array.isArray(item.summary)) {
+              reasoningSummaries.push(
+                ...item.summary.filter(
+                  (part): part is string => typeof part === 'string',
+                ),
+              );
+            }
+            continue;
+          }
           if (
             item?.type !== 'agentMessage' ||
             typeof item.id !== 'string' ||
@@ -215,7 +230,9 @@ class CodexModel implements Model {
             content: [{ type: 'output_text', text: item.text }],
           });
         } else if (event.method === 'thread/tokenUsage/updated') {
-          usage = readUsage(record(params.tokenUsage)?.total);
+          const tokenUsage = record(params.tokenUsage);
+          usage = readUsage(tokenUsage?.total);
+          if (request.modelSettings.preserveRawUsage) rawUsage = tokenUsage;
         }
       }
     } finally {
@@ -226,9 +243,19 @@ class CodexModel implements Model {
       throw new Error('Codex finished without a completed response.');
     }
     const items = [...output.values(), ...(sdkCall ? [sdkCall] : [])];
+    if (reasoningSummaries.length) {
+      items[items.length - 1].providerData = {
+        codexReasoningSummary: reasoningSummaries,
+      };
+    }
     yield {
       type: 'response_done',
-      response: { id: threadId, output: items, usage },
+      response: {
+        id: threadId,
+        output: items,
+        usage,
+        ...(rawUsage !== undefined && { rawUsage }),
+      },
     };
   }
 
@@ -236,32 +263,68 @@ class CodexModel implements Model {
     // Codex may have already executed native tools or changed files.
     return { replaySafety: 'unsafe' };
   }
+}
 
-  private validateRequest(request: ModelRequest) {
-    if (
-      request.previousResponseId !== undefined ||
-      request.conversationId !== undefined ||
-      request.prompt !== undefined
-    ) {
+function prepareModelSettings(request: ModelRequest) {
+  if (
+    request.previousResponseId !== undefined ||
+    request.conversationId !== undefined ||
+    request.prompt !== undefined
+  ) {
+    throw new UserError(
+      'CodexProvider does not support Responses API state or prompt IDs.',
+    );
+  }
+
+  const {
+    timeoutMs: _timeoutMs,
+    retry: _retry,
+    preserveRawUsage: _preserveRawUsage,
+    toolChoice,
+    store,
+    reasoning,
+    text,
+    ...unsupported
+  } = request.modelSettings;
+  const { effort, summary, ...unsupportedReasoning } = reasoning ?? {};
+  const { verbosity, ...unsupportedText } = text ?? {};
+  for (const [prefix, settings] of [
+    [
+      '',
+      {
+        ...unsupported,
+        toolChoice: toolChoice === 'auto' ? undefined : toolChoice,
+        store: store === false ? undefined : store,
+      },
+    ],
+    ['reasoning.', unsupportedReasoning],
+    ['text.', unsupportedText],
+  ] as const) {
+    const entry = Object.entries(settings).find(
+      ([, value]) => value !== undefined,
+    );
+    if (entry) {
       throw new UserError(
-        'CodexProvider does not support Responses API state or prompt IDs.',
+        `CodexProvider does not support modelSettings.${prefix}${entry[0]}. Configure Codex through CodexProvider options.`,
       );
     }
-
-    // The Runner can add OpenAI model defaults even for a custom provider.
-    const { timeoutMs: _timeoutMs, ...settings } = request.modelSettings;
-    const defaults = getDefaultModelSettings(this.modelName);
-    for (const key of Object.keys(settings) as (keyof typeof settings)[]) {
-      if (
-        settings[key] !== undefined &&
-        !isDeepStrictEqual(settings[key], defaults[key])
-      ) {
-        throw new UserError(
-          `CodexProvider does not support modelSettings.${key}. Configure Codex through CodexProvider options.`,
-        );
-      }
-    }
   }
+
+  const { _internal } = request as ModelRequest & {
+    _internal?: {
+      reasoningEffortImplicit?: boolean;
+      textVerbosityImplicit?: boolean;
+    };
+  };
+  return {
+    effort: _internal?.reasoningEffortImplicit
+      ? undefined
+      : (effort ?? undefined),
+    summary: summary ?? undefined,
+    verbosity: _internal?.textVerbosityImplicit
+      ? undefined
+      : (verbosity ?? undefined),
+  };
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

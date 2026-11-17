@@ -23,6 +23,21 @@ vi.mock('../../../src/experimental/codex/appServer', () => ({
 type Event = { method: string; params: Record<string, unknown>; id?: number };
 const localImage =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6uGQAAAAASUVORK5CYII=';
+const tokenUsage = {
+  total: {
+    inputTokens: 17,
+    cachedInputTokens: 3,
+    cacheWriteInputTokens: 2,
+    outputTokens: 12,
+    reasoningOutputTokens: 4,
+    totalTokens: 29,
+  },
+  modelContextWindow: 1024,
+};
+const usageUpdated: Event = {
+  method: 'thread/tokenUsage/updated',
+  params: { threadId: 'thread', turnId: 'turn', tokenUsage },
+};
 
 function agentMessage(
   text: string,
@@ -144,6 +159,98 @@ test('parses structured output and forwards separate consecutive text and local-
   expect(connection.close).toHaveBeenCalledOnce();
 });
 
+test('honors explicit model controls and preserves reported summaries and raw usage', async () => {
+  const connection = server([
+    {
+      method: 'item/completed',
+      params: {
+        threadId: 'thread',
+        turnId: 'turn',
+        item: {
+          type: 'reasoning',
+          id: 'reasoning',
+          summary: ['Identified the diagram.'],
+          content: ['Reasoning content outside the requested summary.'],
+        },
+      },
+    },
+    agentMessage('I will identify the diagram.', 'commentary'),
+    usageUpdated,
+    ...completed('{"label":"diagram"}'),
+  ]);
+  const sdkRunner = new Runner({
+    modelProvider: new CodexProvider({
+      codexOptions: { config: { model_verbosity: 'high' } },
+      threadOptions: { modelReasoningEffort: 'high' },
+    }),
+    modelSettings: {
+      text: { verbosity: 'low' },
+      retry: { maxRetries: 1 },
+    },
+    tracingDisabled: true,
+  });
+  const agent = new Agent({
+    name: 'assistant',
+    modelSettings: {
+      reasoning: { effort: 'medium', summary: 'concise' },
+      toolChoice: 'auto',
+      store: false,
+      preserveRawUsage: true,
+    },
+    outputType: z.object({ label: z.string() }),
+  });
+  const result = await sdkRunner.run(agent, 'Describe the diagram.');
+
+  expect(connection.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({ config: { model_verbosity: 'low' } }),
+  );
+  expect(connection.request).toHaveBeenCalledWith(
+    'turn/start',
+    expect.objectContaining({ effort: 'medium', summary: 'concise' }),
+  );
+  expect(result.finalOutput).toEqual({ label: 'diagram' });
+  expect(result.rawResponses[0]?.output.at(-1)?.providerData).toEqual({
+    codexReasoningSummary: ['Identified the diagram.'],
+  });
+  expect(result.rawResponses[0]?.rawUsage).toEqual(tokenUsage);
+});
+
+test.each([undefined, 'low'] as const)(
+  'keeps Codex settings except for an explicit Runner verbosity of %s',
+  async (verbosity) => {
+    const connection = server([usageUpdated, ...completed('Hello.')]);
+    const sdkRunner = new Runner({
+      modelProvider: new CodexProvider({
+        codexOptions: { config: { model_verbosity: 'high' } },
+        threadOptions: { modelReasoningEffort: 'high' },
+      }),
+      modelSettings: verbosity ? { text: { verbosity } } : undefined,
+      tracingDisabled: true,
+    });
+    const result = await sdkRunner.run(
+      new Agent({ name: 'assistant' }),
+      'Hello.',
+    );
+
+    const thread = connection.request.mock.calls.find(
+      ([method]) => method === 'thread/start',
+    );
+    if (verbosity) {
+      expect(thread?.[1]).toMatchObject({
+        config: { model_verbosity: verbosity },
+      });
+    } else {
+      expect(thread?.[1]).not.toHaveProperty('config');
+    }
+    expect(connection.request).toHaveBeenCalledWith(
+      'turn/start',
+      expect.objectContaining({ effort: 'high' }),
+    );
+    expect(result.rawResponses[0]).not.toHaveProperty('rawUsage');
+  },
+);
+
 test('delivers text deltas before completion without repeating final text and records usage', async () => {
   let release!: () => void;
   let finished = false;
@@ -171,29 +278,13 @@ test('delivers text deltas before completion without repeating final text and re
           delta: 'world.',
         },
       };
-      yield {
-        method: 'thread/tokenUsage/updated',
-        params: {
-          threadId: 'thread',
-          turnId: 'turn',
-          tokenUsage: {
-            total: {
-              inputTokens: 17,
-              cachedInputTokens: 3,
-              cacheWriteInputTokens: 2,
-              outputTokens: 12,
-              reasoningOutputTokens: 4,
-              totalTokens: 29,
-            },
-          },
-        },
-      };
+      yield usageUpdated;
       finished = true;
       yield* completed('Hello world.');
     })(),
   );
   const result = await runner().run(
-    new Agent({ name: 'assistant' }),
+    new Agent({ name: 'assistant', modelSettings: { preserveRawUsage: true } }),
     'Hello.',
     { stream: true },
   );
@@ -212,6 +303,7 @@ test('delivers text deltas before completion without repeating final text and re
   }
   expect(deltas).toEqual(['Hello ', 'world.']);
   expect(result.finalOutput).toBe('Hello world.');
+  expect(result.rawResponses[0]?.rawUsage).toEqual(tokenUsage);
   expect(result.state.usage).toMatchObject({
     inputTokens: 17,
     outputTokens: 12,
@@ -302,6 +394,51 @@ test('lets Runner execute a function tool and replays its exact call ID into a f
   expect(boundary.open).toHaveBeenCalledTimes(2);
 });
 
+test.each(['base64', 'bytes'])(
+  'replays inline %s images from SDK tool history',
+  async (encoding) => {
+    const connection = server(completed('Image received.'));
+    const base64 = localImage.split(',')[1];
+    const result = await runner().run(new Agent({ name: 'assistant' }), [
+      {
+        type: 'function_call',
+        name: 'lookup_image',
+        callId: 'image-call',
+        arguments: '{}',
+        status: 'completed',
+      },
+      {
+        type: 'function_call_result',
+        name: 'lookup_image',
+        callId: 'image-call',
+        status: 'completed',
+        output: {
+          type: 'image',
+          image: {
+            data: encoding === 'bytes' ? Buffer.from(base64, 'base64') : base64,
+            mediaType: 'image/png',
+          },
+        },
+      },
+      { role: 'user', content: 'Describe the image from the tool.' },
+    ]);
+
+    expect(result.finalOutput).toBe('Image received.');
+    expect(connection.request).toHaveBeenCalledWith(
+      'thread/inject_items',
+      expect.objectContaining({
+        items: expect.arrayContaining([
+          {
+            type: 'function_call_output',
+            call_id: 'image-call',
+            output: [{ type: 'input_image', image_url: localImage }],
+          },
+        ]),
+      }),
+    );
+  },
+);
+
 test('closes the transport while SDK approval is pending and resumes serialized RunState', async () => {
   const first = server(callback('approve_lookup'));
   const execute = vi.fn(async () => 'approved account');
@@ -389,6 +526,24 @@ test('rejects Responses IDs and hosted tools before opening the CLI', async () =
   ).rejects.toThrow(UserError);
   expect(boundary.open).not.toHaveBeenCalled();
 });
+
+test.each([
+  [{ toolChoice: 'none' }, 'toolChoice'],
+  [{ toolChoice: 'required' }, 'toolChoice'],
+  [{ toolChoice: 'lookup' }, 'toolChoice'],
+  [{ parallelToolCalls: false }, 'parallelToolCalls'],
+  [{ store: true }, 'store'],
+  [{ reasoning: { context: 'all_turns' as const } }, 'reasoning.context'],
+])(
+  'rejects an SDK setting that Codex cannot enforce: %j',
+  async (settings, name) => {
+    const agent = new Agent({ name: 'assistant', modelSettings: settings });
+    await expect(runner().run(agent, 'Hello.')).rejects.toThrow(
+      `CodexProvider does not support modelSettings.${name}.`,
+    );
+    expect(boundary.open).not.toHaveBeenCalled();
+  },
+);
 
 test.each([
   ['unconfigured tool', 'unknown', null],

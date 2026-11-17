@@ -3789,6 +3789,10 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           !hasExplicitTopLevelReasoningEffort(this.config.modelSettings) &&
           !hasExplicitTopLevelReasoningEffort(agentModelSettings)
         : undefined,
+      textVerbosityImplicit:
+        implicitModelSettings?.text?.verbosity !== undefined &&
+        this.config.modelSettings?.text?.verbosity === undefined &&
+        agentModelSettings?.text?.verbosity === undefined,
       tracingParent:
         getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
       toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',

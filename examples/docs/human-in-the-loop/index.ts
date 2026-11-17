@@ -9,7 +9,7 @@ const getWeatherTool = tool({
   name: 'get_weather',
   description: 'Get the weather for a given city',
   parameters: z.object({
-    location: z.string(),
+    location: z.enum(['Oakland', 'San Francisco']),
   }),
   needsApproval: async (_context, { location }) => {
     // forces approval to look up the weather in San Francisco
@@ -22,14 +22,15 @@ const getWeatherTool = tool({
 
 const dataAgentTwo = new Agent({
   name: 'Data agent',
-  instructions: 'You are a data agent',
+  instructions:
+    'Call get_weather for each city before replying. Use the tool results to answer.',
   handoffDescription: 'You know everything about the weather',
   tools: [getWeatherTool],
 });
 
 const agent = new Agent({
   name: 'Basic test agent',
-  instructions: 'You are a basic agent',
+  instructions: 'Immediately hand off weather questions to the Data agent.',
   handoffs: [dataAgentTwo],
 });
 

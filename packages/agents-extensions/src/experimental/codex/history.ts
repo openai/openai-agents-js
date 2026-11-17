@@ -5,6 +5,7 @@ import {
   type FunctionCallItem,
   type FunctionCallResultItem,
 } from '@openai/agents-core';
+import { formatInlineData } from '@openai/agents-core/utils/internal';
 
 type ImageDetail = 'auto' | 'low' | 'high' | 'original';
 type ImageContent = {
@@ -68,11 +69,16 @@ function toolOutput(
       case 'input_text':
         return { type: 'input_text', text: part.text };
       case 'image':
-      case 'input_image':
-        return imageContent(
-          part.image,
-          part.detail ?? part.providerData?.detail,
-        );
+      case 'input_image': {
+        const image =
+          part.type === 'image' &&
+          typeof part.image === 'object' &&
+          part.image !== null &&
+          'data' in part.image
+            ? formatInlineData(part.image.data, part.image.mediaType)
+            : part.image;
+        return imageContent(image, part.detail ?? part.providerData?.detail);
+      }
       default:
         throw new UserError(
           'CodexProvider accepts only text and local images in tool results.',
