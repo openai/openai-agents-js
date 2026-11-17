@@ -38,6 +38,16 @@ export async function createDockerFileIOFixture(runDockerProcess: Mock) {
   ) => {
     expect(command).toBe('docker');
     commands.push(args);
+    if (
+      process.platform === 'darwin' &&
+      args.at(-4) === 'chmod' &&
+      /^[0-7]+$/u.test(args.at(-3) ?? '') &&
+      args.at(-2) === '--' &&
+      args.at(-1)?.startsWith('/')
+    ) {
+      // BSD chmod omits GNU's delimiter after a numeric mode; paths stay absolute.
+      args = [...args.slice(0, -2), args.at(-1)!];
+    }
     if (args.includes('/usr/bin/tar')) {
       // Real archive extraction; the native Docker test covers containment.
       return native.spawn(
