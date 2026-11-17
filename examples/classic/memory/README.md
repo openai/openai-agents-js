@@ -31,6 +31,8 @@ Run these commands from the repository root. Each example makes live model reque
 
 The file examples create a new session each time you start them and leave its JSON file on disk. The OpenAI Conversations examples keep their server-side conversations.
 
+`FileSession` creates storage directories with mode `0700` and JSON files with mode `0600`. Existing directories and files must be owned by the current user and have no group or other permissions. Use a trusted parent directory that other users cannot replace. `FileSession` rejects unsafe existing directories or files and symlinked storage directories or session files; change their permissions or move the history to a private directory before reopening a session. This example requires POSIX ownership and no-follow file opening.
+
 The approval scenario deletes its new conversation unless you set `KEEP_OPENAI_SESSION`. Set `OPENAI_SESSION_ID` to reuse and preserve an existing conversation.
 
 The SQLite command uses `file:./dev.db` by default. Relative `file:` URLs resolve from `examples/classic/memory/prisma/`, the directory used by the previous example. Set `DATABASE_URL` to choose another file. The SQLite example opens existing Prisma databases from this example in place. Add `?socket_timeout=7` to a database URL to wait up to seven seconds when SQLite encounters a lock. The default wait is five seconds.

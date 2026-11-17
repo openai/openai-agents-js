@@ -1,5 +1,6 @@
 import { protocol } from '@openai/agents/classic';
 import type { AgentInputItem, Session } from '@openai/agents/classic';
+import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -14,7 +15,7 @@ export class FileSession implements Session {
   #sessionId?: string;
 
   constructor(options: FileSessionOptions = {}) {
-    this.#dir = options.dir ?? path.resolve(process.cwd(), '.agents-sessions');
+    this.#dir = path.resolve(options.dir ?? '.agents-sessions');
     this.#sessionId = options.sessionId;
   }
 
@@ -22,12 +23,19 @@ export class FileSession implements Session {
     if (!this.#sessionId) {
       this.#sessionId = randomUUID().replace(/-/g, '').slice(0, 24);
     }
-    await this.#ensureDir();
-    const file = this.#filePath(this.#sessionId);
+    const handle = await this.#openFile(
+      this.#sessionId,
+      true,
+      constants.O_RDONLY,
+    );
+    let needsInitialization: boolean;
     try {
-      await fs.access(file);
-    } catch {
-      await fs.writeFile(file, '[]', 'utf8');
+      needsInitialization = (await handle.stat()).size === 0;
+    } finally {
+      await handle.close();
+    }
+    if (needsInitialization) {
+      await this.#writeItems(this.#sessionId, []);
     }
     return this.#sessionId;
   }
@@ -81,25 +89,71 @@ export class FileSession implements Session {
     }
     const file = this.#filePath(this.#sessionId);
     try {
+      const handle = await this.#openFile(
+        this.#sessionId,
+        false,
+        constants.O_RDONLY,
+      );
+      await handle.close();
       await fs.unlink(file);
-    } catch {
-      // ignore missing file
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        throw err;
+      }
     }
     this.#sessionId = undefined;
   }
 
   async #ensureDir(): Promise<void> {
-    await fs.mkdir(this.#dir, { recursive: true });
+    const uid = process.getuid?.();
+    if (uid === undefined || !constants.O_NOFOLLOW) {
+      throw new Error('FileSession requires POSIX owner-only permissions');
+    }
+    await fs.mkdir(this.#dir, { recursive: true, mode: 0o700 });
+    const stat = await fs.lstat(this.#dir);
+    if (!stat.isDirectory() || stat.uid !== uid || (stat.mode & 0o077) !== 0) {
+      throw new Error('FileSession directory must be owner-only');
+    }
   }
 
   #filePath(sessionId: string): string {
     return path.join(this.#dir, `${sessionId}.json`);
   }
 
-  async #readRawItems(sessionId: string): Promise<unknown[]> {
+  async #openFile(
+    sessionId: string,
+    create = true,
+    access = constants.O_RDWR,
+  ): Promise<fs.FileHandle> {
     const file = this.#filePath(sessionId);
+    await this.#ensureDir();
+    const flags =
+      access |
+      constants.O_NOFOLLOW |
+      constants.O_NONBLOCK |
+      (create ? constants.O_CREAT : 0);
+    const handle = await fs.open(file, flags, 0o600);
     try {
-      const data = await fs.readFile(file, 'utf8');
+      const stat = await handle.stat();
+      if (
+        !stat.isFile() ||
+        stat.uid !== process.getuid?.() ||
+        (stat.mode & 0o077) !== 0
+      ) {
+        throw new Error('FileSession file must be owner-only');
+      }
+      return handle;
+    } catch (err) {
+      await handle.close();
+      throw err;
+    }
+  }
+
+  async #readRawItems(sessionId: string): Promise<unknown[]> {
+    let handle: fs.FileHandle | undefined;
+    try {
+      handle = await this.#openFile(sessionId, true, constants.O_RDONLY);
+      const data = await handle.readFile('utf8');
       const parsed = JSON.parse(data);
       return Array.isArray(parsed) ? parsed : [];
     } catch (err: any) {
@@ -107,13 +161,19 @@ export class FileSession implements Session {
         return [];
       }
       throw err;
+    } finally {
+      await handle?.close();
     }
   }
 
   async #writeItems(sessionId: string, items: unknown[]): Promise<void> {
-    await this.#ensureDir();
-    const file = this.#filePath(sessionId);
-    await fs.writeFile(file, JSON.stringify(items, null, 2), 'utf8');
+    const handle = await this.#openFile(sessionId);
+    try {
+      await handle.truncate(0);
+      await handle.writeFile(JSON.stringify(items, null, 2), 'utf8');
+    } finally {
+      await handle.close();
+    }
   }
 }
 
