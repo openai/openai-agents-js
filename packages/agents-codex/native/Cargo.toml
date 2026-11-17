@@ -127,3 +127,6 @@ codegen-units = 1
 
 [profile.release.package.codex-core]
 codegen-units = 4
+
+[profile.release.package.codex-agents-node]
+codegen-units = 4
