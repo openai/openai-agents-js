@@ -75,7 +75,7 @@
     "@daytonaio/sdk": "^0.201.0",
     "@e2b/code-interpreter": "^2.3.3",
     "@openai/agents": "workspace:>=0.0.0",
-    "@openai/codex-sdk": ">=0.86.0",
+    "@openai/codex-sdk": ">=0.166.0",
     "@vercel/sandbox": "^1.9.3",
     "ai": "^6.0.0 || ^7.0.0",
     "e2b": "^2.14.1",

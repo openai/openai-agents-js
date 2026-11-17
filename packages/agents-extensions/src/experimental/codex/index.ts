@@ -1877,3 +1877,5 @@ function isErrorItem(item: ThreadItem): item is ErrorItem {
 function isReasoningItem(item: ThreadItem): item is ReasoningItem {
   return item?.type === 'reasoning';
 }
+
+export { CodexProvider, type CodexProviderOptions } from './provider';
