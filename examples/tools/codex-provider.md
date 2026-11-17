@@ -93,6 +93,12 @@ With `SandboxAgent`, Codex has been calling the SDK's sandbox tools under a dist
 
 Before starting a sandbox-backed thread, the provider has been reading the effective Codex configuration and rejecting enabled Codex MCP servers. Setting `mcp_servers.<name>.enabled=false` for each configured server has been satisfying this requirement; SDK tools have been supplying the sandbox operations instead. Codex-backed sandbox runs have been omitting Responses-only server compaction and hosted patch controls while retaining SDK function tools for workspace operations.
 
+With `memory()`, both generation phases use the sandbox agent's effective Codex model by default. Close the writer's sandbox and preserve its `memories/` directory to recall a fact in a new conversation. See the [sandbox memory guide](../../docs/src/content/docs/guides/sandbox-agents/memory.mdx).
+
+### SDK-managed MCP
+
+The Runner can connect to an MCP server and expose its tools as SDK function tools in either mode. The [basic](../docs/mcp/sdkManaged.ts), [approval](../docs/mcp/sdkManagedHITL.ts), and [streaming](../docs/mcp/sdkManagedStream.ts) companions use this approach. The [MCP guide](../../docs/src/content/docs/guides/mcp.mdx) includes the commands for switching providers.
+
 ### Current limits
 
 Codex has been rejecting Responses API response IDs, conversation IDs, prompt IDs, and hosted tools. It has also been rejecting forced or disabled tool selection, parallel tool settings, and deferred or programmatic tools. Sampling controls and output token limits have been requiring a different provider.

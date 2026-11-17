@@ -83,7 +83,7 @@ import { CodexProvider } from '@openai/agents-extensions/experimental/codex';
 setDefaultModelProvider(new CodexProvider());
 ```
 
-Codex has been using its own CLI login, `CODEX_API_KEY`, or `OPENAI_API_KEY` and a writable `CODEX_HOME`. The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs.
+Codex has been using its own CLI login, `CODEX_API_KEY`, or `OPENAI_API_KEY` and a writable `CODEX_HOME`. The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs. See the [MCP companions](/openai-agents-js/guides/mcp#sdk-managed-companions-for-hosted-mcp-examples) for SDK-managed tool calls, approvals, and streaming in both modes.
 
 ## OpenAI provider configuration
 

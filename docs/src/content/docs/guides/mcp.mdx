@@ -10,6 +10,10 @@ import hostedStreamExample from '../../../../../examples/docs/mcp/hostedStream.t
 import hostedHITLExample from '../../../../../examples/docs/mcp/hostedHITL.ts?raw';
 import hostedConnectorExample from '../../../../../examples/docs/mcp/hostedConnector.ts?raw';
 import streamableHttpExample from '../../../../../examples/docs/mcp/streamableHttp.ts?raw';
+import sdkManagedAgentExample from '../../../../../examples/docs/mcp/sdkManagedAgent.ts?raw';
+import sdkManagedExample from '../../../../../examples/docs/mcp/sdkManaged.ts?raw';
+import sdkManagedHITLExample from '../../../../../examples/docs/mcp/sdkManagedHITL.ts?raw';
+import sdkManagedStreamExample from '../../../../../examples/docs/mcp/sdkManagedStream.ts?raw';
 import stdioExample from '../../../../../examples/docs/mcp/stdio.ts?raw';
 import toolFilterExample from '../../../../../examples/docs/mcp/tool-filter.ts?raw';
 import mcpServersExample from '../../../../../examples/docs/mcp/mcpServers.ts?raw';
@@ -148,7 +152,7 @@ When your Agent talks directly to a Streamable HTTP MCP server—local or remote
   title="Run with Streamable HTTP MCP servers"
 />
 
-Constructor options:
+`MCPServerStreamableHttp` constructor options:
 
 | Option | Type | Notes |
 | --- | --- | --- |
@@ -174,6 +178,55 @@ Constructor options:
 The constructor also accepts additional MCP TypeScript‑SDK options such as `authProvider`, `requestInit`, `fetch`, `reconnectionOptions`, and `sessionId`. See the [MCP TypeScript SDK repository](https://github.com/modelcontextprotocol/typescript-sdk) and its documents for details.
 
 `toolInputGuardrails` and `toolOutputGuardrails` use the SDK's local function-tool guardrail pipeline. They apply to every tool converted from this server in streaming and non-streaming runs. They do not apply to hosted MCP tools, which the Responses API executes remotely. See [Tool guardrails](/openai-agents-js/guides/guardrails#tool-guardrails) for rejection behavior and approval ordering.
+
+### SDK-managed companions for hosted MCP examples
+
+The companion examples below have been using the same public `openai/codex` repository question through SDK-managed Streamable HTTP. The SDK has been discovering MCP tools and converting them to function tools with `getAllMcpTools`. Your application has been executing the MCP calls, so these examples have been working with both OpenAI Responses models and the experimental [`CodexProvider`](/openai-agents-js/guides/models#experimental-codex-provider). Hosted MCP tools have been requiring the OpenAI Responses API.
+
+| Hosted example | SDK-managed companion | Behavior |
+| --- | --- | --- |
+| `hosted.ts` | `sdkManaged.ts` | Repository answer |
+| `hostedHITL.ts` | `sdkManagedHITL.ts` | Human approval before each MCP tool invocation |
+| `hostedStream.ts` | `sdkManagedStream.ts` | SDK tool events and final answer |
+
+From a checkout of `feat/simple-codex` with dependencies installed and workspace packages built, these commands run the same example with each provider:
+
+```sh
+pnpm exec tsx examples/docs/mcp/sdkManaged.ts openai
+pnpm exec tsx examples/docs/mcp/sdkManaged.ts codex
+```
+
+OpenAI mode uses `OPENAI_API_KEY`. Codex mode uses your Codex login or API key. Substitute `sdkManagedHITL.ts` for approval or `sdkManagedStream.ts` for streaming. To override the model, set `OPENAI_MODEL` or `CODEX_MODEL` for the corresponding provider.
+
+The shared setup has been limiting tools to DeepWiki's `ask_wiki_question`. `MCP_SERVER_URL` has been allowing a self-hosted or local Streamable HTTP endpoint exposing that same tool and compatible input schema. Local endpoints have been receiving calls from your application without requiring public access from the Responses API. Codex has been using a read-only workspace. The SDK has been handling MCP approvals in the application.
+
+<Code
+  lang="typescript"
+  code={sdkManagedAgentExample}
+  title="Shared SDK-managed MCP setup"
+/>
+
+<Code
+  lang="typescript"
+  code={sdkManagedExample}
+  title="SDK-managed repository query"
+/>
+
+The approval example has been setting `needsApproval` on the converted function tools. The SDK has been pausing before executing each MCP tool, then resuming from `result.state` after the user's decision. The question has been requesting read-only public repository information; approval has been demonstrating the same pause before tools with side effects.
+
+<Code
+  lang="typescript"
+  code={sdkManagedHITLExample}
+  title="Human approval for SDK-managed MCP calls"
+/>
+
+The streaming companion has been reading SDK `run_item_stream_event` events and awaiting `result.completed` before reading the final answer and closing the connection. The hosted examples above have been showing provider-specific `response.mcp_call.*` events.
+
+<Code
+  lang="typescript"
+  code={sdkManagedStreamExample}
+  title="Streaming SDK-managed MCP calls"
+/>
 
 ## 3. Stdio MCP servers
 

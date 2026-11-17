@@ -26,7 +26,7 @@ Add `memory()` as a capability to the sandbox agent.
 
 If read is enabled, `memory()` requires `shell()`, which lets the agent read and search memory files when the injected summary is not enough. When live memory update is enabled by default, it also requires `filesystem()`, which lets the agent update `memories/MEMORY.md` if the agent discovers stale memory or the user asks it to update memory.
 
-By default, memory artifacts are stored in the sandbox workspace under `memories/`. To reuse them in a later run, preserve and reuse the whole configured memories directory by keeping the same live sandbox session or resuming from a persisted session state or snapshot; a fresh empty sandbox starts with empty memory.
+By default, the SDK stores generated memory in the sandbox workspace under `memories/`. To recall a fact in a new conversation, keep that entire directory on a persistent volume or restore it in the new sandbox. When you own the writer's sandbox, await `sandbox.close?.()` so both generation phases can finish before starting the reader. The reader can use a new SDK session with empty message history.
 
 `memory()` enables both reading and generating memories. Use `memory({ generate: false })` for agents that should read memory but should not generate new memories: for example, an internal agent, subagent, checker, or one-off tool agent whose run does not add much signal. Use `memory({ read: null })` when the run should generate memory for later, but the user does not want the run to be influenced by existing memory.
 
@@ -67,6 +67,8 @@ workspace/
     └── rollout_summaries/
 ```
 
+If you supply a `MemoryStore`, the SDK writes the raw extracts and rollout summaries to it. The consolidation agent edits `MEMORY.md` and `memory_summary.md` in the sandbox. Preserve the workspace's `memories/` directory to carry those edits into a new sandbox.
+
 You can configure memory generation with `memory({ generate: ... })`:
 
 <Code
@@ -74,6 +76,8 @@ You can configure memory generation with `memory({ generate: ... })`:
   code={generateMemoryExample}
   title="Configure memory generation"
 />
+
+With [`CodexProvider`](/openai-agents-js/guides/models#experimental-codex-provider), both phases use the sandbox agent's effective model and Codex's reasoning defaults. With the default OpenAI provider, extraction uses `gpt-5.4-mini` and consolidation uses `gpt-5.4`, both with medium reasoning effort. To select a different model for both phases, set `generate.model`. To override one phase, set `generate.phaseOneModel` or `generate.phaseTwoModel` to a model available through your provider. The corresponding `phaseOneModelSettings` and `phaseTwoModelSettings` options control each phase's reasoning effort.
 
 Use `extraPrompt` to tell the memory generator which signals matter most for your use case, such as customer and company details for a GTM agent.
 

@@ -101,6 +101,7 @@ export function getOrCreateSandboxMemoryGenerationManager(args: {
       }
     } else {
       existing.manager.updateRuntimeContext({
+        memory: args.memory,
         runAs: args.runAs,
         runAgent: args.runAgent,
         tracingParent: args.tracingParent,
@@ -138,7 +139,7 @@ export function getOrCreateSandboxMemoryGenerationManager(args: {
 
 export class SandboxMemoryGenerationManager {
   private readonly session: SandboxSessionLike<SandboxSessionState>;
-  private readonly memory: Memory;
+  private memory: Memory;
   private runAs?: string;
   private runAgent: SandboxMemoryAgentRunner;
   private tracingParent?: Span<any> | Trace;
@@ -179,10 +180,12 @@ export class SandboxMemoryGenerationManager {
   }
 
   updateRuntimeContext(args: {
+    memory: Memory;
     runAs?: string;
     runAgent: SandboxMemoryAgentRunner;
     tracingParent?: Span<any> | Trace;
   }): void {
+    this.memory = args.memory;
     this.runAs = args.runAs;
     this.runAgent = args.runAgent;
     this.tracingParent = args.tracingParent;
@@ -327,8 +330,7 @@ export class SandboxMemoryGenerationManager {
     const phaseOneAgent = new SandboxAgent({
       name: 'sandbox-memory-phase-one',
       instructions: renderRolloutExtractionInstructions(generate.extraPrompt),
-      model: generate.phaseOneModel,
-      modelSettings: generate.phaseOneModelSettings,
+      ...this.memory.generationModelConfig('One'),
       outputType: RolloutExtractionArtifactsSchema,
       defaultManifest: this.currentManifest(),
       runAs: this.runAs,
@@ -417,8 +419,7 @@ export class SandboxMemoryGenerationManager {
     const { SandboxAgent } = await import('../agent');
     const phaseTwoAgent = new SandboxAgent({
       name: 'sandbox-memory-phase-two',
-      model: generate.phaseTwoModel,
-      modelSettings: generate.phaseTwoModelSettings,
+      ...this.memory.generationModelConfig('Two'),
       defaultManifest: this.currentManifest(),
       runAs: this.runAs,
     });

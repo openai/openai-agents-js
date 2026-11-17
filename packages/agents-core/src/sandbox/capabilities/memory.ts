@@ -77,11 +77,28 @@ class MemoryCapability extends Capability {
     summaryFile: string;
   };
   readonly store?: MemoryStore;
+  private readonly generationDefaults: {
+    phaseOneModel: boolean;
+    phaseTwoModel: boolean;
+    phaseOneModelSettings: boolean;
+    phaseTwoModelSettings: boolean;
+  };
 
   constructor(args: MemoryArgs = {}) {
     super();
     this.read = normalizeReadConfig(args.read);
     this.generate = normalizeGenerateConfig(args.generate);
+    const generate =
+      typeof args.generate === 'object' && args.generate !== null
+        ? args.generate
+        : {};
+    const sharedModel = normalizeMemoryModel(generate.model);
+    this.generationDefaults = {
+      phaseOneModel: (generate.phaseOneModel ?? sharedModel) == null,
+      phaseTwoModel: (generate.phaseTwoModel ?? sharedModel) == null,
+      phaseOneModelSettings: generate.phaseOneModelSettings == null,
+      phaseTwoModelSettings: generate.phaseTwoModelSettings == null,
+    };
     this.layout = normalizeLayoutConfig(args.layout);
     this.store = args.store;
 
@@ -100,6 +117,27 @@ class MemoryCapability extends Capability {
       return new Set(['filesystem', 'shell']);
     }
     return new Set(['shell']);
+  }
+
+  /** @internal Resolves phase defaults without changing the configured signature. */
+  generationModelConfig(phase: 'One' | 'Two'): {
+    model?: string | Model;
+    modelSettings?: ModelSettings;
+  } {
+    const modelKey = `phase${phase}Model` as const;
+    const settingsKey = `phase${phase}ModelSettings` as const;
+    const useProviderDefaults =
+      this._modelInstance?._sandboxModelCapabilities?.useProviderDefaults;
+    return {
+      model:
+        useProviderDefaults && this.generationDefaults[modelKey]
+          ? this._modelInstance
+          : this.generate?.[modelKey],
+      modelSettings:
+        useProviderDefaults && this.generationDefaults[settingsKey]
+          ? undefined
+          : this.generate?.[settingsKey],
+    };
   }
 
   override processManifest(manifest: Manifest): Manifest {

@@ -8,7 +8,7 @@ import type {
   ApplyPatchResult,
   Editor,
 } from '../src/editor';
-import { Agent } from '../src/agent';
+import { Agent, type AgentOutputType } from '../src/agent';
 import { handoff } from '../src/handoff';
 import { run, Runner } from '../src/run';
 import { setDefaultModelProvider } from '../src';
@@ -43,6 +43,7 @@ import { Usage } from '../src/usage';
 import { ScriptedModelProvider, fakeModelMessage } from './stubs';
 import {
   ScriptedModel,
+  modelResponder,
   modelResponse,
   scriptedSandboxSession,
 } from '../src/testing';
@@ -1342,6 +1343,221 @@ describe('Sandbox memory generation', () => {
     );
   });
 
+  it.each([
+    'provider',
+    'agent name',
+    'runner name',
+    'agent object',
+    'runner object',
+  ])(
+    'uses provider defaults for both memory phases with %s selection',
+    async (selection) => {
+      const session = new MemorySession();
+      const requests: Array<Parameters<Model['getResponse']>[0]> = [];
+      const lookups: Array<string | undefined> = [];
+      const makeModel = () =>
+        Object.assign(
+          new ScriptedModel(
+            Array.from({ length: 8 }, () =>
+              modelResponder(({ request }) => {
+                requests.push(request);
+                return [
+                  fakeModelMessage(
+                    request.outputType === 'text'
+                      ? 'done'
+                      : JSON.stringify({
+                          rollout_summary:
+                            '# Rollout\n\nUsed provider defaults.',
+                          rollout_slug: 'provider-defaults',
+                          raw_memory: '- Preserve provider defaults.',
+                        }),
+                  ),
+                ];
+              }),
+            ),
+          ),
+          { _sandboxModelCapabilities: { useProviderDefaults: true } },
+        );
+      const agent = new SandboxAgent({
+        name: 'sandbox',
+        ...(selection === 'agent name' && { model: 'available-agent-model' }),
+        ...(selection === 'agent object' && { model: makeModel() }),
+        capabilities: [memory({ read: false })],
+      });
+      const runner = new Runner({
+        modelProvider: {
+          getModel(name) {
+            lookups.push(name);
+            return makeModel();
+          },
+        },
+        ...(selection === 'runner name' && { model: 'available-runner-model' }),
+        ...(selection === 'runner object' && { model: makeModel() }),
+      });
+
+      // Independent invocations have fresh resolved provider instances and flush
+      // their memory phases while releasing the same caller-owned session.
+      for (const input of ['First memory.', 'Second memory.']) {
+        expect(
+          (await runner.run(agent, input, { sandbox: { session } }))
+            .finalOutput,
+        ).toBe('done');
+      }
+      expect(requests).toHaveLength(6);
+      await session.close();
+
+      expect(requests).toHaveLength(6);
+      expect(
+        requests.filter((request) => request.outputType !== 'text'),
+      ).toHaveLength(2);
+      expect(
+        requests.map((request) => request.modelSettings.reasoning),
+      ).toEqual([
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+      ]);
+      expect(lookups).not.toContain('gpt-5.4-mini');
+      expect(lookups).not.toContain('gpt-5.4');
+      if (selection === 'runner name')
+        expect(lookups.every((name) => name === 'available-runner-model')).toBe(
+          true,
+        );
+      if (selection === 'agent name')
+        expect(lookups.every((name) => name === 'available-agent-model')).toBe(
+          true,
+        );
+      expect(
+        [...session.files.keys()].filter((path) =>
+          path.startsWith('memories/raw_memories/'),
+        ),
+      ).toHaveLength(2);
+      expect(session.files.get('memories/phase_two_selection.json')).toContain(
+        'provider-defaults',
+      );
+    },
+  );
+
+  it.each(['shared name', 'phase objects'])(
+    'preserves explicit memory models and phase settings with provider defaults: %s',
+    async (selection) => {
+      const session = new MemorySession();
+      const phaseOneModel = new RecordingModel([
+        [
+          fakeModelMessage(
+            JSON.stringify({
+              rollout_summary: '# Explicit model',
+              rollout_slug: 'explicit-model',
+              raw_memory: '- Preserve explicit phase choices.',
+            }),
+          ),
+        ],
+      ]);
+      const phaseTwoModel = new RecordingModel([[fakeModelMessage('done')]]);
+      const outerModel = Object.assign(
+        new ScriptedModel([[fakeModelMessage('done')]]),
+        { _sandboxModelCapabilities: { useProviderDefaults: true } },
+      );
+      const lookups: string[] = [];
+      let lookupIndex = 0;
+      const runner = new Runner({
+        modelProvider: {
+          getModel(name) {
+            lookups.push(name!);
+            return lookupIndex++ < 2 ? phaseOneModel : phaseTwoModel;
+          },
+        },
+      });
+      const agent = new SandboxAgent({
+        name: 'sandbox',
+        model: outerModel,
+        capabilities: [
+          memory({
+            read: false,
+            generate: {
+              ...(selection === 'shared name'
+                ? { model: 'gpt-5.4-mini' }
+                : { phaseOneModel, phaseTwoModel }),
+              phaseOneModelSettings: { reasoning: { effort: 'high' } },
+              phaseTwoModelSettings: { reasoning: { effort: 'low' } },
+            },
+          }),
+        ],
+      });
+
+      await runner.run(agent, 'Remember explicit choices.', {
+        sandbox: { session },
+      });
+      expect(phaseOneModel.requests).toHaveLength(1);
+      expect(phaseTwoModel.requests).toHaveLength(1);
+      expect(phaseOneModel.requests[0].modelSettings.reasoning).toEqual({
+        effort: 'high',
+      });
+      expect(phaseTwoModel.requests[0].modelSettings.reasoning).toEqual({
+        effort: 'low',
+      });
+      expect(lookups).toEqual(
+        selection === 'shared name' ? Array(4).fill('gpt-5.4-mini') : [],
+      );
+      expect(session.files.get('memories/phase_two_selection.json')).toContain(
+        'explicit-model',
+      );
+    },
+  );
+
+  it('preserves the default phase names and reasoning for other providers', async () => {
+    const session = new MemorySession();
+    const phaseOneModel = new RecordingModel([
+      [
+        fakeModelMessage(
+          JSON.stringify({
+            rollout_summary: '# Default models',
+            rollout_slug: 'default-models',
+            raw_memory: '- Preserve default models.',
+          }),
+        ),
+      ],
+    ]);
+    const phaseTwoModel = new RecordingModel([[fakeModelMessage('done')]]);
+    const lookups: Array<string | undefined> = [];
+    const runner = new Runner({
+      modelProvider: {
+        getModel(name) {
+          lookups.push(name);
+          return name === 'gpt-5.4-mini' ? phaseOneModel : phaseTwoModel;
+        },
+      },
+    });
+    await runner.run(
+      new SandboxAgent({
+        name: 'sandbox',
+        model: new ScriptedModel([[fakeModelMessage('done')]]),
+        capabilities: [memory({ read: false })],
+      }),
+      'Remember defaults.',
+      { sandbox: { session } },
+    );
+
+    expect(lookups).toEqual([
+      'gpt-5.4-mini',
+      'gpt-5.4-mini',
+      'gpt-5.4',
+      'gpt-5.4',
+    ]);
+    expect(phaseOneModel.requests[0].modelSettings.reasoning).toEqual({
+      effort: 'medium',
+    });
+    expect(phaseTwoModel.requests[0].modelSettings.reasoning).toEqual({
+      effort: 'medium',
+    });
+    expect(session.files.get('memories/phase_two_selection.json')).toContain(
+      'default-models',
+    );
+  });
+
   it('uses the SDK session id as the rollout id before the runner group id', async () => {
     const sandboxSession = new MemorySession();
     const sdkSession = {
@@ -1980,6 +2196,78 @@ describe('Sandbox memory generation', () => {
     );
     expect(JSON.stringify(phaseOneModel.requests[0])).toContain('interrupted');
   });
+
+  it.each([false, true])(
+    'refreshes memory manager model ownership (explicit: %s)',
+    async (explicit) => {
+      const session = new MemorySession();
+      const initialModel = Object.assign(new ScriptedModel([]), {
+        _sandboxModelCapabilities: { useProviderDefaults: true },
+      });
+      const currentModel = Object.assign(
+        new RecordingModel([
+          [
+            fakeModelMessage(
+              JSON.stringify({
+                rollout_summary: '# Current model',
+                rollout_slug: 'current-model',
+                raw_memory: '- Use the current invoking model.',
+              }),
+            ),
+          ],
+          [fakeModelMessage('consolidated')],
+        ]),
+        { _sandboxModelCapabilities: { useProviderDefaults: true } },
+      );
+      const runner = new Runner();
+      const result = await runner.run(
+        new Agent<undefined, AgentOutputType>({
+          name: 'source',
+          model: new ScriptedModel([[fakeModelMessage('done')]]),
+        }),
+        'Remember the current model.',
+      );
+      const manager = getOrCreateSandboxMemoryGenerationManager({
+        session,
+        memory: memory({ read: false }).bindModel('', initialModel),
+        runAgent: (agent, input, options) => runner.run(agent, input, options),
+      });
+      await manager.enqueueState(result.state, { rolloutIdentity: {} });
+      getOrCreateSandboxMemoryGenerationManager({
+        session,
+        memory: memory({
+          read: false,
+          generate: explicit
+            ? {
+                phaseOneModel: 'gpt-5.4-mini',
+                phaseTwoModel: 'gpt-5.4',
+                phaseOneModelSettings: { reasoning: { effort: 'medium' } },
+                phaseTwoModelSettings: { reasoning: { effort: 'medium' } },
+              }
+            : true,
+        }).bindModel('', currentModel),
+        runAgent: (agent, input, options) =>
+          new Runner({ modelProvider: { getModel: () => currentModel } }).run(
+            agent,
+            input,
+            options,
+          ),
+      });
+      await session.close();
+
+      expect(initialModel.calls).toHaveLength(0);
+      expect(currentModel.requests).toHaveLength(2);
+      expect(
+        currentModel.requests.map((request) => request.modelSettings.reasoning),
+      ).toEqual([
+        explicit ? { effort: 'medium' } : undefined,
+        explicit ? { effort: 'medium' } : undefined,
+      ]);
+      expect(session.files.get('memories/phase_two_selection.json')).toContain(
+        'current-model',
+      );
+    },
+  );
 
   it('skips phase two when phase one returns a no-op extraction', async () => {
     const session = new MemorySession();
