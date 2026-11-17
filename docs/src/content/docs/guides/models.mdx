@@ -16,6 +16,7 @@ import setTracingExportApiKeyExample from '../../../../../examples/docs/config/s
 import retryExample from '../../../../../examples/docs/models/retry.ts?raw';
 import hostedMultiAgentExample from '../../../../../examples/docs/models/hostedMultiAgent.ts?raw';
 import gpt56RequestControlsExample from '../../../../../examples/docs/models/gpt56RequestControls.ts?raw';
+import portableReasoningExample from '../../../../../examples/docs/models/portableReasoning.ts?raw';
 
 Every Agent ultimately calls an LLM. The SDK abstracts models behind two lightweight interfaces:
 
@@ -70,6 +71,19 @@ If latency and cost matter, start with the default `gpt-5.6-luna` configuration 
 If you pass a non–GPT-5 model name without custom `modelSettings`, the SDK reverts to generic `modelSettings` compatible with any model.
 
 ---
+
+## Experimental: Codex provider
+
+`CodexProvider` from `@openai/agents-extensions/experimental/codex` has been running agent model calls through the stock Codex App Server. The setup below has been selecting it for the global `run()` utility used in the companion examples on this page, [Running agents](/openai-agents-js/guides/running-agents#server-managed-conversations), and [Sessions](/openai-agents-js/guides/sessions#advanced-history-compaction). Without this setup or another provider override, those examples have been using the default OpenAI provider.
+
+```ts
+import { setDefaultModelProvider } from '@openai/agents';
+import { CodexProvider } from '@openai/agents-extensions/experimental/codex';
+
+setDefaultModelProvider(new CodexProvider());
+```
+
+Codex has been using its own CLI login, `CODEX_API_KEY`, or `OPENAI_API_KEY` and a writable `CODEX_HOME`. The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs.
 
 ## OpenAI provider configuration
 
@@ -285,6 +299,14 @@ GPT-5.6 adds request-level reasoning modes and explicit prompt-cache breakpoints
 />
 
 Explicit breakpoints are supported on GPT-5.6 and later models. The supported content-part types and breakpoint limits vary by API; see the official [prompt cache breakpoint guide](https://developers.openai.com/api/docs/guides/prompt-caching#prompt-cache-breakpoints) for current details.
+
+The companion example has been using the [configured provider](#experimental-codex-provider) and setting only `reasoning.effort: 'medium'`. Omitting `model` has been leaving model selection to the configured provider. The original GPT-5.6 example above has been demonstrating the separate Responses-only `reasoning.mode` and `reasoning.context` controls alongside explicit prompt caching. `CodexProvider` has been rejecting those controls and `promptCacheOptions` rather than translating them into Codex settings.
+
+<Code
+  lang="typescript"
+  code={portableReasoningExample}
+  title="Companion: reasoning effort across providers"
+/>
 
 ### Model retries
 

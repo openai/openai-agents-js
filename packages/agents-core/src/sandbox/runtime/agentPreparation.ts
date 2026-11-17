@@ -18,6 +18,7 @@ import {
 } from './prompts';
 import { manifestWithRunAsUser, sandboxRunAsName } from './runAsManifest';
 import { SandboxWorkspaceScope } from '../workspacePaths';
+import { toolNamespace, type FunctionTool } from '../../tool';
 
 export { getDefaultSandboxInstructions } from './prompts';
 
@@ -109,20 +110,48 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
       ),
     {},
   );
-  const capabilityTools = boundCapabilities.flatMap((capability) =>
+  let capabilityTools = boundCapabilities.flatMap((capability) =>
     capability.tools(),
   );
+  const modelCapabilities = resolvedModelInstance?._sandboxModelCapabilities;
+  const namespace = modelCapabilities?.toolNamespace;
+  if (namespace) {
+    if (capabilityTools.some((tool) => tool.type !== 'function')) {
+      throw new UserError(
+        'This sandbox model supports function capability tools only.',
+      );
+    }
+    capabilityTools = toolNamespace({
+      name: namespace,
+      description: 'Tools operating in the SDK-managed sandbox workspace.',
+      tools: capabilityTools as FunctionTool[],
+    });
+  }
   const tools = [...agent.tools, ...capabilityTools];
+  const { providerData: baseProviderData, ...modelSettings } =
+    agent.modelSettings;
+  // Materializing the execution clone must not make OpenAI's generated model
+  // defaults explicit for a provider that owns its own defaults.
+  const preparedModelSettings =
+    modelCapabilities?.useProviderDefaults && !agent.hasExplicitModelSettings()
+      ? Object.prototype.hasOwnProperty.call(modelSettings, 'store')
+        ? { store: modelSettings.store }
+        : {}
+      : modelSettings;
+  const mergedProviderData = mergeSandboxProviderData(
+    baseProviderData as Record<string, unknown> | undefined,
+    providerData,
+  );
 
   const prepared = agent.clone({
     capabilities: boundCapabilities,
     tools,
     modelSettings: {
-      ...agent.modelSettings,
-      providerData: mergeSandboxProviderData(
-        agent.modelSettings.providerData as Record<string, unknown> | undefined,
-        providerData,
-      ),
+      ...preparedModelSettings,
+      ...(modelCapabilities?.responsesCompaction === false &&
+      Object.keys(mergedProviderData).length === 0
+        ? {}
+        : { providerData: mergedProviderData }),
     },
     instructions: async (runContext, preparedAgent) => {
       const capabilityInstructions = await Promise.all(

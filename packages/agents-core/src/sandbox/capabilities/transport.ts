@@ -1,6 +1,13 @@
+import type { Model } from '../../model';
+
 export function supportsResponsesCompactionTransport(
   modelInstance: unknown,
 ): boolean {
+  const capabilities = (modelInstance as Model | undefined)
+    ?._sandboxModelCapabilities;
+  if (capabilities?.responsesCompaction !== undefined) {
+    return capabilities.responsesCompaction;
+  }
   if (!modelInstance) {
     return true;
   }
@@ -17,6 +24,11 @@ export function supportsResponsesCompactionTransport(
 }
 
 export function supportsApplyPatchTransport(modelInstance: unknown): boolean {
+  const capabilities = (modelInstance as Model | undefined)
+    ?._sandboxModelCapabilities;
+  if (capabilities?.hostedApplyPatch !== undefined) {
+    return capabilities.hostedApplyPatch;
+  }
   return supportsStructuredToolOutputTransport(modelInstance);
 }
 

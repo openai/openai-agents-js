@@ -4522,6 +4522,106 @@ describe('sandbox runner integration', () => {
     expect(toolNames).toContain('apply_patch');
   });
 
+  it.each([
+    {
+      runnerEffort: undefined,
+      agentEffort: undefined,
+      expectedEffort: undefined,
+    },
+    { runnerEffort: 'high', agentEffort: undefined, expectedEffort: 'high' },
+    { runnerEffort: 'high', agentEffort: 'none', expectedEffort: 'none' },
+  ] as const)(
+    'uses provider sandbox defaults without dropping explicit settings (%j)',
+    async ({ runnerEffort, agentEffort, expectedEffort }) => {
+      const client = new FakeSandboxClient();
+      const model = Object.assign(
+        new RecordingModel([
+          modelResponse({
+            output: [
+              {
+                type: 'function_call',
+                name: 'exec_command',
+                namespace: 'agents_sdk',
+                callId: 'sdk-sandbox-call',
+                arguments: JSON.stringify({ cmd: 'pwd' }),
+                status: 'completed',
+              },
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [fakeModelMessage('sandbox done')],
+            usage: new Usage(),
+          }),
+        ]),
+        {
+          _sandboxModelCapabilities: {
+            responsesCompaction: false,
+            hostedApplyPatch: false,
+            toolNamespace: 'agents_sdk',
+            useProviderDefaults: true,
+          },
+        },
+      );
+      const agent = new SandboxAgent({
+        name: 'SandboxWorker',
+        model: 'gpt-5.4-mini',
+        modelSettings:
+          agentEffort === undefined
+            ? undefined
+            : {
+                reasoning: { effort: agentEffort },
+              },
+      });
+      // This source agent receives generated OpenAI defaults, unlike an agent
+      // constructed with a direct Model instance.
+      if (agentEffort === undefined) {
+        expect(agent.hasExplicitModelSettings()).toBe(false);
+        expect(agent.modelSettings.reasoning?.effort).toBe('none');
+        expect(agent.modelSettings.text?.verbosity).toBe('low');
+      }
+      agent.modelSettings.store = false;
+      const result = await new Runner({
+        modelProvider: { getModel: () => model },
+        modelSettings:
+          runnerEffort === undefined
+            ? undefined
+            : {
+                reasoning: { effort: runnerEffort },
+              },
+        sandbox: { client },
+        tracingDisabled: true,
+      }).run(agent, 'Show the sandbox directory.');
+
+      expect(result.finalOutput).toBe('sandbox done');
+      expect(client.execCommandCalls).toEqual([
+        expect.objectContaining({ cmd: 'pwd' }),
+      ]);
+      expect(model.requests[0].modelSettings.providerData).toBeUndefined();
+      for (const request of model.requests) {
+        expect(request.modelSettings.reasoning?.effort).toBe(expectedEffort);
+        expect(request.modelSettings.text?.verbosity).toBeUndefined();
+        expect(request.modelSettings.store).toBe(false);
+      }
+      expect(model.requests[0]._internal?.sdkSandbox).toBe(true);
+      expect(model.requests[0].tools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'function',
+            name: 'apply_patch',
+            namespace: 'agents_sdk',
+          }),
+          expect.objectContaining({
+            type: 'function',
+            name: 'view_image',
+            namespace: 'agents_sdk',
+          }),
+        ]),
+      );
+      expect(agent.tools).toEqual([]);
+    },
+  );
+
   it('uses the sandbox agent model before runner defaults for capability sampling', async () => {
     const client = new FakeSandboxClient();
     const samplingRecorder = new SamplingRecorderCapability();

@@ -8,7 +8,6 @@ import {
 const agent = new Agent({
   name: 'Support',
   instructions: 'Answer briefly and keep track of prior context.',
-  model: 'gpt-5.4',
 });
 
 // Wrap any Session to trigger responses.compact once history grows beyond your threshold.
@@ -28,3 +27,8 @@ await run(agent, 'Remind me of the shipping address.', { session });
 
 // Compaction runs automatically after each persisted turn. You can also force it manually.
 await session.runCompaction({ force: true });
+
+const followup = await run(agent, 'Which order have we been discussing?', {
+  session,
+});
+console.log(followup.finalOutput);

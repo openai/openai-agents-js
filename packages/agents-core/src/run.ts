@@ -2031,6 +2031,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               options.session,
               state,
               preparedCall.modelInput.input,
+              preparedCall.model._supportsStoredResponseId,
             );
             const pendingModelResponse = getResponseWithRetry(
               preparedCall.model,
@@ -3182,6 +3183,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             options.session,
             result.state,
             preparedCall.modelInput.input,
+            preparedCall.model._supportsStoredResponseId,
           );
           try {
             for await (const event of getStreamedResponseWithRetry(
@@ -3796,6 +3798,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       tracingParent:
         getRunStateTurnSpanParent(state) ?? state._currentAgentSpan,
       toolNameCollisionPolicy: options.toolNameCollisionPolicy ?? 'warn',
+      ...(isSandboxRuntimeAgent(executionAgent) && { sdkSandbox: true }),
     };
 
     modelSettings = adjustModelSettingsForLegacyModel(

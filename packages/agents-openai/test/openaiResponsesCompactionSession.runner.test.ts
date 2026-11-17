@@ -927,3 +927,31 @@ describe('Runner compaction rollback budget', () => {
     ]);
   });
 });
+
+for (const stream of [false, true]) {
+  it(`clears a cached stored response ID after a provider without stored response IDs, stream=${stream}`, async () => {
+    const { session, runner, compact, decision } = setup();
+    decision.mockReturnValue(false);
+    const storedModel = new ScriptedModel([
+      [assistantMessage('stored answer')],
+    ]);
+    await runner.run(
+      new Agent({ name: 'stored', model: storedModel }),
+      'hello',
+      { session },
+    );
+    const providerModel = Object.assign(
+      new ScriptedModel([[assistantMessage('local answer')]]),
+      { _supportsStoredResponseId: false },
+    );
+    const providerAgent = new Agent({ name: 'local', model: providerModel });
+    const result = await startRun(runner, providerAgent, stream, { session });
+    if ('completed' in result) await result.completed;
+    await session.runCompaction({ force: true });
+    expect(compact).toHaveBeenCalledOnce();
+    expect(compact.mock.calls[0][0]).toEqual({
+      model: expect.any(String),
+      input: expect.any(Array),
+    });
+  });
+}

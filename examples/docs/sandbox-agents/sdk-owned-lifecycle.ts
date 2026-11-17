@@ -4,11 +4,11 @@ import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 
 const agent = new SandboxAgent({
   name: 'Workspace reviewer',
-  model: 'gpt-5.6-sol',
-  instructions: 'Inspect the sandbox workspace before answering.',
+  instructions:
+    'Run the requested command once in the SDK sandbox workspace and report its output.',
 });
 
-const result = await run(agent, 'Inspect the workspace.', {
+const result = await run(agent, 'Run `ls -a` to list the top-level entries.', {
   sandbox: {
     client: new UnixLocalSandboxClient(),
   },

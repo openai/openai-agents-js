@@ -137,6 +137,7 @@ export function prepareSessionCompactionExchange(
   session: Session | undefined,
   state: RunState<any, any>,
   input: AgentInputItem[],
+  supportsStoredResponseId = true,
 ): (output: AgentInputItem[], responseId?: string) => void {
   const binding = getSessionCompactionState(session, state);
   if (!binding) {
@@ -148,7 +149,7 @@ export function prepareSessionCompactionExchange(
   return (output, responseId) => {
     binding.modelExchange = {
       items: [...snapshot, ...structuredClone(output)],
-      responseId,
+      responseId: supportsStoredResponseId ? responseId : undefined,
       reasoningItemIdPolicy,
     };
   };
@@ -2732,6 +2733,13 @@ async function runCompactionOnSession(
   if (!isOpenAIResponsesCompactionAwareSession(session)) {
     return;
   }
+  // A successful exchange distinguishes provider IDs from stored Responses IDs.
+  // Preserve an absent ID here so a provider change also clears the session cache.
+  const modelExchange = getSessionCompactionState(
+    session,
+    state,
+  )?.modelExchange;
+  if (modelExchange) responseId = modelExchange.responseId;
   const store =
     state._lastModelSettings?.store ?? state._currentAgent.modelSettings?.store;
   const compactionArgs =

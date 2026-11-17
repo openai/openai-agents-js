@@ -25,9 +25,8 @@ const manifest = new Manifest({
 
 const agent = new SandboxAgent({
   name: 'Sandbox engineer',
-  model: 'gpt-5.6-sol',
   instructions:
-    'Read `repo/task.md` before editing files. Load the `$invoice-total-fixer` skill before changing code. Stay grounded in the repository, preserve existing behavior, and mention the exact verification command you ran. If you edit files with apply_patch, paths are relative to the sandbox workspace root.',
+    'Use the SDK sandbox tools for the copied `repo/`. Read `repo/task.md` with `cat` and load the `$invoice-total-fixer` skill. Read `repo/src/invoice.mjs` and `repo/tests/invoice.test.mjs` with `cat`. The test passes tax as a fraction. Use the SDK sandbox apply_patch tool to edit the copied file before testing. Use the SDK tool namespace if your provider exposes one. Patch paths are relative to the sandbox workspace root. Run `node --test` in `repo/` and report its result.',
   defaultManifest: manifest,
   capabilities: [
     ...Capabilities.default(),
@@ -43,6 +42,7 @@ const result = await run(
   agent,
   'Open `repo/task.md`, fix the issue, run the targeted test, and summarize the change.',
   {
+    maxTurns: 20,
     sandbox: {
       client: new UnixLocalSandboxClient(),
     },

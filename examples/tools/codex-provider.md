@@ -81,6 +81,18 @@ With `reasoning.summary`, Codex has been returning any available summary as `pro
 
 Codex has been using automatic tool selection and ephemeral threads. It has been accepting `toolChoice: 'auto'` and `store: false` to match that behavior. The Runner has been applying `timeoutMs` and `retry` to Codex calls. It has been treating Codex calls as unsafe to replay because native tools can change the workspace.
 
+### Conversation history and compaction
+
+The SDK has been continuing conversations through [`MemorySession`](../docs/running-agents/conversationSession.ts) or [`result.history`](../docs/running-agents/previousResponseHistory.ts) with either provider. Codex has been rejecting `conversationId` and `previousResponseId`, which have been selecting OpenAI-managed history. The [reasoning companion](../docs/models/portableReasoning.ts) has been setting `reasoning.effort: 'medium'` without pinning a model; GPT-5.6's `reasoning.mode` and `reasoning.context` have been remaining Responses-only, and Codex has also been rejecting prompt-cache controls.
+
+[`OpenAIResponsesCompactionSession`](../docs/sessions/responsesCompactionSession.ts) has been compacting local history separately through OpenAI's `responses.compact` endpoint. With Codex, automatic compaction has been selecting input mode, and subsequent turns have been replaying the returned encrypted compaction items with their IDs intact. The compactor has been requiring OpenAI credentials through `OPENAI_API_KEY` or its configured `client`, even when Codex has been using a CLI login. Its `model` option has been selecting the OpenAI compaction model independently of the agent's model. The [manual streaming example](../docs/sessions/responsesCompactionManualSession.ts) has been compacting between turns and running a follow-up against the compacted history.
+
+### SDK sandbox tools
+
+With `SandboxAgent`, Codex has been calling the SDK's sandbox tools under a distinct tool namespace. The SDK has been retaining the sandbox filesystem, path policy, approvals, and lifecycle. The provider has been disabling Codex's native execution environment, connected apps, web search, plugins, native subagents, hooks, code mode, and notification commands for these runs. Ordinary `Agent` runs, including the workspace example above, have been retaining Codex's native execution behavior.
+
+Before starting a sandbox-backed thread, the provider has been reading the effective Codex configuration and rejecting enabled Codex MCP servers. Setting `mcp_servers.<name>.enabled=false` for each configured server has been satisfying this requirement; SDK tools have been supplying the sandbox operations instead. Codex-backed sandbox runs have been omitting Responses-only server compaction and hosted patch controls while retaining SDK function tools for workspace operations.
+
 ### Current limits
 
 Codex has been rejecting Responses API response IDs, conversation IDs, prompt IDs, and hosted tools. It has also been rejecting forced or disabled tool selection, parallel tool settings, and deferred or programmatic tools. Sampling controls and output token limits have been requiring a different provider.

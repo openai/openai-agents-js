@@ -10,6 +10,8 @@ import runningAgentsExceptionExample from '../../../../../examples/docs/running-
 import chatLoopExample from '../../../../../examples/docs/running-agents/chatLoop.ts?raw';
 import conversationIdExample from '../../../../../examples/docs/running-agents/conversationId.ts?raw';
 import previousResponseIdExample from '../../../../../examples/docs/running-agents/previousResponseId.ts?raw';
+import conversationSessionExample from '../../../../../examples/docs/running-agents/conversationSession.ts?raw';
+import previousResponseHistoryExample from '../../../../../examples/docs/running-agents/previousResponseHistory.ts?raw';
 import modelInputIdentityExample from '../../../../../examples/docs/running-agents/modelInputIdentity.ts?raw';
 
 Agents do nothing by themselves – you **run** them with the `Runner` class or the `run()` utility.
@@ -160,6 +162,14 @@ You can create a conversation once using [Conversations API](https://platform.op
   title="Reusing a server conversation"
 />
 
+The companion example has been using the [configured provider](/openai-agents-js/guides/models#experimental-codex-provider) and keeping conversation history in a `MemorySession`. Reusing the session has been carrying the earlier turns into each request without a server conversation ID. `MemorySession` has been storing history only for the lifetime of the process; the [sessions guide](/openai-agents-js/guides/sessions) has been covering persistent stores.
+
+<Code
+  lang="typescript"
+  code={conversationSessionExample}
+  title="Companion: client-managed conversation with MemorySession"
+/>
+
 ##### 2. `previousResponseId` to continue from the last turn
 
 If you want to start only with Responses API anyway, you can chain each request using the ID returned from the previous response. This keeps the context alive across turns without creating a full conversation resource.
@@ -168,6 +178,14 @@ If you want to start only with Responses API anyway, you can chain each request 
   lang="typescript"
   code={previousResponseIdExample}
   title="Chaining with previousResponseId"
+/>
+
+The companion example has been using the [configured provider](/openai-agents-js/guides/models#experimental-codex-provider) and passing `first.history` and the new user message into the next run. The application has been owning the replayed history without relying on `lastResponseId` or server response chaining.
+
+<Code
+  lang="typescript"
+  code={previousResponseHistoryExample}
+  title="Companion: continue with result.history"
 />
 
 `conversationId` and `previousResponseId` are mutually exclusive. Use `conversationId` when you want a named conversation resource you can share across systems, and `previousResponseId` when you just want the cheapest SDK-level continuation primitive from one response to the next.

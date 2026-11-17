@@ -3,4 +3,4 @@
 '@openai/agents-extensions': minor
 ---
 
-feat: add an experimental stock Codex provider with streaming, structured output, local images, SDK function tools, handoffs, and supported model settings.
+feat: add an experimental stock Codex provider with streaming, structured output, local images, SDK tools, handoffs, compaction replay, and SDK-managed sandbox workflows.

@@ -2,11 +2,13 @@ import {
   Agent,
   Runner,
   RunState,
+  OpenAIResponsesCompactionSession,
   UserError,
   handoff,
   tool,
   webSearchTool,
   type HandoffInputData,
+  type ModelRequest,
 } from '@openai/agents';
 import { removeAllTools } from '@openai/agents-core/extensions';
 import { CodexProvider } from '../../../src/experimental/codex';
@@ -92,6 +94,7 @@ function server(events: Event[] | AsyncIterable<Event>) {
     request: vi.fn(async (method: string, _params?: unknown) => {
       if (method === 'thread/start') return { thread: { id: 'thread' } };
       if (method === 'turn/start') return { turn: { id: 'turn' } };
+      if (method === 'config/read') return { config: {} };
       return {};
     }),
     notify: vi.fn(),
@@ -115,6 +118,130 @@ function runner() {
 
 beforeEach(() => {
   boundary.open.mockReset();
+});
+
+function sandboxRequest(): ModelRequest & {
+  _internal: { sdkSandbox: boolean };
+} {
+  return {
+    input: 'Inspect the SDK sandbox.',
+    modelSettings: {},
+    tools: [
+      {
+        type: 'function',
+        name: 'exec_command',
+        description: 'Execute in the SDK sandbox.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          required: [],
+          additionalProperties: false,
+        },
+        strict: true,
+        namespace: 'agents_sdk',
+        namespaceDescription: 'SDK sandbox tools.',
+      },
+    ],
+    handoffs: [],
+    outputType: 'text',
+    tracing: false,
+    _internal: { sdkSandbox: true },
+  };
+}
+
+test('confines Codex native tools while preserving SDK sandbox callbacks', async () => {
+  const connection = server(callback('exec_command', 'agents_sdk'));
+  const model = new CodexProvider({
+    codexOptions: {
+      configOverrides: [
+        'features.apps=true',
+        'features.hooks=true',
+        'notify=["ambient-command"]',
+      ],
+    },
+    threadOptions: { webSearchMode: 'live' },
+  }).getModel();
+  const response = await model.getResponse(sandboxRequest());
+
+  expect(response.output).toEqual([
+    expect.objectContaining({
+      type: 'function_call',
+      name: 'exec_command',
+      namespace: 'agents_sdk',
+    }),
+  ]);
+  expect(connection.request).toHaveBeenCalledWith('config/read', {
+    cwd: expect.any(String),
+    includeLayers: false,
+  });
+  expect(connection.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({
+      environments: [],
+      dynamicTools: [
+        expect.objectContaining({
+          type: 'namespace',
+          name: 'agents_sdk',
+          tools: [expect.objectContaining({ name: 'exec_command' })],
+        }),
+      ],
+    }),
+  );
+  expect(connection.request).toHaveBeenCalledWith(
+    'turn/start',
+    expect.objectContaining({ environments: [] }),
+  );
+  expect(boundary.open.mock.calls[0][0].codexOptions.configOverrides).toEqual([
+    'features.apps=true',
+    'features.hooks=true',
+    'notify=["ambient-command"]',
+    'web_search="live"',
+    'features.apps=false',
+    'features.plugins=false',
+    'features.multi_agent=false',
+    'features.multi_agent_v2=false',
+    'features.hooks=false',
+    'features.code_mode=false',
+    'notify=[]',
+    'web_search="disabled"',
+  ]);
+  expect(connection.close).toHaveBeenCalledOnce();
+});
+
+test.each([{}, { enabled: true }])(
+  'rejects enabled ambient Codex MCP servers before starting a sandbox thread (%j)',
+  async (entry) => {
+    const connection = server(completed('unreachable'));
+    connection.request.mockImplementation(async (method) =>
+      method === 'config/read'
+        ? { config: { mcp_servers: { ambient: entry } } }
+        : {},
+    );
+    await expect(
+      new CodexProvider().getModel().getResponse(sandboxRequest()),
+    ).rejects.toThrow('requires Codex MCP servers to be disabled');
+    expect(connection.request).not.toHaveBeenCalledWith(
+      'thread/start',
+      expect.anything(),
+    );
+    expect(connection.close).toHaveBeenCalledOnce();
+  },
+);
+
+test('accepts explicitly disabled Codex MCP servers in SDK sandbox mode', async () => {
+  const connection = server(completed('confined'));
+  const original = connection.request.getMockImplementation()!;
+  connection.request.mockImplementation(async (method, params) =>
+    method === 'config/read'
+      ? { config: { mcp_servers: { ambient: { enabled: false } } } }
+      : original(method, params),
+  );
+  const response = await new CodexProvider()
+    .getModel()
+    .getResponse(sandboxRequest());
+  expect(response.output).toEqual([
+    expect.objectContaining({ type: 'message' }),
+  ]);
 });
 
 test('parses structured output and forwards separate consecutive text and local-image user messages', async () => {
@@ -569,3 +696,55 @@ test.each([
     expect(connection.close).toHaveBeenCalledOnce();
   },
 );
+
+for (const stream of [false, true]) {
+  for (const automatic of [false, true]) {
+    test(`replays ${automatic ? 'automatic' : 'manual'} Responses compaction with stream=${stream}`, async () => {
+      const compaction = {
+        type: 'compaction' as const,
+        id: 'cmp_original',
+        encrypted_content: 'opaque-encrypted-history',
+      };
+      const compact = vi.fn().mockResolvedValue({ output: [compaction] });
+      const session = new OpenAIResponsesCompactionSession({
+        client: { responses: { compact } } as any,
+        model: 'gpt-5.4',
+        shouldTriggerCompaction: () => automatic,
+      });
+      const first = server(completed('The synthetic ticket is amber.'));
+      const agent = new Agent({ name: 'support' });
+      const sdk = runner();
+      const result = stream
+        ? await sdk.run(agent, 'Remember the synthetic ticket color.', {
+            session,
+            stream: true,
+          })
+        : await sdk.run(agent, 'Remember the synthetic ticket color.', {
+            session,
+          });
+      if ('completed' in result) await result.completed;
+      // Provider IDs remain available to callers but are not Responses chain IDs.
+      expect(result.lastResponseId).toBe('thread');
+      expect(first.close).toHaveBeenCalledOnce();
+      if (!automatic) await session.runCompaction({ force: true });
+      expect(compact).toHaveBeenCalledOnce();
+      expect(compact.mock.calls[0][0]).toEqual({
+        model: 'gpt-5.4',
+        input: expect.arrayContaining([
+          expect.objectContaining({ role: 'user' }),
+          expect.objectContaining({ role: 'assistant' }),
+        ]),
+      });
+      expect(await session.getItems()).toEqual([compaction]);
+      const next = server(completed('amber'));
+      const followup = await sdk.run(agent, 'What color was the ticket?', {
+        session,
+      });
+      expect(followup.finalOutput).toBe('amber');
+      expect(next.request).toHaveBeenCalledWith('thread/inject_items', {
+        threadId: 'thread',
+        items: [compaction],
+      });
+    });
+  }
+}

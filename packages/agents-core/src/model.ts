@@ -625,6 +625,7 @@ export type ModelRequest = {
     textVerbosityImplicit?: boolean;
     tracingParent?: Span<any> | Trace;
     toolNameCollisionPolicy?: 'warn' | 'error';
+    sdkSandbox?: boolean;
   };
 };
 
@@ -694,6 +695,18 @@ export interface Model {
    * The Runner omits implicit model settings when such a prompt owns selection.
    */
   readonly supportsPromptModelSelection?: boolean;
+
+  /** @internal */
+  readonly _sandboxModelCapabilities?: {
+    responsesCompaction?: boolean;
+    hostedApplyPatch?: boolean;
+    toolNamespace?: string;
+    /** Whether sandbox preparation leaves implicit model settings to the provider. */
+    useProviderDefaults?: boolean;
+  };
+
+  /** @internal Whether response IDs can be used for Responses API compaction. */
+  readonly _supportsStoredResponseId?: boolean;
 
   /**
    * Get a response from the model.

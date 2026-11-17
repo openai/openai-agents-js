@@ -124,6 +124,7 @@ export type PreparedModelCall<TContext = UnknownContext> =
       textVerbosityImplicit?: boolean;
       tracingParent?: Span<any> | Trace;
       toolNameCollisionPolicy: ToolNameCollisionPolicy;
+      sdkSandbox?: boolean;
     };
     modelSettings: ModelSettings;
     modelInput: ModelInputData;

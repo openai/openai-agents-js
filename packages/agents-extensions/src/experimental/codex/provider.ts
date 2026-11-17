@@ -58,6 +58,14 @@ export class CodexProvider implements ModelProvider {
 }
 
 class CodexModel implements Model {
+  readonly _supportsStoredResponseId = false;
+  readonly _sandboxModelCapabilities = {
+    responsesCompaction: false,
+    hostedApplyPatch: false,
+    toolNamespace: 'agents_sdk',
+    useProviderDefaults: true,
+  };
+
   constructor(
     private readonly options: CodexProviderOptions,
     private readonly modelName?: string,
@@ -76,7 +84,8 @@ class CodexModel implements Model {
   async *getStreamedResponse(
     request: ModelRequest,
   ): AsyncGenerator<CodexStreamEvent> {
-    const { effort, summary, verbosity } = prepareModelSettings(request);
+    const { effort, summary, verbosity, sdkSandbox } =
+      prepareModelSettings(request);
     const { history, turnInput } = prepareCodexHistory(request.input);
     const { tools, identities } = prepareDynamicTools(request);
     const threadOptions = this.options.threadOptions;
@@ -85,7 +94,7 @@ class CodexModel implements Model {
     if (!threadOptions?.skipGitRepoCheck) await requireGitRepository(cwd);
 
     const server = await openCodexAppServer({
-      codexOptions: appServerOptions(this.options),
+      codexOptions: appServerOptions(this.options, sdkSandbox),
       cwd,
       signal: request.signal,
     });
@@ -103,6 +112,31 @@ class CodexModel implements Model {
         capabilities: { experimentalApi: true },
       });
       server.notify('initialized');
+      if (sdkSandbox) {
+        // MCP callbacks can access resources without an execution environment.
+        // Read the effective configuration before starting a thread (and MCP).
+        const config = record(
+          record(
+            await server.request('config/read', { cwd, includeLayers: false }),
+          )?.config,
+        );
+        if (!config) {
+          throw new UserError(
+            'CodexProvider could not verify MCP configuration for the SDK sandbox.',
+          );
+        }
+        const mcpServers = record(config.mcp_servers);
+        if (
+          mcpServers &&
+          Object.values(mcpServers).some(
+            (entry) => record(entry)?.enabled !== false,
+          )
+        ) {
+          throw new UserError(
+            'CodexProvider with SandboxAgent requires Codex MCP servers to be disabled. Set mcp_servers.<name>.enabled=false in the Codex configuration; expose tools through the SDK instead.',
+          );
+        }
+      }
       threadId = responseId(
         await server.request('thread/start', {
           cwd,
@@ -112,6 +146,7 @@ class CodexModel implements Model {
           approvalPolicy: threadOptions?.approvalPolicy,
           sandbox: threadOptions?.sandboxMode,
           threadSource: threadOptions?.threadSource,
+          ...(sdkSandbox && { environments: [] }),
           ...(verbosity !== undefined && {
             config: { model_verbosity: verbosity },
           }),
@@ -139,6 +174,7 @@ class CodexModel implements Model {
           input: turnInput,
           effort: effort ?? threadOptions?.modelReasoningEffort,
           summary,
+          ...(sdkSandbox && { environments: [] }),
           outputSchema:
             request.outputType === 'text'
               ? undefined
@@ -314,9 +350,11 @@ function prepareModelSettings(request: ModelRequest) {
     _internal?: {
       reasoningEffortImplicit?: boolean;
       textVerbosityImplicit?: boolean;
+      sdkSandbox?: boolean;
     };
   };
   return {
+    sdkSandbox: _internal?.sdkSandbox === true,
     effort: _internal?.reasoningEffortImplicit
       ? undefined
       : (effort ?? undefined),
@@ -460,6 +498,7 @@ function readUsage(value: unknown) {
 
 function appServerOptions(
   options: CodexProviderOptions,
+  sdkSandbox = false,
 ): CodexOptions | undefined {
   const thread = options.threadOptions;
   const configOverrides = [...(options.codexOptions?.configOverrides ?? [])];
@@ -477,6 +516,20 @@ function appServerOptions(
         : 'disabled');
   if (webSearch)
     configOverrides.push(`web_search=${JSON.stringify(webSearch)}`);
+  if (sdkSandbox) {
+    // Append after caller options so inherited/explicit Codex tools cannot
+    // bypass the SDK's sandbox tools, approvals, roles, and path policy.
+    configOverrides.push(
+      'features.apps=false',
+      'features.plugins=false',
+      'features.multi_agent=false',
+      'features.multi_agent_v2=false',
+      'features.hooks=false',
+      'features.code_mode=false',
+      'notify=[]',
+      'web_search="disabled"',
+    );
+  }
   return configOverrides.length
     ? { ...options.codexOptions, configOverrides }
     : options.codexOptions;

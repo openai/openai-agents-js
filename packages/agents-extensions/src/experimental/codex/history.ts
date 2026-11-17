@@ -15,6 +15,7 @@ type ImageContent = {
 };
 type UserContent = { type: 'input_text'; text: string } | ImageContent;
 type HistoryItem =
+  | { type: 'compaction'; id?: string; encrypted_content: string }
   | { type: 'message'; role: 'user'; content: UserContent[] }
   | {
       type: 'message';
@@ -147,6 +148,13 @@ export function prepareCodexHistory(input: string | AgentInputItem[]): {
   const items: AgentInputItem[] =
     typeof input === 'string' ? [{ role: 'user', content: input }] : input;
   const history = items.map((item): HistoryItem => {
+    if (item.type === 'compaction') {
+      return {
+        type: 'compaction',
+        ...(item.id !== undefined && { id: item.id }),
+        encrypted_content: item.encrypted_content,
+      };
+    }
     if (item.type === 'function_call') {
       if (pending.has(item.callId)) {
         throw new UserError('CodexProvider received a duplicate tool call.');
