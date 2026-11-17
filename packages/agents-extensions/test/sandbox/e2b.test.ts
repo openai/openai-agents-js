@@ -1950,6 +1950,34 @@ describe('E2BSandboxClient', () => {
     ).toBe(true);
   });
 
+  test('rejects tar hydration before clearing a writable cloud mount', async () => {
+    const session = await new E2BSandboxClient({
+      workspacePersistence: 'tar',
+    }).create(
+      new Manifest({
+        entries: {
+          data: {
+            type: 's3_mount',
+            bucket: 'agent-logs',
+            accessKeyId: 'access-key',
+            secretAccessKey: 'secret-key',
+            readOnly: false,
+            mountPath: 'mounted/logs',
+            mountStrategy: new E2BCloudBucketMountStrategy(),
+          },
+        },
+      }).withInContainerMountCredentialExposureAcknowledged('mounted/logs'),
+    );
+    writeMock.mockClear();
+    runMock.mockClear();
+
+    await expect(session.hydrateWorkspace(makeTarArchive([]))).rejects.toThrow(
+      'cannot hydrate a tar workspace while mounts are active',
+    );
+    expect(writeMock).not.toHaveBeenCalled();
+    expect(runMock).not.toHaveBeenCalled();
+  });
+
   test('rejects a retargeted effective path before credentialed mounts', async () => {
     const defaultRun = runMock.getMockImplementation();
     let mountPathResolutions = 0;

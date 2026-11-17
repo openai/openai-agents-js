@@ -2259,6 +2259,98 @@ describe('BlaxelSandboxClient', () => {
     );
   });
 
+  test.each(['s3', 'gcs', 'drive'] as const)(
+    'rejects tar hydration before clearing a writable %s mount',
+    async (kind) => {
+      const entry =
+        kind === 'drive'
+          ? new BlaxelDriveMount({
+              driveName: 'agent-drive',
+              mountPath: 'mounted/data',
+              mountStrategy: new BlaxelDriveMountStrategy(),
+            })
+          : kind === 'gcs'
+            ? {
+                type: 'gcs_mount' as const,
+                bucket: 'agent-data',
+                accessToken: 'token',
+                readOnly: false,
+                mountPath: 'mounted/data',
+                mountStrategy: new BlaxelCloudBucketMountStrategy(),
+              }
+            : {
+                type: 's3_mount' as const,
+                bucket: 'agent-data',
+                accessKeyId: 'access-key',
+                secretAccessKey: 'secret-key',
+                readOnly: false,
+                mountPath: 'mounted/data',
+                mountStrategy: new BlaxelCloudBucketMountStrategy(),
+              };
+      const manifest = new Manifest({ entries: { data: entry } });
+      const session = await new BlaxelSandboxClient().create(
+        kind === 'drive'
+          ? manifest
+          : manifest.withInContainerMountCredentialExposureAcknowledged(
+              'mounted/data',
+            ),
+      );
+      writeMock.mockClear();
+      processExecMock.mockClear();
+
+      await expect(
+        session.hydrateWorkspace(makeTarArchive([])),
+      ).rejects.toThrow(
+        'cannot hydrate a tar workspace while mounts are active',
+      );
+      expect(writeMock).not.toHaveBeenCalled();
+      expect(processExecMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('rejects tar hydration when only the live read-only drive remains', async () => {
+    const session = await new BlaxelSandboxClient().create(
+      new Manifest({
+        entries: {
+          data: new BlaxelDriveMount({
+            driveName: 'agent-drive',
+            mountPath: 'mounted/drive',
+            readOnly: true,
+            mountStrategy: new BlaxelDriveMountStrategy(),
+          }),
+        },
+      }),
+    );
+    session.state.manifest = new Manifest({
+      root: session.state.manifest.root,
+    });
+    writeBinaryMock.mockClear();
+    processExecMock.mockClear();
+
+    await expect(session.hydrateWorkspace(makeTarArchive([]))).rejects.toThrow(
+      'cannot hydrate a tar workspace while mounts are active',
+    );
+    expect(writeBinaryMock).not.toHaveBeenCalled();
+    expect(processExecMock).not.toHaveBeenCalled();
+  });
+
+  test('hydrates an ordinary tar workspace without mounts', async () => {
+    const session = await new BlaxelSandboxClient().create(new Manifest());
+    writeBinaryMock.mockClear();
+    processExecMock.mockClear();
+
+    await session.hydrateWorkspace(
+      makeTarArchive([{ name: 'keep.txt', content: 'keep' }]),
+    );
+
+    expect(writeBinaryMock).toHaveBeenCalled();
+    expect(
+      processExecMock.mock.calls.some(([params]) =>
+        String(params.command).includes('tar -C'),
+      ),
+    ).toBe(true);
+  });
+
   test.each([
     { prefix: undefined, bucket: 'agent-logs' },
     { prefix: '', bucket: 'agent-logs' },

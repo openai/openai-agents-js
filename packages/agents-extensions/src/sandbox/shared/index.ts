@@ -1,5 +1,6 @@
 export { RemoteSandboxEditor } from './editor';
 export {
+  assertNoWorkspaceMountsForTarHydration,
   assertTarWorkspacePersistence,
   hydrateRemoteWorkspaceTar,
   persistRemoteWorkspaceTar,

@@ -452,6 +452,27 @@ export function workspaceTarProtectedPaths(manifest: Manifest): string[] {
   );
 }
 
+export function assertNoWorkspaceMountsForTarHydration(
+  providerName: string,
+  manifest: Manifest,
+  hasActiveMounts: boolean,
+): void {
+  // A sandbox process can rename a mount's parent after attachment. Its
+  // recorded pathname cannot prove recursive cleanup will miss the mount.
+  if (!hasActiveMounts && manifest.mountTargets().length === 0) {
+    return;
+  }
+
+  throw new SandboxUnsupportedFeatureError(
+    `${providerName} cannot hydrate a tar workspace while mounts are active. Restore the archive before attaching mounts.`,
+    {
+      provider: providerName,
+      feature: 'workspacePersistence.tar',
+      root: manifest.root,
+    },
+  );
+}
+
 export function createEmptyWorkspaceTarArchive(): Uint8Array {
   return new Uint8Array(TAR_BLOCK_SIZE * 2);
 }
