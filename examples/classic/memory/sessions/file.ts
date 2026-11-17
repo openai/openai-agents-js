@@ -15,6 +15,14 @@ export class FileSession implements Session {
 
   constructor(options: FileSessionOptions = {}) {
     this.#dir = options.dir ?? path.resolve(process.cwd(), '.agents-sessions');
+    if (
+      options.sessionId &&
+      (options.sessionId === '.' ||
+        options.sessionId === '..' ||
+        /[/\\:\0]/.test(options.sessionId))
+    ) {
+      throw new Error('Invalid session ID');
+    }
     this.#sessionId = options.sessionId;
   }
 
