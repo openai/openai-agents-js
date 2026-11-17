@@ -3251,6 +3251,79 @@ describe('AiSdkModel.getStreamedResponse', () => {
     ]);
   });
 
+  test('annotates raw input events for requested function tools and skips handoffs', async () => {
+    const parts = [
+      { type: 'tool-input-start', id: 'c1', toolName: 'search' },
+      { type: 'tool-input-start', id: 'c2', toolName: 'transfer' },
+      { type: 'tool-input-delta', id: 'c2', delta: '{}' },
+      { type: 'tool-input-delta', id: 'c1', delta: '{"q":' },
+      { type: 'tool-input-delta', id: 'c1', delta: '"Tokyo"}' },
+      { type: 'tool-input-end', id: 'c1' },
+      {
+        type: 'tool-call',
+        toolCallId: 'c1',
+        toolName: 'search',
+        input: '{"q":"Tokyo"}',
+      },
+      { type: 'tool-input-end', id: 'c2' },
+      {
+        type: 'tool-call',
+        toolCallId: 'c2',
+        toolName: 'transfer',
+        input: '{}',
+      },
+    ];
+    const model = aisdk(
+      stubModel({
+        async doStream() {
+          return { stream: partsStream(parts) };
+        },
+      }),
+    );
+    const events = [];
+    for await (const event of model.getStreamedResponse({
+      input: 'Search for Tokyo.',
+      tools: [
+        {
+          type: 'function',
+          name: 'search',
+          description: 'Search.',
+          parameters: {
+            type: 'object',
+            properties: { q: { type: 'string' } },
+            required: ['q'],
+            additionalProperties: false,
+          },
+          strict: true,
+        },
+      ],
+      handoffs: [
+        {
+          toolName: 'transfer',
+          toolDescription: 'Transfer the conversation.',
+          inputJsonSchema: {
+            type: 'object',
+            properties: {},
+            required: [],
+            additionalProperties: false,
+          },
+          strictJsonSchema: true,
+        },
+      ],
+      modelSettings: {},
+      outputType: 'text',
+      tracing: false,
+    })) {
+      if (event.type === 'model') events.push(event);
+    }
+    expect(events.map((event) => event.event)).toEqual(parts);
+    expect(events.flatMap((event) => event.toolInput ?? [])).toEqual([
+      { type: 'start', callId: 'c1', name: 'search' },
+      { type: 'delta', callId: 'c1', delta: '{"q":' },
+      { type: 'delta', callId: 'c1', delta: '"Tokyo"}' },
+    ]);
+  });
+
   test('preserves per-tool-call providerMetadata in streaming mode (e.g., Gemini thoughtSignature)', async () => {
     const toolCallProviderMetadata = {
       google: { thoughtSignature: 'stream-sig-456' },
