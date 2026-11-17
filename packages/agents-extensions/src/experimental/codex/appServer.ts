@@ -6,6 +6,19 @@ import { createInterface } from 'node:readline';
 import * as nodeUtil from 'node:util';
 import type { CodexOptions } from '@openai/codex-sdk';
 
+type CodexConfigValue =
+  | string
+  | number
+  | boolean
+  | CodexConfigValue[]
+  | { [key: string]: CodexConfigValue };
+
+// Keep provider configuration independent of the optional SDK's minimum version.
+export type CodexAppServerOptions = CodexOptions & {
+  config?: { [key: string]: CodexConfigValue };
+  configOverrides?: string[];
+};
+
 export type CodexAppServerEvent = {
   method: string;
   params?: unknown;
@@ -38,7 +51,14 @@ function resolveExecutable(): { executable: string; pathDir?: string } {
     throw new Error('Unable to locate @openai/codex-sdk.');
   }
   const sdkRequire = nodeModule.createRequire(sdkPackage);
-  const codexPackage = sdkRequire.resolve('@openai/codex/package.json');
+  let codexPackage: string;
+  try {
+    codexPackage = sdkRequire.resolve('@openai/codex/package.json');
+  } catch {
+    throw new Error(
+      'CodexProvider requires @openai/codex-sdk >=0.166.0 or codexOptions.codexPathOverride pointing to a supported stock Codex CLI.',
+    );
+  }
   const codexRequire = nodeModule.createRequire(codexPackage);
   const platform = process.platform;
   const arch = process.arch;
@@ -79,7 +99,7 @@ function resolveExecutable(): { executable: string; pathDir?: string } {
 }
 
 // Preserve the Codex SDK's structured TOML overrides and their precedence.
-function configArguments(config: CodexOptions['config']): string[] {
+function configArguments(config: CodexAppServerOptions['config']): string[] {
   const overrides: string[] = [];
   function toml(value: unknown): string {
     if (typeof value === 'string' || typeof value === 'boolean') {
@@ -126,7 +146,7 @@ export async function openCodexAppServer({
   cwd,
   signal,
 }: {
-  codexOptions?: CodexOptions;
+  codexOptions?: CodexAppServerOptions;
   cwd?: string;
   signal?: AbortSignal;
 } = {}): Promise<CodexAppServer> {

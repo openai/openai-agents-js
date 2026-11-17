@@ -74,6 +74,8 @@ If you pass a non–GPT-5 model name without custom `modelSettings`, the SDK rev
 
 ## Experimental: Codex provider
 
+For `CodexProvider`, install `@openai/codex-sdk@0.166.0` to use its bundled stock Codex App Server, or set `codexOptions.codexPathOverride` to a compatible stock executable. The [`codexTool()` function tool](/openai-agents-js/guides/tools#6-experimental-codex-tool) supports the older 0.86.0 SDK.
+
 `CodexProvider` from `@openai/agents-extensions/experimental/codex` has been running agent model calls through the stock Codex App Server. The setup below has been selecting it for the global `run()` utility used in the companion examples on this page, [Running agents](/openai-agents-js/guides/running-agents#server-managed-conversations), and [Sessions](/openai-agents-js/guides/sessions#advanced-history-compaction). Without this setup or another provider override, those examples have been using the default OpenAI provider.
 
 ```ts
@@ -83,7 +85,9 @@ import { CodexProvider } from '@openai/agents-extensions/experimental/codex';
 setDefaultModelProvider(new CodexProvider());
 ```
 
-Codex has been using its own CLI login, `CODEX_API_KEY`, or `OPENAI_API_KEY` and a writable `CODEX_HOME`. The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs. See the [MCP companions](/openai-agents-js/guides/mcp#sdk-managed-companions-for-hosted-mcp-examples) for SDK-managed tool calls, approvals, and streaming in both modes.
+Sign in with `codex login` in the same writable `CODEX_HOME` that the application uses. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key` before starting the application. Stock App Server 0.166.0 reads the saved login.
+
+The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs. See the [MCP companions](/openai-agents-js/guides/mcp#sdk-managed-companions-for-hosted-mcp-examples) for SDK-managed tool calls, approvals, and streaming in both modes.
 
 ## OpenAI provider configuration
 

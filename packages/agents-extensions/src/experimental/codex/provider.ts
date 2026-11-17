@@ -10,13 +10,13 @@ import {
   type ModelRequest,
   type ModelRetryAdvice,
 } from '@openai/agents-core';
-import type { CodexOptions, ThreadOptions } from '@openai/codex-sdk';
-import { openCodexAppServer } from './appServer';
+import type { ThreadOptions } from '@openai/codex-sdk';
+import { openCodexAppServer, type CodexAppServerOptions } from './appServer';
 import { prepareCodexHistory } from './history';
 
 export type CodexProviderOptions = {
   /** Options for the stock Codex client, including its configuration and credentials. */
-  codexOptions?: CodexOptions;
+  codexOptions?: CodexAppServerOptions;
   /** Local workspace and permissions for each Codex thread. */
   threadOptions?: Omit<ThreadOptions, 'model'>;
 };
@@ -499,7 +499,7 @@ function readUsage(value: unknown) {
 function appServerOptions(
   options: CodexProviderOptions,
   sdkSandbox = false,
-): CodexOptions | undefined {
+): CodexAppServerOptions | undefined {
   const thread = options.threadOptions;
   const configOverrides = [...(options.codexOptions?.configOverrides ?? [])];
   if (thread?.networkAccessEnabled !== undefined) {

@@ -320,6 +320,8 @@ See [`filesystem-example.ts`](https://github.com/openai/openai-agents-js/tree/ma
 
 `@openai/agents-extensions/experimental/codex` provides `codexTool()`, a function tool that routes model tool calls to the Codex SDK so the agent can run workspace-scoped tasks (shell, file edits, MCP tools) autonomously. This surface is experimental and may change.
 
+`codexTool()` supports `@openai/codex-sdk` starting at 0.86.0, including when the outer agent uses the default OpenAI provider. To use Codex as the agent's model provider, see the [Codex provider setup](/openai-agents-js/guides/models#experimental-codex-provider).
+
 Install dependencies first:
 
 ```bash

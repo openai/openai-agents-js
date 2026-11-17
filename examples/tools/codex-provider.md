@@ -25,11 +25,13 @@ pnpm -F tools exec tsx codex-provider.ts openai
 
 ## Codex mode
 
-`CodexProvider` has been using the stock Codex App Server protocol from Codex 0.166.0. The workspace example has been creating and reading `hello.txt` with Codex's native shell. Codex has been handling authentication and configuration separately from the Agents SDK's OpenAI client, using an existing Codex CLI login, `CODEX_API_KEY`, or `OPENAI_API_KEY` from the process environment.
+`CodexProvider` has been using the stock Codex App Server protocol from Codex 0.166.0. The workspace example has been creating and reading `hello.txt` with Codex's native shell. Codex uses its own CLI login and configuration.
 
-App Server has been storing local state in a writable `CODEX_HOME`. On hosts with a read-only default, set `CODEX_HOME` to a writable directory before starting the example.
+App Server has been storing local state in a writable `CODEX_HOME`. On hosts with a read-only default, set `CODEX_HOME` to a writable directory before signing in. Run `codex login` in that environment. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key`. Use the same `CODEX_HOME` when starting the example.
 
 The provider has been locating the installed stock CLI automatically on Node.js 22.14 and later. `codexOptions.codexPathOverride` has been allowing applications to supply the executable path explicitly.
+
+For automatic discovery, install `@openai/codex-sdk@0.166.0` with its optional CLI dependencies. Applications using the separate `codexTool()` function tool can keep `@openai/codex-sdk@0.86.0`. An application that needs both can keep the older SDK for the tool and pass the path to a stock 0.166.0 executable for the provider.
 
 ```sh
 pnpm -F tools exec tsx codex-provider.ts codex
