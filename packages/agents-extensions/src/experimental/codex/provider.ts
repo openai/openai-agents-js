@@ -1,32 +1,54 @@
+import { stat } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   getDefaultModelSettings,
   Usage,
   UserError,
-  type AgentInputItem,
   type AssistantMessageItem,
+  type FunctionCallItem,
   type Model,
   type ModelProvider,
   type ModelRequest,
   type ModelRetryAdvice,
-  type StreamEvent,
 } from '@openai/agents-core';
-import {
-  Codex,
-  type CodexOptions,
-  type ThreadOptions,
-} from '@openai/codex-sdk';
+import type { CodexOptions, ThreadOptions } from '@openai/codex-sdk';
+import { openCodexAppServer } from './appServer';
+import { prepareCodexHistory } from './history';
 
 export type CodexProviderOptions = {
-  /** Options for the stock Codex SDK client, including its configuration and credentials. */
+  /** Options for the stock Codex client, including its configuration and credentials. */
   codexOptions?: CodexOptions;
   /** Local workspace and permissions for each Codex thread. */
   threadOptions?: Omit<ThreadOptions, 'model'>;
 };
 
+type ToolSpec = {
+  type: 'function';
+  name: string;
+  description: string;
+  inputSchema: unknown;
+};
+type ToolNamespace = {
+  type: 'namespace';
+  name: string;
+  description: string;
+  tools: ToolSpec[];
+};
+type CodexStreamEvent =
+  | { type: 'output_text_delta'; delta: string; itemId: string }
+  | {
+      type: 'response_done';
+      response: {
+        id: string;
+        output: (AssistantMessageItem | FunctionCallItem)[];
+        usage: Usage;
+      };
+    };
+
 /**
- * Experimental model provider for text turns backed by the stock Codex CLI.
- * Each model call starts a new Codex thread with its own tools and permissions.
+ * Experimental model provider backed by stock Codex App Server.
+ * The Agents SDK Runner owns function tools, handoffs, and history.
  */
 export class CodexProvider implements ModelProvider {
   constructor(private readonly options: CodexProviderOptions = {}) {}
@@ -43,90 +65,179 @@ class CodexModel implements Model {
   ) {}
 
   async getResponse(request: ModelRequest) {
-    const { message, usage, responseId } = await this.runTurn(request);
-    return { output: [message], usage, responseId };
+    for await (const event of this.getStreamedResponse(request)) {
+      if (event.type === 'response_done') {
+        const { id, output, usage } = event.response;
+        return { responseId: id, output, usage };
+      }
+    }
+    throw new Error('Codex finished without a response.');
   }
 
   async *getStreamedResponse(
     request: ModelRequest,
-  ): AsyncIterable<StreamEvent> {
-    const { message, text, usage, responseId } = await this.runTurn(request);
-    yield { type: 'output_text_delta', delta: text, itemId: message.id };
+  ): AsyncGenerator<CodexStreamEvent> {
+    this.validateRequest(request);
+    const { history, turnInput } = prepareCodexHistory(request.input);
+    const { tools, identities } = prepareDynamicTools(request);
+    const threadOptions = this.options.threadOptions;
+    const cwd = resolve(threadOptions?.workingDirectory ?? process.cwd());
+    request.signal?.throwIfAborted();
+    if (!threadOptions?.skipGitRepoCheck) await requireGitRepository(cwd);
+
+    const server = await openCodexAppServer({
+      codexOptions: appServerOptions(this.options),
+      cwd,
+      signal: request.signal,
+    });
+    let threadId: string;
+    let usage = new Usage();
+    const output = new Map<string, AssistantMessageItem>();
+    const streamedItems = new Set<string>();
+    let sdkCall: FunctionCallItem | undefined;
+    let completed = false;
+    try {
+      await server.request('initialize', {
+        clientInfo: { name: 'openai_agents_sdk', version: '1' },
+        capabilities: { experimentalApi: true },
+      });
+      server.notify('initialized');
+      threadId = responseId(
+        await server.request('thread/start', {
+          cwd,
+          ephemeral: true,
+          model: this.modelName,
+          developerInstructions: request.systemInstructions,
+          approvalPolicy: threadOptions?.approvalPolicy,
+          sandbox: threadOptions?.sandboxMode,
+          threadSource: threadOptions?.threadSource,
+          ...(tools.length && { dynamicTools: tools }),
+          ...(threadOptions?.additionalDirectories?.length && {
+            runtimeWorkspaceRoots: [
+              cwd,
+              ...threadOptions.additionalDirectories.map((path) =>
+                resolve(cwd, path),
+              ),
+            ],
+          }),
+        }),
+        'thread',
+      );
+      if (history.length) {
+        await server.request('thread/inject_items', {
+          threadId,
+          items: history,
+        });
+      }
+      const turnId = responseId(
+        await server.request('turn/start', {
+          threadId,
+          input: turnInput,
+          effort: threadOptions?.modelReasoningEffort,
+          outputSchema:
+            request.outputType === 'text'
+              ? undefined
+              : request.outputType.schema,
+        }),
+        'turn',
+      );
+      for await (const event of server.events) {
+        const params = record(event.params);
+        if (event.id !== undefined) {
+          if (
+            event.method !== 'item/tool/call' ||
+            params?.threadId !== threadId ||
+            params.turnId !== turnId
+          ) {
+            throw new Error(
+              'Codex requested an unsupported approval or client action.',
+            );
+          }
+          const call = sdkToolCall(params, identities);
+          if (!sdkCall) {
+            sdkCall = call;
+            // Stop the Codex turn before handing control to the Runner. The
+            // Runner can pause for approval without keeping a child process alive.
+            await server.request('turn/interrupt', { threadId, turnId });
+          }
+          continue;
+        }
+        if (params?.threadId !== threadId) continue;
+        if (event.method === 'turn/completed') {
+          const turn = record(params.turn);
+          if (turn?.id !== turnId) continue;
+          if (turn.status !== (sdkCall ? 'interrupted' : 'completed')) {
+            throw new Error('Codex did not finish the turn successfully.');
+          }
+          completed = true;
+          break;
+        }
+        if (params.turnId !== turnId) continue;
+        if (
+          event.method === 'item/agentMessage/delta' &&
+          typeof params.itemId === 'string' &&
+          typeof params.delta === 'string'
+        ) {
+          streamedItems.add(params.itemId);
+          yield {
+            type: 'output_text_delta',
+            delta: params.delta,
+            itemId: params.itemId,
+          };
+        } else if (event.method === 'item/completed') {
+          const item = record(params.item);
+          if (
+            item?.type !== 'agentMessage' ||
+            typeof item.id !== 'string' ||
+            typeof item.text !== 'string'
+          ) {
+            continue;
+          }
+          if (
+            !streamedItems.has(item.id) &&
+            !output.has(item.id) &&
+            item.text
+          ) {
+            yield {
+              type: 'output_text_delta',
+              delta: item.text,
+              itemId: item.id,
+            };
+          }
+          output.set(item.id, {
+            type: 'message',
+            id: item.id,
+            role: 'assistant',
+            status: 'completed',
+            ...(item.phase === 'commentary' || item.phase === 'final_answer'
+              ? { phase: item.phase }
+              : {}),
+            content: [{ type: 'output_text', text: item.text }],
+          });
+        } else if (event.method === 'thread/tokenUsage/updated') {
+          usage = readUsage(record(params.tokenUsage)?.total);
+        }
+      }
+    } finally {
+      await server.close();
+    }
+    request.signal?.throwIfAborted();
+    if (!completed || (!sdkCall && output.size === 0)) {
+      throw new Error('Codex finished without a completed response.');
+    }
+    const items = [...output.values(), ...(sdkCall ? [sdkCall] : [])];
     yield {
       type: 'response_done',
-      response: { id: responseId, output: [message], usage },
+      response: { id: threadId, output: items, usage },
     };
   }
 
   getRetryAdvice(): ModelRetryAdvice {
-    // Codex may have already executed tools or changed files.
+    // Codex may have already executed native tools or changed files.
     return { replaySafety: 'unsafe' };
   }
 
-  private async runTurn(request: ModelRequest) {
-    this.validateRequest(request);
-    const prompt = toCodexPrompt(request.input);
-    request.signal?.throwIfAborted();
-
-    const options = this.options.codexOptions;
-    const codex = new Codex({
-      ...options,
-      configOverrides: request.systemInstructions
-        ? [
-            ...(options?.configOverrides ?? []),
-            `developer_instructions=${JSON.stringify(request.systemInstructions)}`,
-          ]
-        : options?.configOverrides,
-    });
-    const thread = codex.startThread({
-      ...this.options.threadOptions,
-      model: this.modelName,
-    });
-    const turn = await thread.run(prompt, { signal: request.signal });
-    request.signal?.throwIfAborted();
-
-    const finalMessage = turn.items
-      .filter((item) => item.type === 'agent_message')
-      .at(-1);
-    if (!thread.id || !finalMessage) {
-      throw new Error('Codex finished without a final assistant message.');
-    }
-
-    const message: AssistantMessageItem = {
-      id: finalMessage.id,
-      type: 'message',
-      role: 'assistant',
-      status: 'completed',
-      content: [{ type: 'output_text', text: turn.finalResponse }],
-    };
-    const usage = new Usage(
-      turn.usage
-        ? {
-            inputTokens: turn.usage.input_tokens,
-            outputTokens: turn.usage.output_tokens,
-            inputTokensDetails: {
-              cached_tokens: turn.usage.cached_input_tokens ?? 0,
-              cache_write_tokens: turn.usage.cache_write_input_tokens ?? 0,
-            },
-            outputTokensDetails: {
-              reasoning_tokens: turn.usage.reasoning_output_tokens ?? 0,
-            },
-          }
-        : {},
-    );
-    return { message, text: turn.finalResponse, usage, responseId: thread.id };
-  }
-
   private validateRequest(request: ModelRequest) {
-    if (
-      request.tools.length ||
-      request.handoffs.length ||
-      request.outputType !== 'text'
-    ) {
-      throw new UserError(
-        'CodexProvider supports text output without Agents SDK tools or handoffs.',
-      );
-    }
     if (
       request.previousResponseId !== undefined ||
       request.conversationId !== undefined ||
@@ -153,48 +264,173 @@ class CodexModel implements Model {
   }
 }
 
-function toCodexPrompt(input: string | AgentInputItem[]): string {
-  const messages =
-    typeof input === 'string'
-      ? [{ role: 'user', text: input }]
-      : input.map((item) => {
-          if (
-            (item.type !== 'message' && item.type !== undefined) ||
-            !('role' in item) ||
-            (item.role !== 'user' && item.role !== 'assistant')
-          ) {
-            throw new UserError(
-              'CodexProvider accepts only user and assistant text messages.',
-            );
-          }
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
 
-          const text =
-            typeof item.content === 'string'
-              ? item.content
-              : item.content
-                  .map((part) => {
-                    if (
-                      part.type !== 'input_text' &&
-                      part.type !== 'output_text'
-                    ) {
-                      throw new UserError(
-                        'CodexProvider accepts only user and assistant text messages.',
-                      );
-                    }
-                    return part.text;
-                  })
-                  .join('\n');
-          return { role: item.role, text };
-        });
+function responseId(result: unknown, field: 'thread' | 'turn'): string {
+  const id = record(record(result)?.[field])?.id;
+  if (typeof id !== 'string' || !id) {
+    throw new Error(`Codex did not return a ${field} ID.`);
+  }
+  return id;
+}
 
-  const latest = messages.at(-1);
-  if (latest?.role !== 'user' || !latest.text.trim()) {
-    throw new UserError(
-      'CodexProvider requires a final user message with text.',
+function toolIdentity(name: string, namespace?: string | null) {
+  return JSON.stringify([namespace ?? null, name]);
+}
+
+function prepareDynamicTools(request: ModelRequest) {
+  const tools: (ToolSpec | ToolNamespace)[] = [];
+  const namespaces = new Map<string, ToolNamespace>();
+  const identities = new Set<string>();
+  const add = (
+    tool: ToolSpec,
+    namespace?: string,
+    namespaceDescription?: string,
+  ) => {
+    const identity = toolIdentity(tool.name, namespace);
+    if (identities.has(identity)) {
+      throw new UserError('CodexProvider requires unique SDK tool names.');
+    }
+    identities.add(identity);
+    if (namespace === undefined) {
+      tools.push(tool);
+      return;
+    }
+    let group = namespaces.get(namespace);
+    if (!group) {
+      if (!namespaceDescription) {
+        throw new UserError(
+          'CodexProvider requires a tool namespace description.',
+        );
+      }
+      group = {
+        type: 'namespace',
+        name: namespace,
+        description: namespaceDescription,
+        tools: [],
+      };
+      namespaces.set(namespace, group);
+      tools.push(group);
+    }
+    group.tools.push(tool);
+  };
+
+  for (const tool of request.tools) {
+    if (
+      tool.type !== 'function' ||
+      tool.deferLoading ||
+      tool.outputSchema !== undefined ||
+      tool.allowedCallers?.some((caller) => caller !== 'direct')
+    ) {
+      throw new UserError(
+        'CodexProvider supports direct SDK function tools and handoffs.',
+      );
+    }
+    add(
+      {
+        type: 'function',
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.parameters,
+      },
+      tool.namespace,
+      tool.namespaceDescription,
     );
   }
-  if (messages.length === 1) {
-    return latest.text;
+  for (const handoff of request.handoffs) {
+    add({
+      type: 'function',
+      name: handoff.toolName,
+      description: handoff.toolDescription,
+      inputSchema: handoff.inputJsonSchema,
+    });
   }
-  return `Prior conversation (JSON):\n${JSON.stringify(messages.slice(0, -1))}\n\nLatest user message:\n${latest.text}`;
+  return { tools, identities };
+}
+
+function sdkToolCall(
+  params: Record<string, unknown>,
+  identities: Set<string>,
+): FunctionCallItem {
+  const { callId, namespace, tool } = params;
+  const args = JSON.stringify(params.arguments);
+  if (
+    typeof callId !== 'string' ||
+    !callId ||
+    typeof tool !== 'string' ||
+    !(typeof namespace === 'string' || namespace === null) ||
+    !identities.has(toolIdentity(tool, namespace)) ||
+    args === undefined
+  ) {
+    throw new Error('Codex requested an unrecognized SDK tool call.');
+  }
+  return {
+    type: 'function_call',
+    callId,
+    name: tool,
+    ...(namespace !== null && { namespace }),
+    status: 'completed',
+    arguments: args,
+  };
+}
+
+function readUsage(value: unknown) {
+  const total = record(value);
+  const number = (key: string) => {
+    const count = total?.[key];
+    return typeof count === 'number' ? count : 0;
+  };
+  return new Usage({
+    inputTokens: number('inputTokens'),
+    outputTokens: number('outputTokens'),
+    inputTokensDetails: {
+      cached_tokens: number('cachedInputTokens'),
+      cache_write_tokens: number('cacheWriteInputTokens'),
+    },
+    outputTokensDetails: { reasoning_tokens: number('reasoningOutputTokens') },
+  });
+}
+
+function appServerOptions(
+  options: CodexProviderOptions,
+): CodexOptions | undefined {
+  const thread = options.threadOptions;
+  const configOverrides = [...(options.codexOptions?.configOverrides ?? [])];
+  if (thread?.networkAccessEnabled !== undefined) {
+    configOverrides.push(
+      `sandbox_workspace_write.network_access=${thread.networkAccessEnabled}`,
+    );
+  }
+  const webSearch =
+    thread?.webSearchMode ??
+    (thread?.webSearchEnabled === undefined
+      ? undefined
+      : thread.webSearchEnabled
+        ? 'live'
+        : 'disabled');
+  if (webSearch)
+    configOverrides.push(`web_search=${JSON.stringify(webSearch)}`);
+  return configOverrides.length
+    ? { ...options.codexOptions, configOverrides }
+    : options.codexOptions;
+}
+
+async function requireGitRepository(cwd: string) {
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    try {
+      const entry = await stat(join(dir, '.git'));
+      if (entry.isDirectory() || entry.isFile()) return;
+    } catch (error) {
+      const code = record(error)?.code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+    }
+    if (dirname(dir) === dir) break;
+  }
+  throw new UserError(
+    'CodexProvider requires a Git repository. Set skipGitRepoCheck to run elsewhere.',
+  );
 }

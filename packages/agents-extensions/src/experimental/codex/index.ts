@@ -21,25 +21,25 @@ import type {
   FunctionTool,
   Span,
 } from '@openai/agents';
-import {
+import type {
   Codex,
-  type CodexOptions,
-  type CommandExecutionItem,
-  type ErrorItem,
-  type FileChangeItem,
-  type McpToolCallItem,
-  type ReasoningItem,
-  type RunStreamedResult,
-  type SandboxMode,
-  type Thread,
-  type ThreadEvent,
-  type ThreadItem,
-  type ThreadOptions,
-  type TodoListItem,
-  type TurnOptions,
-  type Usage as CodexUsage,
-  type UserInput,
-  type WebSearchItem,
+  CodexOptions,
+  CommandExecutionItem,
+  ErrorItem,
+  FileChangeItem,
+  McpToolCallItem,
+  ReasoningItem,
+  RunStreamedResult,
+  SandboxMode,
+  Thread,
+  ThreadEvent,
+  ThreadItem,
+  ThreadOptions,
+  TodoListItem,
+  TurnOptions,
+  Usage as CodexUsage,
+  UserInput,
+  WebSearchItem,
 } from '@openai/codex-sdk';
 import { z } from 'zod';
 
@@ -353,6 +353,21 @@ function resolveCodexOptions(
   return { ...options, apiKey };
 }
 
+function importCodexSdk(): Promise<typeof import('@openai/codex-sdk')> {
+  return import('@openai/codex-sdk').catch((error: unknown) => {
+    // TypeScript lowers import() to require() in the CommonJS build, but
+    // the stock Codex SDK only exposes an ESM import condition.
+    if (
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED'
+    ) {
+      return new Function('return import("@openai/codex-sdk")')();
+    }
+    throw error;
+  });
+}
+
 function createCodexResolver(
   providedCodex: Codex | undefined,
   options: CodexOptions | undefined,
@@ -361,13 +376,14 @@ function createCodexResolver(
     return async () => providedCodex;
   }
 
-  let codexInstance: Codex | null = null;
-  return async () => {
-    if (!codexInstance) {
-      codexInstance = new Codex(options);
-    }
-    return codexInstance;
-  };
+  let codexInstance: Promise<Codex> | undefined;
+  return () =>
+    (codexInstance ??= importCodexSdk()
+      .then(({ Codex }) => new Codex(options))
+      .catch((error: unknown) => {
+        codexInstance = undefined;
+        throw error;
+      }));
 }
 
 const defaultParameters = codexParametersSchema;
