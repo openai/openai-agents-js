@@ -2542,7 +2542,7 @@ describe('convertToOutputItem', () => {
     });
   });
 
-  it('preserves empty hosted MCP outputs', () => {
+  it.each(['lookup result', ''])('replays hosted MCP output %j', (result) => {
     const [output] = convertToOutputItem([
       {
         type: 'mcp_call',
@@ -2551,7 +2551,7 @@ describe('convertToOutputItem', () => {
         arguments: '{}',
         server_label: 'server',
         status: 'completed',
-        output: '',
+        output: result,
       },
     ] as any);
 
@@ -2559,10 +2559,45 @@ describe('convertToOutputItem', () => {
       type: 'hosted_tool_call',
       id: 'mcp_1',
       name: 'mcp_call',
-      output: '',
+      output: result,
     });
     expect(output.providerData).not.toHaveProperty('output');
+    expect(getInputItems([output])[0]).toMatchObject({
+      type: 'mcp_call',
+      output: result,
+    });
   });
+
+  it.each([undefined, '', '[redacted]'])(
+    'replays the current hosted MCP output %j instead of stale provider data',
+    (result) => {
+      const [output] = convertToOutputItem([
+        {
+          type: 'mcp_call',
+          id: 'mcp_1',
+          name: 'lookup',
+          arguments: '{}',
+          server_label: 'server',
+          status: 'completed',
+          output: 'original result',
+        },
+      ]);
+      if (output.type !== 'hosted_tool_call') {
+        throw new Error('Expected a hosted tool call.');
+      }
+      output.providerData = { ...output.providerData, output: 'stale result' };
+      output.output = result;
+
+      const [replayed] = getInputItems([output]);
+      expect(replayed).toHaveProperty('output', result);
+      const serialized = JSON.parse(JSON.stringify(replayed));
+      if (result === undefined) {
+        expect(serialized).not.toHaveProperty('output');
+      } else {
+        expect(serialized.output).toBe(result);
+      }
+    },
+  );
 
   it('converts Programmatic Tool Calling items and caller linkage', () => {
     const out = convertToOutputItem([

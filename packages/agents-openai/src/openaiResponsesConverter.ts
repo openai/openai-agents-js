@@ -1450,9 +1450,8 @@ function getInputItems(
         const entry: OpenAI.Responses.ResponseInputItem.McpCall & {
           caller?: OpenAIToolCaller;
         } = {
-          // output, which can be a large text string, is optional here, so we don't include it
-          // output: item.output,
           ...camelOrSnakeToSnakeCase(providerData), // place here to prioritize the below fields
+          output: item.output,
           type: 'mcp_call',
           id: providerData.id ?? item.id!,
           name: providerData.name,
