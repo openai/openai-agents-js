@@ -1,3 +1,7 @@
+import {
+  getMcpToolBinding,
+  matchesFunctionToolRecipient,
+} from '../toolIdentity';
 import { UserError } from '../errors';
 import {
   isOpenAIResponsesCompactionAwareSession,
@@ -56,6 +60,7 @@ import {
   agentItemRangeMatches,
   normalizeItemsForSessionPersistence,
   sessionItemArraysMatch,
+  storedToolOutputMatches,
 } from './sessionItems';
 
 export { selectRunItemIndexesForBlockedOutput } from './blockedOutputPersistence';
@@ -535,6 +540,117 @@ async function appendPreparedResumedSessionWrite(options: {
   );
 }
 
+// Compaction can replace the checked Session history before its promise rejects.
+const verifiedCompactionSelections = new WeakMap<
+  PendingSessionWrite,
+  {
+    state: RunState<any, any>;
+    index: number | undefined;
+    callId: string;
+    output: string;
+  }
+>();
+
+// Locate the selected result relative to the end of its Session write range.
+// A live producer still owns its output. A restored selection needs its own evidence.
+function restoredTerminalRange(
+  state: RunState<any, any>,
+  pending: PendingSessionWrite,
+) {
+  const selection = pending.terminalToolFinalization;
+  const index = selection?.selectedGeneratedItemIndex;
+  const verified = verifiedCompactionSelections.get(pending);
+  if (
+    verified?.state === state &&
+    verified.index === index &&
+    verified.callId === selection?.selectedCallId &&
+    verified.output === selection.finalOutput
+  ) {
+    return undefined;
+  }
+  if (
+    state._serializedCurrentStep !== state._currentStep ||
+    index === undefined
+  )
+    return undefined;
+  const inAppend = index >= pending.alreadyPersistedCount;
+  const rangeEnd = inAppend
+    ? pending.persistedItemCount
+    : pending.alreadyPersistedCount;
+  const items = normalizeItemsForSessionPersistence(
+    extractOutputItemsFromRunItems(
+      state._generatedItems.slice(index, rangeEnd),
+      pending.reasoningItemIdPolicy,
+    ),
+  );
+  return { inAppend, items };
+}
+
+function assertTerminalRange(
+  state: RunState<any, any>,
+  session: Session,
+  pending: PendingSessionWrite,
+  items: AgentInputItem[],
+  history: AgentInputItem[],
+) {
+  const selected = items[0];
+  // The Session stores the model-visible output. Only return a restored SDK string that its
+  // stored representation proves, even if an application supplied a lossy comparison adapter.
+  const stored = history[history.length - items.length];
+  const selection = pending.terminalToolFinalization;
+  const producer = state._lastProcessedResponse?.functions.find(
+    ({ toolCall }) => toolCall.callId === selection?.selectedCallId,
+  );
+  const isMcpTool =
+    !!producer &&
+    (getMcpToolBinding(producer.tool) !== null ||
+      (typeof producer.mcpToolBinding === 'object' &&
+        producer.mcpToolBinding !== null));
+  const finalOutput = selection?.finalOutput;
+  // Compare the complete records in the backend's representation. For structured output,
+  // the independent proof below checks the original blocks against this exact stored output.
+  const comparisonItems =
+    selected?.type === 'function_call_result' &&
+    stored?.type === 'function_call_result' &&
+    Array.isArray(stored.output)
+      ? [{ ...selected, output: stored.output }, ...items.slice(1)]
+      : items;
+  const expected = getComparableSessionItems(session, comparisonItems);
+  if (
+    selected?.type !== 'function_call_result' ||
+    stored?.type !== 'function_call_result' ||
+    selected.callId !== stored.callId ||
+    finalOutput === undefined ||
+    !storedToolOutputMatches(
+      selected.output,
+      stored.output,
+      finalOutput,
+      isMcpTool,
+      producer?.tool.outputSchema !== undefined &&
+        matchesFunctionToolRecipient(
+          producer.mcpToolBinding ?? null,
+          producer.tool,
+        ),
+    ) ||
+    expected.length !== items.length ||
+    !agentItemRangeMatches(
+      getComparableSessionItems(session, history),
+      expected,
+      history.length - expected.length,
+    )
+  ) {
+    throw new UserError(
+      'The restored terminal tool output could not be verified against the saved Session result. Continue the live RunState or start a new run.',
+    );
+  }
+  return {
+    state,
+    index: pending.terminalToolFinalization?.selectedGeneratedItemIndex,
+    callId: stored.callId,
+    output: finalOutput,
+  };
+}
+
 export async function reconcilePendingSessionWriteBeforeRun(
   session: Session | undefined,
   state: RunState<any, any>,
@@ -567,7 +683,11 @@ export async function reconcilePendingSessionWriteBeforeRun(
       );
     }
     if (pending.phase === 'compaction_pending') {
-      await completePendingApprovedToolInputCompaction(session, state);
+      await completePendingApprovedToolInputCompaction(
+        session,
+        state,
+        restoredTerminalRange(state, pending),
+      );
       return true;
     }
     if (
@@ -627,16 +747,43 @@ export async function reconcilePendingSessionWriteBeforeRun(
       ...appendReady.beforeItems,
       ...appendReady.comparableAppendItems,
     ];
-    if (sessionItemArraysMatch(currentItems, appendReady.beforeItems)) {
+    const needsAppend = sessionItemArraysMatch(
+      currentItems,
+      appendReady.beforeItems,
+    );
+    if (
+      !needsAppend &&
+      !sessionItemArraysMatch(currentItems, expectedAfterItems)
+    ) {
+      throw new UserError(
+        'Session history changed while a resumed write was unacknowledged and cannot be reconciled safely.',
+      );
+    }
+
+    const range = restoredTerminalRange(state, pending);
+    let verifiedSelection;
+    if (range) {
+      // A committed append is witnessed by the actual Session. For a write that has not
+      // committed yet, bind the terminal value to the precise records about to be appended.
+      const history = range.inAppend
+        ? needsAppend
+          ? appendItems
+          : storedItems
+        : storedItems.slice(0, appendReady.beforeItems.length);
+      verifiedSelection = assertTerminalRange(
+        state,
+        session,
+        pending,
+        range.items,
+        history,
+      );
+    }
+    if (needsAppend) {
       await addSessionItems(
         session,
         appendItems,
         state._context,
         getSessionCompactionState(session, state),
-      );
-    } else if (!sessionItemArraysMatch(currentItems, expectedAfterItems)) {
-      throw new UserError(
-        'Session history changed while a resumed write was unacknowledged and cannot be reconciled safely.',
       );
     }
 
@@ -645,8 +792,13 @@ export async function reconcilePendingSessionWriteBeforeRun(
       persistedItemCount: pending.persistedItemCount,
       deferredRunItemIndexes: [],
     });
-    markPendingApprovedToolInputCompaction(state);
-    await completePendingApprovedToolInputCompaction(session, state);
+    const compaction = markPendingApprovedToolInputCompaction(state);
+    // A Session may project the proposed records into a different stored representation.
+    // Once the append settles, verify that representation before granting live retry authority.
+    const readBack = needsAppend && range?.inAppend ? range : undefined;
+    if (verifiedSelection && !readBack)
+      verifiedCompactionSelections.set(compaction, verifiedSelection);
+    await completePendingApprovedToolInputCompaction(session, state, readBack);
     return true;
   } finally {
     releaseOperation?.();
@@ -817,9 +969,7 @@ function commitSessionPersistenceState(options: {
   }
 }
 
-function markPendingApprovedToolInputCompaction(
-  state: RunState<any, any>,
-): void {
+function markPendingApprovedToolInputCompaction(state: RunState<any, any>) {
   const pending = state._pendingSessionWrite;
   if (pending?.phase !== 'append_ready') {
     throw new UserError(
@@ -837,6 +987,7 @@ function markPendingApprovedToolInputCompaction(
     phase: 'compaction_pending',
   };
   assertPendingSessionWriteOwnership(state, state._pendingSessionWrite);
+  return state._pendingSessionWrite;
 }
 
 function commitApprovedToolInputCompaction(
@@ -860,6 +1011,7 @@ function commitApprovedToolInputCompaction(
 async function completePendingApprovedToolInputCompaction(
   session: Session,
   state: RunState<any, any>,
+  range?: ReturnType<typeof restoredTerminalRange>,
 ): Promise<void> {
   const pending = state._pendingSessionWrite;
   if (pending?.phase !== 'compaction_pending') {
@@ -878,6 +1030,24 @@ async function completePendingApprovedToolInputCompaction(
     throw new UserError(
       'A pending Session compaction belongs to a different session and cannot be resumed safely.',
     );
+  }
+  if (range) {
+    const stored = await getSessionItems(session, state._context);
+    const history = range.inAppend
+      ? stored
+      : stored.slice(
+          0,
+          stored.length -
+            getPendingSessionWriteAppendItems(state, pending).length,
+        );
+    const verified = assertTerminalRange(
+      state,
+      session,
+      pending,
+      range.items,
+      history,
+    );
+    verifiedCompactionSelections.set(pending, verified);
   }
   await runCompactionOnSession(session, undefined, state, 'input');
   commitApprovedToolInputCompaction(state, pending.persistedItemCount);

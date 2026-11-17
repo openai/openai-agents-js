@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { Agent } from '../agent';
 import { getAgentToolSourceAgent } from '../agentToolSourceRegistry';
+import type { RunResult } from '../result';
 import type { Handoff, HandoffInputData } from '../handoff';
 import { ModelBehaviorError, ModelRefusalError, UserError } from '../errors';
 import {
@@ -15,6 +16,7 @@ import logger, { logToolActionWarning } from '../logger';
 import { ModelResponse } from '../model';
 import type { RunConfig, Runner, ToolErrorFormatter } from '../run';
 import { RunState } from '../runState';
+import { getCurrentTurnFunctionOutputs } from './currentTurnFunctionOutputs';
 import {
   getOutputText,
   getRefusalFromOutputMessage,
@@ -86,6 +88,12 @@ import {
   getToolInvocationFingerprint,
   type ApprovalCapableToolCall,
 } from '../toolInvocation';
+
+// Keep live child results available to a callback across an approval interruption.
+export const interruptedAgentToolRunResults = new WeakMap<
+  NextStep,
+  Map<RunToolCallOutputItem, RunResult<any, Agent<any, any>>>
+>();
 
 const DEFAULT_TOOL_NOT_FOUND_MESSAGE = (toolName: string) =>
   `Tool '${toolName}' not found.`;
@@ -1368,11 +1376,47 @@ export async function resolveInterruptedTurn<TContext>(
     return handoffStep;
   }
 
+  // Completed siblings participate in finalization once. Only fresh results are emitted or persisted.
+  // A checkpoint written before completed named stops affected addInput may already promise
+  // the next model call to staged input. Honor the decision made when that input was accepted.
+  const honorStagedInput =
+    state._pendingInput.length > 0 && typeof agent.toolUseBehavior === 'object';
+  const priorOutputs = honorStagedInput
+    ? undefined
+    : getCurrentTurnFunctionOutputs(state);
+  const turnResults = new Map<string, FunctionToolResult<TContext>>();
+  const freshResults = new Map(
+    functionToolRuns.map(
+      (run, index) => [run.toolCall.callId, functionResults[index]] as const,
+    ),
+  );
+  for (const { toolCall, tool } of processedResponse.functions) {
+    const fresh = freshResults.get(toolCall.callId);
+    const prior = priorOutputs?.get(toolCall.callId);
+    if (fresh) {
+      turnResults.set(toolCall.callId, fresh);
+    } else if (prior) {
+      turnResults.set(toolCall.callId, {
+        type: 'function_output',
+        tool,
+        output: prior.output,
+        runItem: prior,
+        agentRunResult: state._currentStep
+          ? interruptedAgentToolRunResults.get(state._currentStep)?.get(prior)
+          : undefined,
+      });
+    }
+  }
   const completedStep = await maybeCompleteTurnFromToolResults({
     agent,
     runner,
     state,
-    functionResults,
+    functionResults: [
+      ...turnResults.values(),
+      ...functionResults.filter(
+        (result) => result.type === 'hosted_mcp_tool_approval',
+      ),
+    ],
     originalInput,
     newResponse,
     preStepItems,
@@ -1891,10 +1935,7 @@ async function resolveHandoffAfterTools<TContext>(
       newResponse,
       preStepItems,
       newItems,
-      {
-        type: 'next_step_interruption',
-        data: { interruptions },
-      },
+      toolInterruptionStep(state, functionResults, interruptions),
     );
   }
   return executeHandoffCalls(
@@ -1911,6 +1952,33 @@ async function resolveHandoffAfterTools<TContext>(
     beforeHandoffInputFilter,
     signal,
   );
+}
+
+// The interruption belongs to this run even if a sandbox resume rebinds its execution tools.
+function toolInterruptionStep<TContext>(
+  state: RunState<TContext, any>,
+  functionResults: FunctionToolResult<TContext>[],
+  interruptions: RunToolApprovalItem[],
+): NextStep {
+  const step: NextStep = {
+    type: 'next_step_interruption',
+    data: { interruptions },
+  };
+  let children =
+    state._currentStep &&
+    interruptedAgentToolRunResults.get(state._currentStep);
+  for (const result of functionResults) {
+    if (
+      result.type === 'function_output' &&
+      result.agentRunResult &&
+      !result.interruptions?.length
+    ) {
+      children ??= new Map();
+      children.set(result.runItem, result.agentRunResult);
+    }
+  }
+  if (children) interruptedAgentToolRunResults.set(step, children);
+  return step;
 }
 
 // Consolidates the logic that determines whether tool results yielded a final answer,
@@ -1954,12 +2022,7 @@ async function maybeCompleteTurnFromToolResults<TContext>({
       newResponse,
       preStepItems,
       newItems,
-      {
-        type: 'next_step_interruption',
-        data: {
-          interruptions: toolOutcome.interruptions,
-        },
-      },
+      toolInterruptionStep(state, functionResults, toolOutcome.interruptions),
     );
   }
 

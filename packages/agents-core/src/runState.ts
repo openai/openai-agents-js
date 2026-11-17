@@ -31,6 +31,12 @@ import {
 } from './runner/items';
 import { normalizeItemsForSessionPersistence } from './runner/sessionItems';
 import { getServerConversationOwner } from './runner/conversation';
+import {
+  type CurrentFunctionRouting,
+  getCurrentTurnFunctionOutputs,
+  interruptedCallbackOutputs,
+  completedToolMayStopResume,
+} from './runner/currentTurnFunctionOutputs';
 import { AgentToolUseTracker } from './runner/toolUseTracker';
 import { nextStepSchema, NextStep } from './runner/steps';
 import { createToolRunFunction, type ProcessedResponse } from './runner/types';
@@ -38,7 +44,6 @@ import {
   getCurrentResponseToolOutputGuardrailResultStart,
   needsNestedApprovalOwnership,
   hasBlockedOutputExecutionEffect,
-  hasDeterministicTerminalToolOutputSource,
   hasPendingApprovedToolInputCompaction,
   hasTerminalToolOutputSource,
   restoreCurrentResponseToolOutputGuardrailResultStart,
@@ -192,7 +197,8 @@ import {
  * - 1.22: Records hosted MCP namespace discovery provenance. Older namespace-only
  *   search outputs require rediscovery; explicit MCP descriptors remain usable.
  * - 1.23: Preserves nested numeric token usage breakdowns.
- * - 1.24: Preserves arbitrary JSON token usage metadata, child-owned approval slots,
+ * - 1.24: Distinguishes callback-facing JSON values from display-only tool outputs on approval resume.
+ *   Preserves arbitrary JSON token usage metadata, child-owned approval slots,
  *   and completion evidence for handoff failures returned to the source agent.
  *   Adds sandbox session-state envelope version 6 so client-owned
  *   unresolved environment references cannot be consumed by older SDKs that
@@ -945,12 +951,46 @@ function inferCompletedToolInvocations(generatedItems: readonly RunItem[]): {
   return { completed, ambiguous, evidence };
 }
 
+function getInferredCompletionEvidence(
+  inferredInvocations: ReturnType<typeof inferCompletedToolInvocations>,
+  agent: Agent<any, any>,
+  callId: string,
+  fingerprint: string,
+) {
+  const inferredEvidence = inferredInvocations.evidence.get(agent)?.get(callId);
+  const outputItem = inferredEvidence?.at(-1);
+  return outputItem && inferredEvidence
+    ? findToolInvocationCompletionEvidence(
+        agent,
+        callId,
+        fingerprint,
+        outputItem,
+        inferredEvidence,
+      )
+    : undefined;
+}
+
 function rebuildLegacyCompletedToolInvocations(
   state: RunState<any, Agent<any, any>>,
   generatedItems: readonly RunItem[],
 ): void {
   const inferred = inferCompletedToolInvocations(generatedItems);
   state._completedToolInvocations = inferred.completed;
+  for (const [agent, invocations] of inferred.completed) {
+    for (const [callId, fingerprint] of invocations) {
+      const evidence = getInferredCompletionEvidence(
+        inferred,
+        agent,
+        callId,
+        fingerprint,
+      );
+      if (evidence)
+        getAgentInvocationMap(
+          state._completedToolInvocationEvidence,
+          agent,
+        ).set(callId, evidence);
+    }
+  }
   state._ambiguousToolInvocationCallIds = inferred.ambiguous;
 }
 
@@ -1380,13 +1420,33 @@ type JsonCompatibleValue =
   | JsonCompatibleValue[]
   | { [key: string]: JsonCompatibleValue };
 
+// A historical string can be either the actual result or a non-JSON value rendered for display.
+const unavailableCallbackOutputs = new WeakSet<RunToolCallOutputItem>();
+
+export function assertResumableCallbackOutputs(
+  state: RunState<any, any>,
+): void {
+  for (const item of interruptedCallbackOutputs(state)) {
+    if (unavailableCallbackOutputs.has(item)) {
+      throw new UserError(
+        'This checkpoint did not preserve a completed tool result for the toolUseBehavior callback. Continue with the original live RunState.',
+      );
+    }
+  }
+}
+
 const INVALID_JSON_COMPATIBLE_VALUE = Symbol('invalidJsonCompatibleValue');
 
 function normalizeJsonCompatibleValue(
   value: unknown,
+  lossless = false,
 ): JsonCompatibleValue | typeof INVALID_JSON_COMPATIBLE_VALUE {
   try {
-    return normalizeJsonCompatibleValueInternal(value, new Set<object>());
+    return normalizeJsonCompatibleValueInternal(
+      value,
+      new Set<object>(),
+      lossless,
+    );
   } catch {
     return INVALID_JSON_COMPATIBLE_VALUE;
   }
@@ -1395,6 +1455,7 @@ function normalizeJsonCompatibleValue(
 function normalizeJsonCompatibleValueInternal(
   value: unknown,
   ancestors: Set<object>,
+  lossless = false,
 ): JsonCompatibleValue | typeof INVALID_JSON_COMPATIBLE_VALUE {
   if (value === null) {
     return null;
@@ -1403,7 +1464,7 @@ function normalizeJsonCompatibleValueInternal(
     return value;
   }
   if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
+    if (!Number.isFinite(value) || (lossless && Object.is(value, -0))) {
       return INVALID_JSON_COMPATIBLE_VALUE;
     }
     return Object.is(value, -0) ? 0 : value;
@@ -1425,15 +1486,27 @@ function normalizeJsonCompatibleValueInternal(
       if (!lengthDescriptor || !('value' in lengthDescriptor)) {
         return INVALID_JSON_COMPATIBLE_VALUE;
       }
+      if (
+        lossless &&
+        (Object.getPrototypeOf(value) !== Array.prototype ||
+          Object.getOwnPropertyNames(value).length !==
+            lengthDescriptor.value + 1)
+      )
+        return INVALID_JSON_COMPATIBLE_VALUE;
       const normalized: JsonCompatibleValue[] = [];
       for (let index = 0; index < lengthDescriptor.value; index += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(value, index);
-        if (!descriptor || !('value' in descriptor)) {
+        if (
+          !descriptor ||
+          !('value' in descriptor) ||
+          (lossless && !descriptor.enumerable)
+        ) {
           return INVALID_JSON_COMPATIBLE_VALUE;
         }
         const entry = normalizeJsonCompatibleValueInternal(
           descriptor.value,
           ancestors,
+          lossless,
         );
         if (entry === INVALID_JSON_COMPATIBLE_VALUE) {
           return INVALID_JSON_COMPATIBLE_VALUE;
@@ -1444,7 +1517,7 @@ function normalizeJsonCompatibleValueInternal(
     }
 
     const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
+    if (prototype !== Object.prototype && (lossless || prototype !== null)) {
       return INVALID_JSON_COMPATIBLE_VALUE;
     }
     const entries: Array<[string, JsonCompatibleValue]> = [];
@@ -1457,6 +1530,7 @@ function normalizeJsonCompatibleValueInternal(
         return INVALID_JSON_COMPATIBLE_VALUE;
       }
       if (!descriptor.enumerable) {
+        if (lossless) return INVALID_JSON_COMPATIBLE_VALUE;
         continue;
       }
       if (!('value' in descriptor)) {
@@ -1465,6 +1539,7 @@ function normalizeJsonCompatibleValueInternal(
       const entry = normalizeJsonCompatibleValueInternal(
         descriptor.value,
         ancestors,
+        lossless,
       );
       if (entry === INVALID_JSON_COMPATIBLE_VALUE) {
         return INVALID_JSON_COMPATIBLE_VALUE;
@@ -1473,7 +1548,7 @@ function normalizeJsonCompatibleValueInternal(
     }
     return Object.fromEntries(entries);
   } finally {
-    ancestors.delete(value);
+    if (!lossless) ancestors.delete(value);
   }
 }
 
@@ -1490,7 +1565,7 @@ function hasUnsupportedToJsonProtocol(value: object): boolean {
 }
 
 const jsonCompatibleValueSchema = z.preprocess(
-  normalizeJsonCompatibleValue,
+  (value) => normalizeJsonCompatibleValue(value),
   z.custom<JsonCompatibleValue>(
     (value) => value !== INVALID_JSON_COMPATIBLE_VALUE,
     { message: 'Expected JSON-compatible data.' },
@@ -1533,6 +1608,7 @@ const itemSchema = z.discriminatedUnion('type', [
       .or(protocol.ProgramCallResultItem),
     agent: serializedAgentSchema,
     output: jsonCompatibleValueSchema,
+    callbackOutputFormat: z.enum(['json', 'display']).optional(),
     customData: z.record(z.string(), z.any()).optional(),
     executionStatus: z.literal('executed').optional(),
   }),
@@ -3163,6 +3239,8 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       const toolUseBehavior = this._currentAgent.toolUseBehavior;
       const interruptions = this.getInterruptions();
       const stopsBeforeNextModel =
+        (typeof toolUseBehavior === 'object' &&
+          completedToolMayStopResume(this, toolUseBehavior.stopAtToolNames)) ||
         toolUseBehavior === 'stop_on_first_tool' ||
         (typeof toolUseBehavior === 'object' &&
           toolUseBehavior.stopAtToolNames.some((toolName) =>
@@ -3447,20 +3525,12 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
           agent,
         );
         if (!evidenceByAgent.has(callId)) {
-          const inferredEvidence = inferredInvocations.evidence
-            .get(agent)
-            ?.get(callId);
-          const outputItem = inferredEvidence?.at(-1);
-          const evidence =
-            outputItem && inferredEvidence
-              ? findToolInvocationCompletionEvidence(
-                  agent,
-                  callId,
-                  fingerprint,
-                  outputItem,
-                  inferredEvidence,
-                )
-              : undefined;
+          const evidence = getInferredCompletionEvidence(
+            inferredInvocations,
+            agent,
+            callId,
+            fingerprint,
+          );
           if (evidence) {
             evidenceByAgent.set(callId, evidence);
           }
@@ -3523,6 +3593,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
     const contextJson = this._context._toJSONForRunState(agentIdentity.byAgent);
     const currentResponseGeneratedItemOwnership =
       captureCurrentResponseGeneratedItemOwnership(this);
+    const callbackOutputs = interruptedCallbackOutputs(this);
     const output = {
       $schemaVersion: CURRENT_SCHEMA_VERSION,
       currentTurn: this._currentTurn,
@@ -3586,7 +3657,12 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       ) as any,
       lastModelResponse: this._lastTurnResponse as any,
       generatedItems: this._generatedItems.map(
-        (item) => serializeRunItem(item, agentIdentity.byAgent) as any,
+        (item) =>
+          serializeRunItem(
+            item,
+            agentIdentity.byAgent,
+            item instanceof RunToolCallOutputItem && callbackOutputs.has(item),
+          ) as any,
       ),
       currentResponseGeneratedItemOwnership,
       pendingAgentToolRuns: Object.fromEntries(
@@ -3701,6 +3777,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
         ),
       ].every((envelope) => envelope.version <= 5);
     if (
+      !state.generatedItems.some(
+        (item) =>
+          item.type === 'tool_call_output_item' &&
+          item.callbackOutputFormat !== undefined,
+      ) &&
       !hasRecoveredHandoff &&
       !state.currentResponseGeneratedItemOwnership?.interruptionGeneratedItemIndexes.includes(
         null,
@@ -3802,6 +3883,17 @@ async function buildRunStateFromString<
     typeof jsonResult === 'object' &&
     hasOwnProperty(jsonResult, 'currentTurnSessionWriteCompactedItemCount');
   const stateJson = SerializedRunState.parse(jsonResult);
+  if (
+    currentSchemaVersion !== CURRENT_SCHEMA_VERSION &&
+    stateJson.generatedItems.some(
+      (item) =>
+        item.type === 'tool_call_output_item' &&
+        item.callbackOutputFormat !== undefined,
+    )
+  )
+    throw new UserError(
+      'This RunState schema version does not support callback output provenance.',
+    );
   assertSchemaVersionSupportsStructuredToolOutputs(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
@@ -4240,7 +4332,10 @@ function assertSchemaVersionSupportsPendingSessionWrite(
 export function assertPendingSessionWriteOwnership(
   state: RunState<any, any>,
   pending: PendingSessionWrite,
-  options: { allowUnhydratedTerminalToolStep?: boolean } = {},
+  options: {
+    allowUnhydratedTerminalToolStep?: boolean;
+    routing?: CurrentFunctionRouting;
+  } = {},
 ): void {
   const pendingCompaction = pending.phase === 'compaction_pending';
   const ownsTerminalToolFinalization =
@@ -4309,53 +4404,12 @@ function getPendingSessionWriteBehaviorKind(
 export function assertPendingSessionCompactionTerminalAuthority(
   state: RunState<any, any>,
 ): void {
-  const currentStep = state._currentStep;
-  if (currentStep?.type !== 'next_step_final_output') {
-    return;
-  }
-
-  const behavior = state._currentAgent.toolUseBehavior;
-  const producer = pendingSessionWriteTerminalProducers.get(state);
+  const pending = state._pendingSessionWrite;
   if (
-    producer !== undefined &&
-    getPendingSessionWriteBehaviorKind(producer.behavior) !==
-      getPendingSessionWriteBehaviorKind(behavior)
+    state._currentStep?.type === 'next_step_final_output' &&
+    (pending?.phase !== 'compaction_pending' ||
+      !ownsPendingTerminalToolFinalization(state, pending, {}))
   ) {
-    throw new UserError(
-      'RunState pending Session compaction terminal output is invalid.',
-    );
-  }
-  if (typeof behavior !== 'function') {
-    if (!hasDeterministicTerminalToolOutputSource(state)) {
-      throw new UserError(
-        'RunState pending Session compaction terminal output is invalid.',
-      );
-    }
-    return;
-  }
-
-  const completedInvocations = state._completedToolInvocationEvidence.get(
-    state._currentAgent,
-  );
-  const validProducer =
-    producer !== undefined &&
-    producer.behavior === behavior &&
-    producer.finalOutput === currentStep.output &&
-    producer.selectedCallId === undefined &&
-    producer.resultItems.length > 0 &&
-    producer.resultItems.length === producer.resultCallIds.length &&
-    producer.resultItems.every((item, index) => {
-      const callId = producer.resultCallIds[index];
-      const generatedItemIndex = state._generatedItems.indexOf(item);
-      return (
-        callId !== undefined &&
-        generatedItemIndex >= 0 &&
-        generatedItemIndex < state._currentTurnPersistedItemCount &&
-        getCompletionOutputCallId(item, state._currentAgent) === callId &&
-        completedInvocations?.get(callId)?.items[1] === item
-      );
-    });
-  if (!validProducer) {
     throw new UserError(
       'RunState pending Session compaction terminal output is invalid.',
     );
@@ -4467,7 +4521,10 @@ function selectPendingDeclarativeTerminalCandidate(
 function ownsPendingTerminalToolFinalization(
   state: RunState<any, any>,
   pending: PendingSessionWrite,
-  options: { allowUnhydratedTerminalToolStep?: boolean },
+  options: {
+    allowUnhydratedTerminalToolStep?: boolean;
+    routing?: CurrentFunctionRouting;
+  },
 ): boolean {
   const provenance = pending.terminalToolFinalization;
   const currentStep = state._currentStep;
@@ -4480,7 +4537,7 @@ function ownsPendingTerminalToolFinalization(
     getPendingSessionWriteBehaviorKind(state._currentAgent.toolUseBehavior) !==
       provenance.behavior ||
     (options.allowUnhydratedTerminalToolStep !== true &&
-      !hasTerminalToolOutputSource(state))
+      !hasTerminalToolOutputSource(state, provenance.selectedCallId))
   ) {
     return false;
   }
@@ -4509,6 +4566,14 @@ function ownsPendingTerminalToolFinalization(
     options.allowUnhydratedTerminalToolStep === true
       ? undefined
       : pendingSessionWriteTerminalProducers.get(state);
+  if (
+    liveProducer &&
+    getPendingSessionWriteBehaviorKind(liveProducer.behavior) !==
+      provenance.behavior
+  ) {
+    return false;
+  }
+  const currentOutputs = getCurrentTurnFunctionOutputs(state, options.routing);
   if (provenance.behavior === 'function') {
     return Boolean(
       liveProducer &&
@@ -4516,14 +4581,17 @@ function ownsPendingTerminalToolFinalization(
       liveProducer.finalOutput === provenance.finalOutput &&
       liveProducer.selectedCallId === undefined &&
       liveProducer.resultItems.length > 0 &&
+      liveProducer.resultItems.length === liveProducer.resultCallIds.length &&
       liveProducer.resultItems.every((item, index) => {
         const generatedItemIndex = state._generatedItems.indexOf(item);
         const callId = liveProducer.resultCallIds[index];
         return (
           callId !== undefined &&
-          generatedItemIndex >= pending.alreadyPersistedCount &&
+          (generatedItemIndex >= pending.alreadyPersistedCount ||
+            currentOutputs.get(callId) === item) &&
+          generatedItemIndex >= 0 &&
           generatedItemIndex < pending.persistedItemCount &&
-          completedInvocations?.has(callId)
+          completedInvocations?.get(callId)?.items[1] === item
         );
       }),
     );
@@ -4534,7 +4602,7 @@ function ownsPendingTerminalToolFinalization(
   if (
     !selectedCallId ||
     selectedGeneratedItemIndex === undefined ||
-    selectedGeneratedItemIndex < pending.alreadyPersistedCount ||
+    selectedGeneratedItemIndex < 0 ||
     selectedGeneratedItemIndex >= pending.persistedItemCount
   ) {
     return false;
@@ -4545,7 +4613,7 @@ function ownsPendingTerminalToolFinalization(
     !(selectedOutput instanceof RunToolCallOutputItem) ||
     getCompletionOutputCallId(selectedOutput, state._currentAgent) !==
       selectedCallId ||
-    !completionEvidence ||
+    completionEvidence?.items[1] !== selectedOutput ||
     toSmartString(selectedOutput.output) !== provenance.finalOutput
   ) {
     return false;
@@ -4565,7 +4633,9 @@ function ownsPendingTerminalToolFinalization(
       const generatedItemIndex = state._generatedItems.indexOf(item);
       return candidate &&
         liveProducer.resultCallIds[index] === candidate.callId &&
-        generatedItemIndex >= pending.alreadyPersistedCount &&
+        (generatedItemIndex >= pending.alreadyPersistedCount ||
+          currentOutputs.get(candidate.callId) === item) &&
+        generatedItemIndex >= 0 &&
         generatedItemIndex < pending.persistedItemCount
         ? candidate
         : undefined;
@@ -4580,19 +4650,26 @@ function ownsPendingTerminalToolFinalization(
     }
   }
 
-  const restoredCandidates = pendingGeneratedItems.flatMap((item) => {
-    const candidate = getPendingDeclarativeTerminalCandidate(
-      state,
-      item,
-      completedInvocations,
+  const selectsOutput = (items: Iterable<RunItem>) => {
+    const candidates = Array.from(items).flatMap((item) => {
+      const candidate = getPendingDeclarativeTerminalCandidate(
+        state,
+        item,
+        completedInvocations,
+      );
+      return candidate ? [candidate] : [];
+    });
+    return (
+      selectPendingDeclarativeTerminalCandidate(currentBehavior, candidates)
+        ?.outputItem === selectedOutput
     );
-    return candidate ? [candidate] : [];
-  });
+  };
+  // Released checkpoints may have selected the first result in the pending append.
+  // Preserve decisions already made before the SDK included completed siblings.
   return (
-    selectPendingDeclarativeTerminalCandidate(
-      currentBehavior,
-      restoredCandidates,
-    )?.outputItem === selectedOutput
+    selectsOutput(currentOutputs.values()) ||
+    (currentOutputs.get(selectedCallId) === selectedOutput &&
+      selectsOutput(pendingGeneratedItems))
   );
 }
 
@@ -6274,6 +6351,7 @@ async function buildRunStateFromJson<TContext, TAgent extends Agent<any, any>>(
   if (state._pendingSessionWrite) {
     assertPendingSessionWriteOwnership(state, state._pendingSessionWrite, {
       allowUnhydratedTerminalToolStep: true,
+      routing: stateJson.lastProcessedResponse,
     });
   }
   state._sandbox = stateJson.sandbox
@@ -6596,12 +6674,21 @@ function resolveSerializedAgent(
 function serializeRunItem(
   item: RunItem,
   agentIdentityKeys: ReadonlyMap<Agent<any, any>, string>,
+  forCallback = false,
 ): z.infer<typeof itemSchema> {
   const serialized = item.toJSON() as any;
   if (item instanceof RunToolCallOutputItem) {
-    const normalizedOutput = jsonCompatibleValueSchema.safeParse(item.output);
-    if (normalizedOutput.success) {
-      serialized.output = normalizedOutput.data;
+    const output = normalizeJsonCompatibleValue(item.output, forCallback);
+    if (output !== INVALID_JSON_COMPATIBLE_VALUE) serialized.output = output;
+    if (forCallback) {
+      if (
+        output === INVALID_JSON_COMPATIBLE_VALUE ||
+        unavailableCallbackOutputs.has(item)
+      ) {
+        serialized.callbackOutputFormat = 'display';
+      } else if (typeof output === 'string') {
+        serialized.callbackOutputFormat = 'json';
+      }
     }
   }
   switch (item.type) {
@@ -6788,14 +6875,23 @@ export function deserializeItem(
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.functionToolStateKey,
       );
-    case 'tool_call_output_item':
-      return new RunToolCallOutputItem(
+    case 'tool_call_output_item': {
+      const item = new RunToolCallOutputItem(
         serializedItem.rawItem,
         resolveSerializedAgent(serializedItem.agent, agentMap),
         serializedItem.output,
         serializedItem.customData,
         serializedItem.executionStatus,
       );
+      if (
+        serializedItem.callbackOutputFormat === 'display' ||
+        (serializedItem.callbackOutputFormat === undefined &&
+          typeof serializedItem.output === 'string')
+      ) {
+        unavailableCallbackOutputs.add(item);
+      }
+      return item;
+    }
     case 'reasoning_item':
       return new RunReasoningItem(
         serializedItem.rawItem,

@@ -33,6 +33,7 @@ type WriterSchema = {
   commit: string;
   npmIntegrity: string;
   fixtures: FixtureRecord[];
+  sessionCaptures?: Array<Omit<FixtureRecord, 'kind'>>;
 };
 
 type PolicySchema = {
@@ -150,6 +151,13 @@ describe('historical RunState compatibility corpus', () => {
         expect(
           readJson<Record<string, unknown>>(fixture.path).$schemaVersion,
         ).toBe(source.schemaVersion);
+      }
+      for (const capture of source.sessionCaptures ?? []) {
+        expect(hashFixture(capture.path)).toBe(capture.sha256);
+        const { snapshot } = readJson<{ snapshot: { $schemaVersion: string } }>(
+          capture.path,
+        );
+        expect(snapshot.$schemaVersion).toBe(source.schemaVersion);
       }
     }
     for (const fixture of manifest.negativeFixtures) {

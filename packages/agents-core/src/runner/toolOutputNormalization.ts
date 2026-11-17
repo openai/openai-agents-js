@@ -9,9 +9,7 @@ import { encodeUint8ArrayToBase64 } from '../utils/base64';
 import { formatInlineData, getInlineMediaType } from '../utils/inlineData';
 
 type StructuredToolOutput =
-  | ToolOutputText
-  | ToolOutputImage
-  | ToolOutputFileContent;
+  ToolOutputText | ToolOutputImage | ToolOutputFileContent;
 
 /**
  * Accepts whatever the tool returned and attempts to coerce it into the structured protocol
@@ -40,125 +38,144 @@ export function normalizeStructuredToolOutputs(
   return normalized ? [normalized] : null;
 }
 
-/**
- * Best-effort normalization of a single tool output item. If the object already matches the
- * protocol shape we simply cast it; otherwise we copy the recognised fields into the canonical
- * structure. Returning null lets the caller know we should revert to plain-string handling.
- */
+// Execution is permissive. For checkpoint verification, record which source fields actually
+// contributed to that same projection. Unused alternatives and dropped metadata remain visible.
+class ProjectionEvidence {
+  private readonly represented = new Map<object, Set<string>>();
+
+  constructor(readonly restoreInlineData: (value: string) => string) {}
+
+  include(source: object, ...keys: string[]): void {
+    const fields = this.represented.get(source) ?? new Set<string>();
+    for (const key of keys) fields.add(key);
+    this.represented.set(source, fields);
+  }
+
+  get hasUnrepresentedFields(): boolean {
+    for (const [source, fields] of this.represented) {
+      if (Object.keys(source).some((key) => !fields.has(key))) return true;
+    }
+    return false;
+  }
+}
+
+export function projectStructuredToolOutput(
+  value: unknown,
+  restoreInlineData: (value: string) => string,
+) {
+  const evidence = new ProjectionEvidence(restoreInlineData);
+  const normalized = normalizeStructuredToolOutput(value, evidence);
+  return (
+    normalized && {
+      item: convertStructuredToolOutputToInputItem(normalized),
+      hasUnrepresentedFields: evidence.hasUnrepresentedFields,
+    }
+  );
+}
+
 function normalizeStructuredToolOutput(
   value: unknown,
+  evidence?: ProjectionEvidence,
 ): StructuredToolOutput | null {
-  if (!isRecord(value)) {
+  if (!isRecord(value)) return null;
+  let output: StructuredToolOutput;
+  if (value.type === 'text' && typeof value.text === 'string') {
+    output = { type: 'text', text: value.text };
+    evidence?.include(value, 'text');
+  } else if (value.type === 'image') {
+    const image = normalizeImageValue(value, evidence);
+    if (!image) return null;
+    output = { type: 'image', image };
+    if (isNonEmptyString(value.detail)) {
+      output.detail = value.detail;
+      evidence?.include(value, 'detail');
+    }
+  } else if (value.type === 'file') {
+    const file = normalizeFileValue(value, evidence);
+    if (!file) return null;
+    output = { type: 'file', file };
+  } else {
     return null;
   }
-  const type = value.type;
-  if (type === 'text' && typeof value.text === 'string') {
-    const output: ToolOutputText = { type: 'text', text: value.text };
-    if (isRecord(value.providerData)) {
-      output.providerData = value.providerData;
-    }
-    return output;
+
+  evidence?.include(value, 'type');
+  if (isRecord(value.providerData)) {
+    output.providerData = value.providerData;
+    if (!Array.isArray(value.providerData))
+      evidence?.include(value, 'providerData');
   }
+  return output;
+}
 
-  if (type === 'image') {
-    const output: ToolOutputImage = { type: 'image' };
+function normalizeImageValue(
+  value: Record<string, any>,
+  evidence?: ProjectionEvidence,
+): ToolOutputImage['image'] {
+  const image = value.image;
+  if (isNonEmptyString(image)) {
+    evidence?.include(value, 'image');
+    return image;
+  }
+  if (isRecord(image)) {
+    if (isNonEmptyString(image.url)) {
+      evidence?.include(value, 'image');
+      evidence?.include(image, 'url');
+      return image.url;
+    }
+    if (isInlineData(image.data)) {
+      evidence?.include(value, 'image');
+      return normalizeImageData(value, image, evidence);
+    }
+  }
+  if (isNonEmptyString(value.imageUrl)) {
+    evidence?.include(value, 'imageUrl');
+    return value.imageUrl;
+  }
+  if (isInlineData(value.data))
+    return normalizeImageData(value, value, evidence);
+  if (isRecord(image)) {
+    const key = isNonEmptyString(image.fileId) ? 'fileId' : 'id';
+    if (isNonEmptyString(image[key])) {
+      evidence?.include(value, 'image');
+      evidence?.include(image, key);
+      return { fileId: image[key] };
+    }
+  }
+  if (isNonEmptyString(value.fileId)) {
+    evidence?.include(value, 'fileId');
+    return { fileId: value.fileId };
+  }
+  return undefined;
+}
 
-    let imageString: string | undefined;
-    let imageFileId: string | undefined;
-    const fallbackImageMediaType = getInlineMediaType(value);
-
-    const imageField = value.image;
-    if (typeof imageField === 'string' && imageField.length > 0) {
-      imageString = imageField;
-    } else if (isRecord(imageField)) {
-      const imageObj = imageField as Record<string, any>;
-      const inlineMediaType =
-        getInlineMediaType(imageObj) ?? fallbackImageMediaType;
-      if (isNonEmptyString(imageObj.url)) {
-        imageString = imageObj.url;
-      } else if (isNonEmptyString(imageObj.data)) {
-        imageString = formatInlineData(imageObj.data, inlineMediaType);
-      } else if (
-        imageObj.data instanceof Uint8Array &&
-        imageObj.data.length > 0
-      ) {
-        imageString = formatInlineData(imageObj.data, inlineMediaType);
-      }
-
-      if (!imageString) {
-        const candidateId =
-          (isNonEmptyString(imageObj.fileId) && imageObj.fileId) ||
-          (isNonEmptyString(imageObj.id) && imageObj.id) ||
-          undefined;
-        if (candidateId) {
-          imageFileId = candidateId;
+function normalizeImageData(
+  value: Record<string, any>,
+  source: Record<string, any>,
+  evidence?: ProjectionEvidence,
+): string {
+  const mediaType = getInlineMediaType(source) ?? getInlineMediaType(value);
+  const data =
+    typeof source.data === 'string' && evidence
+      ? evidence.restoreInlineData(source.data)
+      : source.data;
+  const projected = formatInlineData(data, mediaType);
+  if (evidence) {
+    evidence.include(source, 'data');
+    if (mediaType && projected.startsWith(`data:${mediaType};base64,`)) {
+      for (const record of [source, value]) {
+        for (const key of ['mediaType', 'mimeType']) {
+          if (record[key] === mediaType) evidence.include(record, key);
         }
       }
     }
-
-    if (
-      !imageString &&
-      typeof value.imageUrl === 'string' &&
-      value.imageUrl.length > 0
-    ) {
-      imageString = value.imageUrl;
-    }
-    if (
-      !imageFileId &&
-      typeof value.fileId === 'string' &&
-      value.fileId.length > 0
-    ) {
-      imageFileId = value.fileId;
-    }
-
-    if (
-      !imageString &&
-      typeof value.data === 'string' &&
-      value.data.length > 0
-    ) {
-      imageString = fallbackImageMediaType
-        ? formatInlineData(value.data, fallbackImageMediaType)
-        : value.data;
-    } else if (
-      !imageString &&
-      value.data instanceof Uint8Array &&
-      value.data.length > 0
-    ) {
-      imageString = formatInlineData(value.data, fallbackImageMediaType);
-    }
-    if (typeof value.detail === 'string' && value.detail.length > 0) {
-      output.detail = value.detail;
-    }
-
-    if (imageString) {
-      output.image = imageString;
-    } else if (imageFileId) {
-      output.image = { fileId: imageFileId };
-    } else {
-      return null;
-    }
-
-    if (isRecord(value.providerData)) {
-      output.providerData = value.providerData;
-    }
-    return output;
   }
+  return projected;
+}
 
-  if (type === 'file') {
-    const fileValue = normalizeFileValue(value);
-    if (!fileValue) {
-      return null;
-    }
-
-    const output: ToolOutputFileContent = { type: 'file', file: fileValue };
-
-    if (isRecord(value.providerData)) {
-      output.providerData = value.providerData;
-    }
-    return output;
-  }
-
-  return null;
+function isInlineData(value: unknown): value is string | Uint8Array {
+  return (
+    isNonEmptyString(value) || (value instanceof Uint8Array && value.length > 0)
+  );
 }
 
 /**
@@ -265,121 +282,61 @@ type FileReferenceValue = ToolOutputFileContent['file'];
 
 function normalizeFileValue(
   value: Record<string, any>,
+  evidence?: ProjectionEvidence,
 ): FileReferenceValue | null {
-  const directFile = value.file;
-  if (typeof directFile === 'string' && directFile.length > 0) {
-    return directFile;
+  if (isNonEmptyString(value.file)) {
+    evidence?.include(value, 'file');
+    return value.file;
   }
-
-  const normalizedObject = normalizeFileObjectCandidate(directFile);
-  if (normalizedObject) {
-    return normalizedObject;
+  if (isRecord(value.file)) {
+    const file = normalizeFileReference(value.file, false, evidence);
+    if (file) {
+      evidence?.include(value, 'file');
+      return file;
+    }
   }
-
-  const legacyValue = normalizeLegacyFileValue(value);
-  if (legacyValue) {
-    return legacyValue;
-  }
-
-  return null;
+  return normalizeFileReference(value, true, evidence);
 }
 
-function normalizeFileObjectCandidate(
-  value: unknown,
+function normalizeFileReference(
+  source: Record<string, any>,
+  legacy: boolean,
+  evidence?: ProjectionEvidence,
 ): FileReferenceValue | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  if ('data' in value && value.data !== undefined) {
-    const dataValue = value.data;
-    const hasStringData = typeof dataValue === 'string' && dataValue.length > 0;
-    const hasBinaryData =
-      dataValue instanceof Uint8Array && dataValue.length > 0;
-    if (!hasStringData && !hasBinaryData) {
-      return null;
-    }
-
+  const dataKey = legacy ? 'fileData' : 'data';
+  const data = source[dataKey];
+  if (isInlineData(data)) {
     if (
-      !isNonEmptyString(value.mediaType) ||
-      !isNonEmptyString(value.filename)
-    ) {
+      !isNonEmptyString(source.mediaType) ||
+      !isNonEmptyString(source.filename)
+    )
       return null;
-    }
-
+    evidence?.include(source, dataKey, 'mediaType', 'filename');
     return {
       data:
-        typeof dataValue === 'string' ? dataValue : new Uint8Array(dataValue),
-      mediaType: value.mediaType,
-      filename: value.filename,
+        typeof data === 'string'
+          ? (evidence?.restoreInlineData(data) ?? data)
+          : new Uint8Array(data),
+      mediaType: source.mediaType,
+      filename: source.filename,
     };
   }
+  if (!legacy && data !== undefined) return null;
 
-  if (isNonEmptyString(value.url)) {
-    const result: { url: string; filename?: string } = { url: value.url };
-    if (isNonEmptyString(value.filename)) {
-      result.filename = value.filename;
-    }
-    return result;
+  const urlKey = legacy ? 'fileUrl' : 'url';
+  const idKey = legacy || !isNonEmptyString(source.id) ? 'fileId' : 'id';
+  const key = isNonEmptyString(source[urlKey]) ? urlKey : idKey;
+  const reference = source[key];
+  if (!isNonEmptyString(reference)) return null;
+  evidence?.include(source, key);
+  const result:
+    { url: string; filename?: string } | { id: string; filename?: string } =
+    key === urlKey ? { url: reference } : { id: reference };
+  if (isNonEmptyString(source.filename)) {
+    result.filename = source.filename;
+    evidence?.include(source, 'filename');
   }
-
-  const referencedId =
-    (isNonEmptyString(value.id) && value.id) ||
-    (isNonEmptyString(value.fileId) && (value.fileId as string));
-  if (referencedId) {
-    const result: { id: string; filename?: string } = { id: referencedId };
-    if (isNonEmptyString(value.filename)) {
-      result.filename = value.filename;
-    }
-    return result;
-  }
-
-  return null;
-}
-
-function normalizeLegacyFileValue(
-  value: Record<string, any>,
-): FileReferenceValue | null {
-  const filename =
-    typeof value.filename === 'string' && value.filename.length > 0
-      ? value.filename
-      : undefined;
-  const mediaType =
-    typeof value.mediaType === 'string' && value.mediaType.length > 0
-      ? value.mediaType
-      : undefined;
-
-  if (typeof value.fileData === 'string' && value.fileData.length > 0) {
-    if (!mediaType || !filename) {
-      return null;
-    }
-    return { data: value.fileData, mediaType, filename };
-  }
-
-  if (value.fileData instanceof Uint8Array && value.fileData.length > 0) {
-    if (!mediaType || !filename) {
-      return null;
-    }
-    return { data: new Uint8Array(value.fileData), mediaType, filename };
-  }
-
-  if (typeof value.fileUrl === 'string' && value.fileUrl.length > 0) {
-    const result: { url: string; filename?: string } = { url: value.fileUrl };
-    if (filename) {
-      result.filename = filename;
-    }
-    return result;
-  }
-
-  if (typeof value.fileId === 'string' && value.fileId.length > 0) {
-    const result: { id: string; filename?: string } = { id: value.fileId };
-    if (filename) {
-      result.filename = filename;
-    }
-    return result;
-  }
-
-  return null;
+  return result;
 }
 
 function isRecord(value: unknown): value is Record<string, any> {

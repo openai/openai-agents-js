@@ -385,6 +385,13 @@
       "tag": "v0.21.0",
       "commit": "304e436185ad5d7e54d240896efa728533147cf3",
       "npmIntegrity": "sha512-P2jJhc85xrKpe9GUOHAVfPHqK52my49fD1CI0LnfYEvBUwZxJXQI6lgSwby9nWhvQECveM9OvBUglAXuArsHXw==",
+      "sessionCaptures": [
+        {
+          "scenario": "split-terminal-append",
+          "path": "v0.21.0-split-terminal-append.json",
+          "sha256": "f2c0f66bff3067434f2b5d2a29daa55f9385da193de5f6d6a9f5bd2b1a8e61fe"
+        }
+      ],
       "fixtures": [
         {
           "scenario": "minimal",
