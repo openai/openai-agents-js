@@ -27,7 +27,7 @@ pnpm -F tools exec tsx codex-provider.ts openai
 
 `CodexProvider` has been using the stock Codex App Server protocol from Codex 0.166.0. The workspace example has been creating and reading `hello.txt` with Codex's native shell. Codex uses its own CLI login and configuration.
 
-App Server has been storing local state in a writable `CODEX_HOME`. On hosts with a read-only default, set `CODEX_HOME` to a writable directory before signing in. Run `codex login` in that environment. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key`. Use the same `CODEX_HOME` when starting the example.
+App Server has been storing local state in a writable `CODEX_HOME`. On hosts with a read-only default, set `CODEX_HOME` to a writable directory before signing in. Run `codex login` in that environment. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key`. Use the same `CODEX_HOME` when starting the example. On hosts that allow API-key login, passing `codexOptions: { apiKey: process.env.OPENAI_API_KEY }` to `CodexProvider` has been signing in for the lifetime of the child process. It has been leaving the saved CLI login in place. On managed hosts, omitting `apiKey` has been leaving authentication to the host.
 
 The provider has been locating the installed stock CLI automatically on Node.js 22.14 and later. `codexOptions.codexPathOverride` has been allowing applications to supply the executable path explicitly.
 
@@ -71,13 +71,15 @@ In the workspace example, OpenAI mode has been supplying application-owned SDK t
 
 The provider has been passing agent instructions to Codex as developer instructions. It has been accepting SDK function tools, handoffs, structured output, and image data URLs. SDK tool history has also been accepting inline image bytes or base64 with a supported image media type. App Server text deltas have been reaching the Runner during generation. Codex has been reporting token usage through the provider.
 
+Codex has been delivering each SDK function's arguments together in one streaming update. For strict structured output, Codex has been enforcing the schema during generation. With `strict: false`, the provider has been including the schema in the final-answer instructions and the Runner has been parsing the returned JSON.
+
 The Runner has been executing SDK function tools and handoffs, including SDK tool approvals and guardrails. The provider has been returning one SDK callback request per model step. Codex has been executing native tools separately under its own permissions. Native approval requests have been producing errors; the examples have been selecting `approvalPolicy: 'never'`. Each model step has been starting a fresh ephemeral Codex thread. The Runner has been replaying prior messages, SDK tool calls, and tool results as context.
 
 The provider has been disabling Codex connected apps and native web search by default. Applications have been able to enable connected apps with `codexOptions.config.features.apps` and choose native web search with `threadOptions.webSearchMode`. The native shell has been following the selected sandbox policy.
 
 ### Model settings
 
-Codex has been honoring explicit `reasoning.effort`, `reasoning.summary`, and `text.verbosity` through its own configuration. Available values have been depending on the selected Codex model. When the SDK only supplies implicit defaults, Codex has been using the provider's configured effort and verbosity.
+Codex has been honoring explicit `reasoning.effort`, `reasoning.summary`, and `text.verbosity` through its own configuration. Available values have been depending on the selected Codex model. When the SDK only supplies implicit defaults, Codex has been using the provider's configured effort and verbosity. When the model has been supplying a requested reasoning summary, the SDK has been exposing it as a `reasoning_item` and streaming its text through `response.reasoning_summary_text.delta` model events.
 
 With `reasoning.summary`, Codex has been returning any available summary as `providerData.codexReasoningSummary` on the last output item of the model step. With `preserveRawUsage: true`, the Runner has been including Codex's original token usage in `result.rawResponses[n].rawUsage` alongside the SDK's normalized usage.
 
@@ -91,7 +93,7 @@ The SDK has been continuing conversations through [`MemorySession`](../docs/runn
 
 ### SDK sandbox tools
 
-With `SandboxAgent`, Codex has been calling the SDK's sandbox tools under a distinct tool namespace. The SDK has been retaining the sandbox filesystem, path policy, approvals, and lifecycle. The provider has been disabling Codex's native execution environment, connected apps, web search, plugins, native subagents, hooks, code mode, and notification commands for these runs. Ordinary `Agent` runs, including the workspace example above, have been retaining Codex's native execution behavior.
+With `SandboxAgent`, Codex has been calling the SDK's sandbox tools under a distinct tool namespace. The SDK has been retaining the sandbox filesystem, path policy, approvals, and lifecycle. The provider has been disabling Codex's native execution environment, connected apps, web search, plugins, native subagents, hooks, code mode, and notification commands for these runs. An ordinary `Agent` with SDK local shell or apply-patch tools has been using the same isolation so the SDK's executor or editor can enforce approval. Other ordinary agents, including the workspace example above, have been retaining Codex's native execution behavior.
 
 Before starting a sandbox-backed thread, the provider has been reading the effective Codex configuration and rejecting enabled Codex MCP servers. Setting `mcp_servers.<name>.enabled=false` for each configured server has been satisfying this requirement; SDK tools have been supplying the sandbox operations instead. Codex-backed sandbox runs have been omitting Responses-only server compaction and hosted patch controls while retaining SDK function tools for workspace operations.
 
@@ -101,11 +103,15 @@ With `memory()`, both generation phases use the sandbox agent's effective Codex 
 
 The Runner can connect to an MCP server and expose its tools as SDK function tools in either mode. The [basic](../docs/mcp/sdkManaged.ts), [approval](../docs/mcp/sdkManagedHITL.ts), and [streaming](../docs/mcp/sdkManagedStream.ts) companions use this approach. The [MCP guide](../../docs/src/content/docs/guides/mcp.mdx) includes the commands for switching providers.
 
+### Hosted web search
+
+With a web-search-capable provider, stock 0.166.0 has been returning hosted search calls on `gpt-5.4`, `gpt-5.4-mini`, and `gpt-5.5`. The two 5.4 models have been searching text. The 5.5 model has been allowing text and image results. On cache-only hosts, searches have been using cached results even when the application has been allowing live access. Setting `externalWebAccess: false` has been limiting searches to cached results.
+
 ### Current limits
 
-Codex has been rejecting Responses API response IDs, conversation IDs, prompt IDs, and hosted tools. It has also been rejecting forced or disabled tool selection, parallel tool settings, and deferred or programmatic tools. Sampling controls and output token limits have been requiring a different provider.
+Codex has been rejecting Responses API response IDs, conversation IDs, prompt IDs, and hosted file search or code interpreter. It has also been rejecting forced or disabled tool selection, parallel tool settings, and programmatic tool callers. Sampling controls and output token limits have been requiring a different provider.
 
-Codex has been replaying ordinary messages and SDK tool exchanges between model steps. Reasoning summaries have been available as Codex output metadata. Responses API reasoning replay controls, remote image URLs, and file inputs have been remaining unsupported.
+Codex has been discovering deferred SDK functions through its native tool search. The Runner has been applying the agent's tool approvals after discovery. Codex has been replaying ordinary messages and SDK tool exchanges between model steps. Stock has also been accepting encrypted reasoning history. Inline audio has been requiring a model whose Codex catalog entry declares audio input. When the agent has been requesting a reasoning summary, Codex has been returning public summary text as an SDK reasoning item. Streaming runs have also been emitting summary parts and text deltas when the model has been providing them. Responses API reasoning replay controls, remote image URLs, and file inputs have been remaining unsupported.
 
 Input guardrails using `runInParallel: false` have been completing their checks before Codex execution. Workspace writes have been surviving some failures, timeouts, cancellations, and output guardrail rejections.
 

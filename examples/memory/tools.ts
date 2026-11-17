@@ -1,4 +1,4 @@
-import { tool } from '@openai/agents';
+import { tool, type RunItem } from '@openai/agents';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
@@ -98,4 +98,30 @@ function sanitizeFilenameFragment(value: string): string {
       .toLowerCase()
       .slice(0, 32) || 'label'
   );
+}
+
+export function assertMemoryToolCalls(
+  result: { newItems: RunItem[] },
+  names: readonly string[] = ['lookup_customer_profile', 'fetch_image_data'],
+): void {
+  for (const name of names) {
+    const call = result.newItems.find(
+      (item) =>
+        item.type === 'tool_call_item' &&
+        item.rawItem.type === 'function_call' &&
+        item.rawItem.name === name,
+    );
+    if (!call || call.rawItem.type !== 'function_call')
+      throw new Error(`Expected a ${name} call.`);
+    const callId = call.rawItem.callId;
+    if (
+      !result.newItems.some(
+        (item) =>
+          item.type === 'tool_call_output_item' &&
+          item.rawItem.type === 'function_call_result' &&
+          item.rawItem.callId === callId,
+      )
+    )
+      throw new Error(`Expected ${name} to return a tool result.`);
+  }
 }

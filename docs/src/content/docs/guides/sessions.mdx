@@ -189,6 +189,8 @@ The examples below have been leaving the agent's model selection to the [configu
   title="Decorate a session with OpenAIResponsesCompactionSession"
 />
 
+When an OpenAI tool has been returning a result after a stored compaction, sending the same encrypted compaction item again with response storage enabled has been producing `item_conflict`. For local history replay, `modelSettings: { store: false }` has been allowing the session to send the full input on each model call. For a stored Responses chain, continuing from the response that requested the tool has been allowing the service to accept just the paired tool output. The [memory example](https://github.com/openai/openai-agents-js/blob/feat/simple-codex/examples/memory/oai-compact.ts) has been using a stored response for its first compaction and local history for later tool turns.
+
 `OpenAIResponsesCompactionSession` constructor options:
 
 | Option | Type | Notes |

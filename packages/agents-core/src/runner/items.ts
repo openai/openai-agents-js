@@ -692,6 +692,40 @@ export function trimToLatestCompaction<T extends AgentInputItem | RunItem>(
     const item = items[index];
     const rawItem = item && 'rawItem' in item ? item.rawItem : item;
     if (rawItem?.type === 'compaction') {
+      const retainedIds =
+        rawItem.providerData?.standaloneCompactionRetainedItemIds;
+      if (
+        Array.isArray(retainedIds) &&
+        retainedIds.every((id) => typeof id === 'string')
+      ) {
+        const remainingIds = new Set<string>(retainedIds);
+        const retainedIndexes = new Set<number>();
+        // IDs identify the returned window without storing message snapshots.
+        // Keep at most the latest surviving occurrence of each ID in this
+        // segment, preserving any content edits and removals made by filters.
+        for (
+          let previousIndex = index - 1;
+          previousIndex >= 0;
+          previousIndex--
+        ) {
+          const previous = items[previousIndex];
+          const rawPrevious =
+            previous && 'rawItem' in previous ? previous.rawItem : previous;
+          if (rawPrevious?.type === 'compaction') break;
+          if (
+            rawPrevious &&
+            'id' in rawPrevious &&
+            typeof rawPrevious.id === 'string' &&
+            remainingIds.delete(rawPrevious.id)
+          ) {
+            retainedIndexes.add(previousIndex);
+          }
+        }
+        return items.filter(
+          (_item, itemIndex) =>
+            itemIndex >= index || retainedIndexes.has(itemIndex),
+        );
+      }
       return items.slice(index);
     }
   }

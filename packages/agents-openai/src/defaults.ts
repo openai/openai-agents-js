@@ -1,6 +1,6 @@
 import { loadEnv } from '@openai/agents-core/_shims';
 import METADATA from './metadata';
-import type { OpenAIClient } from './openaiClient';
+import type { BundledOpenAIClient, OpenAIClient } from './openaiClient';
 
 export const DEFAULT_OPENAI_API = 'responses';
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
@@ -41,7 +41,7 @@ export function setDefaultOpenAIClient(client: OpenAIClient) {
 }
 
 export function getDefaultOpenAIClient<
-  TClient extends OpenAIClient = OpenAIClient,
+  TClient extends OpenAIClient = BundledOpenAIClient,
 >(): TClient | undefined {
   return _defaultOpenAIClient as TClient | undefined;
 }

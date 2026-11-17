@@ -126,9 +126,6 @@ Use relative paths because the shell starts in the workspace root.`,
         },
       }),
     ],
-    modelSettings: {
-      toolChoice: 'required',
-    },
   });
   const patchAgent = new SandboxAgent({
     name: 'Sandbox Capabilities Patch Smoke',
@@ -136,9 +133,6 @@ Use relative paths because the shell starts in the workspace root.`,
     instructions: `Use apply_patch for the requested filesystem changes. Do not create or delete files with shell redirection, printf, tee, cat, Python, or Node.`,
     defaultManifest: manifest,
     capabilities: Capabilities.default(),
-    modelSettings: {
-      toolChoice: 'apply_patch',
-    },
   });
 
   try {
@@ -152,7 +146,7 @@ Use relative paths because the shell starts in the workspace root.`,
     );
     const patchResult = await run(
       patchAgent,
-      `Call apply_patch exactly once with a structured create_file operation for ${VERIFICATION_FILE}. The file content must be exactly:
+      `Call apply_patch exactly once. Use its operation field with type="create_file", path="${VERIFICATION_FILE}", and diff containing the following lines prefixed with +. The file content must be exactly:
 skill_loaded=true
 codename=atlas
 note_source=filesystem

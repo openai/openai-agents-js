@@ -3,6 +3,8 @@ import { z } from 'zod';
 
 async function main() {
   await withTrace('Agents as tools streaming example', async () => {
+    let billingLookupCount = 0;
+    let streamedEventCount = 0;
     const billingStatusCheckerTool = tool({
       name: 'Billing status checker',
       description:
@@ -12,6 +14,7 @@ async function main() {
         question: z.string(),
       }),
       execute: async ({ customerId, question }) => {
+        billingLookupCount += 1;
         console.log(`Customer ID: ${customerId} Question: ${question}`);
         if (question.toLowerCase().includes('bill')) {
           return `This customer (ID: ${customerId})'s bill is $100`;
@@ -23,8 +26,7 @@ async function main() {
     const subAgent = new Agent({
       name: 'Billing Agent',
       instructions:
-        'You are a billing agent that answers questions about billing.',
-      modelSettings: { toolChoice: 'required' },
+        'Call the billing status checker for every billing question before answering.',
       tools: [billingStatusCheckerTool],
     });
 
@@ -35,6 +37,7 @@ async function main() {
         'You are a billing agent that answers questions about billing.',
       // When you pass onStream handler, the agent is executed in streaming mode.
       onStream: (event) => {
+        streamedEventCount += 1;
         console.log(
           `### onStream method streaming event from ${event.agent.name} in streaming mode:\n\n` +
             JSON.stringify(event) +
@@ -65,6 +68,10 @@ async function main() {
       'Hello, my customer ID is ABC123. How much is my bill for this month?',
     );
 
+    if (billingLookupCount === 0 || streamedEventCount === 0)
+      throw new Error(
+        'Expected a billing lookup and streamed child-agent events.',
+      );
     console.log(`\n### Final response:\n\n${result.finalOutput}`);
   });
 }

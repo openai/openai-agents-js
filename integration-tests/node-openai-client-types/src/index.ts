@@ -18,3 +18,29 @@ setDefaultOpenAIClient(client);
 
 const defaultClient: OpenAI | undefined = getDefaultOpenAIClient();
 void defaultClient;
+
+// Keep validating streaming and response results across SDK versions.
+type InvalidResponseClient = Omit<OpenAI, 'responses'> & {
+  responses: Omit<OpenAI['responses'], 'create'> & {
+    create: () => Promise<undefined>;
+  };
+};
+type EmptyChatChoice = { id: string; choices: { index: number }[] };
+type InvalidChatClient = Omit<OpenAI, 'chat'> & {
+  chat: {
+    completions: {
+      create(body: { stream?: false }): Promise<EmptyChatChoice>;
+      create(body: { stream: true }): Promise<AsyncIterable<EmptyChatChoice>>;
+    };
+  };
+};
+type AcceptsClient<Client> = Client extends Parameters<
+  typeof setDefaultOpenAIClient
+>[0]
+  ? true
+  : false;
+const invalidResults: [
+  AcceptsClient<InvalidResponseClient>,
+  AcceptsClient<InvalidChatClient>,
+] = [false, false];
+void invalidResults;

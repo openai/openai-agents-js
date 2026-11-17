@@ -85,7 +85,7 @@ import { CodexProvider } from '@openai/agents-extensions/experimental/codex';
 setDefaultModelProvider(new CodexProvider());
 ```
 
-Sign in with `codex login` in the same writable `CODEX_HOME` that the application uses. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key` before starting the application. Stock App Server 0.166.0 reads the saved login.
+Sign in with `codex login` in the same writable `CODEX_HOME` that the application uses. For API-key authentication, run `printenv OPENAI_API_KEY | codex login --with-api-key` before starting the application. Stock App Server 0.166.0 reads the saved login. On hosts that allow API-key login, passing `codexOptions: { apiKey: process.env.OPENAI_API_KEY }` to `CodexProvider` has been signing in for the lifetime of the child process. It has been leaving the saved CLI login in place. On managed hosts, omitting `apiKey` has been leaving authentication to the host.
 
 The default provider setup above has been requiring a Git repository as its working directory. Omitting the agent's `model` has been allowing Codex to select its configured model. The Agents SDK has been retaining ownership of conversation history, SDK function tools, and handoffs. See the [MCP companions](/openai-agents-js/guides/mcp#sdk-managed-companions-for-hosted-mcp-examples) for SDK-managed tool calls, approvals, and streaming in both modes.
 

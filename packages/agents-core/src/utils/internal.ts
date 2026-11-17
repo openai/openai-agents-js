@@ -43,3 +43,7 @@ export {
   validateToolInvocationName,
 } from '../toolInvocation';
 export { getAgentToolParentRunConfigFromDetails } from '../agentToolRunConfig';
+export {
+  toOpenAIToolSearchOutputToolPayload,
+  fromOpenAIToolSearchOutputToolPayload,
+} from './toolSearch';

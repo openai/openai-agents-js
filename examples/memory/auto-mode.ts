@@ -1,4 +1,5 @@
 import { Agent, RunResult, run, type Session } from '@openai/agents';
+import { assertMemoryToolCalls } from './tools.ts';
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
 
 /**
@@ -24,7 +25,10 @@ export async function runAutoTurn<S extends Session>(
 
   const runOnce = async (): Promise<string> => {
     let result: RunResult<any, any> = await run(agent, message, { session });
+    if (result.interruptions.length === 0)
+      throw new Error('Expected an approval before the customer lookup.');
     result = await resolver(autoRl, agent, result, session);
+    assertMemoryToolCalls(result);
     const reply = result.finalOutput ?? '[No final output produced]';
     return reply;
   };

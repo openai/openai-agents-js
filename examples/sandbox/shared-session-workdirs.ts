@@ -35,7 +35,6 @@ function buildAgent(name: string, model: string) {
     instructions:
       'Read brief.md with exec_command, then report the project name and owner in one sentence. Use relative paths.',
     capabilities: [shell()],
-    modelSettings: { toolChoice: 'required' },
   });
 }
 

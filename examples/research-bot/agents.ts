@@ -44,7 +44,7 @@ export const searchAgent = new Agent({
   name: 'Search agent',
   instructions: searchAgentInstructions,
   tools: [webSearchTool()],
-  modelSettings: { toolChoice: 'required' },
+  model: 'gpt-5.4',
 });
 
 // ---- Writer Agent ----
@@ -69,6 +69,6 @@ export type ReportData = z.infer<typeof reportData>;
 export const writerAgent = new Agent({
   name: 'WriterAgent',
   instructions: writerPrompt,
-  model: 'o3-mini',
+  model: 'gpt-5.4',
   outputType: reportData,
 });

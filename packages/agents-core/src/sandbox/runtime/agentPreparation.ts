@@ -116,16 +116,33 @@ export function prepareSandboxAgent<TContext, TOutput extends AgentOutputType>({
   const modelCapabilities = resolvedModelInstance?._sandboxModelCapabilities;
   const namespace = modelCapabilities?.toolNamespace;
   if (namespace) {
-    if (capabilityTools.some((tool) => tool.type !== 'function')) {
+    if (
+      capabilityTools.some(
+        (tool) =>
+          tool.type !== 'function' &&
+          !(
+            modelCapabilities.sdkLocalTools &&
+            (tool.type === 'apply_patch' ||
+              (tool.type === 'shell' &&
+                (tool.environment === undefined ||
+                  tool.environment.type === 'local')))
+          ),
+      )
+    ) {
       throw new UserError(
         'This sandbox model supports function capability tools only.',
       );
     }
-    capabilityTools = toolNamespace({
-      name: namespace,
-      description: 'Tools operating in the SDK-managed sandbox workspace.',
-      tools: capabilityTools as FunctionTool[],
-    });
+    capabilityTools = [
+      ...toolNamespace({
+        name: namespace,
+        description: 'Tools operating in the SDK-managed sandbox workspace.',
+        tools: capabilityTools.filter(
+          (tool): tool is FunctionTool => tool.type === 'function',
+        ),
+      }),
+      ...capabilityTools.filter((tool) => tool.type !== 'function'),
+    ];
   }
   const tools = [...agent.tools, ...capabilityTools];
   const { providerData: baseProviderData, ...modelSettings } =

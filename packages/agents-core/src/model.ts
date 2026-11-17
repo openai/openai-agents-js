@@ -701,6 +701,8 @@ export interface Model {
     responsesCompaction?: boolean;
     hostedApplyPatch?: boolean;
     toolNamespace?: string;
+    /** Whether local SDK shell and editor tools can accompany namespaced functions. */
+    sdkLocalTools?: boolean;
     /** Whether sandbox preparation leaves implicit model settings to the provider. */
     useProviderDefaults?: boolean;
   };

@@ -5,7 +5,7 @@ import {
   run,
   withTrace,
 } from '@openai/agents';
-import { fetchImageData } from './tools.ts';
+import { assertMemoryToolCalls, fetchImageData } from './tools.ts';
 
 async function main() {
   const session = new OpenAIResponsesCompactionSession({
@@ -26,7 +26,6 @@ async function main() {
     instructions:
       'Keep answers short. This example demonstrates responses.compact with input mode and store=false. For every user turn, call fetch_image_data with the provided label. Do not include raw image bytes or data URLs in your final answer.',
     modelSettings: {
-      toolChoice: 'required',
       // When you disable store, auto compaction mode is used.
       store: false,
     },
@@ -45,6 +44,7 @@ async function main() {
 
     for (const prompt of prompts) {
       const result = await run(agent, prompt, { session });
+      assertMemoryToolCalls(result, ['fetch_image_data']);
       console.log(`\nUser: ${prompt}`);
       console.log(`Assistant: ${result.finalOutput}`);
       console.log(
@@ -64,6 +64,8 @@ async function main() {
     console.log('Manual compaction result:', compactionResult);
 
     const finalHistory = await session.getItems();
+    if (!finalHistory.some((item) => item.type === 'compaction'))
+      throw new Error('Expected stored history to contain a compaction item.');
     console.log('\nStored history after final compaction:');
     for (const item of finalHistory) {
       console.log(`- ${item.type}`);

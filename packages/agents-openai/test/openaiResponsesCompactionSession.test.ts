@@ -849,7 +849,7 @@ describe('OpenAIResponsesCompactionSession', () => {
     expect(compact).not.toHaveBeenCalled();
   });
 
-  it('replaces history after compaction and reuses the stored response id', async () => {
+  it('replaces history and compacts current input after a later append', async () => {
     const compact = vi
       .fn()
       .mockResolvedValueOnce({
@@ -928,8 +928,17 @@ describe('OpenAIResponsesCompactionSession', () => {
 
     expect(compact).toHaveBeenCalledTimes(2);
     expect(compact).toHaveBeenLastCalledWith({
-      previous_response_id: 'resp_store',
       model: 'gpt-5.6-luna',
+      input: expect.arrayContaining([
+        expect.objectContaining({
+          role: 'assistant',
+          content: [expect.objectContaining({ text: 'compacted output' })],
+        }),
+        expect.objectContaining({
+          role: 'assistant',
+          content: [expect.objectContaining({ text: 'follow up' })],
+        }),
+      ]),
     });
     expect(await session.getItems()).toEqual([
       {

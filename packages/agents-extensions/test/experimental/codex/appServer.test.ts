@@ -79,6 +79,7 @@ test('preserves Codex option precedence, replacement env, working directory and 
         empty: {},
       },
       configOverrides: [
+        'cli_auth_credentials_store="file"',
         'model="raw"',
         'web_search="cached"',
         'openai_base_url="raw-url"',
@@ -107,6 +108,8 @@ test('preserves Codex option precedence, replacement env, working directory and 
     '--config',
     'empty={}',
     '--config',
+    'cli_auth_credentials_store="file"',
+    '--config',
     'model="raw"',
     '--config',
     'web_search="cached"',
@@ -114,10 +117,12 @@ test('preserves Codex option precedence, replacement env, working directory and 
     'openai_base_url="raw-url"',
     '--config',
     'openai_base_url="http://fixture.invalid"',
+    '--config',
+    'cli_auth_credentials_store="ephemeral"',
   ]);
   expect(result.env).toMatchObject({
     FIXTURE_ENV: 'isolated',
-    CODEX_API_KEY: 'fixture-key',
+    CODEX_API_KEY: 'old',
     CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'codex_sdk_ts',
   });
   expect(result.env.HOME).toBeUndefined();
@@ -168,6 +173,9 @@ test('rejects pending requests and event reads on unexpected exit', async () => 
   await expect(server.request('exit')).rejects.toThrow(
     'Codex App Server exited.',
   );
+  await expect(server.request('after-exit')).rejects.toMatchObject({
+    code: 'CODEX_APP_SERVER_EXITED',
+  });
   await expect(event).rejects.toThrow('Codex App Server exited.');
 });
 

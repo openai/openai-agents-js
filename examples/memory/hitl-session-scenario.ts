@@ -68,11 +68,10 @@ async function runScenario(
   const agent = new Agent({
     name: `${label} HITL scenario`,
     instructions:
-      `You must call ${step.toolName} exactly once before responding.` +
+      `These tools only echo synthetic text; they never modify customer records. You must call ${step.toolName} exactly once before responding.` +
       ` Pass the user input as the "query" argument.`,
     tools: [approvalEchoTool, approvalNoteTool],
     model: options.model,
-    modelSettings: { toolChoice: step.toolName },
     toolUseBehavior: 'stop_on_first_tool',
   });
 

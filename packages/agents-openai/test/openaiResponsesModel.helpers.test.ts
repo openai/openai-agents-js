@@ -1308,6 +1308,9 @@ describe('getInputItems', () => {
         status: 'completed',
         providerData: {
           created_by: 'assistant',
+          codexReasoningSummary: ['Public summary.'],
+          codexToolName: 'lookup',
+          codexToolNamespace: 'agents_sdk',
           retained: 'provider metadata',
         },
       },

@@ -176,9 +176,12 @@ export async function openCodexAppServer({
       `openai_base_url=${JSON.stringify(codexOptions.baseUrl)}`,
     );
   }
+  if (codexOptions.apiKey) {
+    // Keep the per-run login in this process, even when the CLI normally saves logins.
+    args.push('--config', 'cli_auth_credentials_store="ephemeral"');
+  }
   const env = { ...(codexOptions.env ?? process.env) };
   env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ||= 'codex_sdk_ts';
-  if (codexOptions.apiKey) env.CODEX_API_KEY = codexOptions.apiKey;
   if (pathDir) {
     const pathKey =
       process.platform === 'win32'
@@ -203,7 +206,11 @@ export async function openCodexAppServer({
       closing = true;
       clearTimeout(killTimer);
       signal?.removeEventListener('abort', abort);
-      fail(new Error('Codex App Server exited.'));
+      fail(
+        Object.assign(new Error('Codex App Server exited.'), {
+          code: 'CODEX_APP_SERVER_EXITED',
+        }),
+      );
       resolve();
     });
   });

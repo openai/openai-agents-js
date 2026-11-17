@@ -311,7 +311,17 @@ export class OpenAIResponsesCompactionSession
 
     const compacted = await this.client.responses.compact(compactRequest);
 
-    const outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
+    let outputItems: AgentInputItem[];
+    try {
+      outputItems = normalizeCompactionOutputItems(compacted.output ?? []);
+    } catch (error) {
+      const usage = toRequestUsage(compacted.usage);
+      attachModelFailureUsage(
+        error,
+        new Usage({ ...usage, requests: 1, requestUsageEntries: [usage] }),
+      );
+      throw error;
+    }
     const outputCompactionCandidateItems =
       selectCompactionCandidateItems(outputItems);
     // Refresh after the request so rollback does not revive items that expired during the await.
@@ -405,6 +415,10 @@ export class OpenAIResponsesCompactionSession
         throw error;
       } finally {
         this.mutationGeneration = {};
+        // The previous stored response no longer describes appended history.
+        // A successful owned exchange can associate its current response below.
+        this.responseId = undefined;
+        this.lastStore = undefined;
       }
       if (ownsGeneration && ownership) {
         this.compactionOwnership.set(ownership, this.mutationGeneration);
@@ -724,12 +738,39 @@ type CompactionOutputItem =
 function normalizeCompactionOutputItems(
   items: ReadonlyArray<CompactionOutputItem>,
 ): AgentInputItem[] {
-  return items.flatMap((item) => {
+  const normalized = items.flatMap((item) => {
     if (isCompactionInputMessage(item)) {
       return [normalizeCompactionInputMessage(item)];
     }
 
     return [item as AgentInputItem];
+  });
+  let retainedItemIds: string[] = [];
+  let missingRetainedId = false;
+  return normalized.map((item) => {
+    if (item.type !== 'compaction') {
+      if (typeof item.id === 'string' && item.id) retainedItemIds.push(item.id);
+      else missingRetainedId = true;
+      return item;
+    }
+    if (missingRetainedId) {
+      throw new UserError(
+        'Standalone compaction returned a retained item without an ID; the original session history has been preserved.',
+      );
+    }
+    if (!retainedItemIds.length) return item;
+    const marker = {
+      ...item,
+      providerData: {
+        ...item.providerData,
+        // SDK-only provenance survives session/state JSON. Provider codecs
+        // transmit only the compaction ID and opaque payload, never this list.
+        standaloneCompactionRetainedItemIds: retainedItemIds,
+      },
+    };
+    retainedItemIds = [];
+    missingRetainedId = false;
+    return marker;
   });
 }
 

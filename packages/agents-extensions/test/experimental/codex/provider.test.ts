@@ -120,6 +120,26 @@ beforeEach(() => {
   boundary.open.mockReset();
 });
 
+test('authenticates an explicit API key before opening a thread', async () => {
+  const connection = server(completed('Authenticated.'));
+  const sdk = new Runner({
+    modelProvider: new CodexProvider({
+      codexOptions: { apiKey: 'fixture-key' },
+    }),
+    tracingDisabled: true,
+  });
+  expect(
+    (await sdk.run(new Agent({ name: 'test' }), 'Hello.')).finalOutput,
+  ).toBe('Authenticated.');
+  expect(
+    connection.request.mock.calls.slice(0, 3).map(([method]) => method),
+  ).toEqual(['initialize', 'account/login/start', 'thread/start']);
+  expect(connection.request).toHaveBeenCalledWith('account/login/start', {
+    type: 'apiKey',
+    apiKey: 'fixture-key',
+  });
+});
+
 function sandboxRequest(): ModelRequest & {
   _internal: { sdkSandbox: boolean };
 } {
@@ -197,6 +217,8 @@ test('confines Codex native tools while preserving SDK sandbox callbacks', async
     'notify=["ambient-command"]',
     'web_search="live"',
     'features.apps=false',
+    'features.shell_tool=false',
+    'features.view_image=false',
     'features.plugins=false',
     'features.multi_agent=false',
     'features.multi_agent_v2=false',
@@ -337,6 +359,14 @@ test('honors explicit model controls and preserves reported summaries and raw us
     expect.objectContaining({ effort: 'medium', summary: 'concise' }),
   );
   expect(result.finalOutput).toEqual({ label: 'diagram' });
+  expect(result.newItems).toContainEqual(
+    expect.objectContaining({
+      type: 'reasoning_item',
+      rawItem: expect.objectContaining({
+        content: [{ type: 'input_text', text: 'Identified the diagram.' }],
+      }),
+    }),
+  );
   expect(result.rawResponses[0]?.output.at(-1)?.providerData).toEqual({
     codexReasoningSummary: ['Identified the diagram.'],
   });
@@ -416,7 +446,10 @@ test('delivers text deltas before completion without repeating final text and re
     { stream: true },
   );
   const deltas: string[] = [];
+  const lifecycle: string[] = [];
   for await (const event of result) {
+    if (event.type === 'raw_model_stream_event')
+      lifecycle.push(event.data.type);
     if (
       event.type === 'raw_model_stream_event' &&
       event.data.type === 'output_text_delta'
@@ -429,6 +462,12 @@ test('delivers text deltas before completion without repeating final text and re
     }
   }
   expect(deltas).toEqual(['Hello ', 'world.']);
+  expect(lifecycle).toEqual([
+    'response_started',
+    'output_text_delta',
+    'output_text_delta',
+    'response_done',
+  ]);
   expect(result.finalOutput).toBe('Hello world.');
   expect(result.rawResponses[0]?.rawUsage).toEqual(tokenUsage);
   expect(result.state.usage).toMatchObject({
@@ -519,6 +558,67 @@ test('lets Runner execute a function tool and replays its exact call ID into a f
   );
   expect(second.close).toHaveBeenCalledOnce();
   expect(boundary.open).toHaveBeenCalledTimes(2);
+});
+
+test('streams the recognized function identity and exact arguments once per client callback', async () => {
+  server(callback('lookup'));
+  server(completed('Account found.'));
+  const lookup = tool({
+    name: 'lookup',
+    description: 'Find the account.',
+    parameters: z.object({}),
+    execute: () => 'account',
+  });
+  const result = await runner().run(
+    new Agent({ name: 'assistant', tools: [lookup] }),
+    'Find my account.',
+    { stream: true },
+  );
+  const inputs = [];
+  for await (const item of result) {
+    if (item.type === 'raw_model_stream_event' && item.data.type === 'model')
+      inputs.push(item.data.toolInput);
+  }
+  expect(inputs).toEqual([
+    { type: 'start', name: 'lookup', callId: 'sdk-call' },
+    { type: 'delta', delta: '{}', callId: 'sdk-call' },
+  ]);
+  expect(result.finalOutput).toBe('Account found.');
+});
+
+test('returns non-strict structured output with optional and open fields', async () => {
+  const connection = server(completed('{"name":"Ada","score":42}'));
+  const agent = new Agent({
+    name: 'assistant',
+    instructions: 'Return the submitted record.',
+    outputType: {
+      type: 'json_schema',
+      name: 'record',
+      strict: false,
+      schema: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: [],
+        additionalProperties: true,
+      },
+    },
+  });
+  const result = await runner().run(agent, 'Use name Ada and score 42.');
+  expect(result.finalOutput).toEqual({ name: 'Ada', score: 42 });
+  expect(connection.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({
+      developerInstructions: expect.stringContaining(
+        '"additionalProperties":true',
+      ),
+    }),
+  );
+  expect(connection.request).toHaveBeenCalledWith(
+    'turn/start',
+    expect.objectContaining({
+      outputSchema: undefined,
+    }),
+  );
 });
 
 test.each(['base64', 'bytes'])(
@@ -638,7 +738,7 @@ test('lets Runner apply handoff filters and target instructions', async () => {
   expect(second.close).toHaveBeenCalledOnce();
 });
 
-test('rejects Responses IDs and hosted tools before opening the CLI', async () => {
+test('rejects Responses IDs and unsupported hosted tool settings before opening the CLI', async () => {
   const sdkRunner = runner();
   await expect(
     sdkRunner.run(new Agent({ name: 'assistant' }), 'Continue.', {
@@ -647,7 +747,10 @@ test('rejects Responses IDs and hosted tools before opening the CLI', async () =
   ).rejects.toThrow(UserError);
   await expect(
     sdkRunner.run(
-      new Agent({ name: 'assistant', tools: [webSearchTool()] }),
+      new Agent({
+        name: 'assistant',
+        tools: [webSearchTool({ imageSettings: { caption: true } })],
+      }),
       'Search.',
     ),
   ).rejects.toThrow(UserError);

@@ -10,7 +10,11 @@ import {
 } from '@openai/agents';
 
 import type { Interface as ReadlineInterface } from 'node:readline/promises';
-import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
+import {
+  assertMemoryToolCalls,
+  createLookupCustomerProfileTool,
+  fetchImageData,
+} from './tools.ts';
 import { runAutoTurn } from './auto-mode.ts';
 
 const AUTO_APPROVE_HITL = process.env.AUTO_APPROVE_HITL === '1';
@@ -98,7 +102,7 @@ async function main() {
     const agent = new Agent({
       name: 'Memory HITL assistant',
       instructions,
-      modelSettings: { toolChoice: 'required' },
+
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
@@ -131,6 +135,7 @@ async function main() {
       let result = await run(agent, userMessage, { session });
       result = await resolveInterruptions(rl, agent, result, session);
 
+      assertMemoryToolCalls(result);
       const reply = result.finalOutput ?? '[No final output produced]';
       console.log(`Assistant: ${reply}`);
       console.log();

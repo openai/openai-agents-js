@@ -114,13 +114,22 @@ async function runSseExample(url: string, name: string) {
     name: 'SSE Assistant',
     instructions: 'Use the available MCP tools to answer the user.',
     mcpServers: [mcpServer],
-    modelSettings: { toolChoice: 'required' },
   });
 
   try {
     await withTrace('SSE MCP Server Example', async () => {
       await mcpServer.connect();
       const result = await run(agent, 'Use the MCP add tool to add 7 and 22.');
+      if (
+        !result.newItems.some(
+          (item) =>
+            item.type === 'tool_call_item' &&
+            item.rawItem.type === 'function_call' &&
+            item.rawItem.name === 'add',
+        ) ||
+        !String(result.finalOutput).includes('29')
+      )
+        throw new Error('Expected the MCP add tool to compute 7 + 22 = 29.');
       console.log(result.finalOutput);
     });
   } finally {

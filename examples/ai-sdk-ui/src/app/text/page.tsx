@@ -9,9 +9,7 @@ export const dynamic = 'force-dynamic';
 const SESSION_QUERY_KEY = 'session';
 
 type PageProps = {
-  searchParams?:
-    | Record<string, string | string[] | undefined>
-    | Promise<Record<string, string | string[] | undefined>>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 function readSessionId(

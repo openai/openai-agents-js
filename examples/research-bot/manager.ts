@@ -25,6 +25,11 @@ export class ResearchManager {
       console.log(`[starting] Starting research...`);
       const searchPlan = await this._planSearches(query);
       const searchResults = await this._performSearches(searchPlan);
+      if (!searchResults.length) {
+        throw new Error(
+          'The research report requires at least one web search result.',
+        );
+      }
       const report = await this._writeReport(query, searchResults);
 
       const finalReport = `Report summary\n\n${report.shortSummary}`;
@@ -74,7 +79,16 @@ export class ResearchManager {
     const input = `Search term: ${item.query}\nReason for searching: ${item.reason}`;
     try {
       const result = await this.runner.run(searchAgent, input);
-      return String(result.finalOutput);
+      const searched = result.newItems.some(
+        (item) =>
+          item.type === 'tool_call_item' &&
+          item.rawItem.type === 'hosted_tool_call' &&
+          item.rawItem.name === 'web_search_call' &&
+          item.rawItem.status === 'completed',
+      );
+      return searched && typeof result.finalOutput === 'string'
+        ? result.finalOutput
+        : null;
     } catch {
       return null;
     }

@@ -4,7 +4,11 @@ import {
   run,
   withTrace,
 } from '@openai/agents';
-import { createLookupCustomerProfileTool, fetchImageData } from './tools.ts';
+import {
+  assertMemoryToolCalls,
+  createLookupCustomerProfileTool,
+  fetchImageData,
+} from './tools.ts';
 
 const directory: Record<string, string> = {
   '1': 'Customer 1 (tier gold). Notes: Prefers concise replies.',
@@ -25,7 +29,7 @@ async function main() {
     const agent = new Agent({
       name: 'Assistant',
       instructions,
-      modelSettings: { toolChoice: 'required' },
+
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
@@ -35,11 +39,13 @@ async function main() {
       'What is the largest country in South America?',
       { session },
     );
+    assertMemoryToolCalls(result);
     console.log(result.finalOutput); // e.g., Brazil
 
     result = await run(agent, 'What is the capital of that country?', {
       session,
     });
+    assertMemoryToolCalls(result);
     console.log(result.finalOutput); // e.g., Brasilia
   });
 }
@@ -49,7 +55,7 @@ async function mainStream() {
     const agent = new Agent({
       name: 'Assistant',
       instructions,
-      modelSettings: { toolChoice: 'required' },
+
       tools: [lookupCustomerProfile, fetchImageData],
     });
 
@@ -70,6 +76,7 @@ async function mainStream() {
       )
         process.stdout.write(event.data.delta);
     }
+    assertMemoryToolCalls(result);
     console.log();
 
     result = await run(agent, 'What is the capital of that country?', {
@@ -82,6 +89,7 @@ async function mainStream() {
     for await (const event of result.toTextStream()) {
       process.stdout.write(event);
     }
+    assertMemoryToolCalls(result);
     console.log();
 
     // Additional tool invocations happen earlier in the turn.

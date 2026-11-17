@@ -119,9 +119,6 @@ async function main() {
       'Answer questions about the sandbox workspace. Inspect the project before answering, keep the response concise, and do not guess file names like package.json or pyproject.toml. This demo intentionally contains a tiny workspace.',
     defaultManifest: manifest,
     capabilities: [shell()],
-    modelSettings: {
-      toolChoice: 'required',
-    },
   });
 
   try {

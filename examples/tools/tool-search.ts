@@ -121,22 +121,14 @@ const getShippingCreditBalance = tool({
 async function main() {
   const namespacedAgent = new Agent({
     name: 'CRM assistant',
-    model: 'gpt-5.4',
     instructions:
       'For customer questions in this example, load the full crm namespace with no query filter before calling tools. Do not search billing unless the user explicitly asks about invoices.',
-    modelSettings: {
-      parallelToolCalls: false,
-    },
     tools: [...crmTools, ...billingTools, toolSearchTool()],
   });
   const topLevelAgent = new Agent({
     name: 'Shipping assistant',
-    model: 'gpt-5.4',
     instructions:
       'Use shipping tools to answer shipping questions. For tracking-number ETA questions, search only get_shipping_eta. Do not search get_shipping_credit_balance unless the user asks about credits or balances.',
-    modelSettings: {
-      parallelToolCalls: false,
-    },
     tools: [getShippingEta, getShippingCreditBalance, toolSearchTool()],
   });
 
@@ -153,6 +145,14 @@ async function main() {
       'billing.get_invoice_status',
     ];
 
+    if (
+      !namespacedLoadedTools.includes('crm.get_customer_profile') ||
+      !namespacedCalledTools.includes('crm.get_customer_profile') ||
+      !namespacedCalledTools.includes('crm.list_recent_support_tickets')
+    )
+      throw new Error(
+        'Expected discovery and calls of the CRM profile and support tools.',
+      );
     console.log('### Tool search with namespaces');
     console.log(namespacedResult.finalOutput);
     console.log(`Loaded tools: ${formatList(namespacedLoadedTools)}`);
@@ -177,6 +177,14 @@ async function main() {
       'get_shipping_credit_balance',
     ];
 
+    if (
+      !topLevelLoadedTools.includes('get_shipping_eta') ||
+      !topLevelCalledTools.includes('get_shipping_eta') ||
+      topLevelCalledTools.includes('get_shipping_credit_balance')
+    )
+      throw new Error(
+        'Expected discovery and execution of only the requested shipping ETA tool.',
+      );
     console.log('### Top-level deferred tools');
     console.log(topLevelResult.finalOutput);
     console.log(`Loaded tools: ${formatList(topLevelLoadedTools)}`);
@@ -259,12 +267,18 @@ function extractLoadedToolNames(
       const namespace =
         typeof tool.namespace === 'string' ? tool.namespace : namespacePrefix;
       return [
-        namespace ? `${namespace}.${tool.functionName}` : tool.functionName,
+        namespace && namespace !== tool.functionName
+          ? `${namespace}.${tool.functionName}`
+          : tool.functionName,
       ];
     }
 
     if (tool.type === 'function' && typeof tool.name === 'string') {
-      return [namespacePrefix ? `${namespacePrefix}.${tool.name}` : tool.name];
+      return [
+        namespacePrefix && namespacePrefix !== tool.name
+          ? `${namespacePrefix}.${tool.name}`
+          : tool.name,
+      ];
     }
 
     return [];

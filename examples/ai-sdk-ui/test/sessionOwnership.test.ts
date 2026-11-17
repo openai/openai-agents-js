@@ -24,7 +24,7 @@ vi.mock('@openai/agents-openai', () => ({
   OpenAIConversationsSession: class {
     constructor(private options?: { conversationId: string }) {}
     getSessionId() {
-      return provider.create();
+      return this.options?.conversationId ?? provider.create();
     }
     getItems() {
       return provider.getItems(this.options?.conversationId);
@@ -122,8 +122,11 @@ describe('browser-owned conversations', () => {
     );
     // Both stream views can open the same owned conversation.
     expect(
-      (await TextPage({ searchParams: { session: first.sessionId } })).props
-        .sessionId,
+      (
+        await TextPage({
+          searchParams: Promise.resolve({ session: first.sessionId }),
+        })
+      ).props.sessionId,
     ).toBe(first.sessionId);
   });
 
@@ -146,8 +149,11 @@ describe('browser-owned conversations', () => {
 
       const second = await openConversation('text');
       expect(
-        (await TextPage({ searchParams: { session: second.sessionId } })).props
-          .sessionId,
+        (
+          await TextPage({
+            searchParams: Promise.resolve({ session: second.sessionId }),
+          })
+        ).props.sessionId,
       ).toBe(second.sessionId);
       expect(
         (await postText(messageRequest({ sessionId: second.sessionId })))
@@ -157,8 +163,11 @@ describe('browser-owned conversations', () => {
       const first = receiveResponse(heldResponse ?? (await pendingFirst));
       for (const { sessionId } of [first, second]) {
         expect(
-          (await Page({ searchParams: { session: sessionId } })).props
-            .sessionId,
+          (
+            await Page({
+              searchParams: Promise.resolve({ session: sessionId }),
+            })
+          ).props.sessionId,
         ).toBe(sessionId);
         expect((await postUi(messageRequest({ sessionId }))).status).toBe(200);
         expect((await postText(messageRequest({ sessionId }))).status).toBe(
@@ -186,18 +195,30 @@ describe('browser-owned conversations', () => {
   ] as const) {
     it(`${name}: allows the owning browser to read and continue its conversation`, async () => {
       const { sessionId } = await openConversation(name);
-      const view = await page({ searchParams: { session: sessionId } });
+      const view = await page({
+        searchParams: Promise.resolve({ session: sessionId }),
+      });
       expect(view.props.initialMessages[0].parts).toEqual([
         { type: 'text', text: 'Private astronomy question' },
       ]);
       const conversationId = provider.getItems.mock.calls[0][0];
       expect((await post(messageRequest({ sessionId }))).status).toBe(200);
-      expect(provider.run.mock.calls[0][2].conversationId).toBe(conversationId);
+      expect(provider.run.mock.calls[0][2].conversationId).toBeUndefined();
+      expect(await provider.run.mock.calls[0][2].session.getSessionId()).toBe(
+        conversationId,
+      );
       // The AI SDK id alias remains usable by the owner, including after a handoff save.
       expect((await post(messageRequest({ id: sessionId }))).status).toBe(200);
-      expect(provider.run.mock.calls[1][2].conversationId).toBe(conversationId);
+      expect(provider.run.mock.calls[1][2].conversationId).toBeUndefined();
+      expect(await provider.run.mock.calls[1][2].session.getSessionId()).toBe(
+        conversationId,
+      );
+      if (name === 'ui') {
+        expect(provider.run.mock.calls[1][0].name).toBe('Support');
+      }
       expect(
-        (await page({ searchParams: { session: sessionId } })).props.sessionId,
+        (await page({ searchParams: Promise.resolve({ session: sessionId }) }))
+          .props.sessionId,
       ).toBe(sessionId);
     });
 
@@ -211,7 +232,7 @@ describe('browser-owned conversations', () => {
       );
       provider.create.mockClear();
       await expect(
-        page({ searchParams: { session: alice.sessionId } }),
+        page({ searchParams: Promise.resolve({ session: alice.sessionId }) }),
       ).rejects.toThrow(`redirect:${bootstrap}`);
       expect(
         (await post(messageRequest({ sessionId: alice.sessionId }))).status,
@@ -221,13 +242,19 @@ describe('browser-owned conversations', () => {
       expect(provider.create).not.toHaveBeenCalled();
       // The rejected attempt neither steals Alice's entry nor damages Bob's.
       expect(
-        (await page({ searchParams: { session: bob.sessionId } })).props
-          .sessionId,
+        (
+          await page({
+            searchParams: Promise.resolve({ session: bob.sessionId }),
+          })
+        ).props.sessionId,
       ).toBe(bob.sessionId);
       provider.cookies = aliceCookies;
       expect(
-        (await page({ searchParams: { session: alice.sessionId } })).props
-          .sessionId,
+        (
+          await page({
+            searchParams: Promise.resolve({ session: alice.sessionId }),
+          })
+        ).props.sessionId,
       ).toBe(alice.sessionId);
     });
 
@@ -236,7 +263,7 @@ describe('browser-owned conversations', () => {
       provider.cookies = new Map();
       provider.create.mockClear();
       await expect(
-        page({ searchParams: { session: sessionId } }),
+        page({ searchParams: Promise.resolve({ session: sessionId }) }),
       ).rejects.toThrow(`redirect:${bootstrap}`);
       expect((await post(messageRequest({ id: sessionId }))).status).toBe(404);
       expect(provider.getItems).not.toHaveBeenCalled();
@@ -251,11 +278,11 @@ describe('browser-owned conversations', () => {
       expect(
         (await post(messageRequest({ sessionId: 'default' }))).status,
       ).toBe(404);
-      await expect(page({ searchParams: {} })).rejects.toThrow(
+      await expect(page({ searchParams: Promise.resolve({}) })).rejects.toThrow(
         `redirect:${bootstrap}`,
       );
       await expect(
-        page({ searchParams: { session: 'unknown' } }),
+        page({ searchParams: Promise.resolve({ session: 'unknown' }) }),
       ).rejects.toThrow(`redirect:${bootstrap}`);
       expect(provider.create).not.toHaveBeenCalled();
       expect(provider.getItems).not.toHaveBeenCalled();

@@ -29,9 +29,6 @@ const weatherAgent = new Agent({
   instructions:
     'You answer weather questions. Always call get_weather before answering.',
   handoffDescription: 'Knows everything about the weather but nothing else.',
-  modelSettings: {
-    toolChoice: 'required',
-  },
   tools: [getWeatherTool],
 });
 
@@ -58,6 +55,18 @@ async function main() {
       }
       history.push(user(message));
       const result = await run(latestAgent, history);
+      if (
+        autoMode &&
+        !result.newItems.some(
+          (item) =>
+            item.type === 'tool_call_item' &&
+            item.rawItem.type === 'function_call' &&
+            item.rawItem.name === 'get_weather',
+        )
+      )
+        throw new Error(
+          'Expected the weather tool to answer the automated weather question.',
+        );
       const outputAgent = result.lastAgent ?? latestAgent;
 
       console.log(`[${outputAgent.name}] ${result.finalOutput}`);

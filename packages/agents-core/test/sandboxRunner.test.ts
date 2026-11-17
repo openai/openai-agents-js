@@ -7240,6 +7240,64 @@ describe('sandbox runner integration', () => {
     expect(sandboxModel.requests[1]?.modelSettings.toolChoice).toBeUndefined();
   });
 
+  it.each([false, true])(
+    'uses local capability engines only when the namespaced model declares support (%s)',
+    async (sdkLocalTools) => {
+      const client = new FakeSandboxClient();
+      const model = Object.assign(
+        new RecordingModel([
+          modelResponse({
+            output: [
+              {
+                type: 'shell_call',
+                callId: 'local-shell',
+                status: 'completed',
+                action: { commands: ['pwd'] },
+              },
+            ],
+            usage: new Usage(),
+          }),
+          modelResponse({
+            output: [fakeModelMessage('sandbox done')],
+            usage: new Usage(),
+          }),
+        ]),
+        {
+          _sandboxModelCapabilities: {
+            toolNamespace: 'agents_sdk',
+            sdkLocalTools,
+          },
+        },
+      );
+      const agent = new SandboxAgent({
+        name: 'CustomShell',
+        model,
+        capabilities: [new ShellToolCapability()],
+      });
+      const result = new Runner({
+        sandbox: { client },
+        tracingDisabled: true,
+      }).run(agent, 'Inspect the workspace.');
+      if (!sdkLocalTools) {
+        await expect(result).rejects.toThrow('function capability tools only');
+        expect(model.requests).toHaveLength(0);
+        return;
+      }
+      expect((await result).finalOutput).toBe('sandbox done');
+      expect(model.requests[0].tools).toContainEqual(
+        expect.objectContaining({ type: 'shell', name: 'shell' }),
+      );
+      expect(model.requests[1].input).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'shell_call_output',
+            output: [expect.objectContaining({ stdout: 'shell result' })],
+          }),
+        ]),
+      );
+    },
+  );
+
   it('allows reserved function tool names returned from sandbox capabilities', async () => {
     const sandboxModel = new RecordingModel([
       modelResponse({

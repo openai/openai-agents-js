@@ -1,4 +1,5 @@
 import { Agent, run } from '@openai/agents';
+import { OpenAIConversationsSession } from '@openai/agents-openai';
 import { createAiSdkTextStreamResponse } from '@openai/agents-extensions/ai-sdk-ui';
 import type { UIMessage } from 'ai';
 
@@ -46,7 +47,9 @@ export async function POST(req: Request) {
 
   const stream = await run(textAgent, input, {
     stream: true,
-    conversationId: entry.conversationId,
+    session: new OpenAIConversationsSession({
+      conversationId: entry.conversationId,
+    }),
   });
   return createAiSdkTextStreamResponse(stream);
 }

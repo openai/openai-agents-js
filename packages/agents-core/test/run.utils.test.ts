@@ -142,3 +142,62 @@ describe('getTurnInput', () => {
     expect(result).toEqual([compaction]);
   });
 });
+
+it('retains only the latest current occurrence of standalone window IDs', () => {
+  const agent = new Agent({ name: 'WindowReader' });
+  const marker: protocol.CompactionItem = {
+    type: 'compaction',
+    id: 'cmp_standalone_window',
+    encrypted_content: 'opaque',
+    providerData: {
+      standaloneCompactionRetainedItemIds: ['msg_member', 'msg_removed'],
+    },
+  };
+  const stale: protocol.AssistantMessageItem = {
+    ...TEST_MODEL_MESSAGE,
+    id: 'msg_member',
+    content: [{ type: 'output_text', text: 'Stale duplicate.' }],
+  };
+  const current: protocol.AssistantMessageItem = {
+    ...stale,
+    content: [{ type: 'output_text', text: 'Edited surviving copy.' }],
+  };
+  const result = getTurnInput(
+    [],
+    [
+      new MessageOutputItem(stale, agent),
+      new MessageOutputItem(current, agent),
+      new CompactionItem(marker, agent),
+    ],
+  );
+  expect(result).toEqual([current, marker]);
+});
+
+it('keeps inline compaction semantics after an earlier standalone returned window', () => {
+  const agent = new Agent({ name: 'InlineReader' });
+  const standalone: protocol.CompactionItem = {
+    type: 'compaction',
+    id: 'cmp_standalone',
+    encrypted_content: 'standalone',
+    providerData: { standaloneCompactionRetainedItemIds: ['msg_retained'] },
+  };
+  const inline: protocol.CompactionItem = {
+    type: 'compaction',
+    id: 'cmp_inline',
+    encrypted_content: 'inline',
+  };
+  const prior: protocol.AssistantMessageItem = {
+    ...TEST_MODEL_MESSAGE,
+    id: 'msg_retained',
+  };
+  expect(
+    getTurnInput(
+      [],
+      [
+        new MessageOutputItem(prior, agent),
+        new CompactionItem(standalone, agent),
+        new CompactionItem(inline, agent),
+      ],
+    ),
+  ).toEqual([inline]);
+});

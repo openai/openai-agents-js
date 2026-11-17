@@ -34,7 +34,6 @@ const orchestrator = new Agent({
       // },
     }),
   ],
-  modelSettings: { toolChoice: 'required' },
 });
 
 async function main() {
@@ -44,6 +43,15 @@ async function main() {
   console.log('Translator agent direct run:', response1.finalOutput);
 
   const response2 = await run(orchestrator, query);
+  if (
+    !response2.newItems.some(
+      (item) =>
+        item.type === 'tool_call_item' &&
+        item.rawItem.type === 'function_call' &&
+        item.rawItem.name === 'translate_text',
+    )
+  )
+    throw new Error('Expected the orchestrator to call translate_text.');
   console.log('Translator agent as tool:', response2.finalOutput);
 }
 

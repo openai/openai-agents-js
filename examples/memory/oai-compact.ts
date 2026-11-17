@@ -4,7 +4,7 @@ import {
   run,
   withTrace,
 } from '@openai/agents';
-import { fetchImageData } from './tools.ts';
+import { assertMemoryToolCalls, fetchImageData } from './tools.ts';
 import { FileSession } from './sessions/index.ts';
 
 async function main() {
@@ -27,8 +27,12 @@ async function main() {
     model: 'gpt-5.4',
     instructions:
       'Keep answers short. This example demonstrates responses.compact with a custom session. For every user turn, call fetch_image_data with the provided label. Do not include raw image bytes or data URLs in your final answer.',
-    modelSettings: { toolChoice: 'required' },
+
     tools: [fetchImageData],
+  });
+
+  const replayAgent = agent.clone({
+    modelSettings: { ...agent.modelSettings, store: false },
   });
 
   // To see compaction debug logs, run with:
@@ -43,7 +47,14 @@ async function main() {
     ];
 
     for (const prompt of prompts) {
-      const result = await run(agent, prompt, { session, stream: true });
+      // The first automatic compact uses the stored response ID when available.
+      // Later tool continuations replay the same encrypted item from local history.
+      // Responses accepts repeated by-value replay with store: false.
+      const history = await session.getItems();
+      const currentAgent = history.some((item) => item.type === 'compaction')
+        ? replayAgent
+        : agent;
+      const result = await run(currentAgent, prompt, { session, stream: true });
       console.log(`\nUser: ${prompt}`);
 
       for await (const event of result.toStream()) {
@@ -68,6 +79,7 @@ async function main() {
           console.log(`Assistant: ${event.item.content.trim()}`);
         }
       }
+      assertMemoryToolCalls(result, ['fetch_image_data']);
       console.log(
         'Usage for the turn:',
         result.state.usage.requestUsageEntries,
@@ -80,11 +92,16 @@ async function main() {
       console.log(`- ${item.type}`);
     }
 
-    // You can manually run compaction this way:
-    const compactionResult = await session.runCompaction({ force: true });
+    // Later turns use store: false, so compact the current local history.
+    const compactionResult = await session.runCompaction({
+      force: true,
+      compactionMode: 'input',
+    });
     console.log('Manual compaction result:', compactionResult);
 
     const finalHistory = await session.getItems();
+    if (!finalHistory.some((item) => item.type === 'compaction'))
+      throw new Error('Expected stored history to contain a compaction item.');
     console.log('\nStored history after final compaction:');
     for (const item of finalHistory) {
       console.log(`- ${item.type}`);
