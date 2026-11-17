@@ -1,3 +1,5 @@
+import { matchesFunctionToolName } from './toolIdentity';
+import { FunctionToolCheckpoint } from './runner/functionToolCheckpoint';
 import { getAgentToolStreamBuffer } from './runner/agentToolStream';
 import { Agent, AgentOutputType } from './agent';
 import { RunAgentUpdatedStreamEvent } from './events';
@@ -1154,6 +1156,24 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
     );
   }
 
+  #canPublishFailedFunctionResults(
+    state: RunState<any, Agent<any, any>>,
+  ): boolean {
+    const agent = state._currentAgent;
+    const behavior = agent.toolUseBehavior;
+    if (!this.#agentHasOutputGuardrail(agent) || behavior === 'run_llm_again')
+      return true;
+    return !state._lastProcessedResponse?.functions.some((run) => {
+      if (run.toolCall.caller?.type === 'program') return false;
+      return (
+        typeof behavior !== 'object' ||
+        behavior.stopAtToolNames.some((name) =>
+          matchesFunctionToolName(run.tool, name),
+        )
+      );
+    });
+  }
+
   #shouldDeferInterruptedSessionItems(state: RunState<any, any>): boolean {
     return shouldDeferInterruptedSessionItems(
       state,
@@ -1411,6 +1431,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       const attemptedRunErrorHandlers = new WeakSet<object>();
       let currentTurnSpan: ReturnType<typeof startTurnSpan> | undefined;
       let turnPendingModelRequest: TurnPreparationSnapshot | undefined;
+      const functionToolCheckpoint = new FunctionToolCheckpoint();
       let guardrailTracker = createGuardrailTracker();
       const parentUsageRecorder = getRunnerParentUsageRecorder(this);
       const recordUsage = (usage: Usage) => {
@@ -1673,6 +1694,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
           if (isAcceptedResponseCheckpoint(state)) {
             this.#captureResponseGuardrailBoundary(state, false);
             await resumeAcceptedModelResponse({
+              serverConversationTracker,
+              functionToolCheckpoint,
               state,
               runner: this,
               toolErrorFormatter,
@@ -1713,6 +1736,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
                   ResumedSessionWritePreparation | undefined;
                 this.#captureResponseGuardrailBoundary(state, false);
                 const outcome = await resumeInterruptedTurn({
+                  functionToolCheckpoint,
                   state,
                   runner: this,
                   toolErrorFormatter,
@@ -2156,12 +2180,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               attemptedRunErrorHandlers,
               (handoffAgent) =>
                 this.#validateModelTimeoutForAgent(handoffAgent),
+              functionToolCheckpoint,
             );
 
             if (turnResult.nextStep.type === 'next_step_handoff') {
               this.#validateModelTimeoutForAgent(turnResult.nextStep.newAgent);
             }
             applyTurnResult({
+              functionToolCheckpoint,
               state,
               turnResult,
               agent: state._currentAgent,
@@ -2255,6 +2281,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (!restoredPendingTurn) {
           state._currentTurnInProgress = false;
         }
+        functionToolCheckpoint.preserveAfterFailure(
+          state,
+          !guardrailTracker.failed &&
+            this.#canPublishFailedFunctionResults(state),
+        );
         attachRunStateToError(err, state);
         releaseUnusedSessionHistoryTransactionBinding(state);
         const errorHandled = state._pendingSessionWrite
@@ -2397,6 +2428,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
 
     let sentInputToModel = false;
     let streamInputPersisted = false;
+    const functionToolCheckpoint = new FunctionToolCheckpoint();
     let guardrailTracker = createGuardrailTracker();
     const persistStreamInputIfNeeded = async () => {
       if (streamInputPersisted || !ensureStreamInputPersisted) {
@@ -2738,6 +2770,8 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
         if (isAcceptedResponseCheckpoint(result.state)) {
           this.#captureResponseGuardrailBoundary(result.state, false);
           await resumeAcceptedModelResponse({
+            serverConversationTracker,
+            functionToolCheckpoint,
             state: result.state,
             runner: this,
             toolErrorFormatter,
@@ -2781,6 +2815,7 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
               ResumedSessionWritePreparation | undefined;
             this.#captureResponseGuardrailBoundary(result.state, false);
             const outcome = await resumeInterruptedTurn({
+              functionToolCheckpoint,
               state: result.state,
               runner: this,
               toolErrorFormatter,
@@ -3388,12 +3423,14 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
             suppressedToolCalls,
             attemptedRunErrorHandlers,
             (handoffAgent) => this.#validateModelTimeoutForAgent(handoffAgent),
+            functionToolCheckpoint,
           );
 
           if (turnResult.nextStep.type === 'next_step_handoff') {
             this.#validateModelTimeoutForAgent(turnResult.nextStep.newAgent);
           }
           applyTurnResult({
+            functionToolCheckpoint,
             state: result.state,
             turnResult,
             agent: currentAgent,
@@ -3466,6 +3503,11 @@ export class Runner extends RunHooks<any, AgentOutputType<unknown>> {
       if (!restoredPendingTurn) {
         result.state._currentTurnInProgress = false;
       }
+      functionToolCheckpoint.preserveAfterFailure(
+        result.state,
+        !guardrailTracker.failed &&
+          this.#canPublishFailedFunctionResults(result.state),
+      );
       attachRunStateToError(error, result.state);
       releaseUnusedSessionHistoryTransactionBinding(result.state);
       suppressStreamInputPersistence =

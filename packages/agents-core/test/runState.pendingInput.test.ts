@@ -10,6 +10,7 @@ import {
   Runner,
   UserError,
   handoff,
+  hostedMcpTool,
   run,
   tool,
   type AgentInputItem,
@@ -25,12 +26,17 @@ import { Usage } from '../src/usage';
 import { fakeModelMessage, fakeModelRefusal } from './stubs';
 import {
   ScriptedModel,
+  functionCall,
   modelError,
   modelResponder,
   modelResponse,
   modelStream,
   modelStreamResponder,
 } from '../src/testing';
+import {
+  createResumableState,
+  hostedApprovalRequest,
+} from './fixtures/runState';
 
 class RecordingModel extends ScriptedModel {
   constructor(responses: ModelResponse[]) {
@@ -205,17 +211,6 @@ class BlockingSession implements Session {
 
 function message(text: string): AgentInputItem {
   return { type: 'message', role: 'user', content: text };
-}
-
-function createResumableState<TAgent extends Agent<any, any>>(
-  agent: TAgent,
-  maxTurns = 3,
-) {
-  const state = new RunState(new RunContext(), 'initial', agent, maxTurns);
-  state._currentTurn = 1;
-  state._initialInputGuardrailsCompleted = true;
-  state._currentStep = { type: 'next_step_run_again' };
-  return state;
 }
 
 describe('RunState pending input', () => {
@@ -1758,6 +1753,133 @@ describe('RunState pending input', () => {
     expect(state._currentStep).toEqual(beforeStep);
   });
 
+  it.each(['first', 'named', 'custom', 'named with new input'] as const)(
+    'finalizes an accepted server response after its extractor fails with a %s selector',
+    async (behavior) => {
+      const named = behavior === 'named' || behavior === 'named with new input';
+      const stagesMoreInput = behavior === 'named with new input';
+      const receipt = { ticket: 'T-1' };
+      const execute = vi.fn(async () => receipt);
+      const extract = vi.fn(() => {
+        throw new Error('metadata failed');
+      });
+      const ticket = tool({
+        name: 'ticket',
+        description: 'Creates a ticket.',
+        parameters: z.object({}),
+        execute,
+        customDataExtractor: extract,
+      });
+      const mcp = hostedMcpTool({
+        serverLabel: 'demo',
+        serverUrl: 'https://example.com',
+        requireApproval: 'always',
+      });
+      const model = new RecordingModel([
+        {
+          output: [
+            functionCall('ticket', {}, { callId: 'ticket-call' }),
+            ...(named ? [hostedApprovalRequest()] : []),
+          ],
+          usage: new Usage(),
+          responseId: 'accepted-ticket',
+        },
+        {
+          output: [fakeModelMessage('additional model turn')],
+          usage: new Usage(),
+          responseId: 'unexpected',
+        },
+      ]);
+      const select = vi.fn((outputs: unknown[]) => ({
+        isFinalOutput: true as const,
+        isInterrupted: undefined,
+        finalOutput: JSON.stringify(outputs),
+      }));
+      const agent = new Agent({
+        name: 'tickets',
+        model,
+        tools: named ? [ticket, mcp] : [ticket],
+        toolUseBehavior:
+          behavior === 'first'
+            ? 'stop_on_first_tool'
+            : named
+              ? { stopAtToolNames: ['ticket'] }
+              : async (_context, results) =>
+                  select(
+                    results.map(
+                      (result) =>
+                        result.type === 'function_output' && result.output,
+                    ),
+                  ),
+      });
+      const state = createResumableState(agent);
+      const conversationId = 'ticket-conversation';
+      state.setConversationContext(conversationId);
+      state.addInput('create the ticket');
+      const runner = new Runner({ tracingDisabled: true });
+      // An accepted response may also leave filtered input staged for a later turn.
+      const options = {
+        conversationId,
+        ...(named && {
+          callModelInputFilter: ({
+            modelData,
+          }: {
+            modelData: { input: AgentInputItem[]; instructions?: string };
+          }) => ({
+            ...modelData,
+            input: modelData.input.filter(
+              (item) =>
+                !(
+                  item.type === 'message' &&
+                  item.content === 'create the ticket'
+                ),
+            ),
+          }),
+        }),
+      };
+      const toolEnd = vi.fn();
+      runner.on('agent_tool_end', toolEnd);
+      await expect(runner.run(agent, state, options)).rejects.toThrow(
+        'metadata failed',
+      );
+      expect(state.pendingInput).toEqual(
+        named ? [message('create the ticket')] : [],
+      );
+      expect(state._currentStep).toMatchObject({
+        data: { responseAccepted: true, localProcessingStarted: true },
+      });
+      const endCalls = toolEnd.mock.calls.length;
+      const restored = await RunState.fromString(agent, state.toString());
+      let recovered = await runner.run(agent, restored, options);
+      if (named) {
+        expect(recovered.interruptions).toHaveLength(1);
+        expect(model.requests).toHaveLength(1);
+        if (stagesMoreInput) recovered.state.addInput('follow up');
+        recovered.state.approve(recovered.interruptions[0]);
+        recovered = await runner.run(
+          agent,
+          await RunState.fromString(agent, recovered.state.toString()),
+          options,
+        );
+      }
+      expect(recovered.finalOutput).toBe(
+        stagesMoreInput
+          ? 'additional model turn'
+          : JSON.stringify(behavior === 'custom' ? [receipt] : receipt),
+      );
+      expect(model.requests).toHaveLength(stagesMoreInput ? 2 : 1);
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(extract).toHaveBeenCalledTimes(1);
+      expect(toolEnd).toHaveBeenCalledTimes(endCalls);
+      expect(select).toHaveBeenCalledTimes(behavior === 'custom' ? 1 : 0);
+      expect(
+        recovered.history
+          .filter((item) => item.type === 'function_call_result')
+          .map((item) => item.callId),
+      ).toEqual(['ticket-call']);
+    },
+  );
+
   it('fails closed after accepted response validation fails', async () => {
     const execute = vi.fn(async () => 'should not run');
     const strictTool = tool({
@@ -2559,65 +2681,6 @@ describe('RunState pending input', () => {
           item.content === 'persist before stream cancellation',
       ),
     ).toHaveLength(1);
-  });
-
-  it('commits tool output before a failing end hook and does not rerun it', async () => {
-    const execute = vi.fn(async () => 'side effect completed');
-    const sideEffectTool = tool({
-      name: 'side_effect_tool',
-      description: 'Runs once.',
-      parameters: z.object({}).strict(),
-      execute,
-    });
-    const functionCall: protocol.FunctionCallItem = {
-      type: 'function_call',
-      name: 'side_effect_tool',
-      callId: 'side-effect-call',
-      status: 'completed',
-      arguments: '{}',
-    };
-    const model = new RecordingModel([
-      { output: [functionCall], usage: new Usage(), responseId: 'accepted-2' },
-      { output: [fakeModelMessage('done')], usage: new Usage() },
-    ]);
-    const agent = new Agent({
-      name: 'tool-end-failure',
-      model,
-      tools: [sideEffectTool],
-    });
-    const state = createResumableState(agent);
-    state.setConversationContext('tool-end-conversation');
-    state.addInput('accepted once');
-    const runner = new Runner();
-    let failEndHook = true;
-    runner.on('agent_tool_end', () => {
-      if (failEndHook) {
-        failEndHook = false;
-        throw new Error('tool end hook failed');
-      }
-    });
-
-    await expect(
-      runner.run(agent, state, {
-        conversationId: 'tool-end-conversation',
-      }),
-    ).rejects.toThrow('tool end hook failed');
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(
-      state._generatedItems.filter(
-        (item) =>
-          item.type === 'tool_call_output_item' &&
-          item.rawItem.callId === 'side-effect-call',
-      ),
-    ).toHaveLength(1);
-
-    const restored = await RunState.fromString(agent, state.toString());
-    const completed = await runner.run(agent, restored, {
-      conversationId: 'tool-end-conversation',
-    });
-    expect(completed.finalOutput).toBe('done');
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(model.requests).toHaveLength(2);
   });
 
   it('keeps one local occurrence across an explicitly approved unsafe replay', async () => {

@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "currentSchemaAtCreation": "1.24",
+  "currentSchemaAtCreation": "1.25",
   "schemas": [
     {
       "schemaVersion": "1.0",
@@ -398,6 +398,11 @@
       "schemaVersion": "1.24",
       "status": "current_unreleased",
       "reason": "Preserves bounded JSON token usage metadata and adds sandbox envelope version 6 for client-owned environment preparation."
+    },
+    {
+      "schemaVersion": "1.25",
+      "status": "current_unreleased",
+      "reason": "Identifies retained function results and preserves deferred model item positions during accepted-response recovery."
     }
   ],
   "expectedNormalizedFixtures": [

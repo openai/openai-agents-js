@@ -1,3 +1,8 @@
+import {
+  getToolResultsForFinalization,
+  releaseChildRunsForSelector,
+} from './currentTurnFunctionOutputs';
+import type { FunctionToolCheckpoint } from './functionToolCheckpoint';
 import { z } from 'zod';
 import { Agent } from '../agent';
 import { getAgentToolSourceAgent } from '../agentToolSourceRegistry';
@@ -1028,6 +1033,7 @@ export async function resolveInterruptedTurn<TContext>(
   signal?: AbortSignal,
   validateHandoffAgent?: (agent: Agent<any, any>) => void,
   beforeHandoffInputFilter?: (input: HandoffInputData) => void,
+  functionToolCheckpoint?: FunctionToolCheckpoint,
 ): Promise<SingleStepResult> {
   const suppressedToolCalls = preflightToolInvocations(
     agent,
@@ -1194,6 +1200,8 @@ export async function resolveInterruptedTurn<TContext>(
     toolErrorFormatter,
     agentToolParentRunConfig,
     signal,
+    undefined,
+    functionToolCheckpoint,
   );
 
   // Computer actions may require approval; only pending approved actions are executed on resume.
@@ -1365,6 +1373,8 @@ export async function resolveInterruptedTurn<TContext>(
     beforeHandoffInputFilter,
   });
   if (handoffStep) {
+    if (handoffStep.nextStep.type !== 'next_step_interruption')
+      releaseChildRunsForSelector(state);
     return handoffStep;
   }
 
@@ -1373,6 +1383,8 @@ export async function resolveInterruptedTurn<TContext>(
     runner,
     state,
     functionResults,
+    functionRuns: processedResponse.functions,
+    executedRuns: functionToolRuns,
     originalInput,
     newResponse,
     preStepItems,
@@ -1417,6 +1429,7 @@ export async function resolveTurnAfterModelResponse<
   preflightedToolCalls?: ReadonlySet<ApprovalCapableToolCall>,
   attemptedErrors?: WeakSet<object>,
   validateHandoffAgent?: (agent: Agent<any, any>) => void,
+  functionToolCheckpoint?: FunctionToolCheckpoint,
 ): Promise<SingleStepResult> {
   const suppressedToolCalls =
     preflightedToolCalls ??
@@ -1465,6 +1478,7 @@ export async function resolveTurnAfterModelResponse<
       agentToolParentRunConfig,
       executionSignal,
       cancelSiblingCategories,
+      functionToolCheckpoint,
     );
   const runComputerActions = (
     executionSignal = signal,
@@ -1593,6 +1607,8 @@ export async function resolveTurnAfterModelResponse<
     validateHandoffAgent,
   });
   if (handoffStep) {
+    if (handoffStep.nextStep.type !== 'next_step_interruption')
+      releaseChildRunsForSelector(state);
     return handoffStep;
   }
 
@@ -1601,6 +1617,8 @@ export async function resolveTurnAfterModelResponse<
     runner,
     state,
     functionResults,
+    functionRuns: processedResponse.functions,
+    executedRuns: functionRuns,
     originalInput,
     newResponse,
     preStepItems,
@@ -1920,18 +1938,30 @@ async function maybeCompleteTurnFromToolResults<TContext>({
   runner: _runner,
   state,
   functionResults,
+  functionRuns,
+  executedRuns,
   originalInput,
   newResponse,
   preStepItems,
   newItems,
   additionalInterruptions = [],
-}: TurnFinalizationParams<TContext>): Promise<SingleStepResult | null> {
+}: TurnFinalizationParams<TContext> & {
+  functionRuns: ProcessedResponse<TContext>['functions'];
+  executedRuns: ProcessedResponse<TContext>['functions'];
+}): Promise<SingleStepResult | null> {
   const toolOutcome = await checkForFinalOutputFromTools(
     agent,
-    functionResults,
+    getToolResultsForFinalization(
+      state,
+      functionRuns,
+      executedRuns,
+      functionResults,
+    ),
     state,
     additionalInterruptions,
   );
+
+  if (!toolOutcome.isInterrupted) releaseChildRunsForSelector(state);
 
   if (toolOutcome.isFinalOutput) {
     // Intentional: explicit toolUseBehavior finalization (for example stop_on_first_tool) takes precedence even when other provider-managed work is still pending.

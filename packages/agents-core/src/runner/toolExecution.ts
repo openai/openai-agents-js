@@ -1,3 +1,5 @@
+import { rememberChildRunForSelector } from './currentTurnFunctionOutputs';
+import type { FunctionToolCheckpoint } from './functionToolCheckpoint';
 import {
   FunctionToolApprovalInputError,
   getFunctionToolApprovalInput,
@@ -40,7 +42,6 @@ import {
   RunItem,
   RunMessageOutputItem,
   RunToolApprovalItem,
-  RunToolCallItem,
   RunToolCallOutputItem,
 } from '../items';
 import { assistant } from '../helpers/message';
@@ -88,6 +89,7 @@ import { Computer } from '../computer';
 import type { ApplyPatchResult } from '../editor';
 import {
   recordPendingSessionWriteTerminalProducer,
+  snapshotFunctionToolOutput,
   RunState,
 } from '../runState';
 import type { AgentInputItem, UnknownContext } from '../types';
@@ -145,6 +147,7 @@ type FunctionToolCallDeps<TContext = UnknownContext> = {
   agentToolParentRunConfig?: Partial<RunConfig>;
   signal?: AbortSignal;
   onInvalidOutputFailure?: (failure: InvalidToolOutputFailure) => void;
+  checkpoint?: FunctionToolCheckpoint;
 };
 
 type ParseToolArgumentsResult =
@@ -330,6 +333,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
   agentToolParentRunConfig?: Partial<RunConfig>,
   signal?: AbortSignal,
   onFatalFailure?: () => void,
+  checkpoint?: FunctionToolCheckpoint,
 ): Promise<FunctionToolResult<TContext>[]> {
   const startedInvalidInputFailures: InvalidToolInputFailure[] = [];
   const startedInvalidOutputFailures: InvalidToolOutputFailure[] = [];
@@ -352,6 +356,7 @@ export async function executeFunctionToolCalls<TContext = UnknownContext>(
     agentToolParentRunConfig,
     signal,
     onInvalidOutputFailure: trackInvalidOutputFailure,
+    checkpoint,
   };
 
   const executePreparedToolRun = async (
@@ -1257,10 +1262,12 @@ async function runApprovedFunctionTool<TContext>(
       span.spanData.input = toolRun.toolCall.arguments;
     }
 
+    let fallbackOutputFailure: InvalidToolOutputFailure | undefined;
     let toolStarted = false;
     let invocationPending = false;
     let cancellationFinalizationAttempted = false;
-    let committedOutputOnFailure = false;
+    let endNotificationStarted = false;
+    let extractorFailedAfterAcceptance = false;
     const buildSiblingCancellationResult = () => {
       if (toolStarted) {
         toolStarted = false;
@@ -1400,8 +1407,10 @@ async function runApprovedFunctionTool<TContext>(
           [FUNCTION_TOOL_PARSED_INPUT_CALLBACK]: (input: unknown) => {
             executedInput = cloneForCustomDataContext(input);
           },
-          [FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]:
-            onInvalidOutputFailure,
+          [FUNCTION_TOOL_INVALID_OUTPUT_FAILURE_CALLBACK]: (failure) => {
+            fallbackOutputFailure = failure;
+            onInvalidOutputFailure?.(failure);
+          },
         };
         if (preparedInput) {
           let executionInput = preparedInput;
@@ -1432,6 +1441,7 @@ async function runApprovedFunctionTool<TContext>(
         );
         invocationPending = true;
         signal?.throwIfAborted();
+        deps.checkpoint?.start(toolRun.toolCall.callId);
         const invokedToolOutput = await invokeFunctionTool({
           tool: toolRun.tool,
           runContext: state._context,
@@ -1496,6 +1506,48 @@ async function runApprovedFunctionTool<TContext>(
       if (refreshRedaction()) {
         executedInput = undefined;
       }
+      const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
+        RunResult<TContext, Agent<TContext, any>> | undefined;
+      const committedRunItem = new RunToolCallOutputItem(
+        rawItem,
+        agent,
+        toolOutput,
+        undefined,
+        executionStatus,
+      );
+      const retain =
+        deps.checkpoint &&
+        ((executionStatus === 'executed' && !invalidInputFailure) ||
+          (state._currentStep?.type === 'next_step_interruption' &&
+            state._currentStep.data.responseAccepted === true &&
+            !refreshRedaction())) &&
+        !nestedRunResult?.interruptions.length &&
+        !signal?.aborted;
+      let retainedItem: RunToolCallOutputItem | undefined;
+      if (retain) {
+        retainedItem = new RunToolCallOutputItem(
+          cloneForCustomDataContext(rawItem),
+          agent,
+          snapshotFunctionToolOutput(toolOutput),
+          undefined,
+          executionStatus,
+        );
+        if (nestedRunResult)
+          rememberChildRunForSelector(state, retainedItem, nestedRunResult);
+        deps.checkpoint?.accept(
+          toolRun.toolCall.callId,
+          retainedItem,
+          invalidInputFailure || fallbackOutputFailure
+            ? () =>
+                Boolean(
+                  (invalidInputFailure &&
+                    refreshInvalidToolInputFailure(invalidInputFailure)) ||
+                  (fallbackOutputFailure &&
+                    refreshInvalidToolOutputFailure(fallbackOutputFailure)),
+                )
+            : undefined,
+        );
+      }
       const redactedBeforeCustomData = refreshRedaction();
       let customData: Awaited<
         ReturnType<typeof maybeExtractToolOutputCustomData>
@@ -1530,22 +1582,18 @@ async function runApprovedFunctionTool<TContext>(
           customDataError = error;
         }
       }
+      if (retainedItem && !customDataFailed)
+        retainedItem.customData = customData;
       if (isSiblingCancellationSignal(signal)) {
         return buildSiblingCancellationResult();
       }
       if (customDataFailed) {
+        extractorFailedAfterAcceptance = Boolean(retainedItem);
         throw customDataError;
       }
-
-      const committedRunItem = new RunToolCallOutputItem(
-        rawItem,
-        agent,
-        toolOutput,
-        customData,
-        executionStatus,
-      );
-
+      committedRunItem.customData = customData;
       const redactedBeforeToolEnd = refreshRedaction();
+      endNotificationStarted = true;
       try {
         emitFunctionToolEnd(
           runner,
@@ -1556,32 +1604,8 @@ async function runApprovedFunctionTool<TContext>(
           toolRun.toolCall,
           refreshRedaction,
         );
+      } finally {
         throwIfRedactionPromoted(redactedBeforeToolEnd);
-      } catch (hookError) {
-        if (
-          state._currentStep?.type !== 'next_step_interruption' ||
-          state._currentStep.data?.responseAccepted !== true
-        ) {
-          throwIfRedactionPromoted(redactedBeforeToolEnd);
-          throw hookError;
-        }
-        const callRunItem = new RunToolCallItem(
-          toolRun.toolCall,
-          agent as Agent<any, any>,
-        );
-        const checkpointItems = state._generatedItems.some(
-          (item) =>
-            item instanceof RunToolCallItem &&
-            item.agent === agent &&
-            item.rawItem.type === 'function_call' &&
-            item.rawItem.callId === toolRun.toolCall.callId,
-        )
-          ? [committedRunItem]
-          : [callRunItem, committedRunItem];
-        state._generatedItems.push(...checkpointItems);
-        state._commitToolInvocations(checkpointItems);
-        committedOutputOnFailure = true;
-        throw hookError;
       }
 
       if (span && runner.config.traceIncludeSensitiveData) {
@@ -1595,8 +1619,6 @@ async function runApprovedFunctionTool<TContext>(
         runItem: committedRunItem,
       };
 
-      const nestedRunResult = consumeAgentToolRunResult(toolRun.toolCall) as
-        RunResult<TContext, Agent<TContext, any>> | undefined;
       if (nestedRunResult) {
         functionResult.agentRunResult = nestedRunResult;
         const nestedInterruptions = nestedRunResult.interruptions;
@@ -1611,6 +1633,7 @@ async function runApprovedFunctionTool<TContext>(
             JSON.stringify(nestedRunStateJson),
             aliases,
           );
+          deps.checkpoint?.suspend(toolRun.toolCall.callId);
         } else {
           for (const stateKey of stateKeys) {
             state.clearPendingAgentToolRun(stateKey, toolRun.toolCall.callId);
@@ -1624,7 +1647,9 @@ async function runApprovedFunctionTool<TContext>(
       if (invalidOutputFailure) {
         onInvalidOutputFailure?.(invalidOutputFailure);
       }
-      if (committedOutputOnFailure) {
+      if (endNotificationStarted) {
+        if (refreshRedaction() && invalidInputFailure)
+          throw invalidInputFailure.error;
         throw error;
       }
       if (cancellationFinalizationAttempted) {
@@ -1659,7 +1684,7 @@ async function runApprovedFunctionTool<TContext>(
         if (refreshRedaction() && invalidInputFailure) {
           throw invalidInputFailure.error;
         }
-        throw hookError;
+        throw extractorFailedAfterAcceptance ? error : hookError;
       }
 
       if (

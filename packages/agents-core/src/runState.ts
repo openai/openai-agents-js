@@ -197,8 +197,9 @@ import {
  *   Adds sandbox session-state envelope version 6 so client-owned
  *   unresolved environment references cannot be consumed by older SDKs that
  *   would resolve them in the runner process.
+ * - 1.25: Identifies accepted function results retained after an interrupted turn failed.
  */
-export const CURRENT_SCHEMA_VERSION = '1.24' as const;
+export const CURRENT_SCHEMA_VERSION = '1.25' as const;
 export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.0',
   '1.1',
@@ -224,6 +225,7 @@ export const SUPPORTED_SCHEMA_VERSIONS = [
   '1.21',
   '1.22',
   '1.23',
+  '1.24',
   CURRENT_SCHEMA_VERSION,
 ] as const;
 type SupportedSchemaVersion = (typeof SUPPORTED_SCHEMA_VERSIONS)[number];
@@ -253,6 +255,7 @@ function schemaVersionSupportsV120State(
     schemaVersion === '1.21' ||
     schemaVersion === '1.22' ||
     schemaVersion === '1.23' ||
+    schemaVersion === '1.24' ||
     schemaVersion === CURRENT_SCHEMA_VERSION
   );
 }
@@ -544,6 +547,10 @@ function getAgentInvocationMap<T>(
 
 type ToolInvocationCompletionEvidence = {
   fingerprint: string;
+  // Local messages and additional approvals can follow a receipt within its owning turn.
+  retainedAfterFailure?:
+    | { approvalTurn: number }
+    | { acceptedResponseTurn: number; beforePendingInput?: true };
   items: [RunItem, RunItem];
 };
 
@@ -1013,6 +1020,18 @@ function validateToolInvocationCompletionEvidence(
   evidence: ToolInvocationCompletionEvidence,
 ): string {
   const [callItem, outputItem] = evidence.items;
+  if (
+    evidence.retainedAfterFailure &&
+    (!(callItem instanceof RunToolCallItem) ||
+      callItem.rawItem.type !== 'function_call' ||
+      !(outputItem instanceof RunToolCallOutputItem) ||
+      outputItem.rawItem.type !== 'function_call_result')
+  ) {
+    throw new UserError(
+      'RunState retained function output evidence is invalid.',
+    );
+  }
+
   const toolName = getToolInvocationNameFromFingerprint(evidence.fingerprint);
   let toolCall: LocalToolCall | protocol.HostedToolCallItem;
   let expectedToolName: string | undefined;
@@ -1223,6 +1242,7 @@ function validateCurrentCompletedToolInvocations(
   for (const [agent, invocations] of state._completedToolInvocationEvidence) {
     for (const [callId, evidence] of invocations) {
       if (
+        schemaVersion !== '1.24' &&
         schemaVersion !== CURRENT_SCHEMA_VERSION &&
         isRecoveredHandoffEvidence(evidence)
       ) {
@@ -1390,6 +1410,12 @@ function normalizeJsonCompatibleValue(
   } catch {
     return INVALID_JSON_COMPATIBLE_VALUE;
   }
+}
+
+/** @internal Snapshots portable output values while preserving opaque live values. */
+export function snapshotFunctionToolOutput(value: unknown): unknown {
+  const snapshot = normalizeJsonCompatibleValue(value);
+  return snapshot === INVALID_JSON_COMPATIBLE_VALUE ? value : snapshot;
 }
 
 function normalizeJsonCompatibleValueInternal(
@@ -1584,6 +1610,17 @@ const serializedToolInvocationCompletionEvidenceItemSchema = z.union([
 
 const serializedToolInvocationCompletionEvidenceSchema = z
   .object({
+    retainedAfterFailure: z
+      .union([
+        z.object({ approvalTurn: z.number().int().positive() }).strict(),
+        z
+          .object({
+            acceptedResponseTurn: z.number().int().positive(),
+            beforePendingInput: z.literal(true).optional(),
+          })
+          .strict(),
+      ])
+      .optional(),
     fingerprint: z.string(),
     items: z.tuple([
       serializedToolInvocationCompletionEvidenceItemSchema,
@@ -1595,6 +1632,18 @@ const serializedToolInvocationCompletionEvidenceSchema = z
 type SerializedToolInvocationCompletionEvidence = z.infer<
   typeof serializedToolInvocationCompletionEvidenceSchema
 >;
+
+function hasRetainedFunctionOutputs(
+  state: z.infer<typeof SerializedRunState>,
+): boolean {
+  return (
+    state.completedToolInvocationEvidence?.some(({ invocations }) =>
+      Object.values(invocations).some(
+        (evidence) => evidence.retainedAfterFailure,
+      ),
+    ) ?? false
+  );
+}
 
 function serializeAgentInvocationEvidence(
   records: ReadonlyMap<
@@ -1626,6 +1675,9 @@ function serializeAgentInvocationEvidence(
           callId,
           {
             fingerprint: evidence.fingerprint,
+            ...(evidence.retainedAfterFailure && {
+              retainedAfterFailure: evidence.retainedAfterFailure,
+            }),
             items: evidence.items.map((item) => {
               const generatedItemIndex = generatedItemIndexes.get(item);
               return generatedItemIndex === undefined
@@ -1668,6 +1720,9 @@ function deserializeAgentInvocationEvidence(
           callId,
           {
             fingerprint: evidence.fingerprint,
+            ...(evidence.retainedAfterFailure && {
+              retainedAfterFailure: evidence.retainedAfterFailure,
+            }),
             items: evidence.items.map((reference) => {
               if ('generatedItemIndex' in reference) {
                 const generatedItem =
@@ -1762,6 +1817,7 @@ const handoffInputSnapshotSchema = z.object({
 
 const serializedProcessedResponseSchema = z.object({
   newItems: z.array(itemSchema),
+  newItemInsertionIndexes: z.array(z.number().int().nonnegative()).optional(),
   toolsUsed: z.array(z.string()),
   handoffs: z.array(
     z.object({
@@ -2293,7 +2349,8 @@ function validateCurrentResponseGeneratedItemOwnership(
     );
     if (interruptionIndex === null) {
       if (
-        stateJson.$schemaVersion !== CURRENT_SCHEMA_VERSION ||
+        (stateJson.$schemaVersion !== '1.24' &&
+          stateJson.$schemaVersion !== CURRENT_SCHEMA_VERSION) ||
         !parsedInterruption.success ||
         parsedInterruption.data.type !== 'tool_approval_item' ||
         parsedInterruption.data.rawItem.type !== 'function_call'
@@ -2555,7 +2612,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
    */
   public _observedToolInvocations: Map<Agent<any, any>, Map<string, string>>;
   /**
-   * Legacy call IDs whose serialized history cannot identify one canonical invocation.
+   * Call IDs whose history cannot establish a safe invocation or completion.
    */
   public _ambiguousToolInvocationCallIds: Map<Agent<any, any>, Set<string>>;
   /**
@@ -2831,6 +2888,13 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       );
     }
     return false;
+  }
+
+  /** @internal Prevents replay of a dispatched call with no publishable completion. */
+  _markToolInvocationUnsafe(agent: Agent<any, any>, callId: string): void {
+    getAgentAmbiguousCallIds(this._ambiguousToolInvocationCallIds, agent).add(
+      callId,
+    );
   }
 
   /**
@@ -3185,6 +3249,21 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       protocol.ModelItem.parse(item),
     );
     this._pendingInput.push(...structuredClone(normalized));
+    if (normalized.length && currentStep.type === 'next_step_interruption') {
+      // Input staged during a partial approval takes precedence over a retained named stop.
+      const completed = this._completedToolInvocationEvidence.get(
+        this._currentAgent,
+      );
+      for (const { toolCall } of this._lastProcessedResponse?.functions ?? []) {
+        const receipt = completed?.get(toolCall.callId)?.retainedAfterFailure;
+        if (
+          receipt &&
+          'acceptedResponseTurn' in receipt &&
+          receipt.acceptedResponseTurn === this._currentTurn
+        )
+          delete receipt.beforePendingInput;
+      }
+    }
   }
 
   /**
@@ -3408,6 +3487,11 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
   toJSON(
     options: { includeTracingApiKey?: boolean } = {},
   ): z.infer<typeof SerializedRunState> {
+    if (hasSplitTerminalSelection(this._pendingSessionWrite)) {
+      throw new UserError(
+        'This terminal tool result was saved before the pending Session append. Continue the live RunState to recover it.',
+      );
+    }
     assertSandboxStateUsesCurrentSessionEnvelope(this._sandbox);
     const agentIdentity = buildAgentIdentityMap(this.#startingAgent);
     const completedToolInvocations = new Map(
@@ -3521,6 +3605,7 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
 
     const includeTracingApiKey = options.includeTracingApiKey === true;
     const contextJson = this._context._toJSONForRunState(agentIdentity.byAgent);
+
     const currentResponseGeneratedItemOwnership =
       captureCurrentResponseGeneratedItemOwnership(this);
     const output = {
@@ -3676,22 +3761,27 @@ export class RunState<TContext, TAgent extends Agent<any, any>> {
       ...state.modelResponses.map((response) => response.usage),
       ...(state.lastModelResponse ? [state.lastModelResponse.usage] : []),
     ];
-    const nestedRunsSupportV123 = Object.values(
-      state.pendingAgentToolRuns,
-    ).every((serialized) => {
-      try {
-        const nested: unknown = JSON.parse(serialized);
-        return (
-          nested !== null &&
-          typeof nested === 'object' &&
-          '$schemaVersion' in nested &&
-          nested.$schemaVersion !== CURRENT_SCHEMA_VERSION &&
-          $schemaVersion.safeParse(nested.$schemaVersion).success
-        );
-      } catch {
-        return false;
-      }
-    });
+    const nestedVersions = Object.values(state.pendingAgentToolRuns).map(
+      (serialized) => {
+        try {
+          return $schemaVersion.safeParse(
+            JSON.parse(serialized)?.$schemaVersion,
+          ).data;
+        } catch {
+          return undefined;
+        }
+      },
+    );
+    if (
+      hasRetainedFunctionOutputs(state) ||
+      state.lastProcessedResponse?.newItemInsertionIndexes !== undefined ||
+      nestedVersions.includes(CURRENT_SCHEMA_VERSION)
+    )
+      return state;
+    state.$schemaVersion = '1.24';
+    const nestedRunsSupportV123 = nestedVersions.every(
+      (version) => version !== undefined && version !== '1.24',
+    );
     const sandboxSupportsV123 =
       !state.sandbox ||
       [
@@ -3840,6 +3930,15 @@ async function buildRunStateFromString<
     hasPendingSessionWriteField,
     hasSessionWriteCompactedItemCountField,
   );
+  if (
+    currentSchemaVersion !== CURRENT_SCHEMA_VERSION &&
+    (hasRetainedFunctionOutputs(stateJson) ||
+      stateJson.lastProcessedResponse?.newItemInsertionIndexes !== undefined)
+  ) {
+    throw new UserError(
+      'Retained function output evidence requires RunState schema 1.25.',
+    );
+  }
   assertSchemaVersionSupportsPendingInput(
     currentSchemaVersion as SupportedSchemaVersion,
     stateJson,
@@ -4043,7 +4142,8 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
         (envelope.version === 4 && supportsVersion4) ||
         (envelope.version === 5 && supportsVersion5) ||
         (envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-          schemaVersion === CURRENT_SCHEMA_VERSION),
+          (schemaVersion === '1.24' ||
+            schemaVersion === CURRENT_SCHEMA_VERSION)),
     )
   ) {
     return;
@@ -4058,7 +4158,7 @@ function assertSchemaVersionSupportsSandboxSessionEnvelope(
       !(envelope.version === 5 && supportsVersion5) &&
       !(
         envelope.version === SANDBOX_SESSION_STATE_VERSION &&
-        schemaVersion === CURRENT_SCHEMA_VERSION
+        (schemaVersion === '1.24' || schemaVersion === CURRENT_SCHEMA_VERSION)
       ),
   )?.version;
   throw new UserError(
@@ -4240,7 +4340,9 @@ function assertSchemaVersionSupportsPendingSessionWrite(
 export function assertPendingSessionWriteOwnership(
   state: RunState<any, any>,
   pending: PendingSessionWrite,
-  options: { allowUnhydratedTerminalToolStep?: boolean } = {},
+  options: {
+    allowUnhydratedTerminalToolStep?: boolean;
+  } = {},
 ): void {
   const pendingCompaction = pending.phase === 'compaction_pending';
   const ownsTerminalToolFinalization =
@@ -4305,6 +4407,18 @@ function getPendingSessionWriteBehaviorKind(
   return undefined;
 }
 
+function hasSplitTerminalSelection(
+  pending: PendingSessionWrite | undefined,
+): boolean {
+  const selected =
+    pending?.terminalToolFinalization?.selectedGeneratedItemIndex;
+  return (
+    pending !== undefined &&
+    selected !== undefined &&
+    selected < pending.alreadyPersistedCount
+  );
+}
+
 /** @internal */
 export function assertPendingSessionCompactionTerminalAuthority(
   state: RunState<any, any>,
@@ -4326,6 +4440,14 @@ export function assertPendingSessionCompactionTerminalAuthority(
     );
   }
   if (typeof behavior !== 'function') {
+    const pending = state._pendingSessionWrite;
+    if (
+      pending &&
+      hasSplitTerminalSelection(pending) &&
+      producer &&
+      ownsPendingTerminalToolFinalization(state, pending, {})
+    )
+      return;
     if (!hasDeterministicTerminalToolOutputSource(state)) {
       throw new UserError(
         'RunState pending Session compaction terminal output is invalid.',
@@ -4467,7 +4589,9 @@ function selectPendingDeclarativeTerminalCandidate(
 function ownsPendingTerminalToolFinalization(
   state: RunState<any, any>,
   pending: PendingSessionWrite,
-  options: { allowUnhydratedTerminalToolStep?: boolean },
+  options: {
+    allowUnhydratedTerminalToolStep?: boolean;
+  },
 ): boolean {
   const provenance = pending.terminalToolFinalization;
   const currentStep = state._currentStep;
@@ -4488,6 +4612,14 @@ function ownsPendingTerminalToolFinalization(
   const completedInvocations = state._completedToolInvocationEvidence.get(
     state._currentAgent,
   );
+  function isRetainedApproval(callId: string): boolean {
+    const receipt = completedInvocations?.get(callId)?.retainedAfterFailure;
+    return (
+      receipt !== undefined &&
+      'approvalTurn' in receipt &&
+      receipt.approvalTurn === state._currentTurn
+    );
+  }
   const pendingGeneratedItems = state._generatedItems.slice(
     pending.alreadyPersistedCount,
     pending.persistedItemCount,
@@ -4521,9 +4653,11 @@ function ownsPendingTerminalToolFinalization(
         const callId = liveProducer.resultCallIds[index];
         return (
           callId !== undefined &&
-          generatedItemIndex >= pending.alreadyPersistedCount &&
+          (generatedItemIndex >= pending.alreadyPersistedCount ||
+            isRetainedApproval(callId)) &&
+          generatedItemIndex >= 0 &&
           generatedItemIndex < pending.persistedItemCount &&
-          completedInvocations?.has(callId)
+          completedInvocations?.get(callId)?.items[1] === item
         );
       }),
     );
@@ -4534,7 +4668,7 @@ function ownsPendingTerminalToolFinalization(
   if (
     !selectedCallId ||
     selectedGeneratedItemIndex === undefined ||
-    selectedGeneratedItemIndex < pending.alreadyPersistedCount ||
+    selectedGeneratedItemIndex < 0 ||
     selectedGeneratedItemIndex >= pending.persistedItemCount
   ) {
     return false;
@@ -4545,17 +4679,18 @@ function ownsPendingTerminalToolFinalization(
     !(selectedOutput instanceof RunToolCallOutputItem) ||
     getCompletionOutputCallId(selectedOutput, state._currentAgent) !==
       selectedCallId ||
-    !completionEvidence ||
+    completionEvidence?.items[1] !== selectedOutput ||
     toSmartString(selectedOutput.output) !== provenance.finalOutput
   ) {
     return false;
   }
   const currentBehavior = state._currentAgent.toolUseBehavior;
-  if (
-    liveProducer &&
-    liveProducer.finalOutput === provenance.finalOutput &&
-    liveProducer.selectedCallId === selectedCallId
-  ) {
+  if (liveProducer) {
+    if (
+      liveProducer.finalOutput !== provenance.finalOutput ||
+      liveProducer.selectedCallId !== selectedCallId
+    )
+      return false;
     const liveCandidates = liveProducer.resultItems.map((item, index) => {
       const candidate = getPendingDeclarativeTerminalCandidate(
         state,
@@ -4565,21 +4700,22 @@ function ownsPendingTerminalToolFinalization(
       const generatedItemIndex = state._generatedItems.indexOf(item);
       return candidate &&
         liveProducer.resultCallIds[index] === candidate.callId &&
-        generatedItemIndex >= pending.alreadyPersistedCount &&
+        (generatedItemIndex >= pending.alreadyPersistedCount ||
+          isRetainedApproval(candidate.callId)) &&
+        generatedItemIndex >= 0 &&
         generatedItemIndex < pending.persistedItemCount
         ? candidate
         : undefined;
     });
-    if (liveCandidates.every((candidate) => candidate !== undefined)) {
-      return (
-        selectPendingDeclarativeTerminalCandidate(
-          currentBehavior,
-          liveCandidates,
-        )?.outputItem === selectedOutput
-      );
-    }
+    return (
+      liveCandidates.every((candidate) => candidate !== undefined) &&
+      selectPendingDeclarativeTerminalCandidate(currentBehavior, liveCandidates)
+        ?.outputItem === selectedOutput
+    );
   }
 
+  // A serialized Session append can only prove a selection inside its own range.
+  if (selectedGeneratedItemIndex < pending.alreadyPersistedCount) return false;
   const restoredCandidates = pendingGeneratedItems.flatMap((item) => {
     const candidate = getPendingDeclarativeTerminalCandidate(
       state,
@@ -7592,6 +7728,8 @@ async function deserializeProcessedResponse<TContext = UnknownContext>(
   );
 
   const result = {
+    newItemInsertionIndexes:
+      serializedProcessedResponse.newItemInsertionIndexes,
     newItems: serializedProcessedResponse.newItems.map((item) =>
       deserializeItem(item, agentMap),
     ),

@@ -96,6 +96,8 @@ export type ToolRunMCPApprovalRequest = {
 
 export type ProcessedResponse<TContext = UnknownContext> = {
   newItems: RunItem[];
+  /** Insertion positions for model items deferred by partial accepted-response publication. */
+  newItemInsertionIndexes?: number[];
   handoffs: ToolRunHandoff[];
   functions: ToolRunFunction<TContext>[];
   functionToolsNotFound?: ToolRunFunctionNotFound[];

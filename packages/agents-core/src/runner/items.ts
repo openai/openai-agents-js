@@ -588,42 +588,27 @@ function dropReasoningItemsPrecedingDroppedCalls(
   droppedIndexes: Set<number>,
   pruningIndexes?: Set<number>,
 ): AgentInputItem[] {
-  const dropReasoning = new Set<number>();
-
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (pruningIndexes && !pruningIndexes.has(index)) {
+  const excluded = new Set(droppedIndexes);
+  let dropPreamble = false;
+  let groupHasRetainedCall = false;
+  for (let index = items.length - 1; index >= 0; index--) {
+    const type = items[index]?.type;
+    if (type === 'reasoning') {
+      if (dropPreamble && (!pruningIndexes || pruningIndexes.has(index))) {
+        excluded.add(index);
+      }
+      groupHasRetainedCall = false;
       continue;
     }
-    const item = items[index];
-    if (
-      !item ||
-      typeof item !== 'object' ||
-      (item as { type?: unknown }).type !== 'reasoning' ||
-      droppedIndexes.has(index)
-    ) {
-      continue;
-    }
-
-    for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
-      if (dropReasoning.has(nextIndex)) {
-        continue;
-      }
-      const nextItem = items[nextIndex];
-      if (
-        nextItem &&
-        typeof nextItem === 'object' &&
-        (nextItem as { type?: unknown }).type === 'reasoning'
-      ) {
-        continue;
-      }
-      if (droppedIndexes.has(nextIndex)) {
-        dropReasoning.add(index);
-      }
-      break;
+    // Consecutive function calls and their programs can share the same reasoning.
+    if (type === 'function_call' || type === 'program') {
+      groupHasRetainedCall ||= !droppedIndexes.has(index);
+      dropPreamble = !groupHasRetainedCall;
+    } else {
+      groupHasRetainedCall = false;
+      dropPreamble = droppedIndexes.has(index);
     }
   }
-
-  const excluded = new Set([...droppedIndexes, ...dropReasoning]);
   return items.filter((_item, index) => !excluded.has(index));
 }
 

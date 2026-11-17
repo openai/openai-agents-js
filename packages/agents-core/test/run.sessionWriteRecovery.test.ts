@@ -1447,6 +1447,145 @@ describe('resumed Session write recovery', () => {
     },
   );
 
+  it('rejects selecting an automatic sibling outside a restored terminal append', async () => {
+    const tools = ['first', 'second'].map((name) =>
+      tool({
+        name,
+        description: name,
+        parameters: z.object({}),
+        needsApproval: name === 'second',
+        execute: async () => name,
+      }),
+    );
+    const agent = new Agent({
+      name: 'receipts',
+      tools,
+      toolUseBehavior: 'stop_on_first_tool',
+      model: new ScriptedModel([
+        modelResponder(() => ({
+          output: tools.map(({ name }) => ({
+            ...functionToolCall(name),
+            name,
+          })),
+          usage: new Usage(),
+        })),
+      ]),
+    });
+    const session = new UncertainAppendSession();
+    const parked = await runOnce(
+      'non_streamed',
+      agent,
+      'get receipts',
+      session,
+    );
+    parked.state.approve(parked.interruptions[0]!);
+    session.failNextAppend('after');
+    await expect(
+      runOnce('non_streamed', agent, parked.state, session),
+    ).rejects.toThrow('acknowledgement lost');
+    const saved = parked.state.toString();
+    const forged = JSON.parse(saved);
+    const selected = forged.pendingSessionWrite.terminalToolFinalization;
+    selected.selectedCallId = 'first';
+    selected.selectedGeneratedItemIndex = forged.generatedItems.findIndex(
+      (item: { type: string; rawItem?: { callId?: string } }) =>
+        item.type === 'tool_call_output_item' &&
+        item.rawItem?.callId === 'first',
+    );
+    forged.currentStep.output = selected.finalOutput = 'first';
+    forged.$schemaVersion = '1.25';
+    forged.completedToolInvocationEvidence[0].invocations.first.retainedAfterFailure =
+      { approvalTurn: forged.currentTurn };
+    await expect(
+      RunState.fromString(agent, JSON.stringify(forged)),
+    ).rejects.toThrow(/pending Session write is invalid/);
+    const restored = await RunState.fromString(agent, saved);
+    expect(
+      (await runOnce('non_streamed', agent, restored, session)).finalOutput,
+    ).toBe('second');
+  });
+
+  it.each(['append', 'compaction'] as const)(
+    'recovers a split terminal selection only from the live state after %s fails',
+    async (failure) => {
+      const firstExecute = vi.fn(async () => 'first receipt');
+      const secondExecute = vi.fn(async () => 'second receipt');
+      const first = tool({
+        name: 'first',
+        description: 'Produces the terminal receipt.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: firstExecute,
+        customDataExtractor: () => {
+          throw new Error('metadata failed');
+        },
+      });
+      const second = tool({
+        name: 'second',
+        description: 'Requires a separate approval.',
+        parameters: z.object({}),
+        needsApproval: true,
+        execute: secondExecute,
+      });
+      const model = new ScriptedModel([
+        modelResponder(() => ({
+          output: [first, second].map(({ name }) => ({
+            ...functionToolCall(name),
+            name,
+          })),
+          usage: new Usage(),
+        })),
+      ]);
+      const agent = new Agent({
+        name: 'receipts',
+        model,
+        tools: [first, second],
+        toolUseBehavior: 'stop_on_first_tool',
+      });
+      const session = new UncertainAppendSession();
+      const parked = await runOnce(
+        'non_streamed',
+        agent,
+        'get receipts',
+        session,
+      );
+      parked.state.approve(parked.interruptions[0]!);
+      await expect(
+        runOnce('non_streamed', agent, parked.state, session),
+      ).rejects.toThrow('metadata failed');
+      const pending = await runOnce(
+        'non_streamed',
+        agent,
+        parked.state,
+        session,
+      );
+      pending.state.approve(pending.interruptions[0]!);
+      if (failure === 'append') session.failNextAppend('after');
+      else session.failNextCompaction();
+      await expect(
+        runOnce('streamed', agent, pending.state, session),
+      ).rejects.toThrow(
+        failure === 'append'
+          ? 'acknowledgement lost'
+          : 'input compaction rejected',
+      );
+      expect(() => pending.state.toString()).toThrow(
+        /Continue the live RunState/,
+      );
+      expect(
+        (await runOnce('streamed', agent, pending.state, session)).finalOutput,
+      ).toBe('first receipt');
+      expect(firstExecute).toHaveBeenCalledTimes(1);
+      expect(secondExecute).toHaveBeenCalledTimes(1);
+      expect(model.calls).toHaveLength(1);
+      expect(
+        (await session.getItems())
+          .filter((item) => item.type === 'function_call_result')
+          .map((item) => item.callId),
+      ).toEqual(['first', 'second']);
+    },
+  );
+
   it.each<RunMode>(['non_streamed', 'streamed'])(
     'rejects an ambiguous serialized sequential-approval terminal $mode append and recovers it live',
     async (mode) => {
