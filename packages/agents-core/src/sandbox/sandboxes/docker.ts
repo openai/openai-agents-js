@@ -1077,11 +1077,11 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       nextManifest,
     );
     try {
-      await materializeDockerMountPoint(
-        this.state.workspaceRootPath,
-        this.state.manifest.root,
+      await materializeLiveDockerMountPoint(
+        this,
         logicalPath,
         args.entry,
+        preparedMount,
       );
       if (args.runAs) {
         await this.mkdirDockerPathAs(preparedMount.effectiveMountPath, 'root');
@@ -1173,11 +1173,19 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
           allowIdentityMetadata: true,
           supportsMount: isSupportedDockerApplyMount,
           materializeMount: async ({ logicalPath, entry }) => {
-            await materializeDockerMountPoint(
-              this.state.workspaceRootPath,
-              this.state.manifest.root,
+            const preparedMount = preparedMountsByLogicalPath.get(logicalPath);
+            if (!preparedMount || !isDockerInContainerMount(entry)) {
+              throw new SandboxMountError(
+                'DockerSandboxClient could not prepare an in-container mount.',
+                { mountType: entry.type },
+                'mount_config_invalid',
+              );
+            }
+            await materializeLiveDockerMountPoint(
+              this,
               logicalPath,
               entry,
+              preparedMount,
             );
           },
         },
@@ -1352,6 +1360,13 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
       this.state.workspaceRootPath,
       this.state.manifest,
     );
+    const preparedMounts = await prepareDockerInContainerMounts(
+      this,
+      this.state.manifest,
+    );
+    const preparedMountsByLogicalPath = new Map(
+      preparedMounts.map((prepared) => [prepared.logicalPath, prepared]),
+    );
     await materializeLocalWorkspaceManifestMounts(
       this.state.manifest,
       this.state.workspaceRootPath,
@@ -1360,16 +1375,29 @@ export class DockerSandboxSession extends UnixLocalSandboxSession<DockerSandboxS
         allowIdentityMetadata: true,
         supportsMount: isSupportedDockerCreateMount,
         materializeMount: async ({ logicalPath, entry }) => {
-          await materializeDockerMountPoint(
-            this.state.workspaceRootPath,
-            this.state.manifest.root,
-            logicalPath,
-            entry,
-          );
+          const preparedMount = preparedMountsByLogicalPath.get(logicalPath);
+          if (preparedMount) {
+            await materializeLiveDockerMountPoint(
+              this,
+              logicalPath,
+              entry,
+              preparedMount,
+            );
+          } else if (!isDockerBindMount(entry) && !isDockerVolumeMount(entry)) {
+            throw new SandboxMountError(
+              'DockerSandboxClient could not prepare an in-container mount.',
+              { mountType: entry.type },
+              'mount_config_invalid',
+            );
+          }
         },
       },
     );
-    await applyDockerInContainerMounts(this, this.state.manifest);
+    await applyDockerInContainerMounts(
+      this,
+      this.state.manifest,
+      preparedMounts,
+    );
   }
 
   override resolveSandboxPath(
@@ -3879,7 +3907,40 @@ async function materializeDockerMountPoint(
   if (!relativePath) {
     return;
   }
-  await mkdir(resolve(workspaceRootPath, relativePath), { recursive: true });
+  const workspaceRoot = await realpath(workspaceRootPath);
+  const effectivePath = await realpathWithMissingTail(
+    resolve(workspaceRootPath, relativePath),
+  );
+  const effectiveRelativePath = relative(workspaceRoot, effectivePath);
+  if (
+    effectiveRelativePath === '..' ||
+    effectiveRelativePath.startsWith(`..${sep}`) ||
+    isAbsolute(effectiveRelativePath)
+  ) {
+    throw new SandboxMountError(
+      'DockerSandboxClient mount path resolves outside the sandbox workspace.',
+      { mountType: entry.type },
+      'mount_config_invalid',
+    );
+  }
+  await mkdir(effectivePath, { recursive: true });
+}
+
+async function materializeLiveDockerMountPoint(
+  session: DockerSandboxSession,
+  logicalPath: string,
+  entry: Mount | TypedMount,
+  preparedMount: PreparedDockerInContainerMount,
+): Promise<void> {
+  if (
+    resolveDockerMountWorkspaceRelativePath(
+      session.state.manifest.root,
+      logicalPath,
+      entry,
+    ) !== null
+  ) {
+    await session.mkdirDockerPathAs(preparedMount.effectiveMountPath);
+  }
 }
 
 function isSupportedDockerCreateMount(entry: Mount | TypedMount): boolean {
