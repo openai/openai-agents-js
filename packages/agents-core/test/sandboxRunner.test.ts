@@ -8423,6 +8423,75 @@ describe('sandbox runner integration', () => {
     ]);
   });
 
+  it('retains live child results when approval resume rebinds sandbox execution tools', async () => {
+    const client = new FakeSandboxClient();
+    const childModel = new ScriptedModel([[fakeModelMessage('child result')]]);
+    const child = new Agent({ name: 'Child', model: childModel });
+    const consult = child.asTool({
+      toolName: 'consult',
+      toolDescription: 'Consult child.',
+    });
+    const gated = tool({
+      name: 'gated',
+      description: 'Requires approval.',
+      parameters: z.object({}),
+      needsApproval: true,
+      execute: vi.fn(async () => 'approved'),
+    });
+    const model = new ScriptedModel([
+      [
+        {
+          type: 'function_call',
+          name: 'consult',
+          callId: 'consult',
+          status: 'completed',
+          arguments: '{"input":"hello"}',
+        },
+        {
+          type: 'function_call',
+          name: 'gated',
+          callId: 'gated',
+          status: 'completed',
+          arguments: '{}',
+        },
+      ],
+    ]);
+    const parent = new SandboxAgent({
+      name: 'Parent',
+      model,
+      tools: [consult, gated],
+      toolUseBehavior: async (_context, results) => {
+        const childOutput = results[0];
+        expect(
+          childOutput.type === 'function_output' &&
+            childOutput.agentRunResult?.finalOutput,
+        ).toBe('child result');
+        return {
+          isFinalOutput: true,
+          isInterrupted: undefined,
+          finalOutput: 'finished',
+        };
+      },
+    });
+    const first = await run(parent, 'begin', { sandbox: { client } });
+    const originalRouting = first.state._lastProcessedResponse;
+    expect(first.interruptions).toHaveLength(1);
+    first.state.approve(first.interruptions[0]!);
+    const result = await run(parent, first.state, {
+      sandbox: {
+        client,
+        sessionState: {
+          manifest: new Manifest({ root: '/workspace' }),
+          sessionId: 'explicit-session',
+        },
+      },
+    });
+    expect(result.state._lastProcessedResponse).not.toBe(originalRouting);
+    expect(result.finalOutput).toBe('finished');
+    expect(childModel.calls).toHaveLength(1);
+    expect(model.calls).toHaveLength(1);
+  });
+
   it('starts adopted preserved sandbox sessions before agent execution', async () => {
     const client = new StartableFakeSandboxClient();
     const archiveLimits = {

@@ -1,4 +1,5 @@
 import type { FunctionTool } from './tool';
+import type { FunctionCallItem } from './types/protocol';
 import { UserError } from './errors';
 import { toolDisplayName, toolQualifiedName } from './tooling';
 export { toolDisplayName, toolQualifiedName } from './tooling';
@@ -500,6 +501,30 @@ export function getExplicitFunctionToolNamespace(
 
 export function getFunctionToolNamespace(tool: unknown): string | undefined {
   return getExplicitFunctionToolNamespace(tool);
+}
+
+export function normalizeFunctionToolCallForStorage(
+  toolCall: FunctionCallItem,
+  tool: FunctionTool<any>,
+): FunctionCallItem {
+  const namespace = getToolCallNamespace(toolCall);
+  const explicitNamespace = getFunctionToolNamespace(tool);
+  const qualifiedToolName = getFunctionToolQualifiedName(tool);
+
+  if (
+    namespace ||
+    !explicitNamespace ||
+    !qualifiedToolName ||
+    toolCall.name !== qualifiedToolName
+  ) {
+    return toolCall;
+  }
+
+  return {
+    ...toolCall,
+    name: tool.name,
+    namespace: explicitNamespace,
+  };
 }
 
 export function getFunctionToolNamespaceDescription(

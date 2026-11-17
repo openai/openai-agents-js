@@ -1,0 +1,368 @@
+{
+  "snapshot": {
+    "$schemaVersion": "1.23",
+    "currentTurn": 1,
+    "currentAgent": { "name": "Released agent" },
+    "originalInput": [
+      { "type": "message", "role": "user", "content": "run both" }
+    ],
+    "modelResponses": [
+      {
+        "usage": {
+          "requests": 1,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "totalTokens": 0,
+          "inputTokensDetails": [],
+          "outputTokensDetails": []
+        },
+        "output": [
+          {
+            "type": "function_call",
+            "callId": "immediate",
+            "name": "immediate",
+            "status": "completed",
+            "arguments": "{}"
+          },
+          {
+            "type": "function_call",
+            "callId": "gated",
+            "name": "gated",
+            "status": "completed",
+            "arguments": "{}"
+          }
+        ],
+        "responseId": "scripted-response-1"
+      }
+    ],
+    "context": {
+      "usage": {
+        "requests": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "inputTokensDetails": [],
+        "outputTokensDetails": []
+      },
+      "approvals": {},
+      "functionApprovals": [
+        {
+          "agentIdentity": "Released agent",
+          "approvals": {
+            "[\"bare\",\"gated\"]": { "approved": ["gated"], "rejected": [] }
+          }
+        }
+      ],
+      "approvalInvocations": [
+        {
+          "agentIdentity": "Released agent",
+          "invocations": {
+            "gated": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"gated\\\"]\",\"type\":\"function_call\"}"
+          },
+          "approvals": {}
+        }
+      ],
+      "context": {}
+    },
+    "toolUseTracker": { "Released agent": ["immediate", "gated"] },
+    "maxTurns": 10,
+    "currentAgentSpan": null,
+    "noActiveAgentRun": false,
+    "inputGuardrailResults": [],
+    "initialInputGuardrailsCompleted": true,
+    "outputGuardrailResults": [],
+    "toolInputGuardrailResults": [],
+    "toolOutputGuardrailResults": [],
+    "currentTurnInProgress": false,
+    "currentStep": { "type": "next_step_final_output", "output": "gated" },
+    "lastModelResponse": {
+      "usage": {
+        "requests": 1,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "totalTokens": 0,
+        "inputTokensDetails": [],
+        "outputTokensDetails": []
+      },
+      "output": [
+        {
+          "type": "function_call",
+          "callId": "immediate",
+          "name": "immediate",
+          "status": "completed",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call",
+          "callId": "gated",
+          "name": "gated",
+          "status": "completed",
+          "arguments": "{}"
+        }
+      ],
+      "responseId": "scripted-response-1"
+    },
+    "generatedItems": [
+      {
+        "type": "tool_call_item",
+        "rawItem": {
+          "type": "function_call",
+          "callId": "immediate",
+          "name": "immediate",
+          "status": "completed",
+          "arguments": "{}"
+        },
+        "agent": { "name": "Released agent" }
+      },
+      {
+        "type": "tool_call_item",
+        "rawItem": {
+          "type": "function_call",
+          "callId": "gated",
+          "name": "gated",
+          "status": "completed",
+          "arguments": "{}"
+        },
+        "agent": { "name": "Released agent" }
+      },
+      {
+        "type": "tool_call_output_item",
+        "rawItem": {
+          "type": "function_call_result",
+          "name": "immediate",
+          "callId": "immediate",
+          "status": "completed",
+          "output": { "type": "text", "text": "immediate" }
+        },
+        "agent": { "name": "Released agent" },
+        "output": "immediate",
+        "executionStatus": "executed"
+      },
+      {
+        "type": "tool_call_output_item",
+        "rawItem": {
+          "type": "function_call_result",
+          "name": "gated",
+          "callId": "gated",
+          "status": "completed",
+          "output": { "type": "text", "text": "gated" }
+        },
+        "agent": { "name": "Released agent" },
+        "output": "gated",
+        "executionStatus": "executed"
+      }
+    ],
+    "pendingAgentToolRuns": {},
+    "pendingAgentToolRunAliases": {},
+    "lastProcessedResponse": {
+      "newItems": [
+        {
+          "type": "tool_call_item",
+          "rawItem": {
+            "type": "function_call",
+            "callId": "immediate",
+            "name": "immediate",
+            "status": "completed",
+            "arguments": "{}"
+          },
+          "agent": { "name": "Released agent" }
+        },
+        {
+          "type": "tool_call_item",
+          "rawItem": {
+            "type": "function_call",
+            "callId": "gated",
+            "name": "gated",
+            "status": "completed",
+            "arguments": "{}"
+          },
+          "agent": { "name": "Released agent" }
+        }
+      ],
+      "toolsUsed": ["immediate", "gated"],
+      "handoffs": [],
+      "functions": [
+        {
+          "toolCall": {
+            "type": "function_call",
+            "callId": "immediate",
+            "name": "immediate",
+            "status": "completed",
+            "arguments": "{}"
+          },
+          "tool": {
+            "type": "function",
+            "name": "immediate",
+            "description": "immediate",
+            "parameters": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true,
+            "deferLoading": false,
+            "timeoutBehavior": "error_as_result",
+            "inputGuardrails": [],
+            "outputGuardrails": []
+          },
+          "mcpToolBinding": null
+        },
+        {
+          "toolCall": {
+            "type": "function_call",
+            "callId": "gated",
+            "name": "gated",
+            "status": "completed",
+            "arguments": "{}"
+          },
+          "tool": {
+            "type": "function",
+            "name": "gated",
+            "description": "gated",
+            "parameters": {
+              "$schema": "http://json-schema.org/draft-07/schema#",
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false,
+              "required": []
+            },
+            "strict": true,
+            "deferLoading": false,
+            "timeoutBehavior": "error_as_result",
+            "inputGuardrails": [],
+            "outputGuardrails": []
+          },
+          "mcpToolBinding": null
+        }
+      ],
+      "functionToolsNotFound": [],
+      "computerActions": [],
+      "shellActions": [],
+      "applyPatchActions": [],
+      "mcpApprovalRequests": []
+    },
+    "currentTurnPersistedItemCount": 3,
+    "pendingSessionWrite": {
+      "sessionId": "uncertain-append-session",
+      "alreadyPersistedCount": 3,
+      "persistedItemCount": 4,
+      "reasoningItemIdPolicy": "preserve",
+      "terminalToolFinalization": {
+        "behavior": "stop_on_first_tool",
+        "selectedCallId": "gated",
+        "selectedGeneratedItemIndex": 3,
+        "finalOutput": "gated"
+      },
+      "phase": "append_ready",
+      "beforeItems": [
+        { "type": "message", "role": "user", "content": "run both" },
+        {
+          "type": "function_call",
+          "callId": "immediate",
+          "name": "immediate",
+          "status": "completed",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call",
+          "callId": "gated",
+          "name": "gated",
+          "status": "completed",
+          "arguments": "{}"
+        },
+        {
+          "type": "function_call_result",
+          "name": "immediate",
+          "callId": "immediate",
+          "status": "completed",
+          "output": { "type": "text", "text": "immediate" }
+        }
+      ],
+      "comparableAppendItems": [
+        {
+          "type": "function_call_result",
+          "name": "gated",
+          "callId": "gated",
+          "status": "completed",
+          "output": { "type": "text", "text": "gated" }
+        }
+      ]
+    },
+    "completedToolInvocations": [
+      {
+        "agentIdentity": "Released agent",
+        "invocations": {
+          "immediate": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"immediate\\\"]\",\"type\":\"function_call\"}",
+          "gated": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"gated\\\"]\",\"type\":\"function_call\"}"
+        }
+      }
+    ],
+    "completedToolInvocationEvidence": [
+      {
+        "agentIdentity": "Released agent",
+        "invocations": {
+          "immediate": {
+            "fingerprint": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"immediate\\\"]\",\"type\":\"function_call\"}",
+            "items": [{ "generatedItemIndex": 0 }, { "generatedItemIndex": 2 }]
+          },
+          "gated": {
+            "fingerprint": "{\"caller\":{\"type\":\"direct\"},\"payload\":{\"format\":\"json\",\"value\":{}},\"toolName\":\"[\\\"bare\\\",\\\"gated\\\"]\",\"type\":\"function_call\"}",
+            "items": [
+              {
+                "item": {
+                  "type": "tool_approval_item",
+                  "rawItem": {
+                    "type": "function_call",
+                    "callId": "gated",
+                    "name": "gated",
+                    "status": "completed",
+                    "arguments": "{}"
+                  },
+                  "agent": { "name": "Released agent" },
+                  "toolName": "gated",
+                  "functionToolStateKey": "[\"bare\",\"gated\"]"
+                }
+              },
+              { "generatedItemIndex": 3 }
+            ]
+          }
+        }
+      }
+    ],
+    "ambiguousToolInvocationCallIds": [],
+    "trace": null
+  },
+  "history": [
+    { "type": "message", "role": "user", "content": "run both" },
+    {
+      "type": "function_call",
+      "callId": "immediate",
+      "name": "immediate",
+      "status": "completed",
+      "arguments": "{}"
+    },
+    {
+      "type": "function_call",
+      "callId": "gated",
+      "name": "gated",
+      "status": "completed",
+      "arguments": "{}"
+    },
+    {
+      "type": "function_call_result",
+      "name": "immediate",
+      "callId": "immediate",
+      "status": "completed",
+      "output": { "type": "text", "text": "immediate" }
+    },
+    {
+      "type": "function_call_result",
+      "name": "gated",
+      "callId": "gated",
+      "status": "completed",
+      "output": { "type": "text", "text": "gated" }
+    }
+  ]
+}

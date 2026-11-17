@@ -35,6 +35,7 @@ import {
   buildFunctionToolLookupMap,
   type FunctionToolLookupKey,
   getFunctionToolNamespace,
+  normalizeFunctionToolCallForStorage,
   getFunctionToolQualifiedName,
   getFunctionToolStateKey,
   isDeferredTopLevelFunctionTool,
@@ -339,30 +340,6 @@ function recordMissingFunctionTool(
     toolName,
     ...(reason ? { reason } : {}),
   });
-}
-
-function normalizeFunctionToolCallForStorage(
-  toolCall: protocol.FunctionCallItem,
-  tool: FunctionTool<any>,
-): protocol.FunctionCallItem {
-  const namespace = getToolCallNamespace(toolCall);
-  const explicitNamespace = getFunctionToolNamespace(tool);
-  const qualifiedToolName = getFunctionToolQualifiedName(tool);
-
-  if (
-    namespace ||
-    !explicitNamespace ||
-    !qualifiedToolName ||
-    toolCall.name !== qualifiedToolName
-  ) {
-    return toolCall;
-  }
-
-  return {
-    ...toolCall,
-    name: tool.name,
-    namespace: explicitNamespace,
-  };
 }
 
 type LoadedDeferredToolState = {

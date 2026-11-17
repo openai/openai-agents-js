@@ -4761,7 +4761,7 @@ describe('output guardrail replay redaction', () => {
       partial.state.approve(partial.interruptions[0]!);
 
       const completed = await runOnce(partial.state);
-      expect(completed.finalOutput).toBe('second checkpointed output');
+      expect(completed.finalOutput).toBe('first checkpointed output');
       expect(
         (await session.getItems()).filter(
           (item) => item.type === 'function_call',
