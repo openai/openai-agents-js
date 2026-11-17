@@ -1245,23 +1245,23 @@ os.unlink = denied_unlink
         await writeFile(destination, 'destination\n');
         try {
           if (allowed) {
-            childProcess.execFileSync('/bin/chmod', [
-              '+a',
-              `${username} allow delete`,
-              source,
-            ]);
+            childProcess.execFileSync(
+              '/bin/chmod',
+              ['+a', `${username} allow delete`, source],
+              { stdio: 'pipe' },
+            );
             await chmod(parent, 0o555);
           } else {
-            childProcess.execFileSync('/bin/chmod', [
-              '+a',
-              `${username} deny delete`,
-              source,
-            ]);
-            childProcess.execFileSync('/bin/chmod', [
-              '+a',
-              `${username} deny delete_child`,
-              parent,
-            ]);
+            childProcess.execFileSync(
+              '/bin/chmod',
+              ['+a', `${username} deny delete`, source],
+              { stdio: 'pipe' },
+            );
+            childProcess.execFileSync(
+              '/bin/chmod',
+              ['+a', `${username} deny delete_child`, parent],
+              { stdio: 'pipe' },
+            );
           }
           const move = session.createEditor().updateFile({
             type: 'update_file',
@@ -1282,9 +1282,13 @@ os.unlink = denied_unlink
           expect(await readFile(source, 'utf8')).toBe('before\n');
         } finally {
           await chmod(parent, 0o700);
-          childProcess.execFileSync('/bin/chmod', ['-N', parent]);
+          childProcess.execFileSync('/bin/chmod', ['-N', parent], {
+            stdio: 'pipe',
+          });
           if (!allowed) {
-            childProcess.execFileSync('/bin/chmod', ['-N', source]);
+            childProcess.execFileSync('/bin/chmod', ['-N', source], {
+              stdio: 'pipe',
+            });
           }
         }
       },
