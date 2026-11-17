@@ -29,7 +29,7 @@ OPENAI_MODEL=gpt-5.4 pnpm -F tools exec tsx codex-provider.ts openai
 
 ## Codex mode
 
-`CodexProvider` has been using stock Codex through `@openai/codex-sdk` 0.166.0 or newer and Codex's native tools. Codex has been handling authentication and configuration separately from the Agents SDK's OpenAI client. Codex has been using an existing CLI login or `CODEX_API_KEY` from the process environment.
+`CodexProvider` has been using stock Codex through `@openai/codex-sdk` 0.166.0 or newer. Codex has been creating and reading `hello.txt` with its native shell, without an MCP server. Codex has been handling authentication and configuration separately from the Agents SDK's OpenAI client. Use an existing Codex CLI login, `CODEX_API_KEY`, or `OPENAI_API_KEY` from the process environment.
 
 ```sh
 pnpm -F tools exec tsx codex-provider.ts codex
@@ -41,7 +41,7 @@ To choose a model, use the environment variable for that mode.
 CODEX_MODEL=gpt-5.4 pnpm -F tools exec tsx codex-provider.ts codex
 ```
 
-Without `CODEX_MODEL`, the example has been leaving model selection to Codex. For the temporary directory, it has been selecting `workspace-write`, skipping the Git repository check, and setting the approval policy to `never` for unattended execution. Codex has been applying its own configuration and sandbox rules. On Linux, the example has been requiring a host that allows Codex to start its Bubblewrap sandbox.
+Without `CODEX_MODEL`, the example has been leaving model selection to Codex. For the temporary directory, it has been selecting `workspace-write`, skipping the Git repository check, and setting the approval policy to `never` for unattended execution. Codex has been applying its own configuration and sandbox rules. On Linux, use a host permitting Codex to start its Bubblewrap sandbox. For sandbox startup failures in restricted containers, run the example on a compatible host with `workspace-write` enabled.
 
 ## Switching an application
 
