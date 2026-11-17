@@ -2,6 +2,14 @@
 
 Release notes for alpha versions of the OpenAI Agents SDK for JavaScript and TypeScript.
 
+## Unreleased
+
+- Native API-key Sessions with provider-managed history have been selecting standard Responses automatically, including when continuing a stored response. For other requests, `new NativeProvider({ responsesFormat: 'standard' })` has been enabling standard request controls on compatible endpoints. [Provider configuration](examples/codex/guides/session-configuration.md#provider-connection-and-credentials)
+- The SDK has been surfacing stream interruptions after publishing ordinary assistant text, even in `agent.run()` without an event reader. Interruptions before the first text event have still been eligible for retry. [Connection retries](examples/codex/guides/session-configuration.md#connection-retries-and-errors)
+- The SDK has been leaving generated revision IDs out of application instructions sent to the model. Otherwise identical fresh Sessions have been sending the same prompt prefix while saved history has been retaining the original instruction receipts.
+- Idle portable checkpoints for ordinary roots with only unnamespaced JavaScript function tools have been accepting updated, added, and removed tools. An explicit saved selection has been keeping surviving tools in their saved order. [Restore instructions and tools](examples/codex/guides/state.md#restore-instructions-and-tools)
+- SDK Sessions have been omitting newly generated CLI collaboration instructions. Older checkpoints have still been retaining collaboration text for replay.
+
 ## 0.22.0-alpha.3
 
 ### Highlights

@@ -742,6 +742,17 @@ impl EngineState {
             None if chatgpt_plan => crate::auth::plan_manager(services),
             None => crate::auth::manager(services, api_key).await?,
         };
+        let standard_responses = config::sdk_standard_responses(&runtime_json)?;
+        ensure!(
+            !standard_responses
+                || (!chatgpt_plan
+                    && saved_login.is_none()
+                    && services.model_provider_id == "native_agent"
+                    && services.model_provider.requires_openai_auth
+                    && !services.model_provider.is_amazon_bedrock()
+                    && auth.auth_mode() == Some(AuthMode::ApiKey)),
+            "Standard Responses requires a native API-key provider"
+        );
         let bundled_catalog = if chatgpt_plan {
             Some(
                 load_bundled_model_catalog()
@@ -760,11 +771,12 @@ impl EngineState {
             services.features.enabled(Feature::ApiKeyModelDiscovery),
         );
         let models: SharedModelsManager =
-            if injected_bundle || sdk_user_input_enabled == Some(false) {
+            if injected_bundle || sdk_user_input_enabled == Some(false) || standard_responses {
                 Arc::new(ConfiguredModels {
                     inner: models,
                     bundled_catalog: injected_bundle,
                     disable_user_input: sdk_user_input_enabled == Some(false),
+                    standard_responses,
                 })
             } else {
                 models
@@ -2772,6 +2784,7 @@ struct ConfiguredModels {
     inner: SharedModelsManager,
     bundled_catalog: bool,
     disable_user_input: bool,
+    standard_responses: bool,
 }
 
 impl ModelsManager for ConfiguredModels {
@@ -2852,6 +2865,9 @@ impl ModelsManager for ConfiguredModels {
                         "request_user_input_async" | "send_user_message_async"
                     )
                 });
+            }
+            if self.standard_responses {
+                info.use_responses_lite = false;
             }
             info
         })

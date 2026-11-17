@@ -1290,16 +1290,9 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
       server.assertExhausted();
     }, 30_000);
 
-    it.each([
-      [undefined, false, false],
-      [0, false, false],
-      [1, false, false],
-      [1, true, false],
-      [1, true, true],
-    ] as const)(
-      'preserves dropped-stream recovery with retry budget %s, completed item %s and blank success %s',
-      async (streamMaxRetries, completedItem, blankSuccess) => {
-        const finalChunks = blankSuccess ? ['\u0085\u2003'] : ['answer ', '2'];
+    it.each([undefined, 0, 1] as const)(
+      'surfaces dropped published text with retry budget %s',
+      async (streamMaxRetries) => {
         const dropped = {
           status: 200,
           headers: { 'content-type': 'text/event-stream' },
@@ -1325,26 +1318,11 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
               content_index: 0,
               delta: 'partial output',
             },
-            ...(completedItem
-              ? [
-                  {
-                    type: 'response.output_item.done',
-                    output_index: 0,
-                    item: {
-                      ...message('partial output'),
-                      id: 'dropped-message',
-                    },
-                  },
-                ]
-              : []),
           ]
             .map((event) => `data: ${JSON.stringify(event)}\n\n`)
             .join(''),
         };
-        const server = new ModelServer([
-          dropped,
-          ...(streamMaxRetries === 0 ? [] : [response(2, finalChunks)]),
-        ]);
+        const server = new ModelServer([dropped, response(2)]);
         const config = await server.config();
         await using provider = new NativeProvider({
           baseUrl: (config['model_providers.fixture'] as { base_url: string })
@@ -1354,47 +1332,14 @@ describe.skipIf(process.env.OPENAI_AGENTS_NATIVE_TESTS !== '1')(
           requestMaxRetries: 0,
           streamMaxRetries,
         });
-        const agent = new Agent({
-          instructions: 'Answer.',
-          model: 'gpt-5',
-          provider,
-        });
-        const running = agent.run('recover the response');
-        if (streamMaxRetries === 0) {
-          await expect(running).rejects.toBeInstanceOf(NativeError);
-        } else {
-          const completed = await running;
-          expect(completed.finalOutput).toBe(blankSuccess ? '' : 'answer 2');
-          const originalInput = server.requests[0]!.input as unknown[];
-          const recoveredInput = server.requests[1]!.input as unknown[];
-          expect(recoveredInput.slice(0, originalInput.length)).toEqual(
-            originalInput,
-          );
-          expect(recoveredInput).toHaveLength(
-            originalInput.length + (completedItem ? 1 : 0),
-          );
-          if (completedItem) {
-            expect(recoveredInput.at(-1)).toMatchObject({ role: 'assistant' });
-            expect(JSON.stringify(recoveredInput.at(-1))).toContain(
-              'partial output',
-            );
-          }
-          const observations = await Array.fromAsync(completed.turn.events());
-          expect(
-            observations
-              .filter((event) => event.type === 'output_text_delta')
-              .map((event) => event.delta),
-          ).toEqual(['partial output', ...finalChunks]);
-          const dispatched = observations.filter(
-            (event) => event.type === 'model_request_dispatching',
-          );
-          expect(dispatched).toHaveLength(2);
-          expect(new Set(dispatched.map((event) => event.requestId)).size).toBe(
-            2,
-          );
-        }
-        expect(server.requests).toHaveLength(streamMaxRetries === 0 ? 1 : 2);
-        server.assertExhausted();
+        await expect(
+          new Agent({
+            instructions: 'Answer.',
+            model: 'gpt-5',
+            provider,
+          }).run('recover the response'),
+        ).rejects.toBeInstanceOf(NativeError);
+        expect(server.requests).toHaveLength(1);
       },
       30_000,
     );

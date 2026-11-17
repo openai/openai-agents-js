@@ -65,6 +65,8 @@ export interface NativeProviderOptions {
   supportsWebsockets?: boolean;
   /** Read one complete Responses JSON body over API-key HTTP. */
   responseMode?: 'streaming' | 'buffered';
+  /** Select standard Responses for ordinary native API-key requests. */
+  responsesFormat?: 'auto' | 'standard';
   queryParams?: Readonly<Record<string, string>>;
   headers?: Readonly<Record<string, string>>;
   /** Resolve once when this descriptor is constructed; missing/empty values stay omitted. */
@@ -157,6 +159,20 @@ export class NativeProvider {
       }
       websocketOptions = Object.freeze(capturedOptions);
     }
+    if (
+      options.responsesFormat !== undefined &&
+      !['auto', 'standard'].includes(options.responsesFormat)
+    )
+      throw new TypeError('responsesFormat must be auto or standard');
+    if (
+      options.responsesFormat === 'standard' &&
+      (options.modelBackend !== undefined ||
+        options.codexLogin !== undefined ||
+        options.signInWithChatGPT !== undefined)
+    )
+      throw new TypeError(
+        'responsesFormat standard requires a native API-key provider',
+      );
     const runtime = options.runtime;
     if (runtime !== undefined) validateNativeRuntime(runtime);
     const signIn = options.signInWithChatGPT;
@@ -293,10 +309,16 @@ export class NativeProvider {
   /** @internal */
   get _supportsProfileRouting(): boolean {
     return (
+      this._supportsStandardResponses && this.#options.chatGPT === undefined
+    );
+  }
+
+  /** @internal Standard Responses requires an owned API-key inference route. */
+  get _supportsStandardResponses(): boolean {
+    return (
       this.#options.modelBackend === undefined &&
       this.#options.codexLogin === undefined &&
-      this.#getPlanCredential === undefined &&
-      this.#options.chatGPT === undefined
+      this.#getPlanCredential === undefined
     );
   }
 
@@ -344,6 +366,9 @@ export class NativeProvider {
 
   get baseUrl(): string | undefined {
     return this.#options.baseUrl;
+  }
+  get responsesFormat(): 'auto' | 'standard' {
+    return this.#options.responsesFormat ?? 'auto';
   }
   get responseMode(): 'streaming' | 'buffered' {
     return this.#options.responseMode ?? 'streaming';

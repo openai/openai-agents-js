@@ -135,9 +135,13 @@ Before opening a checkpoint, verify its integrity and confirm that your applicat
 
 `parseSessionState(json)` validates the envelope structure. It does not authenticate the checkpoint or approve its saved privacy settings. After the integrity and policy checks, read and reuse the last accepted instructions with `await readSessionInstructions(state)`. Older v2 and manual v3 checkpoints can lack that record. The reader then throws, and you can restore with current trusted instructions.
 
-Idle restore requires matching managed declarations, including materialized borrowed MCP tools. The SDK compares names, descriptions, parameter schemas, namespaces, and catalog order. Current callback implementations can differ. Selected checkpoints retain the full admitted catalog, including hidden tools, separately from narrowed defaults.
+In `0.22.0-alpha.3`, idle restore has been requiring matching managed tool declarations, including materialized borrowed MCP tools. The SDK has been comparing names, descriptions, parameter schemas, namespaces, and catalog order. Applications have been supplying current callback implementations.
 
-The destination selects native `HttpMCP` and `StdioMCP` declarations. Restore matching managed declarations first, then use supported idle updates within the opening ceiling.
+With the current [source build](building.md), idle portable checkpoints from an ordinary root Session with only unnamespaced JavaScript function tools have been accepting current declarations. Applications have been changing schemas and descriptions, adding tools, or removing tools when reopening with `agent.session({ state })`. New turns have been using the current callbacks. Saved history has been retaining earlier calls and results without executing those calls again.
+
+An explicit saved default selection has been keeping only surviving tools in its saved order. Newly added tools have been staying outside that selection. Without a saved selection, the restored Session has been using the declarations supplied at opening. Pending manual work, forks (including forks saved again), agent profiles, native children, and namespaced or hosted tools have been following their existing declaration checks.
+
+The destination has been selecting native `HttpMCP` and `StdioMCP` declarations. For materialized borrowed MCP tools, the SDK has been requiring matching managed declarations on restore. Later idle updates have been selecting tools from the declarations admitted at opening.
 
 ### Model settings on restore
 

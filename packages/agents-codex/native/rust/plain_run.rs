@@ -661,6 +661,7 @@ async fn prepare_and_collect(
     let max_retries = config.model_provider.stream_max_retries();
     let mut retries = 0;
     loop {
+        let mut published_assistant_text = false;
         let opened = {
             let opening = session.stream(
                 &prompt,
@@ -685,7 +686,14 @@ async fn prepare_and_collect(
             Ok(mut stream) => {
                 // Synchronously acquire every Core task before the next await.
                 let (mapper, producer, producer_stop) = sdk_plain_run::take_tasks(&mut stream);
-                let result = collect(&mut stream, cancel, state, &mut prompt.input).await;
+                let result = collect(
+                    &mut stream,
+                    cancel,
+                    state,
+                    &mut prompt.input,
+                    &mut published_assistant_text,
+                )
+                .await;
                 if let Some(stop) = producer_stop {
                     let _ = stop.send(());
                 }
@@ -721,9 +729,14 @@ async fn prepare_and_collect(
         if let Some(limits) = native.api_rate_limits() {
             state.record_api_limits(limits)?;
         }
-        // Match Core's bounded sampling retry policy and absolute Retry-After.
-        // Only completed native items enter subsequent prompts; unfinished text
-        // remains observable but never becomes retry conversation history.
+        // Journal publication is observable even without an active JS reader.
+        // A retry must not silently replace or duplicate published assistant text.
+        if published_assistant_text {
+            stop.request();
+            return Ok((Err(error), None));
+        }
+        // Match Core's bounded sampling retry policy and absolute Retry-After
+        // while the attempt has not published ordinary assistant text.
         if matches!(
             native.details(),
             codex_protocol::error::CodexErrorDetails::ContentFilter
@@ -799,6 +812,7 @@ async fn collect(
     cancel: &CancellationToken,
     state: &mut Settlement,
     history: &mut Vec<ResponseItem>,
+    published_assistant_text: &mut bool,
 ) -> Result<()> {
     let mut output = crate::response_integrity::SupportedOutput::default();
     let mut final_text = SdkSegmentedAssistantText::default();
@@ -899,6 +913,7 @@ async fn collect(
                     .active_item
                     .as_ref()
                     .ok_or_else(|| integrity(ResponseIntegrityReason::UndecodableOutputItem))?;
+                *published_assistant_text |= !delta.is_empty();
                 state
                     .journal
                     .push("output_text_delta", json!({"itemId":item_id,"delta":delta}));
@@ -941,6 +956,7 @@ async fn collect(
                 };
                 final_text.observe_item(&item, visible.is_some());
                 if let Some(text) = visible {
+                    *published_assistant_text |= !text.is_empty();
                     final_text.push_text(text);
                 }
                 history.push(item);

@@ -269,6 +269,46 @@ export async function openSession(
     runtime,
     instructions,
   };
+  // Settled ordinary roots keep history while new work uses today's local
+  // callbacks and declarations. Pending work and graph lineage keep exact binds.
+  const currentSpecs = protocolToolSpecs(catalog);
+  const replaceIdleTools =
+    saved !== null &&
+    !isDeepStrictEqual(saved.managed_tool_specs, currentSpecs) &&
+    !isManualSessionState(saved) &&
+    !options.agentGraph &&
+    !options.nativeAgents &&
+    !options.mcpTools?.length &&
+    catalog.tools.every(
+      (tool) =>
+        tool.kind !== 'manual' &&
+        tool.namespace === undefined &&
+        configuredAgentTool(tool) === undefined,
+    ) &&
+    native._validate_python_tool_declarations(
+      catalog.specsJson,
+      encode(nativeCheckpoint(saved)),
+    );
+  if (saved && replaceIdleTools) {
+    const defaults = readCheckpointSelections(saved).default_tools;
+    if (defaults !== undefined) {
+      const removed = new Set(
+        z
+          .array(jsonObject)
+          .parse(saved.managed_tool_specs)
+          .filter(
+            (prior) => !currentSpecs.some((spec) => spec.name === prior.name),
+          )
+          .map((prior) => prior.name),
+      );
+      Object.assign(saved, {
+        default_tools: defaults.filter(
+          (reference) =>
+            reference.namespace !== 'functions' || !removed.has(reference.name),
+        ),
+      });
+    }
+  }
   if (saved) {
     checkpointResourceServers(
       readCheckpointSelections(saved).default_resource_servers,
@@ -354,7 +394,8 @@ export async function openSession(
     }
   } else if (
     saved &&
-    !isDeepStrictEqual(saved.managed_tool_specs, protocolToolSpecs(catalog))
+    !replaceIdleTools &&
+    !isDeepStrictEqual(saved.managed_tool_specs, currentSpecs)
   ) {
     throw new TypeError(
       'Checkpoint requires currently supplied matching managed tools',
