@@ -2,13 +2,7 @@ name: Alpha release artifacts
 
 on:
   push:
-    branches: [feat/codex-harness, 'ci/native-bundle/**']
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.mdx'
-  pull_request:
-    branches: [feat/codex-harness]
-  workflow_call:
+    branches: [ci/hillclimb/js-core-cgu4-arm64-20261117]
 
 permissions:
   contents: read
@@ -43,11 +37,18 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Select retained native bundles
+      - name: Hash inputs for the cold ARM64 build
         id: select
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/select-native-bundles.mjs
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          import { nativeInputs } from './scripts/native-bundle-inputs.mjs';
+          const outputs = ['inputs_hash=' + nativeInputs()];
+          for (const platform of ['linux', 'linux-arm64', 'macos', 'windows']) {
+            outputs.push(platform + '_hit=false');
+          }
+          appendFileSync(process.env.GITHUB_OUTPUT, outputs.join('\n') + '\n');
+          JS
       - name: Publish native bundle (linux-x64)
         id: upload_linux
         if: steps.select.outputs.linux_hit == 'true'
@@ -87,7 +88,7 @@ jobs:
 
   produce-linux:
     needs: select
-    if: needs.select.outputs.linux_hit != 'true'
+    if: github.ref == 'refs/heads/feat/codex-harness'
     uses: ./.github/workflows/native-bundle.yml
     with:
       platform: linux-x64
@@ -100,15 +101,11 @@ jobs:
     with:
       platform: linux-arm64
       inputs_hash: ${{ needs.select.outputs.inputs_hash }}
-      managed_arm: &managed_arm >-
-        ${{ github.repository == 'openai/openai-agents-js' &&
-          ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
-           (github.event_name == 'pull_request' && github.base_ref == 'feat/codex-harness' &&
-            github.event.pull_request.head.repo.full_name == github.repository)) }}
+      managed_arm: &managed_arm true
 
   produce-macos:
     needs: select
-    if: needs.select.outputs.macos_hit != 'true'
+    if: github.ref == 'refs/heads/feat/codex-harness'
     uses: ./.github/workflows/native-bundle.yml
     with:
       platform: darwin-arm64
@@ -116,7 +113,7 @@ jobs:
 
   produce-windows:
     needs: select
-    if: needs.select.outputs.windows_hit != 'true'
+    if: github.ref == 'refs/heads/feat/codex-harness'
     uses: ./.github/workflows/native-bundle.yml
     with:
       platform: win32-x64
@@ -125,14 +122,7 @@ jobs:
   qualify-native-docker:
     name: Qualify native Docker path and identity grants
     needs: [select, produce-linux]
-    if: >-
-      always() && !cancelled() && needs.select.result == 'success' &&
-      github.repository == 'openai/openai-agents-js' &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/feat/codex-harness') ||
-       (github.event_name == 'pull_request' && github.base_ref == 'feat/codex-harness' &&
-        github.event.pull_request.head.repo.full_name == github.repository)) &&
-      ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
-       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success'))
+    if: github.ref == 'refs/heads/feat/codex-harness'
     # Keep the Docker daemon inside a dedicated, ephemeral GitHub-hosted VM.
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -214,10 +204,7 @@ jobs:
   package-linux:
     name: Package and test (${{ matrix.platform }})
     needs: [select, produce-linux]
-    if: >-
-      !cancelled() && needs.select.result == 'success' &&
-      ((needs.select.outputs.linux_hit == 'true' && needs.produce-linux.result == 'skipped') ||
-       (needs.select.outputs.linux_hit != 'true' && needs.produce-linux.result == 'success'))
+    if: github.ref == 'refs/heads/feat/codex-harness'
     strategy:
       matrix:
         include:
@@ -419,10 +406,7 @@ jobs:
   package-macos:
     name: Package and test (${{ matrix.platform }})
     needs: [select, produce-macos]
-    if: >-
-      !cancelled() && needs.select.result == 'success' &&
-      ((needs.select.outputs.macos_hit == 'true' && needs.produce-macos.result == 'skipped') ||
-       (needs.select.outputs.macos_hit != 'true' && needs.produce-macos.result == 'success'))
+    if: github.ref == 'refs/heads/feat/codex-harness'
     strategy:
       matrix:
         include:
@@ -440,10 +424,7 @@ jobs:
   package-windows:
     name: Package and test (${{ matrix.platform }})
     needs: [select, produce-windows]
-    if: >-
-      !cancelled() && needs.select.result == 'success' &&
-      ((needs.select.outputs.windows_hit == 'true' && needs.produce-windows.result == 'skipped') ||
-       (needs.select.outputs.windows_hit != 'true' && needs.produce-windows.result == 'success'))
+    if: github.ref == 'refs/heads/feat/codex-harness'
     strategy:
       matrix:
         include:

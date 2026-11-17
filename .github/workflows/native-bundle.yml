@@ -85,6 +85,7 @@ jobs:
 
       - name: Build the native runtime
         env:
+          OPENAI_AGENTS_NATIVE_TIMINGS: '1'
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [[ "$EXPECTED_PLATFORM" == win32-x64 ]]; then
@@ -92,6 +93,14 @@ jobs:
           else
             node packages/agents-codex/scripts/native.mjs package
           fi
+      - name: Retain Cargo timing report
+        if: inputs.platform == 'linux-arm64' && success()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cargo-timing-linux-arm64
+          path: ${{ runner.temp }}/agents-target/cargo-timings/cargo-timing-*.html
+          if-no-files-found: error
+          retention-days: 14
       - name: Archive the Windows addon
         if: inputs.platform == 'win32-x64'
         working-directory: packages/agents-codex
