@@ -688,14 +688,15 @@ test.each([
       {
         claim: 'Services generated revenue',
         source_url: primaryUrl,
-        supporting_extract: 'FY26 Services revenue: $123.301 billion',
+        supporting_extract: 'FY26 Services revenue was $123.301 billion.',
         supported: true,
         explanation: 'Full fiscal year, billions.',
       },
       {
         claim: 'The company returned cash to shareholders',
         source_url: primaryUrl,
-        supporting_extract: 'Cash dividends paid: $15.7 billion',
+        supporting_extract:
+          'The company returned $15.7 billion in cash dividends in FY26.',
         supported: true,
         explanation: 'Full fiscal year cash flow, billions.',
       },
@@ -703,6 +704,11 @@ test.each([
     const firstAudit = auditResponse(false);
     firstAudit.finalOutput.checks = [
       ...checks,
+      {
+        ...checks[0],
+        claim: 'Diluted EPS figures',
+        supporting_extract: '$ 2.10 $ 1.85 $ 8.98 $ 7.46',
+      },
       ...firstAudit.finalOutput.checks,
     ];
     const secondAudit = auditResponse(false, false);
@@ -742,8 +748,9 @@ test.each([
     expect(scopedInput).toContain('$15.7 billion');
     expect(scopedInput).toContain('narrower coverage');
     expect(scopedInput).not.toContain('not $105B');
+    expect(scopedInput).not.toContain('1.85');
     expect(
-      scopedInput.match(/FY26 Services revenue: \$123\.301 billion/g),
+      scopedInput.match(/FY26 Services revenue was \$123\.301 billion\./g),
     ).toHaveLength(2); // Executive summary and report, one finding each.
   },
 );
@@ -814,4 +821,31 @@ test('bounds missing-receipt recovery to three exact documents and skips unsuppo
   ).toEqual(
     [1, 2, 3].map((index) => `https://investor.example.com/doc${index}.pdf`),
   );
+});
+
+test('passes only exact report-cited source URLs to both verifiers', async () => {
+  const manager = new FinancialResearchManager();
+  const sources = [
+    evidence('Relevant results'),
+    {
+      summary: 'Unrelated research',
+      sources: [{ url: 'https://unrelated.example/unused' }],
+    },
+  ];
+  const audit = vi
+    .spyOn(Runner.prototype, 'run')
+    .mockResolvedValue(auditResponse(true));
+  runMock.mockResolvedValue({ finalOutput: { verified: true, issues: '' } });
+
+  await manager.verifyReport(initialReport, sources);
+
+  const auditInput = String(audit.mock.calls[0][1]);
+  const selectedInput = String(runMock.mock.calls[0][1]);
+  expect(auditInput).toContain('https://example.com/results');
+  expect(selectedInput).toContain('Exact allowed citation URLs');
+  expect(selectedInput).toContain('https://example.com/results');
+  expect(selectedInput).toContain(primaryUrl); // The actual fresh primary read joins the authoritative ledger.
+  expect(auditInput).not.toContain('unrelated.example');
+  expect(selectedInput).not.toContain('unrelated.example');
+  expect(selectedInput).not.toContain('Unrelated research');
 });

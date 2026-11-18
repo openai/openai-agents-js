@@ -25,6 +25,15 @@ function scopedReport(checks: PrimaryAuditCheck[]): FinancialReportData | null {
   const documents = new Set<string>();
   const selected = checks
     .filter((check) => {
+      // Prefer complete source prose; unlabelled table rows cannot stand alone.
+      if (
+        !/\b(posted|reported|was|were|generated|declared|increased|grew|reached|returned|announced|recorded)\b/i.test(
+          check.supporting_extract,
+        ) ||
+        check.supporting_extract.includes('|') ||
+        /(?:\$\s*[\d,.]+\s*){2,}/.test(check.supporting_extract)
+      )
+        return false;
       if (!documents.has(check.source_url) && documents.size >= 2) return false;
       documents.add(check.source_url);
       return true;
@@ -41,6 +50,16 @@ function scopedReport(checks: PrimaryAuditCheck[]): FinancialReportData | null {
       'How do the same measures compare across reporting periods?',
     ],
   };
+}
+
+function citedReportSources(
+  report: FinancialReportData,
+  searchResults: SearchResult[],
+): Source[] {
+  const text = `${report.short_summary}\n${report.markdown_report}`;
+  return [...sourceReferences(searchResults).values()].filter(
+    ({ url }) => text.includes(`](${url})`) || text.includes(`](<${url}>)`),
+  );
 }
 
 function enforceVerification(
@@ -333,7 +352,14 @@ export class FinancialResearchManager {
   ): Promise<ReportVerification> {
     const audit = await this.auditReport(report, searchResults);
     console.log(`[verifying] Verifying report...`);
-    const inputData = `Complete report:\n${JSON.stringify(report, null, 2)}\n\nSource summaries:\n${formatSearchResults(searchResults)}`;
+    const sources = citedReportSources(report, searchResults);
+    const allowed = new Set(sources.map(({ url }) => url));
+    const relevant = searchResults.filter(
+      (result) =>
+        result.sources.some(({ url }) => allowed.has(url)) &&
+        !result.summary.startsWith('Independent primary-source audit'),
+    );
+    const inputData = `Complete report:\n${JSON.stringify(report, null, 2)}\n\nExact allowed citation URLs for this report (host-confirmed service metadata, including completed primary-page reads; this list is authoritative for membership):\n${JSON.stringify(sources)}\n\nFresh independent primary-source audit (direct document extracts take precedence over generated summaries):\n${JSON.stringify(audit)}\n\nRelevant generated source summaries (secondary context):\n${relevant.map(({ summary }) => summary).join('\n\n')}`;
     const result = await this.runner.run(verifierAgent, inputData);
     console.log(`[verifying] Done verifying report.`);
     const verification = result.finalOutput!;
@@ -369,7 +395,7 @@ export class FinancialResearchManager {
     console.log('[auditing] Reading primary sources independently...');
     const result = await this.searchRunner.run(
       primarySourceAuditAgent,
-      `Complete report to audit:\n${JSON.stringify(report)}\n\nCandidate URLs to locate original primary documents (verify independently):\n${JSON.stringify([...sourceReferences(searchResults).values()].map(({ url }) => url))}`,
+      `Complete report to audit:\n${JSON.stringify(report)}\n\nCandidate URLs to locate original primary documents (verify independently):\n${JSON.stringify(citedReportSources(report, searchResults).map(({ url }) => url))}`,
       { maxTurns: 3 },
     );
     const opened = openedSourceURLs(result.newItems);
