@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+import { sdkBuildPaths } from './sdk-build-bundle.mjs';
 import { createHash } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -755,7 +757,7 @@ test('workflow preserves qualification coverage on explicit protected transfers'
   const native = readFileSync(path('native-bundle.yml'), 'utf8');
   const select = workflow.slice(
     workflow.indexOf('  select:'),
-    workflow.indexOf('  produce-linux:'),
+    workflow.indexOf('  sdk-build:'),
   );
   const qualify = workflow.slice(workflow.indexOf('  package-linux:'));
   for (const [key, platform] of Object.entries(nativePlatforms)) {
@@ -822,7 +824,7 @@ test('workflow preserves qualification coverage on explicit protected transfers'
   expect(qualify).toContain('Check runner platform');
   expect(qualify).toContain('apparmor-profiles bubblewrap');
   for (const step of [
-    'Build the current SDK',
+    'Restore the common SDK build',
     'Qualify canonical native storage',
     'Qualify the Linux worker',
     'Qualify local executor grants on macOS',
@@ -848,7 +850,7 @@ test.each(Object.keys(nativePlatforms))(
     const qualify = workflow
       .split(`  package-${key}:\n`)[1]
       .split(/^ {2}package-/m)[0];
-    expect(qualify).toContain(`needs: [select, produce-${key}]`);
+    expect(qualify).toContain(`needs: [select, produce-${key}, sdk-build]`);
     expect(qualify).toContain(
       "!cancelled() && needs.select.result == 'success'",
     );
@@ -867,3 +869,63 @@ test.each(Object.keys(nativePlatforms))(
     );
   },
 );
+
+test('common SDK handoff restores six builds and preserves platform products', () => {
+  const root = mkdtempSync(join(tmpdir(), 'sdk build handoff '));
+  const producer = join(root, 'producer');
+  const consumer = join(root, 'consumer');
+  const script = fileURLToPath(
+    new URL('./sdk-build-bundle.mjs', import.meta.url),
+  );
+  const restore = (archive) =>
+    execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import { readFileSync } from 'node:fs';
+     import { restoreSdkBuild } from ${JSON.stringify(new URL('./sdk-build-bundle.mjs', import.meta.url).href)};
+     restoreSdkBuild(readFileSync(process.argv[1]));`,
+        archive,
+      ],
+      { cwd: consumer, stdio: 'pipe' },
+    );
+  mkdirSync(consumer, { recursive: true });
+  try {
+    for (const path of sdkBuildPaths) {
+      const file = path.endsWith('/dist') ? path + '/index.mjs' : path;
+      mkdirSync(dirname(join(producer, file)), { recursive: true });
+      writeFileSync(join(producer, file), file);
+    }
+    const local = 'packages/agents-codex/native/codex.node';
+    mkdirSync(dirname(join(consumer, local)), { recursive: true });
+    writeFileSync(join(consumer, local), 'consumer platform binary');
+    writeFileSync(join(producer, local), 'producer platform binary');
+    const archive = join(root, 'sdk build.tar.gz');
+    execFileSync(process.execPath, [script, 'pack', archive], {
+      cwd: producer,
+      stdio: 'pipe',
+    });
+    restore(archive);
+    for (const path of sdkBuildPaths) {
+      const file = path.endsWith('/dist') ? path + '/index.mjs' : path;
+      assert.equal(readFileSync(join(consumer, file), 'utf8'), file);
+    }
+    assert.equal(
+      readFileSync(join(consumer, local), 'utf8'),
+      'consumer platform binary',
+    );
+    // Extra producer-platform members stay outside the fixed extraction scope.
+    execFileSync('tar', ['-czf', archive, '--', ...sdkBuildPaths, local], {
+      cwd: producer,
+      stdio: 'pipe',
+    });
+    restore(archive);
+    assert.equal(
+      readFileSync(join(consumer, local), 'utf8'),
+      'consumer platform binary',
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
