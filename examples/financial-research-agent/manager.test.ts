@@ -326,6 +326,10 @@ test('collects only service-returned search sources and citation annotations', a
 
 test('verifies the executive summary and follow-up questions with the report', async () => {
   const manager = new FinancialResearchManager();
+  vi.spyOn(manager, 'auditReport').mockResolvedValue({
+    verified: true,
+    issues: '',
+  });
   runMock.mockResolvedValueOnce({
     finalOutput: { verified: true, issues: '' },
   });
@@ -539,4 +543,127 @@ test('exposes deterministic deduplicated source IDs to the writer and reviser', 
     expect(input).toContain('"id":"S1","url":"https://example.com/results"');
     expect(input).not.toContain('"id":"S2"');
   }
+});
+
+const primaryUrl = 'https://investor.example.com/FY26-financial-statements.pdf';
+function auditResponse(supported: boolean, opened = true) {
+  return {
+    finalOutput: {
+      verified: supported,
+      issues: supported
+        ? ''
+        : 'FY26 Services revenue disagrees with the primary statement.',
+      checks: [
+        {
+          claim: 'FY26 Services revenue',
+          source_url: primaryUrl,
+          supporting_extract: 'Services 123,301 (millions)',
+          supported,
+          explanation:
+            'FY26 full-year Services revenue is $123.301B, not $105B.',
+        },
+      ],
+    },
+    newItems: opened
+      ? [
+          {
+            rawItem: {
+              type: 'hosted_tool_call',
+              name: 'web_search_call',
+              status: 'completed',
+              providerData: { action: { type: 'open_page', url: primaryUrl } },
+            },
+          },
+        ]
+      : [
+          {
+            rawItem: {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                {
+                  providerData: {
+                    annotations: [{ type: 'url_citation', url: primaryUrl }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+  } as any;
+}
+
+test('primary-document audit overrules a positive summary-based verifier', async () => {
+  const manager = new FinancialResearchManager();
+  runMock.mockResolvedValue({ finalOutput: { verified: true, issues: '' } });
+  vi.spyOn(Runner.prototype, 'run').mockResolvedValue(auditResponse(false));
+  const sources = [evidence('FY26 Services revenue was $105B.')];
+
+  const verdict = await manager.verifyReport(
+    {
+      ...initialReport,
+      markdown_report:
+        'FY26 Services revenue was $105B [Results](https://example.com/results).',
+    },
+    sources,
+  );
+
+  expect(verdict.verified).toBe(false);
+  expect(verdict.issues).toContain('$123.301B, not $105B');
+  expect(sources[1].sources).toEqual([{ url: primaryUrl }]);
+  expect(runMock.mock.calls[0][1]).toContain('Services 123,301 (millions)');
+});
+
+test('rejects audit approval without an actual open_page even with citation annotations', async () => {
+  const manager = new FinancialResearchManager();
+  vi.spyOn(Runner.prototype, 'run').mockResolvedValue(
+    auditResponse(true, false),
+  );
+  const verdict = await manager.auditReport(initialReport, [
+    evidence('Search summary'),
+  ]);
+  expect(verdict.verified).toBe(false);
+  expect(verdict.issues).toContain('no opened primary-source evidence');
+});
+
+test('revises a wrong financial figure using newly opened primary evidence and re-audits it', async () => {
+  const manager = new FinancialResearchManager();
+  vi.spyOn(manager, 'planSearches').mockResolvedValue({ searches: [] });
+  vi.spyOn(manager, 'performSearches').mockResolvedValue([
+    evidence('FY26 Services revenue was $105B.'),
+  ]);
+  vi.spyOn(manager, 'writeReport').mockResolvedValue({
+    ...initialReport,
+    markdown_report: 'FY26 Services revenue was $105B [source:S1].',
+  });
+  const revise = vi.spyOn(manager, 'reviseReport').mockResolvedValue({
+    ...initialReport,
+    markdown_report: 'FY26 Services revenue was $123.301B [source:S2].',
+  });
+  runMock.mockResolvedValue({ finalOutput: { verified: true, issues: '' } });
+  const audit = vi
+    .spyOn(Runner.prototype, 'run')
+    .mockResolvedValueOnce(auditResponse(false))
+    .mockResolvedValueOnce(auditResponse(true));
+
+  await manager.run('Analyze FY26 Services revenue.');
+
+  expect(revise).toHaveBeenCalledTimes(1);
+  expect(revise.mock.calls[0][2].issues).toContain('$123.301B, not $105B');
+  expect(audit.mock.calls[1][1]).toContain(`$123.301B [S2](${primaryUrl})`);
+  expect(console.log).toHaveBeenCalledWith(
+    `Report:\nFY26 Services revenue was $123.301B [S2](${primaryUrl}).`,
+  );
+});
+
+test('rejects an audit relying on a failed open_page receipt', async () => {
+  const manager = new FinancialResearchManager();
+  const response = auditResponse(true);
+  response.newItems[0].rawItem.status = 'failed';
+  vi.spyOn(Runner.prototype, 'run').mockResolvedValue(response);
+  const verdict = await manager.auditReport(initialReport, [
+    evidence('Search summary'),
+  ]);
+  expect(verdict.verified).toBe(false);
+  expect(verdict.issues).toContain('no opened primary-source evidence');
 });

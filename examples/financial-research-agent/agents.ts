@@ -108,11 +108,42 @@ export const verifierAgent = new Agent({
   outputType: VerificationResult,
 });
 
+export const PrimarySourceAudit = VerificationResult.extend({
+  checks: z.array(
+    z.object({
+      claim: z.string(),
+      source_url: z.string(),
+      supporting_extract: z.string(),
+      supported: z.boolean(),
+      explanation: z.string(),
+    }),
+  ),
+});
+
+export const primarySourceAuditAgent = new Agent({
+  name: 'PrimarySourceAuditAgent',
+  model: 'gpt-5.4',
+  instructions: `Independently audit every material numeric claim in the complete report against original primary sources.
+Do not trust the report or generated research summaries. Use hosted web search, then explicitly OPEN and READ the issuer earnings release, financial-statement PDF, or regulatory filing. Search snippets, aggregator summaries, and remembered figures are insufficient.
+Check the exact fiscal period, currency, scale, segment, and GAAP/non-GAAP basis. Read the relevant table, not a nearby quarter or fiscal year. For each material numeric claim return a check with the exact URL you opened, a short supporting extract, supported, and an explanation of period and units. If a figure disagrees, quote the actual source value in the explanation and reject the report. Reject incomplete coverage or unavailable primary evidence. Do not accept a claim merely because another generated summary agrees.
+Set verified true only after all material numeric claims have supporting primary evidence; return an empty issues string only then. Include at least one check for the financial report.`,
+  tools: [webSearchTool()],
+  modelSettings: {
+    toolChoice: 'required',
+    providerData: {
+      include: ['web_search_call.action.sources'],
+      max_tool_calls: 8,
+    },
+  },
+  outputType: PrimarySourceAudit,
+});
+
 // --- Financial Writer Agent ---
 export const writerPrompt = `You are a senior financial analyst.
 You will be provided with the original query and a set of raw search summaries.
 Your task is to synthesize these into a long-form markdown report (at least several paragraphs) including a short executive summary and follow-up questions.
 Use only facts supported by the supplied summaries, cite only URLs in their service-returned source lists, and clearly label uncertainty or conflicting information. Cite claims in both short_summary and markdown_report using the exact supplied source references, for example [source:S1]. The host replaces each known reference with an inline Markdown citation to its original retrieved URL before verification. Do not copy, invent, or repair URLs or source IDs. If evidence is sparse, write a shorter report explaining the gaps rather than filling them from memory.
+Omit optional timeline, guidance, or claims about missing evidence unless the supplied evidence directly supports them. Do not infer that guidance is absent or sources disagree merely because summaries omit details.
 When source summaries conflict on a fact, do not choose a version based on how often it appears. Omit the disputed fact from the executive summary and bottom-line conclusions unless a supplied source directly reconciles the conflict.
 If needed, you can call the available analysis tools (e.g. fundamentals_analysis, risk_analysis) to get short specialist write-ups to incorporate.`;
 

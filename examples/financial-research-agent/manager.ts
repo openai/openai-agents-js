@@ -8,7 +8,11 @@ import {
 } from './agents.ts';
 import { riskAgent } from './agents.ts';
 import { searchAgent } from './agents.ts';
-import { verifierAgent, VerificationResult } from './agents.ts';
+import {
+  primarySourceAuditAgent,
+  verifierAgent,
+  VerificationResult,
+} from './agents.ts';
 import { writerAgent, FinancialReportData } from './agents.ts';
 
 const MAX_REPORT_REVISIONS = 2;
@@ -178,6 +182,9 @@ export class FinancialResearchManager {
     );
     let revisions = 0;
     while (!verification.verified && revisions < MAX_REPORT_REVISIONS) {
+      // Append audit sources without changing IDs assigned to earlier research.
+      for (const [id, source] of sourceReferences(searchResults))
+        references.set(id, source);
       report = renderSourceReferences(
         await this.reviseReport(query, report, verification, searchResults),
         references,
@@ -266,11 +273,74 @@ export class FinancialResearchManager {
     report: FinancialReportData,
     searchResults: SearchResult[],
   ): Promise<VerificationResult> {
+    const audit = await this.auditReport(report, searchResults);
     console.log(`[verifying] Verifying report...`);
     const inputData = `Complete report:\n${JSON.stringify(report, null, 2)}\n\nSource summaries:\n${formatSearchResults(searchResults)}`;
     const result = await this.runner.run(verifierAgent, inputData);
     console.log(`[verifying] Done verifying report.`);
-    return result.finalOutput!;
+    const verification = result.finalOutput!;
+    return {
+      verified: verification.verified && audit.verified,
+      issues: [verification.issues, audit.issues].filter(Boolean).join('\n'),
+    };
+  }
+
+  async auditReport(
+    report: FinancialReportData,
+    searchResults: SearchResult[],
+  ): Promise<VerificationResult> {
+    console.log('[auditing] Reading primary sources independently...');
+    const result = await this.searchRunner.run(
+      primarySourceAuditAgent,
+      `Complete report to audit:\n${JSON.stringify(report)}\n\nCandidate URLs to locate original primary documents (verify independently):\n${JSON.stringify([...sourceReferences(searchResults).values()].map(({ url }) => url))}`,
+      { maxTurns: 3 },
+    );
+    const opened = new Set<string>();
+    for (const { rawItem } of result.newItems) {
+      if (
+        rawItem.type !== 'hosted_tool_call' ||
+        rawItem.name !== 'web_search_call' ||
+        rawItem.status !== 'completed'
+      )
+        continue;
+      const action = rawItem.providerData?.action;
+      if (
+        action?.type === 'open_page' &&
+        typeof action.url === 'string' &&
+        /^https?:\/\//.test(action.url)
+      )
+        opened.add(action.url);
+    }
+    const audit = result.finalOutput!;
+    const issues = [audit.issues.trim()];
+    if (opened.size === 0 || audit.checks.length === 0)
+      issues.push(
+        'Primary-source audit returned no opened primary-source evidence or claim checks.',
+      );
+    for (const check of audit.checks) {
+      if (
+        !check.supported ||
+        !opened.has(check.source_url) ||
+        !check.supporting_extract.trim()
+      ) {
+        issues.push(
+          `Primary-source audit: ${check.claim}: ${check.explanation} Source: ${check.source_url}; extract: ${check.supporting_extract}`,
+        );
+      }
+    }
+    if (opened.size > 0) {
+      searchResults.push({
+        summary: `Independent primary-source audit (directly opened documents take precedence over earlier generated summaries):\n${JSON.stringify(audit.checks)}`,
+        sources: [...opened].map((url) => ({ url })),
+      });
+    }
+    console.log(
+      `[auditing] Read ${opened.size} primary-source pages; checked ${audit.checks.length} claims.`,
+    );
+    return {
+      verified: audit.verified && issues.every((issue) => !issue),
+      issues: issues.filter(Boolean).join('\n'),
+    };
   }
 
   async reviseReport(
@@ -282,7 +352,7 @@ export class FinancialResearchManager {
     console.log(`[revising] Revising report from verifier feedback...`);
     const inputData = `Original query: ${query}
 
-The current report failed verification. Resolve every issue in all report fields, including the executive summary. Remove the entire unsupported claim instead of merely rephrasing or caveating it. When sources conflict, omit the disputed figure or attribution unless a supplied source directly resolves the conflict. Do not introduce new facts. Cite the claims you keep. Use the matching source ID, for example [source:S1], so the host inserts the exact retrieved URL. Do not copy, shorten, or repair URLs. If you cannot substantiate a claim with those sources, delete it.
+The current report failed verification. Resolve every issue in all report fields, including the executive summary. Remove the entire unsupported claim instead of merely rephrasing or caveating it. When sources conflict, omit the disputed figure or attribution unless a supplied source directly resolves the conflict. Use the independently opened primary-source audit to correct numeric errors; its direct document extracts take precedence over earlier search summaries. Omit optional timeline/guidance and missing-evidence claims unless directly supported. Cite the claims you keep. Use the matching source ID, for example [source:S1], so the host inserts the exact retrieved URL. Do not copy, shorten, or repair URLs. If you cannot substantiate a claim with those sources, delete it.
 
 Verifier feedback:
 ${verification.issues}
