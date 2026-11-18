@@ -742,6 +742,76 @@ test.each([
     expect(scopedInput).toContain('$15.7 billion');
     expect(scopedInput).toContain('narrower coverage');
     expect(scopedInput).not.toContain('not $105B');
-    expect(scopedInput.match(/Services generated revenue/g)).toHaveLength(2); // Executive summary and report, one finding each.
+    expect(
+      scopedInput.match(/FY26 Services revenue: \$123\.301 billion/g),
+    ).toHaveLength(2); // Executive summary and report, one finding each.
   },
 );
+
+test.each([
+  'exact',
+  'different-url',
+  'different-claim',
+  'failed-open',
+  'empty-extract',
+])(
+  'requires a same-URL completed read and exact claim for targeted recovery: %s',
+  async (variant) => {
+    const manager = new FinancialResearchManager();
+    const original = auditResponse(true, false);
+    const recovered = auditResponse(true);
+    if (variant === 'different-url')
+      recovered.newItems[0].rawItem.providerData.action.url += '?different=1';
+    if (variant === 'different-claim')
+      recovered.finalOutput.checks[0].claim += ' changed';
+    if (variant === 'failed-open')
+      recovered.newItems[0].rawItem.status = 'failed';
+    if (variant === 'empty-extract')
+      recovered.finalOutput.checks[0].supporting_extract = ' ';
+    const run = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValueOnce(original)
+      .mockResolvedValueOnce(recovered);
+
+    const verdict = await manager.auditReport(initialReport, [
+      evidence('Search summary'),
+    ]);
+
+    expect(verdict.verified).toBe(variant === 'exact');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(run.mock.calls[1][1]))).toEqual({
+      source_url: primaryUrl,
+      claims: ['FY26 Services revenue'],
+    });
+    expect(
+      run.mock.calls[1][0].modelSettings.providerData?.max_tool_calls,
+    ).toBe(2);
+    expect(run.mock.calls[1][2]).toEqual({ maxTurns: 2 });
+  },
+);
+
+test('bounds missing-receipt recovery to three exact documents and skips unsupported claims', async () => {
+  const manager = new FinancialResearchManager();
+  const original = auditResponse(true, false);
+  original.finalOutput.checks = Array.from({ length: 5 }, (_, index) => ({
+    ...original.finalOutput.checks[0],
+    claim: `Claim ${index}`,
+    source_url: `https://investor.example.com/doc${index}.pdf`,
+    supported: index !== 0,
+  }));
+  const run = vi.spyOn(Runner.prototype, 'run').mockResolvedValue(original);
+
+  const verdict = await manager.auditReport(initialReport, [
+    evidence('Research'),
+  ]);
+
+  expect(verdict.verified).toBe(false);
+  expect(run).toHaveBeenCalledTimes(4);
+  expect(
+    run.mock.calls
+      .slice(1)
+      .map((call) => JSON.parse(String(call[1])).source_url),
+  ).toEqual(
+    [1, 2, 3].map((index) => `https://investor.example.com/doc${index}.pdf`),
+  );
+});
