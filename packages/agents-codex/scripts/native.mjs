@@ -53,7 +53,9 @@ if (
   !['prepare', 'audit', 'build', 'package', 'assemble-windows'].includes(
     command,
   ) ||
-  ((values.release || values['test-fixture']) && command !== 'build') ||
+  (values.release && command !== 'build') ||
+  (values['test-fixture'] &&
+    (component !== undefined || !['build', 'package'].includes(command))) ||
   (component !== undefined &&
     (command !== 'package' || !['addon', 'helpers'].includes(component))) ||
   (command === 'assemble-windows') !== Boolean(parts)
@@ -496,7 +498,11 @@ async function build() {
     ),
   );
   checkInputs();
-  if (command === 'package' && !component) smoke();
+  if (command === 'package' && !component) {
+    smoke();
+    // CI transfers the verified fixture separately from the SDK's shipped files.
+    delete products[`native/test-bin/exec-server-fixture${suffix}`];
+  }
   writeFileSync(
     receiptPath,
     JSON.stringify(
