@@ -16,6 +16,8 @@ const trackingNumberParams = z.object({
   trackingNumber: z.string().describe('The tracking number to look up.'),
 });
 
+const successfulCalls = new Set<string>();
+
 const crmTools = toolNamespace({
   name: 'crm',
   description: 'CRM tools for customer profile and support lookups.',
@@ -30,6 +32,7 @@ const crmTools = toolNamespace({
           return null;
         }
 
+        successfulCalls.add('crm.get_customer_profile');
         return {
           customerId,
           fullName: 'Avery Chen',
@@ -47,6 +50,7 @@ const crmTools = toolNamespace({
           return [];
         }
 
+        successfulCalls.add('crm.list_recent_support_tickets');
         return [
           {
             ticketId: 'ticket_991',
@@ -92,6 +96,7 @@ const getShippingEta = tool({
       return null;
     }
 
+    successfulCalls.add('get_shipping_eta');
     return {
       trackingNumber,
       eta: '2026-03-07',
@@ -130,8 +135,9 @@ async function main() {
   const namespacedAgent = new Agent({
     name: 'CRM assistant',
     model,
-    instructions:
-      'For customer questions in this example, load the full crm namespace with no query filter before calling tools. Do not search billing unless the user explicitly asks about invoices.',
+    instructions: useCodex
+      ? 'For customer questions in this example, search with the exact query "crm" and limit 2 to discover both CRM tools, then call them. Do not search billing unless the user explicitly asks about invoices.'
+      : 'For customer questions in this example, load the full crm namespace with no query filter before calling tools. Do not search billing unless the user explicitly asks about invoices.',
     tools: [...crmTools, ...billingTools, toolSearchTool()],
   });
   const topLevelAgent = new Agent({
@@ -157,6 +163,11 @@ async function main() {
 
     if (
       !namespacedLoadedTools.includes('crm.get_customer_profile') ||
+      !namespacedLoadedTools.includes('crm.list_recent_support_tickets') ||
+      namespacedLoadedTools.some((name) => name.startsWith('billing.')) ||
+      namespacedCalledTools.some((name) => name.startsWith('billing.')) ||
+      !successfulCalls.has('crm.get_customer_profile') ||
+      !successfulCalls.has('crm.list_recent_support_tickets') ||
       !namespacedCalledTools.includes('crm.get_customer_profile') ||
       !namespacedCalledTools.includes('crm.list_recent_support_tickets')
     )
@@ -189,6 +200,8 @@ async function main() {
 
     if (
       !topLevelLoadedTools.includes('get_shipping_eta') ||
+      topLevelLoadedTools.includes('get_shipping_credit_balance') ||
+      !successfulCalls.has('get_shipping_eta') ||
       !topLevelCalledTools.includes('get_shipping_eta') ||
       topLevelCalledTools.includes('get_shipping_credit_balance')
     )
