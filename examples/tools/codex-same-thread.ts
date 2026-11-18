@@ -72,18 +72,21 @@ async function main(): Promise<void> {
     'Codex same thread example',
     async () => {
       const workingDirectory = resolveWorkingDirectory();
+      let completedCodexTurns = 0;
       const agent = new Agent<ExampleContext>({
         name: 'Codex Agent (same thread)',
+        modelSettings: { toolChoice: 'required' },
         instructions: [
-          'Always use the codex tool to answer the user question.',
+          'Delegate every question to the codex_engineer SDK function tool. Do not use your own native shell or workspace tools instead.',
           'Even if context is limited, use the codex tool to continue the same task.',
+          'Ask Codex to return example code in its response only. Do not modify files or run implementation checks.',
         ].join(' '),
         tools: [
           codexTool({
             // `name` is optional for a single Codex tool.
             // We set it so the run-context key is tool-specific and to avoid collisions when adding more Codex tools.
             name: 'codex_engineer',
-            sandboxMode: 'workspace-write',
+            sandboxMode: 'read-only',
             defaultThreadOptions: {
               model: 'gpt-5.4',
               modelReasoningEffort: 'low',
@@ -92,7 +95,11 @@ async function main(): Promise<void> {
               approvalPolicy: 'never',
               workingDirectory,
             },
-            onStream: onCodexStream,
+            onStream: async (payload) => {
+              if (payload.event.type === 'turn.completed')
+                completedCodexTurns++;
+              await onCodexStream(payload);
+            },
             // Reuse the same Codex thread across runs that share this context object.
             useRunContextThreadId: true,
           }),
@@ -103,24 +110,39 @@ async function main(): Promise<void> {
       const context: ExampleContext = {};
 
       log('Turn 1: ask for a Python Responses API example.');
+      const beforeFirst = completedCodexTurns;
       const first = await run(
         agent,
-        "Write a working Python example for OpenAI's Responses API with web search enabled.",
+        "Call the codex_engineer SDK function tool to return a working Python example for OpenAI's Responses API with web search enabled. Return code in the response only; do not modify files or run implementation checks.",
         { context },
       );
       const firstThreadId = context[THREAD_ID_KEY] ?? null;
+      if (!firstThreadId || completedCodexTurns <= beforeFirst) {
+        throw new Error(
+          'The first question did not complete a Codex tool turn.',
+        );
+      }
       log(String(first.finalOutput ?? ''));
       log(`thread after turn 1: ${firstThreadId}`);
 
       log('Turn 2: continue in the same Codex thread.');
+      const beforeSecond = completedCodexTurns;
       const second = await run(
         agent,
-        'Rewrite the same example in TypeScript.',
+        'Call the codex_engineer SDK function tool to continue its existing thread and rewrite the same example in TypeScript. Return code in the response only; do not modify files or run implementation checks.',
         {
           context,
         },
       );
       const secondThreadId = context[THREAD_ID_KEY] ?? null;
+      if (
+        secondThreadId !== firstThreadId ||
+        completedCodexTurns <= beforeSecond
+      ) {
+        throw new Error(
+          'The second question did not complete a turn in the same Codex thread.',
+        );
+      }
       log(String(second.finalOutput ?? ''));
       log(`thread after turn 2: ${secondThreadId}`);
       log(

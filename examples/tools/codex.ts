@@ -111,8 +111,9 @@ async function main(): Promise<void> {
         // this needs to be top dir, not examples/tools
         workingDirectory = parent;
       }
+      let completedCodexTurns = 0;
       const codex = codexTool({
-        sandboxMode: 'workspace-write',
+        sandboxMode: 'read-only',
         defaultThreadOptions: {
           model: 'gpt-5.4',
           modelReasoningEffort: 'low',
@@ -121,12 +122,16 @@ async function main(): Promise<void> {
           approvalPolicy: 'never',
           workingDirectory,
         },
-        onStream: onCodexStream,
+        onStream: async (payload) => {
+          if (payload.event.type === 'turn.completed') completedCodexTurns++;
+          await onCodexStream(payload);
+        },
       });
       const agent = new Agent({
         name: 'Codex Agent',
+        modelSettings: { toolChoice: 'required' },
         instructions: [
-          'Use the codex tool to inspect the workspace and answer the question.',
+          'Delegate every question to the codex SDK function tool. Do not use your own native shell or workspace tools instead.',
           'When skill names, which usually start with `$`, are mentioned, you must rely on the codex tool to use the skill and answer the question.',
           'When you send the final answer, you must include the following info at the end:',
           'Run `codex resume <thread_id>` to continue the codex session.',
@@ -137,19 +142,31 @@ async function main(): Promise<void> {
       log(
         'Using $openai-knowledge skill to fetch the latest realtime model name...',
       );
+      const beforeFirst = completedCodexTurns;
       const result1 = await run(
         agent,
-        'You must use `$openai-knowledge` skill to fetch the latest realtime model name.',
+        'Call the codex SDK function tool and ask it to use `$openai-knowledge` to fetch the latest realtime model name.',
       );
+      if (completedCodexTurns <= beforeFirst) {
+        throw new Error(
+          'The first question did not complete a Codex tool turn.',
+        );
+      }
       log(String(result1.finalOutput ?? ''));
 
       log(
         'Using the codex tool to inspect the workspace and find the Agent implementation...',
       );
+      const beforeSecond = completedCodexTurns;
       const result2 = await run(
         agent,
-        'Use the codex tool to inspect this workspace. Find the main source file that defines the Agent class and summarize its location in one sentence.',
+        'Call the codex SDK function tool to inspect this workspace. Ask it to find the main source file that defines the Agent class and summarize its location in one sentence. Do not inspect files yourself.',
       );
+      if (completedCodexTurns <= beforeSecond) {
+        throw new Error(
+          'The second question did not complete a Codex tool turn.',
+        );
+      }
       log(String(result2.finalOutput ?? ''));
     },
     { traceId },
