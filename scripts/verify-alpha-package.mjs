@@ -259,9 +259,14 @@ export async function verifyAlphaPackage(directory) {
       const types = await verifyTypes(root, env);
       await record(profile, types);
     };
+    // One full TypeScript profile at a time on the macOS release runner.
+    const starter = qualify('starter', consumer);
+    if (process.platform === 'darwin') {
+      await starter;
+    }
     // Join both profiles before removing their files, including on failure.
     const results = await Promise.allSettled([
-      qualify('starter', consumer),
+      starter,
       qualify('app', existing),
     ]);
     const failures = results.filter((result) => result.status === 'rejected');
