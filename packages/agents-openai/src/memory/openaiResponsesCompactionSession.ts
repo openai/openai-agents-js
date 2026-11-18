@@ -26,7 +26,7 @@ import {
   OPENAI_SESSION_API,
   type OpenAISessionApiTagged,
 } from './openaiSessionApi';
-import type { OpenAIClient } from '../openaiClient';
+import type { CompatibleOpenAIClient, OpenAIClient } from '../openaiClient';
 
 const DEFAULT_COMPACTION_THRESHOLD = 10;
 const logger = getLogger('openai-agents:openai:compaction');
@@ -56,14 +56,16 @@ export type OpenAIResponsesCompactionDecisionContext = {
   sessionItems: AgentInputItem[];
 };
 
-export type OpenAIResponsesCompactionSessionOptions = {
+export type OpenAIResponsesCompactionSessionOptions<
+  Client extends CompatibleOpenAIClient = OpenAIClient,
+> = {
   /**
    * OpenAI client used to call `responses.compact`.
    *
    * When omitted, the session will use `getDefaultOpenAIClient()` if configured. Otherwise it
    * creates a new `OpenAI()` instance via `new OpenAI()`.
    */
-  client?: OpenAIClient;
+  client?: Client;
   /**
    * Session store that receives items and holds the compacted history.
    *
@@ -154,7 +156,9 @@ export class OpenAIResponsesCompactionSession
   private mutationGeneration: object = {};
   private readonly compactionOwnership = new WeakMap<object, object>();
 
-  constructor(options: OpenAIResponsesCompactionSessionOptions) {
+  constructor(
+    options: OpenAIResponsesCompactionSessionOptions<CompatibleOpenAIClient>,
+  ) {
     const { maxRollbackItems } = options;
     if (
       maxRollbackItems !== undefined &&
@@ -657,7 +661,7 @@ function resolveCompactionMode(options: {
 }
 
 function resolveClient(
-  options: OpenAIResponsesCompactionSessionOptions,
+  options: OpenAIResponsesCompactionSessionOptions<CompatibleOpenAIClient>,
 ): OpenAI {
   if (options.client) {
     return options.client as OpenAI;

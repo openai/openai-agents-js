@@ -8,7 +8,7 @@ import {
 } from '@openai/agents-core';
 import OpenAI from 'openai';
 import { ResponsesWS } from 'openai/resources/beta/responses/ws';
-import type { OpenAIClient } from '../../openaiClient';
+import type { CompatibleOpenAIClient } from '../../openaiClient';
 import { HEADERS } from '../../defaults';
 import {
   OpenAIResponsesModel,
@@ -265,7 +265,7 @@ export class OpenAIHostedMultiAgentModel extends OpenAIResponsesModel {
   #requestInProgress = false;
 
   constructor(
-    client: OpenAIClient,
+    client: CompatibleOpenAIClient,
     model: string,
     config?: HostedMultiAgentConfig,
   ) {

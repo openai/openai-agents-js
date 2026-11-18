@@ -41,7 +41,7 @@ import {
 import { protocol } from '@openai/agents-core';
 import { getOpenAIRetryAdvice } from './retryAdvice';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
-import type { OpenAIClient } from './openaiClient';
+import type { CompatibleOpenAIClient } from './openaiClient';
 import {
   CONTENT_FILTER_REFUSAL_MESSAGE,
   shouldSynthesizeContentFilterRefusal,
@@ -130,7 +130,7 @@ export class OpenAIChatCompletionsModel implements Model {
   #hasWarnedUnsupportedReasoningSettings = false;
 
   constructor(
-    client: OpenAIClient,
+    client: CompatibleOpenAIClient,
     model: string,
     options: OpenAIChatCompletionsModelOptions = {},
   ) {

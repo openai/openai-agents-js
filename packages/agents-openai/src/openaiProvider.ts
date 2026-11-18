@@ -13,12 +13,14 @@ import {
   OpenAIResponsesWSModel,
 } from './openaiResponsesModel';
 import { OpenAIChatCompletionsModel } from './openaiChatCompletionsModel';
-import type { OpenAIClient } from './openaiClient';
+import type { CompatibleOpenAIClient, OpenAIClient } from './openaiClient';
 
 /**
  * Options for OpenAIProvider.
  */
-export type OpenAIProviderOptions = {
+export type OpenAIProviderOptions<
+  Client extends CompatibleOpenAIClient = OpenAIClient,
+> = {
   apiKey?: string;
   baseURL?: string;
   websocketBaseURL?: string;
@@ -34,7 +36,7 @@ export type OpenAIProviderOptions = {
    */
   strictFeatureValidation?: boolean;
   responsesWebSocketOptions?: OpenAIResponsesWebSocketOptions;
-  openAIClient?: OpenAIClient;
+  openAIClient?: Client;
 };
 
 /**
@@ -47,9 +49,9 @@ export class OpenAIProvider implements ModelProvider {
   #websocketBaseURL?: string;
   #cacheResponsesWebSocketModels: boolean;
   #modelCache = new Map<string, Model>();
-  #options: OpenAIProviderOptions;
+  #options: OpenAIProviderOptions<CompatibleOpenAIClient>;
 
-  constructor(options: OpenAIProviderOptions = {}) {
+  constructor(options: OpenAIProviderOptions<CompatibleOpenAIClient> = {}) {
     this.#options = options;
     if (this.#options.openAIClient) {
       if (this.#options.apiKey) {

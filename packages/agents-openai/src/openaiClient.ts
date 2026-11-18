@@ -2,7 +2,7 @@ import type { OpenAI } from 'openai';
 import type { ConversationItem } from 'openai/resources/conversations/items';
 
 // Keep the full client type for callers that read the SDK default.
-export type BundledOpenAIClient = OpenAI | import('openai/index.mjs').OpenAI;
+export type OpenAIClient = OpenAI | import('openai/index.mjs').OpenAI;
 
 // OpenAI 7.2 represented MCP errors as text. Later versions use a structured
 // error. The Agents SDK treats this field as provider data.
@@ -47,7 +47,7 @@ type Create<ModelInput, Result, Event> = {
  * SDK. Check the public operations and result fields shared across supported
  * versions without depending on private resource, promise, or stream classes.
  */
-export type OpenAIClient = Pick<
+export type CompatibleOpenAIClient = Pick<
   OpenAI,
   'apiKey' | 'baseURL' | 'organization' | 'project' | 'buildURL'
 > & {

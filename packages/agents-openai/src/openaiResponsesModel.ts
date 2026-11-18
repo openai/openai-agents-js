@@ -55,7 +55,7 @@ import {
   mergeQueryParamsIntoURL,
   splitResponsesTransportOverrides,
 } from './responsesTransportUtils';
-import type { OpenAIClient } from './openaiClient';
+import type { CompatibleOpenAIClient } from './openaiClient';
 import { camelOrSnakeToSnakeCase } from './utils/providerData';
 import { normalizePromptCacheRetention } from './utils/modelSettings';
 import {
@@ -1503,7 +1503,7 @@ export class OpenAIResponsesModel implements Model {
   protected readonly _client: OpenAI;
   protected readonly _model: string;
 
-  constructor(client: OpenAIClient, model: string) {
+  constructor(client: CompatibleOpenAIClient, model: string) {
     this._client = client as OpenAI;
     this._model = model;
   }
@@ -2196,7 +2196,7 @@ export class OpenAIResponsesWSModel extends OpenAIResponsesModel {
   #wsRequestLock: Promise<void> = Promise.resolve();
 
   constructor(
-    client: OpenAIClient,
+    client: CompatibleOpenAIClient,
     model: string,
     options: OpenAIResponsesWSModelOptions = {},
   ) {

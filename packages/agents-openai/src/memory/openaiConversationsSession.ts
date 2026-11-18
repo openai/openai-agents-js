@@ -9,13 +9,15 @@ import {
   OPENAI_SESSION_API,
   type OpenAISessionApiTagged,
 } from './openaiSessionApi';
-import type { OpenAIClient } from '../openaiClient';
+import type { CompatibleOpenAIClient, OpenAIClient } from '../openaiClient';
 
 const MAX_ITEMS_PER_CREATE = 20;
 
-export type OpenAIConversationsSessionOptions = {
+export type OpenAIConversationsSessionOptions<
+  Client extends CompatibleOpenAIClient = OpenAIClient,
+> = {
   conversationId?: string;
-  client?: OpenAIClient;
+  client?: Client;
   apiKey?: string;
   baseURL?: string;
   organization?: string;
@@ -23,7 +25,7 @@ export type OpenAIConversationsSessionOptions = {
 };
 
 export async function startOpenAIConversationsSession(
-  client?: OpenAIClient,
+  client?: CompatibleOpenAIClient,
 ): Promise<string> {
   const resolvedClient = client ? (client as OpenAI) : resolveClient({});
   const response = await resolvedClient.conversations.create({ items: [] });
@@ -40,7 +42,9 @@ export class OpenAIConversationsSession
   #conversationId?: string;
   #sessionOperation: Promise<void> = Promise.resolve();
 
-  constructor(options: OpenAIConversationsSessionOptions = {}) {
+  constructor(
+    options: OpenAIConversationsSessionOptions<CompatibleOpenAIClient> = {},
+  ) {
     this.#client = resolveClient(options);
     this.#conversationId = options.conversationId;
   }
@@ -483,7 +487,9 @@ function isResponseOutputItemArray(
   });
 }
 
-function resolveClient(options: OpenAIConversationsSessionOptions): OpenAI {
+function resolveClient(
+  options: OpenAIConversationsSessionOptions<CompatibleOpenAIClient>,
+): OpenAI {
   if (options.client) {
     return options.client as OpenAI;
   }

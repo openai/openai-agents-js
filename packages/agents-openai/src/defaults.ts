@@ -1,6 +1,6 @@
 import { loadEnv } from '@openai/agents-core/_shims';
 import METADATA from './metadata';
-import type { BundledOpenAIClient, OpenAIClient } from './openaiClient';
+import type { CompatibleOpenAIClient, OpenAIClient } from './openaiClient';
 
 export const DEFAULT_OPENAI_API = 'responses';
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
@@ -8,7 +8,7 @@ export const DEFAULT_OPENAI_RESPONSES_TRANSPORT = 'http';
 
 let _defaultOpenAIAPI = DEFAULT_OPENAI_API;
 let _defaultOpenAIResponsesTransport = DEFAULT_OPENAI_RESPONSES_TRANSPORT;
-let _defaultOpenAIClient: OpenAIClient | undefined;
+let _defaultOpenAIClient: CompatibleOpenAIClient | undefined;
 let _defaultOpenAIKey: string | undefined = undefined;
 let _defaultTracingApiKey: string | undefined = undefined;
 
@@ -36,12 +36,12 @@ export function setOpenAIResponsesTransport(value: 'http' | 'websocket') {
   _defaultOpenAIResponsesTransport = value;
 }
 
-export function setDefaultOpenAIClient(client: OpenAIClient) {
+export function setDefaultOpenAIClient(client: CompatibleOpenAIClient) {
   _defaultOpenAIClient = client;
 }
 
 export function getDefaultOpenAIClient<
-  TClient extends OpenAIClient = BundledOpenAIClient,
+  TClient extends CompatibleOpenAIClient = OpenAIClient,
 >(): TClient | undefined {
   return _defaultOpenAIClient as TClient | undefined;
 }
