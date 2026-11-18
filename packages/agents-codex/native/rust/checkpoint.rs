@@ -242,6 +242,7 @@ impl Checkpoint {
                 self.managed_tool_specs.is_some() && trusted_specs.is_some()
             } else {
                 self.managed_tool_specs == trusted_specs
+                    || self.can_replace_idle_tools(python_specs)?
             },
             "checkpoint tool mode and current managed specs must match; startup checkpoints cannot convert to managed tools"
         );
@@ -298,6 +299,50 @@ impl Checkpoint {
             }
         }
         Ok(ids)
+    }
+
+    // Only settled ordinary roots can reinterpret declarations for new work.
+    // Historical effects stay untouched and never grant current tool authority.
+    pub(crate) fn can_replace_idle_tools(
+        &self,
+        current: Option<&[DynamicToolSpec]>,
+    ) -> anyhow::Result<bool> {
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        let Some(saved) = &self.managed_tool_specs else {
+            return Ok(false);
+        };
+        let Some(RolloutItem::SessionMeta(header)) = self.history.first() else {
+            return Ok(false);
+        };
+        if !matches!(self.format_version, 2 | 4)
+            || !self.descendants.is_empty()
+            || !self.interrupted_thread_ids.is_empty()
+            || self.agent_environment_policy_digest.is_some()
+            || self.root_metadata.forked_from_id.is_some()
+            || self.root_metadata.parent_thread_id.is_some()
+            || header.meta.forked_from_id.is_some()
+            || header.meta.parent_thread_id.is_some()
+            || self.history.iter().any(|item| {
+                matches!(item,
+                RolloutItem::ResponseItem(envelope) if envelope.metadata.as_ref()
+                    .is_some_and(|metadata| metadata.sdk_agent_profile.is_some()
+                        || metadata.sdk_agent_graph.is_some()))
+            })
+        {
+            return Ok(false);
+        }
+        let saved_specs: Vec<DynamicToolSpec> = serde_json::from_value(saved.clone())?;
+        crate::python_tools::validate_declarations(&saved_specs)?;
+        ensure!(
+            crate::python_tools::checkpoint_specs(&saved_specs)? == *saved,
+            "Checkpoint saved tool declarations contain unknown fields"
+        );
+        Ok(saved_specs
+            .iter()
+            .chain(current)
+            .all(|spec| matches!(spec, DynamicToolSpec::Function(_))))
     }
 
     pub(crate) fn initial_models(
@@ -818,7 +863,9 @@ async fn export_inner(
         Some(fork) => fork.executor_policy_digest.clone(),
         None => crate::environment::checkpoint_policy(&state.thread).await?,
     };
-    let agent_environment_policy_digest = state.thread.thread_extension_data()
+    let agent_environment_policy_digest = state
+        .thread
+        .thread_extension_data()
         .get::<crate::agent_profiles::ProfileEnvironments>()
         .map(|environments| environments.digest.clone());
     let plan = codex_thread_store::is_chatgpt_plan_provider(&root_metadata.model_provider);
@@ -1705,6 +1752,16 @@ pub async fn restore(
     // Match the current application declaration before any native import or
     // config-dependent startup. This is the same parser used by JS preflight.
     let has_agent_profiles = options.agent_profiles.is_some();
+    if has_agent_profiles && !fresh_manual {
+        ensure!(
+            checkpoint.managed_tool_specs
+                == python_specs
+                    .as_deref()
+                    .map(crate::python_tools::checkpoint_specs)
+                    .transpose()?,
+            "Agent profiles require matching checkpoint tool declarations"
+        );
+    }
     let accepted = options.validate_instructions(&checkpoint.history)?;
     let profile_transport = options
         .agent_profiles
@@ -1835,10 +1892,14 @@ pub async fn restore(
         checkpoint.executor_policy_digest.as_deref(),
         &startup,
     )?;
-    let environment = startup.thread_extension_init.get::<crate::agent_profiles::ProfileEnvironments>();
+    let environment = startup
+        .thread_extension_init
+        .get::<crate::agent_profiles::ProfileEnvironments>();
     ensure!(
         checkpoint.agent_environment_policy_digest.as_deref()
-            == environment.as_ref().map(|environments| environments.digest.as_str()),
+            == environment
+                .as_ref()
+                .map(|environments| environments.digest.as_str()),
         "Restore requires the recorded Agent environment grants"
     );
 

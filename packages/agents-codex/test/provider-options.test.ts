@@ -9,6 +9,8 @@ describe('NativeProvider option capture', () => {
     ['baseUrl', null],
     ['apiKey', null],
     ['supportsWebsockets', null],
+    ['responsesFormat', 'lite'],
+    ['responsesFormat', null],
   ])(
     'rejects an incorrectly typed %s from JSON configuration',
     (key, value) => {
@@ -215,4 +217,46 @@ describe('NativeProvider option capture', () => {
       vi.unstubAllEnvs();
     }
   });
+});
+
+it('captures the Responses shape without changing transport selection', async () => {
+  const options = {
+    responsesFormat: 'standard' as 'auto' | 'standard',
+    supportsWebsockets: true,
+  };
+  await using provider = new NativeProvider(options);
+  options.responsesFormat = 'auto';
+  expect(provider.responsesFormat).toBe('standard');
+  expect(provider.supportsWebsockets).toBe(true);
+  await using ordinary = new NativeProvider();
+  expect(ordinary.responsesFormat).toBe('auto');
+});
+
+it.each([
+  { codexLogin: {} },
+  { signInWithChatGPT: { getCredential: vi.fn() } },
+  { modelBackend: { complete: vi.fn() } },
+])('rejects standard Responses without native API-key ownership', (options) => {
+  expect(
+    () => new NativeProvider({ ...options, responsesFormat: 'standard' }),
+  ).toThrow('responsesFormat standard requires a native API-key provider');
+});
+
+it('preserves API-key inference ownership with separate personal Apps credentials', async () => {
+  await using provider = new NativeProvider({
+    responsesFormat: 'standard',
+    apiKey: 'synthetic-model-key',
+    chatGPT: {
+      accountId: 'synthetic-apps-account',
+      accessToken: 'synthetic-apps-token',
+    },
+  });
+  expect(provider._supportsStandardResponses).toBe(true);
+  const lease = provider._acquire();
+  try {
+    expect(lease.apiKey).toBe('synthetic-model-key');
+    expect(lease.chatGPT?.accessToken).toBe('synthetic-apps-token');
+  } finally {
+    await lease.release();
+  }
 });

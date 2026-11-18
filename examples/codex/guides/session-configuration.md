@@ -18,6 +18,10 @@ The default `NativeProvider` transport has been sending model requests through C
 - A custom endpoint has been using HTTP by default. At the default endpoint, eligible `agent.run()` calls have been selecting HTTP, while explicit Sessions have been allowing WebSockets. The [provider lifetime](#provider-lifetime) section has been describing reuse eligibility and explicit transport settings.
 - When you omit the key, the SDK reads `OPENAI_API_KEY` as the Session opens.
 
+With the current [source build](building.md), native API-key Sessions with `providerHistory` have been selecting standard Responses automatically. For a stored response over HTTP, `modelSettings: { store: true }` and `providerHistory: { type: 'previous_response' }` have been starting a chain. On restore, the application has been supplying the saved state, current credentials, and an independently authorized response ID in `providerHistory: { type: 'previous_response', id }`.
+
+For ordinary requests that need standard controls such as `verbosity`, `new NativeProvider({ responsesFormat: 'standard' })` has been selecting standard Responses on compatible native API-key endpoints. The default `'auto'` has been following the model catalog for ordinary requests. `supportsWebsockets` has been controlling the transport independently.
+
 ### Use Sign in with ChatGPT
 
 With the current source build, a registered application can use a user's ChatGPT plan for native text Sessions. Supply a `SignInWithChatGPT` credential source to `NativeProvider`. Each Session opening, including resume, calls `getCredential()` once and uses that access token for the Session's lifetime.
@@ -205,6 +209,8 @@ Supported values and account access depend on the model provider. Accepting a se
 
 Each Session captures its effective configuration when it opens. The Agent keeps its defaults for other Sessions. The Session borrows a supplied provider and releases its own resources when it closes. Other Sessions can keep using that provider.
 
+In the current [source build](building.md), fresh Sessions with the same application instructions have been sending the same instruction text. Native requests have been using a separate cache routing key for each Session and reusing that key after restore. To share a routing key across fresh Sessions using a borrowed OpenAI client, pass `{ promptCacheKey: 'shared-prefix' }` as the third argument to `new ResponsesModel(client, model, options)`. The provider has been reporting actual cache usage in its response.
+
 Portable `state`, including state from `session.fork()`, retains the saved model and accepted settings. Restore through the same Agent even if its default model differs or is absent. Leave `model` and `modelSettings` undefined when restoring. Passing `modelSettings: {}` rejects the restore.
 
 You can supply a provider with current credentials on restore. Afterward, an idle Session can use `session.update(...)` to change supported settings. A `NativeAgents` Session keeps its opening model settings. Checkpoints omit provider credentials and tool grants. They retain `store`, `promptCacheRetention` and `promptCacheTtl`; verify checkpoint integrity and application-policy approval [before restoring](state.md#restore-instructions-and-tools). A pending manual continuation can sample before an idle update, so a later update cannot serve as its privacy-policy check.
@@ -320,6 +326,8 @@ Opening overrides do not remove a separately supplied Environment or programmati
 See [the tenant tools example](../opening-tools.ts) for two Sessions with separate callbacks.
 
 ## Connection retries and errors
+
+After publishing ordinary assistant text for a model request, the current [source build](building.md) has been surfacing any subsequent stream interruption for that request. This has been applying to `agent.run()` even without an event reader. Raw turn events have been exposing provisional text before output guardrails approve the final answer, so those text events have also been stopping retries. Interruptions before publication and later model requests within the same turn have still been eligible for retry. [Accepted output and raw events](accepted-output.md#separating-progress-from-content)
 
 `NativeProvider` exposes `requestMaxRetries` for failed HTTP requests and `streamMaxRetries` for dropped response streams. Omitted values use the native defaults: four request retries and five stream reconnections. Set either value to zero to disable that recovery path. Values must be nonnegative safe integers; the native client caps each limit at 100.
 

@@ -442,6 +442,9 @@ nativeIt(
     let connections = 0;
     model.onUpgrade((request, socket, head) => {
       connections++;
+      expect(
+        request.headers['x-openai-internal-codex-responses-lite'],
+      ).toBeUndefined();
       sockets.handleUpgrade(request, socket, head, (connection) => {
         connection.on('message', (raw) => {
           const payload = JSON.parse(raw.toString());
@@ -467,7 +470,7 @@ nativeIt(
       });
       const agent = new Agent({
         instructions: 'Continue the current response chain.',
-        model: 'gpt-5.5',
+        model: 'gpt-6.1-sol',
         provider,
         modelSettings: { store: false },
       });
@@ -1975,4 +1978,76 @@ nativeIt.each(['previous_response', 'conversation'] as const)(
     }
   },
   15_000,
+);
+
+nativeIt.each([false, true])(
+  'uses standard Responses for stored native history on a catalog Lite model across restore with personal Apps=%s',
+  async (personalApps) => {
+    const model = new ModelServer([[message('Before.')], [message('After.')]]);
+    const remote = await peer(model);
+    await using provider = new NativeProvider({
+      ...remote.options,
+      ...(personalApps
+        ? {
+            chatGPT: {
+              accountId: 'synthetic-apps-account',
+              accessToken: 'synthetic-apps-token',
+            },
+          }
+        : {}),
+    });
+    const agent = new Agent({
+      instructions: 'Continue.',
+      model: 'gpt-6.1-sol',
+      provider,
+      modelSettings: {
+        store: true,
+        parallelToolCalls: false,
+        verbosity: 'high',
+      },
+    });
+    const state = await (async () => {
+      await using session = await agent.session({
+        providerHistory: { type: 'previous_response' },
+      });
+      expect((await (await session.submit('Before.')).wait()).finalOutput).toBe(
+        'Before.',
+      );
+      return session.saveState();
+    })();
+    await using restored = await agent.session({
+      state,
+      providerHistory: { type: 'previous_response', id: 'response-1' },
+    });
+    expect((await (await restored.submit('After.')).wait()).finalOutput).toBe(
+      'After.',
+    );
+    expect(
+      model.requests.map((request) => request.previous_response_id),
+    ).toEqual([undefined, 'response-1']);
+    for (const request of model.requests) {
+      expect(request).toMatchObject({
+        model: 'gpt-6.1-sol',
+        store: true,
+        parallel_tool_calls: false,
+        text: { verbosity: 'high' },
+      });
+    }
+    for (const headers of model.requestHeaders)
+      expect(headers['x-openai-internal-codex-responses-lite']).toBeUndefined();
+    expect(remote.reads).toContainEqual([
+      '/v1/responses/response-1',
+      'Bearer current-owner',
+    ]);
+    expect(model.requests[1]!.input).toEqual([
+      expect.objectContaining({ role: 'user' }),
+    ]);
+    expect(
+      remote.auth.every(
+        (request) => request.authorization === 'Bearer current-owner',
+      ),
+    ).toBe(true);
+    model.assertExhausted();
+  },
+  30_000,
 );

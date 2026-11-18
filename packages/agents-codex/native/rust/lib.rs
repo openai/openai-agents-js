@@ -201,10 +201,22 @@ pub fn _validate_application_instructions(
 
 /// Pure declaration preflight before Agent.session acquires runtime resources.
 #[napi(js_name = "_validate_python_tool_declarations")]
-pub fn _validate_python_tool_declarations(specs_json: String) -> napi::Result<()> {
+pub fn _validate_python_tool_declarations(
+    specs_json: String,
+    checkpoint_json: Option<String>,
+) -> napi::Result<bool> {
     let specs: tool_callers::ToolDeclarations =
         serde_json::from_str(&specs_json).map_err(input_error)?;
-    python_tools::validate_declarations(&specs).map_err(input_error)
+    python_tools::validate_declarations(&specs).map_err(input_error)?;
+    let Some(encoded) = checkpoint_json else {
+        return Ok(false);
+    };
+    let checkpoint: checkpoint::Checkpoint =
+        serde_json::from_value(checkpoint_wire_value(&encoded).map_err(input_error)?)
+            .map_err(input_error)?;
+    checkpoint
+        .can_replace_idle_tools(Some(&specs))
+        .map_err(input_error)
 }
 
 fn input_error(error: impl std::fmt::Display) -> napi::Error {

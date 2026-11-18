@@ -1571,7 +1571,15 @@
     {
       "path": "sdk-reconcile-remote-exit-receipts.patch",
       "sha256": "69c07a5b8bc22f5b12ac9d53988501ff0275c54bc89c636392f5ff56c404bd66"
+    },
+    {
+      "path": "sdk-stable-application-instruction-prompt.patch",
+      "sha256": "aec94c1e5915d4de9266e0b54e5c20cbe13119419263394090825477dd358f1a"
+    },
+    {
+      "path": "sdk-no-retry-after-visible-text.patch",
+      "sha256": "72bb8c22c0ce8885b5dbf06f613da4f4184919eedf0ce461d8c307edd0e416b9"
     }
   ],
-  "result_tree": "cfe5bbcd2c3f14295432add23b6876777789100c"
+  "result_tree": "7a7cfa75ee9a8a86c13f6fc5dc0bc6a3ca057962"
 }

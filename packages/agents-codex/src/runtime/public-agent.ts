@@ -2266,6 +2266,7 @@ export class Agent<Context = undefined, Output = string> {
       }
     assertUniqueToolIdentities(selected);
     const config: JsonObject = {
+      include_collaboration_mode_instructions: false,
       include_permissions_instructions: !!environment,
       include_environment_context: !!environment,
       'agents.enabled': false,
@@ -2520,6 +2521,11 @@ export class Agent<Context = undefined, Output = string> {
         },
         runtime: {
           ...home,
+          ...(provider.responsesFormat === 'standard' ||
+          (options.providerHistory !== undefined &&
+            provider._supportsStandardResponses)
+            ? { _sdk_standard_responses: true }
+            : {}),
           ...(discoverAgentsMd ? { _sdk_discover_agents_md: true } : {}),
           ...(lease.codexLogin === undefined
             ? {}
@@ -3274,6 +3280,13 @@ export function captureAgentProfiles<Context, Output>(
       targetProvider !== undefined &&
       targetProvider !== rootDeclaration.provider
     ) {
+      if (
+        rootDeclaration.provider.responsesFormat === 'standard' ||
+        targetProvider.responsesFormat === 'standard'
+      )
+        throw new TypeError(
+          'responsesFormat standard requires a shared native handoff provider',
+        );
       const borrowed =
         rootDeclaration.provider.modelBackend !== undefined &&
         targetProvider.modelBackend !== undefined;

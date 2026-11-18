@@ -530,7 +530,10 @@ export class NativeModelWebSocket {
   close(code: number, reason: string): Promise<void>;
 }
 /** Pure declaration preflight; never acquires runtime resources. */
-export function _validate_python_tool_declarations(specs_json: string): void;
+export function _validate_python_tool_declarations(
+  specs_json: string,
+  checkpoint_json?: string,
+): boolean;
 export function _read_session_instructions(history_json: string): string;
 export function _validate_application_instructions(
   history_json: string,

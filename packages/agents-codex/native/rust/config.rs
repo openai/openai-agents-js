@@ -44,6 +44,8 @@ struct RuntimeOptions {
     // The facade owns this signal on its live runtime; checkpoint runtime is ignored.
     #[serde(rename = "_sdk_native_config")]
     sdk_native_config: bool,
+    #[serde(rename = "_sdk_standard_responses")]
+    sdk_standard_responses: bool,
     // Project guidance reads only host-authorized trust and discovery settings.
     #[serde(rename = "_sdk_project_guidance_config")]
     sdk_project_guidance_config: bool,
@@ -159,6 +161,11 @@ pub fn project_search(runtime_json: &str) -> Result<Option<crate::project_search
 pub fn native_agents(runtime_json: &str) -> Result<bool> {
     let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
     Ok(options.native_agents)
+}
+
+pub fn sdk_standard_responses(runtime_json: &str) -> Result<bool> {
+    let options: RuntimeOptions = decode(serde_json::from_str(runtime_json)?)?;
+    Ok(options.sdk_standard_responses)
 }
 
 pub fn sdk_native_config(runtime_json: &str) -> Result<bool> {
