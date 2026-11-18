@@ -219,7 +219,7 @@ export class FinancialResearchManager {
       useResponses: true,
       useResponsesWebSocket: false,
     }),
-    model: 'gpt-5.4',
+    model: searchAgent.model,
   });
 
   private readonly runner: Pick<Runner, 'run'>;

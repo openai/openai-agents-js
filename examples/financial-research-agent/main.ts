@@ -1,4 +1,5 @@
 import { Runner, withTrace } from '@openai/agents';
+import { plannerAgent } from './agents.ts';
 import { FinancialResearchManager } from './manager.ts';
 
 async function main() {
@@ -30,7 +31,7 @@ async function main() {
           approvalPolicy: 'never',
         },
       }),
-      model: process.env.CODEX_MODEL ?? 'gpt-5.5',
+      model: process.env.CODEX_MODEL ?? plannerAgent.model,
     });
   }
   await withTrace('Financial research workflow', async () => {

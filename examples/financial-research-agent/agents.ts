@@ -126,7 +126,7 @@ export type PrimaryAuditCheck = z.infer<
 
 export const primarySourceAuditAgent = new Agent({
   name: 'PrimarySourceAuditAgent',
-  model: 'gpt-5.4',
+  model: searchAgent.model,
   instructions: `Independently audit every material numeric claim in the complete report against original primary sources.
 Do not trust the report or generated research summaries. Use hosted web search, then explicitly OPEN and READ the issuer earnings release, financial-statement PDF, or regulatory filing. Search snippets, aggregator summaries, and remembered figures are insufficient.
 Check the exact fiscal period, currency, scale, segment, and GAAP/non-GAAP basis. Read the relevant table, not a nearby quarter or fiscal year. For each material numeric claim return a check with the exact URL you opened, a short supporting extract, supported, and an explanation of period and units. Prefer self-contained issuer earnings-release prose for revenue, EPS and other headline findings when available. Copy complete narrative sentences with metric and period context rather than bare table rows with multiple unlabeled figures; the extracts may become the final scoped report. Open the report-cited primary URLs first; only search for additional primary documents when needed. If a figure disagrees, quote the actual source value in the explanation and reject the report. Reject incomplete coverage or unavailable primary evidence. Do not accept a claim merely because another generated summary agrees.
