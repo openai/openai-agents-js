@@ -1,0 +1,1770 @@
+diff --git a/codex-rs/config/src/shell_environment_policy.rs b/codex-rs/config/src/shell_environment_policy.rs
+index 7e7c056ba6fb54824ef5df5c866ec2e20128df18..b0995af7a455bc9d02c4e21684c093ef1c49c417 100644
+--- a/codex-rs/config/src/shell_environment_policy.rs
++++ b/codex-rs/config/src/shell_environment_policy.rs
+@@ -159,6 +159,7 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
+                 .map(|pattern| EnvironmentVariablePattern::new_case_insensitive(&pattern))
+                 .collect(),
+             r#set: toml.r#set.unwrap_or_default(),
++            sdk_environment_overrides: Default::default(),
+             include_only: include_only
+                 .into_iter()
+                 .map(|pattern| EnvironmentVariablePattern::new_case_insensitive(&pattern))
+diff --git a/codex-rs/core-api/src/lib.rs b/codex-rs/core-api/src/lib.rs
+index 41792b1ee9c5b91e37310c57caeaa968c41fa871..b109bf950384d01e1ffce122567e561cff35d1d4 100644
+--- a/codex-rs/core-api/src/lib.rs
++++ b/codex-rs/core-api/src/lib.rs
+@@ -32,6 +32,7 @@ pub use codex_core::AgentTreeShutdown;
+ pub use codex_core::CodexAppsToolsCache;
+ pub use codex_core::CodexThread;
+ pub use codex_core::CodexThreadSettingsOverrides;
++pub use codex_core::ConfirmRemoteProcessTermination;
+ pub use codex_core::EnvironmentConfig;
+ pub use codex_core::EnvironmentMcpPolicy;
+ pub use codex_core::EnvironmentNetworkPolicy;
+diff --git a/codex-rs/core/src/agent/control.rs b/codex-rs/core/src/agent/control.rs
+index a7af5100a8f851a02c2a25c2d5b61eff71d62107..8870ad370e6533a8c69f39915fe44a9f1c0cba55 100644
+--- a/codex-rs/core/src/agent/control.rs
++++ b/codex-rs/core/src/agent/control.rs
+@@ -62,6 +62,7 @@ pub(crate) use self::runtime::AgentTreeMembership;
+ pub(crate) use self::runtime::AgentTreeShutdownState;
+ pub(crate) use self::runtime::AgentTreeTeardownGuard;
+ pub(crate) use self::runtime::LocalAgentRuntime;
++pub(crate) use self::runtime::RemoteProcessTerminationPolicy;
+ pub(crate) use self::watch::StatusSubscription;
+ 
+ mod api;
+diff --git a/codex-rs/core/src/agent/control/runtime.rs b/codex-rs/core/src/agent/control/runtime.rs
+index 4a37b39d14e72d099a3bd3c03230fdf3aaaeaa17..081e7ac250bf942a2348ca7cbded9b984757aab2 100644
+--- a/codex-rs/core/src/agent/control/runtime.rs
++++ b/codex-rs/core/src/agent/control/runtime.rs
+@@ -32,6 +32,7 @@ pub(crate) struct AgentTreeShutdownState {
+     tasks: TaskTracker,
+     failed: AtomicBool,
+     managed_process_shutdown_failed: AtomicBool,
++    remote_process_shutdown_failed: Arc<AtomicBool>,
+ }
+ 
+ impl AgentTreeShutdownState {
+@@ -39,6 +40,7 @@ impl AgentTreeShutdownState {
+         self.members.wait().await;
+         if self.failed.load(Ordering::Acquire)
+             || self.managed_process_shutdown_failed.load(Ordering::Acquire)
++            || self.remote_process_shutdown_failed.load(Ordering::Acquire)
+         {
+             return Err(CodexErr::Fatal(
+                 "agent tree shutdown did not complete cleanly".to_owned(),
+@@ -57,11 +59,51 @@ impl AgentTreeShutdownState {
+         Ok(())
+     }
+ 
++    pub(crate) async fn wait_for_process_shutdown(&self) -> CodexResult<()> {
++        self.wait_for_managed_process_shutdown().await?;
++        if self.remote_process_shutdown_failed.load(Ordering::Acquire) {
++            return Err(CodexErr::Fatal(
++                "A remote process termination attempt was not acknowledged".to_owned(),
++            ));
++        }
++        Ok(())
++    }
++
+     fn record_failure(&self) {
+         self.failed.store(true, Ordering::Release);
+     }
+ }
+ 
++/// Runtime-only process authority: per-thread health and the exact tree's operation ownership.
++#[derive(Clone)]
++pub(crate) struct RemoteProcessTerminationPolicy {
++    failed: Arc<AtomicBool>,
++    requests: TaskTracker,
++    tree: Arc<AgentTreeShutdownState>,
++}
++
++impl RemoteProcessTerminationPolicy {
++    pub(crate) fn failed(&self) -> bool {
++        self.failed.load(Ordering::Acquire)
++    }
++    pub(crate) fn record_failure(&self) {
++        self.failed.store(true, Ordering::Release);
++        self.tree
++            .remote_process_shutdown_failed
++            .store(true, Ordering::Release);
++    }
++    pub(crate) fn track(&self) -> TaskTrackerToken {
++        self.tree.members.token()
++    }
++    pub(crate) fn track_request(&self) -> TaskTrackerToken {
++        self.requests.token()
++    }
++    pub(crate) async fn wait_for_requests(&self) {
++        self.requests.close();
++        self.requests.wait().await;
++    }
++}
++
+ #[derive(Clone)]
+ pub(crate) struct AgentTreeMembership {
+     state: Arc<AgentTreeShutdownState>,
+@@ -250,6 +292,14 @@ impl LocalAgentRuntime {
+         self.shutdown_state.record_failure();
+     }
+ 
++    pub(crate) fn remote_process_termination_policy(&self) -> RemoteProcessTerminationPolicy {
++        RemoteProcessTerminationPolicy {
++            failed: Arc::new(AtomicBool::new(false)),
++            requests: TaskTracker::new(),
++            tree: Arc::clone(&self.shutdown_state),
++        }
++    }
++
+     pub(crate) fn record_managed_process_shutdown_failure(&self) {
+         self.shutdown_state
+             .managed_process_shutdown_failed
+diff --git a/codex-rs/core/src/agent/control/runtime_tests.rs b/codex-rs/core/src/agent/control/runtime_tests.rs
+index 23de453fd6955ce690bf79a0fc3bcdcd18dbc1ac..3b8779379bcdebebd93211c2461b3deff82286d1 100644
+--- a/codex-rs/core/src/agent/control/runtime_tests.rs
++++ b/codex-rs/core/src/agent/control/runtime_tests.rs
+@@ -79,3 +79,23 @@ async fn writer_shutdown_joins_tasks_without_waiting_for_session_membership() {
+         .await
+         .expect("session teardown finishes separately");
+ }
++
++#[tokio::test]
++async fn remote_cleanup_health_is_thread_scoped_and_tree_aggregated() {
++    let runtime = LocalAgentRuntime::new(Weak::default(), default_thread_id_generator(), None);
++    let first = runtime.remote_process_termination_policy();
++    let sibling = runtime.remote_process_termination_policy();
++    first.record_failure();
++    assert!(first.failed());
++    assert!(
++        !sibling.failed(),
++        "a sibling's exact interrupt is independent"
++    );
++    let tree = runtime.request_shutdown();
++    tree.wait_for_process_shutdown()
++        .await
++        .expect_err("owning tree retains remote failure");
++    tree.wait_for_managed_process_shutdown()
++        .await
++        .expect("remote failure does not broaden managed-local-only classification");
++}
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index 53ad2c2c7b31fffb11b512593aa5239d27f6e798..e45fcb0321dc52ff3ed8f8206308b2c6a81ba9a5 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -238,6 +238,11 @@ pub struct BackgroundTerminalInfo {
+ #[derive(Clone, Debug)]
+ pub struct ManagedLocalExecCancelFailure(pub(crate) String);
+ 
++/// Runtime-only opt-in to acknowledged remote process cleanup during interruption and shutdown.
++/// Install in the thread extension store before the thread starts executing commands.
++#[derive(Clone, Copy, Debug, Default)]
++pub struct ConfirmRemoteProcessTermination;
++
+ /// Conduit for the bidirectional stream of messages that compose a thread
+ /// (formerly called a conversation) in Codex.
+ impl CodexThread {
+@@ -821,6 +826,14 @@ impl CodexThread {
+             .is_some_and(|failure| failure.0 == turn_id)
+     }
+ 
++    /// Read after the interrupt barrier or tree shutdown; failure is sticky across empty drains.
++    pub fn remote_process_termination_failed(&self) -> bool {
++        self.session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    }
++
+     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
+         self.io.agent_status.clone()
+     }
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index 4cc15995527e2ab3b3f6d6377ef60cb1538d7145..fb17750c532b9934ece834bcf59c5f5d6a042924 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -51,6 +51,7 @@ pub use codex_protocol::mcp_policy::EnvironmentMcpPolicy;
+ pub use codex_protocol::protocol::EnvironmentConfig;
+ pub use codex_thread::BackgroundTerminalInfo;
+ pub use codex_thread::CodexThread;
++pub use codex_thread::ConfirmRemoteProcessTermination;
+ pub use codex_thread::ManagedLocalExecCancelFailure;
+ pub use session::owned_turn_stop::OwnedTurnStop;
+ pub use session::owned_turn_stop::OwnedTurnTask;
+diff --git a/codex-rs/core/src/sandboxing/mod.rs b/codex-rs/core/src/sandboxing/mod.rs
+index 43003e8ad09666b4ebdd3630375b304591c9a64e..c4ea2951a342dea198ab73da01622a12c836ebef 100644
+--- a/codex-rs/core/src/sandboxing/mod.rs
++++ b/codex-rs/core/src/sandboxing/mod.rs
+@@ -44,6 +44,7 @@ pub(crate) struct ExecOptions {
+ pub(crate) struct ExecServerEnvConfig {
+     pub(crate) policy: codex_exec_server::ExecEnvPolicy,
+     pub(crate) local_policy_env: HashMap<String, String>,
++    pub(crate) sdk_env_override_names: std::collections::HashSet<String>,
+ }
+ 
+ #[derive(Debug)]
+diff --git a/codex-rs/core/src/session/handlers.rs b/codex-rs/core/src/session/handlers.rs
+index ae32eac33a093d535792d4aa82d072dc089e09d0..f6fcf14f3e061609508353cb37d5315c8c5e7709 100644
+--- a/codex-rs/core/src/session/handlers.rs
++++ b/codex-rs/core/src/session/handlers.rs
+@@ -321,17 +321,9 @@ pub(super) async fn shutdown_session_runtime(sess: &Arc<Session>) {
+     sess.hooks().shutdown().await;
+     sess.async_hook_results.close();
+     while sess.async_hook_results.try_recv().is_ok() {}
+-    if !sess
+-        .services
+-        .unified_exec_manager
+-        .terminate_all_processes()
+-        .await
+-    {
+-        sess.services
+-            .local_agent_runtime
+-            .record_managed_process_shutdown_failure();
+-        warn!("failed to confirm managed local command shutdown");
+-    }
++    // Use the same opted-in confirmation as interruption; an earlier drain can already
++    // have removed a process, so its failed acknowledgment must remain in tree health.
++    sess.close_unified_exec_processes().await;
+     if let Err(err) = sess.services.code_mode_service.shutdown().await {
+         sess.services.local_agent_runtime.record_shutdown_failure();
+         warn!("failed to shutdown code mode session: {err}");
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 6d8a9a49837f2054019683123a1199504ae16204..8f48e3c77a9a75b9b1c8ef41a5b3372ec77b7095 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -1718,6 +1718,9 @@ impl Session {
+                 mcp_handler_cache: Default::default(),
+                 unified_exec_manager: UnifiedExecProcessManager::new(
+                     config.background_terminal_max_timeout,
++                ).with_remote_confirmation(
++                    thread_extension_data.get::<crate::ConfirmRemoteProcessTermination>()
++                        .map(|_| local_agent_runtime.remote_process_termination_policy()),
+                 ),
+                 elicitations: crate::elicitation::ElicitationService::new(),
+                 shell_zsh_path: config.zsh_path.clone(),
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index d5ee490ad6255f5809f2d3eaf4805e15e85c36dc..eff1f8c36244e70bc400d778899759b36770aae6 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -13844,3 +13844,297 @@ async fn response_integrity_reason_tracks_the_originating_terminal_error_event()
+         Some(ResponseIntegrityReason::UndecodableOutputItem)
+     );
+ }
++
++// Exercise the same shared termination wait used by CodexThread without a
++// production hook. Lifecycle contributors are the existing controlled seam.
++struct HeldRootStop {
++    entered: tokio::sync::Semaphore,
++    release: tokio::sync::Semaphore,
++    aborted: std::sync::atomic::AtomicBool,
++    stopped: std::sync::atomic::AtomicUsize,
++    finished: std::sync::atomic::AtomicBool,
++}
++
++impl codex_extension_api::TurnLifecycleContributor for HeldRootStop {
++    fn on_turn_abort<'a>(
++        &'a self,
++        input: codex_extension_api::TurnAbortInput<'a>,
++    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++        Box::pin(async move {
++            assert_eq!(input.reason, TurnAbortReason::Interrupted);
++            self.aborted
++                .store(true, std::sync::atomic::Ordering::SeqCst);
++        })
++    }
++}
++
++impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config> for HeldRootStop {
++    fn on_thread_stop<'a>(
++        &'a self,
++        _input: codex_extension_api::ThreadStopInput<'a>,
++    ) -> codex_extension_api::ExtensionFuture<'a, ()> {
++        Box::pin(async move {
++            assert!(self.aborted.load(std::sync::atomic::Ordering::SeqCst));
++            self.stopped
++                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++            self.entered.add_permits(1);
++            self.release
++                .acquire()
++                .await
++                .expect("release thread stop")
++                .forget();
++            self.finished
++                .store(true, std::sync::atomic::Ordering::SeqCst);
++        })
++    }
++}
++
++struct HeldRootShutdown {
++    session: Arc<Session>,
++    io: SessionIo,
++    gate: Arc<HeldRootStop>,
++    loop_finished: Arc<std::sync::atomic::AtomicBool>,
++    health: Arc<crate::agent::control::AgentTreeShutdownState>,
++}
++
++impl Drop for HeldRootShutdown {
++    fn drop(&mut self) {
++        // A failed assertion must not leave the real loop parked on our gate.
++        self.gate.release.add_permits(1);
++    }
++}
++
++async fn held_root_shutdown_with_full_queue(capacity: usize) -> HeldRootShutdown {
++    let (mut session, context) = make_session_and_context().await;
++    let gate = Arc::new(HeldRootStop {
++        entered: tokio::sync::Semaphore::new(0),
++        release: tokio::sync::Semaphore::new(0),
++        aborted: std::sync::atomic::AtomicBool::new(false),
++        stopped: std::sync::atomic::AtomicUsize::new(0),
++        finished: std::sync::atomic::AtomicBool::new(false),
++    });
++    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
++    builder.thread_lifecycle_contributor(gate.clone());
++    builder.turn_lifecycle_contributor(gate.clone());
++    session.services.extensions = Arc::new(builder.build());
++    let session = Arc::new(session);
++    session
++        .spawn_task(
++            Arc::new(context),
++            Vec::new(),
++            NeverEndingTask {
++                kind: TaskKind::Regular,
++                listen_to_cancellation_token: true,
++            },
++        )
++        .await;
++    let (tx_sub, rx_sub) = async_channel::bounded(capacity);
++    for index in 0..capacity {
++        tx_sub
++            .try_send(Submission {
++                turn_extension_init: None,
++                id: format!("queued-before-root-shutdown-{index}"),
++                op: Op::Interrupt,
++                trace_policy: None,
++                parent_turn_id: None,
++                root_turn_id: None,
++                residency_guard: None,
++                trace: None,
++            })
++            .expect("fill actual submission queue");
++    }
++    assert!(tx_sub.is_full());
++    // This is the exact request behind ThreadManager::request_agent_tree_shutdown.
++    let health = session.services.local_agent_runtime.request_shutdown();
++    let loop_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let handle = {
++        let session = Arc::clone(&session);
++        let finished = Arc::clone(&loop_finished);
++        tokio::spawn(async move {
++            let config = session.get_config().await;
++            submission_loop(session, config, rx_sub).await;
++            finished.store(true, std::sync::atomic::Ordering::SeqCst);
++        })
++    };
++    let (_tx_event, rx_event) = async_channel::unbounded();
++    HeldRootShutdown {
++        session,
++        io: SessionIo {
++            tx_sub,
++            rx_event,
++            agent_status: watch::channel(AgentStatus::PendingInit).1,
++            session_loop_termination: session_loop_termination_from_handle(handle),
++        },
++        gate,
++        loop_finished,
++        health,
++    }
++}
++
++#[tokio::test]
++async fn root_cancellation_joins_full_teardown_with_a_saturated_submission_queue() {
++    tokio::time::timeout(StdDuration::from_secs(10), async {
++        let fixture = held_root_shutdown_with_full_queue(SUBMISSION_CHANNEL_CAPACITY).await;
++        fixture
++            .gate
++            .entered
++            .acquire()
++            .await
++            .expect("entered teardown")
++            .forget();
++        assert!(fixture.session.active_turn.lock().await.is_none());
++        let mut tasks_joined = Box::pin(
++            fixture
++                .session
++                .services
++                .local_agent_runtime
++                .wait_for_tasks_before_writer_shutdown(),
++        );
++        assert!(futures::poll!(tasks_joined.as_mut()).is_ready());
++        drop(tasks_joined);
++        assert!(
++            fixture.io.tx_sub.is_full(),
++            "root cancellation must precede queued work"
++        );
++        let mut redundant_shutdown = Box::pin(fixture.io.shutdown_and_wait());
++        assert!(futures::poll!(redundant_shutdown.as_mut()).is_pending());
++        drop(redundant_shutdown);
++        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
++        let mut joined = Box::pin(tokio::time::timeout_at(
++            deadline,
++            fixture.io.session_loop_termination.clone(),
++        ));
++        assert!(futures::poll!(joined.as_mut()).is_pending());
++        assert!(
++            !fixture
++                .gate
++                .finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        fixture.gate.release.add_permits(1);
++        joined
++            .await
++            .expect("full root teardown must join before deadline");
++        assert!(
++            fixture
++                .loop_finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert!(
++            fixture
++                .gate
++                .finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert_eq!(
++            fixture
++                .gate
++                .stopped
++                .load(std::sync::atomic::Ordering::SeqCst),
++            1
++        );
++        assert!(fixture.io.tx_sub.is_closed());
++        fixture
++            .health
++            .wait()
++            .await
++            .expect("owned tasks terminated cleanly");
++    })
++    .await
++    .expect("saturated root shutdown test timed out");
++}
++
++#[tokio::test]
++async fn cancelled_root_termination_wait_can_retry_without_losing_teardown_or_health() {
++    tokio::time::timeout(StdDuration::from_secs(10), async {
++        let fixture = held_root_shutdown_with_full_queue(1).await;
++        fixture
++            .gate
++            .entered
++            .acquire()
++            .await
++            .expect("entered teardown")
++            .forget();
++        assert!(fixture.session.active_turn.lock().await.is_none());
++        let mut tasks_joined = Box::pin(
++            fixture
++                .session
++                .services
++                .local_agent_runtime
++                .wait_for_tasks_before_writer_shutdown(),
++        );
++        assert!(futures::poll!(tasks_joined.as_mut()).is_ready());
++        drop(tasks_joined);
++        fixture
++            .session
++            .services
++            .local_agent_runtime
++            .record_shutdown_failure();
++        // An expired absolute deadline must still report timeout while teardown is held.
++        assert!(
++            tokio::time::timeout_at(
++                tokio::time::Instant::now(),
++                fixture.io.session_loop_termination.clone(),
++            )
++            .await
++            .is_err()
++        );
++        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
++        let mut cancelled = Box::pin(tokio::time::timeout_at(
++            deadline,
++            fixture.io.session_loop_termination.clone(),
++        ));
++        assert!(futures::poll!(cancelled.as_mut()).is_pending());
++        drop(cancelled);
++        assert!(
++            !fixture
++                .loop_finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        let mut retry = Box::pin(tokio::time::timeout_at(
++            deadline,
++            fixture.io.session_loop_termination.clone(),
++        ));
++        assert!(futures::poll!(retry.as_mut()).is_pending());
++        fixture.gate.release.add_permits(1);
++        retry
++            .await
++            .expect("retry must retain the original deadline");
++        assert!(
++            fixture
++                .loop_finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert!(
++            fixture
++                .gate
++                .finished
++                .load(std::sync::atomic::Ordering::SeqCst)
++        );
++        assert_eq!(
++            fixture
++                .gate
++                .stopped
++                .load(std::sync::atomic::Ordering::SeqCst),
++            1
++        );
++        assert!(fixture.io.tx_sub.is_closed());
++        let first = fixture
++            .health
++            .wait()
++            .await
++            .expect_err("health failure survives termination");
++        let second = fixture
++            .health
++            .wait()
++            .await
++            .expect_err("health failure survives retry");
++        assert_eq!(
++            first.to_string(),
++            "Fatal error: agent tree shutdown did not complete cleanly"
++        );
++        assert_eq!(second.to_string(), first.to_string());
++    })
++    .await
++    .expect("cancelled root termination wait test timed out");
++}
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 8bec3ca115f621f9c8a94d5ead66760a6adfa43e..dc482d15bde61ff683f08ff4abf1c035480f3b9e 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -1029,12 +1029,29 @@ impl Session {
+     }
+ 
+     pub(crate) async fn close_unified_exec_processes(&self) {
+-        if !self
++        let checked = self
+             .services
+-            .unified_exec_manager
+-            .terminate_all_processes()
+-            .await
+-        {
++            .thread_extension_data
++            .get::<crate::ConfirmRemoteProcessTermination>()
++            .is_some();
++        let (local_acknowledged, _) = if checked {
++            self.services
++                .unified_exec_manager
++                .remote_confirmation_policy(&self.services.local_agent_runtime);
++            self.services
++                .unified_exec_manager
++                .terminate_all_processes_checked()
++                .await
++        } else {
++            (
++                self.services
++                    .unified_exec_manager
++                    .terminate_all_processes()
++                    .await,
++                true,
++            )
++        };
++        if !local_acknowledged {
+             self.services
+                 .local_agent_runtime
+                 .record_managed_process_shutdown_failure();
+diff --git a/codex-rs/core/src/thread_manager/shutdown.rs b/codex-rs/core/src/thread_manager/shutdown.rs
+index 9526a48b31f73a23870252d91c6e880dc5a4b633..bf0a0476899a8977377d96b918cf650e1c051f4a 100644
+--- a/codex-rs/core/src/thread_manager/shutdown.rs
++++ b/codex-rs/core/src/thread_manager/shutdown.rs
+@@ -47,6 +47,17 @@ impl ThreadManager {
+ }
+ 
+ impl CodexThread {
++    /// Shut down this exact tree and check acknowledged local and opted-in remote cleanup.
++    #[doc(hidden)]
++    pub async fn shutdown_agent_tree_and_check_processes(&self) -> CodexResult<()> {
++        self.session
++            .services
++            .local_agent_runtime
++            .request_shutdown()
++            .wait_for_process_shutdown()
++            .await
++    }
++
+     /// Shut down this handle's exact tree and report unconfirmed managed process cleanup.
+     #[doc(hidden)]
+     pub async fn shutdown_agent_tree_and_check_managed_processes(&self) -> CodexResult<()> {
+diff --git a/codex-rs/core/src/unified_exec/mod.rs b/codex-rs/core/src/unified_exec/mod.rs
+index 901c81c4beed3d9a9b9123e1ace1bc4197d71b69..997c7ad7354ff726d61519be1c84391dfcb51964 100644
+--- a/codex-rs/core/src/unified_exec/mod.rs
++++ b/codex-rs/core/src/unified_exec/mod.rs
+@@ -186,18 +186,47 @@ impl ProcessStore {
+ pub(crate) struct UnifiedExecProcessManager {
+     process_store: Mutex<ProcessStore>,
+     max_write_stdin_yield_time_ms: u64,
++    remote_confirmation: std::sync::OnceLock<crate::agent::control::RemoteProcessTerminationPolicy>,
+ }
+ 
+ impl UnifiedExecProcessManager {
+     pub(crate) fn new(max_write_stdin_yield_time_ms: u64) -> Self {
+         Self {
+             process_store: Mutex::new(ProcessStore::default()),
++            remote_confirmation: std::sync::OnceLock::new(),
+             max_write_stdin_yield_time_ms: max_write_stdin_yield_time_ms
+                 .max(MIN_EMPTY_YIELD_TIME_MS),
+         }
+     }
+ }
+ 
++impl UnifiedExecProcessManager {
++    pub(crate) fn with_remote_confirmation(
++        self,
++        policy: Option<crate::agent::control::RemoteProcessTerminationPolicy>,
++    ) -> Self {
++        if let Some(policy) = policy {
++            let _ = self.remote_confirmation.set(policy);
++        }
++        self
++    }
++
++    pub(crate) fn remote_confirmation_policy(
++        &self,
++        runtime: &crate::agent::control::LocalAgentRuntime,
++    ) -> crate::agent::control::RemoteProcessTerminationPolicy {
++        self.remote_confirmation
++            .get_or_init(|| runtime.remote_process_termination_policy())
++            .clone()
++    }
++
++    pub(crate) fn remote_process_termination_failed(&self) -> bool {
++        self.remote_confirmation
++            .get()
++            .is_some_and(|policy| policy.failed())
++    }
++}
++
+ impl Default for UnifiedExecProcessManager {
+     fn default() -> Self {
+         Self::new(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS)
+diff --git a/codex-rs/core/src/unified_exec/process.rs b/codex-rs/core/src/unified_exec/process.rs
+index b129559570ddf741286c2dbcd5533e1737f8db25..673e031cdbcdcd7633b24092e4947eca9bb95ca3 100644
+--- a/codex-rs/core/src/unified_exec/process.rs
++++ b/codex-rs/core/src/unified_exec/process.rs
+@@ -19,6 +19,10 @@ use tokio::task::JoinHandle;
+ use tokio::time::Duration;
+ use tokio_util::sync::CancellationToken;
+ 
++use futures::FutureExt;
++use futures::future::BoxFuture;
++use futures::future::Shared;
++
+ use codex_exec_server::ExecProcess;
+ use codex_exec_server::ExecProcessEvent;
+ use codex_exec_server::ProcessSignal as ExecServerProcessSignal;
+@@ -114,10 +118,32 @@ struct LinuxSandboxCancellation {
+     exit_unconfirmed: AtomicBool,
+ }
+ 
+-/// Unified wrapper over directly spawned PTY sessions and exec-server-backed
+-/// processes.
++// Failure or cancellation stays failure after a process leaves the inventory.
++pub(super) struct RemoteTerminationAcknowledgment {
++    pub(super) policy: crate::agent::control::RemoteProcessTerminationPolicy,
++    pub(super) acknowledged: bool,
++    pub(super) _membership: Option<tokio_util::task::task_tracker::TaskTrackerToken>,
++    pub(super) _request: Option<tokio_util::task::task_tracker::TaskTrackerToken>,
++}
++
++impl Drop for RemoteTerminationAcknowledgment {
++    fn drop(&mut self) {
++        if !self.acknowledged {
++            self.policy.record_failure();
++        }
++    }
++}
++
++type RemoteTermination = Shared<BoxFuture<'static, Result<(), String>>>;
++
++/// Unified wrapper over directly spawned PTY sessions and exec-server-backed processes.
+ pub(crate) struct UnifiedExecProcess {
+     process_handle: ProcessHandle,
++    remote_confirmation: OnceLock<(
++        crate::agent::control::RemoteProcessTerminationPolicy,
++        tokio_util::task::task_tracker::TaskTrackerToken,
++    )>,
++    remote_termination: OnceLock<RemoteTermination>,
+     #[cfg(target_os = "linux")]
+     sandbox_cancel: Option<LinuxSandboxCancellation>,
+     #[cfg(target_os = "macos")]
+@@ -166,6 +192,8 @@ impl UnifiedExecProcess {
+ 
+         Self {
+             process_handle,
++            remote_confirmation: OnceLock::new(),
++            remote_termination: OnceLock::new(),
+             #[cfg(target_os = "linux")]
+             sandbox_cancel: None,
+             #[cfg(target_os = "macos")]
+@@ -271,6 +299,61 @@ impl UnifiedExecProcess {
+         }
+     }
+ 
++    pub(super) fn confirm_remote_termination(
++        &self,
++        policy: crate::agent::control::RemoteProcessTerminationPolicy,
++    ) {
++        self.remote_confirmation.get_or_init(|| {
++            let membership = policy.track();
++            (policy, membership)
++        });
++    }
++
++    fn remote_termination(&self, process: &Arc<dyn ExecProcess>) -> RemoteTermination {
++        self.remote_termination
++            .get_or_init(|| {
++                let process = Arc::clone(process);
++                let (policy, membership) = self
++                    .remote_confirmation
++                    .get()
++                    .expect("confirmed remote policy");
++                let membership = membership.clone();
++                let request = policy.track_request();
++                let mut acknowledgment = RemoteTerminationAcknowledgment {
++                    policy: policy.clone(),
++                    acknowledged: false,
++                    _membership: Some(membership),
++                    _request: Some(request),
++                };
++                let task = tokio::spawn(async move {
++                    let result = process.terminate().await.map_err(|error| error.to_string());
++                    acknowledgment.acknowledged = result.is_ok();
++                    drop(acknowledgment);
++                    result
++                });
++                async move { task.await.map_err(|error| error.to_string())? }
++                    .boxed()
++                    .shared()
++            })
++            .clone()
++    }
++
++    async fn terminate_remote(
++        &self,
++        process: &Arc<dyn ExecProcess>,
++    ) -> Result<(), UnifiedExecError> {
++        if self.remote_confirmation.get().is_some() {
++            self.remote_termination(process)
++                .await
++                .map_err(UnifiedExecError::process_failed)
++        } else {
++            process
++                .terminate()
++                .await
++                .map_err(|error| UnifiedExecError::process_failed(error.to_string()))
++        }
++    }
++
+     pub(super) fn terminate(&self) {
+         match &self.process_handle {
+             ProcessHandle::Local(process_handle) => {
+@@ -285,10 +368,16 @@ impl UnifiedExecProcess {
+                 process_handle.terminate();
+             }
+             ProcessHandle::ExecServer(process_handle) => {
+-                let process_handle = Arc::clone(process_handle);
+-                tokio::spawn(async move {
+-                    let _ = process_handle.terminate().await;
+-                });
++                if self.remote_confirmation.get().is_some() {
++                    if !self.has_exited() || self.remote_termination.get().is_some() {
++                        drop(self.remote_termination(process_handle));
++                    }
++                } else {
++                    let process_handle = Arc::clone(process_handle);
++                    tokio::spawn(async move {
++                        let _ = process_handle.terminate().await;
++                    });
++                }
+             }
+         }
+         self.finish_termination();
+@@ -307,10 +396,7 @@ impl UnifiedExecProcess {
+         match &self.process_handle {
+             ProcessHandle::Local(process_handle) => process_handle.terminate(),
+             ProcessHandle::ExecServer(process_handle) => {
+-                process_handle
+-                    .terminate()
+-                    .await
+-                    .map_err(|err| UnifiedExecError::process_failed(err.to_string()))?;
++                self.terminate_remote(process_handle).await?;
+             }
+         }
+         self.signal_exit(self.exit_code());
+@@ -377,21 +463,34 @@ impl UnifiedExecProcess {
+         match &self.process_handle {
+             ProcessHandle::Local(process) => self.request_local_termination(process),
+             ProcessHandle::ExecServer(process) => {
+-                let process = Arc::clone(process);
+-                tokio::spawn(async move {
+-                    let _ = process.terminate().await;
+-                });
++                if self.remote_confirmation.get().is_some() {
++                    if !self.has_exited() || self.remote_termination.get().is_some() {
++                        drop(self.remote_termination(process));
++                    }
++                } else {
++                    let process = Arc::clone(process);
++                    tokio::spawn(async move {
++                        let _ = process.terminate().await;
++                    });
++                }
+             }
+         }
+     }
+ 
+     pub(super) async fn terminate_and_join(&self) -> bool {
+         let mut state = self.state_rx.clone();
+-        let stopped = tokio::time::timeout(Duration::from_secs(5), async {
++        let timeout = Duration::from_secs(5);
++        #[cfg(target_os = "macos")]
++        let timeout = if self.darwin_control.is_some() {
++            codex_exec_server::darwin_command::SHUTDOWN_TIMEOUT
++        } else {
++            timeout
++        };
++        let stopped = tokio::time::timeout(timeout, async {
+             match &self.process_handle {
+                 ProcessHandle::Local(process) => self.request_local_termination(process),
+                 ProcessHandle::ExecServer(process) => {
+-                    if process.terminate().await.is_err() {
++                    if self.terminate_remote(process).await.is_err() {
+                         return false;
+                     }
+                 }
+@@ -645,7 +744,7 @@ impl UnifiedExecProcess {
+     pub(super) async fn from_exec_server_started(
+         started: StartedExecProcess,
+     ) -> Result<Self, UnifiedExecError> {
+-        Self::from_exec_server_started_with_output_policy(started, false).await
++        Self::from_exec_server_started_with_output_policy(started, false, None).await
+     }
+ 
+     pub(super) fn withhold_output_diagnostics(&self) {
+@@ -656,12 +755,16 @@ impl UnifiedExecProcess {
+     pub(super) async fn from_exec_server_started_with_output_policy(
+         started: StartedExecProcess,
+         controlled: bool,
++        remote_confirmation: Option<crate::agent::control::RemoteProcessTerminationPolicy>,
+     ) -> Result<Self, UnifiedExecError> {
+         let process_handle = ProcessHandle::ExecServer(Arc::clone(&started.process));
+         // Older peers do not report this field. In that case, skip local
+         // classification rather than attributing a violation to a guessed backend.
+         let sandbox_type = started.sandbox_type;
+         let mut managed = Self::new(process_handle, sandbox_type, /*spawn_lifecycle*/ None);
++        if let Some(policy) = remote_confirmation {
++            managed.confirm_remote_termination(policy);
++        }
+         if controlled {
+             managed.withhold_output_diagnostics();
+         }
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index e3af900d4d4f8b9628d3958019393e897a6971b3..c83a6911a6b68add7cd347d035be143f724844e4 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
+ use uuid::Uuid;
+ 
+ use super::oneshot::Completion;
++use super::process::RemoteTerminationAcknowledgment;
+ 
+ use crate::codex_thread::BackgroundTerminalInfo;
+ use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
+@@ -236,6 +237,49 @@ pub(super) fn exec_env_policy_from_shell_policy(
+     }
+ }
+ 
++fn apply_sdk_environment_overrides(
++    mut inherited: HashMap<String, String>,
++    policy: &ShellEnvironmentPolicy,
++) -> HashMap<String, String> {
++    // Preserve exact names until the selected receiver applies its native identity.
++    inherited.extend(
++        policy
++            .sdk_environment_overrides()
++            .map(|(name, value)| (name.to_owned(), value.to_owned())),
++    );
++    inherited
++}
++
++// This runs only at the direct local spawn boundary: controller and receiver match.
++#[cfg(any(windows, test))]
++fn local_sdk_environment_for_request(request: &ExecRequest) -> HashMap<String, String> {
++    let mut inherited = request.env.clone();
++    let Some(config) = &request.exec_server_env_config else {
++        return inherited;
++    };
++    let overrides = config
++        .sdk_env_override_names
++        .iter()
++        .filter_map(|name| inherited.remove_entry(name))
++        .map(|(name, value)| (name.into(), value.into()))
++        .collect();
++    codex_protocol::shell_environment::merge_env_overrides(
++        inherited
++            .into_iter()
++            .map(|(name, value)| (name.into(), value.into()))
++            .collect(),
++        overrides,
++    )
++    .into_iter()
++    .map(|(name, value)| {
++        (
++            name.into_string().expect("Unicode environment name"),
++            value.into_string().expect("Unicode environment value"),
++        )
++    })
++    .collect()
++}
++
+ fn env_overlay_for_exec_server(
+     request_env: &HashMap<String, String>,
+     local_policy_env: &HashMap<String, String>,
+@@ -264,8 +308,16 @@ fn exec_server_env_for_request(
+     if let Some(exec_server_env_config) = &request.exec_server_env_config {
+         let mut env =
+             env_overlay_for_exec_server(&request.env, &exec_server_env_config.local_policy_env);
++        for name in &exec_server_env_config.sdk_env_override_names {
++            if let Some(value) = request.env.get(name) {
++                env.insert(name.clone(), value.clone());
++            }
++        }
+         if request.exec_server_shell_snapshot.is_some()
+             && !exec_server_env_config.policy.r#set.contains_key("PATH")
++            && !exec_server_env_config
++                .sdk_env_override_names
++                .contains("PATH")
+         {
+             env.remove("PATH");
+         }
+@@ -1629,7 +1681,9 @@ impl UnifiedExecProcessManager {
+             .map_err(|err| UnifiedExecError::create_process(err.to_string()))?;
+             spawn_lifecycle.after_spawn();
+             return UnifiedExecProcess::from_exec_server_started_with_output_policy(
+-                started, controlled,
++                started,
++                controlled,
++                self.remote_confirmation.get().cloned(),
+             )
+             .await
+             .map(Arc::new);
+@@ -1733,11 +1787,17 @@ impl UnifiedExecProcessManager {
+         });
+         #[cfg(target_os = "linux")]
+         let command = sandbox_command.as_deref().unwrap_or(command);
++        #[cfg(windows)]
++        let local_env = local_sdk_environment_for_request(request);
++        #[cfg(windows)]
++        let local_env = &local_env;
++        #[cfg(not(windows))]
++        let local_env = &request.env;
+         let spawn_direct = || {
+             codex_sandboxing::spawn_process(codex_sandboxing::SpawnRequest {
+                 command,
+                 cwd: native_cwd.as_path(),
+-                env: &request.env,
++                env: local_env,
+                 arg0: &request.arg0,
+                 sandbox: request.sandbox,
+                 windows_sandbox,
+@@ -1835,7 +1895,10 @@ impl UnifiedExecProcessManager {
+         let turn = &context.step_context.turn;
+         let shell_environment_policy = request.turn_environment.shell_environment_policy();
+         let local_policy_env = create_env(shell_environment_policy, /*thread_id*/ None);
+-        let mut env = local_policy_env.clone();
++        let mut env = apply_sdk_environment_overrides(
++            apply_unified_exec_env(local_policy_env.clone()),
++            shell_environment_policy,
++        );
+         env.insert(
+             CODEX_THREAD_ID_ENV_VAR.to_string(),
+             context.session.thread_id.to_string(),
+@@ -1844,13 +1907,21 @@ impl UnifiedExecProcessManager {
+         inject_apply_patch_env(&mut env, &turn.config.features);
+         let active_permission_profile = request.turn_environment.active_permission_profile();
+         inject_permission_profile_env(&mut env, active_permission_profile.as_ref());
+-        let mut env = apply_unified_exec_env(env);
+         strip_output_env(&mut env);
+         let mut explicit_env_overrides = shell_environment_policy.r#set.clone();
++        explicit_env_overrides.extend(
++            shell_environment_policy
++                .sdk_environment_overrides()
++                .map(|(name, value)| (name.to_owned(), value.to_owned())),
++        );
+         strip_output_env(&mut explicit_env_overrides);
+         let exec_server_env_config = ExecServerEnvConfig {
+             policy: exec_env_policy_from_shell_policy(shell_environment_policy),
+             local_policy_env,
++            sdk_env_override_names: shell_environment_policy
++                .sdk_environment_overrides()
++                .map(|(name, _)| name.to_owned())
++                .collect(),
+         };
+         let shell_snapshot = shell_snapshot_request(request, &cwd, context);
+         let mut orchestrator = ToolOrchestrator::new();
+@@ -2187,6 +2258,29 @@ impl UnifiedExecProcessManager {
+     }
+ 
+     pub(crate) async fn terminate_all_processes(&self) -> bool {
++        self.terminate_all_processes_with_confirmation(None).await.0
++    }
++
++    /// Local and remote acknowledgment results remain separate for the host's cleanup policy.
++    pub(crate) async fn terminate_all_processes_checked(&self) -> (bool, bool) {
++        let policy = self
++            .remote_confirmation
++            .get()
++            .expect("confirmed remote policy")
++            .clone();
++        let result = self
++            .terminate_all_processes_with_confirmation(Some(policy.clone()))
++            .await;
++        // Earlier pruning or cancellation can remove an entry while its owned RPC is
++        // still pending. The interrupt barrier must join those requests as well.
++        policy.wait_for_requests().await;
++        result
++    }
++
++    async fn terminate_all_processes_with_confirmation(
++        &self,
++        remote_failure: Option<crate::agent::control::RemoteProcessTerminationPolicy>,
++    ) -> (bool, bool) {
+         let (entries, mut starting) = {
+             let mut store = self.process_store.lock().await;
+             let entries = store
+@@ -2225,15 +2319,49 @@ impl UnifiedExecProcessManager {
+             (entries, starting)
+         };
+ 
++        // Arm before any post-drain await: cancellation must not turn a removed live
++        // remote process into an empty-inventory success on a later close.
++        if let Some(failed) = &remote_failure {
++            for entry in &entries {
++                entry.process.confirm_remote_termination(failed.clone());
++            }
++        }
++        let mut acknowledgment =
++            remote_failure
++                .as_ref()
++                .map(|failed| RemoteTerminationAcknowledgment {
++                    policy: failed.clone(),
++                    _membership: None,
++                    _request: None,
++                    acknowledged: !entries.iter().any(|entry| {
++                        !entry.process.uses_managed_local_sandbox() && !entry.process.has_exited()
++                    }),
++                });
++        let mut remote_acknowledged = true;
+         for entry in entries {
+             unregister_network_approval_for_entry(&entry).await;
+             if entry.process.uses_managed_local_sandbox() {
+                 starting.push((None, entry.process));
++            } else if let Some(failed) = &remote_failure {
++                // Match terminate_process: an already exited remote process needs no new attempt.
++                if !entry.process.has_exited() && entry.process.terminate_confirmed().await.is_err()
++                {
++                    failed.record_failure();
++                    remote_acknowledged = false;
++                    // Release local readers without issuing a replacement remote request.
++                    entry.process.terminate();
++                }
+             } else {
+                 entry.process.terminate();
+             }
+         }
+-        self.join_owned_processes(starting).await
++        if let Some(acknowledgment) = &mut acknowledgment {
++            acknowledgment.acknowledged = remote_acknowledged;
++        }
++        (
++            self.join_owned_processes(starting).await,
++            remote_acknowledged,
++        )
+     }
+ 
+     pub(crate) async fn pending_local_exec(
+diff --git a/codex-rs/core/src/unified_exec/process_manager_tests.rs b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+index 14eec7a955ece7e72759d68dc27c4bd1e66a2126..822b7b60840db1dc723caedb950bb78c0680167c 100644
+--- a/codex-rs/core/src/unified_exec/process_manager_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_manager_tests.rs
+@@ -216,6 +216,7 @@ fn exec_server_params_use_path_uri_and_env_policy_overlay_contract() {
+             ),
+         ]),
+         exec_server_env_config: Some(ExecServerEnvConfig {
++            sdk_env_override_names: Default::default(),
+             policy: codex_exec_server::ExecEnvPolicy {
+                 inherit: codex_protocol::config_types::ShellEnvironmentPolicyInherit::Core,
+                 ignore_default_excludes: false,
+@@ -912,3 +913,346 @@ async fn shutdown_joins_published_managed_linux_process() {
+         assert_eq!(shutdown.await, confirmed);
+     }
+ }
++
++async fn insert_remote_shutdown_process(
++    session: &crate::session::session::Session,
++    turn: &crate::TurnContext,
++    terminate_error: Option<String>,
++) {
++    let process = Arc::new(
++        crate::unified_exec::process_tests::remote_process(
++            codex_exec_server::WriteStatus::Accepted,
++            terminate_error,
++            codex_sandboxing::SandboxType::None,
++        )
++        .await,
++    );
++    insert_remote_shutdown_process_instance(session, turn, process).await;
++}
++
++async fn insert_remote_shutdown_process_instance(
++    session: &crate::session::session::Session,
++    turn: &crate::TurnContext,
++    process: Arc<UnifiedExecProcess>,
++) {
++    session
++        .services
++        .unified_exec_manager
++        .process_store
++        .lock()
++        .await
++        .processes
++        .insert(
++            1000,
++            ProcessEntry {
++                output_policy_store: None,
++                process,
++                plugin_metrics_sidecar: None,
++                call_id: "remote-shutdown".to_owned(),
++                process_id: 1000,
++                cwd: PathUri::parse("file:///tmp").expect("test cwd"),
++                initial_exec_command_active: Arc::new(AtomicBool::new(false)),
++                initial_exec_command_returned: Arc::new(AtomicBool::new(true)),
++                hook_command: "remote-command".to_owned(),
++                tty: false,
++                environment_id: "remote-test".to_owned(),
++                permissions: super::super::TerminalPermissions::for_launch(
++                    turn.initial_environments
++                        .primary()
++                        .expect("turn environment"),
++                    turn,
++                    super::super::TerminalSandboxSource::Native,
++                    crate::sandboxing::SandboxPermissions::UseDefault,
++                    None,
++                    None,
++                ),
++                network_approval: None,
++                session: std::sync::Weak::new(),
++                last_used: Instant::now(),
++            },
++        );
++}
++
++#[tokio::test]
++async fn checked_remote_shutdown_retains_earlier_abort_failure_after_empty_final_drain() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    insert_remote_shutdown_process(&session, &turn, Some("terminate rejected".to_owned())).await;
++
++    // This is the same earlier drain used by interrupt, before final shutdown runs.
++    session.close_unified_exec_processes().await;
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .list_processes()
++            .await
++            .is_empty()
++    );
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    session.close_unified_exec_processes().await;
++    let shutdown = session.services.local_agent_runtime.request_shutdown();
++    shutdown
++        .wait_for_process_shutdown()
++        .await
++        .expect_err("failed remote ACK remains fatal");
++    shutdown
++        .wait_for_managed_process_shutdown()
++        .await
++        .expect("remote failure keeps its own classification");
++}
++
++#[tokio::test]
++async fn checked_remote_shutdown_accepts_positive_acknowledgment() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    insert_remote_shutdown_process(&session, &turn, None).await;
++    session.close_unified_exec_processes().await;
++    assert!(
++        !session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    session
++        .services
++        .local_agent_runtime
++        .request_shutdown()
++        .wait_for_process_shutdown()
++        .await
++        .expect("positive remote ACK permits checked shutdown");
++}
++
++#[tokio::test]
++async fn unmarked_remote_shutdown_preserves_raw_core_cleanup_policy() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    insert_remote_shutdown_process(&session, &turn, Some("terminate rejected".to_owned())).await;
++    session.close_unified_exec_processes().await;
++    assert!(
++        !session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    session
++        .services
++        .local_agent_runtime
++        .request_shutdown()
++        .wait_for_process_shutdown()
++        .await
++        .expect("unmarked raw Core retains its existing unconfirmed remote policy");
++}
++
++#[tokio::test]
++async fn checked_remote_shutdown_retains_canceled_confirmation_after_empty_drain() {
++    let (session, turn) = crate::session::tests::make_session_and_context().await;
++    let session = Arc::new(session);
++    session
++        .services
++        .thread_extension_data
++        .insert(crate::ConfirmRemoteProcessTermination);
++    let entered = Arc::new(tokio::sync::Notify::new());
++    let release = Arc::new(tokio::sync::Notify::new());
++    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let process = Arc::new(
++        crate::unified_exec::process_tests::remote_process_with_termination_controls(
++            codex_exec_server::WriteStatus::Accepted,
++            None,
++            codex_sandboxing::SandboxType::None,
++            calls.clone(),
++            Some(entered.clone()),
++            Some(release.clone()),
++        )
++        .await,
++    );
++    insert_remote_shutdown_process_instance(&session, &turn, process.clone()).await;
++    let closing = tokio::spawn({
++        let session = session.clone();
++        async move {
++            session.close_unified_exec_processes().await;
++        }
++    });
++    entered.notified().await;
++    closing.abort();
++    closing.await.expect_err("abort waiting drain");
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed()
++    );
++    let final_drain = tokio::spawn({
++        let session = session.clone();
++        async move {
++            session.close_unified_exec_processes().await;
++        }
++    });
++    tokio::task::yield_now().await;
++    assert!(
++        !final_drain.is_finished(),
++        "empty drain joins original pending request"
++    );
++    release.notify_one();
++    final_drain.await.expect("final drain joins original RPC");
++    process
++        .terminate_confirmed()
++        .await
++        .expect("original request eventually acknowledges");
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    drop(process);
++    session
++        .services
++        .local_agent_runtime
++        .request_shutdown()
++        .wait_for_process_shutdown()
++        .await
++        .expect_err("empty later drain cannot repair uncertain acknowledgment");
++    assert!(
++        session
++            .services
++            .unified_exec_manager
++            .remote_process_termination_failed(),
++        "first uncertain close remains failed"
++    );
++}
++
++#[test]
++fn sdk_environment_overrides_preserve_exact_payload_values_after_filtering() {
++    use codex_protocol::config_types::{EnvironmentVariablePattern, ShellEnvironmentPolicyInherit};
++    let mut policy = ShellEnvironmentPolicy {
++        inherit: ShellEnvironmentPolicyInherit::All,
++        include_only: vec![EnvironmentVariablePattern::new_case_insensitive("KEEP")],
++        r#set: HashMap::from([("ORDINARY".to_owned(), "filtered".to_owned())]),
++        ..Default::default()
++    };
++    let inherited = HashMap::from([
++        ("KEEP".to_owned(), "same".to_owned()),
++        ("LITERAL".to_owned(), "excluded".to_owned()),
++        ("LITX".to_owned(), "excluded".to_owned()),
++    ]);
++    let baseline =
++        codex_protocol::shell_environment::create_env_from_vars(inherited, &policy, None);
++    assert_eq!(baseline.get("KEEP"), Some(&"same".to_owned()));
++    let selected = HashMap::from([
++        ("SDK_NORMAL".to_owned(), "private-value".to_owned()),
++        ("LIT*".to_owned(), "star".to_owned()),
++        ("LIT?".to_owned(), "question".to_owned()),
++        ("KEEP".to_owned(), "same".to_owned()),
++        ("TERM".to_owned(), "xterm".to_owned()),
++        ("LANG".to_owned(), "fr_FR".to_owned()),
++        ("PATH".to_owned(), "/upper".to_owned()),
++        ("Path".to_owned(), "/mixed".to_owned()),
++    ]);
++    policy.set_sdk_environment_overrides(selected.clone());
++    let payload =
++        apply_sdk_environment_overrides(apply_unified_exec_env(baseline.clone()), &policy);
++    for (name, value) in &selected {
++        assert_eq!(payload.get(name), Some(value));
++    }
++    assert!(!payload.contains_key("LITERAL"));
++    assert!(!payload.contains_key("LITX"));
++    assert!(!payload.contains_key("ORDINARY"));
++    assert!(!format!("{policy:?}").contains("private-value"));
++    let cwd: codex_utils_absolute_path::AbsolutePathBuf =
++        std::env::current_dir().unwrap().try_into().unwrap();
++    let permission_profile = codex_protocol::models::PermissionProfile::Disabled;
++    let mut request = ExecRequest {
++        command: vec!["bash".to_string(), "-lc".to_string(), "true".to_string()],
++        cwd: cwd.clone().into(),
++        env: HashMap::from([
++            ("HOME".to_string(), "/client-home".to_string()),
++            ("PATH".to_string(), "/sandbox-path".to_string()),
++            ("CODEX_THREAD_ID".to_string(), "thread-1".to_string()),
++            (
++                "HTTP_PROXY".to_string(),
++                "http://127.0.0.1:43123".to_string(),
++            ),
++            ("CODEX_NETWORK_PROXY_ACTIVE".to_string(), "1".to_string()),
++            (
++                "SSL_CERT_FILE".to_string(),
++                "/client/custom-ca.pem".to_string(),
++            ),
++        ]),
++        exec_server_env_config: Some(ExecServerEnvConfig {
++            sdk_env_override_names: Default::default(),
++            policy: codex_exec_server::ExecEnvPolicy {
++                inherit: codex_protocol::config_types::ShellEnvironmentPolicyInherit::Core,
++                ignore_default_excludes: false,
++                exclude: Vec::new(),
++                r#set: HashMap::new(),
++                include_only: Vec::new(),
++            },
++            local_policy_env: HashMap::from([
++                ("HOME".to_string(), "/client-home".to_string()),
++                ("PATH".to_string(), "/client-path".to_string()),
++                (
++                    "HTTP_PROXY".to_string(),
++                    "http://127.0.0.1:43123".to_string(),
++                ),
++                ("CODEX_NETWORK_PROXY_ACTIVE".to_string(), "1".to_string()),
++                (
++                    "SSL_CERT_FILE".to_string(),
++                    "/client/custom-ca.pem".to_string(),
++                ),
++            ]),
++        }),
++        exec_server_shell_snapshot: None,
++        network: None,
++        network_environment_id: None,
++        expiration: crate::exec::ExecExpiration::DefaultTimeout,
++        capture_policy: crate::exec::ExecCapturePolicy::ShellTool,
++        sandbox: codex_sandboxing::SandboxType::None,
++        windows_sandbox_policy_cwd: cwd.clone().into(),
++        windows_sandbox_workspace_roots: vec![cwd],
++        windows_sandbox_level: codex_protocol::config_types::WindowsSandboxLevel::Disabled,
++        permission_profile: permission_profile.clone(),
++        windows_sandbox_filesystem_overrides: None,
++        arg0: None,
++        exec_server_sandbox: None,
++        exec_server_enforce_managed_network: true,
++        exec_server_managed_network: None,
++        exec_server_network_proxy: None,
++    };
++    request.env = payload;
++    let config = request.exec_server_env_config.as_mut().unwrap();
++    config.policy = exec_env_policy_from_shell_policy(&policy);
++    config.local_policy_env = baseline;
++    config.sdk_env_override_names = selected.keys().cloned().collect();
++    let (remote_policy, remote_env) = exec_server_env_for_request(&request);
++    for (name, value) in &selected {
++        assert_eq!(remote_env.get(name), Some(value));
++    }
++    let remote_policy = remote_policy.unwrap();
++    assert_eq!(remote_policy.include_only, vec!["KEEP".to_owned()]);
++    assert_eq!(
++        remote_policy.r#set,
++        HashMap::from([("ORDINARY".to_owned(), "filtered".to_owned())])
++    );
++    assert!(!remote_env.contains_key("LITERAL"));
++    assert!(!remote_env.contains_key("LITX"));
++    request
++        .exec_server_env_config
++        .as_mut()
++        .unwrap()
++        .sdk_env_override_names = std::collections::HashSet::from(["Path".to_owned()]);
++    let local = local_sdk_environment_for_request(&request);
++    assert_eq!(local.get("Path"), Some(&"/mixed".to_owned()));
++    if cfg!(windows) {
++        assert!(!local.contains_key("PATH"));
++    } else {
++        assert_eq!(local.get("PATH"), Some(&"/upper".to_owned()));
++    }
++    policy.set_sdk_environment_overrides(HashMap::new());
++    assert!(policy.sdk_environment_overrides().next().is_none());
++}
+diff --git a/codex-rs/core/src/unified_exec/process_tests.rs b/codex-rs/core/src/unified_exec/process_tests.rs
+index ed59dfd4865406ae472bbae1fd95c2abe20d21a3..a3ef0e800f96185f5c23a8189687415e5c0e8750 100644
+--- a/codex-rs/core/src/unified_exec/process_tests.rs
++++ b/codex-rs/core/src/unified_exec/process_tests.rs
+@@ -21,6 +21,9 @@ struct MockExecProcess {
+     write_response: WriteResponse,
+     read_responses: Mutex<VecDeque<ReadResponse>>,
+     terminate_error: Option<String>,
++    terminate_calls: Arc<std::sync::atomic::AtomicUsize>,
++    terminate_entered: Option<Arc<tokio::sync::Notify>>,
++    terminate_release: Option<Arc<tokio::sync::Notify>>,
+     wake_tx: watch::Sender<u64>,
+ }
+ 
+@@ -43,6 +46,14 @@ impl MockExecProcess {
+     }
+ 
+     async fn terminate(&self) -> Result<(), ExecServerError> {
++        self.terminate_calls
++            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++        if let Some(entered) = &self.terminate_entered {
++            entered.notify_one();
++        }
++        if let Some(release) = &self.terminate_release {
++            release.notified().await;
++        }
+         if let Some(message) = &self.terminate_error {
+             return Err(ExecServerError::Protocol(message.clone()));
+         }
+@@ -89,6 +100,25 @@ pub(super) async fn remote_process(
+     write_status: WriteStatus,
+     terminate_error: Option<String>,
+     sandbox_type: impl Into<Option<codex_sandboxing::SandboxType>>,
++) -> UnifiedExecProcess {
++    remote_process_with_termination_controls(
++        write_status,
++        terminate_error,
++        sandbox_type,
++        Arc::new(std::sync::atomic::AtomicUsize::new(0)),
++        None,
++        None,
++    )
++    .await
++}
++
++pub(super) async fn remote_process_with_termination_controls(
++    write_status: WriteStatus,
++    terminate_error: Option<String>,
++    sandbox_type: impl Into<Option<codex_sandboxing::SandboxType>>,
++    terminate_calls: Arc<std::sync::atomic::AtomicUsize>,
++    terminate_entered: Option<Arc<tokio::sync::Notify>>,
++    terminate_release: Option<Arc<tokio::sync::Notify>>,
+ ) -> UnifiedExecProcess {
+     let (wake_tx, _wake_rx) = watch::channel(0);
+     let started = StartedExecProcess {
+@@ -99,6 +129,9 @@ pub(super) async fn remote_process(
+             },
+             read_responses: Mutex::new(VecDeque::new()),
+             terminate_error,
++            terminate_calls,
++            terminate_entered,
++            terminate_release,
+             wake_tx,
+         }),
+         sandbox_type: sandbox_type.into(),
+@@ -213,3 +246,112 @@ async fn remote_process_preserves_executor_sandbox_type() {
+         assert_eq!(process.sandbox_type(), sandbox_type);
+     }
+ }
++
++#[tokio::test]
++async fn confirmed_remote_termination_reuses_success_or_failure_through_drop() {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    for rejected in [false, true] {
++        let calls = Arc::new(AtomicUsize::new(0));
++        let (session, _) = crate::session::tests::make_session_and_context().await;
++        let failed = session
++            .services
++            .local_agent_runtime
++            .remote_process_termination_policy();
++        let process = remote_process_with_termination_controls(
++            WriteStatus::Accepted,
++            rejected.then(|| "rejected".to_owned()),
++            codex_sandboxing::SandboxType::None,
++            calls.clone(),
++            None,
++            None,
++        )
++        .await;
++        process.confirm_remote_termination(failed.clone());
++        assert_eq!(process.terminate_confirmed().await.is_err(), rejected);
++        assert_eq!(process.terminate_confirmed().await.is_err(), rejected);
++        process.request_terminate();
++        process.terminate();
++        drop(process);
++        tokio::task::yield_now().await;
++        assert_eq!(
++            calls.load(Ordering::SeqCst),
++            1,
++            "cleanup never retries the remote operation"
++        );
++        assert_eq!(failed.failed(), rejected);
++    }
++}
++
++#[tokio::test]
++async fn confirmed_remote_termination_keeps_one_owned_request_after_waiter_cancellation() {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    let calls = Arc::new(AtomicUsize::new(0));
++    let (session, _) = crate::session::tests::make_session_and_context().await;
++    let failed = session
++        .services
++        .local_agent_runtime
++        .remote_process_termination_policy();
++    let entered = Arc::new(tokio::sync::Notify::new());
++    let release = Arc::new(tokio::sync::Notify::new());
++    let process = Arc::new(
++        remote_process_with_termination_controls(
++            WriteStatus::Accepted,
++            None,
++            codex_sandboxing::SandboxType::None,
++            calls.clone(),
++            Some(entered.clone()),
++            Some(release.clone()),
++        )
++        .await,
++    );
++    process.confirm_remote_termination(failed.clone());
++    let closing = tokio::spawn({
++        let process = process.clone();
++        async move { process.terminate_confirmed().await }
++    });
++    entered.notified().await;
++    closing.abort();
++    closing.await.expect_err("cancel first waiter");
++    process.request_terminate();
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    release.notify_one();
++    process
++        .terminate_confirmed()
++        .await
++        .expect("join original acknowledgment");
++    drop(process);
++    tokio::task::yield_now().await;
++    assert_eq!(calls.load(Ordering::SeqCst), 1);
++    assert!(!failed.failed());
++}
++
++#[tokio::test]
++async fn confirmed_remote_termination_does_not_attempt_an_already_exited_process() {
++    use std::sync::atomic::{AtomicUsize, Ordering};
++    let (session, _) = crate::session::tests::make_session_and_context().await;
++    let policy = session
++        .services
++        .local_agent_runtime
++        .remote_process_termination_policy();
++    let calls = Arc::new(AtomicUsize::new(0));
++    let process = remote_process_with_termination_controls(
++        WriteStatus::UnknownProcess,
++        None,
++        codex_sandboxing::SandboxType::None,
++        calls.clone(),
++        None,
++        None,
++    )
++    .await;
++    process
++        .write(b"input")
++        .await
++        .expect_err("backend already retired the process");
++    assert!(process.has_exited());
++    process.confirm_remote_termination(policy.clone());
++    process.request_terminate();
++    drop(process);
++    tokio::task::yield_now().await;
++    assert_eq!(calls.load(Ordering::SeqCst), 0);
++    assert!(!policy.failed());
++}
+diff --git a/codex-rs/exec-server/src/darwin_command.rs b/codex-rs/exec-server/src/darwin_command.rs
+index b341cbb6c856e77999ea02f8296a8b86a9e426a1..93bca7f12bfc4af88873eac875ef1828ddc42445 100644
+--- a/codex-rs/exec-server/src/darwin_command.rs
++++ b/codex-rs/exec-server/src/darwin_command.rs
+@@ -26,7 +26,17 @@ const INTERRUPT: u8 = 4;
+ const EXITED: u8 = 5;
+ const WRAPPER_STARTED: u8 = 6;
+ const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+-const DRAIN_TIMEOUT: Duration = Duration::from_secs(4);
++// macOS can keep a crashed task in its coalition while reporting the crash.
++const DRAIN_TIMEOUT: Duration = Duration::from_secs(12);
++const SERVICE_REMOVAL_TIMEOUT: Duration = Duration::from_secs(1);
++// Leave room for connection and registration lookup if shutdown races
++// startup, plus coalition drain, both removal calls, and wrapper exit.
++pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(
++    2 * SETUP_TIMEOUT.as_secs()
++        + DRAIN_TIMEOUT.as_secs()
++        + 2 * SERVICE_REMOVAL_TIMEOUT.as_secs()
++        + 2,
++);
+ const POLL_INTERVAL: Duration = Duration::from_millis(10);
+ const MAX_REQUEST_SIZE: usize = 16 * 1024 * 1024;
+ 
+@@ -317,8 +327,14 @@ pub fn wrapper_main(args: impl Iterator<Item = std::ffi::OsString>) -> io::Resul
+     // request, this exact coalition owns any resulting command.
+     let result = run_managed(&mut control, &mut worker, &owner, &request);
+     let _ = worker.shutdown(Shutdown::Write);
+-    owner.drain(DRAIN_TIMEOUT, /*keep_helper*/ false)?;
+-    job.finish()?;
++    owner
++        .drain(DRAIN_TIMEOUT, /*keep_helper*/ false)
++        .map_err(|error| {
++            io::Error::new(error.kind(), format!("drain command coalition: {error}"))
++        })?;
++    job.finish().map_err(|error| {
++        io::Error::new(error.kind(), format!("remove command service: {error}"))
++    })?;
+     control.write_all(&[DRAINED])?;
+     result
+ }
+@@ -673,10 +689,17 @@ impl LaunchdJob {
+         let Some(service) = &self.service else {
+             return Ok(());
+         };
+-        let deadline = Instant::now() + Duration::from_secs(1);
+-        let result = launchctl(&["bootout".as_ref(), service.as_ref()], deadline, false)?;
++        let result = launchctl(
++            &["bootout".as_ref(), service.as_ref()],
++            Instant::now() + SERVICE_REMOVAL_TIMEOUT,
++            false,
++        )?;
+         if !result.success {
+-            let inspection = launchctl(&["print".as_ref(), service.as_ref()], deadline, true)?;
++            let inspection = launchctl(
++                &["print".as_ref(), service.as_ref()],
++                Instant::now() + SERVICE_REMOVAL_TIMEOUT,
++                true,
++            )?;
+             let label = service.rsplit('/').next().ok_or_else(invalid_message)?;
+             if inspection.success
+                 || !inspection.stderr.contains("Could not find service")
+diff --git a/codex-rs/exec-server/src/local_process.rs b/codex-rs/exec-server/src/local_process.rs
+index 257ee47120d0a40312ec39bfa8e07e42cafee789..52acb8c4d83e4f999ae99686b362096a772a427f 100644
+--- a/codex-rs/exec-server/src/local_process.rs
++++ b/codex-rs/exec-server/src/local_process.rs
+@@ -799,6 +799,7 @@ pub(crate) fn shell_environment_policy(env_policy: &ExecEnvPolicy) -> ShellEnvir
+             .map(|pattern| EnvironmentVariablePattern::new_case_insensitive(pattern))
+             .collect(),
+         r#set: env_policy.r#set.clone(),
++        sdk_environment_overrides: Default::default(),
+         include_only: env_policy
+             .include_only
+             .iter()
+diff --git a/codex-rs/protocol/src/config_types.rs b/codex-rs/protocol/src/config_types.rs
+index 87ffe6dc8bea4d093822a8c1e868df477490e669..78f0cdab850358cab6a459a9102ad4f20b2a3760 100644
+--- a/codex-rs/protocol/src/config_types.rs
++++ b/codex-rs/protocol/src/config_types.rs
+@@ -256,6 +256,29 @@ pub struct ShellEnvironmentPolicy {
+ 
+     /// If true, the shell profile will be used to run the command.
+     pub use_profile: bool,
++
++    /// In-process SDK authority; omitted from config, wire and checkpoint representations.
++    #[doc(hidden)]
++    pub sdk_environment_overrides: std::sync::Arc<HashMap<String, RedactedString>>,
++}
++
++impl ShellEnvironmentPolicy {
++    #[doc(hidden)]
++    pub fn set_sdk_environment_overrides(&mut self, values: HashMap<String, String>) {
++        self.sdk_environment_overrides = std::sync::Arc::new(
++            values
++                .into_iter()
++                .map(|(name, value)| (name, value.into()))
++                .collect(),
++        );
++    }
++
++    #[doc(hidden)]
++    pub fn sdk_environment_overrides(&self) -> impl Iterator<Item = (&str, &str)> {
++        self.sdk_environment_overrides
++            .iter()
++            .map(|(name, value)| (name.as_str(), value.as_str()))
++    }
+ }
+ 
+ impl Default for ShellEnvironmentPolicy {
+@@ -267,6 +290,7 @@ impl Default for ShellEnvironmentPolicy {
+             r#set: HashMap::new(),
+             include_only: Vec::new(),
+             use_profile: false,
++            sdk_environment_overrides: Default::default(),
+         }
+     }
+ }
+diff --git a/codex-rs/rmcp-client/src/stdio_server_launcher.rs b/codex-rs/rmcp-client/src/stdio_server_launcher.rs
+index 19a0fd593aabd8f0700009cd09f0f6eceb4dfac5..9b744ec672548ea5764645d3e4284631b66b8f72 100644
+--- a/codex-rs/rmcp-client/src/stdio_server_launcher.rs
++++ b/codex-rs/rmcp-client/src/stdio_server_launcher.rs
+@@ -854,6 +854,7 @@ mod tests {
+                 .map(|pattern| EnvironmentVariablePattern::new_case_insensitive(pattern))
+                 .collect(),
+             use_profile: false,
++            sdk_environment_overrides: Default::default(),
+         };
+ 
+         let env = shell_environment::create_env_from_vars(

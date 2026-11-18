@@ -1,0 +1,397 @@
+diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
+index 8556ec7ce2e5997f6608941eb4db294372964df2..d580dd3d1c2203b4011e910481d945f8a6919812 100644
+--- a/codex-rs/app-server/src/notification_media.rs
++++ b/codex-rs/app-server/src/notification_media.rs
+@@ -23,7 +23,8 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
+                     content.retain(|item| match item {
+                         ContentItem::InputFile { .. }
+                         | ContentItem::InputImage { .. }
+-                        | ContentItem::InputAudio { .. } => false,
++                        | ContentItem::InputAudio { .. }
++                        | ContentItem::OutputAudio { .. } => false,
+                         ContentItem::InputText { .. } | ContentItem::OutputText { .. } => true,
+                     });
+                 }
+diff --git a/codex-rs/codex-api/src/common.rs b/codex-rs/codex-api/src/common.rs
+index b71e29d309cb7f80a4623c94353ebff20ec3e26b..5e74ae365450566edbf2f5885fb1ae8c36188787 100644
+--- a/codex-rs/codex-api/src/common.rs
++++ b/codex-rs/codex-api/src/common.rs
+@@ -2,6 +2,7 @@ use crate::error::ApiError;
+ use codex_protocol::ResponseUsageMetadata;
+ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+ use codex_protocol::config_types::Verbosity as VerbosityConfig;
++use codex_protocol::models::ContentItem;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
+ use codex_protocol::protocol::ApiRateLimits;
+@@ -490,6 +491,20 @@ pub enum ResponsesWsRequest<'a> {
+     ResponseCreate(ResponseCreateWsRequest<'a>),
+ }
+ 
++pub(crate) fn check_responses_input(input: &[ResponseItem]) -> Result<(), ApiError> {
++    let has_assistant_audio = input.iter().any(|item| {
++        matches!(item, ResponseItem::Message { content, .. } if content.iter().any(|part| {
++            matches!(part, ContentItem::OutputAudio { .. })
++        }))
++    });
++    if has_assistant_audio {
++        return Err(ApiError::InvalidRequest {
++            message: "Assistant audio history requires Chat Completions".to_string(),
++        });
++    }
++    Ok(())
++}
++
+ pub fn create_text_param_for_request(
+     verbosity: Option<VerbosityConfig>,
+     output_schema: &Option<Value>,
+diff --git a/codex-rs/codex-api/src/endpoint/responses.rs b/codex-rs/codex-api/src/endpoint/responses.rs
+index e4e3a856b22c2e389cb236c31af577988c644458..eca6442a0eebe5af4eeabe23b67b8e1fc329a91a 100644
+--- a/codex-rs/codex-api/src/endpoint/responses.rs
++++ b/codex-rs/codex-api/src/endpoint/responses.rs
+@@ -222,6 +222,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
+         request: ResponsesApiRequest,
+         mut options: ResponsesOptions,
+     ) -> Result<(EncodedJsonBody, ResponsesOptions), ApiError> {
++        crate::common::check_responses_input(&request.input)?;
+         let body = EncodedJsonBody::encode(&request)
+             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
+ 
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index 894d4925d586827b108d628698aa5fabf85ffaf6..b87067237ccf160a6cc8a2933f47f64dbe0c116b 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -1247,6 +1247,8 @@ async fn send_websocket_request(
+ }
+ 
+ fn serialize_websocket_request(request: &ResponsesWsRequest<'_>) -> Result<String, ApiError> {
++    let ResponsesWsRequest::ResponseCreate(create) = request;
++    crate::common::check_responses_input(&create.input)?;
+     serde_json::to_string(request)
+         .map_err(|err| ApiError::Stream(format!("failed to encode websocket request: {err}")))
+ }
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index cd47ab75e86de9898011b08a352b8424bfb8dc27..2bdae35296188758048cbcb88e79ceca1ee1086c 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -1106,7 +1106,8 @@ pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
+             }
+             ContentItem::InputFile { .. }
+             | ContentItem::InputImage { .. }
+-            | ContentItem::InputAudio { .. } => {}
++            | ContentItem::InputAudio { .. }
++            | ContentItem::OutputAudio { .. } => {}
+         }
+     }
+     if pieces.is_empty() {
+diff --git a/codex-rs/core/src/compact_remote_v2.rs b/codex-rs/core/src/compact_remote_v2.rs
+index caa90d9e8e3b06def55198675b3bcb7781cc1b3b..00823284edfcad932044548a7ccda49ff9ab3cbe 100644
+--- a/codex-rs/core/src/compact_remote_v2.rs
++++ b/codex-rs/core/src/compact_remote_v2.rs
+@@ -822,7 +822,9 @@ fn message_text_token_count(item: &ResponseItem) -> usize {
+             ContentItem::InputFile { .. } => {
+                 unreachable!("atomic files are handled before optional text budgeting")
+             }
+-            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => 0,
++            ContentItem::InputImage { .. }
++            | ContentItem::InputAudio { .. }
++            | ContentItem::OutputAudio { .. } => 0,
+         })
+         .sum()
+ }
+@@ -867,7 +869,8 @@ fn truncate_message_text_to_token_budget(
+             }
+             ContentItem::InputFile { .. }
+             | ContentItem::InputImage { .. }
+-            | ContentItem::InputAudio { .. } => {
++            | ContentItem::InputAudio { .. }
++            | ContentItem::OutputAudio { .. } => {
+                 truncated_content.push(content_item);
+             }
+         }
+diff --git a/codex-rs/core/src/compact_remote_v2_images.rs b/codex-rs/core/src/compact_remote_v2_images.rs
+index eeb2c3db7228c712fc93541b8be61b2c4684e102..34b2b6c71d73c1b366a1a4b7afa637b4838f016b 100644
+--- a/codex-rs/core/src/compact_remote_v2_images.rs
++++ b/codex-rs/core/src/compact_remote_v2_images.rs
+@@ -21,7 +21,7 @@ pub(super) fn content_item_token_count(item: &ContentItem) -> usize {
+         )
+         .unwrap_or(usize::MAX),
+         ContentItem::InputFile { .. } => unreachable!("atomic files use unknown-cost retention"),
+-        ContentItem::InputAudio { .. } => 0,
++        ContentItem::InputAudio { .. } | ContentItem::OutputAudio { .. } => 0,
+     }
+ }
+ 
+@@ -77,7 +77,9 @@ pub(super) fn truncate_message_to_token_budget(
+                     retained.push(item);
+                 }
+             }
+-            ContentItem::InputFile { .. } | ContentItem::InputAudio { .. } => retained.push(item),
++            ContentItem::InputFile { .. }
++            | ContentItem::InputAudio { .. }
++            | ContentItem::OutputAudio { .. } => retained.push(item),
+             ContentItem::InputImage { .. } => unreachable!("images are handled atomically above"),
+         }
+     }
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index b625736969006bff31f23b68741c448806a8dad1..cd8f8c50141b1b2fb672787d7c25899af5e734f1 100644
+--- a/codex-rs/core/src/context_manager/history.rs
++++ b/codex-rs/core/src/context_manager/history.rs
+@@ -1267,6 +1267,12 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
+                     unreachable!("file cost is unknown and must use the optional estimate")
+                 }
+                 ContentItem::InputAudio { audio_url } => estimate_audio_bytes(audio_url),
++                // Chat replays the provider reference and its metadata.
++                ContentItem::OutputAudio { provider_data, .. } => provider_data
++                    .values()
++                    .filter_map(serde_json::Value::as_str)
++                    .map(text_bytes)
++                    .fold(0i64, i64::saturating_add),
+             })
+             .fold(0i64, i64::saturating_add),
+         ResponseItem::AgentMessage {
+diff --git a/codex-rs/core/src/event_mapping.rs b/codex-rs/core/src/event_mapping.rs
+index b218932694b815720cdec8263e1c85241795781c..a31fac04075875b577b5d13cd64eb0884bed6d80 100644
+--- a/codex-rs/core/src/event_mapping.rs
++++ b/codex-rs/core/src/event_mapping.rs
+@@ -141,6 +141,7 @@ fn parse_user_message(message: &[ContentItem]) -> Option<UserMessageItem> {
+             ContentItem::OutputText { text, .. } => {
+                 warn!("Output text in user message: {}", text);
+             }
++            ContentItem::OutputAudio { .. } => warn!("Output audio in user message"),
+         }
+     }
+ 
+diff --git a/codex-rs/core/src/guardian/input_budget.rs b/codex-rs/core/src/guardian/input_budget.rs
+index 5944d3d2b5ded86401395772c3cb6be349db1925..d53157d42080f76fcc135b641432cf0de1ee0822 100644
+--- a/codex-rs/core/src/guardian/input_budget.rs
++++ b/codex-rs/core/src/guardian/input_budget.rs
+@@ -305,7 +305,8 @@ pub(crate) async fn finalize(
+                                 }),
+                                 ContentItem::InputFile { .. }
+                                 | ContentItem::OutputText { .. }
+-                                | ContentItem::InputAudio { .. } => Err(CodexErr::InvalidRequest(
++                                | ContentItem::InputAudio { .. }
++                                | ContentItem::OutputAudio { .. } => Err(CodexErr::InvalidRequest(
+                                     "Unsupported Guardian input content".to_owned(),
+                                 )),
+                             })
+diff --git a/codex-rs/core/src/hook_runtime.rs b/codex-rs/core/src/hook_runtime.rs
+index 57d267dd9b31c04fff5f80f203c28d414a838efb..9c740a0dec035480e2ef9ab3052a9cc842c328d4 100644
+--- a/codex-rs/core/src/hook_runtime.rs
++++ b/codex-rs/core/src/hook_runtime.rs
+@@ -1122,6 +1122,7 @@ mod tests {
+                                 ContentItem::InputFile { .. }
+                                 | ContentItem::InputImage { .. }
+                                 | ContentItem::InputAudio { .. }
++                                | ContentItem::OutputAudio { .. }
+                                 | ContentItem::OutputText { .. } => {
+                                     panic!("expected input text content, got {item:?}")
+                                 }
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 4840b6a989ab71291fbb33000f9e976c7eef5a06..9986b5d0629e66c1c121ba2cd8d90f2db300f7d2 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -3759,6 +3759,7 @@ impl Session {
+                             ContentItem::InputFile { .. } => "user.file",
+                             ContentItem::InputImage { .. } => "user.image",
+                             ContentItem::InputAudio { .. } => "user.audio",
++                            ContentItem::OutputAudio { .. } => "assistant.audio",
+                         }
+                         .to_string(),
+                     )
+diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/decisions.rs b/codex-rs/ext/guardian-v2/src/async_scorer/decisions.rs
+index 02295d3381bdc53e5940d3e474d02f0160762a29..9e8b7230a0b68873ae9dd20d97bb03560e8d3768 100644
+--- a/codex-rs/ext/guardian-v2/src/async_scorer/decisions.rs
++++ b/codex-rs/ext/guardian-v2/src/async_scorer/decisions.rs
+@@ -271,6 +271,7 @@ fn request_body(
+                 ContentItem::InputFile { .. }
+                 | ContentItem::InputImage { .. }
+                 | ContentItem::InputAudio { .. }
++                | ContentItem::OutputAudio { .. }
+                 | ContentItem::OutputText { .. } => {
+                     return Err(DecisionsError::UnsupportedEvidence);
+                 }
+diff --git a/codex-rs/ext/image-generation/src/tool.rs b/codex-rs/ext/image-generation/src/tool.rs
+index c04571b99aeda709a886c687df5b78772339bc87..d62999055123101da50723aa8e74ec220e86241a 100644
+--- a/codex-rs/ext/image-generation/src/tool.rs
++++ b/codex-rs/ext/image-generation/src/tool.rs
+@@ -497,6 +497,7 @@ fn recent_images(
+                     ContentItem::InputFile { .. }
+                     | ContentItem::InputText { .. }
+                     | ContentItem::InputAudio { .. }
++                    | ContentItem::OutputAudio { .. }
+                     | ContentItem::OutputText { .. } => None,
+                 }));
+             }
+diff --git a/codex-rs/guardian-context/src/budget.rs b/codex-rs/guardian-context/src/budget.rs
+index f04380c2b0adb1f7fdd3b6dcd2df65fb17372eeb..c9bceeba750e1973d1ee3be04126f29e07bea30e 100644
+--- a/codex-rs/guardian-context/src/budget.rs
++++ b/codex-rs/guardian-context/src/budget.rs
+@@ -116,7 +116,8 @@ impl SectionCost {
+                 // Count the transmitted descriptor, never fetch or estimate opaque file contents.
+                 self.text_bytes = self.text_bytes.saturating_add(file_reference_bytes(file));
+             }
+-            ContentItem::InputAudio { audio_url } => {
++            ContentItem::InputAudio { audio_url }
++            | ContentItem::OutputAudio { audio: audio_url, .. } => {
+                 // Guardian currently has no audio contributor. Count a future opaque
+                 // payload conservatively until its consumer supplies modality costs.
+                 self.text_bytes = self.text_bytes.saturating_add(audio_url.len());
+diff --git a/codex-rs/guardian-context/src/composition.rs b/codex-rs/guardian-context/src/composition.rs
+index 5e1956af9f01781b5c366b0a079182f813aa3098..6909ff40c085df0f64baffe07722149194cda549 100644
+--- a/codex-rs/guardian-context/src/composition.rs
++++ b/codex-rs/guardian-context/src/composition.rs
+@@ -379,6 +379,7 @@ impl ComposedContext {
+                     ContentItem::InputImage { image, detail } => UserInput::Image { image, detail },
+                     ContentItem::InputFile { .. }
+                     | ContentItem::InputAudio { .. }
++                    | ContentItem::OutputAudio { .. }
+                     | ContentItem::OutputText { .. } => {
+                         return Err(SectionError::UnsupportedDelivery {
+                             section: section.id,
+diff --git a/codex-rs/guardian-context/src/enforcement.rs b/codex-rs/guardian-context/src/enforcement.rs
+index 6cf969b1ba364e4502f6cd47c518eec0ec2824d2..e4a95219f2406df792f9c8258cade8a8c0211628 100644
+--- a/codex-rs/guardian-context/src/enforcement.rs
++++ b/codex-rs/guardian-context/src/enforcement.rs
+@@ -318,6 +318,7 @@ fn retain_content(
+                 } => 0,
+                 ContentItem::InputFile { file } => crate::budget::file_reference_bytes(file),
+                 ContentItem::InputAudio { audio_url } => audio_url.len(),
++                ContentItem::OutputAudio { audio, .. } => audio.len(),
+             };
+             truncations.push(TruncationObservation {
+                 component: section.id,
+diff --git a/codex-rs/guardian-context/src/images.rs b/codex-rs/guardian-context/src/images.rs
+index ded6e0dfdb389f60cf9f9f77b81ca77907e9c7c1..593c769e14adc27f61e245216a9a5f9dacefff59 100644
+--- a/codex-rs/guardian-context/src/images.rs
++++ b/codex-rs/guardian-context/src/images.rs
+@@ -102,6 +102,7 @@ impl TranscriptImages {
+                             ContentItem::InputFile { .. }
+                             | ContentItem::InputText { .. }
+                             | ContentItem::InputAudio { .. }
++                            | ContentItem::OutputAudio { .. }
+                             | ContentItem::OutputText { .. } => {}
+                         }
+                     }
+@@ -153,6 +154,7 @@ impl TranscriptImages {
+                     | ContentItem::InputFile { .. }
+                     | ContentItem::InputText { .. }
+                     | ContentItem::InputAudio { .. }
++                    | ContentItem::OutputAudio { .. }
+                     | ContentItem::OutputText { .. } => {}
+                 }
+             }
+diff --git a/codex-rs/guardian-context/src/transcript.rs b/codex-rs/guardian-context/src/transcript.rs
+index 12d2a4ded97d1eefa90d562502dd0f678e05e272..2aea8cb94a05502b4b1fdd01eebc4b5fa8d89981 100644
+--- a/codex-rs/guardian-context/src/transcript.rs
++++ b/codex-rs/guardian-context/src/transcript.rs
+@@ -146,7 +146,8 @@ pub fn collect_transcript(
+                         | ContentItem::OutputText { .. }
+                         | ContentItem::InputFile { .. }
+                         | ContentItem::InputImage { .. }
+-                        | ContentItem::InputAudio { .. } => None,
++                        | ContentItem::InputAudio { .. }
++                        | ContentItem::OutputAudio { .. } => None,
+                     })
+                     .collect::<Vec<_>>()
+                     .join("\n");
+diff --git a/codex-rs/memories/write/src/rollout_input.rs b/codex-rs/memories/write/src/rollout_input.rs
+index 81292bed7c6975664da1f2a33941ee4c4c275da1..ca728dd66e0b3914fa4a4c7819ba7c6f634d8903 100644
+--- a/codex-rs/memories/write/src/rollout_input.rs
++++ b/codex-rs/memories/write/src/rollout_input.rs
+@@ -77,6 +77,12 @@ pub(crate) fn serialize_tiered_input(
+                             text: "[audio omitted]".into(),
+                         };
+                     }
++                    ContentItem::OutputAudio { .. } => {
++                        *part = ContentItem::OutputText {
++                            text: "[audio omitted]".into(),
++                            logprobs: None,
++                        };
++                    }
+                     ContentItem::InputText { .. } | ContentItem::OutputText { .. } => {}
+                 }
+             }
+diff --git a/codex-rs/otel/src/agent_response.rs b/codex-rs/otel/src/agent_response.rs
+index 7b06edc9feeae2018432d5c10431693fa3077fad..7a212916c482e023ae6daaa7f5809dd5a8eaa696 100644
+--- a/codex-rs/otel/src/agent_response.rs
++++ b/codex-rs/otel/src/agent_response.rs
+@@ -82,7 +82,8 @@ impl AgentResponseLogger {
+                 ContentItem::InputText { .. }
+                 | ContentItem::InputFile { .. }
+                 | ContentItem::InputImage { .. }
+-                | ContentItem::InputAudio { .. } => None,
++                | ContentItem::InputAudio { .. }
++                | ContentItem::OutputAudio { .. } => None,
+             })
+             .collect::<String>();
+         // Keep plan content, stripping memory citations only from the exported copy.
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index 66eb94fd658ef840fce94a00f1c64c26cf4f6cdd..719ad6b9ba844f046a0e4c24a94e82bfaa096c2b 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -949,6 +949,13 @@ pub enum ContentItem {
+     InputAudio {
+         audio_url: String,
+     },
++    /// Audio output retained by the native Chat Completions adapter.
++    OutputAudio {
++        #[debug(skip)]
++        audio: String,
++        #[debug(skip)]
++        provider_data: std::collections::BTreeMap<String, serde_json::Value>,
++    },
+     OutputText {
+         text: String,
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+diff --git a/codex-rs/rollout/src/search.rs b/codex-rs/rollout/src/search.rs
+index 9ea1f25851d662dabfcb41b3c0fe5018b5a03892..7ed448483e1da26940bab4e948252bb78ca3b56c 100644
+--- a/codex-rs/rollout/src/search.rs
++++ b/codex-rs/rollout/src/search.rs
+@@ -327,7 +327,8 @@ fn content_item_text(item: &ContentItem) -> Option<&str> {
+         }
+         ContentItem::InputFile { .. }
+         | ContentItem::InputImage { .. }
+-        | ContentItem::InputAudio { .. } => None,
++        | ContentItem::InputAudio { .. }
++        | ContentItem::OutputAudio { .. } => None,
+     }
+ }
+ 
+diff --git a/codex-rs/thread-store/src/local/rollout_migration/rollback_plan.rs b/codex-rs/thread-store/src/local/rollout_migration/rollback_plan.rs
+index 6d0656a895fc43d0e9812fc00a0b152835d93875..bfe83ce026bffb4e4fe33e2f48e1155f71dca272 100644
+--- a/codex-rs/thread-store/src/local/rollout_migration/rollback_plan.rs
++++ b/codex-rs/thread-store/src/local/rollout_migration/rollback_plan.rs
+@@ -587,7 +587,7 @@ fn user_response_matches_event(content: &[ContentItem], event: &UserMessageEvent
+             // Legacy user-message events have no file identity; never infer an exact match.
+             ContentItem::InputFile { .. } => return false,
+             ContentItem::InputAudio { audio_url } => audio.push(audio_url.as_str()),
+-            ContentItem::OutputText { .. } => return false,
++            ContentItem::OutputText { .. } | ContentItem::OutputAudio { .. } => return false,
+         }
+     }
+     text == event.message
+diff --git a/codex-rs/tools/src/tool_output.rs b/codex-rs/tools/src/tool_output.rs
+index 497fe6861d1f0898f22fac2cb1a0bd17e7addb15..53e862bfbe8f9d7adbf06900028557ebe86a32f9 100644
+--- a/codex-rs/tools/src/tool_output.rs
++++ b/codex-rs/tools/src/tool_output.rs
+@@ -272,7 +272,7 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue
+         ResponseInputItem::Message { content, .. } => content_items_to_code_mode_result(
+             &content
+                 .into_iter()
+-                .map(|item| match item {
++                .filter_map(|item| Some(match item {
+                     codex_protocol::models::ContentItem::InputText { text }
+                     | codex_protocol::models::ContentItem::OutputText { text, .. } => {
+                         FunctionCallOutputContentItem::InputText { text }
+@@ -289,7 +289,8 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue
+                     codex_protocol::models::ContentItem::InputAudio { audio_url } => {
+                         FunctionCallOutputContentItem::InputAudio { audio_url }
+                     }
+-                })
++                    codex_protocol::models::ContentItem::OutputAudio { .. } => return None,
++                }))
+                 .collect::<Vec<_>>(),
+         ),
+         ResponseInputItem::FunctionCallOutput { output, .. }

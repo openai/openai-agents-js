@@ -1,0 +1,1669 @@
+diff --git a/codex-rs/core/src/thread_manager/shutdown.rs b/codex-rs/core/src/thread_manager/shutdown.rs
+index f009ab513906c43a984d005a3cc1fb841a5b8e43..e02bfec9c220425df65b776b84c9ee76333b186a 100644
+--- a/codex-rs/core/src/thread_manager/shutdown.rs
++++ b/codex-rs/core/src/thread_manager/shutdown.rs
+@@ -1,6 +1,7 @@
+ //! Fences and signals one local agent tree, then exposes its teardown result.
+ 
+ use super::ThreadManager;
++use crate::CodexThread;
+ use crate::agent::control::AgentTreeShutdownState;
+ use codex_protocol::ThreadId;
+ use codex_protocol::error::Result as CodexResult;
+@@ -34,13 +35,19 @@ impl ThreadManager {
+         &self,
+         thread_id: ThreadId,
+     ) -> CodexResult<AgentTreeShutdown> {
+-        let thread = self.get_thread(thread_id).await?;
+-        Ok(AgentTreeShutdown {
+-            state: thread
+-                .session
+-                .services
+-                .local_agent_runtime
+-                .request_shutdown(),
+-        })
++        Ok(self
++            .get_thread(thread_id)
++            .await?
++            .request_agent_tree_shutdown())
++    }
++}
++
++impl CodexThread {
++    /// Request shutdown of the exact tree owned by this thread handle.
++    #[doc(hidden)]
++    pub fn request_agent_tree_shutdown(&self) -> AgentTreeShutdown {
++        AgentTreeShutdown {
++            state: self.session.services.local_agent_runtime.request_shutdown(),
++        }
+     }
+ }
+diff --git a/codex-rs/core/src/tools/orchestrator.rs b/codex-rs/core/src/tools/orchestrator.rs
+index 3d7e2b62c5227910980c56fc6be5f426d35e20c1..c312c4560fc687601af4694b6e467a6e1c662140 100644
+--- a/codex-rs/core/src/tools/orchestrator.rs
++++ b/codex-rs/core/src/tools/orchestrator.rs
+@@ -143,12 +143,12 @@ impl ToolOrchestrator {
+         let environment = tool.turn_environment(req);
+         let sandbox_manager = SandboxManager::new();
+         #[cfg(target_os = "macos")]
+-        let sandbox_manager = sandbox_manager.with_allowed_symlinked_codex_home(
+-            environment
+-                .environment
+-                .local_runtime_paths()
+-                .and_then(|paths| paths.allowed_symlinked_codex_home.clone()),
+-        );
++        let sandbox_manager = match environment.environment.local_runtime_paths() {
++            Some(paths) => sandbox_manager
++                .with_restricted_macos_process_sandbox(paths.restricted_macos_process_sandbox)
++                .with_allowed_symlinked_codex_home(paths.allowed_symlinked_codex_home.clone()),
++            None => sandbox_manager,
++        };
+         let sandbox_config = environment.config();
+         let owner_network_policy = sandbox_config.network_policy.is_some();
+         let workspace_roots = environment.workspace_roots();
+diff --git a/codex-rs/core/src/unified_exec/process_manager.rs b/codex-rs/core/src/unified_exec/process_manager.rs
+index 211d99de7cf4e92c21779712cb31dc1b0f1c4426..55d39c46d1eaff030fb9f303077d807f12c7fe85 100644
+--- a/codex-rs/core/src/unified_exec/process_manager.rs
++++ b/codex-rs/core/src/unified_exec/process_manager.rs
+@@ -32,6 +32,7 @@ use crate::tools::ApprovalContext;
+ use crate::tools::context::ExecCommandToolOutput;
+ use crate::tools::events::ToolEmitter;
+ use crate::tools::events::ToolEventCtx;
++use crate::tools::events::ToolEventFailure;
+ use crate::tools::events::ToolEventStage;
+ use crate::tools::network_approval::DeferredNetworkApproval;
+ use crate::tools::network_approval::finish_deferred_network_approval;
+@@ -533,6 +534,32 @@ impl UnifiedExecProcessManager {
+             Ok((attempt, deferred_network_approval)) => (attempt, deferred_network_approval),
+             Err(err) => {
+                 self.release_process_id(request.process_id).await;
++                // A process denied during the early-exit check returns before Begin.
++                // Record the final denial only after the sandbox orchestrator has
++                // decided whether to retry, using the original process output.
++                if let UnifiedExecError::SandboxDenied { output, .. } = &err {
++                    let model_context = context.step_context.model_context();
++                    let mut event_ctx = ToolEventCtx::new(
++                        context.session.as_ref(),
++                        context.step_context.turn.as_ref(),
++                        &context.step_context.settings.model_info,
++                        &context.call_id,
++                        /*turn_diff_tracker*/ None,
++                    );
++                    event_ctx.model_context = Some(&model_context);
++                    ToolEmitter::unified_exec(
++                        &request.command,
++                        cwd,
++                        ExecCommandSource::UnifiedExecStartup,
++                        /*process_id*/ None,
++                        /*plugin_attribution*/ None,
++                    )
++                    .emit(
++                        event_ctx,
++                        ToolEventStage::Failure(ToolEventFailure::Output(output.clone())),
++                    )
++                    .await;
++                }
+                 return Err(err);
+             }
+         };
+diff --git a/codex-rs/exec-server/src/client.rs b/codex-rs/exec-server/src/client.rs
+index 0369bb7185d4a68d5ad77c47f06c2524c249aa35..044c96ff13efa12f4efe349766631c294aeb6322 100644
+--- a/codex-rs/exec-server/src/client.rs
++++ b/codex-rs/exec-server/src/client.rs
+@@ -402,6 +402,7 @@ pub(crate) struct LazyRemoteExecServerClient {
+     current_client: Arc<StdMutex<Option<ExecServerClient>>>,
+     reconnect: Arc<StdMutex<Option<Arc<ConnectionAttempt>>>>,
+     refresh_lock: Arc<Mutex<()>>,
++    retired: CancellationToken,
+     environment_connection_state_tx: watch::Sender<EnvironmentConnectionState>,
+ }
+ 
+@@ -418,6 +419,7 @@ impl LazyRemoteExecServerClient {
+             current_client: Arc::new(StdMutex::new(None)),
+             reconnect: Arc::new(StdMutex::new(None)),
+             refresh_lock: Arc::new(Mutex::new(())),
++            retired: CancellationToken::new(),
+             environment_connection_state_tx: watch::channel(
+                 EnvironmentConnectionState::Disconnected,
+             )
+@@ -506,7 +508,17 @@ impl LazyRemoteExecServerClient {
+         self.initial_client().await.map(drop)
+     }
+ 
++    fn check_not_retired(&self) -> Result<(), ExecServerError> {
++        if self.retired.is_cancelled() {
++            return Err(ExecServerError::Disconnected(
++                "exec-server environment was retired".into(),
++            ));
++        }
++        Ok(())
++    }
++
+     pub(crate) async fn get(&self) -> Result<ExecServerClient, ExecServerError> {
++        self.check_not_retired()?;
+         if matches!(self.recovery_policy, RecoveryPolicy::FailFast) {
+             let client = match self.cached_client() {
+                 Some(client) => client,
+@@ -544,6 +556,7 @@ impl LazyRemoteExecServerClient {
+     }
+ 
+     async fn initial_client(&self) -> Result<ExecServerClient, ExecServerError> {
++        self.check_not_retired()?;
+         let result = if self.can_reconnect()
+             && (self.startup.cancelled.is_cancelled()
+                 || self.startup.result.get().is_some_and(|result| {
+@@ -581,6 +594,7 @@ impl LazyRemoteExecServerClient {
+                 .reconnect
+                 .lock()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner);
++            self.check_not_retired()?;
+             if let Some(client) = self.connected_client() {
+                 return Ok(client);
+             }
+diff --git a/codex-rs/exec-server/src/client/accepted.rs b/codex-rs/exec-server/src/client/accepted.rs
+index ae6d5f84e7b2b305f0144830059dcfb3a00100e5..0bc0f5aa47f5d9405326e5434663a765a3e5dee2 100644
+--- a/codex-rs/exec-server/src/client/accepted.rs
++++ b/codex-rs/exec-server/src/client/accepted.rs
+@@ -250,6 +250,7 @@ impl LazyRemoteExecServerClient {
+             current_client: std::sync::Arc::new(std::sync::Mutex::new(Some(client))),
+             reconnect: std::sync::Arc::new(std::sync::Mutex::new(None)),
+             refresh_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
++            retired: Default::default(),
+             environment_connection_state_tx,
+         }
+     }
+diff --git a/codex-rs/exec-server/src/client_refresh.rs b/codex-rs/exec-server/src/client_refresh.rs
+index 3579cb4f72f3abfa69256bb476178a7bcc098740..bb1ef6e06882cb6aa9cf07a1cac5605b0c60bfe7 100644
+--- a/codex-rs/exec-server/src/client_refresh.rs
++++ b/codex-rs/exec-server/src/client_refresh.rs
+@@ -83,6 +83,7 @@ impl LazyRemoteExecServerClient {
+     )]
+     pub(crate) async fn refresh_connection(&self) -> Result<(), ExecServerError> {
+         let _refresh = self.refresh_lock.lock().await;
++        self.check_not_retired()?;
+         let (previous, attempt) = loop {
+             let observed = self.cached_client();
+             let observed_registration = observed
+@@ -128,6 +129,7 @@ impl LazyRemoteExecServerClient {
+                 .current_client
+                 .lock()
+                 .unwrap_or_else(std::sync::PoisonError::into_inner);
++            self.check_not_retired()?;
+             // A new client makes the lookup stale. Recovery can also renew the
+             // registration on the same client, so compare it under the connection lock.
+             if !match (&observed, &*current) {
+@@ -216,6 +218,7 @@ impl LazyRemoteExecServerClient {
+         // Keep the transport future out of every caller's async layout, including
+         // the CLI entry point, which otherwise exceeds rustc's query-depth limit.
+         Box::pin(async move {
++            self.check_not_retired().map_err(Arc::new)?;
+             let transport = attempt
+                 .transport
+                 .as_ref()
+@@ -237,7 +240,7 @@ impl LazyRemoteExecServerClient {
+                     .current_client
+                     .lock()
+                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+-                if !attempt.cancelled.is_cancelled() {
++                if !self.retired.is_cancelled() && !attempt.cancelled.is_cancelled() {
+                     client.attach_environment_connection_state(
+                         self.environment_connection_state_tx.clone(),
+                     );
+@@ -253,6 +256,31 @@ impl LazyRemoteExecServerClient {
+     }
+ }
+ 
++impl LazyRemoteExecServerClient {
++    pub(crate) async fn retire_current_connection(&self) {
++        let client = {
++            let reconnect = self
++                .reconnect
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            let current = self
++                .current_client
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            // Use the same lock order as attempt admission and installation.
++            self.retired.cancel();
++            self.startup.cancelled.cancel();
++            if let Some(attempt) = reconnect.as_ref() {
++                attempt.cancelled.cancel();
++            }
++            current.clone()
++        };
++        if let Some(client) = client {
++            client.inner.retire().await;
++        }
++    }
++}
++
+ impl Inner {
+     async fn retire(self: &Arc<Self>) {
+         let message = "exec-server executor was replaced".to_string();
+diff --git a/codex-rs/exec-server/src/client_refresh_tests.rs b/codex-rs/exec-server/src/client_refresh_tests.rs
+index 5e391a602aaccb5fe937271d066cc528e57d0fd3..f858830e9a1c868e9faa6eb6cb3bbf9e6e02213b 100644
+--- a/codex-rs/exec-server/src/client_refresh_tests.rs
++++ b/codex-rs/exec-server/src/client_refresh_tests.rs
+@@ -663,6 +663,45 @@ async fn superseded_refresh_lookup_does_not_retire_a_newer_session() -> Result<(
+     Ok(())
+ }
+ 
++#[tokio::test]
++async fn retired_environment_rejects_in_flight_and_future_reconnects() -> Result<()> {
++    let _clock = freeze_clock();
++    let executor = Executor::start(Validator::default()).await?;
++    let (client, registry) = executor.client()?;
++    let original = client.get().await?;
++    original.inner.retire().await;
++    let release = registry.block_next_lookup();
++    let reconnect = client.get();
++    tokio::pin!(reconnect);
++    assert!(futures::poll!(reconnect.as_mut()).is_pending());
++    registry.lookup_started.notified().await;
++
++    client.retire_current_connection().await;
++    assert!(matches!(
++        futures::poll!(reconnect.as_mut()),
++        std::task::Poll::Ready(Err(ExecServerError::ConnectionAttempt(_)))
++    ));
++    drop(release);
++    let calls = registry.calls.load(Ordering::Relaxed);
++    assert!(matches!(
++        client.get().await,
++        Err(ExecServerError::Disconnected(_))
++    ));
++    assert!(matches!(
++        client.refresh_connection().await,
++        Err(ExecServerError::Disconnected(_))
++    ));
++    assert_eq!(registry.calls.load(Ordering::Relaxed), calls);
++    assert!(Arc::ptr_eq(
++        &original.inner,
++        &client
++            .cached_client()
++            .expect("original client remains cached")
++            .inner,
++    ));
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn provisioned_environment_waits_for_offline_executor_on_the_same_handle() -> Result<()> {
+     let _clock = freeze_clock();
+diff --git a/codex-rs/exec-server/src/environment.rs b/codex-rs/exec-server/src/environment.rs
+index b92961a719c9d1d589ee9d4c6fd3018ee79f0b39..694f9b4a3ea29969f09b36f0fb4c13450fda4725 100644
+--- a/codex-rs/exec-server/src/environment.rs
++++ b/codex-rs/exec-server/src/environment.rs
+@@ -932,6 +932,14 @@ impl Environment {
+             .map(LazyRemoteExecServerClient::subscribe_connection_state)
+     }
+ 
++    /// Retires the current remote connection during shutdown of its owning runtime.
++    #[doc(hidden)]
++    pub async fn retire_current_connection(&self) {
++        if let Some(client) = &self.remote_client {
++            client.retire_current_connection().await;
++        }
++    }
++
+     pub fn local_runtime_paths(&self) -> Option<&ExecServerRuntimeOptions> {
+         self.local_runtime_paths.as_ref()
+     }
+diff --git a/codex-rs/exec-server/src/fs_sandbox.rs b/codex-rs/exec-server/src/fs_sandbox.rs
+index 89058f3ff8d79b1eacf4eef4500ff4f95f5d8f4c..1de3366d400d23c91cdd42b5582569a37c70197d 100644
+--- a/codex-rs/exec-server/src/fs_sandbox.rs
++++ b/codex-rs/exec-server/src/fs_sandbox.rs
+@@ -75,9 +75,13 @@ pub(crate) struct FileSystemSandboxRunner {
+ 
+ impl FileSystemSandboxRunner {
+     pub(crate) fn new(runtime_paths: ExecServerRuntimeOptions) -> Self {
++        let helper_env = runtime_paths
++            .file_system_helper_env
++            .clone()
++            .unwrap_or_else(helper_env);
+         Self {
+             runtime_paths,
+-            helper_env: helper_env(),
++            helper_env,
+         }
+     }
+ 
+diff --git a/codex-rs/exec-server/src/lib.rs b/codex-rs/exec-server/src/lib.rs
+index 1a7c5c2aa62406c63cf358237c58f3ceb2296023..8cae382238552d4278c709604a8cef35d43370d1 100644
+--- a/codex-rs/exec-server/src/lib.rs
++++ b/codex-rs/exec-server/src/lib.rs
+@@ -107,6 +107,7 @@ pub use codex_file_system::WalkOutcome;
+ pub use codex_file_system::WindowsSandboxSelection;
+ pub use codex_file_system::WriteFileOptions;
+ pub use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
++pub use codex_sandboxing::LocalWriteRoots;
+ pub use environment::CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR;
+ pub use environment::CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
+ pub use environment::CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
+diff --git a/codex-rs/exec-server/src/process_sandbox.rs b/codex-rs/exec-server/src/process_sandbox.rs
+index fd2c89ee16b88be00a8640dd541b6efce2839a62..541f61915ddf1cab83f072cc122242099ac8e005 100644
+--- a/codex-rs/exec-server/src/process_sandbox.rs
++++ b/codex-rs/exec-server/src/process_sandbox.rs
+@@ -213,6 +213,7 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
+         .with_linux_sandbox_pid_namespace(runtime_paths.linux_sandbox_pid_namespace);
+     #[cfg(target_os = "macos")]
+     let sandbox_manager = sandbox_manager
++        .with_restricted_macos_process_sandbox(runtime_paths.restricted_macos_process_sandbox)
+         .with_allowed_symlinked_codex_home(runtime_paths.allowed_symlinked_codex_home.clone());
+     let (sandbox, windows_sandbox_level) = select_sandbox(
+         &sandbox_manager,
+diff --git a/codex-rs/exec-server/src/runtime_options.rs b/codex-rs/exec-server/src/runtime_options.rs
+index 812e09553f2ea9b8ed6915589937e1be3d50009b..04e78b67f1e753d20df0d179974835483ab28699 100644
+--- a/codex-rs/exec-server/src/runtime_options.rs
++++ b/codex-rs/exec-server/src/runtime_options.rs
+@@ -1,5 +1,6 @@
+ //! Executor-local paths and trusted startup settings used when preparing execution.
+ 
++use std::collections::HashMap;
+ use std::path::PathBuf;
+ 
+ use codex_sandboxing::LinuxSandboxPidNamespace;
+@@ -17,6 +18,10 @@ pub struct ExecServerRuntimeOptions {
+     pub linux_sandbox_pid_namespace: LinuxSandboxPidNamespace,
+     /// Trusted startup routing; request policy still controls destination access.
+     pub proxy_private_ips_via_upstream: bool,
++    pub(crate) file_system_helper_env: Option<HashMap<String, String>>,
++    /// Use the platform runtime paths without implicit scratch and application access.
++    #[cfg(target_os = "macos")]
++    pub restricted_macos_process_sandbox: bool,
+     /// User-config opt-out of writable-root symlink checks beneath this host's home.
+     #[cfg(target_os = "macos")]
+     pub allowed_symlinked_codex_home: Option<AbsolutePathBuf>,
+@@ -43,9 +48,12 @@ impl ExecServerRuntimeOptions {
+         Ok(Self {
+             linux_sandbox_pid_namespace: LinuxSandboxPidNamespace::default(),
+             proxy_private_ips_via_upstream: false,
++            file_system_helper_env: None,
+             codex_self_exe: absolute_path(codex_self_exe)?,
+             codex_linux_sandbox_exe: codex_linux_sandbox_exe.map(absolute_path).transpose()?,
+             #[cfg(target_os = "macos")]
++            restricted_macos_process_sandbox: false,
++            #[cfg(target_os = "macos")]
+             allowed_symlinked_codex_home: None,
+         })
+     }
+@@ -62,6 +70,19 @@ impl ExecServerRuntimeOptions {
+         self
+     }
+ 
++    /// Selects a complete filesystem helper environment at trusted executor startup.
++    pub fn with_file_system_helper_env(mut self, env: HashMap<String, String>) -> Self {
++        self.file_system_helper_env = Some(env);
++        self
++    }
++
++    /// Restricts the platform defaults to runtime access for an SDK-owned local executor.
++    #[cfg(target_os = "macos")]
++    pub fn with_restricted_macos_process_sandbox(mut self) -> Self {
++        self.restricted_macos_process_sandbox = true;
++        self
++    }
++
+     /// Applies the symlink opt-in resolved by the execution host's config loader.
+     #[cfg(target_os = "macos")]
+     pub fn with_allowed_symlinked_codex_home(
+diff --git a/codex-rs/linux-sandbox/src/bwrap.rs b/codex-rs/linux-sandbox/src/bwrap.rs
+index 5efdb6f3553dbe241c49f61908ee40b91a3ac1b6..4adb13d9e7a10e8be24d9248537d741818125f82 100644
+--- a/codex-rs/linux-sandbox/src/bwrap.rs
++++ b/codex-rs/linux-sandbox/src/bwrap.rs
+@@ -563,7 +563,19 @@ fn create_filesystem_args(
+             ];
+         } else {
+             for root in readable_roots {
+-                if !root.exists() {
++                // The covering writable bind and its read-only carveout mount this
++                // path below. A bootstrap bind could depend on a temporary empty
++                // metadata target that another sandbox removes before startup.
++                let covered_protected_metadata =
++                    root.file_name().is_some_and(is_protected_metadata_name)
++                        && writable_roots.iter().any(|writable_root| {
++                            root.parent() == Some(writable_root.root.as_path())
++                                && writable_root
++                                    .read_only_subpaths
++                                    .iter()
++                                    .any(|path| path.as_path() == root)
++                        });
++                if covered_protected_metadata || !root.exists() {
+                     continue;
+                 }
+                 // Writable roots are rebound by real target below; mirror that
+@@ -733,9 +745,14 @@ fn create_filesystem_args(
+             if deferred_read_only_subpaths.contains(&subpath) {
+                 continue;
+             }
++            let protected_metadata = subpath
++                .file_name()
++                .is_some_and(is_protected_metadata_name)
++                .then(|| fs::symlink_metadata(&subpath));
+             append_read_only_subpath_args(
+                 &mut bwrap_args,
+                 &subpath,
++                protected_metadata,
+                 &allowed_write_paths,
+                 &daemon_directories,
+             )?;
+@@ -1214,24 +1231,34 @@ fn append_mount_target_parent_dir_args(args: &mut Vec<String>, mount_target: &Pa
+ fn append_read_only_subpath_args(
+     bwrap_args: &mut BwrapArgs,
+     subpath: &Path,
++    protected_metadata: Option<io::Result<Metadata>>,
+     allowed_write_paths: &[PathBuf],
+     daemon_directories: &BTreeSet<PathBuf>,
+ ) -> Result<()> {
+-    if let Some(metadata) = transient_empty_metadata_path(subpath)
++    if let Some(metadata) = protected_metadata
+         && is_within_allowed_write_paths(subpath, allowed_write_paths)
+     {
+         // Another concurrent bwrap setup can leave an empty mount target at
+-        // a missing metadata path. Treat it like the missing case instead of
+-        // binding that transient host path as the stable source.
++        // a missing metadata path. Use the initial observation to avoid a
++        // bind that depends on this transient host path.
+         match metadata {
+-            EmptyProtectedMetadataPath::File(metadata) => {
+-                append_existing_empty_file_bind_data_args(bwrap_args, subpath, &metadata)?;
++            Ok(metadata) if metadata.is_file() && metadata.len() == 0 => {
++                return append_existing_empty_file_bind_data_args(bwrap_args, subpath, &metadata);
+             }
+-            EmptyProtectedMetadataPath::Directory(metadata) => {
++            Ok(metadata) if metadata.is_dir() && directory_is_empty_or_missing(subpath) => {
+                 append_existing_empty_directory_args(bwrap_args, subpath, &metadata);
++                return Ok(());
+             }
++            Err(err) if err.kind() == io::ErrorKind::NotFound => {
++                let missing_ancestor = subpath.parent().and_then(find_first_non_existent_component);
++                let first_missing_component = missing_ancestor.as_deref().unwrap_or(subpath);
++                if is_within_allowed_write_paths(first_missing_component, allowed_write_paths) {
++                    append_missing_read_only_subpath_args(bwrap_args, first_missing_component)?;
++                }
++                return Ok(());
++            }
++            _ => {}
+         }
+-        return Ok(());
+     }
+ 
+     if !subpath.exists() {
+@@ -1402,33 +1429,11 @@ fn is_within_allowed_write_paths(path: &Path, allowed_write_paths: &[PathBuf]) -
+         .any(|root| path.starts_with(root))
+ }
+ 
+-enum EmptyProtectedMetadataPath {
+-    File(Metadata),
+-    Directory(Metadata),
+-}
+-
+-fn transient_empty_metadata_path(path: &Path) -> Option<EmptyProtectedMetadataPath> {
+-    if !path.file_name().is_some_and(is_protected_metadata_name) {
+-        return None;
++fn directory_is_empty_or_missing(path: &Path) -> bool {
++    match fs::read_dir(path).and_then(|mut entries| entries.next().transpose()) {
++        Ok(entry) => entry.is_none(),
++        Err(err) => err.kind() == io::ErrorKind::NotFound,
+     }
+-
+-    let metadata = fs::symlink_metadata(path).ok()?;
+-    if metadata.file_type().is_file() && metadata.len() == 0 {
+-        return Some(EmptyProtectedMetadataPath::File(metadata));
+-    }
+-
+-    if metadata.file_type().is_dir() && directory_is_empty(path) {
+-        return Some(EmptyProtectedMetadataPath::Directory(metadata));
+-    }
+-
+-    None
+-}
+-
+-fn directory_is_empty(path: &Path) -> bool {
+-    let Ok(mut entries) = fs::read_dir(path) else {
+-        return false;
+-    };
+-    entries.next().is_none()
+ }
+ 
+ fn first_writable_symlink_component_in_path(
+@@ -1523,6 +1528,67 @@ mod tests {
+     use pretty_assertions::assert_eq;
+     use tempfile::TempDir;
+ 
++    #[test]
++    fn restricted_read_bootstrap_defers_protected_metadata_to_the_writable_bind() {
++        let workspace = TempDir::new().expect("workspace");
++        let root = workspace.path();
++        let dot_git = root.join(".git");
++        fs::create_dir(&dot_git).expect("create transient .git directory");
++        let workspace_root = AbsolutePathBuf::from_absolute_path(root).expect("absolute workspace");
++        let mut policy = FileSystemSandboxPolicy::workspace_write(&[], true, true)
++            .materialize_project_roots_with_workspace_roots(&[workspace_root]);
++        let root_read = policy
++            .entries
++            .iter_mut()
++            .find(|entry| {
++                matches!(
++                    entry.path,
++                    FileSystemPath::Special {
++                        value: FileSystemSpecialPath::Root,
++                    }
++                )
++            })
++            .expect("workspace root read baseline");
++        root_read.path = FileSystemPath::Special {
++            value: FileSystemSpecialPath::Minimal,
++        };
++        let plan = || {
++            create_filesystem_args(&policy, root, BwrapOptions::default()).expect("filesystem args")
++        };
++        let transient = plan();
++        fs::remove_dir(&dot_git).expect("remove transient .git directory");
++        let dot_git_str = path_to_string(&dot_git);
++        let readonly_binds = |args: &BwrapArgs| {
++            args.args
++                .windows(3)
++                .enumerate()
++                .filter_map(|(index, window)| {
++                    (window == ["--ro-bind", dot_git_str.as_str(), dot_git_str.as_str()])
++                        .then_some(index)
++                })
++                .collect::<Vec<_>>()
++        };
++        assert_empty_directory_mounted_read_only(&transient.args, &dot_git);
++        assert!(readonly_binds(&transient).is_empty());
++        assert!(synthetic_mount_target_paths(&transient).contains(&dot_git));
++
++        fs::create_dir(&dot_git).expect("create real .git directory");
++        fs::write(dot_git.join("HEAD"), "ref: refs/heads/main\n").expect("write HEAD");
++        let real = plan();
++        let root_str = path_to_string(root);
++        let writable_bind = real
++            .args
++            .windows(3)
++            .position(|window| window == ["--bind", root_str.as_str(), root_str.as_str()])
++            .expect("workspace writable bind");
++        let binds = readonly_binds(&real);
++        assert_eq!(binds.len(), 1);
++        assert!(
++            binds[0] > writable_bind,
++            "the real metadata stays read-only"
++        );
++    }
++
+     #[test]
+     fn default_unreadable_glob_scan_has_no_depth_cap() {
+         assert_eq!(BwrapOptions::default().glob_scan_max_depth, None);
+@@ -2058,6 +2124,38 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn protected_metadata_observed_missing_uses_a_mask_if_a_placeholder_appears() {
++        let workspace = TempDir::new().expect("workspace");
++        let dot_git = workspace.path().join(".git");
++        let missing = fs::symlink_metadata(&dot_git).expect_err(".git should be missing");
++        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
++        fs::create_dir(&dot_git).expect("create transient .git directory");
++
++        let mut args = BwrapArgs {
++            args: Vec::new(),
++            preserved_files: Vec::new(),
++            synthetic_mount_targets: Vec::new(),
++            protected_create_targets: Vec::new(),
++        };
++        append_read_only_subpath_args(
++            &mut args,
++            &dot_git,
++            Some(Err(missing)),
++            &[workspace.path().to_path_buf()],
++            &BTreeSet::new(),
++        )
++        .expect("plan read-only mount");
++        fs::remove_dir(&dot_git).expect("remove transient .git directory");
++
++        assert_empty_directory_mounted_read_only(&args.args, &dot_git);
++        assert!(!args.args.iter().any(|arg| arg == "--ro-bind"));
++        assert_eq!(
++            args.synthetic_mount_targets,
++            vec![SyntheticMountTarget::missing_empty_directory(&dot_git)]
++        );
++    }
++
+     #[test]
+     fn transient_empty_preserved_file_uses_empty_file_bind_data() {
+         let temp_dir = TempDir::new().expect("temp dir");
+diff --git a/codex-rs/linux-sandbox/src/daemon_mounts.rs b/codex-rs/linux-sandbox/src/daemon_mounts.rs
+index 1ad026f1b5be081d8bf60ff6556b21023c83fce2..aaee077a0ddbae4ae1cef0e64b6924e8d5ca96c9 100644
+--- a/codex-rs/linux-sandbox/src/daemon_mounts.rs
++++ b/codex-rs/linux-sandbox/src/daemon_mounts.rs
+@@ -2,6 +2,7 @@
+ //! Mount roots describe filesystem identity; canonical paths alone miss bind mounts.
+ //! Btrfs subvolume device numbers can differ from the containing mount's device.
+ 
++use codex_sandboxing::decode_mountinfo_path as mount_path;
+ use rustix::fs::AtFlags;
+ use rustix::fs::StatxFlags;
+ use rustix::fs::fstatfs;
+@@ -10,7 +11,6 @@ use std::collections::BTreeSet;
+ use std::fs;
+ use std::io;
+ use std::os::fd::AsRawFd;
+-use std::os::unix::ffi::OsStringExt;
+ use std::os::unix::fs::MetadataExt;
+ use std::path::Path;
+ use std::path::PathBuf;
+@@ -227,30 +227,6 @@ fn check_mounts(
+     Ok(mask_paths)
+ }
+ 
+-fn mount_path(encoded: &[u8]) -> io::Result<PathBuf> {
+-    let mut decoded = Vec::new();
+-    let mut bytes = encoded.iter().copied();
+-    while let Some(byte) = bytes.next() {
+-        decoded.push(if byte == b'\\' {
+-            let digits: Vec<_> = bytes.by_ref().take(3).collect();
+-            match digits.as_slice() {
+-                b"040" => b' ',
+-                b"011" => b'\t',
+-                b"012" => b'\n',
+-                b"134" => b'\\',
+-                _ => return Err(io::Error::other("invalid mountinfo path escape")),
+-            }
+-        } else {
+-            byte
+-        });
+-    }
+-    let path = PathBuf::from(std::ffi::OsString::from_vec(decoded));
+-    if !path.is_absolute() {
+-        return Err(io::Error::other("mountinfo path is not absolute"));
+-    }
+-    Ok(path)
+-}
+-
+ #[cfg(test)]
+ #[path = "daemon_mounts_tests.rs"]
+ mod tests;
+diff --git a/codex-rs/linux-sandbox/src/linux_run_main.rs b/codex-rs/linux-sandbox/src/linux_run_main.rs
+index 8ef516589c06847b4dfbdcc8ef326269ea8c5bd7..1d116b9fab0026eb34b1cbcfaae062a34dec0083 100644
+--- a/codex-rs/linux-sandbox/src/linux_run_main.rs
++++ b/codex-rs/linux-sandbox/src/linux_run_main.rs
+@@ -40,6 +40,7 @@ use codex_protocol::protocol::FileSystemSandboxPolicy;
+ use codex_protocol::protocol::FileSystemSpecialPath;
+ use codex_protocol::protocol::NetworkSandboxPolicy;
+ use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
++use codex_utils_absolute_path::AbsolutePathBuf;
+ 
+ static BWRAP_CHILD_PID: AtomicI32 = AtomicI32::new(0);
+ static PENDING_FORWARDED_SIGNAL: AtomicI32 = AtomicI32::new(0);
+@@ -337,6 +338,14 @@ pub fn run_main() -> ! {
+             proxy_route_spec,
+             command,
+         });
++        // The inner executable is this trusted helper. With restricted reads,
++        // expose only that file so bubblewrap can re-enter it to apply seccomp.
++        let helper = AbsolutePathBuf::from_absolute_path(Path::new(&inner[0]))
++            .unwrap_or_else(|err| panic!("invalid sandbox helper path: {err}"));
++        let file_system_sandbox_policy = file_system_sandbox_policy.with_additional_readable_roots(
++            &sandbox_policy_cwd,
++            &[helper],
++        );
+         run_bwrap_with_proc_fallback(
+             &sandbox_policy_cwd,
+             command_cwd.as_deref(),
+@@ -1510,11 +1519,17 @@ fn close_fd_or_panic(fd: libc::c_int, context: &str) {
+ }
+ 
+ fn is_proc_mount_failure(stderr: &str) -> bool {
+-    stderr.contains("Can't mount proc")
+-        && stderr.contains("/newroot/proc")
+-        && (stderr.contains("Invalid argument")
+-            || stderr.contains("Operation not permitted")
+-            || stderr.contains("Permission denied"))
++    stderr.lines().any(|line| {
++        matches!(
++            line,
++            "bwrap: Can't mount proc on /newroot/proc: Invalid argument"
++                | "bwrap: Can't mount proc on /newroot/proc: Operation not permitted"
++                | "bwrap: Can't mount proc on /newroot/proc: Permission denied"
++                | "bwrap: Can't mount proc on /proc: Invalid argument"
++                | "bwrap: Can't mount proc on /proc: Operation not permitted"
++                | "bwrap: Can't mount proc on /proc: Permission denied"
++        )
++    })
+ }
+ 
+ struct InnerSeccompCommandArgs<'a> {
+diff --git a/codex-rs/linux-sandbox/src/linux_run_main_tests.rs b/codex-rs/linux-sandbox/src/linux_run_main_tests.rs
+index 79a0dca0408068103dd67e52d71ff5c3261e8a9e..eb5be8601da8db13ae56e18ce661673fa632e5a7 100644
+--- a/codex-rs/linux-sandbox/src/linux_run_main_tests.rs
++++ b/codex-rs/linux-sandbox/src/linux_run_main_tests.rs
+@@ -45,6 +45,38 @@ fn detects_proc_mount_permission_denied_failure() {
+     assert!(is_proc_mount_failure(stderr));
+ }
+ 
++#[test]
++fn detects_proc_mount_failures_at_proc_root() {
++    for reason in [
++        "Invalid argument",
++        "Operation not permitted",
++        "Permission denied",
++    ] {
++        let stderr = format!("bwrap: Can't mount proc on /proc: {reason}");
++        assert!(is_proc_mount_failure(&stderr), "{stderr}");
++    }
++}
++
++#[test]
++fn detects_proc_mount_failure_among_diagnostic_lines() {
++    let stderr = "earlier diagnostic\nbwrap: Can't mount proc on /proc: Operation not permitted\r\nlater diagnostic\n";
++    assert!(is_proc_mount_failure(stderr));
++}
++
++#[test]
++fn ignores_misleading_proc_mount_diagnostics() {
++    for stderr in [
++        "bwrap: Can't mount proc on /proc-other: Operation not permitted",
++        "bwrap: Can't mount proc on /newroot/proc-other: Operation not permitted",
++        "bwrap: Can't mount proc on /proc: No such file or directory",
++        "bwrap: Can't bind mount /proc: Operation not permitted",
++        "bwrap: Can't mount proc\n/newroot/proc\nOperation not permitted",
++        "bwrap: Can't mount proc on /proc: Operation not permitted by another operation",
++    ] {
++        assert!(!is_proc_mount_failure(stderr), "{stderr}");
++    }
++}
++
+ #[test]
+ fn ignores_non_proc_mount_errors() {
+     let stderr = "bwrap: Can't bind mount /dev/null: Operation not permitted";
+diff --git a/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs b/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs
+index 02b5d0cad8a9e3d8e77f9dd7c7641ae187437d52..ef3428937074a59a5823d535c3593b94a2a66edf 100644
+--- a/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs
++++ b/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs
+@@ -308,8 +308,10 @@ async fn namespace_reaper_collects_orphaned_descendants() {
+     assert_eq!(output.stdout, b"orphan reaped\n");
+ }
+ 
++#[test_case::test_case("/newroot/proc"; "legacy_proc_path")]
++#[test_case::test_case("/proc"; "current_proc_path")]
+ #[tokio::test]
+-async fn proc_mount_denial_preserves_legacy_fallback_and_explicit_pid_inheritance() {
++async fn proc_mount_denial_preserves_legacy_fallback_and_explicit_pid_inheritance(proc_path: &str) {
+     if should_skip_bwrap_tests().await {
+         eprintln!("skipping bwrap test: bubblewrap is unavailable");
+         return;
+@@ -327,7 +329,7 @@ async fn proc_mount_denial_preserves_legacy_fallback_and_explicit_pid_inheritanc
+ for arg in "$@"; do
+     [ "$arg" = "--" ] && break
+     if [ "$arg" = "--proc" ]; then
+-        printf '%s\n' "bwrap: Can't mount proc on /newroot/proc: Operation not permitted" >&2
++        printf "bwrap: Can't mount proc on %s: Operation not permitted\n" "$CODEX_TEST_PROC_MOUNT_PATH" >&2
+         exit 1
+     fi
+ done
+@@ -368,6 +370,18 @@ set -eu
+ printf 'command started\n'
+ IFS=' ' read -r proc_pid rest < /proc/self/stat
+ test "$$" != "$proc_pid"
++test "$(readlink /proc/self/ns/pid)" != "$CODEX_TEST_PID_NAMESPACE"
++if (printf changed > "$CODEX_TEST_PROTECTED_FILE") 2>/dev/null; then exit 1; fi
++test "$(readlink /proc/self/ns/user)" != "$CODEX_TEST_USER_NAMESPACE"
++test "$(readlink /proc/self/ns/ipc)" != "$CODEX_TEST_IPC_NAMESPACE"
++test "$(readlink /proc/self/ns/net)" != "$CODEX_TEST_NET_NAMESPACE"
++while read -r key value rest; do
++    case "$key" in
++        CapEff:) test "$value" = 0000000000000000 ;;
++        NoNewPrivs:) test "$value" = 1 ;;
++        Seccomp:) test "$value" = 2 ;;
++    esac
++done < /proc/self/status
+ printf 'legacy proc fallback\n'
+ "#;
+ 
+@@ -385,6 +399,10 @@ printf 'legacy proc fallback\n'
+             "CODEX_TEST_REAL_BWRAP".to_string(),
+             system_bwrap.display().to_string(),
+         );
++        env.insert(
++            "CODEX_TEST_PROC_MOUNT_PATH".to_string(),
++            proc_path.to_string(),
++        );
+         env.insert(
+             "CODEX_TEST_PID_NAMESPACE".to_string(),
+             pid_namespace.display().to_string(),
+diff --git a/codex-rs/rollout/src/lib.rs b/codex-rs/rollout/src/lib.rs
+index 6a068945ebab3b04919cd0d36c7a4a7b0ab1055d..01ca1096a46647a0da80ec4b7be4c5fa5bd0535b 100644
+--- a/codex-rs/rollout/src/lib.rs
++++ b/codex-rs/rollout/src/lib.rs
+@@ -144,6 +144,7 @@ pub use persistence_metrics::RolloutPersistenceBatchMeasurement;
+ pub use persistence_metrics::RolloutPersistenceTelemetry;
+ pub use persistence_metrics::measure_and_filter_rollout_items;
+ pub use policy::into_persisted_rollout_items;
++pub use policy::persisted_event_msg;
+ pub use policy::persisted_rollout_item;
+ pub use policy::persisted_rollout_items;
+ pub use policy::should_persist_response_item;
+diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
+index ea8a8838e9f1e6e444edd1e339a24c9f485015b3..074583491272453e76574467bc48ae5eb903d6df 100644
+--- a/codex-rs/rollout/src/policy.rs
++++ b/codex-rs/rollout/src/policy.rs
+@@ -125,7 +125,8 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
+     }
+ }
+ 
+-fn persisted_event_msg(
++/// Returns the authoritative durable representation of an event.
++pub fn persisted_event_msg(
+     ev: &EventMsg,
+     history_mode: ThreadHistoryMode,
+ ) -> Option<Cow<'_, EventMsg>> {
+@@ -233,7 +234,13 @@ fn persisted_item_completed_event<'a>(
+     history_mode: ThreadHistoryMode,
+ ) -> Option<Cow<'a, EventMsg>> {
+     match history_mode {
+-        ThreadHistoryMode::Legacy => {
++        // The SDK also reads execution completions from legacy in-memory histories.
++        ThreadHistoryMode::Legacy
++            if !matches!(
++                event.item,
++                TurnItem::CommandExecution(_) | TurnItem::McpToolCall(_) | TurnItem::FileChange(_)
++            ) =>
++        {
+             // Legacy rollouts keep only items with no lossless raw ResponseItem or legacy
+             // equivalent.
+             (matches!(
+@@ -248,7 +255,7 @@ fn persisted_item_completed_event<'a>(
+             ))
+             .then_some(Cow::Borrowed(ev))
+         }
+-        ThreadHistoryMode::Paginated => match &event.item {
++        ThreadHistoryMode::Legacy | ThreadHistoryMode::Paginated => match &event.item {
+             TurnItem::CommandExecution(CommandExecutionItem {
+                 aggregated_output: Some(aggregated_output),
+                 ..
+diff --git a/codex-rs/sandboxing/src/bwrap.rs b/codex-rs/sandboxing/src/bwrap.rs
+index 633487136abe00065ee0f30707573ceb67b04e5b..1823edd14fe0ad3e0f01561090e1acb9a8f0248b 100644
+--- a/codex-rs/sandboxing/src/bwrap.rs
++++ b/codex-rs/sandboxing/src/bwrap.rs
+@@ -166,7 +166,9 @@ fn is_user_namespace_failure(output: &Output) -> bool {
+ }
+ 
+ pub fn find_system_bwrap_in_path() -> Option<PathBuf> {
+-    let search_path = std::env::var_os("PATH")?;
++    // The SDK launcher keeps pre-sandbox lookup separate from the child PATH.
++    let search_path =
++        std::env::var_os("CODEX_SDK_BWRAP_SEARCH_PATH").or_else(|| std::env::var_os("PATH"))?;
+     let cwd = std::env::current_dir().ok()?;
+     find_system_bwrap_in_search_paths(std::env::split_paths(&search_path), &cwd)
+ }
+diff --git a/codex-rs/sandboxing/src/lib.rs b/codex-rs/sandboxing/src/lib.rs
+index 9e54454e3d272f0e3393b54b44ef7f5eed7fa918..248f79cf28b94caa4f2aef74552e11c02ff63370 100644
+--- a/codex-rs/sandboxing/src/lib.rs
++++ b/codex-rs/sandboxing/src/lib.rs
+@@ -3,6 +3,7 @@ mod bwrap;
+ mod denial;
+ pub mod landlock;
+ mod linux_pid_namespace;
++mod local_write_roots;
+ mod manager;
+ pub mod policy_transforms;
+ #[cfg(target_os = "macos")]
+@@ -25,6 +26,9 @@ pub use codex_windows_sandbox::WindowsSandboxProxySettingsMode;
+ pub use denial::is_likely_executor_managed_sandbox_denied;
+ pub use denial::is_likely_sandbox_denied;
+ pub use linux_pid_namespace::LinuxSandboxPidNamespace;
++pub use local_write_roots::LocalWriteRoots;
++#[cfg(target_os = "linux")]
++pub use local_write_roots::decode_mountinfo_path;
+ pub use manager::SandboxCommand;
+ pub use manager::SandboxDirectSpawnTransformRequest;
+ pub use manager::SandboxExecRequest;
+diff --git a/codex-rs/sandboxing/src/local_write_roots.rs b/codex-rs/sandboxing/src/local_write_roots.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c14243236326fe38da7c143d21153f7ff74346f7
+--- /dev/null
++++ b/codex-rs/sandboxing/src/local_write_roots.rs
+@@ -0,0 +1,618 @@
++use codex_utils_absolute_path::AbsolutePathBuf;
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++use std::collections::HashSet;
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++use std::fs;
++use std::io;
++#[cfg(target_os = "linux")]
++use std::os::fd::AsRawFd;
++#[cfg(target_os = "linux")]
++use std::os::unix::ffi::OsStringExt;
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++use std::os::unix::fs::MetadataExt;
++#[cfg(target_os = "linux")]
++use std::os::unix::fs::OpenOptionsExt;
++use std::path::Path;
++use std::path::PathBuf;
++
++/// Canonical local write grants, their filesystem identities, and Linux mounts.
++pub struct LocalWriteRoots<'a> {
++    roots: &'a [AbsolutePathBuf],
++    #[cfg(any(target_os = "linux", target_os = "macos"))]
++    physical: PhysicalWriteRoots,
++    #[cfg(target_os = "linux")]
++    mounts: WritableMounts,
++}
++
++impl<'a> LocalWriteRoots<'a> {
++    pub fn new(roots: &'a [AbsolutePathBuf]) -> io::Result<Self> {
++        #[cfg(target_os = "linux")]
++        let mounts = if roots.is_empty() {
++            WritableMounts::default()
++        } else {
++            WritableMounts::new(roots, &fs::read("/proc/self/mountinfo")?)?
++        };
++        Ok(Self {
++            roots,
++            #[cfg(any(target_os = "linux", target_os = "macos"))]
++            physical: PhysicalWriteRoots::new(roots)?,
++            #[cfg(target_os = "linux")]
++            mounts,
++        })
++    }
++
++    /// Includes alternate paths to the same filesystem entries and Linux mounts.
++    pub fn contains_entry(&self, path: &Path) -> io::Result<bool> {
++        if self
++            .roots
++            .iter()
++            .any(|root| path.starts_with(root.as_path()))
++        {
++            return Ok(true);
++        }
++        #[cfg(any(target_os = "linux", target_os = "macos"))]
++        if self.physical.contains_entry(path)? {
++            return Ok(true);
++        }
++        #[cfg(target_os = "linux")]
++        return self.mounts.contains_entry(path);
++        #[cfg(not(target_os = "linux"))]
++        Ok(false)
++    }
++
++    /// Detect ordinary hard links to resolved helper files in local write grants.
++    #[cfg(any(target_os = "linux", target_os = "macos"))]
++    pub fn contains_hard_link_to_any(&self, paths: &[PathBuf]) -> io::Result<bool> {
++        let mut linked_helpers = HashSet::new();
++        for path in paths {
++            let metadata = fs::symlink_metadata(path)?;
++            if metadata.is_file() && metadata.nlink() > 1 {
++                linked_helpers.insert((metadata.dev(), metadata.ino()));
++            }
++        }
++        if linked_helpers.is_empty() {
++            return Ok(false);
++        }
++
++        // A package manager may keep other links outside the grants. Walk the
++        // grants once for all multiply linked helpers and never follow symlinks.
++        let mut directories = Vec::new();
++        for root in self.roots {
++            if !self
++                .roots
++                .iter()
++                .any(|other| root != other && root.as_path().starts_with(other.as_path()))
++            {
++                directories.push((root.as_path(), root.as_path().to_path_buf()));
++            }
++        }
++        while let Some((root, directory)) = directories.pop() {
++            #[cfg(target_os = "linux")]
++            let (_directory_fd, entries) = read_helper_directory(root, &directory)?;
++            #[cfg(not(target_os = "linux"))]
++            let entries = fs::read_dir(&directory)?;
++            for entry in entries {
++                let entry = entry?;
++                let kind = entry.file_type()?;
++                if kind.is_dir() {
++                    directories.push((root, directory.join(entry.file_name())));
++                } else if kind.is_file() {
++                    let metadata = entry.metadata()?;
++                    if linked_helpers.contains(&(metadata.dev(), metadata.ino())) {
++                        return Ok(true);
++                    }
++                }
++            }
++        }
++        Ok(false)
++    }
++
++    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
++    pub fn contains_hard_link_to_any(&self, _paths: &[PathBuf]) -> io::Result<bool> {
++        Ok(false)
++    }
++
++    /// Includes physical ancestors of a grant and mounts below the protected path.
++    pub fn has_root_at_or_below(&self, path: &Path) -> io::Result<bool> {
++        if self
++            .roots
++            .iter()
++            .any(|root| root.as_path().starts_with(path))
++        {
++            return Ok(true);
++        }
++        #[cfg(any(target_os = "linux", target_os = "macos"))]
++        if self.physical.has_root_at_or_below(path)? {
++            return Ok(true);
++        }
++        #[cfg(target_os = "linux")]
++        return self.mounts.contains_descendant(path);
++        #[cfg(not(target_os = "linux"))]
++        Ok(false)
++    }
++}
++
++// A finite bind view can exceed PATH_MAX even when its original tree does not.
++// Keep the ordinary path walk fast; reopen only overlong paths one component at
++// a time. Retain the final descriptor until its ReadDir entries have been used.
++#[cfg(target_os = "linux")]
++fn read_helper_directory(
++    root: &Path,
++    directory: &Path,
++) -> io::Result<(Option<fs::File>, fs::ReadDir)> {
++    match fs::read_dir(directory) {
++        Ok(entries) => Ok((None, entries)),
++        Err(error) if error.raw_os_error() == Some(libc::ENAMETOOLONG) => {
++            let relative = directory.strip_prefix(root).map_err(io::Error::other)?;
++            // Preserve the existing grant-root lookup, including an explicit
++            // root alias. Descendants are still never followed through symlinks.
++            let mut opened = fs::File::open(root)?;
++            for component in relative {
++                let path =
++                    PathBuf::from(format!("/proc/self/fd/{}", opened.as_raw_fd())).join(component);
++                opened = fs::OpenOptions::new()
++                    .read(true)
++                    .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
++                    .open(path)?;
++            }
++            let entries = fs::read_dir(format!("/proc/self/fd/{}", opened.as_raw_fd()))?;
++            Ok((Some(opened), entries))
++        }
++        Err(error) => Err(error),
++    }
++}
++
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++type EntryIdentity = (u64, u64);
++
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++#[derive(Default)]
++struct PhysicalWriteRoots {
++    roots: HashSet<EntryIdentity>,
++    ancestors: HashSet<EntryIdentity>,
++}
++
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++impl PhysicalWriteRoots {
++    fn new(roots: &[AbsolutePathBuf]) -> io::Result<Self> {
++        let mut physical = Self::default();
++        for root in roots {
++            physical.roots.insert(write_root_identity(root.as_path())?);
++            for ancestor in root.as_path().ancestors().skip(1) {
++                physical.ancestors.extend(entry_identity(ancestor)?);
++            }
++        }
++        Ok(physical)
++    }
++
++    fn contains_entry(&self, path: &Path) -> io::Result<bool> {
++        if self.roots.is_empty() {
++            return Ok(false);
++        }
++        // An alternate spelling can hide a grant even when only an ancestor
++        // of the proposed path already exists.
++        for ancestor in path.ancestors() {
++            if entry_identity(ancestor)?.is_some_and(|identity| self.roots.contains(&identity)) {
++                return Ok(true);
++            }
++        }
++        Ok(false)
++    }
++
++    fn has_root_at_or_below(&self, path: &Path) -> io::Result<bool> {
++        if self.roots.is_empty() {
++            return Ok(false);
++        }
++        Ok(entry_identity(path)?.is_some_and(|identity| {
++            self.roots.contains(&identity) || self.ancestors.contains(&identity)
++        }))
++    }
++}
++
++#[cfg(target_os = "linux")]
++struct Mount {
++    destination: PathBuf,
++    // Pseudo filesystems can have a non-path root, such as nsfs "mnt:[inode]".
++    backing: Option<PathBuf>,
++}
++
++#[cfg(target_os = "linux")]
++impl Mount {
++    fn backing_path(&self, path: &Path) -> Option<PathBuf> {
++        let relative = path.strip_prefix(&self.destination).ok()?;
++        Some(self.backing.as_ref()?.join(relative))
++    }
++}
++
++#[cfg(target_os = "linux")]
++#[derive(Eq, Hash, PartialEq)]
++struct BackingEntry {
++    visible: PathBuf,
++    backing: PathBuf,
++    identity: EntryIdentity,
++}
++
++#[cfg(target_os = "linux")]
++#[derive(Default)]
++struct WritableMounts {
++    mounts: Vec<Mount>,
++    identities: HashSet<EntryIdentity>,
++    backing_entries: HashSet<BackingEntry>,
++}
++
++#[cfg(target_os = "linux")]
++impl WritableMounts {
++    fn new(roots: &[AbsolutePathBuf], mountinfo: &[u8]) -> io::Result<Self> {
++        let mut grants = Self::default();
++        for line in mountinfo
++            .split(|&byte| byte == b'\n')
++            .filter(|line| !line.is_empty())
++        {
++            let mut fields = line.split(|&byte| byte == b' ').skip(3);
++            let (Some(backing), Some(destination)) = (fields.next(), fields.next()) else {
++                return Err(io::Error::other("invalid mountinfo entry"));
++            };
++            grants.mounts.push(Mount {
++                destination: decode_mountinfo_path(destination)?,
++                backing: backing
++                    .starts_with(b"/")
++                    .then(|| decode_mountinfo_path(backing))
++                    .transpose()?,
++            });
++        }
++        for root in roots {
++            grants.insert(root.as_path(), write_root_identity(root.as_path())?);
++        }
++        for index in 0..grants.mounts.len() {
++            let destination = &grants.mounts[index].destination;
++            if roots
++                .iter()
++                .any(|root| destination.starts_with(root.as_path()))
++                && let Some(identity) = entry_identity(destination)?
++            {
++                // Use the visible entry because mountinfo can also describe covered mounts.
++                grants.insert(&destination.clone(), identity);
++            }
++        }
++        Ok(grants)
++    }
++
++    fn insert(&mut self, path: &Path, identity: EntryIdentity) {
++        self.identities.insert(identity);
++        self.backing_entries
++            .extend(self.mounts.iter().filter_map(|mount| {
++                Some(BackingEntry {
++                    visible: path.to_path_buf(),
++                    backing: mount.backing_path(path)?,
++                    identity,
++                })
++            }));
++    }
++
++    fn contains_entry(&self, path: &Path) -> io::Result<bool> {
++        if self.identities.is_empty() {
++            return Ok(false);
++        }
++        let Some(identity) = entry_identity(path)? else {
++            return Ok(false);
++        };
++        if self.identities.contains(&identity) {
++            return Ok(true);
++        }
++        for mount in &self.mounts {
++            if let Some(backing) = mount.backing_path(path)
++                && self.contains_backing_path(&backing, identity)?
++            {
++                return Ok(true);
++            }
++        }
++        Ok(false)
++    }
++
++    fn contains_backing_path(&self, backing: &Path, identity: EntryIdentity) -> io::Result<bool> {
++        for entry in &self.backing_entries {
++            let Ok(relative) = backing.strip_prefix(&entry.backing) else {
++                continue;
++            };
++            // The protected path can be mounted from beneath a grant. Confirm the
++            // proposed writable name still exposes that inode without following a
++            // symlink out of the grant or through a covered mount.
++            let candidate = join_mount_relative(&entry.visible, relative);
++            if entry_identity(&candidate)? == Some(identity)
++                && fs::canonicalize(&candidate)? == candidate
++            {
++                return Ok(true);
++            }
++        }
++        Ok(false)
++    }
++
++    fn contains_descendant(&self, path: &Path) -> io::Result<bool> {
++        for mount in &self.mounts {
++            let (directory, backing) = if let Some(backing) = mount.backing_path(path) {
++                (path, backing)
++            } else if mount.destination.starts_with(path)
++                && let Some(backing) = &mount.backing
++            {
++                (mount.destination.as_path(), backing.clone())
++            } else {
++                continue;
++            };
++            if let Some(identity) = entry_identity(directory)?
++                && self.contains_backing_path(&backing, identity)?
++            {
++                return Ok(true);
++            }
++            for entry in &self.backing_entries {
++                // Mount roots propose a location. Stat the candidate to establish actual
++                // identity, including when a different mount covers the proposed path.
++                let Ok(relative) = entry.backing.strip_prefix(&backing) else {
++                    continue;
++                };
++                if entry_identity(&join_mount_relative(directory, relative))?
++                    == Some(entry.identity)
++                {
++                    return Ok(true);
++                }
++            }
++        }
++        Ok(false)
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn join_mount_relative(path: &Path, relative: &Path) -> PathBuf {
++    // Adding a slash to a file mount's own path makes it unstatable.
++    if relative.as_os_str().is_empty() {
++        path.to_path_buf()
++    } else {
++        path.join(relative)
++    }
++}
++
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++fn write_root_identity(path: &Path) -> io::Result<EntryIdentity> {
++    entry_identity(path)?
++        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "local writable root disappeared"))
++}
++
++#[cfg(any(target_os = "linux", target_os = "macos"))]
++fn entry_identity(path: &Path) -> io::Result<Option<EntryIdentity>> {
++    match fs::symlink_metadata(path) {
++        Ok(metadata) => Ok(Some((metadata.dev(), metadata.ino()))),
++        Err(error)
++            if matches!(
++                error.kind(),
++                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
++            ) =>
++        {
++            Ok(None)
++        }
++        Err(error) => Err(error),
++    }
++}
++
++#[cfg(target_os = "linux")]
++pub fn decode_mountinfo_path(encoded: &[u8]) -> io::Result<PathBuf> {
++    let mut decoded = Vec::new();
++    let mut bytes = encoded.iter().copied();
++    while let Some(byte) = bytes.next() {
++        decoded.push(if byte == b'\\' {
++            let digits: Vec<_> = bytes.by_ref().take(3).collect();
++            match digits.as_slice() {
++                b"040" => b' ',
++                b"011" => b'\t',
++                b"012" => b'\n',
++                b"134" => b'\\',
++                _ => return Err(io::Error::other("invalid mountinfo path escape")),
++            }
++        } else {
++            byte
++        });
++    }
++    let path = PathBuf::from(std::ffi::OsString::from_vec(decoded));
++    if !path.is_absolute() {
++        return Err(io::Error::other("mountinfo path is not absolute"));
++    }
++    Ok(path)
++}
++
++#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn requires_an_existing_grant_when_capturing_physical_identities() -> io::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let root = AbsolutePathBuf::from_absolute_path(temp.path().join("missing"))?;
++        let error = PhysicalWriteRoots::new(&[root])
++            .err()
++            .expect("grant identity must exist");
++        assert_eq!(error.kind(), io::ErrorKind::NotFound);
++        Ok(())
++    }
++
++    #[test]
++    fn alternate_directory_paths_include_actual_grant_ancestors_and_descendants() -> io::Result<()>
++    {
++        let temp = tempfile::tempdir()?;
++        let real = temp.path().join("real");
++        let root = real.join("workspace/grant");
++        let sibling = real.join("workspace/sibling");
++        fs::create_dir_all(&root)?;
++        fs::create_dir(&sibling)?;
++        fs::write(root.join("existing"), "local state")?;
++        let alias = temp.path().join("alias");
++        std::os::unix::fs::symlink(&real, &alias)?;
++        let alternate = alias.join("workspace");
++        let roots = [AbsolutePathBuf::from_absolute_path(&root)?];
++        let grants = LocalWriteRoots::new(&roots)?;
++
++        assert!(grants.contains_entry(&alternate.join("grant/existing"))?);
++        assert!(grants.contains_entry(&alternate.join("grant/missing/child"))?);
++        assert!(!grants.contains_entry(&alternate)?);
++        assert!(grants.has_root_at_or_below(&alternate)?);
++        assert!(grants.has_root_at_or_below(&alternate.join("grant"))?);
++        assert!(!grants.has_root_at_or_below(&alternate.join("grant/missing"))?);
++        assert!(!grants.contains_entry(&alternate.join("sibling"))?);
++        assert!(!grants.has_root_at_or_below(&alternate.join("sibling"))?);
++        Ok(())
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn hard_link_scan_handles_deep_directories_without_skipping_helpers() -> io::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let helper = temp.path().join("helper");
++        fs::write(&helper, "synthetic helper")?;
++        let store = temp.path().join("store");
++        fs::create_dir(&store)?;
++        fs::hard_link(&helper, store.join("store-entry"))?;
++        for (name, depth, width) in [("ordinary", 600, 1), ("overlong", 19, 240)] {
++            let workspace = temp.path().join(name);
++            fs::create_dir(&workspace)?;
++            let mut directory = fs::File::open(&workspace)?;
++            for _ in 0..depth {
++                let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
++                    .join("d".repeat(width));
++                fs::create_dir(&path)?;
++                directory = fs::File::open(path)?;
++            }
++            let deepest = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
++            std::os::unix::fs::symlink(&store, deepest.join("outside-store"))?;
++            let roots = [AbsolutePathBuf::from_absolute_path(&workspace)?];
++            let grants = LocalWriteRoots::new(&roots)?;
++            let helpers = [helper.clone()];
++            assert!(!grants.contains_hard_link_to_any(&helpers)?, "{name}");
++            fs::hard_link(&helper, deepest.join("helper-alias"))?;
++            assert!(grants.contains_hard_link_to_any(&helpers)?, "{name}");
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn ordinary_hard_link_to_a_helper_must_be_inside_a_grant() -> io::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let workspace = temp.path().join("workspace");
++        let nested = workspace.join("nested");
++        fs::create_dir_all(&nested)?;
++        let helper = temp.path().join("helper");
++        fs::write(&helper, "synthetic helper")?;
++        let store = temp.path().join("store");
++        fs::create_dir(&store)?;
++        fs::hard_link(&helper, store.join("store-entry"))?;
++        std::os::unix::fs::symlink(store, workspace.join("symlink"))?;
++
++        let roots = [AbsolutePathBuf::from_absolute_path(&workspace)?];
++        let grants = LocalWriteRoots::new(&roots)?;
++        let helpers = [helper];
++        assert!(!grants.contains_hard_link_to_any(&helpers)?);
++        fs::hard_link(&helpers[0], nested.join("helper-alias"))?;
++        assert!(grants.contains_hard_link_to_any(&helpers)?);
++        Ok(())
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn protected_mount_backed_by_a_child_of_a_write_grant() -> io::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let workspace = temp.path().join("workspace");
++        let source = workspace.join("source");
++        fs::create_dir_all(&source)?;
++        let protected = temp.path().join("protected");
++        fs::write(&protected, "synthetic bind target")?;
++        let alias = source.join("alias");
++        // A hard link supplies the same file identity without a privileged mount.
++        fs::hard_link(&protected, &alias)?;
++        let mountinfo = format!(
++            "3 1 0:1 / / rw - ext4 /dev/fixture rw\n7 3 0:1 {} {} rw - ext4 /dev/fixture rw\n",
++            alias.display(),
++            protected.display(),
++        );
++        let roots = [AbsolutePathBuf::from_absolute_path(&workspace)?];
++        let grants = LocalWriteRoots {
++            roots: &roots,
++            physical: PhysicalWriteRoots::new(&roots)?,
++            mounts: WritableMounts::new(&roots, mountinfo.as_bytes())?,
++        };
++
++        assert!(grants.contains_entry(&protected)?);
++        assert!(grants.has_root_at_or_below(&protected)?);
++
++        // Simulate a cover at the mount source with a different visible inode.
++        fs::remove_file(&alias)?;
++        fs::write(&alias, "covered by a different file")?;
++        assert!(!grants.contains_entry(&protected)?);
++        assert!(!grants.has_root_at_or_below(&protected)?);
++
++        // An intermediate symlink can resolve to the same inode outside the grant.
++        fs::remove_dir_all(&source)?;
++        let outside = temp.path().join("outside");
++        fs::create_dir(&outside)?;
++        fs::hard_link(&protected, outside.join("alias"))?;
++        std::os::unix::fs::symlink(outside, source)?;
++        assert!(!grants.contains_entry(&protected)?);
++        assert!(!grants.has_root_at_or_below(&protected)?);
++        Ok(())
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn nested_mount_exposes_the_helper_identity() -> io::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let workspace = temp.path().join("work space");
++        fs::create_dir(&workspace)?;
++        let protected = temp.path().join("protected");
++        fs::create_dir(&protected)?;
++        let helper = protected.join("helper");
++        fs::write(&helper, "synthetic helper")?;
++        let alias = workspace.join("mount");
++        // A hard link supplies the same file identity without a privileged mount.
++        fs::hard_link(&helper, &alias)?;
++        let sibling = temp.path().join("sibling");
++        fs::write(&sibling, "other file")?;
++        let mountinfo = format!(
++            "3 1 0:1 / / rw - ext4 /dev/fixture rw\n7 3 0:1 {} {} rw - ext4 /dev/fixture rw\n",
++            helper.display(),
++            alias.to_str().unwrap().replace(' ', "\\040")
++        );
++        let roots = [AbsolutePathBuf::from_absolute_path(&workspace)?];
++        let grants = LocalWriteRoots {
++            roots: &roots,
++            physical: PhysicalWriteRoots::new(&roots)?,
++            mounts: WritableMounts::new(&roots, mountinfo.as_bytes())?,
++        };
++        assert!(grants.contains_entry(&helper)?);
++        assert!(grants.has_root_at_or_below(&protected)?);
++        assert!(!grants.has_root_at_or_below(&sibling)?);
++        assert!(!grants.contains_entry(&sibling)?);
++        assert!(!grants.contains_entry(&temp.path().join("missing"))?);
++        Ok(())
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn aliases_of_the_same_file_include_a_mount_inside_the_protected_directory() -> io::Result<()> {
++        let temp = tempfile::tempdir()?;
++        let workspace = temp.path().join("workspace");
++        let protected = temp.path().join("protected");
++        fs::create_dir(&workspace)?;
++        fs::create_dir(&protected)?;
++        let backing = temp.path().join("backing");
++        fs::write(&backing, "synthetic protected state")?;
++        let protected_file = protected.join("state");
++        let writable_file = workspace.join("alias");
++        fs::hard_link(&backing, &protected_file)?;
++        fs::hard_link(&backing, &writable_file)?;
++        let mountinfo = format!(
++            "3 1 0:1 / / rw - ext4 /dev/fixture rw\n7 3 0:1 {0} {1} rw - ext4 /dev/fixture rw\n8 3 0:1 {0} {2} rw - ext4 /dev/fixture rw\n",
++            backing.display(),
++            protected_file.display(),
++            writable_file.display(),
++        );
++        let roots = [AbsolutePathBuf::from_absolute_path(&workspace)?];
++        let grants = WritableMounts::new(&roots, mountinfo.as_bytes())?;
++        assert!(grants.contains_descendant(&protected)?);
++        Ok(())
++    }
++}
+diff --git a/codex-rs/sandboxing/src/manager.rs b/codex-rs/sandboxing/src/manager.rs
+index 2bdcecfc525b19ebcd5b438d44e29741bbe9a939..5449a7cc3bf3ea547c21d24bfc31a61094228f49 100644
+--- a/codex-rs/sandboxing/src/manager.rs
++++ b/codex-rs/sandboxing/src/manager.rs
+@@ -296,6 +296,15 @@ impl SandboxManager {
+         self
+     }
+ 
++    /// Use the narrow Seatbelt defaults without additional application or scratch grants.
++    #[cfg(target_os = "macos")]
++    pub fn with_restricted_macos_process_sandbox(mut self, restricted: bool) -> Self {
++        if restricted {
++            self.seatbelt_profile = MacosSeatbeltProfile::FileSystemHelper;
++        }
++        self
++    }
++
+     /// Allows otherwise-authorized writable roots beneath the opted-in user home
+     /// to follow symlinks, including targets outside that home.
+     #[cfg(target_os = "macos")]
+diff --git a/codex-rs/utils/pty/src/process.rs b/codex-rs/utils/pty/src/process.rs
+index 5593450b89d0578d59f3ab74cb5cfcf625c908f6..b231c8104314baadc48c663fce10b81f311c2c2f 100644
+--- a/codex-rs/utils/pty/src/process.rs
++++ b/codex-rs/utils/pty/src/process.rs
+@@ -261,6 +261,16 @@ impl ProcessHandle {
+         {
+             handle.abort();
+         }
++        #[cfg(unix)]
++        {
++            // Closing the owned master also releases terminal readers outside the child group.
++            let handles = self
++                ._pty_handles
++                .lock()
++                .ok()
++                .and_then(|mut handles| handles.take());
++            drop(handles);
++        }
+         if let Ok(mut h) = self.wait_handle.lock()
+             && let Some(handle) = h.take()
+         {
+@@ -479,3 +489,80 @@ pub fn spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess {
+         exit_rx: exit_rx_out,
+     }
+ }
++
++#[cfg(all(test, target_os = "linux"))]
++mod terminal_teardown_regression {
++    use std::collections::HashMap;
++    use std::os::fd::AsRawFd;
++    use std::time::Duration;
++
++    async fn lock_is_released(path: &std::path::Path, duration: Duration) -> bool {
++        let file = std::fs::OpenOptions::new()
++            .read(true)
++            .write(true)
++            .open(path)
++            .unwrap();
++        let deadline = tokio::time::Instant::now() + duration;
++        loop {
++            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
++                unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
++                return true;
++            }
++            if tokio::time::Instant::now() >= deadline {
++                return false;
++            }
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    }
++
++    #[tokio::test]
++    async fn hard_terminate_closes_retained_terminal_for_detached_reader() -> anyhow::Result<()> {
++        let directory = tempfile::tempdir()?;
++        let lock = directory.path().join("terminal.lock");
++        let ready = directory.path().join("ready");
++        let env = HashMap::from([
++            ("SHELL".to_owned(), "/bin/bash".to_owned()),
++            ("LOCK_PATH".to_owned(), lock.to_string_lossy().into_owned()),
++            (
++                "READY_PATH".to_owned(),
++                ready.to_string_lossy().into_owned(),
++            ),
++        ]);
++        let command = r#"/usr/bin/setsid /usr/bin/timeout --signal=KILL 8s /bin/bash -c 'set -e; exec 3>"$LOCK_PATH"; /usr/bin/flock -n 3; printf ready > "$READY_PATH"; read -r line' <&0 & wait"#;
++        let spawned = crate::spawn_pty_process(
++            "/bin/bash",
++            &["-c".to_owned(), command.to_owned()],
++            directory.path(),
++            &env,
++            &None,
++            crate::TerminalSize::default(),
++            crate::ChildFds::Attached(&[]),
++        )
++        .await?;
++        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
++        while !ready.exists() && tokio::time::Instant::now() < deadline {
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++        let entered = ready.exists();
++        let held = entered && !lock_is_released(&lock, Duration::from_millis(20)).await;
++        spawned.session.terminate();
++        let released = entered && lock_is_released(&lock, Duration::from_secs(1)).await;
++        // Keep the ProcessHandle alive for the regression. Cleanup owns only this PTY;
++        // the child also has an independent bounded lifetime if terminal hangup fails.
++        drop(spawned.session);
++        let cleaned = !entered || lock_is_released(&lock, Duration::from_secs(9)).await;
++        let exit = tokio::time::timeout(Duration::from_secs(2), spawned.exit_rx).await;
++        assert!(entered, "reader did not enter");
++        assert!(
++            held,
++            "fixture reader did not hold its lock before termination"
++        );
++        exit??;
++        assert!(cleaned, "fixture reader retained its lock after cleanup");
++        assert!(
++            released,
++            "hard termination retained the owned PTY master and blocked the reader"
++        );
++        Ok(())
++    }
++}

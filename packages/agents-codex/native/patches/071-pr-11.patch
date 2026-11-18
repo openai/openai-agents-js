@@ -1,0 +1,2311 @@
+diff --git a/codex-rs/app-server/src/request_processors/feedback_processor.rs b/codex-rs/app-server/src/request_processors/feedback_processor.rs
+index 15aa393134cd62801d3f3ffd324ec9a70b3f9ff2..edc9ebb7bc33f7323bee411362abec6c3a96095a 100644
+--- a/codex-rs/app-server/src/request_processors/feedback_processor.rs
++++ b/codex-rs/app-server/src/request_processors/feedback_processor.rs
+@@ -758,6 +758,8 @@ mod tests {
+                 timestamp: "2026-07-24T00:00:01Z".to_string(),
+                 ordinal: None,
+                 item: RolloutItem::TurnContext(TurnContextItem {
++                    sdk_model_override: None,
++                    sdk_model_settings_override: None,
+                     sdk_receipt: None,
+                     turn_id: Some((*turn_id).to_string()),
+                     root_turn_id: None,
+diff --git a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
+index a7011b9021d39ef58d261e6fac546e3ffbf2392b..b6bf3d5b1229e9544be68d97a477807f81595de8 100644
+--- a/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
++++ b/codex-rs/app-server/src/request_processors/persisted_resume_settings_tests.rs
+@@ -65,6 +65,8 @@ fn turn_context_item(
+     active_permission_profile: Option<ActivePermissionProfile>,
+ ) -> RolloutItem {
+     RolloutItem::TurnContext(TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_id.to_string()),
+         root_turn_id: None,
+diff --git a/codex-rs/app-server/src/request_processors/turn_processor.rs b/codex-rs/app-server/src/request_processors/turn_processor.rs
+index 75606be316fb721a80ccc7880fe035922cc5d41e..abcdab1bdfcc6b83bb0c9e67940444e55d7a925e 100644
+--- a/codex-rs/app-server/src/request_processors/turn_processor.rs
++++ b/codex-rs/app-server/src/request_processors/turn_processor.rs
+@@ -1156,6 +1156,11 @@ impl TurnRequestProcessor {
+                         None,
+                         Some(AnalyticsJsonRpcError::Input(InputError::Empty)),
+                     ),
++                    NotSubmittedReason::ActiveTurnModelOverrideMismatch => (
++                        "active turn uses a different model override".to_string(),
++                        None,
++                        None,
++                    ),
+                     NotSubmittedReason::ActiveTurnOutputSchemaMismatch => (
+                         "active turn uses a different output schema".to_string(),
+                         None,
+diff --git a/codex-rs/codex-api/src/endpoint/responses_websocket.rs b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+index a4b3f92fadc344afd0bc1c79a56f3f6f941c061d..756d274ca56cf905ac778c2c3ed4337f6269fc9e 100644
+--- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
++++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
+@@ -260,18 +260,37 @@ impl ResponsesWebsocketConnection {
+             .is_none_or(|stream| stream.pump_task.is_finished())
+     }
+ 
++    pub async fn stream_request(
++        &self,
++        request: ResponsesWsRequest<'_>,
++        connection_reused: bool,
++        turn_state: Option<Arc<OnceLock<String>>>,
++        observe_raw_provider_events: bool,
++    ) -> Result<ResponseStream, ApiError> {
++        self.stream_request_with_observer(
++            request,
++            connection_reused,
++            turn_state,
++            observe_raw_provider_events,
++            None,
++        )
++        .await
++    }
++
++    /// Captures a content-free send observer into this exact request's producer.
+     #[instrument(
+         name = "responses_websocket.stream_request",
+         level = "info",
+         skip_all,
+         fields(transport = "responses_websocket", api.path = "/responses")
+     )]
+-    pub async fn stream_request(
++    pub async fn stream_request_with_observer(
+         &self,
+         request: ResponsesWsRequest<'_>,
+         connection_reused: bool,
+         turn_state: Option<Arc<OnceLock<String>>>,
+         observe_raw_provider_events: bool,
++        observer: Option<Arc<dyn Fn() + Send + Sync>>,
+     ) -> Result<ResponseStream, ApiError> {
+         let (tx_event, rx_event) =
+             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
+@@ -363,6 +382,7 @@ impl ResponsesWebsocketConnection {
+                             &timing_log_context,
+                             rx_interrupt,
+                             observe_raw_provider_events && !timing_log_context.warmup,
++                            observer,
+                         ) => result,
+                         _ = &mut stopped => Err(ApiError::Stream("local response invocation stopped".into())),
+                         _ = tx_event.closed() => Err(ApiError::Stream(
+@@ -786,9 +806,13 @@ async fn run_websocket_response_stream(
+     timing_log_context: &ResponsesWebsocketTimingLogContext,
+     interrupt: oneshot::Receiver<()>,
+     observe_raw_provider_events: bool,
++    observer: Option<Arc<dyn Fn() + Send + Sync>>,
+ ) -> Result<(), ApiError> {
+     let mut last_server_model: Option<String> = None;
+     let mut safety_buffering_treatment = SafetyBufferingTreatment::default();
++    if let Some(observer) = observer {
++        observer();
++    }
+     send_websocket_request(
+         ws_stream,
+         request_text,
+@@ -1508,6 +1532,7 @@ mod tests {
+             &context,
+             rx_interrupt,
+             /*observe_raw_provider_events*/ false,
++            None,
+         )
+         .await
+         .unwrap_err();
+@@ -1649,6 +1674,7 @@ mod tests {
+                 &context,
+                 rx_interrupt,
+                 false,
++                None,
+             )
+             .await
+             .unwrap_err();
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index 3bf1797b2f936e8300f73daa51054c4f0950ac06..4c856bcd59d644c20ef23299c13cfb61b354f416 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -111,9 +111,9 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool
+                 call_id: Some(_), ..
+             }
+             | ResponseItem::ApplyPatchCall { .. }
+-        | ResponseItem::ComputerCall { .. }
++            | ResponseItem::ComputerCall { .. }
+             | ResponseItem::ApplyPatchCallOutput { .. }
+-        | ResponseItem::ComputerCallOutput { .. }
++            | ResponseItem::ComputerCallOutput { .. }
+             | ResponseItem::CustomToolCall { .. }
+             | ResponseItem::CustomToolCallOutput { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+@@ -661,12 +661,14 @@ impl LocalAgentControl {
+                 .shared_thread_instructions_provider
+                 .get()
+                 .cloned();
+-            (user.is_some() || user_appendix.is_some() || thread_provider.is_some()).then_some(SessionInstructions {
+-                user,
+-                user_appendix,
+-                thread_provider,
+-                ..Default::default()
+-            })
++            (user.is_some() || user_appendix.is_some() || thread_provider.is_some()).then_some(
++                SessionInstructions {
++                    user,
++                    user_appendix,
++                    thread_provider,
++                    ..Default::default()
++                },
++            )
+         };
+         // Reserving a slot can evict an idle nested parent. Capture its instructions
+         // alongside its authority so the child does not depend on a later live lookup.
+@@ -976,6 +978,14 @@ impl LocalAgentControl {
+         let durability_wait = durability_wait_started_at.elapsed();
+ 
+         let start_options = TurnStartOptions {
++            model_settings_override: options
++                .spawning_source
++                .as_ref()
++                .and_then(|source| source.step.settings.model_settings_override.clone()),
++            model_override: options
++                .spawning_source
++                .as_ref()
++                .and_then(|source| source.step.settings.model_override.clone()),
+             parent_turn_id: options.parent_turn_id,
+             turn_trigger: options.turn_trigger,
+             root_turn_id: options.root_turn_id,
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index fe04357e8c20cb6ac4a0a407e7cde8e2c14a8659..c1e999b8f3a2f04274ac867ea8d36d9c9bf2e25b 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -591,6 +591,7 @@ struct ModelResponsesTransport<F> {
+     direct: Option<codex_extension_api::ModelHttpStream>,
+     fallback: F,
+     defaults: ApiHeaderMap,
++    attempts: Option<crate::session::sdk_request_attempts::AttemptRoute>,
+ }
+ 
+ impl<F> codex_client::HttpTransport for ModelResponsesTransport<F>
+@@ -601,7 +602,13 @@ where
+         &self,
+         req: codex_client::Request,
+     ) -> std::result::Result<codex_client::Response, codex_client::TransportError> {
+-        codex_client::HttpTransport::execute(&(self.fallback)()?, req).await
++        let transport = (self.fallback)()?;
++        if self.direct.is_none() {
++            if let Some(attempts) = &self.attempts {
++                attempts.record(1);
++            }
++        }
++        codex_client::HttpTransport::execute(&transport, req).await
+     }
+ 
+     async fn stream(
+@@ -620,7 +627,11 @@ where
+             }
+             direct(req).await
+         } else {
+-            codex_client::HttpTransport::stream(&(self.fallback)()?, req).await
++            let transport = (self.fallback)()?;
++            if let Some(attempts) = &self.attempts {
++                attempts.record(0);
++            }
++            codex_client::HttpTransport::stream(&transport, req).await
+         }
+     }
+ }
+@@ -2289,6 +2300,10 @@ impl ModelClientSession {
+                         .map_err(|error| codex_client::TransportError::Build(error.to_string()))
+                 },
+                 defaults: codex_login::default_client::default_headers(),
++                attempts: responses_metadata
++                    .sdk_request_attempts
++                    .clone()
++                    .map(|route| route.with_http_mode(prompt.prefer_buffered_response)),
+             };
+             let request_auth_context = AuthRequestTelemetryContext::new(
+                 client_setup.auth.as_ref().map(CodexAuth::auth_mode),
+@@ -2371,7 +2386,7 @@ impl ModelClientSession {
+                 session_telemetry_for_request(session_telemetry, &request);
+             let observation_is_reviewer = is_guardian_reviewer(&responses_headers);
+             options.extra_headers.extend(responses_headers);
+-            let interceptors = crate::model_request::prepare(
++            let interceptors = crate::model_request::prepare_with_attempts(
+                 &self.client.request_contributors,
+                 &self.client.state.thread_id.to_string(),
+                 &model_info.slug,
+@@ -2379,6 +2394,13 @@ impl ModelClientSession {
+                 codex_extension_api::ModelRequestKind::Generation,
+                 &mut request.client_metadata,
+                 prompt.tool_admission.clone(),
++                responses_metadata
++                    .sdk_request_attempts
++                    .clone()
++                    .map(|route| {
++                        Arc::new(route.with_http_mode(prompt.prefer_buffered_response))
++                            as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
++                    }),
+             );
+             let inference_trace_attempt = inference_trace.start_attempt();
+             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
+@@ -2437,6 +2459,14 @@ impl ModelClientSession {
+                     .as_ref()
+                     .is_some_and(|input| input == &request.input))
+             .then(|| (request.model.clone(), client_setup.auth_owner_generation));
++            if interceptors
++                .iter()
++                .any(|interceptor| interceptor.produces_response())
++            {
++                if let Some(attempts) = &responses_metadata.sdk_request_attempts {
++                    attempts.borrowed();
++                }
++            }
+             let produced = crate::model_request::produce_response(&interceptors, &request)
+                 .await
+                 .map_err(CodexErr::Fatal)?;
+@@ -2633,6 +2663,12 @@ impl ModelClientSession {
+             } else {
+                 session_telemetry_for_request(session_telemetry, &request)
+             };
++            let private_response_route =
++                self.client.request_contributors.iter().any(|contributor| {
++                    contributor
++                        .http_stream(&client_setup.api_provider.url_for_path("/responses"))
++                        .is_some()
++                });
+             match self
+                 .websocket_connection(WebsocketConnectParams {
+                     session_telemetry,
+@@ -2782,7 +2818,7 @@ impl ModelClientSession {
+                 client_setup.auth.as_ref(),
+                 &responses_headers,
+             );
+-            let interceptors = crate::model_request::prepare(
++            let interceptors = crate::model_request::prepare_with_attempts(
+                 &self.client.request_contributors,
+                 &self.client.state.thread_id.to_string(),
+                 &model_info.slug,
+@@ -2794,6 +2830,13 @@ impl ModelClientSession {
+                 },
+                 &mut ws_payload.client_metadata,
+                 prompt.tool_admission.clone(),
++                responses_metadata
++                    .sdk_request_attempts
++                    .clone()
++                    .map(|route| {
++                        Arc::new(route)
++                            as Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>
++                    }),
+             );
+             let mut ws_request = ResponsesWsRequest::ResponseCreate(ws_payload);
+             stamp_ws_stream_request_start_ms(&mut ws_request);
+@@ -2847,12 +2890,18 @@ impl ModelClientSession {
+                     codex_extension_api::ModelRequestTransport::Websocket,
+                 )
+             };
++            let observer = responses_metadata
++                .sdk_request_attempts
++                .clone()
++                .filter(|_| !private_response_route)
++                .map(|route| Arc::new(move || route.record(2)) as Arc<dyn Fn() + Send + Sync>);
+             let stream_result = websocket_connection
+-                .stream_request(
++                .stream_request_with_observer(
+                     ws_request,
+                     self.websocket_session.connection_reused(),
+                     Some(Arc::clone(&self.turn_state)),
+                     prompt.observe_raw_provider_events,
++                    observer,
+                 )
+                 .await;
+             if let Some(original_item_ids) = original_item_ids {
+diff --git a/codex-rs/core/src/client_tests.rs b/codex-rs/core/src/client_tests.rs
+index 318a8b6ec5661d37592caff14abaf8ab1019edfe..e3880c70d02cdefe6ce051af6c44aac87a10ba30 100644
+--- a/codex-rs/core/src/client_tests.rs
++++ b/codex-rs/core/src/client_tests.rs
+@@ -2831,6 +2831,7 @@ mod direct_model_http_transport {
+             http::HeaderValue::from_bytes(b"\xe9").unwrap(),
+         );
+         let transport = super::super::ModelResponsesTransport {
++            attempts: None,
+             direct: Some(Arc::new(move |request| {
+                 *target.lock().unwrap() = Some(request.headers);
+                 Box::pin(async { Err(TransportError::Build("captured".into())) })
+@@ -2891,6 +2892,7 @@ mod direct_model_http_transport {
+         let physical = codex_client::ReqwestTransport::from_http_client(physical);
+         let constructions = AtomicUsize::new(0);
+         let transport = super::super::ModelResponsesTransport {
++            attempts: None,
+             direct: Some(Arc::new(|_| panic!("execute invoked streaming callback"))),
+             fallback: || {
+                 constructions.fetch_add(1, Ordering::SeqCst);
+diff --git a/codex-rs/core/src/codex_delegate.rs b/codex-rs/core/src/codex_delegate.rs
+index 28b5147d4938ad7f1bffb15c720b4cb2f078d8c2..609d5a6b082f0427b04092deddc15a3ec2c3cdb6 100644
+--- a/codex-rs/core/src/codex_delegate.rs
++++ b/codex-rs/core/src/codex_delegate.rs
+@@ -227,6 +227,7 @@ pub(crate) async fn run_codex_thread_one_shot(
+     // requiring the caller to cancel the parent token.
+     let child_cancel = cancel_token.child_token();
+     let parent_turn_id = parent_ctx.sub_id.clone();
++    let model_override = parent_ctx.model_override().map(str::to_owned);
+     let parent_environments = parent_ctx.initial_environments.clone();
+     let root_turn_id = parent_ctx.turn_metadata_state.root_turn_id();
+     let (session, io) = Box::pin(run_codex_thread_interactive(
+@@ -249,6 +250,7 @@ pub(crate) async fn run_codex_thread_one_shot(
+     let submission = io
+         .submit_turn_input(
+             TurnInputRequest::user_input(input).on_start(TurnStartOptions {
++                model_override,
+                 final_output_json_schema,
+                 service_tier: None,
+                 parent_turn_id: Some(parent_turn_id),
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index e4ea8192a85af05857d68fe1385b69a9dfb1ab0f..a551862f969633811ef15a12ba753397e21e9769 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -333,6 +333,14 @@ impl CodexThread {
+             .is_elicitation_pending(server, token)
+     }
+ 
++    /// Starts content-free send counting for one owned SDK native turn.
++    pub fn sdk_start_request_attempts(&self) -> crate::SdkRequestAttemptsLink {
++        let capture = crate::session::sdk_request_attempts::SdkRequestAttempts::default();
++        let link = capture.child_link();
++        self.thread_extension_data().insert(capture);
++        link
++    }
++
+     /// Starts ephemeral provider usage capture for one owned SDK run.
+     pub fn sdk_start_raw_usage(&self) -> crate::SdkRawUsageLink {
+         let capture = crate::session::sdk_raw_usage::SdkRawUsage::default();
+@@ -557,6 +565,8 @@ impl CodexThread {
+             turn_extension_init,
+         } = request.into();
+         let RecoverTurnRequest {
++            model_override,
++            model_settings_override,
+             turn_id,
+             thread_settings,
+             trace,
+@@ -570,6 +580,8 @@ impl CodexThread {
+             .filter(|context| context.turn_id.as_deref() == Some(turn_id.as_str()))
+             .and_then(|context| context.root_turn_id);
+         let start_options = TurnStartOptions {
++            model_override,
++            model_settings_override,
+             cyber_access_program,
+             final_output_json_schema,
+             root_turn_id,
+@@ -1125,11 +1137,9 @@ impl CodexThread {
+ 
+         let turn_context = self.response_item_injection_context().await?;
+         if let Some(turn_id) = restored_turn_id {
+-            turn_context
+-                .extension_data
+-                .insert(crate::session::sdk_produced_items::RestoredSdkTurn(
+-                    turn_id.to_owned(),
+-                ));
++            turn_context.extension_data.insert(
++                crate::session::sdk_produced_items::RestoredSdkTurn(turn_id.to_owned()),
++            );
+         }
+         self.session
+             .inject_annotated_response_items(items, turn_context.as_ref())
+@@ -1173,7 +1183,7 @@ impl CodexThread {
+     #[doc(hidden)]
+     pub async fn inject_response_items_for_initialization(
+         &self,
+-        items: Vec<ResponseItem>,
++        items: Vec<ResponseItemEnvelope>,
+     ) -> CodexResult<Vec<ResponseItem>> {
+         if items.is_empty() {
+             return Err(CodexErr::InvalidRequest("items must not be empty".into()));
+diff --git a/codex-rs/core/src/context_manager/history_tests.rs b/codex-rs/core/src/context_manager/history_tests.rs
+index 7d0f84c2e04411d1cfac0e31999099b447f51978..7acab46c78535983c84d8f3f2c28b1fe4653bd21 100644
+--- a/codex-rs/core/src/context_manager/history_tests.rs
++++ b/codex-rs/core/src/context_manager/history_tests.rs
+@@ -708,6 +708,8 @@ fn developer_msg_with_fragments(texts: &[&str]) -> ResponseItem {
+ 
+ fn reference_context_item() -> TurnContextItem {
+     TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some("reference-turn".to_string()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/src/lib.rs b/codex-rs/core/src/lib.rs
+index c0b3e2720f6c1a7896cdee2203c281c8f3e72606..02e461740e08cdb8cae4d878c8faca7cea21b38e 100644
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -70,6 +70,7 @@ pub use codex_thread::GuardianRootSnapshot;
+ pub use codex_thread::ThreadConfigSnapshot;
+ pub use owned_question::OwnedQuestion;
+ pub use session::sdk_raw_usage::SdkRawUsageLink;
++pub use session::sdk_request_attempts::SdkRequestAttemptsLink;
+ pub use session::turn_context::TurnContext;
+ pub use thread_startup_metadata::ThreadStartupMetadata;
+ mod agent;
+diff --git a/codex-rs/core/src/model_request.rs b/codex-rs/core/src/model_request.rs
+index 9976e4d28f15c2d73753e1114a1a8df13a10f67f..b0bc5c43b302db6d2646329a3d61a790ddcb5a50 100644
+--- a/codex-rs/core/src/model_request.rs
++++ b/codex-rs/core/src/model_request.rs
+@@ -31,12 +31,35 @@ pub(crate) fn prepare(
+     kind: ModelRequestKind,
+     metadata: &mut Option<HashMap<String, String>>,
+     tool_admission: Option<Arc<dyn ModelToolAdmission>>,
++) -> Vec<Box<dyn ModelResponseInterceptor>> {
++    prepare_with_attempts(
++        contributors,
++        thread_id,
++        model,
++        model_omitted,
++        kind,
++        metadata,
++        tool_admission,
++        None,
++    )
++}
++
++pub(crate) fn prepare_with_attempts(
++    contributors: &[Arc<dyn ModelRequestContributor>],
++    thread_id: &str,
++    model: &str,
++    model_omitted: bool,
++    kind: ModelRequestKind,
++    metadata: &mut Option<HashMap<String, String>>,
++    tool_admission: Option<Arc<dyn ModelToolAdmission>>,
++    attempts: Option<Arc<dyn codex_extension_api::ModelRequestAttemptsObserver>>,
+ ) -> Vec<Box<dyn ModelResponseInterceptor>> {
+     contributors
+         .iter()
+         .filter_map(|contributor| {
+             let mut additions = None;
+             let interceptor = contributor.request(ModelRequestInput {
++                attempts: attempts.clone(),
+                 kind,
+                 thread_id,
+                 client_metadata: &mut additions,
+diff --git a/codex-rs/core/src/responses_metadata.rs b/codex-rs/core/src/responses_metadata.rs
+index bfdeb3b40f524401e1a57879ab2335a45130f588..1f1cb3d0d1d790fbc8d63f0d50114597c3ee2889 100644
+--- a/codex-rs/core/src/responses_metadata.rs
++++ b/codex-rs/core/src/responses_metadata.rs
+@@ -229,6 +229,7 @@ pub(crate) enum TurnToolSource {
+ /// truth.
+ #[derive(Clone, Debug)]
+ pub struct CodexResponsesMetadata {
++    pub(crate) sdk_request_attempts: Option<crate::session::sdk_request_attempts::AttemptRoute>,
+     /// Guardian parent reference; projected only onto a Guardian request.
+     pub(crate) parent_response_id: Option<String>,
+     pub(crate) installation_id: String,
+@@ -275,6 +276,7 @@ impl CodexResponsesMetadata {
+         window_id: String,
+     ) -> Self {
+         Self {
++            sdk_request_attempts: None,
+             parent_response_id: None,
+             installation_id,
+             session_id,
+diff --git a/codex-rs/core/src/session/agent_profile.rs b/codex-rs/core/src/session/agent_profile.rs
+index 8861564bf158a7a3c6580f23ca6b1733da448db4..c15bf408838c472639d36c46ff077d9466eccca9 100644
+--- a/codex-rs/core/src/session/agent_profile.rs
++++ b/codex-rs/core/src/session/agent_profile.rs
+@@ -279,9 +279,10 @@ impl Session {
+             selected.request_controls = target.model.request_controls.clone();
+         }
+         let model = selected
+-            .resolve_model_info(
++            .resolve_model_info_with_override(
+                 self.services.models_manager.as_ref(),
+                 &opening.model_info_overrides,
++                current.model_override.as_deref(),
+             )
+             .await;
+         let mut destination = ResolvedStepSettings::new(
+@@ -290,6 +291,17 @@ impl Session {
+             self.features.enabled(codex_features::Feature::FastMode),
+             opening.model_info_overrides.context_window,
+         );
++        destination = destination
++            .with_model_override(current.model_override.clone())
++            .with_model_settings_override(
++                current.model_settings_override.clone(),
++                self.features.enabled(codex_features::Feature::FastMode),
++                opening.model_info_overrides.context_window,
++            );
++        destination
++            .request_controls()
++            .validate_profile(&destination.model_info)
++            .map_err(invalid)?;
+         destination.mcp_approvals_reviewer_override = current.mcp_approvals_reviewer_override;
+         let target = Arc::new(AgentProfile {
+             mcp: Arc::new(
+diff --git a/codex-rs/core/src/session/inject.rs b/codex-rs/core/src/session/inject.rs
+index 1f0734698adcaf9cb550987850b863a307921553..f8ccb24155a59e648011663e0203f3cabc14c216 100644
+--- a/codex-rs/core/src/session/inject.rs
++++ b/codex-rs/core/src/session/inject.rs
+@@ -116,22 +116,21 @@ impl Session {
+     pub(crate) async fn record_initial_response_items(
+         &self,
+         turn_context: &TurnContext,
+-        items: Vec<ResponseItem>,
++        items: Vec<ResponseItemEnvelope>,
+     ) -> codex_protocol::error::Result<Vec<ResponseItem>> {
+         if self.active_turn.lock().await.is_some() {
+             return Err(codex_protocol::error::CodexErr::InvalidRequest(
+                 "initial response items require an idle fresh initializer".into(),
+             ));
+         }
+-        let (prepared, image_preparations) = self
+-            .prepare_conversation_items_for_history(turn_context, turn_context.model_info(), &items)
++        let (envelopes, image_preparations) = self
++            .prepare_annotated_conversation_items_for_history(
++                turn_context,
++                turn_context.model_info(),
++                items,
++            )
+             .await;
+-        let prepared = prepared.into_owned();
+-        let envelopes = prepared
+-            .iter()
+-            .cloned()
+-            .map(ResponseItemEnvelope::new)
+-            .collect();
++        let prepared = envelopes.iter().map(|envelope| envelope.item.clone()).collect();
+         self.record_prepared_conversation_items(
+             turn_context,
+             turn_context.model_info(),
+diff --git a/codex-rs/core/src/session/inject_tests.rs b/codex-rs/core/src/session/inject_tests.rs
+index c9972f726c04ada246c767fc8080dcc53207dec8..27d4625b9c981d94aee0b34899e6495937236a57 100644
+--- a/codex-rs/core/src/session/inject_tests.rs
++++ b/codex-rs/core/src/session/inject_tests.rs
+@@ -407,7 +407,7 @@ async fn sdk_ordinary_compacted_resume_defers_originals_until_explicit_read() {
+     }
+     let input: ResponseItem = serde_json::from_value(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"after resume"}]})).unwrap();
+     let admitted = session
+-        .record_initial_response_items(&turn, vec![input])
++        .record_initial_response_items(&turn, vec![codex_history::ResponseItemEnvelope::new(input)])
+         .await
+         .unwrap();
+     originals.extend(
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index 54ade59a98eca9f8cf438787d1a273ee03470977..521625a120eb1c65614ebe44a18da54879ad5eed 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -269,6 +269,7 @@ mod rollout_budget;
+ mod rollout_reconstruction;
+ pub(crate) mod sdk_produced_items;
+ pub(crate) mod sdk_raw_usage;
++pub(crate) mod sdk_request_attempts;
+ #[allow(clippy::module_inception)]
+ pub(crate) mod session;
+ pub(crate) mod startup_prewarm;
+@@ -2052,6 +2053,24 @@ impl Session {
+                 return Ok(None);
+             }
+ 
++            if let Some(model) = &updates.model_override_for_turn {
++                let mut effective = SessionSettingsUpdate::default();
++                effective.step_settings.model = Some(model.clone());
++                // A scoped model cannot silently change the admitted approval authority.
++                effective.step_settings.approvals_reviewer =
++                    Some(updated.step_settings.approvals_reviewer);
++                self.apply_session_settings(&updated, &effective)?;
++            }
++
++            if let Some(settings) = &updates.model_settings_override_for_turn {
++                let mut effective = SessionSettingsUpdate::default();
++                effective.step_settings.apply_run_model_settings(settings);
++                effective.step_settings.model = updates.model_override_for_turn.clone();
++                effective.step_settings.approvals_reviewer =
++                    Some(updated.step_settings.approvals_reviewer);
++                self.apply_session_settings(&updated, &effective)?;
++            }
++
+             let previous_config = notify_config_contributors
+                 .then(|| self.build_effective_session_config(&state.session_configuration));
+             let previous_permission_profile = state.session_configuration.permission_profile();
+@@ -4145,10 +4164,17 @@ impl Session {
+                 selected.service_tier = root_service_tier;
+                 let mut inherited_settings = ResolvedStepSettings::new(
+                     Arc::new(selected),
+-                    Arc::clone(&settings.model_info),
++                    Arc::clone(&settings.catalog_model_info),
+                     self.features.enabled(Feature::FastMode),
+                     turn_context.config.model_context_window,
+                 );
++                inherited_settings = inherited_settings
++                    .with_model_override(settings.model_override.clone())
++                    .with_model_settings_override(
++                        settings.model_settings_override.clone(),
++                        self.features.enabled(Feature::FastMode),
++                        turn_context.config.model_context_window,
++                    );
+                 inherited_settings.agent_profile = settings.agent_profile.clone();
+                 inherited_settings.mcp_approvals_reviewer_override =
+                     settings.mcp_approvals_reviewer_override;
+@@ -4382,6 +4408,15 @@ impl Session {
+         {
+             Arc::make_mut(&mut settings).set_captured_named_tool_choice(choice);
+         }
++
++        if let Some(model) = &settings.model_override {
++            extension_data.insert(codex_extension_api::CapturedRunModelOverride(model.clone()));
++        }
++        if let Some(overrides) = &settings.model_settings_override {
++            extension_data.insert(codex_extension_api::CapturedRunModelSettingsOverride(
++                overrides.clone(),
++            ));
++        }
+         Ok(Arc::new(StepContext {
+             preempt: turn_context
+                 .config
+@@ -5680,7 +5715,7 @@ impl Session {
+                 .await;
+             if let Some(turn_state) = turn_state {
+                 turn_state.lock().await.token_usage_by_model.record(
+-                    settings.selected_collaboration_mode().model(),
++                    settings.request_model(),
+                     settings.telemetry(&turn_context.session_telemetry),
+                     token_usage,
+                 );
+diff --git a/codex-rs/core/src/session/rollout_reconstruction_tests.rs b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+index f374924b536cc6a0a3bb4543ac0704658f3d7e17..550f063b24809f824d743a2c7546b42c9fe1e87e 100644
+--- a/codex-rs/core/src/session/rollout_reconstruction_tests.rs
++++ b/codex-rs/core/src/session/rollout_reconstruction_tests.rs
+@@ -441,6 +441,8 @@ async fn record_initial_history_resumed_bare_turn_context_does_not_hydrate_previ
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -494,6 +496,8 @@ async fn record_initial_history_resumed_hydrates_previous_turn_settings_from_lif
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let mut previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -2027,6 +2031,8 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: Some("root-turn".to_string()),
+@@ -2133,6 +2139,8 @@ async fn record_initial_history_resumed_turn_context_after_compaction_reestablis
+         serde_json::to_value(session.reference_context_item().await)
+             .expect("serialize seeded reference context item"),
+         serde_json::to_value(Some(TurnContextItem {
++            sdk_model_override: None,
++            sdk_model_settings_override: None,
+             sdk_receipt: None,
+             turn_id: Some(turn_context.sub_id.clone()),
+             root_turn_id: Some("root-turn".to_string()),
+@@ -2170,6 +2178,8 @@ async fn record_initial_history_resumed_aborted_turn_without_id_clears_active_tu
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -2320,6 +2330,8 @@ async fn record_initial_history_resumed_unmatched_abort_preserves_active_turn_fo
+     let current_turn_id = "current-turn".to_string();
+     let unmatched_abort_turn_id = "other-turn".to_string();
+     let current_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(current_turn_id.clone()),
+         root_turn_id: None,
+@@ -2462,6 +2474,8 @@ async fn record_initial_history_resumed_trailing_incomplete_turn_compaction_clea
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+@@ -2653,6 +2667,8 @@ async fn record_initial_history_resumed_replaced_incomplete_compacted_turn_clear
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "previous-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/src/session/sdk_request_attempts.rs b/codex-rs/core/src/session/sdk_request_attempts.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..c52309e7c3876188e0e349e820006b9c73118667
+--- /dev/null
++++ b/codex-rs/core/src/session/sdk_request_attempts.rs
+@@ -0,0 +1,273 @@
++//! Content-free send-start counts for one owned SDK native turn.
++use std::sync::{Arc, Mutex, Weak};
++
++use codex_extension_api::ExtensionData;
++use codex_protocol::error::{CodexErr, Result as CodexResult};
++use serde::Serialize;
++
++const OPERATIONS: [&str; 3] = ["generation", "compaction", "internal"];
++const TRANSPORTS: [&str; 3] = ["http_sse", "http_json", "websocket"];
++
++#[derive(Debug, Default)]
++struct Capture {
++    turn_id: Option<String>,
++    root_turn_id: Option<String>,
++    counts: [[[u64; 3]; 3]; 2],
++    borrowed: bool,
++    overflowed: bool,
++    finished: bool,
++}
++
++#[derive(Clone, Debug)]
++enum Owner {
++    Root(Arc<Mutex<Capture>>),
++    Child(Weak<Mutex<Capture>>),
++}
++
++#[derive(Clone, Debug)]
++pub struct SdkRequestAttemptsLink(Arc<Mutex<Capture>>);
++
++impl SdkRequestAttemptsLink {
++    pub fn seal(&self, turn_id: &str) {
++        let mut capture = self
++            .0
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if capture.turn_id.as_deref().is_none_or(|id| id == turn_id) {
++            capture.turn_id.get_or_insert_with(|| turn_id.to_owned());
++            capture.finished = true;
++        }
++    }
++
++    pub fn read(&self, turn_id: &str) -> CodexResult<String> {
++        SdkRequestAttempts(Owner::Root(self.0.clone())).finish(turn_id)
++    }
++
++    pub fn attach(&self, store: &ExtensionData) {
++        store.insert(SdkRequestAttempts(Owner::Child(Arc::downgrade(&self.0))));
++    }
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct SdkRequestAttempts(Owner);
++
++impl Default for SdkRequestAttempts {
++    fn default() -> Self {
++        Self(Owner::Root(Arc::default()))
++    }
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct AttemptRoute {
++    capture: Weak<Mutex<Capture>>,
++    owner: usize,
++    operation: usize,
++    http_transport: usize,
++}
++
++impl codex_extension_api::ModelRequestAttemptsObserver for AttemptRoute {
++    fn send_started(&self, transport: codex_extension_api::ModelRequestTransport) {
++        self.record(match transport {
++            codex_extension_api::ModelRequestTransport::HttpSse => 0,
++            codex_extension_api::ModelRequestTransport::HttpJson => 1,
++            codex_extension_api::ModelRequestTransport::Websocket => 2,
++        });
++    }
++}
++
++impl AttemptRoute {
++    pub(crate) fn with_http_mode(mut self, buffered: bool) -> Self {
++        self.http_transport = usize::from(buffered);
++        self
++    }
++    pub(crate) fn record(&self, transport: usize) {
++        let Some(capture) = self.capture.upgrade() else {
++            return;
++        };
++        let mut capture = capture
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if capture.finished || capture.overflowed {
++            return;
++        }
++        let transport = if transport < 2 {
++            self.http_transport
++        } else {
++            transport
++        };
++        let count = &mut capture.counts[self.owner][self.operation][transport];
++        match count.checked_add(1) {
++            Some(next) => *count = next,
++            None => capture.overflowed = true,
++        }
++    }
++
++    pub(crate) fn borrowed(&self) {
++        if let Some(capture) = self.capture.upgrade() {
++            let mut capture = capture
++                .lock()
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            if !capture.finished {
++                capture.borrowed = true;
++            }
++        }
++    }
++}
++
++#[derive(Serialize)]
++struct Count {
++    owner: &'static str,
++    operation: &'static str,
++    transport: &'static str,
++    count: String,
++}
++
++#[derive(Serialize)]
++struct Report {
++    availability: &'static str,
++    counts: Vec<Count>,
++    borrowed_requests_unavailable: bool,
++}
++
++impl SdkRequestAttempts {
++    pub(crate) fn child_link(&self) -> SdkRequestAttemptsLink {
++        SdkRequestAttemptsLink(match &self.0 {
++            Owner::Root(capture) => capture.clone(),
++            Owner::Child(capture) => capture.upgrade().expect("request attempts root ended"),
++        })
++    }
++
++    /// Root identities come from native turn metadata, never passive events.
++    pub(crate) fn route(
++        &self,
++        turn_id: &str,
++        root_turn_id: &str,
++        operation: usize,
++    ) -> Option<AttemptRoute> {
++        let (capture, owner) = match &self.0 {
++            Owner::Root(capture) => (capture.clone(), 0),
++            Owner::Child(capture) => (capture.upgrade()?, 1),
++        };
++        let mut state = capture
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if state.finished {
++            return None;
++        }
++        if owner == 0 {
++            if state.turn_id.as_deref().is_some_and(|id| id != turn_id) {
++                return None;
++            }
++            state.turn_id.get_or_insert_with(|| turn_id.to_owned());
++            state
++                .root_turn_id
++                .get_or_insert_with(|| root_turn_id.to_owned());
++        }
++        if state.root_turn_id.as_deref() != Some(root_turn_id) {
++            return None;
++        }
++        Some(AttemptRoute {
++            capture: Arc::downgrade(&capture),
++            owner,
++            operation,
++            http_transport: 0,
++        })
++    }
++
++    pub(crate) fn finish(&self, turn_id: &str) -> CodexResult<String> {
++        let Owner::Root(capture) = &self.0 else {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempts belong to the root turn".into(),
++            ));
++        };
++        let mut capture = capture
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner);
++        if !capture.finished {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempts require native turn settlement".into(),
++            ));
++        }
++        if capture.turn_id.as_deref().is_some_and(|id| id != turn_id) {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempts belong to a different turn".into(),
++            ));
++        }
++        if capture.overflowed {
++            return Err(CodexErr::InvalidRequest(
++                "Request attempt counter overflow".into(),
++            ));
++        }
++        let mut counts = Vec::new();
++        for (owner, operations) in capture.counts.iter().enumerate() {
++            for (operation, transports) in operations.iter().enumerate() {
++                for (transport, count) in transports.iter().enumerate() {
++                    if *count != 0 {
++                        counts.push(Count {
++                            owner: if owner == 0 { "root" } else { "child" },
++                            operation: OPERATIONS[operation],
++                            transport: TRANSPORTS[transport],
++                            count: count.to_string(),
++                        });
++                    }
++                }
++            }
++        }
++        serde_json::to_string(&Report {
++            availability: if !capture.borrowed {
++                "complete"
++            } else if counts.is_empty() {
++                "unavailable"
++            } else {
++                "partial"
++            },
++            counts,
++            borrowed_requests_unavailable: capture.borrowed,
++        })
++        .map_err(|_| CodexErr::InvalidRequest("Unable to encode request attempts".into()))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::{Value, json};
++
++    #[test]
++    fn settlement_keeps_failures_and_rejects_foreign_descendants() {
++        let root = SdkRequestAttempts::default();
++        let route = root.route("turn", "turn", 0).unwrap();
++        route.record(0);
++        route.record(0);
++        let store = ExtensionData::new("child");
++        root.child_link().attach(&store);
++        let child = store.get::<SdkRequestAttempts>().unwrap();
++        assert!(child.route("child-turn", "older-root", 0).is_none());
++        child.route("child-turn", "turn", 1).unwrap().record(2);
++        route.borrowed();
++        root.child_link().seal("turn");
++        let report: Value = serde_json::from_str(&root.finish("turn").unwrap()).unwrap();
++        assert_eq!(
++            report,
++            json!({"availability":"partial", "counts":[
++            {"owner":"root","operation":"generation","transport":"http_sse","count":"2"},
++            {"owner":"child","operation":"compaction","transport":"websocket","count":"1"}
++        ], "borrowed_requests_unavailable":true})
++        );
++        route.record(0);
++        assert!(child.route("child-turn", "turn", 0).is_none());
++    }
++
++    #[test]
++    fn zero_and_borrowed_only_have_distinct_availability() {
++        let zero = SdkRequestAttempts::default();
++        zero.child_link().seal("turn");
++        let report: Value = serde_json::from_str(&zero.finish("turn").unwrap()).unwrap();
++        assert_eq!(report["availability"], "complete");
++        let borrowed = SdkRequestAttempts::default();
++        borrowed.route("turn", "turn", 0).unwrap().borrowed();
++        borrowed.child_link().seal("turn");
++        let report: Value = serde_json::from_str(&borrowed.finish("turn").unwrap()).unwrap();
++        assert_eq!(report["availability"], "unavailable");
++    }
++}
+diff --git a/codex-rs/core/src/session/session.rs b/codex-rs/core/src/session/session.rs
+index 3c42c643e25bdfce7979c5365c77e1af54a02618..f483f3fedda6a97a459002d0912ac018287695a5 100644
+--- a/codex-rs/core/src/session/session.rs
++++ b/codex-rs/core/src/session/session.rs
+@@ -620,6 +620,9 @@ pub(crate) struct SessionSettingsUpdate {
+     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
+     pub(crate) windows_sandbox_level: Option<WindowsSandboxLevel>,
+     pub(crate) service_tier_for_turn: Option<String>,
++    pub(crate) model_override_for_turn: Option<String>,
++    pub(crate) model_settings_override_for_turn:
++        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
+     pub(crate) app_server_client_name: Option<String>,
+     pub(crate) app_server_client_version: Option<String>,
+     pub(crate) disabled_plugin_ids: Option<Vec<String>>,
+@@ -744,7 +747,32 @@ impl Session {
+         window_number: u64,
+         context_window_id: uuid::Uuid,
+     ) -> CodexResponsesMetadata {
++        let sdk_request_attempts = self
++            .services
++            .thread_extension_data
++            .get::<crate::session::sdk_request_attempts::SdkRequestAttempts>()
++            .filter(|_| {
++                !matches!(
++                    responses_metadata.request_kind,
++                    Some(CodexResponsesRequestKind::Prewarm)
++                )
++            })
++            .and_then(|capture| {
++                capture.route(
++                    &turn_context.sub_id,
++                    responses_metadata
++                        .root_turn_id
++                        .as_deref()
++                        .unwrap_or(&turn_context.sub_id),
++                    match responses_metadata.request_kind {
++                        Some(CodexResponsesRequestKind::Turn) => 0,
++                        Some(CodexResponsesRequestKind::Compaction(_)) => 1,
++                        _ => 2,
++                    },
++                )
++            });
+         CodexResponsesMetadata {
++            sdk_request_attempts,
+             window_number: Some(window_number),
+             context_window_id: Some(context_window_id),
+             mcp_attribution: Some(self.services.executed_tool_calls.mcp_attribution_snapshot()),
+diff --git a/codex-rs/core/src/session/step_activation.rs b/codex-rs/core/src/session/step_activation.rs
+index cdd5312c39b04674f2beff0e8a8bf89e543306ec..75f69842d84ccddbc8d94b0999b4fcf8ac16420d 100644
+--- a/codex-rs/core/src/session/step_activation.rs
++++ b/codex-rs/core/src/session/step_activation.rs
+@@ -35,8 +35,7 @@ pub(super) fn check_legacy_turn_safety(
+ ) -> Result<(), String> {
+     let stack = &live_config.config_layer_stack;
+     let requirements = stack.requirements();
+-    let required_review = requirements
+-        .auto_review_required_for_model(destination.selected_collaboration_mode().model());
++    let required_review = requirements.auto_review_required_for_model(destination.request_model());
+     let admitted_required_review = turn_context
+         .config
+         .config_layer_stack
+@@ -59,9 +58,7 @@ pub(super) fn check_legacy_turn_safety(
+     {
+         return Err("the destination changes the admitted approval policy".to_string());
+     }
+-    if required_review
+-        != requirements
+-            .auto_review_required_for_model(current.selected_collaboration_mode().model())
++    if required_review != requirements.auto_review_required_for_model(current.request_model())
+         || required_review != admitted_required_review
+     {
+         return Err("the destination changes model-required approval authority".to_string());
+diff --git a/codex-rs/core/src/session/step_settings.rs b/codex-rs/core/src/session/step_settings.rs
+index d6a3875a202da407b93898efb2378edd73205549..e25dd13d1c8da753fc0e8b8250aab48955239074 100644
+--- a/codex-rs/core/src/session/step_settings.rs
++++ b/codex-rs/core/src/session/step_settings.rs
+@@ -49,7 +49,15 @@ pub(crate) struct ResolvedStepSettings {
+     /// Inputs for later sparse patches. Unset defaults and unsupported requested
+     /// tiers must not be reconstructed from the effective values below.
+     selected: Arc<StepSettings>,
++    effective: Arc<StepSettings>,
++    pub(crate) model_settings_override:
++        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
+     pub(crate) model_info: Arc<ModelInfo>,
++    /// Pinned metadata before profile/run request-control declarations.
++    pub(super) catalog_model_info: Arc<ModelInfo>,
++    /// Start-only run selection, separate from the profile defaults in `selected`.
++    pub(crate) model_override: Option<String>,
++    run_request_controls: Option<codex_protocol::model_request_controls::ModelRequestControls>,
+     /// Known or explicitly configured usable limit, captured with this model.
+     reported_context_window: Option<i64>,
+     /// Effective request summary: the configured value or the pinned model's default.
+@@ -69,6 +77,7 @@ impl ResolvedStepSettings {
+         fast_mode_enabled: bool,
+         context_window_override: Option<i64>,
+     ) -> Self {
++        let catalog_model_info = Arc::clone(&model_info);
+         if let Some(Some(prompt)) = &selected.request_controls.hosted_prompt {
+             let model = Arc::make_mut(&mut model_info);
+             model.use_responses_lite = false;
+@@ -108,8 +117,13 @@ impl ResolvedStepSettings {
+             };
+         Self {
+             agent_profile: None,
++            model_override: None,
++            run_request_controls: None,
++            effective: Arc::clone(&selected),
++            model_settings_override: None,
+             selected,
+             model_info,
++            catalog_model_info,
+             reported_context_window,
+             reasoning_summary,
+             service_tier,
+@@ -127,22 +141,121 @@ impl ResolvedStepSettings {
+         {
+             return;
+         }
+-        Arc::make_mut(&mut self.selected)
++        Arc::make_mut(&mut self.effective)
+             .request_controls
+-            .named_tool_choice = Some(Some(choice));
++            .named_tool_choice = Some(Some(choice.clone()));
++        if self
++            .model_settings_override
++            .as_ref()
++            .is_none_or(|settings| settings.request_controls.named_tool_choice.is_none())
++        {
++            Arc::make_mut(&mut self.selected)
++                .request_controls
++                .named_tool_choice = Some(Some(choice));
++        }
++        self.refresh_run_request_controls();
++    }
++
++    pub(crate) fn request_model(&self) -> &str {
++        self.model_override
++            .as_deref()
++            .unwrap_or_else(|| self.selected.collaboration_mode.model())
++    }
++
++    pub(super) fn with_model_override(mut self, model_override: Option<String>) -> Self {
++        self.model_override = model_override;
++        self.refresh_run_request_controls();
++        self
++    }
++
++    pub(super) fn with_model_settings_override(
++        self,
++        settings: Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
++        fast_mode_enabled: bool,
++        context_window_override: Option<i64>,
++    ) -> Self {
++        let Some(settings) = settings else {
++            return self;
++        };
++        let mut effective = self.selected.as_ref().clone();
++        if let Some(effort) = settings.effort.clone() {
++            effective.collaboration_mode =
++                effective
++                    .collaboration_mode
++                    .with_updates(None, Some(Some(effort)), None);
++        }
++        if let Some(summary) = settings.summary {
++            effective.reasoning_summary = Some(summary);
++        }
++        if let Some(tier) = &settings.service_tier {
++            effective.service_tier = Some(tier.as_ref().map_or_else(
++                || SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string(),
++                |tier| {
++                    ServiceTier::from_request_value(tier)
++                        .map_or_else(|| tier.clone(), |tier| tier.request_value().to_string())
++                },
++            ));
++        }
++        if let Some(choice) = settings.tool_choice {
++            effective.tool_choice = Some(choice);
++            effective.request_controls.named_tool_choice = Some(None);
++        }
++        if let Some(timeout) = settings.invocation_timeout_ms {
++            effective.invocation_timeout_ms = timeout;
++        }
++        effective
++            .request_controls
++            .apply_patch(&settings.request_controls);
++        let mut resolved = Self::new(
++            Arc::new(effective),
++            Arc::clone(&self.catalog_model_info),
++            fast_mode_enabled,
++            context_window_override,
++        );
++        resolved.selected = self.selected;
++        resolved.model_override = self.model_override;
++        resolved.model_settings_override = Some(settings);
++        resolved.agent_profile = self.agent_profile;
++        resolved.mcp_approvals_reviewer_override = self.mcp_approvals_reviewer_override;
++        resolved.refresh_run_request_controls();
++        resolved
+     }
+ 
+     pub(crate) fn request_controls(
+         &self,
+     ) -> &codex_protocol::model_request_controls::ModelRequestControls {
+-        &self.selected.request_controls
++        self.run_request_controls
++            .as_ref()
++            .unwrap_or(&self.effective.request_controls)
++    }
++
++    fn refresh_run_request_controls(&mut self) {
++        self.run_request_controls = self.model_override.as_ref().and_then(|_| {
++            let mut controls = self.effective.request_controls.clone();
++            let prompt = controls.hosted_prompt.as_mut()?.as_mut()?;
++            prompt.omit_model = false;
++            Some(controls)
++        });
+     }
+ 
+     pub(super) fn release_forced_tool_choice(&mut self) {
+         if self.tool_choice() == ToolChoice::Required {
+-            let selected = Arc::make_mut(&mut self.selected);
++            let selected = Arc::make_mut(&mut self.effective);
+             selected.tool_choice = Some(ToolChoice::Auto);
+             selected.request_controls.named_tool_choice = Some(None);
++            if self
++                .model_settings_override
++                .as_ref()
++                .is_none_or(|settings| {
++                    settings.tool_choice.is_none()
++                        && settings.request_controls.named_tool_choice.is_none()
++                })
++            {
++                let selected = Arc::make_mut(&mut self.selected);
++                selected.tool_choice = Some(ToolChoice::Auto);
++                selected.request_controls.named_tool_choice = Some(None);
++            }
++            self.refresh_run_request_controls();
+         }
+     }
+ 
+@@ -159,7 +272,7 @@ impl ResolvedStepSettings {
+     }
+ 
+     pub(crate) fn reasoning_effort(&self) -> Option<&ReasoningEffort> {
+-        self.selected
++        self.effective
+             .collaboration_mode
+             .settings
+             .reasoning_effort
+@@ -173,7 +286,7 @@ impl ResolvedStepSettings {
+     }
+ 
+     pub(crate) fn effective_collaboration_mode(&self) -> CollaborationMode {
+-        let mut collaboration_mode = self.selected.collaboration_mode.clone();
++        let mut collaboration_mode = self.effective.collaboration_mode.clone();
+         collaboration_mode.settings.model = self.model_info.slug.clone();
+         collaboration_mode
+     }
+@@ -196,11 +309,11 @@ impl ResolvedStepSettings {
+     }
+ 
+     pub(crate) fn invocation_timeout_ms(&self) -> Option<u32> {
+-        self.selected.invocation_timeout_ms
++        self.effective.invocation_timeout_ms
+     }
+ 
+     pub(crate) fn tool_choice(&self) -> ToolChoice {
+-        self.selected.tool_choice.unwrap_or_default()
++        self.effective.tool_choice.unwrap_or_default()
+     }
+ 
+     pub(crate) fn personality(&self) -> Option<Personality> {
+@@ -222,6 +335,7 @@ impl ResolvedStepSettings {
+         fast_mode_enabled: bool,
+     ) -> ConstraintResult<Self> {
+         let selected = self.selected.apply(update, constraints)?;
++        selected.validate_model_override(self.model_override.as_deref(), constraints)?;
+         let model_info = if selected.collaboration_mode.model()
+             == self.selected.collaboration_mode.model()
+             && selected.personality == self.selected.personality
+@@ -241,14 +355,24 @@ impl ResolvedStepSettings {
+                     .and_then(Option::as_ref)
+                     .map(|prompt| prompt.omit_model)
+         {
+-            Arc::clone(&self.model_info)
++            Arc::clone(&self.catalog_model_info)
+         } else {
+-            Arc::new(selected.resolve_model_info(models_manager, overrides).await)
++            Arc::new(
++                selected
++                    .resolve_model_info_with_override(
++                        models_manager,
++                        overrides,
++                        self.model_override.as_deref(),
++                    )
++                    .await,
++            )
+         };
+-        selected
+-            .request_controls
+-            .validate_profile(&model_info)
+-            .map_err(|reason| ConstraintError::InvalidRequestControls { reason })?;
++        if self.model_settings_override.is_none() {
++            selected
++                .request_controls
++                .validate_profile(&model_info)
++                .map_err(|reason| ConstraintError::InvalidRequestControls { reason })?;
++        }
+         let mut next = Self::new(
+             Arc::new(selected),
+             model_info,
+@@ -256,6 +380,15 @@ impl ResolvedStepSettings {
+             overrides.context_window,
+         );
+         next.agent_profile = self.agent_profile.clone();
++        next = next.with_model_override(self.model_override.clone());
++        next = next.with_model_settings_override(
++            self.model_settings_override.clone(),
++            fast_mode_enabled,
++            overrides.context_window,
++        );
++        next.request_controls()
++            .validate_profile(&next.model_info)
++            .map_err(|reason| ConstraintError::InvalidRequestControls { reason })?;
+         next.mcp_approvals_reviewer_override = update
+             .approvals_reviewer
+             .or(self.mcp_approvals_reviewer_override);
+@@ -272,6 +405,9 @@ impl ResolvedStepSettings {
+         // Sharing these checks would also make ordinary settings updates stricter
+         // after a requirements refresh.
+         self.selected.validate(constraints)?;
++        self.effective.validate(constraints)?;
++        self.selected
++            .validate_model_override(self.model_override.as_deref(), constraints)?;
+         constraints
+             .requirements
+             .approval_policy
+@@ -283,10 +419,8 @@ impl ResolvedStepSettings {
+     }
+ 
+     pub(super) fn telemetry(&self, base: &SessionTelemetry) -> SessionTelemetry {
+-        base.clone().with_model(
+-            self.selected.collaboration_mode.model(),
+-            &self.model_info.slug,
+-        )
++        base.clone()
++            .with_model(self.request_model(), &self.model_info.slug)
+     }
+ }
+ 
+@@ -349,6 +483,36 @@ pub(crate) struct StepSettingsUpdate {
+     pub(crate) approvals_reviewer: Option<ApprovalsReviewer>,
+ }
+ 
++impl StepSettingsUpdate {
++    pub(super) fn apply_run_model_settings(
++        &mut self,
++        settings: &codex_protocol::model_request_controls::RunModelSettingsOverride,
++    ) {
++        if let Some(effort) = settings.effort.clone() {
++            if let Some(mode) = &self.collaboration_mode {
++                self.collaboration_mode = Some(mode.with_updates(None, Some(Some(effort)), None));
++            } else {
++                self.effort = Some(Some(effort));
++            }
++        }
++        if settings.summary.is_some() {
++            self.reasoning_summary = settings.summary;
++        }
++        if settings.service_tier.is_some() {
++            self.service_tier = settings.service_tier.clone();
++        }
++        if settings.invocation_timeout_ms.is_some() {
++            self.invocation_timeout_ms = settings.invocation_timeout_ms;
++        }
++        if settings.tool_choice.is_some() {
++            self.tool_choice = settings.tool_choice;
++            self.request_controls.named_tool_choice = Some(None);
++        }
++        self.request_controls
++            .apply_patch(&settings.request_controls);
++    }
++}
++
+ /// Constraints used when applying and validating a candidate settings version.
+ /// Each caller supplies the permissions of the target environment selection.
+ pub(crate) struct StepSettingsConstraints<'a> {
+@@ -364,10 +528,23 @@ impl StepSettings {
+         &self,
+         models_manager: &dyn ModelsManager,
+         overrides: &ModelInfoOverrides,
++    ) -> ModelInfo {
++        self.resolve_model_info_with_override(models_manager, overrides, None)
++            .await
++    }
++
++    pub(super) async fn resolve_model_info_with_override(
++        &self,
++        models_manager: &dyn ModelsManager,
++        overrides: &ModelInfoOverrides,
++        model_override: Option<&str>,
+     ) -> ModelInfo {
+         let config = overrides.models_manager_config(self.personality);
+         models_manager
+-            .get_model_info(self.collaboration_mode.model(), &config)
++            .get_model_info(
++                model_override.unwrap_or_else(|| self.collaboration_mode.model()),
++                &config,
++            )
+             .await
+     }
+ 
+@@ -445,6 +622,24 @@ impl StepSettings {
+         Ok(next)
+     }
+ 
++    fn validate_model_override(
++        &self,
++        model: Option<&str>,
++        constraints: &StepSettingsConstraints<'_>,
++    ) -> ConstraintResult<()> {
++        if let Some(model) = model {
++            self.apply(
++                &StepSettingsUpdate {
++                    model: Some(model.to_owned()),
++                    approvals_reviewer: Some(self.approvals_reviewer),
++                    ..Default::default()
++                },
++                constraints,
++            )?;
++        }
++        Ok(())
++    }
++
+     /// Checks directly constructed settings or rechecks changed constraints.
+     pub(super) fn validate(
+         &self,
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index 5c8e0f0fe2bf25df14b8a4866d2a3d9fe2d827f3..57dc07abf45772fe0188101be162e0c77981a0e3 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -4503,6 +4503,8 @@ async fn record_initial_history_forked_hydrates_previous_turn_settings() {
+     let (session, turn_context) = make_session_and_context().await;
+     let previous_model = "forked-rollout-model";
+     let previous_context_item = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_context.sub_id.clone()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/src/session/turn_context.rs b/codex-rs/core/src/session/turn_context.rs
+index 72c97f203f7d10d5624d9c69afcb430dac53920b..1f3c2a308e35c9570bbf172a617905e026a25dbb 100644
+--- a/codex-rs/core/src/session/turn_context.rs
++++ b/codex-rs/core/src/session/turn_context.rs
+@@ -312,6 +312,9 @@ impl std::fmt::Debug for TurnEnvironment {
+ /// Request options for one turn, separate from persistent thread settings.
+ #[derive(Default)]
+ pub(crate) struct NewTurnContextOptions {
++    pub(crate) model_override: Option<String>,
++    pub(crate) model_settings_override:
++        Option<codex_protocol::model_request_controls::RunModelSettingsOverride>,
+     pub(crate) final_output_json_schema: Option<Value>,
+     pub(crate) cyber_access_program: Option<CyberAccessProgram>,
+ }
+@@ -530,6 +533,16 @@ impl TurnContext {
+ 
+     /// Legacy: returns the frozen initial-turn model metadata.
+     /// Step-scoped consumers should use their captured `StepContext::settings`.
++    pub(crate) fn model_settings_override(
++        &self,
++    ) -> Option<&codex_protocol::model_request_controls::RunModelSettingsOverride> {
++        self.initial_settings.model_settings_override.as_ref()
++    }
++
++    pub(crate) fn model_override(&self) -> Option<&str> {
++        self.initial_settings.model_override.as_deref()
++    }
++
+     pub(crate) fn model_info(&self) -> &Arc<ModelInfo> {
+         &self.initial_settings.model_info
+     }
+@@ -785,6 +798,7 @@ impl TurnContext {
+         model: String,
+         models_manager: &SharedModelsManager,
+     ) -> Self {
++        let model = self.model_override().map(str::to_owned).unwrap_or(model);
+         let mut config = (*self.config).clone();
+         config.model = Some(model.clone());
+         let model_info = models_manager
+@@ -832,7 +846,13 @@ impl TurnContext {
+                 config.features.enabled(Feature::FastMode),
+                 config.model_context_window,
+             )
+-            .with_agent_profile(self.next_step_settings.load().agent_profile.clone()),
++            .with_agent_profile(self.next_step_settings.load().agent_profile.clone())
++            .with_model_override(self.initial_settings.model_override.clone())
++            .with_model_settings_override(
++                self.initial_settings.model_settings_override.clone(),
++                config.features.enabled(Feature::FastMode),
++                config.model_context_window,
++            ),
+         );
+         config.service_tier = step_settings.service_tier.clone();
+         let session_telemetry = step_settings.telemetry(&self.session_telemetry);
+@@ -954,6 +974,8 @@ impl TurnContext {
+         let file_system_sandbox_policy =
+             self.non_legacy_file_system_sandbox_policy(&permission_profile, &sandbox_policy);
+         TurnContextItem {
++            sdk_model_override: self.initial_settings.model_override.clone(),
++            sdk_model_settings_override: self.initial_settings.model_settings_override.clone(),
+             sdk_receipt: None,
+             turn_id: Some(self.sub_id.clone()),
+             root_turn_id: self.turn_metadata_state.root_turn_id(),
+@@ -1318,10 +1340,12 @@ impl Session {
+     pub(super) async fn new_turn_with_sub_id_if(
+         &self,
+         sub_id: String,
+-        updates: SessionSettingsUpdate,
++        mut updates: SessionSettingsUpdate,
+         options: NewTurnContextOptions,
+         should_start: impl FnOnce(&SessionConfiguration, &SessionConfiguration) -> bool + Send,
+     ) -> CodexResult<Option<(Arc<TurnContext>, ThreadSettingsSnapshot)>> {
++        updates.model_override_for_turn = options.model_override.clone();
++        updates.model_settings_override_for_turn = options.model_settings_override.clone();
+         let service_tier_for_turn = updates.service_tier_for_turn.clone();
+         let commit = match self.update_settings_if(updates, should_start).await {
+             Ok(Some(commit)) => commit,
+@@ -1426,9 +1450,10 @@ impl Session {
+             .unwrap_or_else(|| session_configuration.permission_profile());
+         let model_info = session_configuration
+             .step_settings
+-            .resolve_model_info(
++            .resolve_model_info_with_override(
+                 self.services.models_manager.as_ref(),
+                 &session_configuration.model_info_overrides,
++                options.model_override.as_deref(),
+             )
+             .await;
+         let multi_agent_version = match build_mode {
+@@ -1489,7 +1514,13 @@ impl Session {
+                 self.features.enabled(Feature::FastMode),
+                 session_configuration.model_info_overrides.context_window,
+             )
+-            .with_agent_profile(session_configuration.agent_profile.clone()),
++            .with_agent_profile(session_configuration.agent_profile.clone())
++            .with_model_override(options.model_override.clone())
++            .with_model_settings_override(
++                options.model_settings_override.clone(),
++                self.features.enabled(Feature::FastMode),
++                session_configuration.model_info_overrides.context_window,
++            ),
+         );
+         let mut turn_context: TurnContext = Self::make_turn_context(
+             self.thread_id(),
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index cc4c7d95437973dc23751f6b0c68197badee084d..bc0706e8fe08f4fc07b8c100fb1def9c89c994c1 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -100,6 +100,15 @@ impl PreparedTurnInputSettings {
+         thread_settings: impl Into<WithTurnExtensionData<ThreadSettingsOverrides>>,
+         start_options: TurnStartOptions,
+     ) -> CodexResult<Self> {
++        if start_options
++            .model_override
++            .as_ref()
++            .is_some_and(|model| model.trim().is_empty())
++        {
++            return Err(CodexErr::InvalidRequest(
++                "model override must be nonempty".to_string(),
++            ));
++        }
+         let thread_settings = thread_settings.into();
+         let thread_settings_update = if thread_settings.request
+             == ThreadSettingsOverrides::default()
+@@ -114,6 +123,35 @@ impl PreparedTurnInputSettings {
+                 .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+             Some(updates)
+         };
++        if let Some(settings) = &start_options.model_settings_override {
++            let mut effective = thread_settings_update.clone().unwrap_or_default();
++            effective.step_settings.apply_run_model_settings(settings);
++            if let Some(model) = &start_options.model_override {
++                if let Some(mode) = &effective.step_settings.collaboration_mode {
++                    effective.step_settings.collaboration_mode =
++                        Some(mode.with_updates(Some(model.clone()), None, None));
++                } else {
++                    effective.step_settings.model = Some(model.clone());
++                }
++            }
++            session
++                .preview_settings(&effective)
++                .await
++                .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++        }
++        if let Some(model) = &start_options.model_override {
++            let mut effective = thread_settings_update.clone().unwrap_or_default();
++            if let Some(mode) = &effective.step_settings.collaboration_mode {
++                effective.step_settings.collaboration_mode =
++                    Some(mode.with_updates(Some(model.clone()), None, None));
++            } else {
++                effective.step_settings.model = Some(model.clone());
++            }
++            session
++                .preview_settings(&effective)
++                .await
++                .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
++        }
+         Ok(Self {
+             thread_settings_update,
+             start_options,
+@@ -137,6 +175,8 @@ impl PreparedTurnInputSettings {
+             turn_trigger,
+             final_output_json_schema,
+             service_tier,
++            model_override,
++            model_settings_override,
+             parent_turn_id,
+             root_turn_id,
+             cyber_access_program,
+@@ -151,6 +191,8 @@ impl PreparedTurnInputSettings {
+         updates.service_tier_for_turn = service_tier;
+ 
+         let options = NewTurnContextOptions {
++            model_override,
++            model_settings_override,
+             final_output_json_schema,
+             cyber_access_program,
+         };
+@@ -355,6 +397,8 @@ async fn start_or_steer(
+             additional_context.clone(),
+             /*expected_turn_id*/ None,
+             settings.required_active_final_output_json_schema(),
++            settings.start_options.model_override.as_deref(),
++            settings.start_options.model_settings_override.as_ref(),
+             responsesapi_client_metadata.clone(),
+             origin,
+         )
+@@ -790,6 +834,8 @@ async fn steer(
+             additional_context,
+             Some(expected_turn_id.as_str()),
+             settings.required_active_final_output_json_schema(),
++            settings.start_options.model_override.as_deref(),
++            settings.start_options.model_settings_override.as_ref(),
+             responsesapi_client_metadata,
+             origin,
+         )
+@@ -884,6 +930,10 @@ impl Session {
+         additional_context: BTreeMap<String, AdditionalContextEntry>,
+         expected_turn_id: Option<&str>,
+         required_final_output_json_schema: Option<&Value>,
++        required_model_override: Option<&str>,
++        required_model_settings_override: Option<
++            &codex_protocol::model_request_controls::RunModelSettingsOverride,
++        >,
+         responsesapi_client_metadata: Option<HashMap<String, String>>,
+         origin: UserInputOrigin,
+     ) -> Result<String, NotSubmittedReason> {
+@@ -901,6 +951,16 @@ impl Session {
+             return Err(NotSubmittedReason::NoActiveTurn);
+         };
+         let active_turn_id = &active_task.turn_context.sub_id;
++        if let Some(required) = required_model_settings_override
++            && active_task.turn_context.model_settings_override() != Some(required)
++        {
++            return Err(NotSubmittedReason::ActiveTurnModelOverrideMismatch);
++        }
++        if let Some(required) = required_model_override
++            && active_task.turn_context.model_override() != Some(required)
++        {
++            return Err(NotSubmittedReason::ActiveTurnModelOverrideMismatch);
++        }
+ 
+         if let Some(expected_turn_id) = expected_turn_id
+             && expected_turn_id != active_turn_id
+diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
+index adcd277706ed47abe2f026becef815b183a75804..5f3aab4b880b5864e3fb2697ac7f2b8669540e52 100644
+--- a/codex-rs/core/src/stream_events_utils.rs
++++ b/codex-rs/core/src/stream_events_utils.rs
+@@ -601,6 +601,8 @@ pub(crate) async fn handle_non_tool_response_item(
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+         | ResponseItem::ShellCallOutput { .. }
++        | ResponseItem::Program { .. }
++        | ResponseItem::ProgramOutput { .. }
+         | ResponseItem::ImageGenerationCall { .. } => {
+             let mut turn_item = parse_turn_item(item)?;
+             finalize_turn_item(sess, contributor_policy, &mut turn_item, plan_mode).await;
+diff --git a/codex-rs/core/src/tasks/lifecycle.rs b/codex-rs/core/src/tasks/lifecycle.rs
+index c408fd5e88ef1c60e839bce89447bbfefec01f67..7121a7728f2530225553e8af1f888d6e0f3ed93e 100644
+--- a/codex-rs/core/src/tasks/lifecycle.rs
++++ b/codex-rs/core/src/tasks/lifecycle.rs
+@@ -21,6 +21,18 @@ impl Session {
+     ) {
+         let metadata: Arc<dyn TurnAnalyticsMetadata> = turn_context.turn_metadata_state.clone();
+         turn_context.extension_data.insert(metadata);
++        if let Some(model) = turn_context.model_override() {
++            turn_context
++                .extension_data
++                .insert(codex_extension_api::CapturedRunModelOverride(
++                    model.to_owned(),
++                ));
++        }
++        if let Some(settings) = turn_context.model_settings_override() {
++            turn_context.extension_data.insert(
++                codex_extension_api::CapturedRunModelSettingsOverride(settings.clone()),
++            );
++        }
+         let collaboration_mode = turn_context.collaboration_mode();
+         for contributor in self.services.extensions.turn_lifecycle_contributors() {
+             if contributor.turn_start_phase(&self.services.thread_extension_data) != phase {
+diff --git a/codex-rs/core/src/tasks/mod.rs b/codex-rs/core/src/tasks/mod.rs
+index 61ec335017a1621c56369bf8e7fd9b319cd68ae1..395e67e7457b334307f418f9dc6c7dd5cb2374eb 100644
+--- a/codex-rs/core/src/tasks/mod.rs
++++ b/codex-rs/core/src/tasks/mod.rs
+@@ -762,15 +762,21 @@ impl Session {
+         let mut start_options = batch.start_options;
+         if batch.initiating_agent_path.is_none() {
+             // Queue-only mail wakes durable sleep without selecting a new task's settings.
+-            start_options.cyber_access_program = self
+-                .reference_context_item()
+-                .await
++            let retained = self.reference_context_item().await;
++            start_options.cyber_access_program = retained
++                .as_ref()
+                 .and_then(|context| context.cyber_access_program);
++            start_options.model_settings_override = retained
++                .as_ref()
++                .and_then(|context| context.sdk_model_settings_override.clone());
++            start_options.model_override = retained.and_then(|context| context.sdk_model_override);
+         }
+         let turn_context = self
+             .new_turn_with_default_settings(
+                 sub_id,
+                 NewTurnContextOptions {
++                    model_override: start_options.model_override,
++                    model_settings_override: start_options.model_settings_override,
+                     final_output_json_schema: start_options.final_output_json_schema,
+                     cyber_access_program: start_options.cyber_access_program,
+                 },
+@@ -1566,13 +1572,22 @@ impl Session {
+                     owner.cancel_for_retirement();
+                 }
+                 let _ = task.handle.owner().join().await;
+-                if let Some(owner) = task.turn_context.extension_data
+-                    .get::<Arc<crate::session::model_invocation_deadline::ModelInvocationDeadline>>() {
++                if let Some(owner) = task
++                    .turn_context
++                    .extension_data
++                    .get::<Arc<crate::session::model_invocation_deadline::ModelInvocationDeadline>>(
++                    )
++                {
+                     let errors = owner.retire_tasks().await;
+                     if let Some(cleanup) = cleanup_errors.as_deref_mut() {
+                         cleanup.extend(errors.iter().cloned());
+                     }
+-                    if let Some(event) = Self::model_request_abort_error(&task.turn_context, Some(owner.as_ref().as_ref()), error.take(), errors) {
++                    if let Some(event) = Self::model_request_abort_error(
++                        &task.turn_context,
++                        Some(owner.as_ref().as_ref()),
++                        error.take(),
++                        errors,
++                    ) {
+                         self.send_event(&task.turn_context, EventMsg::Error(event))
+                             .await;
+                     }
+@@ -1581,12 +1596,19 @@ impl Session {
+                     .abort(Arc::clone(self), Arc::clone(&task.turn_context))
+                     .await;
+             } else {
+-                if let Some(event) = self.join_deadline_request_tasks(
+-                    task.handle, &task.turn_context, join_local_commands,
+-                    request_owner.as_ref().map(|owner| owner.as_ref().as_ref()),
+-                    error.take(), cleanup_errors.as_deref_mut(),
+-                ).await {
+-                    self.send_event(&task.turn_context, EventMsg::Error(event)).await;
++                if let Some(event) = self
++                    .join_deadline_request_tasks(
++                        task.handle,
++                        &task.turn_context,
++                        join_local_commands,
++                        request_owner.as_ref().map(|owner| owner.as_ref().as_ref()),
++                        error.take(),
++                        cleanup_errors.as_deref_mut(),
++                    )
++                    .await
++                {
++                    self.send_event(&task.turn_context, EventMsg::Error(event))
++                        .await;
+                 }
+             }
+             if let Err(cleanup_error) = self.end_owned_sdk_stdio(&task.turn_context).await {
+@@ -1628,13 +1650,21 @@ impl Session {
+                 owner.cancel_for_retirement();
+             }
+             let _ = task.handle.owner().join().await;
+-            if let Some(owner) = task.turn_context.extension_data
+-                .get::<Arc<crate::session::model_invocation_deadline::ModelInvocationDeadline>>() {
++            if let Some(owner) = task
++                .turn_context
++                .extension_data
++                .get::<Arc<crate::session::model_invocation_deadline::ModelInvocationDeadline>>()
++            {
+                 let errors = owner.retire_tasks().await;
+                 if let Some(cleanup) = cleanup_errors.as_deref_mut() {
+                     cleanup.extend(errors.iter().cloned());
+                 }
+-                error = Self::model_request_abort_error(&task.turn_context, Some(owner.as_ref().as_ref()), error.take(), errors);
++                error = Self::model_request_abort_error(
++                    &task.turn_context,
++                    Some(owner.as_ref().as_ref()),
++                    error.take(),
++                    errors,
++                );
+             }
+         } else {
+             select! {
+@@ -1645,11 +1675,16 @@ impl Session {
+                 }
+             }
+ 
+-            error = self.join_deadline_request_tasks(
+-                task.handle, &task.turn_context, join_local_commands,
+-                request_owner.as_ref().map(|owner| owner.as_ref().as_ref()),
+-                error.take(), cleanup_errors.as_deref_mut(),
+-            ).await;
++            error = self
++                .join_deadline_request_tasks(
++                    task.handle,
++                    &task.turn_context,
++                    join_local_commands,
++                    request_owner.as_ref().map(|owner| owner.as_ref().as_ref()),
++                    error.take(),
++                    cleanup_errors.as_deref_mut(),
++                )
++                .await;
+         }
+         if let Err(cleanup_error) = self.end_owned_sdk_stdio(&task.turn_context).await {
+             warn!("Child stdio cleanup failed while aborting: {cleanup_error}");
+@@ -1749,60 +1784,94 @@ impl Session {
+     // Sampler shutdown must precede the final lookup: a first/new attempt may
+     // publish its physical owner after abort's initial snapshot.
+     async fn join_deadline_request_tasks(
+-        &self, task: TaskHandle, turn: &TurnContext, join_local_commands: bool,
++        &self,
++        task: TaskHandle,
++        turn: &TurnContext,
++        join_local_commands: bool,
+         initial: Option<&crate::session::model_invocation_deadline::ModelInvocationDeadline>,
+-        primary: Option<ErrorEvent>, cleanup_errors: Option<&mut Vec<String>>,
++        primary: Option<ErrorEvent>,
++        cleanup_errors: Option<&mut Vec<String>>,
+     ) -> Option<ErrorEvent> {
+-        if let Some(owner) = initial { owner.cancel_for_retirement(); }
++        if let Some(owner) = initial {
++            owner.cancel_for_retirement();
++        }
+         task.abort();
+         let mut errors = Vec::new();
+         if let Err(error) = task.owner().join().await {
+             errors.push(format!("sampler retirement failed: {error}"));
+         }
+-        let latest = turn.extension_data
++        let latest = turn
++            .extension_data
+             .get::<Arc<crate::session::model_invocation_deadline::ModelInvocationDeadline>>();
+         let latest_owner = latest.as_ref().map(|owner| owner.as_ref().as_ref());
+-        if let Some(owner) = latest_owner { owner.cancel_for_retirement(); }
++        if let Some(owner) = latest_owner {
++            owner.cancel_for_retirement();
++        }
+         if let Some(owner) = initial
+-            && !latest_owner.is_some_and(|latest| std::ptr::eq(latest, owner)) {
++            && !latest_owner.is_some_and(|latest| std::ptr::eq(latest, owner))
++        {
++            errors.extend(owner.retire_tasks().await);
++        }
++        if let Some(owner) = latest_owner {
+             errors.extend(owner.retire_tasks().await);
+         }
+-        if let Some(owner) = latest_owner { errors.extend(owner.retire_tasks().await); }
+-        if join_local_commands && !self.services.unified_exec_manager
+-            .join_unreturned_local_commands(&turn.extension_data).await {
++        if join_local_commands
++            && !self
++                .services
++                .unified_exec_manager
++                .join_unreturned_local_commands(&turn.extension_data)
++                .await
++        {
+             let failure = ManagedLocalExecCancelFailure(turn.sub_id.clone());
+             turn.extension_data.insert(failure.clone());
+             self.services.thread_extension_data.insert(failure);
+             errors.push("Native local command cleanup could not confirm exit".to_owned());
+         }
+-        if let Some(cleanup) = cleanup_errors { cleanup.extend(errors.iter().cloned()); }
++        if let Some(cleanup) = cleanup_errors {
++            cleanup.extend(errors.iter().cloned());
++        }
+         Self::model_request_abort_error(turn, latest_owner, primary, errors)
+     }
+ 
+     fn model_request_abort_error(
+         turn: &TurnContext,
+         owner: Option<&crate::session::model_invocation_deadline::ModelInvocationDeadline>,
+-        primary: Option<ErrorEvent>, errors: Vec<String>,
++        primary: Option<ErrorEvent>,
++        errors: Vec<String>,
+     ) -> Option<ErrorEvent> {
+         // A forced abort must preserve a winning invocation deadline even though
+         // the physical owner now points at its independently timed attempt.
+-        if turn.extension_data.get::<codex_extension_api::TurnSamplingStop>()
+-            .is_some_and(|stop| stop.model_deadline_expired()) {
++        if turn
++            .extension_data
++            .get::<codex_extension_api::TurnSamplingStop>()
++            .is_some_and(|stop| stop.model_deadline_expired())
++        {
+             let mut causes = errors;
+-            if let Some(primary) = primary { causes.push(primary.message); }
+-            let suffix = if causes.is_empty() { String::new() }
+-                else { format!("; {}", causes.join("; ")) };
++            if let Some(primary) = primary {
++                causes.push(primary.message);
++            }
++            let suffix = if causes.is_empty() {
++                String::new()
++            } else {
++                format!("; {}", causes.join("; "))
++            };
+             return Some(CodexErr::ModelInvocationDeadlineExceeded(suffix).to_error_event(None));
+         }
+-        if let Some(owner) = owner { return owner.abort_error(primary, errors); }
+-        if errors.is_empty() { return primary; }
++        if let Some(owner) = owner {
++            return owner.abort_error(primary, errors);
++        }
++        if errors.is_empty() {
++            return primary;
++        }
+         let details = format!("model request retirement failed: {}", errors.join("; "));
+         match primary {
+-            Some(mut primary) => { primary.message.push_str(&format!("; {details}")); Some(primary) }
++            Some(mut primary) => {
++                primary.message.push_str(&format!("; {details}"));
++                Some(primary)
++            }
+             None => Some(CodexErr::Fatal(details).to_error_event(None)),
+         }
+     }
+-
+ }
+ 
+ #[cfg(test)]
+diff --git a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
+index 3d2942f1196d6840bfc16a6e4a3e519bee4c8c5a..653e063adb81ddeaac2b571cdd09450b222919b0 100644
+--- a/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
++++ b/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs
+@@ -97,6 +97,8 @@ impl Handler {
+                 receiver_thread_id,
+                 input_items,
+                 crate::TurnStartOptions {
++                    model_override: turn.model_override().map(str::to_owned),
++                    model_settings_override: turn.model_settings_override().cloned(),
+                     parent_turn_id: Some(turn.sub_id.clone()),
+                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                     turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
+diff --git a/codex-rs/core/tests/suite/abort_tasks.rs b/codex-rs/core/tests/suite/abort_tasks.rs
+index 9368b1f4a168ae081e543d2f6fa2603d643c82b5..017c03840598da1cac8ec7d0355f0c99b6697582 100644
+--- a/codex-rs/core/tests/suite/abort_tasks.rs
++++ b/codex-rs/core/tests/suite/abort_tasks.rs
+@@ -183,6 +183,7 @@ async fn root_turn_suspension_preserves_unfinished_turn_history() {
+         resumed
+             .codex
+             .recover_turn_if_idle(codex_core::RecoverTurnRequest {
++                model_override: None,
+                 turn_id: turn_id.clone(),
+                 thread_settings: Default::default(),
+                 trace: None,
+diff --git a/codex-rs/core/tests/suite/cyber_access_program.rs b/codex-rs/core/tests/suite/cyber_access_program.rs
+index 3db422ca1768af7c6a256994b260a8f2f4546718..66a31e171d811bbfc0a657008db2f1680a444f3b 100644
+--- a/codex-rs/core/tests/suite/cyber_access_program.rs
++++ b/codex-rs/core/tests/suite/cyber_access_program.rs
+@@ -96,6 +96,7 @@ async fn recover_turn_restores_cyber_access_program_without_making_it_sticky() -
+     let submission = test
+         .codex
+         .recover_turn_if_idle(RecoverTurnRequest {
++            model_override: None,
+             turn_id: turn_id.clone(),
+             thread_settings: Default::default(),
+             trace: None,
+diff --git a/codex-rs/core/tests/suite/reasoning_effort_override.rs b/codex-rs/core/tests/suite/reasoning_effort_override.rs
+index f808db1935df3020204555860c988d64623887c0..43aaf1a154056ff5d46cb3d44b8725856489e770 100644
+--- a/codex-rs/core/tests/suite/reasoning_effort_override.rs
++++ b/codex-rs/core/tests/suite/reasoning_effort_override.rs
+@@ -308,6 +308,7 @@ async fn reasoning_effort_override_recovery_reuses_trusted_tail_update() -> anyh
+         resumed
+             .codex
+             .recover_turn_if_idle(RecoverTurnRequest {
++                model_override: None,
+                 turn_id: turn_id.clone(),
+                 thread_settings: Default::default(),
+                 trace: None,
+diff --git a/codex-rs/core/tests/suite/resume_warning.rs b/codex-rs/core/tests/suite/resume_warning.rs
+index 9707d40ded5063b255e1aac1a06ed6c3f44704ac..1dfa9a7c6b92c3b9f06b049b14b0ef831c49c25b 100644
+--- a/codex-rs/core/tests/suite/resume_warning.rs
++++ b/codex-rs/core/tests/suite/resume_warning.rs
+@@ -29,6 +29,8 @@ fn resume_history(
+ ) -> InitialHistory {
+     let turn_id = "resume-warning-seed-turn".to_string();
+     let turn_ctx = TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_id.clone()),
+         root_turn_id: None,
+diff --git a/codex-rs/core/tests/suite/turn_phase_trace.rs b/codex-rs/core/tests/suite/turn_phase_trace.rs
+index 4082548c77dc8405fc4be2162970c234e9297b29..f1011fd806308e19de1c8c7c265016b73b94d68e 100644
+--- a/codex-rs/core/tests/suite/turn_phase_trace.rs
++++ b/codex-rs/core/tests/suite/turn_phase_trace.rs
+@@ -218,6 +218,7 @@ async fn steer_joins_existing_turn_without_extending_sampling(
+             assert_eq!(
+                 test.codex
+                     .recover_turn_if_idle(RecoverTurnRequest {
++                        model_override: None,
+                         turn_id: call.turn_id.clone(),
+                         thread_settings: Default::default(),
+                         trace: codex_otel::span_w3c_trace_context(&recovery),
+diff --git a/codex-rs/core/tests/tool_terminal_recovery.rs b/codex-rs/core/tests/tool_terminal_recovery.rs
+index de9346d00d4df4379b6f9c159d92580deeccfd7d..cac5b75b6acb8fadad81332ad519b5897ef7a768 100644
+--- a/codex-rs/core/tests/tool_terminal_recovery.rs
++++ b/codex-rs/core/tests/tool_terminal_recovery.rs
+@@ -272,6 +272,7 @@ async fn tool_terminal_recovery_request_boundary(case: RecoveryCase) -> anyhow::
+     let submission = test
+         .codex
+         .recover_turn_if_idle(RecoverTurnRequest {
++            model_override: None,
+             turn_id: TURN.into(),
+             thread_settings: Default::default(),
+             trace: None,
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 38e659d80e8bb9776167f257c5a97827ca597485..c998622bde2dec8945784e53fddd45db1a4d14f8 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -155,11 +155,14 @@ pub use model_request_observation::{
+ };
+ 
+ pub use codex_api::completed_model_response;
++pub use model_request::CapturedRunModelOverride;
++pub use model_request::CapturedRunModelSettingsOverride;
+ pub use model_request::CompactionInput;
+ pub use model_request::CompactionResult;
+ pub use model_request::CompactionWindow;
+ pub use model_request::ModelContextInput;
+ pub use model_request::ModelHttpStream;
++pub use model_request::ModelRequestAttemptsObserver;
+ pub use model_request::ModelRequestContributor;
+ pub use model_request::ModelRequestInput;
+ pub use model_request::ModelRequestKind;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index 4eee806dd173b6869356069283a982a209ff3778..ab89e05149097b7c2301dd2f2c4944361b95d62a 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -185,7 +185,13 @@ pub enum CompactionResult {
+ }
+ 
+ /// Request identity before provider dispatch.
++/// An in-process content-free observer captured for one native model request.
++pub trait ModelRequestAttemptsObserver: Send + Sync + std::fmt::Debug {
++    fn send_started(&self, transport: crate::ModelRequestTransport);
++}
++
+ pub struct ModelRequestInput<'a> {
++    pub attempts: Option<Arc<dyn ModelRequestAttemptsObserver>>,
+     /// Whether this request generates output or warms up the session.
+     pub kind: ModelRequestKind,
+     /// Thread making the request.
+@@ -364,6 +370,16 @@ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
+     fn request(&self, input: ModelRequestInput<'_>) -> Option<Box<dyn ModelResponseInterceptor>>;
+ }
+ 
++/// Explicit start-only model choice captured with the issuing native step.
++#[derive(Clone, Debug)]
++pub struct CapturedRunModelOverride(pub String);
++
++/// Sparse model settings captured with the original native turn owner.
++#[derive(Clone, Debug)]
++pub struct CapturedRunModelSettingsOverride(
++    pub codex_protocol::model_request_controls::RunModelSettingsOverride,
++);
++
+ /// Immutable routing and owner evidence captured for one issuing model request.
+ /// Admission only parses and checks the retained runtime; it must not execute tools or hooks.
+ pub trait ModelToolAdmission: Send + Sync + std::fmt::Debug {
+diff --git a/codex-rs/protocol/src/model_request_controls.rs b/codex-rs/protocol/src/model_request_controls.rs
+index 17c8b4ca3ee64c913916a681700cb65fae25811e..32afd5d17f0baa1d792f687740d917f5062ec0f3 100644
+--- a/codex-rs/protocol/src/model_request_controls.rs
++++ b/codex-rs/protocol/src/model_request_controls.rs
+@@ -86,6 +86,33 @@ pub struct HostedPromptControls {
+     pub resolved_instructions: Option<String>,
+ }
+ 
++/// Sparse start-only preferences, retained independently of profile defaults.
++#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
++#[serde(default, deny_unknown_fields)]
++pub struct RunModelSettingsOverride {
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub effort: Option<crate::openai_models::ReasoningEffort>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub summary: Option<crate::config_types::ReasoningSummary>,
++    #[serde(
++        skip_serializing_if = "Option::is_none",
++        with = "serde_with::rust::double_option"
++    )]
++    #[ts(optional = nullable, as = "Option<String>")]
++    #[schemars(with = "Option<String>")]
++    pub service_tier: Option<Option<String>>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub tool_choice: Option<crate::config_types::ToolChoice>,
++    #[serde(
++        skip_serializing_if = "Option::is_none",
++        with = "serde_with::rust::double_option"
++    )]
++    #[ts(optional = nullable, as = "Option<u32>")]
++    #[schemars(with = "Option<u32>")]
++    pub invocation_timeout_ms: Option<Option<u32>>,
++    pub request_controls: ModelRequestControls,
++}
++
+ /// Retain the caller's selection, including explicit clears, across capture/restore.
+ /// This is also a sparse update: omitted members leave each owner's selection intact.
+ #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 02328ead17d54dd74b66c38b404763061ac780c0..d658fe27073033aa91b02390696dd429df29e3ba 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -4120,6 +4120,16 @@ pub struct TurnContextNetworkItem {
+ /// latest durable baseline.
+ #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, JsonSchema, TS)]
+ pub struct TurnContextItem {
++    /// SDK run choice, separate from the persistent profile/default model.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[schemars(skip)]
++    #[ts(skip)]
++    pub sdk_model_override: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[schemars(skip)]
++    #[ts(skip)]
++    pub sdk_model_settings_override:
++        Option<crate::model_request_controls::RunModelSettingsOverride>,
+     /// SDK-only evidence captured at a regular model sampling boundary.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     #[schemars(skip)]
+@@ -7028,6 +7038,8 @@ mod tests {
+     #[test]
+     fn turn_context_item_serializes_network_when_present() -> Result<()> {
+         let item = TurnContextItem {
++            sdk_model_override: None,
++            sdk_model_settings_override: None,
+             sdk_receipt: None,
+             turn_id: None,
+             root_turn_id: None,
+diff --git a/codex-rs/protocol/src/turn_input.rs b/codex-rs/protocol/src/turn_input.rs
+index 11e50bc4ddeea2c9197435605d6ba23943d66ff5..7eef9238382445b1feae775aa8d53ef164f3e96a 100644
+--- a/codex-rs/protocol/src/turn_input.rs
++++ b/codex-rs/protocol/src/turn_input.rs
+@@ -58,6 +58,9 @@ pub struct TurnInputRequest {
+ /// for that turn.
+ #[derive(Clone, Debug)]
+ pub struct RecoverTurnRequest {
++    /// Original accepted run choice, retained through a manual checkpoint.
++    pub model_override: Option<String>,
++    pub model_settings_override: Option<crate::model_request_controls::RunModelSettingsOverride>,
+     pub turn_id: String,
+     pub thread_settings: ThreadSettingsOverrides,
+     pub trace: Option<W3cTraceContext>,
+@@ -171,6 +174,9 @@ pub struct TurnStartOptions {
+     pub final_output_json_schema: Option<Value>,
+     /// Service tier for a new turn, without changing the thread's preference.
+     pub service_tier: Option<String>,
++    /// Forced model for this run and its native descendants, without changing defaults.
++    pub model_override: Option<String>,
++    pub model_settings_override: Option<crate::model_request_controls::RunModelSettingsOverride>,
+     /// Parent turn lineage recorded if this request starts a new turn.
+     pub parent_turn_id: Option<String>,
+     /// Causal root turn lineage recorded if this request starts a new turn.
+@@ -249,6 +255,9 @@ pub enum NotSubmittedReason {
+     /// that differs from the active turn's schema.
+     ActiveTurnOutputSchemaMismatch,
+ 
++    /// Steering cannot replace the model admitted for the active run.
++    ActiveTurnModelOverrideMismatch,
++
+     /// `start_or_steer_turn` or `steer_turn` reached a steering path with empty user input.
+     EmptyInput,
+ }
+diff --git a/codex-rs/rollout/src/recorder_tests.rs b/codex-rs/rollout/src/recorder_tests.rs
+index 68cc0b5a586ef8ed285084cb64ce90b3b5f60d40..432ce57463ecf8107c4d339c2465ebb4577dd9b4 100644
+--- a/codex-rs/rollout/src/recorder_tests.rs
++++ b/codex-rs/rollout/src/recorder_tests.rs
+@@ -1868,6 +1868,8 @@ async fn resume_candidate_matches_cwd_reads_latest_turn_context() -> std::io::Re
+         timestamp: "2025-01-03T13:00:01Z".to_string(),
+         ordinal: None,
+         item: RolloutItem::TurnContext(TurnContextItem {
++            sdk_model_override: None,
++            sdk_model_settings_override: None,
+             sdk_receipt: None,
+             turn_id: Some("turn-1".to_string()),
+             root_turn_id: None,
+diff --git a/codex-rs/state/src/extract.rs b/codex-rs/state/src/extract.rs
+index 0276240d8be86eb8e802b849eba669227c04946a..5cf8e5520c90a54b9e6de80a928896016592d2e1 100644
+--- a/codex-rs/state/src/extract.rs
++++ b/codex-rs/state/src/extract.rs
+@@ -567,6 +567,8 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
++                sdk_model_settings_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+@@ -618,6 +620,8 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
++                sdk_model_settings_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+@@ -669,6 +673,8 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
++                sdk_model_settings_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+@@ -709,6 +715,8 @@ mod tests {
+         apply_rollout_item(
+             &mut metadata,
+             &RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
++                sdk_model_settings_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+diff --git a/codex-rs/thread-store/src/local/mod.rs b/codex-rs/thread-store/src/local/mod.rs
+index 3812ac1d8ab87a5a327d3d30de73bd2366a9030c..310fad3f4fdd2a77338fd91bd133dd505e652d95 100644
+--- a/codex-rs/thread-store/src/local/mod.rs
++++ b/codex-rs/thread-store/src/local/mod.rs
+@@ -1307,6 +1307,8 @@ mod tests {
+         let cwd = std::env::current_dir().expect("current directory");
+         let turn_context = |model: &str, approval_policy| {
+             RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
++                sdk_model_settings_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("turn-1".to_string()),
+                 root_turn_id: None,
+diff --git a/codex-rs/thread-store/src/local/model_context_tests.rs b/codex-rs/thread-store/src/local/model_context_tests.rs
+index 5f39f047add140e45a0c040bd16b10daded43d35..a2ca172e766b2ba5f0470d97f059e93d9ab46933 100644
+--- a/codex-rs/thread-store/src/local/model_context_tests.rs
++++ b/codex-rs/thread-store/src/local/model_context_tests.rs
+@@ -677,6 +677,8 @@ fn completed_user_message(turn_id: &str, message: &str) -> RolloutItem {
+ 
+ fn turn_context(root: &Path, turn_id: &str) -> RolloutItem {
+     RolloutItem::TurnContext(TurnContextItem {
++        sdk_model_override: None,
++        sdk_model_settings_override: None,
+         sdk_receipt: None,
+         turn_id: Some(turn_id.to_string()),
+         root_turn_id: None,
+diff --git a/codex-rs/thread-store/src/local/rollout_migration_tests.rs b/codex-rs/thread-store/src/local/rollout_migration_tests.rs
+index ff03bb4f4371df1990170d245e10b131b88c248f..860d1ccf11428aaa1a892ef9d02477cb5cbdb8b1 100644
+--- a/codex-rs/thread-store/src/local/rollout_migration_tests.rs
++++ b/codex-rs/thread-store/src/local/rollout_migration_tests.rs
+@@ -2068,6 +2068,8 @@ async fn migration_compacts_subagent_prefix_and_does_not_project_it() {
+             }),
+             started("child-turn"),
+             RolloutItem::TurnContext(TurnContextItem {
++                sdk_model_override: None,
++                sdk_model_settings_override: None,
+                 sdk_receipt: None,
+                 turn_id: Some("child-turn".to_string()),
+                 root_turn_id: None,

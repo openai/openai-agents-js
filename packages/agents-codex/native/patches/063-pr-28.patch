@@ -1,0 +1,2688 @@
+diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
+index 98d69fb6dc55875fff86edb42d4110e4df0a2b69..fc94c5cb4c4ff6f153a6af7a8a6b99dd532d5866 100644
+--- a/codex-rs/app-server/src/notification_media.rs
++++ b/codex-rs/app-server/src/notification_media.rs
+@@ -50,6 +50,10 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
+                 | ResponseItem::ComputerCallOutput { .. }
+                 | ResponseItem::CustomToolCall { .. }
+                 | ResponseItem::ToolSearchOutput { .. }
++                | ResponseItem::McpListTools { .. }
++                | ResponseItem::McpCall { .. }
++                | ResponseItem::McpApprovalRequest { .. }
++                | ResponseItem::McpApprovalResponse { .. }
+                 | ResponseItem::FileSearchCall { .. }
+                 | ResponseItem::CodeInterpreterCall { .. }
+                 | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
+index 8374c57e01cf4657a2ee35f8e2eb9cdeb0b68e9d..66e3b7e2d76503928d40840b6eab26a780d24fc6 100644
+--- a/codex-rs/app-server/src/request_processors/thread_processor.rs
++++ b/codex-rs/app-server/src/request_processors/thread_processor.rs
+@@ -388,6 +388,10 @@ fn validate_dynamic_tools(tools: &[DynamicToolSpec]) -> Result<(), String> {
+     let mut seen_namespaces = HashSet::new();
+     for spec in tools {
+         match spec {
++            DynamicToolSpec::ToolSearch(_) => { return Err("client tool search requires an extension-owned executor".to_string()); },
++            DynamicToolSpec::HostedMcp(_) => {
++                return Err("hosted MCP approval slots require an SDK executor".into());
++            }
+             DynamicToolSpec::Computer(tool) => {
+                 tool.validate()?;
+                 if !seen_tools.insert("computer") {
+@@ -1466,9 +1470,11 @@ impl ThreadRequestProcessor {
+         let dynamic_tool_count: usize = dynamic_tools
+             .iter()
+             .map(|tool| match tool {
++                DynamicToolSpec::HostedMcp(_) => 0,
+                 DynamicToolSpec::Computer(_)
+                 | DynamicToolSpec::Function(_)
+-                | DynamicToolSpec::Shell(_) => 1,
++                | DynamicToolSpec::Shell(_)
++                | DynamicToolSpec::ToolSearch(_) => 1,
+                 DynamicToolSpec::Namespace(namespace) => namespace.tools.len(),
+             })
+             .sum();
+diff --git a/codex-rs/app-server/src/request_processors/turn_processor.rs b/codex-rs/app-server/src/request_processors/turn_processor.rs
+index df8890dc70ef25e6ba21298a116038e5ca4e3728..9be8870f4c55220f0a159ceb3fb6dfd74204c679 100644
+--- a/codex-rs/app-server/src/request_processors/turn_processor.rs
++++ b/codex-rs/app-server/src/request_processors/turn_processor.rs
+@@ -66,6 +66,10 @@ fn validate_response_item_image_urls(items: &[ResponseItem]) -> Result<(), JSONR
+             | ResponseItem::CustomToolCall { .. }
+         | ResponseItem::ToolSearchOutput { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
++        | ResponseItem::McpApprovalRequest { .. }
++        | ResponseItem::McpApprovalResponse { .. }
+         | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/agent/control/spawn.rs b/codex-rs/core/src/agent/control/spawn.rs
+index e725e7d2fb08e69b8129d64b742bc245a16ddf72..8bf154b8f46d8cfcb90430e1b6a5a07191aa0d8e 100644
+--- a/codex-rs/core/src/agent/control/spawn.rs
++++ b/codex-rs/core/src/agent/control/spawn.rs
+@@ -116,6 +116,10 @@ fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool
+             | ResponseItem::CustomToolCallOutput { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+             | ResponseItem::WebSearchCall { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index d4aa446a724c6eb4f4450d8677ec847afa516814..724a8fd61042910b19e7fba7727819044a046cb6 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -1396,6 +1396,7 @@ impl ModelClient {
+                     codex_tools::ToolSpec::CodeInterpreter(_)
+                         | codex_tools::ToolSpec::ImageGeneration(_)
+                         | codex_tools::ToolSpec::Shell(_)
++                        | codex_tools::ToolSpec::Mcp(_)
+                 )
+             }) || (request.request_controls.prompt.is_some()
+                 && request.tools.is_none());
+diff --git a/codex-rs/core/src/client_common.rs b/codex-rs/core/src/client_common.rs
+index e338367edeed5019e124b3e1d0d82fe3a010a83b..326a81c9a052fe0c95ca24605cedf1115ede35c0 100644
+--- a/codex-rs/core/src/client_common.rs
++++ b/codex-rs/core/src/client_common.rs
+@@ -189,6 +189,10 @@ fn normalize_image_details(items: &mut [ResponseItem], model_info: &ModelInfo) {
+             | ResponseItem::CustomToolCall { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+             | ResponseItem::WebSearchCall { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/compact.rs b/codex-rs/core/src/compact.rs
+index 16b7f6aa042968a6840529c3ed8f096a32ec53c9..a0f91bd7881a7277c15ff9ac71797ef4393462a6 100644
+--- a/codex-rs/core/src/compact.rs
++++ b/codex-rs/core/src/compact.rs
+@@ -957,6 +957,10 @@ fn reject_compaction_tool_output(item: &ResponseItem) -> CodexResult<()> {
+             | ResponseItem::ToolSearchCall { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+             | ResponseItem::WebSearchCall { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/context_manager/history.rs b/codex-rs/core/src/context_manager/history.rs
+index b3654ddc648463eca1b7ebbbca292241f635acc9..61b90421d4cfbce0a966d989b226e5d39f677bb6 100644
+--- a/codex-rs/core/src/context_manager/history.rs
++++ b/codex-rs/core/src/context_manager/history.rs
+@@ -1117,6 +1117,10 @@ pub(crate) fn is_api_message(
+         | ResponseItem::LocalShellCall { .. }
+         | ResponseItem::Reasoning { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
++        | ResponseItem::McpApprovalRequest { .. }
++        | ResponseItem::McpApprovalResponse { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+@@ -1297,6 +1301,37 @@ fn estimate_response_item_model_visible_bytes(item: &ResponseItem) -> i64 {
+         ResponseItem::WebSearchCall { action, .. } => {
+             action.as_ref().map(json_content_bytes).unwrap_or_default()
+         }
++        ResponseItem::McpListTools {
++            server_label,
++            tools,
++            provider_fields,
++            ..
++        } => text_bytes(server_label)
++            .saturating_add(json_content_bytes(tools))
++            .saturating_add(json_content_bytes(provider_fields)),
++        ResponseItem::McpCall {
++            server_label,
++            name,
++            arguments,
++            provider_fields,
++            ..
++        }
++        | ResponseItem::McpApprovalRequest {
++            server_label,
++            name,
++            arguments,
++            provider_fields,
++            ..
++        } => text_bytes(server_label)
++            .saturating_add(text_bytes(name))
++            .saturating_add(text_bytes(arguments))
++            .saturating_add(json_content_bytes(provider_fields)),
++        ResponseItem::McpApprovalResponse {
++            approval_request_id,
++            reason,
++            ..
++        } => text_bytes(approval_request_id)
++            .saturating_add(reason.as_deref().map(text_bytes).unwrap_or_default()),
+         ResponseItem::FileSearchCall {
+             provider_fields, ..
+         }
+@@ -1481,6 +1516,9 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
+         | ResponseItem::FunctionCall { .. }
+         | ResponseItem::ToolSearchCall { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
++        | ResponseItem::McpApprovalRequest { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+@@ -1497,6 +1535,7 @@ fn is_model_generated_item(item: &ResponseItem) -> bool {
+         | ResponseItem::FunctionCallOutput { .. }
+         | ResponseItem::ToolSearchOutput { .. }
+         | ResponseItem::CustomToolCallOutput { .. }
++        | ResponseItem::McpApprovalResponse { .. }
+         | ResponseItem::AgentMessage { .. }
+         | ResponseItem::ItemReference { .. }
+         | ResponseItem::Other => false,
+diff --git a/codex-rs/core/src/context_manager/normalize.rs b/codex-rs/core/src/context_manager/normalize.rs
+index 71bfaa87c2a7db2e9711cfc5e8f0e1cb1738c343..bd35f6c09344e55876369c71d667b737d059cb32 100644
+--- a/codex-rs/core/src/context_manager/normalize.rs
++++ b/codex-rs/core/src/context_manager/normalize.rs
+@@ -31,6 +31,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+     let mut function_output_ids = HashSet::new();
+     let mut tool_search_output_ids = HashSet::new();
+     let mut custom_tool_output_ids = HashSet::new();
++    let mut mcp_approval_output_ids = HashSet::new();
+     for envelope in items.iter() {
+         match &envelope.item {
+             ResponseItem::FunctionCallOutput {
+@@ -48,6 +49,12 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+             ResponseItem::CustomToolCallOutput { call_id, .. } => {
+                 custom_tool_output_ids.insert(call_id.as_str());
+             }
++            ResponseItem::McpApprovalResponse {
++                approval_request_id,
++                ..
++            } => {
++                mcp_approval_output_ids.insert(approval_request_id.as_str());
++            }
+             _ => {}
+         }
+     }
+@@ -59,6 +66,23 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+ 
+     for (idx, envelope) in items.iter().enumerate() {
+         match &envelope.item {
++            ResponseItem::McpApprovalRequest {
++                id: Some(id),
++                provider_fields,
++                ..
++            } if !id.as_str().is_empty() && !mcp_approval_output_ids.contains(id.as_str()) => {
++                missing_outputs_to_insert.push((
++                    idx,
++                    ResponseItemEnvelope::new(ResponseItem::McpApprovalResponse {
++                        id: synthetic_output_id("mcpa", Some(id.as_str())),
++                        approval_request_id: id.as_str().to_owned(),
++                        approve: false,
++                        reason: Some("MCP approval was interrupted.".into()),
++                        caller: provider_fields.get("caller").cloned(),
++                        internal_chat_message_metadata_passthrough: None,
++                    }),
++                ));
++            }
+             ResponseItem::FunctionCall { id, call_id, .. }
+                 if !function_output_ids.contains(call_id.as_str()) =>
+             {
+@@ -138,6 +162,7 @@ pub(crate) fn ensure_call_outputs_present(items: &mut Vec<ResponseItemEnvelope>)
+         function_output_ids,
+         tool_search_output_ids,
+         custom_tool_output_ids,
++        mcp_approval_output_ids,
+     ));
+ 
+     // Insert synthetic outputs in reverse index order to avoid re-indexing.
+diff --git a/codex-rs/core/src/event_mapping.rs b/codex-rs/core/src/event_mapping.rs
+index f80a4bf49b618e5134450ad4931d54974d46d364..4d25dd03bc855d33ff897e5cdaf37a730fe6adb5 100644
+--- a/codex-rs/core/src/event_mapping.rs
++++ b/codex-rs/core/src/event_mapping.rs
+@@ -255,6 +255,8 @@ pub fn parse_turn_item(item: &ResponseItem) -> Option<TurnItem> {
+         }
+         ResponseItem::FileSearchCall { id, .. }
+         | ResponseItem::CodeInterpreterCall { id, .. }
++        | ResponseItem::McpListTools { id, .. }
++        | ResponseItem::McpCall { id, .. }
+         | ResponseItem::ShellCall { id, .. }
+         | ResponseItem::ShellCallOutput { id, .. } => Some(TurnItem::HostedToolCall(
+             codex_protocol::items::HostedToolCallItem {
+diff --git a/codex-rs/core/src/image_preparation.rs b/codex-rs/core/src/image_preparation.rs
+index b1cb1cbe028f85cc972a93b2cd4cd4dc1cd2ede4..228a3d8dacafb85ebcf37a3b9879a80566b011ea 100644
+--- a/codex-rs/core/src/image_preparation.rs
++++ b/codex-rs/core/src/image_preparation.rs
+@@ -282,6 +282,10 @@ pub(crate) async fn prepare_response_items(
+             | ResponseItem::CustomToolCall { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+             | ResponseItem::WebSearchCall { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/session/sdk_produced_items.rs b/codex-rs/core/src/session/sdk_produced_items.rs
+index 1fdf6ea24cb402e2c654e13c9a424fe01c2e82b1..0f0fccc74ab7c4462b09bec302f8df3f8e1781c1 100644
+--- a/codex-rs/core/src/session/sdk_produced_items.rs
++++ b/codex-rs/core/src/session/sdk_produced_items.rs
+@@ -139,6 +139,8 @@ fn is_produced_response(item: &ResponseItem) -> bool {
+         | ResponseItem::WebSearchCall { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
+         | ResponseItem::ShellCall { .. }
+         | ResponseItem::ShellCallOutput { .. }
+         | ResponseItem::ImageGenerationCall { .. } => true,
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 73baa060cd4c65d8707f8c2183e3020d2dc02903..b580ba008512ec7450b5dbf35595b0d118f02630 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -3783,6 +3783,7 @@ async fn handle_assistant_item_done_in_plan_mode(
+             step_context,
+             item,
+             finalized_facts.as_ref(),
++            /*application_tool*/ None,
+         )
+         .await;
+         if let Some(agent_message) = final_last_agent_message {
+@@ -3888,6 +3889,7 @@ fn provider_event_may_have_effects(event: &ResponseEvent) -> bool {
+                 | ResponseItem::ImageGenerationCall { .. }
+                 | ResponseItem::ShellCall { .. }
+                 | ResponseItem::ShellCallOutput { .. }
++                | ResponseItem::McpCall { .. }
+                 | ResponseItem::Other
+         ),
+         ResponseEvent::HostedToolCallProgress(progress) => progress
+@@ -4308,6 +4310,10 @@ async fn try_run_sampling_request(
+                         | ResponseItem::CustomToolCallOutput { .. }
+                         | ResponseItem::ToolSearchOutput { .. }
+                         | ResponseItem::WebSearchCall { .. }
++                        | ResponseItem::McpListTools { .. }
++                        | ResponseItem::McpCall { .. }
++                        | ResponseItem::McpApprovalRequest { .. }
++                        | ResponseItem::McpApprovalResponse { .. }
+                         | ResponseItem::FileSearchCall { .. }
+                         | ResponseItem::CodeInterpreterCall { .. }
+                         | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/core/src/stream_events_utils.rs b/codex-rs/core/src/stream_events_utils.rs
+index 39e356f9b2170f7a07c9c99f7c99a6487d4f387d..7e432958373c5ab8acab9b70a9f8af487e60d0e3 100644
+--- a/codex-rs/core/src/stream_events_utils.rs
++++ b/codex-rs/core/src/stream_events_utils.rs
+@@ -4,6 +4,8 @@ use std::sync::Arc;
+ use std::sync::Mutex;
+ 
+ use codex_extension_api::ExtensionData;
++use codex_history::CodexHarnessMetadata;
++use codex_history::ResponseItemEnvelope;
+ use codex_protocol::ResponseItemId;
+ use codex_protocol::config_types::ModeKind;
+ use codex_protocol::items::TurnItem;
+@@ -81,12 +83,14 @@ pub(crate) async fn record_completed_response_item(
+     sess: &Session,
+     step_context: &StepContext,
+     item: &ResponseItem,
++    application_tool: Option<&str>,
+ ) {
+     record_completed_response_item_with_finalized_facts(
+         sess,
+         step_context,
+         item,
+         /*finalized_facts*/ None,
++        application_tool,
+     )
+     .await;
+ }
+@@ -96,14 +100,30 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
+     step_context: &StepContext,
+     item: &ResponseItem,
+     finalized_facts: Option<&FinalizedTurnItemFacts>,
++    application_tool: Option<&str>,
+ ) {
+     let turn_context = &step_context.turn;
+-    sess.record_conversation_items(
+-        turn_context,
+-        &step_context.settings.model_info,
+-        std::slice::from_ref(item),
+-    )
+-    .await;
++    if let Some(tool) = application_tool {
++        sess.record_annotated_conversation_items(
++            turn_context,
++            &step_context.settings.model_info,
++            vec![ResponseItemEnvelope {
++                item: item.clone(),
++                metadata: Some(CodexHarnessMetadata {
++                    sdk_application_tool: Some(tool.to_owned()),
++                    ..Default::default()
++                }),
++            }],
++        )
++        .await;
++    } else {
++        sess.record_conversation_items(
++            turn_context,
++            &step_context.settings.model_info,
++            std::slice::from_ref(item),
++        )
++        .await;
++    }
+     if turn_context.config.otel.agent_response_logging_enabled() {
+         turn_context
+             .extension_data
+@@ -161,6 +181,8 @@ fn response_item_may_include_external_context(item: &ResponseItem) -> bool {
+         item,
+         ResponseItem::ToolSearchCall { .. }
+             | ResponseItem::ToolSearchOutput { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
+             | ResponseItem::WebSearchCall { .. }
+             | ResponseItem::FunctionCallOutput { call_id: None, .. }
+     )
+@@ -372,6 +394,19 @@ pub(crate) async fn handle_output_item_done(
+     let plan_mode = ctx.step_context.turn.mode() == ModeKind::Plan;
+     ctx.tool_runtime.observe_requested_item(&item);
+ 
++    if matches!(item, ResponseItem::McpApprovalResponse { .. }) {
++        return Err(CodexErr::InvalidRequest(
++            "Provider emitted an application-only hosted MCP approval decision".into(),
++        ));
++    }
++    if matches!(item, ResponseItem::McpApprovalRequest { .. })
++        && !ctx.step_context.tool_router.admits_response_item(&item)
++    {
++        return Err(CodexErr::InvalidRequest(
++            "Hosted MCP approval request has no captured handler for this server".into(),
++        ));
++    }
++
+     let mut routed = ctx.tool_runtime.build_model_tool_call(item.clone());
+     let passive = matches!(&routed, Ok(None));
+     // This turn store tracks completed stream items independently of provider
+@@ -403,8 +438,18 @@ pub(crate) async fn handle_output_item_done(
+                 call.tool_name,
+             );
+ 
+-            record_completed_response_item(ctx.sess.as_ref(), ctx.step_context.as_ref(), &item)
+-                .await;
++            let application_tool =
++                matches!(&call.payload, codex_tools::ToolPayload::Shell { .. }).then_some("shell");
++            record_completed_response_item(
++                ctx.sess.as_ref(),
++                ctx.step_context.as_ref(),
++                &item,
++                application_tool,
++            )
++            .await;
++            if application_tool.is_some() {
++                ctx.sess.ensure_rollout_durable().await?;
++            }
+ 
+             let cancellation_token = ctx.cancellation_token.child_token();
+             let tool_future: InFlightFuture<'static> = Box::pin(
+@@ -451,6 +496,7 @@ pub(crate) async fn handle_output_item_done(
+                 ctx.step_context.as_ref(),
+                 &item,
+                 finalized_facts.as_ref(),
++                /*application_tool*/ None,
+             )
+             .await;
+ 
+@@ -469,8 +515,13 @@ pub(crate) async fn handle_output_item_done(
+                     ..Default::default()
+                 },
+             };
+-            record_completed_response_item(ctx.sess.as_ref(), ctx.step_context.as_ref(), &item)
+-                .await;
++            record_completed_response_item(
++                ctx.sess.as_ref(),
++                ctx.step_context.as_ref(),
++                &item,
++                /*application_tool*/ None,
++            )
++            .await;
+             if let Some(response_item) = response_input_to_response_item(&response) {
+                 ctx.sess
+                     .record_conversation_items(
+@@ -513,6 +564,10 @@ pub(crate) async fn handle_non_tool_response_item(
+         ResponseItem::CustomToolCallOutput { .. } => "custom_tool_call_output",
+         ResponseItem::ToolSearchOutput { .. } => "tool_search_output",
+         ResponseItem::WebSearchCall { .. } => "web_search_call",
++        ResponseItem::McpListTools { .. } => "mcp_list_tools",
++        ResponseItem::McpCall { .. } => "mcp_call",
++        ResponseItem::McpApprovalRequest { .. } => "mcp_approval_request",
++        ResponseItem::McpApprovalResponse { .. } => "mcp_approval_response",
+         ResponseItem::FileSearchCall { .. } => "file_search_call",
+         ResponseItem::CodeInterpreterCall { .. } => "code_interpreter_call",
+         ResponseItem::ShellCall { .. } => "shell_call",
+@@ -535,6 +590,8 @@ pub(crate) async fn handle_non_tool_response_item(
+         ResponseItem::Message { .. }
+         | ResponseItem::Reasoning { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+@@ -618,7 +675,8 @@ fn completed_item_defers_mailbox_delivery_to_next_turn(
+ 
+ pub(crate) fn response_input_to_response_item(input: &ResponseInputItem) -> Option<ResponseItem> {
+     match input {
+-        ResponseInputItem::ComputerCallOutput { .. } => Some(input.clone().into()),
++        ResponseInputItem::ComputerCallOutput { .. }
++        | ResponseInputItem::McpApprovalResponse { .. } => Some(input.clone().into()),
+         ResponseInputItem::FunctionCallOutput { call_id, output } => {
+             Some(ResponseItem::FunctionCallOutput {
+                 id: None,
+diff --git a/codex-rs/core/src/tools/context.rs b/codex-rs/core/src/tools/context.rs
+index 0b3a35c11c2b64c5127a0467183eeb4fe4c0eef0..18eed8325a7c1d5263347eecbcbc79a1f12dfa14 100644
+--- a/codex-rs/core/src/tools/context.rs
++++ b/codex-rs/core/src/tools/context.rs
+@@ -13,6 +13,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
+ use codex_protocol::models::ResponseInputItem;
+ use codex_protocol::models::ResponseItem;
+ use codex_protocol::models::function_call_output_content_items_to_text;
++#[cfg(test)]
+ use codex_tools::LoadableToolSpec;
+ use codex_tools::ToolName;
+ use codex_utils_audio::estimate_audio_token_count;
+@@ -227,46 +228,7 @@ impl McpToolOutput {
+     }
+ }
+ 
+-#[derive(Clone)]
+-pub struct ToolSearchOutput {
+-    pub tools: Vec<LoadableToolSpec>,
+-}
+-
+-impl ToolOutput for ToolSearchOutput {
+-    fn log_output(&self) -> String {
+-        let tools = self
+-            .tools
+-            .iter()
+-            .map(|tool| {
+-                serde_json::to_value(tool).unwrap_or_else(|err| {
+-                    JsonValue::String(format!("failed to serialize tool_search output: {err}"))
+-                })
+-            })
+-            .collect();
+-        JsonValue::Array(tools).to_string()
+-    }
+-
+-    fn success_for_logging(&self) -> bool {
+-        true
+-    }
+-
+-    fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
+-        ResponseInputItem::ToolSearchOutput {
+-            call_id: call_id.to_string(),
+-            status: "completed".to_string(),
+-            execution: "client".to_string(),
+-            tools: self
+-                .tools
+-                .iter()
+-                .map(|tool| {
+-                    serde_json::to_value(tool).unwrap_or_else(|err| {
+-                        JsonValue::String(format!("failed to serialize tool_search output: {err}"))
+-                    })
+-                })
+-                .collect(),
+-        }
+-    }
+-}
++pub use codex_tools::ToolSearchOutput;
+ 
+ pub struct FunctionToolOutput {
+     pub body: Vec<FunctionCallOutputContentItem>,
+@@ -371,12 +333,22 @@ impl ToolOutput for AbortedToolOutput {
+ 
+     fn to_response_item(&self, call_id: &str, payload: &ToolPayload) -> ResponseInputItem {
+         match payload {
+-            ToolPayload::ToolSearch { .. } => ResponseInputItem::ToolSearchOutput {
+-                call_id: call_id.to_string(),
+-                status: "completed".to_string(),
+-                execution: "client".to_string(),
+-                tools: Vec::new(),
+-            },
++            ToolPayload::HostedMcpApproval { .. } => codex_tools::ToolOutput::to_response_item(
++                &codex_tools::HostedMcpApprovalDecision {
++                    approve: false,
++                    reason: Some(self.message.clone()),
++                },
++                call_id,
++                payload,
++            ),
++            ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_) => {
++                ResponseInputItem::ToolSearchOutput {
++                    call_id: call_id.to_string(),
++                    status: "completed".to_string(),
++                    execution: "client".to_string(),
++                    tools: Vec::new(),
++                }
++            }
+             _ => function_tool_response(
+                 call_id,
+                 payload,
+diff --git a/codex-rs/core/src/tools/executed_tool_calls.rs b/codex-rs/core/src/tools/executed_tool_calls.rs
+index 03443d8455d15c2bd0066d1e34ee2f5343912f63..2bdead490580b8d366cf6651a1fb801740d2234b 100644
+--- a/codex-rs/core/src/tools/executed_tool_calls.rs
++++ b/codex-rs/core/src/tools/executed_tool_calls.rs
+@@ -742,10 +742,14 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
+         ToolPayload::Computer { arguments }
+         | ToolPayload::Function { arguments }
+         | ToolPayload::Shell { arguments } => arguments.len(),
++        ToolPayload::HostedMcpApproval { request } => {
++            serialized_json_bytes(request).unwrap_or(usize::MAX)
++        }
+         ToolPayload::Custom { input } => serialized_json_bytes(input).unwrap_or(usize::MAX),
+         ToolPayload::ToolSearch { arguments } => {
+             serialized_json_bytes(arguments).unwrap_or(usize::MAX)
+         }
++        ToolPayload::ClientToolSearch(call) => serialized_json_bytes(&call.arguments).unwrap_or(usize::MAX),
+     };
+     let name = codex_tools::code_mode_name_for_tool_name(&call.tool_name);
+     let recorded_call = if original_bytes > MAX_EXECUTED_TOOL_CALL_ARGUMENT_BYTES {
+@@ -756,10 +760,14 @@ fn recorded_call(call: &ToolCall) -> (ExecutedToolCall, usize) {
+             | ToolPayload::Function { arguments }
+             | ToolPayload::Shell { arguments } => serde_json::from_str(arguments)
+                 .unwrap_or_else(|_| JsonValue::String(arguments.clone())),
++            ToolPayload::HostedMcpApproval { request } => {
++                serde_json::to_value(request).unwrap_or_default()
++            }
+             ToolPayload::Custom { input } => JsonValue::String(input.clone()),
+             ToolPayload::ToolSearch { arguments } => {
+                 serde_json::to_value(arguments).unwrap_or_default()
+             }
++            ToolPayload::ClientToolSearch(call) => call.arguments.clone(),
+         };
+         ExecutedToolCall::new(name, arguments)
+     };
+@@ -773,6 +781,7 @@ fn input_call_id(item: &ResponseItem) -> Option<&str> {
+         | ResponseItem::CustomToolCall { call_id, .. } => Some(call_id),
+         ResponseItem::ToolSearchCall { call_id, .. }
+         | ResponseItem::LocalShellCall { call_id, .. } => call_id.as_deref(),
++        ResponseItem::McpApprovalRequest { id, .. } => id.as_ref().map(|id| id.as_str()),
+         _ => None,
+     }
+ }
+@@ -783,6 +792,10 @@ fn output_call_id(item: &ResponseItem) -> Option<&str> {
+         | ResponseItem::ToolSearchOutput { call_id, .. } => call_id.as_deref(),
+         ResponseItem::ComputerCallOutput { call_id, .. }
+         | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id),
++        ResponseItem::McpApprovalResponse {
++            approval_request_id,
++            ..
++        } => Some(approval_request_id),
+         _ => None,
+     }
+ }
+diff --git a/codex-rs/core/src/tools/handlers/extension_tools.rs b/codex-rs/core/src/tools/handlers/extension_tools.rs
+index 9436124da5902601126eaef81ddaaa7103f8c2c2..95785c06f62cd5aef12aba13ee4f62280e46e934 100644
+--- a/codex-rs/core/src/tools/handlers/extension_tools.rs
++++ b/codex-rs/core/src/tools/handlers/extension_tools.rs
+@@ -139,6 +139,11 @@ impl CoreToolRuntime for ExtensionToolAdapter {
+                 ToolSpec::Computer { .. }
+                     | ToolSpec::ComputerUsePreview { .. }
+                     | ToolSpec::ApplicationShell { .. }
++                    | ToolSpec::Mcp(_)
++            ),
++            ToolPayload::HostedMcpApproval { request } => matches!(
++                self.0.spec(),
++                ToolSpec::Mcp(config) if config.server_label == request.server_label
+             ),
+             ToolPayload::Custom { .. } => match self.0.spec() {
+                 ToolSpec::Freeform(_) => true,
+@@ -152,15 +157,18 @@ impl CoreToolRuntime for ExtensionToolAdapter {
+                 ToolSpec::Function(_)
+                 | ToolSpec::ToolSearch { .. }
+                 | ToolSpec::FileSearch(_)
++                | ToolSpec::Mcp(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::Shell(_)
+                 | ToolSpec::ApplicationShell { .. }
+                 | ToolSpec::ImageGeneration(_)
++                | ToolSpec::ProviderToolSearch(_)
+                 | ToolSpec::Computer { .. }
+                 | ToolSpec::ComputerUsePreview { .. }
+                 | ToolSpec::WebSearch { .. } => false,
+             },
+             ToolPayload::ToolSearch { .. } => false,
++            ToolPayload::ClientToolSearch(_) => matches!(self.0.spec(), ToolSpec::ProviderToolSearch(config) if !config.searches_on_provider()),
+         }
+     }
+ }
+@@ -251,6 +259,14 @@ async fn to_extension_call<'a>(
+             &invocation.step_context.settings,
+         ))
+         .and_then(|metadata| to_ascii_json_string(&metadata).ok());
++    let payload = match &invocation.payload {
++        ToolPayload::ClientToolSearch(call) => {
++            let mut call = call.clone();
++            call.catalog = invocation.step_context.tool_router.client_tool_search_catalog();
++            ToolPayload::ClientToolSearch(call)
++        }
++        payload => payload.clone(),
++    };
+     ExtensionToolCall {
+         turn_id: invocation.turn.sub_id.clone(),
+         call_id: invocation.call_id.clone(),
+@@ -274,7 +290,7 @@ async fn to_extension_call<'a>(
+             turn: Arc::downgrade(&invocation.turn),
+         }),
+         environments,
+-        payload: invocation.payload.clone(),
++        payload,
+     }
+ }
+ 
+diff --git a/codex-rs/core/src/tools/handlers/tool_search.rs b/codex-rs/core/src/tools/handlers/tool_search.rs
+index a107c13d5bd3e2f119281e30647fd249e3f156c6..d0c086e5660ab0e961b03845e89242d193584de3 100644
+--- a/codex-rs/core/src/tools/handlers/tool_search.rs
++++ b/codex-rs/core/src/tools/handlers/tool_search.rs
+@@ -202,6 +202,8 @@ impl ToolSearchHandler {
+ 
+         let args = match payload {
+             ToolPayload::ToolSearch { arguments } => arguments,
++            ToolPayload::ClientToolSearch(call) => serde_json::from_value(call.arguments)
++                .map_err(|error| FunctionCallError::RespondToModel(format!("failed to parse tool_search arguments: {error}")))?,
+             _ => {
+                 return Err(FunctionCallError::Fatal(format!(
+                     "{TOOL_SEARCH_TOOL_NAME} handler received unsupported payload"
+diff --git a/codex-rs/core/src/tools/parallel.rs b/codex-rs/core/src/tools/parallel.rs
+index 8a8fc04505ab2fe383cc85eb7661f8b0b0e3917a..988b5a3fef3a8bdd785752e11031581879fa9fbf 100644
+--- a/codex-rs/core/src/tools/parallel.rs
++++ b/codex-rs/core/src/tools/parallel.rs
+@@ -266,7 +266,12 @@ impl ToolCallRuntime {
+                     (result.into_response(), pending_exec, succeeded)
+                 }
+                 Err(FunctionCallError::Fatal(message)) => return Err(CodexErr::Fatal(message)),
+-                Err(other) if matches!(error_call.payload, ToolPayload::Computer { .. }) => {
++                Err(other)
++                    if matches!(
++                        error_call.payload,
++                        ToolPayload::Computer { .. } | ToolPayload::HostedMcpApproval { .. }
++                    ) =>
++                {
+                     return Err(CodexErr::Fatal(other.to_string()));
+                 }
+                 Err(other) => (
+@@ -444,6 +449,9 @@ impl ToolCallRuntime {
+                                 if matches!(call.payload, ToolPayload::Computer { .. }) {
+                                     return Err(FunctionCallError::Fatal("computer call cancelled".into()));
+                                 }
++                                if matches!(call.payload, ToolPayload::HostedMcpApproval { .. }) {
++                                    return Err(FunctionCallError::Fatal("Hosted MCP approval cancelled".into()));
++                                }
+                                 let response = Self::aborted_response(&call, secs);
+                                 call_trace::result_ready(
+                                     thread_id,
+@@ -488,17 +496,29 @@ impl ToolCallRuntime {
+ 
+     fn failure_response(call: ToolCall, err: FunctionCallError) -> ResponseInputItem {
+         let message = err.to_string();
++        if matches!(&call.payload, ToolPayload::HostedMcpApproval { .. }) {
++            return codex_tools::ToolOutput::to_response_item(
++                &codex_tools::HostedMcpApprovalDecision {
++                    approve: false,
++                    reason: Some(message),
++                },
++                &call.call_id,
++                &call.payload,
++            );
++        }
+         match &call.payload {
+             ToolPayload::Shell { arguments } => {
+                 codex_tools::ApplicationShellOutput::error(arguments, message)
+                     .to_response_item(&call.call_id, &call.payload)
+             }
+-            ToolPayload::ToolSearch { .. } => ResponseInputItem::ToolSearchOutput {
+-                call_id: call.call_id,
+-                status: "completed".to_string(),
+-                execution: "client".to_string(),
+-                tools: Vec::new(),
+-            },
++            ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_) => {
++                ResponseInputItem::ToolSearchOutput {
++                    call_id: call.call_id,
++                    status: "completed".to_string(),
++                    execution: "client".to_string(),
++                    tools: Vec::new(),
++                }
++            }
+             ToolPayload::Custom { .. } => ResponseInputItem::CustomToolCallOutput {
+                 call_id: call.call_id,
+                 name: None,
+diff --git a/codex-rs/core/src/tools/registry.rs b/codex-rs/core/src/tools/registry.rs
+index 2073b226378b6af4e72b91893efbbe12aba4f9ce..e47ac871c1e761a3842dae3c74dbeea63979937d 100644
+--- a/codex-rs/core/src/tools/registry.rs
++++ b/codex-rs/core/src/tools/registry.rs
+@@ -92,7 +92,7 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
+     fn matches_kind(&self, payload: &ToolPayload) -> bool {
+         matches!(
+             payload,
+-            ToolPayload::Function { .. } | ToolPayload::ToolSearch { .. }
++            ToolPayload::Function { .. } | ToolPayload::ToolSearch { .. } | ToolPayload::ClientToolSearch(_)
+         )
+     }
+ 
+@@ -550,10 +550,12 @@ impl ToolRegistry {
+                 | ToolSpec::Freeform(_)
+                 | ToolSpec::ToolSearch { .. }
+                 | ToolSpec::FileSearch(_)
++                | ToolSpec::Mcp(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::Shell(_)
+                 | ToolSpec::ApplicationShell { .. }
+                 | ToolSpec::ImageGeneration(_)
++                | ToolSpec::ProviderToolSearch(_)
+                 | ToolSpec::Computer { .. }
+                 | ToolSpec::ComputerUsePreview { .. }
+                 | ToolSpec::WebSearch { .. } => "",
+@@ -881,7 +883,8 @@ impl ToolRegistry {
+                         && !matches!(&final_item, codex_protocol::models::ResponseItem::ComputerCallOutput { call_id, .. } if call_id == &invocation.call_id)
+                     {
+                         return Err(FunctionCallError::Fatal(
+-                            "native computer result must retain its protocol type and call ID".into(),
++                            "native computer result must retain its protocol type and call ID"
++                                .into(),
+                         ));
+                     }
+                     if matches!(invocation.payload, ToolPayload::Shell { .. })
+@@ -896,6 +899,14 @@ impl ToolRegistry {
+                             "native shell result must retain its protocol type and call ID".into(),
+                         ));
+                     }
++                    if matches!(invocation.payload, ToolPayload::HostedMcpApproval { .. })
++                        && !matches!(&final_item, codex_protocol::models::ResponseItem::McpApprovalResponse { approval_request_id, .. } if approval_request_id == &invocation.call_id)
++                    {
++                        return Err(FunctionCallError::Fatal(
++                            "Hosted MCP approval decision must retain the original request ID"
++                                .into(),
++                        ));
++                    }
+                     crate::file_admission::validate_response_items(
+                         invocation
+                             .session
+diff --git a/codex-rs/core/src/tools/router.rs b/codex-rs/core/src/tools/router.rs
+index 98e8d570686d66d2033c930dac52806e88af14a9..e83e0684d11eaa4959f48c0158a644c6f5ab6f06 100644
+--- a/codex-rs/core/src/tools/router.rs
++++ b/codex-rs/core/src/tools/router.rs
+@@ -19,7 +19,6 @@ use crate::tools::spec_plan::finalize_tool_router;
+ use codex_protocol::error::CodexErrorDetails;
+ use codex_protocol::error::Result as CodexResult;
+ use codex_protocol::models::ResponseItem;
+-use codex_protocol::models::SearchToolCallParams;
+ #[cfg(test)]
+ use codex_protocol::openai_models::ModelInfo;
+ use codex_protocol::openai_models::ToolMode;
+@@ -211,23 +210,53 @@ impl ToolRouter {
+                 }
+                 ToolSpec::ToolSearch { .. }
+                 | ToolSpec::FileSearch(_)
++                | ToolSpec::Mcp(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::Shell(_)
+                 | ToolSpec::ImageGeneration(_)
+                 | ToolSpec::WebSearch { .. } => false,
++                ToolSpec::ProviderToolSearch(config) => {
++                    !config.searches_on_provider()
++                        && name.is_default_namespace()
++                        && name.name == "tool_search"
++                }
+             })
+         {
+             return true;
+         }
+-        self.model_visible_specs
+-            .iter()
+-            .any(|spec| matches!(spec, ToolSpec::ToolSearch { .. }))
+-            && self.registry.entries().any(|tool| {
+-                tool.exposure.is_deferred()
+-                    && tool.runtime.tool_name().with_default_namespace() == name
+-                    && (tool.runtime.immutable_spec().is_some()
+-                        || tool.runtime.search_info().is_some())
++        self.model_visible_specs.iter().any(|spec| match spec {
++            ToolSpec::ToolSearch { .. } => true,
++            ToolSpec::ProviderToolSearch(config) => !config.searches_on_provider(),
++            _ => false,
++        }) && self.registry.entries().any(|tool| {
++            tool.exposure.is_deferred()
++                && tool.runtime.tool_name().with_default_namespace() == name
++                && (tool.runtime.immutable_spec().is_some()
++                    || tool.runtime.search_info().is_some())
++        })
++    }
++
++    pub(crate) fn client_tool_search_catalog(&self) -> Vec<codex_tools::ClientToolSearchEntry> {
++        self.registry
++            .entries()
++            .filter(|tool| tool.exposure.is_direct() || tool.exposure.is_deferred())
++            .filter_map(|tool| {
++                let info = tool.runtime.search_info().or_else(|| {
++                    tool.runtime.immutable_spec().and_then(|spec| {
++                        codex_tools::ToolSearchInfo::from_shared_spec(
++                            String::new(),
++                            Arc::clone(spec),
++                            None,
++                        )
++                    })
++                })?;
++                Some(codex_tools::ClientToolSearchEntry {
++                    name: tool.runtime.tool_name(),
++                    deferred: tool.exposure.is_deferred(),
++                    info,
++                })
+             })
++            .collect()
+     }
+ 
+     /// Projects only schema-addition metadata for a complete selected catalog.
+@@ -365,6 +394,13 @@ impl ToolRouter {
+ 
+     /// Check the retained dispatch plan without hooks, accounting, or parse-error logging.
+     pub(crate) fn admits_response_item(&self, item: &ResponseItem) -> bool {
++        if let ResponseItem::McpApprovalRequest { server_label, .. } = item
++            && !self.model_visible_specs.iter().any(
++                |spec| matches!(spec, ToolSpec::Mcp(config) if &config.server_label == server_label),
++            )
++        {
++            return false;
++        }
+         self.build_model_tool_call(item.clone())
+             .ok()
+             .flatten()
+@@ -412,25 +448,50 @@ impl ToolRouter {
+                     encrypted_function_args,
+                 }))
+             }
+-            ResponseItem::ToolSearchCall {
+-                call_id: Some(call_id),
+-                execution,
++            ResponseItem::McpApprovalRequest {
++                id,
++                server_label,
++                name,
+                 arguments,
++                provider_fields,
+                 ..
+-            } if execution == "client" => {
+-                let arguments: SearchToolCallParams =
+-                    serde_json::from_value(arguments).map_err(|err| {
+-                        FunctionCallError::RespondToModel(format!(
+-                            "failed to parse tool_search arguments: {err}"
+-                        ))
+-                    })?;
++            } => {
++                let id = id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
++                    FunctionCallError::Fatal("Hosted MCP approval request is missing its ID".into())
++                })?;
++                if server_label.trim().is_empty() || name.trim().is_empty() {
++                    return Err(FunctionCallError::Fatal(
++                        "Hosted MCP approval request is missing its server or tool name".into(),
++                    ));
++                }
+                 Ok(Some(ToolCall {
+-                    tool_name: ToolName::plain("tool_search"),
+-                    call_id,
+-                    payload: ToolPayload::ToolSearch { arguments },
++                    tool_name: ToolName::namespaced("hosted_mcp", server_label.as_str()),
++                    call_id: id.into(),
++                    payload: ToolPayload::HostedMcpApproval {
++                        request: codex_tools::HostedMcpApprovalRequest {
++                            server_label,
++                            name,
++                            arguments,
++                            caller: provider_fields.get("caller").cloned(),
++                        },
++                    },
+                     encrypted_function_args: None,
+                 }))
+             }
++            ResponseItem::ToolSearchCall {
++                call_id: Some(call_id),
++                execution,
++                arguments,
++                ..
++            } if execution == "client" => Ok(Some(ToolCall {
++                tool_name: ToolName::plain("tool_search"),
++                call_id,
++                payload: ToolPayload::ClientToolSearch(codex_tools::ClientToolSearchCall {
++                    arguments,
++                    catalog: Vec::new(),
++                }),
++                encrypted_function_args: None,
++            })),
+             ResponseItem::ToolSearchCall { .. } => Ok(None),
+             ResponseItem::CustomToolCall {
+                 name,
+@@ -536,3 +597,111 @@ impl ToolRouter {
+ #[cfg(test)]
+ #[path = "router_tests.rs"]
+ mod tests;
++
++#[cfg(test)]
++mod application_client_search_tests {
++    use super::*;
++    use codex_protocol::models::ResponseInputItem;
++    use codex_tools::ToolOutput;
++
++    struct CatalogRuntime(&'static str);
++    impl codex_tools::ToolExecutor<crate::tools::context::ToolInvocation> for CatalogRuntime {
++        fn tool_name(&self) -> ToolName {
++            ToolName::plain(self.0)
++        }
++        fn spec(&self) -> ToolSpec {
++            ToolSpec::Function(codex_tools::ResponsesApiTool {
++                name: self.0.into(),
++                description: "captured catalog control".into(),
++                strict: false,
++                parameters: codex_tools::JsonSchema::object(
++                    std::collections::BTreeMap::new(),
++                    None,
++                    None,
++                ),
++                defer_loading: None,
++                output_schema: None,
++            })
++        }
++        fn handle<'a>(
++            &'a self,
++            _: crate::tools::context::ToolInvocation,
++        ) -> codex_tools::ToolExecutorFuture<'a>
++        where
++            crate::tools::context::ToolInvocation: 'a,
++        {
++            Box::pin(async { unreachable!("catalog control never executes a tool") })
++        }
++    }
++    impl crate::tools::registry::CoreToolRuntime for CatalogRuntime {}
++
++    #[test]
++    fn custom_client_selection_rejects_hidden_registry_entries() {
++        use crate::tools::registry::{ToolExposure, ToolRegistry};
++        let mut registry =
++            ToolRegistry::with_tool_policy(Arc::new(codex_extension_api::ToolPolicy::default()));
++        registry.register_trusted_with_exposure(
++            Arc::new(CatalogRuntime("hidden_lookup")),
++            ToolExposure::Hidden,
++        );
++        registry.register_trusted_with_exposure(
++            Arc::new(CatalogRuntime("direct_lookup")),
++            ToolExposure::Direct,
++        );
++        registry.register_trusted_with_exposure(
++            Arc::new(CatalogRuntime("deferred_lookup")),
++            ToolExposure::Deferred,
++        );
++        let router = ToolRouter::from_parts(
++            registry,
++            Vec::new(),
++            ToolMode::Direct,
++            std::collections::BTreeMap::new(),
++            None,
++            &[],
++            None,
++        );
++        let catalog = router.client_tool_search_catalog();
++        assert_eq!(
++            catalog
++                .iter()
++                .map(|entry| entry.name.name.as_str())
++                .collect::<Vec<_>>(),
++            vec!["direct_lookup", "deferred_lookup"]
++        );
++        let select = |name| {
++            codex_tools::ClientToolSearchSelection {
++                tool_refs: vec![ToolName::plain(name)],
++                catalog_generation: None,
++            }
++            .resolve(&catalog, &[])
++        };
++        assert!(select("hidden_lookup").is_err());
++        assert!(select("direct_lookup").is_ok());
++        assert!(select("deferred_lookup").is_ok());
++    }
++
++    #[test]
++    fn arbitrary_client_arguments_have_been_retaining_their_call_owner() {
++        let arguments = serde_json::json!({"department":"support","tags":["billing"]});
++        let item: ResponseItem = serde_json::from_value(serde_json::json!({
++            "type":"tool_search_call", "id":"provider-item", "call_id":"client-search",
++            "execution":"client", "arguments":arguments,
++        }))
++        .unwrap();
++        let call = ToolRouter::build_tool_call(item).unwrap().unwrap();
++        assert_eq!(call.call_id, "client-search");
++        assert_eq!(call.tool_name, ToolName::plain("tool_search"));
++        let ToolPayload::ClientToolSearch(payload) = &call.payload else {
++            panic!("expected raw client search")
++        };
++        assert_eq!(payload.arguments, arguments);
++        let output = crate::tools::context::AbortedToolOutput {
++            message: "selection rejected".into(),
++        }
++        .to_response_item(&call.call_id, &call.payload);
++        assert!(
++            matches!(output, ResponseInputItem::ToolSearchOutput { call_id, .. } if call_id == "client-search")
++        );
++    }
++}
+diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
+index 1a4e8587dd68b42461497ca16ab98262842b5ec4..4d87b25a9d3b04e31a3273c6db9fc08616312e9c 100644
+--- a/codex-rs/core/src/tools/router_tests.rs
++++ b/codex-rs/core/src/tools/router_tests.rs
+@@ -245,6 +245,105 @@ fn test_tool_router(
+     )
+ }
+ 
++struct HostedMcpApprovalExecutor;
++
++impl<'call> ToolExecutor<ExtensionToolCall<'call>> for HostedMcpApprovalExecutor {
++    fn tool_name(&self) -> ToolName {
++        ToolName::namespaced("hosted_mcp", "docs")
++    }
++
++    fn spec(&self) -> ToolSpec {
++        ToolSpec::Mcp(codex_tools::HostedMcpTool {
++            server_label: "docs".to_owned(),
++            provider_data: Default::default(),
++        })
++    }
++
++    fn exposure(&self) -> ToolExposure {
++        ToolExposure::DirectModelOnly
++    }
++
++    fn handle<'a>(&'a self, call: ExtensionToolCall<'call>) -> codex_tools::ToolExecutorFuture<'a>
++    where
++        'call: 'a,
++    {
++        Box::pin(async move {
++            assert_eq!(call.call_id, "mcpr_accepted");
++            assert_eq!(
++                call.payload,
++                ToolPayload::HostedMcpApproval {
++                    request: codex_tools::HostedMcpApprovalRequest {
++                        server_label: "docs".to_owned(),
++                        name: "lookup".to_owned(),
++                        arguments: "{}".to_owned(),
++                        caller: Some(json!({"type": "direct"})),
++                    },
++                }
++            );
++            Ok(Box::new(codex_tools::HostedMcpApprovalDecision {
++                approve: false,
++                reason: Some("Use public documents only".to_owned()),
++            }) as Box<dyn codex_tools::ToolOutput>)
++        })
++    }
++}
++
++#[tokio::test]
++async fn hosted_mcp_approval_uses_the_captured_server_and_exact_id() -> anyhow::Result<()> {
++    let (session, turn) = make_session_and_context().await;
++    let turn = Arc::new(turn);
++    let step = StepContext::for_test(Arc::clone(&turn));
++    let executors: Vec<Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>> =
++        vec![Arc::new(HostedMcpApprovalExecutor)];
++    let router = test_tool_router(step.as_ref(), Vec::new(), executors, &turn.dynamic_tools);
++    let request = |server: &str, id: &str| {
++        serde_json::from_value::<ResponseItem>(json!({
++            "type": "mcp_approval_request",
++            "id": id,
++            "server_label": server,
++            "name": "lookup",
++            "arguments": "{}",
++            "caller": {"type": "direct"},
++        }))
++        .expect("provider MCP request should parse")
++    };
++    let accepted = request("docs", "mcpr_accepted");
++    assert!(router.admits_response_item(&accepted));
++    assert!(!router.admits_response_item(&request("other", "mcpr_foreign")));
++    assert!(!router.admits_response_item(&request("docs", "")));
++    let forged_call = serde_json::from_value::<ResponseItem>(json!({
++        "type": "function_call",
++        "namespace": "hosted_mcp",
++        "name": "docs",
++        "call_id": "mcpr_accepted",
++        "arguments": "{}",
++    }))?;
++    assert!(!router.admits_response_item(&forged_call));
++
++    let call = ToolRouter::build_tool_call(accepted)?.expect("captured MCP approval");
++    let result = router
++        .dispatch_tool_call_with_code_mode_result(
++            Arc::new(session),
++            step,
++            CancellationToken::new(),
++            Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new())),
++            call,
++            ToolCallSource::Direct,
++        )
++        .await?;
++    assert_eq!(
++        serde_json::to_value(result.into_response().item)?,
++        json!({
++            "type": "mcp_approval_response",
++            "approval_request_id": "mcpr_accepted",
++            "approve": false,
++            "reason": "Use public documents only",
++            "caller": {"type": "direct"},
++        })
++    );
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn parallel_support_does_not_match_namespaced_local_tool_names() -> anyhow::Result<()> {
+     let (_, turn) = make_session_and_context().await;
+@@ -739,7 +838,9 @@ fn namespace_function_names(specs: &[ToolSpec], namespace_name: &str) -> Vec<Str
+             | ToolSpec::Function(_)
+             | ToolSpec::Freeform(_)
+             | ToolSpec::ToolSearch { .. }
++            | ToolSpec::ProviderToolSearch(_)
+             | ToolSpec::FileSearch(_)
++            | ToolSpec::Mcp(_)
+             | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::ImageGeneration(_)
+             | ToolSpec::Shell(_)
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index 5ba90816c850d2c8c027bb7f560bf86c40b7dcd5..677d88dc10ec6ef8cd8500a8d76972358bf78b22 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -269,7 +269,7 @@ pub(crate) async fn build_tool_router(
+         let mut candidates = registry
+             .entries()
+             .map(|entry| entry.runtime.tool_name())
+-            .chain(hosted_specs.iter().map(|spec| ToolName::plain(spec.name())))
++            .chain(hosted_specs.iter().map(hosted_tool_policy_name))
+             .collect::<Vec<_>>();
+         if matches!(
+             effective_tool_mode(turn_context, model_info),
+@@ -354,7 +354,7 @@ pub(crate) async fn build_tool_router(
+             registry.remove(&name);
+         }
+         hosted_specs.retain(|spec| {
+-            selected.contains(&ToolName::plain(spec.name()).with_default_namespace())
++            selected.contains(&hosted_tool_policy_name(spec).with_default_namespace())
+         });
+     }
+     finalize_selected_tool_router(
+@@ -578,6 +578,17 @@ pub(crate) fn finalize_tool_router(
+     )
+ }
+ 
++// MCP's wire type is shared, but its authority is captured per server.
++fn hosted_tool_policy_name(spec: &ToolSpec) -> ToolName {
++    match spec {
++        ToolSpec::Mcp(config) => ToolName::new(
++            Some("hosted_mcp".into()),
++            config.server_label.clone(),
++        ),
++        _ => ToolName::plain(spec.name()),
++    }
++}
++
+ fn finalize_selected_tool_router(
+     turn_context: &TurnContext,
+     model_info: &ModelInfo,
+@@ -589,7 +600,7 @@ fn finalize_selected_tool_router(
+     let allows = |name: &ToolName| {
+         selected.is_none_or(|names| names.contains(&name.clone().with_default_namespace()))
+     };
+-    hosted_specs.retain(|spec| registry.tool_policy.allows(&ToolName::plain(spec.name())));
++    hosted_specs.retain(|spec| registry.tool_policy.allows(&hosted_tool_policy_name(spec)));
+     apply_direct_model_only_namespace_overrides(turn_context, &mut registry);
+     enforce_strict_3p_tools(turn_context, model_info, &mut registry);
+     let tool_mode = effective_tool_mode(turn_context, model_info);
+@@ -605,15 +616,30 @@ fn finalize_selected_tool_router(
+         }
+     }
+     let tool_search_name = ToolName::plain(TOOL_SEARCH_TOOL_NAME);
+-    if allows(&tool_search_name)
++    let hosted_tool_search = hosted_specs
++        .iter()
++        .any(|spec| matches!(spec, ToolSpec::ProviderToolSearch(_)));
++    let client_tool_search = registry.entries().any(|tool| {
++        tool.exposure.is_direct()
++            && tool.runtime.tool_name() == tool_search_name
++            && matches!(
++                tool.runtime.spec(),
++                ToolSpec::ProviderToolSearch(config) if !config.searches_on_provider()
++            )
++    });
++    let use_builtin_search = !hosted_tool_search
++        && !client_tool_search
++        && allows(&tool_search_name)
+         && model_info.supports_search_tool
+         && registry.entries().any(|tool| {
+             tool.runtime.tool_name() != tool_search_name
+                 && tool.exposure.is_deferred()
+                 && tool.runtime.search_info().is_some()
+-        })
+-    {
+-        if registry.remove(&tool_search_name).is_some() {
++        });
++    if hosted_tool_search || client_tool_search || use_builtin_search {
++        if (hosted_tool_search || use_builtin_search)
++            && registry.remove(&tool_search_name).is_some()
++        {
+             registry.record_collision(tool_search_name.clone());
+         }
+         // Special model tools own the namespace matching their wire identity, so
+@@ -639,7 +665,9 @@ fn finalize_selected_tool_router(
+                 registry.record_collision(tool_name);
+             }
+         }
+-        append_tool_search_executor(turn_context, &mut registry, tool_search_handler_cache);
++        if use_builtin_search {
++            append_tool_search_executor(turn_context, &mut registry, tool_search_handler_cache);
++        }
+     }
+ 
+     let model_messages = ResolvedModelMessages::from_model(model_info);
+@@ -688,10 +716,12 @@ fn finalize_selected_tool_router(
+                     ToolSpec::Function(_) | ToolSpec::Freeform(_) => DEFAULT_FUNCTION_NAMESPACE,
+                     ToolSpec::ToolSearch { .. } => TOOL_SEARCH_TOOL_NAME,
+                     ToolSpec::FileSearch(_)
++                    | ToolSpec::Mcp(_)
+                     | ToolSpec::CodeInterpreter(_)
+                     | ToolSpec::Shell(_)
+                     | ToolSpec::ApplicationShell { .. }
+                     | ToolSpec::ImageGeneration(_)
++                    | ToolSpec::ProviderToolSearch(_)
+                     | ToolSpec::Computer { .. }
+                     | ToolSpec::ComputerUsePreview { .. }
+                     | ToolSpec::WebSearch { .. } => continue,
+@@ -843,10 +873,17 @@ fn build_model_visible_specs(
+     code_mode_tool_names: &BTreeMap<String, ToolName>,
+     hosted_specs: Vec<ToolSpec>,
+ ) -> Vec<ToolSpec> {
++    let provider_searches = hosted_specs.iter().any(
++        |spec| matches!(spec, ToolSpec::ProviderToolSearch(config) if config.searches_on_provider()),
++    );
+     let mut specs = Vec::new();
+     for tool in registry.entries() {
+         let exposure = tool.exposure;
+-        if !exposure.is_direct() {
++        if !exposure.is_direct()
++            && !(provider_searches
++                && exposure.is_deferred()
++                && tool.runtime.search_info().is_some())
++        {
+             continue;
+         }
+ 
+@@ -855,7 +892,13 @@ fn build_model_visible_specs(
+             continue;
+         }
+ 
+-        let spec = tool.runtime.spec();
++        let mut spec = tool.runtime.spec();
++        if exposure.is_deferred() {
++            let Some(deferred) = spec.deferred_for_provider_search() else {
++                continue;
++            };
++            spec = deferred;
++        }
+         specs.push(spec_for_model_request(
+             turn_context,
+             model_info,
+@@ -1134,10 +1177,12 @@ fn register_code_mode_executors(
+             ToolSpec::Namespace(_)
+             | ToolSpec::ToolSearch { .. }
+             | ToolSpec::FileSearch(_)
++            | ToolSpec::Mcp(_)
+             | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::Shell(_)
+             | ToolSpec::ApplicationShell { .. }
+             | ToolSpec::ImageGeneration(_)
++            | ToolSpec::ProviderToolSearch(_)
+             | ToolSpec::Computer { .. }
+             | ToolSpec::ComputerUsePreview { .. }
+             | ToolSpec::WebSearch { .. } => {
+@@ -1734,6 +1779,8 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
+ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mut ToolRegistry) {
+     for spec in dynamic_tools {
+         match spec {
++            // SDK extensions attach these executors through ToolContributor.
++            DynamicToolSpec::ToolSearch(_) | DynamicToolSpec::HostedMcp(_) => {}
+             DynamicToolSpec::Computer(tool) => {
+                 if let Ok(handler) = super::handlers::computer::ComputerToolHandler::new(tool) {
+                     registry.register_external(Arc::new(handler));
+diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
+index 27f595448627a138ea48c918673f1a70903cf381..d5b4c0e108c9d0c4eca8f1671aceab19bf4eafaf 100644
+--- a/codex-rs/core/src/tools/spec_plan_tests.rs
++++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -112,7 +112,9 @@ impl ToolPlanProbe {
+                 | ToolSpec::ComputerUsePreview { .. }
+                 | ToolSpec::Function(_)
+                 | ToolSpec::ToolSearch { .. }
++                | ToolSpec::ProviderToolSearch(_)
+                 | ToolSpec::FileSearch(_)
++                | ToolSpec::Mcp(_)
+                 | ToolSpec::CodeInterpreter(_)
+                 | ToolSpec::ImageGeneration(_)
+                 | ToolSpec::Shell(_)
+diff --git a/codex-rs/core/src/tools/tool_dispatch_trace.rs b/codex-rs/core/src/tools/tool_dispatch_trace.rs
+index a6dcb2eb0b7813117ab9a69f593c5ab2c22678ca..645df57e5e11038e10cd8253b3a4d20015bddb34 100644
+--- a/codex-rs/core/src/tools/tool_dispatch_trace.rs
++++ b/codex-rs/core/src/tools/tool_dispatch_trace.rs
+@@ -116,9 +116,13 @@ fn tool_dispatch_payload(payload: &ToolPayload) -> ToolDispatchPayload {
+         | ToolPayload::Shell { arguments } => ToolDispatchPayload::Function {
+             arguments: arguments.clone(),
+         },
++        ToolPayload::HostedMcpApproval { request } => ToolDispatchPayload::Function {
++            arguments: serde_json::to_string(request).unwrap_or_default(),
++        },
+         ToolPayload::ToolSearch { arguments } => ToolDispatchPayload::ToolSearch {
+             arguments: arguments.clone(),
+         },
++        ToolPayload::ClientToolSearch(call) => ToolDispatchPayload::Function { arguments: call.arguments.to_string() },
+         ToolPayload::Custom { input } => ToolDispatchPayload::Custom {
+             input: input.clone(),
+         },
+diff --git a/codex-rs/core/src/tools/tool_namespaces_info.rs b/codex-rs/core/src/tools/tool_namespaces_info.rs
+index 3d91b344fd1c9205b8ff53e5c3a2c7f4f32863b8..82ad63da4df04413e1c27b3996b18f40694b67f6 100644
+--- a/codex-rs/core/src/tools/tool_namespaces_info.rs
++++ b/codex-rs/core/src/tools/tool_namespaces_info.rs
+@@ -41,10 +41,12 @@ pub(super) fn collect_tool_namespaces_info(
+                 direct_functions.insert((TOOL_SEARCH_TOOL_NAME, TOOL_SEARCH_FUNCTION_NAME));
+             }
+             ToolSpec::FileSearch(_)
++            | ToolSpec::Mcp(_)
+             | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::Shell(_)
+             | ToolSpec::ApplicationShell { .. }
+             | ToolSpec::ImageGeneration(_)
++            | ToolSpec::ProviderToolSearch(_)
+             | ToolSpec::Computer { .. }
+             | ToolSpec::ComputerUsePreview { .. }
+             | ToolSpec::WebSearch { .. } => {}
+diff --git a/codex-rs/core/src/turn_timing.rs b/codex-rs/core/src/turn_timing.rs
+index 1df591e9e3456529e700e865a973f5fb2bed47e6..bc5c06a8cb3bd0d421fe2cc3fe07a040d51deaa9 100644
+--- a/codex-rs/core/src/turn_timing.rs
++++ b/codex-rs/core/src/turn_timing.rs
+@@ -441,6 +441,9 @@ fn response_item_records_turn_ttft(item: &ResponseItem) -> bool {
+         | ResponseItem::CustomToolCall { .. }
+         | ResponseItem::ToolSearchCall { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
++        | ResponseItem::McpApprovalRequest { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+@@ -453,6 +456,7 @@ fn response_item_records_turn_ttft(item: &ResponseItem) -> bool {
+         | ResponseItem::ComputerCallOutput { .. }
+         | ResponseItem::FunctionCallOutput { .. }
+         | ResponseItem::CustomToolCallOutput { .. }
++        | ResponseItem::McpApprovalResponse { .. }
+         | ResponseItem::ToolSearchOutput { .. }
+         | ResponseItem::ItemReference { .. }
+         | ResponseItem::Other => false,
+diff --git a/codex-rs/ext/guardian-v2/src/async_scorer/action.rs b/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
+index b8005b8883d9cc21e279cfbe34360a1b7a508bf6..a1ce7b2ec8769341e199e7a60c2482ccdff177ec 100644
+--- a/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
++++ b/codex-rs/ext/guardian-v2/src/async_scorer/action.rs
+@@ -28,7 +28,9 @@ impl GuardianAction {
+                 serde_json::from_str(&arguments).unwrap_or(serde_json::Value::String(arguments))
+             }
+             ToolPayload::Custom { input } => serde_json::Value::String(input),
++            ToolPayload::HostedMcpApproval { request } => json!(request),
+             ToolPayload::ToolSearch { arguments } => json!(arguments),
++            ToolPayload::ClientToolSearch(call) => call.arguments,
+         };
+         let mut action = match arguments {
+             serde_json::Value::Object(arguments) => arguments,
+diff --git a/codex-rs/ext/image-generation/src/tool.rs b/codex-rs/ext/image-generation/src/tool.rs
+index 062aff925d839911cd68b724a18228f5afbe0282..c9f7e84eab481cfcc8efc45466b12dbc579cfdca 100644
+--- a/codex-rs/ext/image-generation/src/tool.rs
++++ b/codex-rs/ext/image-generation/src/tool.rs
+@@ -523,6 +523,10 @@ fn recent_images(
+             | ResponseItem::CustomToolCall { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+             | ResponseItem::WebSearchCall { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/guardian-context/src/transcript.rs b/codex-rs/guardian-context/src/transcript.rs
+index 155962777e7e440d24fd579769179386948ab97f..496f55ef71f19fde1bdf273cde63d6d590a3280b 100644
+--- a/codex-rs/guardian-context/src/transcript.rs
++++ b/codex-rs/guardian-context/src/transcript.rs
+@@ -346,6 +346,10 @@ pub fn collect_transcript(
+                 ..
+             }
+             | ResponseItem::AdditionalTools { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/history/src/lib.rs b/codex-rs/history/src/lib.rs
+index dcc172b3cda3d278a8bfc12378dd5246f9ceb859..31e88ee4ed53c31cbf09b72ef33f3885ae44ef2f 100644
+--- a/codex-rs/history/src/lib.rs
++++ b/codex-rs/history/src/lib.rs
+@@ -77,6 +77,10 @@ pub struct CodexHarnessMetadata {
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub sdk_agent_profile: Option<serde_json::Value>,
+ 
++    /// Application tool routed by Core before dispatch; never sent to the provider.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub sdk_application_tool: Option<String>,
++
+     /// Provider/native function correlation; history metadata, never execution authority.
+     #[serde(default, skip_serializing_if = "Option::is_none")]
+     pub realtime_tool_call: Option<serde_json::Value>,
+diff --git a/codex-rs/history/src/sdk_originals.rs b/codex-rs/history/src/sdk_originals.rs
+index 491a279a5f4c3612b727234e0a929d5d7be06ef2..73f28efbfec2771a151e0dd21f1148c01dc2d9e1 100644
+--- a/codex-rs/history/src/sdk_originals.rs
++++ b/codex-rs/history/src/sdk_originals.rs
+@@ -73,6 +73,11 @@ pub fn input_projection(value: &str) -> Result<Option<ResponseItem>, String> {
+     let item: ResponseItem =
+         serde_json::from_str(value).map_err(|_| "Invalid canonical history item".to_string())?;
+     Ok(match item {
++        ResponseItem::McpApprovalResponse { approve: true, .. } => {
++            return Err(
++                "Imported hosted MCP approvals require live SDK approval authority".to_string(),
++            );
++        }
+         ResponseItem::Other
+         | ResponseItem::ConfigurationUpdate { .. }
+         | ResponseItem::CompactionTrigger { .. } => None,
+diff --git a/codex-rs/otel/src/events/session_telemetry.rs b/codex-rs/otel/src/events/session_telemetry.rs
+index 85546fdbfe05f43ba86db8adc558d173efa42282..e24bfc7a22922d08596cdc6d15e4e1e9f3b143ba 100644
+--- a/codex-rs/otel/src/events/session_telemetry.rs
++++ b/codex-rs/otel/src/events/session_telemetry.rs
+@@ -1419,6 +1419,10 @@ impl SessionTelemetry {
+             ResponseItem::CustomToolCall { .. } => "custom_tool_call".into(),
+             ResponseItem::CustomToolCallOutput { .. } => "custom_tool_call_output".into(),
+             ResponseItem::WebSearchCall { .. } => "web_search_call".into(),
++            ResponseItem::McpListTools { .. } => "mcp_list_tools".into(),
++            ResponseItem::McpCall { .. } => "mcp_call".into(),
++            ResponseItem::McpApprovalRequest { .. } => "mcp_approval_request".into(),
++            ResponseItem::McpApprovalResponse { .. } => "mcp_approval_response".into(),
+             ResponseItem::FileSearchCall { .. } => "file_search_call".into(),
+             ResponseItem::CodeInterpreterCall { .. } => "code_interpreter_call".into(),
+             ResponseItem::ShellCall { .. } => "shell_call".into(),
+diff --git a/codex-rs/protocol/src/dynamic_tools.rs b/codex-rs/protocol/src/dynamic_tools.rs
+index 7a067e62fef2c97499c661d49705d76e819ef311..a7711a330a52807111b79ea91e9e65d936d577d2 100644
+--- a/codex-rs/protocol/src/dynamic_tools.rs
++++ b/codex-rs/protocol/src/dynamic_tools.rs
+@@ -12,9 +12,11 @@ use ts_rs::TS;
+ #[ts(tag = "type", export_to = "v2/")]
+ pub enum DynamicToolSpec {
+     Computer(DynamicComputerToolSpec),
++    ToolSearch(DynamicToolSearchSpec),
+     Function(DynamicToolFunctionSpec),
+     Namespace(DynamicToolNamespaceSpec),
+     Shell(DynamicShellToolSpec),
++    HostedMcp(DynamicHostedMcpSpec),
+ }
+ 
+ /// Shell execution is supplied by the SDK host. Skills describe its local environment.
+@@ -48,6 +50,27 @@ pub struct LocalShellSkill {
+     pub path: String,
+ }
+ 
++/// Captured application-owned client search; never a function provider schema.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++#[ts(export_to = "v2/")]
++pub struct DynamicToolSearchSpec {
++    pub declaration: JsonValue,
++}
++impl DynamicToolSearchSpec {
++    pub fn callback_spec(&self) -> DynamicToolFunctionSpec {
++        DynamicToolFunctionSpec {
++            strict: false,
++            output_schema: None,
++            name: "tool_search".into(),
++            description: "Native client tool search".into(),
++            input_schema: self.declaration.get("parameters").cloned()
++                .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}}},"required":["paths"],"additionalProperties":false})),
++            defer_loading: false,
++        }
++    }
++}
++
+ /// Native computer declaration. The host retains execution and safety-policy authority.
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+ #[serde(rename_all = "camelCase", deny_unknown_fields)]
+@@ -458,3 +481,45 @@ mod image_reference_tests {
+         assert!(typescript.contains("{ fileId: string; imageUrl?: never }"));
+     }
+ }
++
++/// Saved identity of an SDK-owned hosted MCP approval callback.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++#[ts(export_to = "v2/")]
++pub struct DynamicHostedMcpSpec {
++    pub server_label: String,
++}
++
++impl DynamicHostedMcpSpec {
++    pub fn callback_spec(&self) -> DynamicToolFunctionSpec {
++        DynamicToolFunctionSpec {
++            strict: false,
++            output_schema: None,
++            name: self.server_label.clone(),
++            description: "Hosted MCP approval callback".into(),
++            input_schema: serde_json::json!({"type": "object"}),
++            defer_loading: false,
++        }
++    }
++}
++
++#[cfg(test)]
++mod hosted_mcp_tests {
++    use super::DynamicToolSpec;
++    use serde_json::json;
++
++    #[test]
++    fn hosted_mcp_checkpoint_keeps_only_the_server_label() {
++        let identity = json!({"type": "hostedMcp", "serverLabel": "docs"});
++        let spec = serde_json::from_value::<DynamicToolSpec>(identity.clone()).unwrap();
++        assert_eq!(serde_json::to_value(spec).unwrap(), identity);
++        assert!(
++            serde_json::from_value::<DynamicToolSpec>(json!({
++                "type": "hostedMcp",
++                "serverLabel": "docs",
++                "headers": {"authorization": "fixture-only"}
++            }))
++            .is_err()
++        );
++    }
++}
+diff --git a/codex-rs/protocol/src/models.rs b/codex-rs/protocol/src/models.rs
+index ddaf5cf8c7f8bde2cbc113edde2130ffd6b2c194..58de958a043ae9ee0d235ff941cb796482b91122 100644
+--- a/codex-rs/protocol/src/models.rs
++++ b/codex-rs/protocol/src/models.rs
+@@ -865,6 +865,16 @@ pub enum ResponseInputItem {
+         #[schemars(with = "FunctionCallOutputBody")]
+         output: FunctionCallOutputPayload,
+     },
++    McpApprovalResponse {
++        approval_request_id: String,
++        approve: bool,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional)]
++        reason: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional, type = "unknown")]
++        caller: Option<serde_json::Value>,
++    },
+     McpToolCallOutput {
+         call_id: String,
+         output: CallToolResult,
+@@ -1055,6 +1065,58 @@ pub enum ResponseItem {
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
+     },
++    McpListTools {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional)]
++        id: Option<ResponseItemId>,
++        server_label: String,
++        #[serde(default)]
++        #[ts(type = "unknown[]")]
++        tools: Vec<serde_json::Value>,
++        #[serde(flatten)]
++        provider_fields: std::collections::BTreeMap<String, serde_json::Value>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
++    },
++    McpCall {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional)]
++        id: Option<ResponseItemId>,
++        server_label: String,
++        name: String,
++        arguments: String,
++        #[serde(flatten)]
++        provider_fields: std::collections::BTreeMap<String, serde_json::Value>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
++    },
++    McpApprovalRequest {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional)]
++        id: Option<ResponseItemId>,
++        server_label: String,
++        name: String,
++        arguments: String,
++        #[serde(flatten)]
++        provider_fields: std::collections::BTreeMap<String, serde_json::Value>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
++    },
++    McpApprovalResponse {
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional)]
++        id: Option<ResponseItemId>,
++        approval_request_id: String,
++        approve: bool,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional)]
++        reason: Option<String>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        #[ts(optional, type = "unknown")]
++        caller: Option<serde_json::Value>,
++        #[serde(default, skip_serializing_if = "Option::is_none")]
++        internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
++    },
+     AdditionalTools {
+         #[serde(default, skip_serializing_if = "Option::is_none")]
+         #[ts(optional)]
+@@ -1383,6 +1445,10 @@ impl ResponseItem {
+             | Self::ToolSearchCall { id, .. }
+             | Self::FunctionCallOutput { id, .. }
+             | Self::ComputerCall { id, .. }
++            | Self::McpListTools { id, .. }
++            | Self::McpCall { id, .. }
++            | Self::McpApprovalRequest { id, .. }
++            | Self::McpApprovalResponse { id, .. }
+             | Self::ComputerCallOutput { id, .. }
+             | Self::CustomToolCall { id, .. }
+             | Self::CustomToolCallOutput { id, .. }
+@@ -1414,6 +1480,10 @@ impl ResponseItem {
+             | Self::ToolSearchCall { id, .. }
+             | Self::FunctionCallOutput { id, .. }
+             | Self::ComputerCall { id, .. }
++            | Self::McpListTools { id, .. }
++            | Self::McpCall { id, .. }
++            | Self::McpApprovalRequest { id, .. }
++            | Self::McpApprovalResponse { id, .. }
+             | Self::ComputerCallOutput { id, .. }
+             | Self::CustomToolCall { id, .. }
+             | Self::CustomToolCallOutput { id, .. }
+@@ -1446,6 +1516,10 @@ impl ResponseItem {
+             Self::ToolSearchCall { .. } => Some("tsc"),
+             Self::FunctionCallOutput { .. } => Some("fco"),
+             Self::ComputerCall { .. } => Some("cc"),
++            Self::McpListTools { .. } => Some("mcpl"),
++            Self::McpCall { .. } => Some("mcp"),
++            Self::McpApprovalRequest { .. } => Some("mcpr"),
++            Self::McpApprovalResponse { .. } => Some("mcpa"),
+             Self::ComputerCallOutput { .. } => Some("cco"),
+             Self::CustomToolCall { .. } => Some("ctc"),
+             Self::CustomToolCallOutput { .. } => Some("ctco"),
+@@ -1491,6 +1565,10 @@ impl ResponseItem {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+             }
++            | Self::McpApprovalResponse {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
+             | Self::ComputerCallOutput {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+@@ -1575,6 +1653,22 @@ impl ResponseItem {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+             }
++            | Self::McpListTools {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
++            | Self::McpCall {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
++            | Self::McpApprovalRequest {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
++            | Self::McpApprovalResponse {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
+             | Self::ComputerCallOutput {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+@@ -1667,6 +1761,22 @@ impl ResponseItem {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+             }
++            | Self::McpListTools {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
++            | Self::McpCall {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
++            | Self::McpApprovalRequest {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
++            | Self::McpApprovalResponse {
++                internal_chat_message_metadata_passthrough: metadata,
++                ..
++            }
+             | Self::ComputerCallOutput {
+                 internal_chat_message_metadata_passthrough: metadata,
+                 ..
+@@ -2109,6 +2219,19 @@ impl From<ResponseInputItem> for ResponseItem {
+                 output,
+                 internal_chat_message_metadata_passthrough: None,
+             },
++            ResponseInputItem::McpApprovalResponse {
++                approval_request_id,
++                approve,
++                reason,
++                caller,
++            } => Self::McpApprovalResponse {
++                id: None,
++                approval_request_id,
++                approve,
++                reason,
++                caller,
++                internal_chat_message_metadata_passthrough: None,
++            },
+             ResponseInputItem::McpToolCallOutput { call_id, output } => {
+                 let output = output.into_function_call_output_payload();
+                 Self::FunctionCallOutput {
+@@ -2716,6 +2839,66 @@ impl std::fmt::Display for FunctionCallOutputPayload {
+ #[cfg(test)]
+ mod tests {
+ 
++    #[test]
++    fn hosted_mcp_items_round_trip_provider_data_and_approval_reference() {
++        for value in [
++            serde_json::json!({
++                "type": "mcp_list_tools",
++                "id": "mcpl_catalog",
++                "server_label": "docs",
++                "tools": [{
++                    "name": "lookup",
++                    "input_schema": {"type": "object", "properties": {}}
++                }],
++                "error": null
++            }),
++            serde_json::json!({
++                "type": "mcp_call",
++                "id": "mcp_call",
++                "server_label": "docs",
++                "name": "lookup",
++                "arguments": "{}",
++                "output": "answer",
++                "error": null,
++                "status": "completed",
++                "approval_request_id": "mcpr_request"
++            }),
++            serde_json::json!({
++                "type": "mcp_approval_request",
++                "id": "mcpr_request",
++                "server_label": "docs",
++                "name": "lookup",
++                "arguments": "{}"
++            }),
++        ] {
++            let mut item: super::ResponseItem = serde_json::from_value(value.clone()).unwrap();
++            assert_eq!(item.id().unwrap().as_str(), value["id"].as_str().unwrap());
++            item.set_turn_id_if_missing("turn_mcp");
++            assert_eq!(item.turn_id(), Some("turn_mcp"));
++            item.clear_internal_chat_message_metadata_passthrough();
++            assert_eq!(serde_json::to_value(item).unwrap(), value);
++        }
++
++        let reply = super::ResponseInputItem::McpApprovalResponse {
++            approval_request_id: "mcpr_request".into(),
++            approve: false,
++            reason: Some("Use public documents only".into()),
++            caller: Some(serde_json::json!({"type": "direct"})),
++        };
++        let wire = serde_json::json!({
++            "type": "mcp_approval_response",
++            "approval_request_id": "mcpr_request",
++            "approve": false,
++            "reason": "Use public documents only",
++            "caller": {"type": "direct"}
++        });
++        assert_eq!(serde_json::to_value(&reply).unwrap(), wire);
++        assert_eq!(
++            serde_json::to_value(super::ResponseItem::from(reply)).unwrap(),
++            wire
++        );
++    }
++
+     #[test]
+     fn hosted_response_items_preserve_nullable_and_unknown_provider_fields() {
+         for value in [
+diff --git a/codex-rs/rollout/src/persistence_metrics.rs b/codex-rs/rollout/src/persistence_metrics.rs
+index 0660e04f335db4c86581f0e7b34e6385f902b03b..aa7063fd0a7dc410a92c4914cf1b4a7387c67614 100644
+--- a/codex-rs/rollout/src/persistence_metrics.rs
++++ b/codex-rs/rollout/src/persistence_metrics.rs
+@@ -333,6 +333,10 @@ fn response_item_type(item: &ResponseItemEnvelope) -> &'static str {
+         ResponseItem::CustomToolCall { .. } => "response.custom_tool_call",
+         ResponseItem::CustomToolCallOutput { .. } => "response.custom_tool_call_output",
+         ResponseItem::WebSearchCall { .. } => "response.web_search_call",
++        ResponseItem::McpListTools { .. } => "response.mcp_list_tools",
++        ResponseItem::McpCall { .. } => "response.mcp_call",
++        ResponseItem::McpApprovalRequest { .. } => "response.mcp_approval_request",
++        ResponseItem::McpApprovalResponse { .. } => "response.mcp_approval_response",
+         ResponseItem::FileSearchCall { .. } => "response.file_search_call",
+         ResponseItem::CodeInterpreterCall { .. } => "response.code_interpreter_call",
+         ResponseItem::ShellCall { .. } => "response.shell_call",
+diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
+index 7e56194dea2439396656831a6f2fcd54d2e5660d..fca83eb842b408c98f1dc56f414c010ce2261fa2 100644
+--- a/codex-rs/rollout/src/policy.rs
++++ b/codex-rs/rollout/src/policy.rs
+@@ -95,6 +95,10 @@ pub fn should_persist_response_item(item: &ResponseItem) -> bool {
+         | ResponseItem::CustomToolCall { .. }
+         | ResponseItem::CustomToolCallOutput { .. }
+         | ResponseItem::WebSearchCall { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
++        | ResponseItem::McpApprovalRequest { .. }
++        | ResponseItem::McpApprovalResponse { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+@@ -127,6 +131,10 @@ pub fn should_persist_response_item_for_memories(item: &ResponseItem) -> bool {
+         ResponseItem::AdditionalTools { .. }
+         | ResponseItem::Reasoning { .. }
+         | ResponseItem::ConfigurationUpdate { .. }
++        | ResponseItem::McpListTools { .. }
++        | ResponseItem::McpCall { .. }
++        | ResponseItem::McpApprovalRequest { .. }
++        | ResponseItem::McpApprovalResponse { .. }
+         | ResponseItem::FileSearchCall { .. }
+         | ResponseItem::CodeInterpreterCall { .. }
+         | ResponseItem::ShellCall { .. }
+diff --git a/codex-rs/tools/src/code_mode.rs b/codex-rs/tools/src/code_mode.rs
+index ae01b6c466e6562decf2c60b0d01b7306e9a387f..b1912d3e8bbf3ba8f141105b65dd44788e93939d 100644
+--- a/codex-rs/tools/src/code_mode.rs
++++ b/codex-rs/tools/src/code_mode.rs
+@@ -225,10 +225,12 @@ fn code_mode_tool_definitions_for_spec(
+             .collect(),
+         ToolSpec::ToolSearch { .. }
+         | ToolSpec::FileSearch(_)
++        | ToolSpec::Mcp(_)
+         | ToolSpec::CodeInterpreter(_)
+         | ToolSpec::Shell(_)
+         | ToolSpec::ApplicationShell { .. }
+         | ToolSpec::ImageGeneration(_)
++        | ToolSpec::ProviderToolSearch(_)
+         | ToolSpec::Computer { .. }
+         | ToolSpec::ComputerUsePreview { .. }
+         | ToolSpec::WebSearch { .. } => Vec::new(),
+diff --git a/codex-rs/tools/src/hosted_tools.rs b/codex-rs/tools/src/hosted_tools.rs
+index 822a1beae81402b949a94b3b3a34d3619844ca81..3c64fc35c65cde5d5d0dd3f908f8f62c6174c581 100644
+--- a/codex-rs/tools/src/hosted_tools.rs
++++ b/codex-rs/tools/src/hosted_tools.rs
+@@ -14,6 +14,8 @@ pub enum HostedToolSpec {
+     CodeInterpreter(CodeInterpreterTool),
+     Shell(HostedShellTool),
+     ImageGeneration(ImageGenerationTool),
++    ToolSearch(ProviderToolSearch),
++    Mcp(HostedMcpTool),
+ }
+ 
+ impl From<HostedToolSpec> for crate::ToolSpec {
+@@ -23,10 +25,113 @@ impl From<HostedToolSpec> for crate::ToolSpec {
+             HostedToolSpec::CodeInterpreter(config) => Self::CodeInterpreter(config),
+             HostedToolSpec::Shell(config) => Self::Shell(config),
+             HostedToolSpec::ImageGeneration(config) => Self::ImageGeneration(config),
++            HostedToolSpec::ToolSearch(config) => Self::ProviderToolSearch(config),
++            HostedToolSpec::Mcp(config) => Self::Mcp(config),
+         }
+     }
+ }
+ 
++/// A remote MCP server whose calls are executed by the Responses provider.
++#[derive(Clone, Serialize, Deserialize, PartialEq)]
++pub struct HostedMcpTool {
++    pub server_label: String,
++    #[serde(flatten)]
++    pub provider_data: serde_json::Map<String, serde_json::Value>,
++}
++
++impl std::fmt::Debug for HostedMcpTool {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("HostedMcpTool")
++            .field("server_label", &self.server_label)
++            .field("provider_field_count", &self.provider_data.len())
++            .finish()
++    }
++}
++
++/// The provider's approval input. Core carries its original request ID separately.
++#[derive(Clone, PartialEq, Serialize, Deserialize)]
++pub struct HostedMcpApprovalRequest {
++    pub server_label: String,
++    pub name: String,
++    pub arguments: String,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub caller: Option<serde_json::Value>,
++}
++
++impl std::fmt::Debug for HostedMcpApprovalRequest {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("HostedMcpApprovalRequest")
++            .field("server_label", &self.server_label)
++            .field("name", &self.name)
++            .finish_non_exhaustive()
++    }
++}
++
++/// The application's decision for an admitted approval request.
++#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct HostedMcpApprovalDecision {
++    pub approve: bool,
++    pub reason: Option<String>,
++}
++
++impl crate::ToolOutput for HostedMcpApprovalDecision {
++    fn log_output(&self) -> String {
++        if self.approve {
++            "Hosted MCP call approved".to_owned()
++        } else {
++            "Hosted MCP call declined".to_owned()
++        }
++    }
++
++    fn success_for_logging(&self) -> bool {
++        true
++    }
++
++    fn to_response_item(
++        &self,
++        call_id: &str,
++        payload: &crate::ToolPayload,
++    ) -> codex_protocol::models::ResponseInputItem {
++        let caller = match payload {
++            crate::ToolPayload::HostedMcpApproval { request } => request.caller.clone(),
++            _ => None,
++        };
++        codex_protocol::models::ResponseInputItem::McpApprovalResponse {
++            approval_request_id: call_id.to_owned(),
++            approve: self.approve,
++            reason: self.reason.clone(),
++            caller,
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
++#[serde(rename_all = "snake_case")]
++pub enum ProviderToolSearchExecution {
++    Server,
++    Client,
++}
++
++/// Explicit Responses search options, separate from Core's own search executor.
++#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
++pub struct ProviderToolSearch {
++    #[serde(flatten)]
++    pub provider_data: serde_json::Map<String, serde_json::Value>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub execution: Option<ProviderToolSearchExecution>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub description: Option<String>,
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    pub parameters: Option<serde_json::Value>,
++}
++
++impl ProviderToolSearch {
++    pub fn searches_on_provider(&self) -> bool {
++        self.execution != Some(ProviderToolSearchExecution::Client)
++    }
++}
++
+ #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+ #[serde(untagged)]
+ pub enum CodeInterpreterContainer {
+@@ -197,9 +302,69 @@ pub enum AutoCodeInterpreterContainerKind {
+ 
+ #[cfg(test)]
+ mod tests {
++    #[test]
++    fn provider_tool_search_preserves_wire_options_and_defaults() {
++        for input in [
++            serde_json::json!({"type": "tool_search"}),
++            serde_json::json!({
++                "type": "tool_search",
++                "execution": "server",
++                "description": "Find deferred account tools.",
++                "parameters": {"type": "object", "additionalProperties": false},
++            }),
++            serde_json::json!({
++                "type": "tool_search",
++                "execution": "client",
++                "parameters": {"type": "object", "properties": {"scope": {"type": "string"}}},
++            }),
++        ] {
++            let hosted: super::HostedToolSpec = serde_json::from_value(input.clone()).unwrap();
++            let spec = crate::ToolSpec::from(hosted);
++            assert_eq!(spec.name(), "tool_search");
++            let crate::ToolSpec::ProviderToolSearch(ref config) = spec else {
++                panic!("Expected an explicit provider tool-search declaration");
++            };
++            assert_eq!(
++                config.searches_on_provider(),
++                input.get("execution").and_then(serde_json::Value::as_str) != Some("client")
++            );
++            assert_eq!(serde_json::to_value(spec).unwrap(), input);
++        }
++        assert!(
++            serde_json::from_value::<super::HostedToolSpec>(
++                serde_json::json!({"type": "tool_search", "execution": "invalid"})
++            )
++            .is_err()
++        );
++    }
++
+     use super::*;
+     use serde_json::json;
+ 
++    #[test]
++    fn hosted_mcp_forwards_provider_configuration_and_redacts_debug_fields() {
++        let wire = json!({
++            "type": "mcp",
++            "server_label": "docs",
++            "server_url": "https://mcp.example.invalid",
++            "authorization": "fixture-token",
++            "headers": {"X-Application": "fixture-header"},
++            "allowed_tools": {"tool_names": ["lookup"], "read_only": true},
++            "require_approval": {"always": {"tool_names": ["lookup"]}},
++            "allowed_callers": ["direct"],
++            "defer_loading": true,
++            "provider_extension": {"enabled": true}
++        });
++        let hosted: HostedToolSpec = serde_json::from_value(wire.clone()).unwrap();
++        let spec = crate::ToolSpec::from(hosted);
++        let debug = format!("{spec:?}");
++        assert!(!debug.contains("fixture-token"));
++        assert!(!debug.contains("fixture-header"));
++        assert!(!debug.contains("mcp.example.invalid"));
++        assert!(!spec.has_eager_callable(&crate::ToolName::plain("mcp")));
++        assert_eq!(serde_json::to_value(spec).unwrap(), wire);
++    }
++
+     #[test]
+     fn hosted_declarations_serialize_provider_fields_without_include_flag() {
+         let input = json!({"tools": [
+@@ -312,3 +477,17 @@ mod option_fidelity_tests {
+         }
+     }
+ }
++
++/// Builds the provider declaration captured by the application client-search slot.
++pub fn client_tool_search_spec(
++    spec: &codex_protocol::dynamic_tools::DynamicToolSearchSpec,
++) -> Result<crate::ToolSpec, String> {
++    match serde_json::from_value::<HostedToolSpec>(spec.declaration.clone())
++        .map_err(|_| "Invalid captured client tool search declaration".to_string())?
++    {
++        HostedToolSpec::ToolSearch(config) if !config.searches_on_provider() => {
++            Ok(crate::ToolSpec::ProviderToolSearch(config))
++        }
++        _ => Err("Captured client tool search requires client execution".to_string()),
++    }
++}
+diff --git a/codex-rs/tools/src/lib.rs b/codex-rs/tools/src/lib.rs
+index 4ebed0b7169c9d63953b64e9586063b9e7a9419e..aef4bce931adc1075ea5088f4304a43f8df4d20d 100644
+--- a/codex-rs/tools/src/lib.rs
++++ b/codex-rs/tools/src/lib.rs
+@@ -114,8 +114,8 @@ pub use tool_executor::ToolExecutorFuture;
+ pub use tool_executor::ToolExposure;
+ pub use tool_executor::ToolExposures;
+ pub use tool_output::JsonToolOutput;
+-pub use tool_output::ToolOutput;
+-pub use tool_payload::ToolPayload;
++pub use tool_output::{ToolOutput, ToolSearchOutput};
++pub use tool_payload::{ClientToolSearchCall, ClientToolSearchEntry, ClientToolSearchSelection, ToolPayload};
+ pub use tool_search::ToolSearchEntry;
+ pub use tool_search::ToolSearchInfo;
+ pub use tool_spec::ResponsesApiWebSearchFilters;
+@@ -124,3 +124,5 @@ pub use tool_spec::ToolSpec;
+ pub use tool_spec::create_tools_json_for_responses_api;
+ pub use tool_spec::create_tools_json_for_responses_lite;
+ pub use tool_spec::create_tools_raw_json_for_responses_api;
++
++pub use hosted_tools::client_tool_search_spec;
+diff --git a/codex-rs/tools/src/tool_output.rs b/codex-rs/tools/src/tool_output.rs
+index 2f51a493325ed6ae589b797382582926421f8f25..418d810ea468ea246bf7559578d531279b6d01d6 100644
+--- a/codex-rs/tools/src/tool_output.rs
++++ b/codex-rs/tools/src/tool_output.rs
+@@ -6,7 +6,7 @@ use codex_protocol::models::ImageReference;
+ use codex_protocol::models::ResponseInputItem;
+ use serde_json::Value as JsonValue;
+ 
+-use crate::ToolPayload;
++use crate::{LoadableToolSpec, ToolPayload};
+ 
+ /// Model-facing output contract returned by executable tool runtimes.
+ pub trait ToolOutput: Send {
+@@ -289,6 +289,16 @@ fn response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue
+                 content_items_to_code_mode_result(&items)
+             }
+         },
++        ResponseInputItem::McpApprovalResponse {
++            approval_request_id,
++            approve,
++            reason,
++            ..
++        } => serde_json::json!({
++            "approval_request_id": approval_request_id,
++            "approve": approve,
++            "reason": reason,
++        }),
+         ResponseInputItem::ToolSearchOutput { tools, .. } => JsonValue::Array(tools),
+         ResponseInputItem::McpToolCallOutput { output, .. } => serde_json::to_value(output)
+             .unwrap_or_else(|err| {
+@@ -358,3 +368,44 @@ fn structured_provider_media_result(item: ResponseInputItem) -> Option<JsonValue
+     });
+     rich.then(|| serde_json::to_value(parts).expect("canonical content is serializable"))
+ }
++
++#[derive(Clone)]
++pub struct ToolSearchOutput {
++    pub tools: Vec<LoadableToolSpec>,
++}
++
++impl ToolOutput for ToolSearchOutput {
++    fn log_output(&self) -> String {
++        let tools = self
++            .tools
++            .iter()
++            .map(|tool| {
++                serde_json::to_value(tool).unwrap_or_else(|err| {
++                    JsonValue::String(format!("failed to serialize tool_search output: {err}"))
++                })
++            })
++            .collect();
++        JsonValue::Array(tools).to_string()
++    }
++
++    fn success_for_logging(&self) -> bool {
++        true
++    }
++
++    fn to_response_item(&self, call_id: &str, _payload: &ToolPayload) -> ResponseInputItem {
++        ResponseInputItem::ToolSearchOutput {
++            call_id: call_id.to_string(),
++            status: "completed".to_string(),
++            execution: "client".to_string(),
++            tools: self
++                .tools
++                .iter()
++                .map(|tool| {
++                    serde_json::to_value(tool).unwrap_or_else(|err| {
++                        JsonValue::String(format!("failed to serialize tool_search output: {err}"))
++                    })
++                })
++                .collect(),
++        }
++    }
++}
+diff --git a/codex-rs/tools/src/tool_payload.rs b/codex-rs/tools/src/tool_payload.rs
+index 035abba527a1e94cac747e994fa4c66bc585433c..3049547d883aca60fafd9c6b71e957a4ac0ed7c8 100644
+--- a/codex-rs/tools/src/tool_payload.rs
++++ b/codex-rs/tools/src/tool_payload.rs
+@@ -1,5 +1,8 @@
+ use std::borrow::Cow;
+ 
++use crate::{HostedMcpApprovalRequest, ToolName, ToolSearchInfo};
++use serde_json::Value;
++
+ use codex_protocol::models::SearchToolCallParams;
+ 
+ /// Canonical payload shapes accepted by model-visible tool runtimes.
+@@ -8,7 +11,9 @@ pub enum ToolPayload {
+     Computer { arguments: String },
+     Shell { arguments: String },
+     Function { arguments: String },
++    HostedMcpApproval { request: HostedMcpApprovalRequest },
+     ToolSearch { arguments: SearchToolCallParams },
++    ClientToolSearch(ClientToolSearchCall),
+     Custom { input: String },
+ }
+ 
+@@ -18,8 +23,266 @@ impl ToolPayload {
+             ToolPayload::Computer { .. } => Cow::Borrowed("[native computer call]"),
+             ToolPayload::Shell { .. } => Cow::Borrowed("[native shell call]"),
+             ToolPayload::Function { arguments } => Cow::Borrowed(arguments),
++            ToolPayload::HostedMcpApproval { .. } => Cow::Borrowed("[hosted MCP approval request]"),
+             ToolPayload::ToolSearch { arguments } => Cow::Owned(arguments.query.clone()),
+             ToolPayload::Custom { input } => Cow::Borrowed(input),
++            ToolPayload::ClientToolSearch(_) => Cow::Borrowed("[native client tool search]"),
+         }
+     }
+ }
++
++/// One entry from the exact admitted native tool registry.
++#[derive(Clone, PartialEq)]
++pub struct ClientToolSearchEntry {
++    pub name: ToolName,
++    pub deferred: bool,
++    pub info: ToolSearchInfo,
++}
++
++/// Raw application arguments and a trusted read-only catalog snapshot.
++#[derive(Clone, PartialEq)]
++pub struct ClientToolSearchCall {
++    pub arguments: Value,
++    pub catalog: Vec<ClientToolSearchEntry>,
++}
++
++impl std::fmt::Debug for ClientToolSearchCall {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("ClientToolSearchCall")
++            .field("catalog_entries", &self.catalog.len())
++            .finish_non_exhaustive()
++    }
++}
++
++#[derive(Clone, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct ClientToolSearchSelection {
++    pub tool_refs: Vec<ToolName>,
++    #[serde(default)]
++    pub catalog_generation: Option<String>,
++}
++
++impl ClientToolSearchSelection {
++    pub fn from_response(
++        response: &codex_protocol::dynamic_tools::DynamicToolResponse,
++    ) -> Result<Self, crate::FunctionCallError> {
++        use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
++        if !response.success {
++            return Err(crate::FunctionCallError::RespondToModel(
++                "Client tool search failed".into(),
++            ));
++        }
++        let [DynamicToolCallOutputContentItem::InputText { text }] =
++            response.content_items.as_slice()
++        else {
++            return Err(crate::FunctionCallError::RespondToModel(
++                "Client tool search requires a JSON selection".into(),
++            ));
++        };
++        serde_json::from_str(text).map_err(|_| {
++            crate::FunctionCallError::RespondToModel("Invalid client tool search selection".into())
++        })
++    }
++
++    pub fn resolve(
++        &self,
++        captured_catalog: &[ClientToolSearchEntry],
++        admitted_new_catalog: &[ClientToolSearchEntry],
++    ) -> Result<crate::ToolSearchOutput, crate::FunctionCallError> {
++        let mut catalog = std::collections::HashMap::new();
++        for entry in captured_catalog.iter().chain(admitted_new_catalog) {
++            let key = entry.name.clone().with_default_namespace();
++            if catalog.insert(key, entry).is_some() {
++                return Err(crate::FunctionCallError::RespondToModel(
++                    "Client tool search cannot replace a captured tool".into(),
++                ));
++            }
++        }
++        let mut seen = std::collections::HashSet::new();
++        let mut tools = Vec::new();
++        for name in &self.tool_refs {
++            let key = name.clone().with_default_namespace();
++            if !seen.insert(key.clone()) {
++                continue;
++            }
++            let entry = catalog.get(&key).ok_or_else(|| {
++                crate::FunctionCallError::RespondToModel(
++                    "Client tool search selected a tool outside its captured catalog".into(),
++                )
++            })?;
++            tools.push(entry.info.entry.to_loadable_spec());
++        }
++        Ok(crate::ToolSearchOutput {
++            tools: crate::coalesce_loadable_tool_specs(tools),
++        })
++    }
++}
++
++impl ClientToolSearchCall {
++    pub fn load_default(
++        &self,
++        paths: &[String],
++    ) -> Result<Vec<ToolName>, crate::FunctionCallError> {
++        use std::collections::{BTreeMap, HashSet};
++        let mut plain = BTreeMap::new();
++        let mut namespaces: BTreeMap<String, Vec<&ClientToolSearchEntry>> = BTreeMap::new();
++        let mut qualified = BTreeMap::new();
++        for entry in self.catalog.iter().filter(|entry| entry.deferred) {
++            if entry.name.is_default_namespace() {
++                plain.insert(entry.name.name.clone(), entry);
++            } else if let Some(namespace) = &entry.name.namespace {
++                namespaces.entry(namespace.clone()).or_default().push(entry);
++                qualified.insert(format!("{namespace}.{}", entry.name.name), entry);
++            }
++        }
++        for path in paths {
++            if usize::from(plain.contains_key(path))
++                + usize::from(namespaces.contains_key(path))
++                + usize::from(qualified.contains_key(path))
++                > 1
++            {
++                return Err(crate::FunctionCallError::RespondToModel(
++                    "Ambiguous deferred tool search path".into(),
++                ));
++            }
++        }
++        let requested_namespaces: HashSet<_> = paths
++            .iter()
++            .filter(|path| namespaces.contains_key(*path))
++            .collect();
++        let mut seen = HashSet::new();
++        let mut selected = Vec::new();
++        for path in paths {
++            let entries = if let Some(entry) = plain.get(path) {
++                vec![*entry]
++            } else if let Some(entries) = namespaces.get(path) {
++                entries.clone()
++            } else if let Some(entry) = qualified.get(path) {
++                if entry
++                    .name
++                    .namespace
++                    .as_ref()
++                    .is_some_and(|namespace| requested_namespaces.contains(namespace))
++                {
++                    continue;
++                }
++                vec![*entry]
++            } else {
++                Vec::new()
++            };
++            for entry in entries {
++                if seen.insert(entry.name.clone().with_default_namespace()) {
++                    selected.push(entry.name.clone());
++                }
++            }
++        }
++        Ok(selected)
++    }
++}
++
++#[cfg(test)]
++mod client_search_tests {
++    use super::*;
++    use serde_json::json;
++
++    fn entry(name: &str, namespace: Option<&str>, deferred: bool) -> ClientToolSearchEntry {
++        let function = crate::ResponsesApiTool {
++            name: name.into(),
++            description: "captured-schema-sentinel".into(),
++            strict: false,
++            defer_loading: None,
++            output_schema: None,
++            parameters: crate::JsonSchema::object(std::collections::BTreeMap::new(), None, None),
++        };
++        let spec = match namespace {
++            Some(namespace) => crate::ToolSpec::Namespace(crate::ResponsesApiNamespace {
++                name: namespace.into(),
++                description: String::new(),
++                tools: vec![crate::ResponsesApiNamespaceTool::Function(function)],
++            }),
++            None => crate::ToolSpec::Function(function),
++        };
++        ClientToolSearchEntry {
++            name: ToolName::new(namespace.map(str::to_owned), name),
++            deferred,
++            info: ToolSearchInfo::from_tool_spec(spec, None).unwrap(),
++        }
++    }
++
++    #[test]
++    fn default_paths_preserve_namespace_precedence_and_ignore_unknown_or_direct_tools() {
++        let call = ClientToolSearchCall {
++            arguments: json!({}),
++            catalog: vec![
++                entry("lookup", None, true),
++                entry("first", Some("reports"), true),
++                entry("second", Some("reports"), true),
++                entry("direct", None, false),
++            ],
++        };
++        let selected = call
++            .load_default(&[
++                "reports.first".into(),
++                "missing".into(),
++                "lookup".into(),
++                "reports".into(),
++                "lookup".into(),
++                "direct".into(),
++            ])
++            .unwrap();
++        assert_eq!(
++            selected,
++            vec![
++                ToolName::plain("lookup"),
++                ToolName::new(Some("reports".into()), "first"),
++                ToolName::new(Some("reports".into()), "second")
++            ]
++        );
++    }
++
++    #[test]
++    fn selected_refs_resolve_only_captured_or_admitted_new_tools() {
++        let captured = vec![entry("lookup", None, true)];
++        let added = vec![entry("new_lookup", Some("reports"), true)];
++        let response = codex_protocol::dynamic_tools::DynamicToolResponse {
++            success: true, content_items: vec![codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem::InputText { text: json!({"tool_refs":[{"name":"lookup"},{"name":"new_lookup","namespace":"reports"}],"catalog_generation":"42"}).to_string() }],
++        };
++        let selection = ClientToolSearchSelection::from_response(&response).unwrap();
++        assert_eq!(selection.catalog_generation.as_deref(), Some("42"));
++        assert_eq!(selection.resolve(&captured, &added).unwrap().tools.len(), 2);
++        assert!(selection.resolve(&captured, &[]).is_err());
++        assert!(
++            selection
++                .resolve(&captured, &[entry("lookup", None, true)])
++                .is_err()
++        );
++    }
++
++    #[test]
++    fn raw_client_payload_debug_has_been_redacting_arguments_and_schemas() {
++        let payload = ToolPayload::ClientToolSearch(ClientToolSearchCall {
++            arguments: json!({"department":"private-argument-sentinel","tags":["account"]}),
++            catalog: vec![entry("lookup", None, true)],
++        });
++        let debug = format!("{payload:?}");
++        assert!(!debug.contains("private-argument-sentinel"));
++        assert!(!debug.contains("captured-schema-sentinel"));
++        assert_eq!(payload.log_payload(), "[native client tool search]");
++    }
++
++    #[test]
++    fn typed_slot_has_been_preserving_provider_configuration_without_a_function_schema() {
++        let declaration = json!({"type":"tool_search","execution":"client","description":"Find support tools","parameters":{"type":"object","properties":{"department":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}});
++        let slot = codex_protocol::dynamic_tools::DynamicToolSearchSpec {
++            declaration: declaration.clone(),
++        };
++        let spec = crate::client_tool_search_spec(&slot).unwrap();
++        assert_eq!(serde_json::to_value(spec).unwrap(), declaration);
++        let wire = serde_json::to_value(
++            codex_protocol::dynamic_tools::DynamicToolSpec::ToolSearch(slot),
++        )
++        .unwrap();
++        assert_eq!(wire["type"], "toolSearch");
++        assert_eq!(wire["declaration"], declaration);
++    }
++}
+diff --git a/codex-rs/tools/src/tool_search.rs b/codex-rs/tools/src/tool_search.rs
+index c5d88af41f58881aa0f094005738467d6e383b60..cb3e6b7a2ca1f8c36ba0b0b726f6fc69f057d3ec 100644
+--- a/codex-rs/tools/src/tool_search.rs
++++ b/codex-rs/tools/src/tool_search.rs
+@@ -45,10 +45,12 @@ impl ToolSearchInfo {
+             }),
+             ToolSpec::ToolSearch { .. }
+             | ToolSpec::FileSearch(_)
++            | ToolSpec::Mcp(_)
+             | ToolSpec::CodeInterpreter(_)
+             | ToolSpec::Shell(_)
+             | ToolSpec::ApplicationShell { .. }
+             | ToolSpec::ImageGeneration(_)
++            | ToolSpec::ProviderToolSearch(_)
+             | ToolSpec::Computer { .. }
+             | ToolSpec::ComputerUsePreview { .. }
+             | ToolSpec::WebSearch { .. } => None,
+@@ -96,10 +98,12 @@ fn normalize_search_spec(spec: ToolSpec) -> Option<LoadableToolSpec> {
+         ToolSpec::Namespace(namespace) => namespace,
+         ToolSpec::ToolSearch { .. }
+         | ToolSpec::FileSearch(_)
++        | ToolSpec::Mcp(_)
+         | ToolSpec::CodeInterpreter(_)
+         | ToolSpec::Shell(_)
+         | ToolSpec::ApplicationShell { .. }
+         | ToolSpec::ImageGeneration(_)
++        | ToolSpec::ProviderToolSearch(_)
+         | ToolSpec::Computer { .. }
+         | ToolSpec::ComputerUsePreview { .. }
+         | ToolSpec::WebSearch { .. } => {
+@@ -150,13 +154,16 @@ fn default_tool_search_text(spec: &ToolSpec) -> String {
+             push_search_part(&mut parts, description.clone());
+         }
+         ToolSpec::FileSearch(_)
++        | ToolSpec::Mcp(_)
+         | ToolSpec::CodeInterpreter(_)
+         | ToolSpec::Shell(_)
+         | ToolSpec::ApplicationShell { .. }
+         | ToolSpec::ImageGeneration(_) => {
+             push_search_part(&mut parts, spec.name().to_string());
+         }
+-        ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => {}
++        ToolSpec::Computer { .. }
++        | ToolSpec::ComputerUsePreview { .. }
++        | ToolSpec::ProviderToolSearch(_) => {}
+         ToolSpec::WebSearch { .. } => {
+             push_search_part(&mut parts, "web search".to_string());
+         }
+diff --git a/codex-rs/tools/src/tool_spec.rs b/codex-rs/tools/src/tool_spec.rs
+index a2ad571b607de0464dded891069abc119a6626a5..343094d213c394f6440c3db292a9ec42b48f3b4c 100644
+--- a/codex-rs/tools/src/tool_spec.rs
++++ b/codex-rs/tools/src/tool_spec.rs
+@@ -64,6 +64,8 @@ pub enum ToolSpec {
+     },
+     #[serde(rename = "file_search")]
+     FileSearch(crate::FileSearchTool),
++    #[serde(rename = "mcp")]
++    Mcp(crate::HostedMcpTool),
+     #[serde(rename = "code_interpreter")]
+     CodeInterpreter(crate::CodeInterpreterTool),
+     #[serde(rename = "shell")]
+@@ -74,6 +76,8 @@ pub enum ToolSpec {
+     },
+     #[serde(rename = "image_generation")]
+     ImageGeneration(crate::ImageGenerationTool),
++    #[serde(rename = "tool_search")]
++    ProviderToolSearch(crate::ProviderToolSearch),
+     #[serde(rename = "custom")]
+     Freeform(FreeformTool),
+ }
+@@ -121,8 +125,31 @@ impl ToolSpec {
+             | Self::ImageGeneration(_) => {
+                 target.is_default_namespace() && self.name() == target.name
+             }
+-            Self::Namespace(_) | Self::ToolSearch { .. } => false,
++            Self::Namespace(_)
++            | Self::ToolSearch { .. }
++            | Self::ProviderToolSearch(_)
++            | Self::Mcp(_) => false,
++        }
++    }
++
++    /// Advertise a deferred schema while retaining its provider options.
++    pub fn deferred_for_provider_search(mut self) -> Option<Self> {
++        match &mut self {
++            Self::Function(tool) => tool.defer_loading = Some(true),
++            Self::Freeform(tool) => tool.defer_loading = Some(true),
++            Self::Namespace(namespace) => {
++                for tool in &mut namespace.tools {
++                    match tool {
++                        ResponsesApiNamespaceTool::Function(tool) => {
++                            tool.defer_loading = Some(true)
++                        }
++                        ResponsesApiNamespaceTool::Custom(tool) => tool.defer_loading = Some(true),
++                    }
++                }
++            }
++            _ => return None,
+         }
++        Some(self)
+     }
+ 
+     pub fn name(&self) -> &str {
+@@ -130,9 +157,10 @@ impl ToolSpec {
+             ToolSpec::Computer { .. } | ToolSpec::ComputerUsePreview { .. } => "computer",
+             ToolSpec::Function(tool) => tool.name.as_str(),
+             ToolSpec::Namespace(namespace) => namespace.name.as_str(),
+-            ToolSpec::ToolSearch { .. } => "tool_search",
++            ToolSpec::ToolSearch { .. } | ToolSpec::ProviderToolSearch(_) => "tool_search",
+             ToolSpec::WebSearch { .. } => "web_search",
+             ToolSpec::FileSearch(_) => "file_search",
++            ToolSpec::Mcp(_) => "mcp",
+             ToolSpec::CodeInterpreter(_) => "code_interpreter",
+             ToolSpec::Shell(_) | ToolSpec::ApplicationShell { .. } => "shell",
+             ToolSpec::ImageGeneration(_) => "image_generation",
+diff --git a/codex-rs/tui/src/dynamic_tools.rs b/codex-rs/tui/src/dynamic_tools.rs
+index a7ad418ee1ba41547d96ff892e15add012b53a54..10773295c3d54f244b3f5fef1a2e682f62c6855e 100644
+--- a/codex-rs/tui/src/dynamic_tools.rs
++++ b/codex-rs/tui/src/dynamic_tools.rs
+@@ -264,7 +264,9 @@ pub(crate) fn non_delegation_tool_specs() -> Vec<DynamicToolSpec> {
+     tool_specs()
+         .into_iter()
+         .filter_map(|spec| match spec {
++            DynamicToolSpec::HostedMcp(_) => None,
+             spec @ (DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_)) => Some(spec),
++            DynamicToolSpec::ToolSearch(_) => None,
+             DynamicToolSpec::Function(function) => (!DELEGATION_TOOLS
+                 .contains(&function.name.as_str()))
+             .then_some(DynamicToolSpec::Function(function)),
+diff --git a/codex-rs/tui/src/dynamic_tools_mcp.rs b/codex-rs/tui/src/dynamic_tools_mcp.rs
+index 0e806377d6cbc5b98be637db9ac97068210d6726..5334237148e28fb69e29132bde5ea01688f68b08 100644
+--- a/codex-rs/tui/src/dynamic_tools_mcp.rs
++++ b/codex-rs/tui/src/dynamic_tools_mcp.rs
+@@ -262,7 +262,10 @@ impl ServerHandler for DynamicToolMcpHandler {
+         }
+         for spec in specs {
+             let functions = match spec {
+-                DynamicToolSpec::Computer(_) | DynamicToolSpec::Shell(_) => continue,
++                DynamicToolSpec::Computer(_)
++                | DynamicToolSpec::Shell(_)
++                | DynamicToolSpec::ToolSearch(_)
++                | DynamicToolSpec::HostedMcp(_) => continue,
+                 DynamicToolSpec::Function(function) => vec![function],
+                 DynamicToolSpec::Namespace(namespace) => namespace
+                     .tools
+diff --git a/codex-rs/utils/audio/src/lib.rs b/codex-rs/utils/audio/src/lib.rs
+index 4662c1269488bae4336a3479cb954cb0fb932da3..896051d3d330e6db6c9f6e647afcc7a05641482b 100644
+--- a/codex-rs/utils/audio/src/lib.rs
++++ b/codex-rs/utils/audio/src/lib.rs
+@@ -81,6 +81,10 @@ pub fn prepare_response_items(items: &mut [ResponseItem]) {
+             | ResponseItem::CustomToolCall { .. }
+             | ResponseItem::ToolSearchOutput { .. }
+             | ResponseItem::WebSearchCall { .. }
++            | ResponseItem::McpListTools { .. }
++            | ResponseItem::McpCall { .. }
++            | ResponseItem::McpApprovalRequest { .. }
++            | ResponseItem::McpApprovalResponse { .. }
+             | ResponseItem::FileSearchCall { .. }
+             | ResponseItem::CodeInterpreterCall { .. }
+             | ResponseItem::ShellCall { .. }
