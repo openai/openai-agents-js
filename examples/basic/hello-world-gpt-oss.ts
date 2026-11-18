@@ -17,6 +17,7 @@ async function main() {
     // This is an example of how to use gpt-oss with Ollama.
     // Refer to https://cookbook.openai.com/articles/gpt-oss/run-locally-ollama for more details.
     // If you prefer using LM Studio, refer to https://cookbook.openai.com/articles/gpt-oss/run-locally-lmstudio
+    // Passing this model object has been bypassing the default provider, including CodexProvider.
     model: new OpenAIChatCompletionsModel(
       new OpenAI({
         baseURL: 'http://localhost:11434/v1',

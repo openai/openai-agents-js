@@ -1,11 +1,24 @@
 import {
   Agent,
+  createMCPToolStaticFilter,
+  MCPServerStreamableHttp,
   hostedMcpTool,
   isOpenAIResponsesRawModelStreamEvent,
-  run,
 } from '@openai/agents';
 
-async function main(verbose: boolean, stream: boolean): Promise<void> {
+import { exampleRunner } from '../tools/example-runner';
+
+async function main(
+  verbose: boolean,
+  stream: boolean,
+  sdkManaged: boolean,
+  codex: boolean,
+): Promise<void> {
+  if (codex && !sdkManaged) {
+    throw new Error(
+      'Use --sdk-managed with --codex; Codex does not resolve hosted connector IDs.',
+    );
+  }
   // 1. Visit https://developers.google.com/oauthplayground/
   // 2. Input https://www.googleapis.com/auth/calendar.events as the required scope
   // 3. Grab the access token starting with "ya29."
@@ -16,45 +29,74 @@ async function main(verbose: boolean, stream: boolean): Promise<void> {
     );
   }
 
-  const agent = new Agent({
-    name: 'My Calendar Assistant',
-    instructions:
-      'You are a helpful assistant that can help a user with their calendar.',
-    tools: [
-      hostedMcpTool({
-        serverLabel: 'google_calendar',
-        connectorId: 'connector_googlecalendar',
-        authorization,
-        requireApproval: 'never',
-      }),
-    ],
-  });
-
-  const today = new Date().toISOString().split('T')[0];
-  const input = `What is my schedule for ${today}?`;
-  if (stream) {
-    const result = await run(agent, input, { stream: true });
-    for await (const event of result) {
-      if (
-        isOpenAIResponsesRawModelStreamEvent(event) &&
-        event.data.event.type !== 'response.mcp_call_arguments.delta' &&
-        event.data.event.type !== 'response.output_text.delta'
-      ) {
-        console.log(`Got event of type ${JSON.stringify(event.data)}`);
+  const runner = await exampleRunner(codex);
+  const server = sdkManaged
+    ? new MCPServerStreamableHttp({
+        name: 'Google Calendar',
+        url: 'https://calendarmcp.googleapis.com/mcp/v1',
+        requestInit: { headers: { Authorization: `Bearer ${authorization}` } },
+        toolFilter: createMCPToolStaticFilter({
+          allowed: ['calendar.list_events'],
+        }),
+      })
+    : undefined;
+  try {
+    await server?.connect();
+    if (
+      server &&
+      !(await server.listTools()).some(
+        (tool) => tool.name === 'calendar.list_events',
+      )
+    ) {
+      throw new Error(
+        'The Calendar MCP server did not expose calendar.list_events.',
+      );
+    }
+    const agent = new Agent({
+      name: 'My Calendar Assistant',
+      instructions:
+        'You are a helpful assistant that can help a user with their calendar. Use the calendar tool to read the requested schedule.',
+      mcpServers: server ? [server] : [],
+      modelSettings: server ? { toolChoice: 'required' } : {},
+      tools: server
+        ? []
+        : [
+            hostedMcpTool({
+              serverLabel: 'google_calendar',
+              connectorId: 'connector_googlecalendar',
+              authorization,
+              requireApproval: 'never',
+            }),
+          ],
+    });
+    const today = new Date().toISOString().split('T')[0];
+    const input = `What is my schedule for ${today}?`;
+    if (stream) {
+      const result = await runner.run(agent, input, { stream: true });
+      for await (const event of result) {
+        if (
+          isOpenAIResponsesRawModelStreamEvent(event) &&
+          event.data.event.type !== 'response.mcp_call_arguments.delta' &&
+          event.data.event.type !== 'response.output_text.delta'
+        ) {
+          console.log(`Got event of type ${JSON.stringify(event.data)}`);
+        }
       }
-    }
-    for (const item of result.newItems) {
-      console.log(JSON.stringify(item, null, 2));
-    }
-    console.log(`Done streaming; final result: ${result.finalOutput}`);
-  } else {
-    const res = await run(agent, input);
-    if (verbose) {
-      for (const item of res.output) {
+      for (const item of result.newItems) {
         console.log(JSON.stringify(item, null, 2));
       }
+      console.log(`Done streaming; final result: ${result.finalOutput}`);
+    } else {
+      const res = await runner.run(agent, input);
+      if (verbose) {
+        for (const item of res.output) {
+          console.log(JSON.stringify(item, null, 2));
+        }
+      }
+      console.log(res.finalOutput);
     }
-    console.log(res.finalOutput);
+  } finally {
+    await server?.close();
   }
 }
 
@@ -62,7 +104,12 @@ const args = process.argv.slice(2);
 const verbose = args.includes('--verbose');
 const stream = args.includes('--stream');
 
-main(verbose, stream).catch((err) => {
+main(
+  verbose,
+  stream,
+  args.includes('--sdk-managed'),
+  args.includes('--codex'),
+).catch((err) => {
   console.error(err);
   process.exit(1);
 });

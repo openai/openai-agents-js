@@ -118,6 +118,30 @@ With `memory()`, both generation phases use the sandbox agent's effective Codex 
 
 ### SDK-managed MCP
 
+For a Google Calendar example, the [connector sample](../connectors/) has been offering an explicit `--sdk-managed` mode. Adding `--codex` changes the model, not the calendar account. This path has been using Google's own MCP endpoint; it has **not** been resolving an OpenAI-hosted connector ID. It requires Google's access and OAuth setup.
+
+The [prompt example](../basic/prompt-id.ts) has also been accepting `--local` (or `--local --codex`) to format the same poem instructions in the application. Neither SDK has been fetching the hosted prompt's contents in this mode. Changes to the dashboard prompt have not been updating that local template.
+
+### Choosing a model backend
+
+The Runner has only been calling the chosen provider for a **model name**. If you give an agent a **model instance** such as an `OpenAIChatCompletionsModel`, that object keeps handling inference, including with a Codex provider on the Runner.
+
+To run Codex itself against another server, use a backend that implements the streaming Responses API. For example, this configuration in `$CODEX_HOME/config.toml` has been sending model requests to a local server:
+
+```toml
+model_provider = "local"
+
+[model_providers.local]
+name = "Local Responses server"
+base_url = "http://127.0.0.1:8000/v1"
+wire_api = "responses"
+supports_websockets = false
+```
+
+Set the agent's model name to an ID that server serves. A Chat Completions endpoint alone has not been sufficient. This changes **where Codex sends requests**; it does not wrap another SDK's model client.
+
+### Connecting other MCP servers
+
 The Runner can connect to an MCP server and expose its tools as SDK function tools in either mode. The [basic](../docs/mcp/sdkManaged.ts), [approval](../docs/mcp/sdkManagedHITL.ts), and [streaming](../docs/mcp/sdkManagedStream.ts) companions use this approach. The [MCP guide](../../docs/src/content/docs/guides/mcp.mdx) includes the commands for switching providers.
 
 ### Hosted web search
