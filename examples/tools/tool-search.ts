@@ -1,12 +1,12 @@
 import {
   Agent,
-  run,
   tool,
   toolNamespace,
   toolSearchTool,
   withTrace,
 } from '@openai/agents';
 import { z } from 'zod';
+import { exampleRunner } from './example-runner.ts';
 
 const customerIdParams = z.object({
   customerId: z.string().describe('The customer identifier to look up.'),
@@ -119,21 +119,31 @@ const getShippingCreditBalance = tool({
 });
 
 async function main() {
+  const useCodex = process.argv.includes('--codex');
+  const model = useCodex ? process.env.CODEX_MODEL : undefined;
+  if (useCodex && !model) {
+    throw new Error(
+      'Set CODEX_MODEL to a model with tool search in the stock Codex catalog.',
+    );
+  }
+  const runner = await exampleRunner(useCodex);
   const namespacedAgent = new Agent({
     name: 'CRM assistant',
+    model,
     instructions:
       'For customer questions in this example, load the full crm namespace with no query filter before calling tools. Do not search billing unless the user explicitly asks about invoices.',
     tools: [...crmTools, ...billingTools, toolSearchTool()],
   });
   const topLevelAgent = new Agent({
     name: 'Shipping assistant',
+    model,
     instructions:
-      'Use shipping tools to answer shipping questions. For tracking-number ETA questions, search only get_shipping_eta. Do not search get_shipping_credit_balance unless the user asks about credits or balances.',
+      'Use shipping tools to answer shipping questions. For tracking-number ETA questions, search with the exact query "get_shipping_eta" and limit 1. Do not search get_shipping_credit_balance unless the user asks about credits or balances.',
     tools: [getShippingEta, getShippingCreditBalance, toolSearchTool()],
   });
 
   await withTrace('Tool search example', async () => {
-    const namespacedResult = await run(
+    const namespacedResult = await runner.run(
       namespacedAgent,
       'Look up customer_42 and summarize their profile and recent support activity.',
     );
@@ -166,7 +176,7 @@ async function main() {
     console.log(`Called tools: ${formatList(namespacedCalledTools)}`);
     console.log();
 
-    const topLevelResult = await run(
+    const topLevelResult = await runner.run(
       topLevelAgent,
       'Can you check the shipping ETA for tracking number ZX-123?',
     );

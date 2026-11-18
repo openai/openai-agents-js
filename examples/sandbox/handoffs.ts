@@ -84,6 +84,7 @@ async function main() {
     instructions:
       'You triage internal requests. If a request depends on attached documents, hand off to the onboarding packet reviewer immediately instead of answering yourself.',
     handoffs: [sandboxReviewer],
+    modelSettings: { toolChoice: 'required' },
   });
 
   try {

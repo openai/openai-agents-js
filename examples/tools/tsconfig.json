@@ -1,6 +1,7 @@
 {
   "extends": "../../tsconfig.examples.json",
   "compilerOptions": {
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "rewriteRelativeImportExtensions": true
   }
 }

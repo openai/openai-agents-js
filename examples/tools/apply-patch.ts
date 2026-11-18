@@ -4,13 +4,14 @@ import { pathToFileURL } from 'node:url';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   Agent,
-  run,
+  MemorySession,
   withTrace,
   applyPatchTool,
   type Editor,
   type ApplyPatchOperation,
   type ApplyPatchResult,
 } from '@openai/agents';
+import { exampleRunner } from './example-runner.ts';
 import { applyDiff } from '@openai/agents';
 import chalk from 'chalk';
 
@@ -113,6 +114,9 @@ async function seedWorkspace(root: string): Promise<void> {
 }
 
 async function main() {
+  const useCodex = process.argv.includes('--codex');
+  const runner = await exampleRunner(useCodex);
+  const session = useCodex ? new MemorySession() : undefined;
   const workspaceRoot = await mkdtemp(
     path.join(os.tmpdir(), 'apply-patch-example-'),
   );
@@ -122,11 +126,16 @@ async function main() {
 
   const agent = new Agent({
     name: 'Patch Assistant',
-    model: 'gpt-5.4',
+    model: useCodex ? process.env.CODEX_MODEL : 'gpt-5.4',
     modelSettings: {
       reasoning: { effort: 'low' },
     },
-    instructions: `You can edit files inside ${workspaceRoot} using the apply_patch tool.`,
+    instructions: `You can edit files inside ${workspaceRoot} using the apply_patch tool.
+      For create_file, operation.diff contains only file-content lines prefixed with '+'.
+      For update_file, use @@ hunks and context/+/- lines. Do not wrap operation.diff in
+      *** Begin Patch, *** End Patch, filename headers, Markdown fences, or <BEGIN_FILES>.
+      Use '- [ ] ' for unchecked items and '- [x] ' for checked items.
+      Only perform the edit requested in the current user message.`,
     tools: [
       applyPatchTool({
         editor,
@@ -147,9 +156,10 @@ async function main() {
   try {
     console.log(chalk.dim('Asking agent to create tasks.md …\n'));
     await withTrace('apply-patch-example', async () => {
-      const result = await run(
+      const result = await runner.run(
         agent,
-        'Create tasks.md with a shopping checklist of 5 entries.',
+        'Create tasks.md with exactly 5 unchecked shopping items. Do not check off any items.',
+        { session },
       );
       console.log(`${chalk.bold('Agent:')} ${chalk.cyan(result.finalOutput)}`);
       const updatedNotes = await readFile(
@@ -158,14 +168,59 @@ async function main() {
       );
       console.log(`\n\n${chalk.dim('tasks.md after creation:')}`);
       console.log(updatedNotes);
+      const originalItems = updatedNotes
+        .split('\n')
+        .map((line) => line.trimStart())
+        .filter((line) => line.startsWith('- ['));
+      if (
+        originalItems.length !== 5 ||
+        !originalItems.every((line) => line.startsWith('- [ ] '))
+      ) {
+        throw new Error(
+          'Expected five unchecked shopping items after creation.',
+        );
+      }
       console.log(
         `\n\n${chalk.dim('Asking agent to check off the last two items …')}\n`,
       );
-      const result2 = await run(
+      const result2 = await runner.run(
         agent,
         `<BEGIN_FILES>\n===== tasks.md\n${updatedNotes}\n\n<END_FILES>\nUse the apply_patch tool to update tasks.md in place. Preserve the existing Markdown structure exactly, keep the \`- [ ]\` checklist prefix style consistent, and check off only the last two items.`,
+        { session },
       );
       console.log(`${chalk.bold('Agent:')} ${chalk.cyan(result2.finalOutput)}`);
+      const finalNotes = await readFile(
+        path.join(workspaceRoot, 'tasks.md'),
+        'utf8',
+      );
+      const finalItems = finalNotes
+        .split('\n')
+        .map((line) => line.trimStart())
+        .filter((line) => line.startsWith('- ['));
+      const expected = originalItems.map((line, index) =>
+        index >= 3 ? line.replace('- [ ] ', '- [x] ') : line,
+      );
+      if (JSON.stringify(finalItems) !== JSON.stringify(expected)) {
+        throw new Error(
+          'Expected the same five checklist items with only the final two checked.',
+        );
+      }
+      let itemIndex = 0;
+      const expectedLines = updatedNotes
+        .split('\n')
+        .map((line) =>
+          line.trimStart().startsWith('- [') ? expected[itemIndex++] : line,
+        );
+      const finalLines = finalNotes
+        .split('\n')
+        .map((line) =>
+          line.trimStart().startsWith('- [') ? line.trimStart() : line,
+        );
+      if (JSON.stringify(finalLines) !== JSON.stringify(expectedLines)) {
+        throw new Error(
+          'The update changed content outside the two checkbox markers.',
+        );
+      }
     });
 
     console.log(`\n\n${chalk.dim('Final tasks.md:')}`);
@@ -174,8 +229,6 @@ async function main() {
       'utf8',
     );
     console.log(finalNotes);
-  } catch (err) {
-    console.error(err);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }

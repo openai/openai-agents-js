@@ -9,6 +9,7 @@ const translator = new Agent({
 
 const orchestrator = new Agent({
   name: 'orchestrator',
+  modelSettings: { toolChoice: 'required' },
   instructions:
     'You are a task dispatcher. Always call the tool with sufficient input for the task. Do not handle any tasks by yourself.',
   tools: [

@@ -49,7 +49,15 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   pnpm examples:tools-web-search
   ```
 
+- `web-search-filters.ts` – Has been searching within official OpenAI domains. The explicit Codex variant has been checking completed page-open metadata for every final Markdown citation; it has not been requesting the Responses-only retrieved-sources field.
+
+  ```bash
+  pnpm -F tools exec tsx web-search-filters.ts --codex
+  ```
+
 - `code-interpreter.ts` – Demonstrates `codeInterpreterTool` for code execution.
+
+  For computation on your own host with either provider, see [Local code execution](./local-code-execution.md).
 
   ```bash
   pnpm -F tools start:code-interpreter
