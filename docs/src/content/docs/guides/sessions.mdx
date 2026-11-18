@@ -203,6 +203,8 @@ When an OpenAI tool has been returning a result after a stored compaction, sendi
 
 `compactionMode: 'previous_response_id'` is useful when you are already chaining turns with Responses API response IDs. `compactionMode: 'input'` rebuilds compaction requests from the current session items instead, which is helpful when the response chain is unavailable or you want the underlying session contents to be the source of truth.
 
+When you append messages with `session.addItems()`, the wrapper discards the saved response ID because it predates those messages. With `compactionMode: 'auto'`, the next compaction uses the updated history as input. If you force `'previous_response_id'`, pass a Responses ID that covers the appended messages to `session.runCompaction({ responseId })`. Without a current ID, the call throws.
+
 `runCompaction(args)` options:
 
 | Option | Type | Notes |
