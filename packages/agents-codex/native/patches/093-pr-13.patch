@@ -1,0 +1,94 @@
+diff --git a/codex-rs/core/src/client.rs b/codex-rs/core/src/client.rs
+index 7f1ee8d6eec3d837bd9e630d4e25776c4c40ce41..9946916a14c3da2dd368ce4b18a48577621f64df 100644
+--- a/codex-rs/core/src/client.rs
++++ b/codex-rs/core/src/client.rs
+@@ -3260,9 +3260,9 @@ impl ModelClientSession {
+                 payload.input = payload.input.borrow_with(input);
+             }
+             if !previous_response_id_from_untraced_warmup {
+-                if let Some(logical) = logical_history_input.as_deref() {
++                if let Some(logical) = logical_history_input.as_ref() {
+                     let ResponsesWsRequest::ResponseCreate(payload) = &mut ws_request;
+-                    let logical = payload.input.borrow_with(logical);
++                    let logical = logical.borrow_with(logical.as_ref());
+                     let wire = std::mem::replace(&mut payload.input, logical);
+                     inference_trace_attempt.record_started(&ws_request);
+                     let ResponsesWsRequest::ResponseCreate(payload) = &mut ws_request;
+diff --git a/codex-rs/core/src/client/provider_history.rs b/codex-rs/core/src/client/provider_history.rs
+index a856dd006a3b31ce29f45d568ea38ec9df25db67..5dd79feacef76634ae30c220e024e5d4cf1f3dc6 100644
+--- a/codex-rs/core/src/client/provider_history.rs
++++ b/codex-rs/core/src/client/provider_history.rs
+@@ -465,7 +465,7 @@ impl Cursor {
+             &codex_protocol::model_request_transport::RequestTransportOverrides,
+         >,
+         history_transport: HistoryTransport<'_>,
+-    ) -> Result<Option<Vec<ResponseItem>>> {
++    ) -> Result<Option<codex_api::CacheAnnotatedInput<Vec<ResponseItem>>>> {
+         let canonical_input = request
+             .request_controls
+             .canonical_history_input
+@@ -520,7 +520,7 @@ impl Cursor {
+             )
+         };
+         let full_len = request.input.len();
+-        let full_digest = input_digest(&request.input)?;
++        let full_digest = input_digest(request.input.as_ref())?;
+         let unsent = if let Some(window) = &saved.window {
+             let canonical = if let Some(canonical) = canonical_window(window) {
+                 if canonical_input.prefix_len + canonical_input.wire_input_indices.len() != full_len
+@@ -617,10 +617,12 @@ impl Cursor {
+         self.persist().await?;
+         let logical = unsent.map(|indices| {
+             let full = std::mem::take(&mut request.input);
+-            request.input = indices
+-                .into_iter()
+-                .map(|index| full[index].clone())
+-                .collect();
++            request.input = full.with_items(
++                indices
++                    .into_iter()
++                    .map(|index| full[index].clone())
++                    .collect(),
++            );
+             full
+         });
+         request.request_controls.provider_history = Some(saved.selection);
+diff --git a/codex-rs/core/src/compact_remote_v2_attempt.rs b/codex-rs/core/src/compact_remote_v2_attempt.rs
+index 479b2137e41409896c23e891819a6e14c2c5d016..277b91c8d8752c43644ebb0018f071d40ba89b0f 100644
+--- a/codex-rs/core/src/compact_remote_v2_attempt.rs
++++ b/codex-rs/core/src/compact_remote_v2_attempt.rs
+@@ -107,6 +107,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
+         sampling_stop: crate::model_request::turn_sampling_stop(&turn_context.extension_data),
+         prepared_request_admission: None,
+         canonical_history_input: None,
++        prompt_cache_annotations: Vec::new(),
+         parallel_tool_calls: true,
+         tool_choice: Default::default(),
+         base_instructions,
+diff --git a/codex-rs/core/src/session/model_attempts.rs b/codex-rs/core/src/session/model_attempts.rs
+index 32f3f1904dfb47a5f240cd052da0680c1d0ece11..214e56945ccecc5b07c7e590e6fa9b10b4ee5fbd 100644
+--- a/codex-rs/core/src/session/model_attempts.rs
++++ b/codex-rs/core/src/session/model_attempts.rs
+@@ -376,6 +376,7 @@ impl ModelAttemptAdmission for Attempt {
+                     usage.requests -= 1;
+                     usage.requests_without_token_usage -= 1;
+                     measurement.provider_managed = true;
++                    state.snapshot.provider_managed = Some(true);
+                     Ok(None)
+                 }
+                 ProviderRequestAccounting::Create if measurement.provider_managed => {
+diff --git a/codex-rs/protocol/src/model_retry.rs b/codex-rs/protocol/src/model_retry.rs
+index 319a00d5bcaa6b80866c545140a884714b429e5a..a59b24739892ef714cd8f6ce4131551e81027a24 100644
+--- a/codex-rs/protocol/src/model_retry.rs
++++ b/codex-rs/protocol/src/model_retry.rs
+@@ -190,6 +190,10 @@ pub struct ModelAttemptSnapshot {
+     pub owner_attempt_id: Option<String>,
+     pub usage: ModelAttemptUsage,
+     pub terminal_attempt_id: Option<String>,
++    /// Physical provider requests own usage; intermediate logical admissions are not additive.
++    #[serde(default, skip_serializing_if = "Option::is_none")]
++    #[ts(optional)]
++    pub provider_managed: Option<bool>,
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, JsonSchema, TS)]

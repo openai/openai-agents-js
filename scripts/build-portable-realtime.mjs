@@ -62,13 +62,14 @@ const { identities: sourceIdentity, verify: verifySources } = auditSources(
   sources,
   true,
 );
-const crate = join(
-  native,
-  '.upstream/reviewed-codex/codex-rs/realtime-control',
-);
+const crate = join(native, 'portable-realtime-control');
 const inputFiles = ['Cargo.toml', 'Cargo.lock', 'src/lib.rs', 'src/wasm.rs'];
-const textCrate = join(dirname(crate), 'turn-control');
-const textInputFiles = [...inputFiles, 'src/portable.rs'];
+const textCrate = join(native, 'portable-turn-control');
+const textInputFiles = [
+  ...inputFiles,
+  'src/portable.rs',
+  'src/portable_tracing.rs',
+];
 
 const snapshot = () => ({
   script: sha256(readFileSync(fileURLToPath(import.meta.url))),
@@ -142,7 +143,10 @@ function buildControl(cratePath, binary) {
       throw new Error(`Portable control omitted ABI export ${name}.`);
   return { built, bytes };
 }
-const { built, bytes } = buildControl(crate, 'codex_realtime_control.wasm');
+const { built, bytes } = buildControl(
+  crate,
+  'codex_portable_realtime_control.wasm',
+);
 const text = buildControl(textCrate, 'codex_turn_control.wasm');
 // Binaryen's virtual filesystem does not consistently resolve Windows drive paths.
 // Keep its input and output local to an explicit working directory.

@@ -1,0 +1,30 @@
+diff --git a/codex-rs/core/src/session/tests.rs b/codex-rs/core/src/session/tests.rs
+index d4bfa4cd6aa0c1eb621031da5920cfcad9bd657e..3ad7db2b2b85935ac0a7e5cfc6668e49d010ea3e 100644
+--- a/codex-rs/core/src/session/tests.rs
++++ b/codex-rs/core/src/session/tests.rs
+@@ -1,3 +1,4 @@
++use codex_otel::current_span_w3c_trace_context;
+ use crate::agent::LocalAgentControl;
+ #[path = "notification_tests.rs"]
+ mod notification_tests;
+@@ -3485,6 +3486,8 @@ async fn recompute_token_usage_updates_model_context_window() {
+     }
+ 
+     update_turn_settings_for_test(&mut turn_context, |settings| {
++        // This fixture supplies known model metadata.
++        Arc::make_mut(&mut settings.model_info).used_fallback_model_metadata = false;
+         Arc::make_mut(&mut settings.model_info).context_window = Some(128_000);
+         Arc::make_mut(&mut settings.model_info).effective_context_window_percent = 100;
+     });
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 2f3003e58fe5754c3963708b7c235cf5741492a2..9ca49453b863e6164acc18cf5cb2bd55f386d84f 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -6215,6 +6215,7 @@ mod tests {
+     #[test]
+     fn turn_context_item_serializes_network_when_present() -> Result<()> {
+         let item = TurnContextItem {
++            sdk_receipt: None,
+             turn_id: None,
+             root_turn_id: None,
+             disabled_plugin_ids: None,

@@ -1,0 +1,971 @@
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index ab7af297e71f5494672f8ac85a685aa8e393829e..b8b4cd12c109caa9b67deb9a4e4e65418c52a607 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -738,12 +738,8 @@ pub(crate) async fn run_turn(
+             .map_err(CodexErr::Fatal)?;
+             // Step selection has joined the SDK input guardrails. The manual replies
+             // are already in history, so the batch follows them in the next request.
+-            sess.record_conversation_items(
+-                &turn_context,
+-                &step_context.settings.model_info,
+-                items,
+-            )
+-            .await;
++            sess.record_conversation_items(&turn_context, &step_context.settings.model_info, items)
++                .await;
+             sess.ensure_rollout_durable().await?;
+             staged.acknowledge();
+         }
+@@ -2312,7 +2308,11 @@ async fn run_sampling_request(
+     let mut request_attempt = 1_u64;
+     let mut policy_attempt = 1_u64;
+     let mut locked_retries = 0_u32;
++    let mut provider_response_span = None;
+     let invocation = async {
++        provider_response_span =
++            admit_sdk_provider_response_span(&sess, &step_context, cancellation_token.clone())
++                .await?;
+         loop {
+             // Running code-mode cells can request review while this response is in flight.
+             // Keep the latest received ID until response.created replaces it.
+@@ -2503,15 +2503,26 @@ async fn run_sampling_request(
+                 step_context.clone(),
+                 {
+                     let history = sess.clone_history().await;
+-                    if history.model_items().iter().any(|envelope| envelope.metadata.as_ref()
+-                        .is_some_and(|metadata| metadata.sdk_model_provider_metadata.is_some()))
+-                    {
+-                        history.for_prompt_annotated(&step_context.settings.model_info.input_modalities)
++                    if history.model_items().iter().any(|envelope| {
++                        envelope
++                            .metadata
++                            .as_ref()
++                            .is_some_and(|metadata| metadata.sdk_model_provider_metadata.is_some())
++                    }) {
++                        history
++                            .for_prompt_annotated(
++                                &step_context.settings.model_info.input_modalities,
++                            )
+                             .into_iter()
+-                            .filter(|envelope| envelope.metadata.as_ref()
+-                                .is_some_and(|metadata| metadata.sdk_model_provider_metadata.is_some()))
++                            .filter(|envelope| {
++                                envelope.metadata.as_ref().is_some_and(|metadata| {
++                                    metadata.sdk_model_provider_metadata.is_some()
++                                })
++                            })
+                             .collect()
+-                    } else { Vec::new() }
++                    } else {
++                        Vec::new()
++                    }
+                 },
+             );
+             prompt.tool_admission = Some(admission.clone());
+@@ -2610,7 +2621,7 @@ async fn run_sampling_request(
+                 if let Some(owner) = &invocation_deadline {
+                     owner.start();
+                 }
+-                try_run_sampling_request(
++                let receiving = try_run_sampling_request(
+                     tool_runtime.clone(),
+                     Arc::clone(&sess),
+                     Arc::clone(&step_context),
+@@ -2623,8 +2634,9 @@ async fn run_sampling_request(
+                     attempt.cancellation(),
+                     Some(attempt_deadline.clone()),
+                     invocation_deadline.as_deref(),
+-                )
+-                .await
++                    provider_response_span.as_ref(),
++                );
++                receiving.await
+             };
+             let mut outcome = attempt_deadline.run(Box::pin(invocation_attempt)).await;
+             attempt_deadline.accept_outcome();
+@@ -2960,7 +2972,7 @@ async fn run_sampling_request(
+         Some(owner) => owner.run(Box::pin(invocation)).await,
+         None => invocation.await,
+     };
+-    if invocation_deadline
++    let outcome = if invocation_deadline
+         .as_ref()
+         .is_some_and(|owner| owner.expired())
+         && !outcome.as_ref().err().is_some_and(|error| {
+@@ -2968,19 +2980,97 @@ async fn run_sampling_request(
+                 error.details(),
+                 CodexErrorDetails::ModelInvocationDeadlineExceeded(_)
+             )
+-        })
+-    {
++        }) {
+         let cleanup = outcome
+             .as_ref()
+             .err()
+             .filter(|error| !matches!(error.details(), CodexErrorDetails::TurnAborted))
+             .map(|error| format!("; invocation retirement failed: {error}"))
+             .unwrap_or_default();
+-        return Err(CodexErr::ModelInvocationDeadlineExceeded(cleanup));
++        Err(CodexErr::ModelInvocationDeadlineExceeded(cleanup))
++    } else {
++        outcome
++    };
++    if let Some(span) = provider_response_span.as_ref() {
++        span.finish(match &outcome {
++            Ok(_) => codex_otel::sdk_trace::ProviderResponseOutcome::Ok,
++            Err(error) if matches!(error.details(), CodexErrorDetails::TurnAborted) => {
++                codex_otel::sdk_trace::ProviderResponseOutcome::Cancelled
++            }
++            Err(_) => codex_otel::sdk_trace::ProviderResponseOutcome::Error,
++        });
+     }
+     outcome
+ }
+ 
++// Only provider polling borrows the model-response ancestry. Function and
++// approval callbacks retain the existing operation context.
++async fn poll_provider_response<F: std::future::Future>(
++    future: F,
++    span: Option<&codex_otel::sdk_trace::ProviderResponseSpan>,
++) -> F::Output {
++    use codex_otel::sdk_trace::FutureExt as _;
++    match span {
++        Some(span) => future.with_context(span.context()).await,
++        None => future.await,
++    }
++}
++
++// One SDK scope owns all attempts in this logical model round. Generic Core
++// turns and disabled/unowned contexts never ask a host for an identifier.
++async fn admit_sdk_provider_response_span(
++    sess: &Session,
++    step: &Arc<StepContext>,
++    cancellation: CancellationToken,
++) -> CodexResult<Option<codex_otel::sdk_trace::ProviderResponseSpan>> {
++    if step
++        .extension_data
++        .get::<codex_extension_api::SdkTurnReceiptSeed>()
++        .is_none()
++        || codex_otel::sdk_trace::current_scope_policy().is_none_or(|policy| policy.disabled)
++    {
++        return Ok(None);
++    }
++    let Some(parent) = codex_otel::sdk_trace::ContextLease::capture() else {
++        return Ok(None);
++    };
++    let admission = crate::model_request::tool_admission_for_step(
++        sess.thread_id.to_string(),
++        step.clone(),
++        Vec::new(),
++    );
++    let mut selected = None;
++    for contributor in sess.services.extensions.model_request_contributors() {
++        if cancellation.is_cancelled() {
++            return Err(CodexErr::TurnAborted);
++        }
++        let reply = contributor
++            .admit_provider_response_span(codex_extension_api::SdkProviderResponseSpanInput {
++                admission: admission.clone(),
++                parent_context: parent.token().to_owned(),
++                cancellation: cancellation.clone(),
++            })
++            .await
++            .map_err(CodexErr::Fatal)?;
++        if let Some(reply) = reply {
++            if selected.replace(reply).is_some() {
++                return Err(CodexErr::Fatal(
++                    "Multiple SDK response span admissions".into(),
++                ));
++            }
++        }
++    }
++    if cancellation.is_cancelled() {
++        return Err(CodexErr::TurnAborted);
++    }
++    selected
++        .map(|reply| {
++            codex_otel::sdk_trace::start_provider_response_span(&parent, reply.span_id)
++                .map_err(CodexErr::Fatal)
++        })
++        .transpose()
++}
++
+ async fn publish_model_attempt(
+     sess: &Session,
+     step: &StepContext,
+@@ -4334,10 +4424,12 @@ async fn handle_assistant_item_done_in_plan_mode(
+             step_context,
+             item,
+             finalized_facts.as_ref(),
+-            provider_metadata.cloned().map(|metadata| codex_history::CodexHarnessMetadata {
+-                sdk_model_provider_metadata: Some(metadata),
+-                ..Default::default()
+-            }),
++            provider_metadata
++                .cloned()
++                .map(|metadata| codex_history::CodexHarnessMetadata {
++                    sdk_model_provider_metadata: Some(metadata),
++                    ..Default::default()
++                }),
+         )
+         .await;
+         if let Some(agent_message) = final_last_agent_message {
+@@ -4487,6 +4579,7 @@ async fn try_run_sampling_request(
+     cancellation_token: CancellationToken,
+     logical_deadline: Option<Arc<super::model_invocation_deadline::ModelInvocationDeadline>>,
+     invocation_deadline: Option<&super::model_invocation_deadline::ModelInvocationDeadline>,
++    provider_response_span: Option<&codex_otel::sdk_trace::ProviderResponseSpan>,
+ ) -> CodexResult<SamplingRequestResult> {
+     let turn_context = Arc::clone(&step_context.turn);
+     feedback_tags!(
+@@ -4628,6 +4721,10 @@ async fn try_run_sampling_request(
+         if timeout_ms.is_some() && sample_cancel.is_cancelled() {
+             return Err(CodexErr::TurnAborted);
+         }
++        let stream_request_span = trace_span!("stream_request");
++        if let Some(parent) = provider_response_span {
++            codex_otel::set_parent_from_context(&stream_request_span, parent.context());
++        }
+         let request = client_session
+             .stream(
+                 prompt,
+@@ -4639,11 +4736,12 @@ async fn try_run_sampling_request(
+                 responses_metadata,
+                 &inference_trace,
+             )
+-            .instrument(trace_span!("stream_request"));
+-        let mut stream = input_owner
+-            .admit_model(request)
+-            .or_cancel(&sample_cancel)
+-            .await???;
++            .instrument(stream_request_span);
++        let mut stream = poll_provider_response(
++            input_owner.admit_model(request).or_cancel(&sample_cancel),
++            provider_response_span,
++        )
++        .await???;
+         // Publish owned handles synchronously before checking raced cancellation.
+         deadline.attach_stream_stop(stream.consumer_dropped.clone(), stream.producer_stop.take());
+         if timeout_ms.is_some()
+@@ -4677,12 +4775,21 @@ async fn try_run_sampling_request(
+                 codex.usage.total_tokens = field::Empty,
+             );
+ 
+-            let event = stream
+-                .next()
+-                .instrument(trace_span!(parent: &handle_responses, "receiving"))
+-                .or_cancel(&preempt)
+-                .or_cancel(&sample_cancel)
+-                .await;
++            // Handling can dispatch tools, so only the provider polling span
++            // belongs to the logical response. Keep effect ancestry unchanged.
++            let receiving_poll_span = trace_span!(parent: &handle_responses, "receiving");
++            if let Some(parent) = provider_response_span {
++                codex_otel::set_parent_from_context(&receiving_poll_span, parent.context());
++            }
++            let event = poll_provider_response(
++                stream
++                    .next()
++                    .instrument(receiving_poll_span)
++                    .or_cancel(&preempt)
++                    .or_cancel(&sample_cancel),
++                provider_response_span,
++            )
++            .await;
+             if sample_cancel.is_cancelled() {
+                 break Err(CodexErr::TurnAborted);
+             }
+@@ -4781,8 +4888,10 @@ async fn try_run_sampling_request(
+                     }
+                 }
+                 ResponseEvent::OutputItemDone(mut item) => {
+-                    let provider_metadata = if let Some(metadata) = prompt.tool_admission
+-                        .as_ref().and_then(|admission| admission.provider_output_metadata())
++                    let provider_metadata = if let Some(metadata) = prompt
++                        .tool_admission
++                        .as_ref()
++                        .and_then(|admission| admission.provider_output_metadata())
+                     {
+                         match metadata.take_for(&item) {
+                             Ok(metadata) => metadata,
+@@ -4792,7 +4901,9 @@ async fn try_run_sampling_request(
+                                 break Err(CodexErr::InvalidRequest(error));
+                             }
+                         }
+-                    } else { None };
++                    } else {
++                        None
++                    };
+                     if matches!(&item, ResponseItem::Message { role, content, .. } if role == "assistant" && !content.is_empty())
+                     {
+                         if let Some(attempt) = &model_attempt {
+@@ -4801,7 +4912,9 @@ async fn try_run_sampling_request(
+                     }
+ 
+                     assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
+-                    sess.services.model_client.observe_provider_history_output(&item)?;
++                    sess.services
++                        .model_client
++                        .observe_provider_history_output(&item)?;
+                     sess.reserve_assistant_message_order(&turn_context, &item)
+                         .await;
+                     if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
+@@ -4910,14 +5023,18 @@ async fn try_run_sampling_request(
+                     };
+ 
+                     let direct_call = item.clone();
+-                    let output_result =
+-                        match handle_output_item_done(&mut ctx, item, previously_streamed_item, provider_metadata)
+-                            .instrument(handle_responses)
+-                            .await
+-                        {
+-                            Ok(output_result) => output_result,
+-                            Err(err) => break Err(err),
+-                        };
++                    let output_result = match handle_output_item_done(
++                        &mut ctx,
++                        item,
++                        previously_streamed_item,
++                        provider_metadata,
++                    )
++                    .instrument(handle_responses)
++                    .await
++                    {
++                        Ok(output_result) => output_result,
++                        Err(err) => break Err(err),
++                    };
+                     if let Some(text) = sdk_segmented_text.as_mut()
+                         && !text
+                             .observe_item(&direct_call, output_result.last_agent_message.is_some())
+@@ -5158,6 +5275,12 @@ async fn try_run_sampling_request(
+                     usage_metadata,
+                     end_turn,
+                 } => {
++                    // The provider has completed; tool and approval settlement below
++                    // belong to their existing operation owners.
++                    if let Some(span) = provider_response_span {
++                        span.record_response(&response_id);
++                        span.finish(codex_otel::sdk_trace::ProviderResponseOutcome::Ok);
++                    }
+                     if let (Some(attempt), Some(admission)) =
+                         (&model_attempt, &prompt.tool_admission)
+                     {
+@@ -5472,7 +5595,8 @@ async fn try_run_sampling_request(
+         async {
+             sess.ensure_rollout_durable().await?;
+             client_session.accept_provider_history().await
+-        }.await
++        }
++        .await
+     } else {
+         Ok(())
+     };
+@@ -5564,7 +5688,9 @@ async fn try_run_sampling_request(
+         release_failed_tool_candidates(&sess, &step_context).await;
+     }
+     tool_cleanup?;
+-    if history_acceptance.is_err() { release_failed_tool_candidates(&sess, &step_context).await; }
++    if history_acceptance.is_err() {
++        release_failed_tool_candidates(&sess, &step_context).await;
++    }
+     history_acceptance?;
+ 
+     // Tool effects have completed. Save their results before any dependent work.
+diff --git a/codex-rs/ext/extension-api/src/lib.rs b/codex-rs/ext/extension-api/src/lib.rs
+index 815d721a075be97a730820ceb80ff8185c6b3141..e63ab087bf86cbe29b85e6ac5f80e63f20db76f3 100644
+--- a/codex-rs/ext/extension-api/src/lib.rs
++++ b/codex-rs/ext/extension-api/src/lib.rs
+@@ -12,8 +12,8 @@ mod user_instructions;
+ pub use provider_image_reference_policy::ProviderImageReferencePolicy;
+ pub use session_isolation::IsolatedSessionExtensions;
+ pub use session_isolation::SessionIsolation;
+-pub use tool_policy::FinalStepBuiltinTools;
+ pub use tool_not_found::ToolNotFoundBehavior;
++pub use tool_policy::FinalStepBuiltinTools;
+ pub use tool_policy::ToolPolicy;
+ 
+ pub use capabilities::ConversationHistorySnapshot;
+@@ -187,6 +187,8 @@ pub use model_request::ModelResponseStream;
+ pub use model_request::ModelToolAdmission;
+ pub use model_request::ProviderResponseAnchor;
+ pub use model_request::ResponseEvent;
++pub use model_request::SdkProviderResponseSpanAdmission;
++pub use model_request::SdkProviderResponseSpanInput;
+ pub use model_request::SelectedStagedInput;
+ pub use model_request::StagedInputBatch;
+ pub use model_request::StagedInputPreparation;
+diff --git a/codex-rs/ext/extension-api/src/model_request.rs b/codex-rs/ext/extension-api/src/model_request.rs
+index eb0bc9f6260dfe5db29b61e7821ba13421efd5b8..63a29bc257748b6b061099074fe3c7f43666a474 100644
+--- a/codex-rs/ext/extension-api/src/model_request.rs
++++ b/codex-rs/ext/extension-api/src/model_request.rs
+@@ -306,9 +306,36 @@ pub struct ToolsOnlyCallInput {
+     pub cancellation: tokio_util::sync::CancellationToken,
+ }
+ 
++/// Exact logical model round, before any of its retry attempts start.
++/// The context is a Core-retained live SDK capability, never a portable parent ID.
++#[derive(Clone)]
++pub struct SdkProviderResponseSpanInput {
++    pub admission: Arc<dyn ModelToolAdmission>,
++    pub parent_context: String,
++    pub cancellation: tokio_util::sync::CancellationToken,
++}
++
++/// A host-validated synchronous ID policy result for this exact admission.
++/// Core validates the optional span ID again before constructing its real span.
++#[derive(Debug, Clone, serde::Deserialize)]
++#[serde(deny_unknown_fields)]
++pub struct SdkProviderResponseSpanAdmission {
++    pub span_id: Option<String>,
++}
++
+ /// Contributes request-scoped preparation and response interception.
+ /// Return None for requests this host does not manage.
+ pub trait ModelRequestContributor: Send + Sync + std::fmt::Debug {
++    /// Await SDK ID allocation on the host's own loop, never in an OTel subscriber.
++    /// The host retains and joins its exact reply owner on cancellation.
++    /// None preserves generic native instrumentation without adding an SDK span.
++    fn admit_provider_response_span(
++        &self,
++        _input: SdkProviderResponseSpanInput,
++    ) -> BoxFuture<'_, Result<Option<SdkProviderResponseSpanAdmission>, String>> {
++        Box::pin(async { Ok(None) })
++    }
++
+     fn provider_history_route(
+         &self,
+         _url: &str,
+diff --git a/codex-rs/otel/src/sdk_trace.rs b/codex-rs/otel/src/sdk_trace.rs
+index 91626c7f7baad203d0c863a571d8a2880cb4d27c..3451230786e086a46443d224b81c4fd1d01b6bf8 100644
+--- a/codex-rs/otel/src/sdk_trace.rs
++++ b/codex-rs/otel/src/sdk_trace.rs
+@@ -18,7 +18,12 @@ use serde::{Deserialize, Serialize};
+ use serde_json::{Value, json};
+ use tracing_opentelemetry::OpenTelemetrySpanExt;
+ 
+-pub(crate) const MAX_COMPLETION_DATA_BYTES: usize = 32 * 1024;
++// Per-owner wire budgets. Processor queues still charge the complete encoded
++// projection, including receipts and retained root descriptors.
++pub(crate) const MAX_TRACING_OPTIONS_BYTES: usize = 128 * 1024;
++pub(crate) const MAX_COMPLETION_DATA_BYTES: usize = 64 * 1024;
++// Allow host JSON escaping and outcome framing, then validate compact data below.
++const MAX_TRACING_OUTCOME_BYTES: usize = 4 * MAX_COMPLETION_DATA_BYTES;
+ const MAX_TRACING_DATA_DEPTH: usize = 64;
+ 
+ pub(crate) struct SpanAnnotations(Box<str>);
+@@ -45,6 +50,7 @@ pub struct ScopePolicy {
+     callback_release: Option<Arc<CallbackRelease>>,
+     // Validated per-span data stays with its existing owner, independent of attributes.
+     pub(crate) annotations: Option<Arc<SpanAnnotations>>,
++    pub(crate) custom_completion: bool,
+     // A bare W3C parent may need privacy limits without gaining an SDK context token.
+     restriction_only: bool,
+ }
+@@ -60,6 +66,7 @@ impl ScopePolicy {
+             callback_storage_key: self.callback_storage_key.clone(),
+             callback_release: None,
+             annotations: self.annotations.clone(),
++            custom_completion: self.custom_completion,
+             restriction_only: self.restriction_only,
+         }
+     }
+@@ -519,19 +526,19 @@ fn parse_span_id(value: &str) -> Result<SpanId, String> {
+     }
+     Ok(id)
+ }
+-fn bounded_value(value: &Value, depth: usize) -> Result<(), String> {
++fn bounded_value(value: &Value, depth: usize, custom: bool) -> Result<(), String> {
+     if depth > MAX_TRACING_DATA_DEPTH {
+         return Err(format!(
+             "Tracing metadata exceeds maximum depth of {MAX_TRACING_DATA_DEPTH}"
+         ));
+     }
+     match value {
+-        Value::String(s) if s.len() > MAX_COMPLETION_DATA_BYTES => {
+-            Err("Tracing outcome string exceeds 32 KiB".into())
++        Value::String(s) if !custom && s.len() > MAX_COMPLETION_DATA_BYTES => {
++            Err("Tracing outcome string exceeds 64 KiB".into())
+         }
+         Value::Array(values) => {
+             for value in values {
+-                bounded_value(value, depth + 1)?;
++                bounded_value(value, depth + 1, custom)?;
+             }
+             Ok(())
+         }
+@@ -540,13 +547,31 @@ fn bounded_value(value: &Value, depth: usize) -> Result<(), String> {
+                 if key.len() > 256 {
+                     return Err("Tracing key exceeds 256 UTF-8 bytes".into());
+                 }
+-                bounded_value(value, depth + 1)?;
++                bounded_value(value, depth + 1, custom)?;
+             }
+             Ok(())
+         }
+         _ => Ok(()),
+     }
+ }
++pub(crate) fn validate_completion_data(data: &Value) -> Result<(), String> {
++    bounded_value(data, 0, false)?;
++    if data.to_string().len() > MAX_COMPLETION_DATA_BYTES {
++        return Err("Encoded tracing outcome data exceeds 64 KiB".into());
++    }
++    Ok(())
++}
++
++pub(crate) fn validate_custom_completion_data(data: &Value, encoded: &str) -> Result<(), String> {
++    bounded_value(data, 0, true)?;
++    if serde_json::to_string(encoded).map_or(usize::MAX, |wire| wire.len())
++        > crate::sdk_trace_routes::MAX_CUSTOM_COMPLETION_WIRE_BYTES
++    {
++        return Err("Encoded custom tracing outcome exceeds the native event limit".into());
++    }
++    Ok(())
++}
++
+ // Validate opaque metadata with typed serde containers, without Value's private-map visitor.
+ fn bounded_metadata_json(
+     encoded: &str,
+@@ -599,8 +624,8 @@ fn metadata_attribute_value(value: &serde_json::value::RawValue) -> Result<Strin
+ // A single SDK-owned carrier avoids the generic OpenTelemetry attribute-count cap.
+ // Both export routes restore the existing per-key shape after native span collection.
+ pub(crate) fn metadata_attributes(encoded: &str) -> Result<Vec<KeyValue>, String> {
+-    if encoded.len() > 65536 {
+-        return Err("Tracing metadata exceeds 64 KiB".into());
++    if encoded.len() > MAX_TRACING_OPTIONS_BYTES {
++        return Err("Tracing metadata exceeds 128 KiB".into());
+     }
+     let bounded = bounded_metadata_json(encoded, 0)?;
+     let metadata: std::collections::BTreeMap<String, &serde_json::value::RawValue> =
+@@ -617,16 +642,30 @@ pub(crate) fn metadata_attributes(encoded: &str) -> Result<Vec<KeyValue>, String
+ }
+ 
+ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+-    if encoded.len() > 65536 {
+-        return Err("Tracing options exceed 64 KiB".into());
++    if encoded.len() > MAX_TRACING_OPTIONS_BYTES {
++        return Err("Tracing options exceed 128 KiB".into());
+     }
+     let options: Options =
+         serde_json::from_str(encoded).map_err(|_| "Invalid native tracing span options")?;
++    start_trace_span_options(options, false).map(|started| started.encoded)
++}
++
++struct StartedSpan {
++    encoded: String,
++    key: String,
++    handle: Arc<Handle>,
++}
++
++fn start_trace_span_options(
++    options: Options,
++    provider_response: bool,
++) -> Result<StartedSpan, String> {
+     if options.name.is_empty() || options.name.len() > 4096 {
+         return Err("Tracing span name must contain 1–4096 UTF-8 bytes".into());
+     }
+     if !["workflow", "custom", "callback", "validation", "operation"]
+         .contains(&options.kind.as_str())
++        && !(provider_response && options.kind == "model")
+     {
+         return Err("Unsupported native tracing span kind".into());
+     }
+@@ -694,6 +733,7 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+         annotations: (!metadata.is_empty())
+             .then(|| Arc::new(SpanAnnotations(bounded_metadata.get().into()))),
+         restriction_only: false,
++        custom_completion: options.kind == "custom",
+         workflow_span_id,
+         disabled,
+         include_sensitive_data: capture,
+@@ -775,9 +815,86 @@ pub fn start_trace_span(encoded: &str) -> Result<String, String> {
+     handles()
+         .lock()
+         .unwrap_or_else(|e| e.into_inner())
+-        .insert(key, handle);
+-    Ok(result)
++        .insert(key.clone(), Arc::clone(&handle));
++    Ok(StartedSpan {
++        encoded: result,
++        key,
++        handle,
++    })
++}
++
++/// One SDK response scope around a logical model round and all of its attempts.
++/// Construction reuses the public scope's live-parent, ID and export validation.
++pub struct ProviderResponseSpan {
++    key: String,
++    context: Context,
++    finished: AtomicBool,
++}
++
++#[derive(Clone, Copy)]
++pub enum ProviderResponseOutcome {
++    Ok,
++    Error,
++    Cancelled,
++}
++
++pub fn start_provider_response_span(
++    parent: &ContextLease,
++    span_id: Option<String>,
++) -> Result<ProviderResponseSpan, String> {
++    let started = start_trace_span_options(
++        Options {
++            name: "response".into(),
++            kind: "model".into(),
++            parent: Some(parent.token().to_owned()),
++            span_id,
++            ..Options::default()
++        },
++        true,
++    )?;
++    Ok(ProviderResponseSpan {
++        key: started.key,
++        context: explicit_submission_context(started.handle.context.clone()),
++        finished: AtomicBool::new(false),
++    })
++}
++
++impl ProviderResponseSpan {
++    pub fn context(&self) -> Context {
++        self.context.clone()
++    }
++
++    pub fn record_response(&self, response_id: &str) {
++        if !response_id.is_empty()
++            && response_id.len() <= 4096
++            && policy_for_context(&self.context).is_some_and(|policy| policy.include_sensitive_data)
++        {
++            self.context
++                .span()
++                .set_attribute(KeyValue::new("sdk.response.id", response_id.to_owned()));
++        }
++    }
++
++    pub fn finish(&self, outcome: ProviderResponseOutcome) {
++        if self.finished.swap(true, Ordering::AcqRel) {
++            return;
++        }
++        let status = match outcome {
++            ProviderResponseOutcome::Ok => "ok",
++            ProviderResponseOutcome::Error => "error",
++            ProviderResponseOutcome::Cancelled => "cancelled",
++        };
++        let _ = end_trace_span(&self.key, &json!({"status": status}).to_string());
++    }
+ }
++
++impl Drop for ProviderResponseSpan {
++    fn drop(&mut self) {
++        self.finish(ProviderResponseOutcome::Cancelled);
++        release_trace_span(&self.key);
++    }
++}
++
+ pub fn trace_span_context(key: &str) -> Result<String, String> {
+     readback(key, resolve(key)?.as_ref(), None)
+ }
+@@ -839,6 +956,7 @@ pub fn borrow_trace_context(
+         callback_storage_key: None,
+         callback_release: None,
+         annotations: captured.annotations.clone(),
++        custom_completion: false,
+         restriction_only: captured.restriction_only,
+     });
+     let handle = Arc::new(Handle {
+@@ -883,8 +1001,20 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+         category: Option<String>,
+         data: Option<Value>,
+     }
+-    if encoded.len() > 65536 {
+-        return Err("Tracing outcome exceeds 64 KiB".into());
++    let handle = resolve(key)?;
++    let policy = policy_for_context(&handle.context);
++    let custom = policy.as_ref().is_some_and(|policy| policy.custom_completion);
++    let limit = if custom {
++        crate::sdk_trace_routes::MAX_BYTES
++    } else {
++        MAX_TRACING_OUTCOME_BYTES
++    };
++    if encoded.len() > limit {
++        return Err(if custom {
++            "Tracing outcome exceeds the native event limit".into()
++        } else {
++            "Tracing outcome exceeds 256 KiB".into()
++        });
+     }
+     let outcome: Outcome =
+         serde_json::from_str(encoded).map_err(|_| "Invalid tracing span outcome")?;
+@@ -896,13 +1026,16 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+     }) {
+         return Err("Tracing outcome category must be a bounded nonsecret label".into());
+     }
+-    if let Some(data) = &outcome.data {
+-        bounded_value(data, 0)?;
+-        if data.to_string().len() > MAX_COMPLETION_DATA_BYTES {
+-            return Err("Encoded tracing outcome data exceeds 32 KiB".into());
++    let encoded_data = outcome.data.map(|data| {
++        if !custom {
++            validate_completion_data(&data)?;
+         }
+-    }
+-    let handle = resolve(key)?;
++        let encoded = data.to_string();
++        if custom {
++            validate_custom_completion_data(&data, &encoded)?;
++        }
++        Ok::<_, String>(encoded)
++    }).transpose()?;
+     let mut ended = handle.ended.lock().unwrap_or_else(|e| e.into_inner());
+     if *ended {
+         return Ok(());
+@@ -922,10 +1055,10 @@ pub fn end_trace_span(key: &str, encoded: &str) -> Result<(), String> {
+     if let Some(category) = outcome.category {
+         span.set_attribute(KeyValue::new("sdk.outcome.category", category));
+     }
+-    if policy_for_context(&handle.context).is_some_and(|p| p.include_sensitive_data)
+-        && let Some(data) = outcome.data
++    if policy.is_some_and(|p| p.include_sensitive_data)
++        && let Some(data) = encoded_data
+     {
+-        span.set_attribute(KeyValue::new("sdk.outcome.data", data.to_string()));
++        span.set_attribute(KeyValue::new("sdk.outcome.data", data));
+     }
+     span.end();
+     *ended = true;
+@@ -1013,22 +1146,43 @@ mod tests {
+         assert!(parse_trace_id("00000000000000000000000000000000").is_err());
+         assert!(parse_trace_id("workflow").is_err());
+     }
++    #[test]
++    fn validates_expanded_annotation_budgets_without_relaxing_shape_bounds() {
++        let metadata = json!({"x": "x".repeat(100_000)}).to_string();
++        assert!(metadata_attributes(&metadata).is_ok());
++        assert!(
++            metadata_attributes(&json!({"x": "x".repeat(MAX_TRACING_OPTIONS_BYTES)}).to_string())
++                .is_err()
++        );
++        let data = json!({"x": "x".repeat(MAX_COMPLETION_DATA_BYTES - 8)});
++        assert_eq!(data.to_string().len(), MAX_COMPLETION_DATA_BYTES);
++        assert!(validate_completion_data(&data).is_ok());
++        let escaped = json!({"x": "\\".repeat((MAX_COMPLETION_DATA_BYTES - 8) / 2)});
++        assert_eq!(escaped.to_string().len(), MAX_COMPLETION_DATA_BYTES);
++        assert!(validate_completion_data(&escaped).is_ok());
++        assert!(
++            validate_completion_data(&json!({"x": "x".repeat(MAX_COMPLETION_DATA_BYTES)})).is_err()
++        );
++        let key = "x".repeat(257);
++        assert!(validate_completion_data(&json!({(key): 0})).is_err());
++    }
++
+     #[test]
+     fn bounds_nested_fields() {
+         let at_limit = json!({"x": "a".repeat(MAX_COMPLETION_DATA_BYTES)});
+         let over_limit = json!({"x": "a".repeat(MAX_COMPLETION_DATA_BYTES + 1)});
+-        assert!(bounded_value(&at_limit, 0).is_ok());
+-        assert!(bounded_value(&over_limit, 0).is_err());
+-        assert!(bounded_value(&json!({"x":[1,2,3]}), 0).is_ok());
+-        assert!(bounded_value(&json!({"x": vec![0; 65]}), 0).is_ok());
++        assert!(bounded_value(&at_limit, 0, false).is_ok());
++        assert!(bounded_value(&over_limit, 0, false).is_err());
++        assert!(bounded_value(&json!({"x":[1,2,3]}), 0, false).is_ok());
++        assert!(bounded_value(&json!({"x": vec![0; 65]}), 0, false).is_ok());
+         let object = (0..65)
+             .map(|key| (key.to_string(), json!(0)))
+             .collect::<serde_json::Map<_, _>>();
+-        assert!(bounded_value(&Value::Object(object), 0).is_ok());
++        assert!(bounded_value(&Value::Object(object), 0, false).is_ok());
+         for (depth, allowed) in [(9, true), (64, true), (65, false)] {
+             let encoded = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+             let value: Value = serde_json::from_str(&encoded).unwrap();
+-            assert_eq!(bounded_value(&value, 0).is_ok(), allowed);
++            assert_eq!(bounded_value(&value, 0, false).is_ok(), allowed);
+         }
+     }
+     #[test]
+diff --git a/codex-rs/otel/src/sdk_trace_routes.rs b/codex-rs/otel/src/sdk_trace_routes.rs
+index 656ec8c12aa89ad0b6ff9748d519d813ebd37dea..cc8a74a2073c07a31c151ba7e9ad167306391ac1 100644
+--- a/codex-rs/otel/src/sdk_trace_routes.rs
++++ b/codex-rs/otel/src/sdk_trace_routes.rs
+@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex, OnceLock};
+ use std::time::{Duration, Instant, UNIX_EPOCH};
+ 
+ const MAX_EVENTS: usize = 2048;
+-const MAX_BYTES: usize = 4 * 1024 * 1024;
++pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
++pub(crate) const MAX_CUSTOM_COMPLETION_WIRE_BYTES: usize = MAX_BYTES - 65_536;
+ 
+ /// Process-wide settings for the existing native-to-host lifecycle queue.
+ #[derive(Clone, Debug, Deserialize)]
+@@ -336,7 +337,11 @@ fn attributes(span: &SpanData, policy: Option<&crate::sdk_trace::ScopePolicy>) -
+             other => json!(truncate(
+                 &other.to_string(),
+                 if key == "sdk.outcome.data" {
+-                    crate::sdk_trace::MAX_COMPLETION_DATA_BYTES
++                    if policy.is_some_and(|p| p.custom_completion && p.include_sensitive_data) {
++                        MAX_CUSTOM_COMPLETION_WIRE_BYTES
++                    } else {
++                        crate::sdk_trace::MAX_COMPLETION_DATA_BYTES
++                    }
+                 } else {
+                     4096
+                 },
+@@ -417,6 +422,35 @@ fn event(
+     enqueue_event(s, sequence, value, root_descriptor, credential, metadata_projection_bytes);
+ }
+ 
++// Preserve the ordinary record allowance. Only validated compact SDK completion
++// data grants room above the original 32-KiB data budget, plus JSON escaping.
++// Replay uses the same check; arbitrary observation fields grant no extra room.
++fn completion_projection_bytes(value: Option<&Value>, custom: bool) -> usize {
++    let Some(value @ Value::String(data)) = value else {
++        return 0;
++    };
++    let limit = if custom {
++        MAX_CUSTOM_COMPLETION_WIRE_BYTES
++    } else {
++        crate::sdk_trace::MAX_COMPLETION_DATA_BYTES
++    };
++    if data.len() > limit {
++        return 0;
++    }
++    let Ok(decoded) = serde_json::from_str::<Value>(data) else {
++        return 0;
++    };
++    let valid = if custom {
++        crate::sdk_trace::validate_custom_completion_data(&decoded, data)
++    } else {
++        crate::sdk_trace::validate_completion_data(&decoded)
++    };
++    if valid.is_err() || decoded.to_string() != data.as_str() {
++        return 0;
++    }
++    data.len().saturating_sub(32 * 1024) + value.to_string().len() - data.len() - 2
++}
++
+ fn enqueue_event(
+     s: &mut Routes,
+     sequence: u64,
+@@ -425,19 +459,17 @@ fn enqueue_event(
+     credential: Option<Arc<HostTraceCredential>>,
+     metadata_projection_bytes: usize,
+ ) -> bool {
+-    // Completion data is compact JSON carried as a string. Exclude only the
+-    // second layer of escaping from the record limit. The queue still charges
+-    // the actual encoded bytes below.
+-    let completion_escape_bytes = match value
+-        .get("attributes")
+-        .and_then(|attrs| attrs.get("sdk.outcome.data"))
+-    {
+-        Some(value @ Value::String(data)) => value.to_string().len() - data.len() - 2,
+-        _ => 0,
+-    };
+-    let max_event_bytes = 65_536
+-        + completion_escape_bytes.min(crate::sdk_trace::MAX_COMPLETION_DATA_BYTES)
+-        + metadata_projection_bytes;
++    let attributes = value.get("attributes");
++    // Replayed snapshots have no scope or credential authority. The kind and
++    // lifecycle select a bounded data projection, charged in full to the queue.
++    let custom = value["lifecycle"] == "end"
++        && attributes.and_then(|attrs| attrs.get("sdk.span.kind")).and_then(Value::as_str)
++            == Some("custom");
++    let completion_bytes = completion_projection_bytes(
++        attributes.and_then(|attrs| attrs.get("sdk.outcome.data")),
++        custom,
++    );
++    let max_event_bytes = 65_536 + completion_bytes + metadata_projection_bytes;
+     if serde_json::to_vec(&value).map_or(MAX_BYTES + 1, |v| v.len()) > max_event_bytes {
+         dropped(s, sequence);
+         return false;
+@@ -535,7 +567,10 @@ fn legacy_metadata_bytes(attributes: &serde_json::Map<String, Value>) -> usize {
+         let Value::String(text) = value else {
+             return 0;
+         };
+-        if key.is_empty() || key.len() > 256 || text.len() > 65_536 {
++        if key.is_empty()
++            || key.len() > 256
++            || text.len() > crate::sdk_trace::MAX_TRACING_OPTIONS_BYTES
++        {
+             return 0;
+         }
+         let decoded = serde_json::from_str::<Value>(text)
+@@ -560,7 +595,7 @@ fn legacy_metadata_bytes(attributes: &serde_json::Map<String, Value>) -> usize {
+         };
+         input_bytes +=
+             encoded_key.len() + 1 + encoded_value.len() + usize::from(!metadata.is_empty());
+-        if input_bytes > 65_536 {
++        if input_bytes > crate::sdk_trace::MAX_TRACING_OPTIONS_BYTES {
+             return 0;
+         }
+         metadata.insert(key.to_owned(), decoded);
+@@ -2243,4 +2278,67 @@ mod tests {
+         assert!(retained.upgrade().is_none());
+         assert_eq!(lock().dropped, 1);
+     }
++    #[test]
++    fn expanded_completion_preserves_record_and_actual_queue_budgets() {
++        let completion =
++            json!({"x": "\\".repeat((crate::sdk_trace::MAX_COMPLETION_DATA_BYTES - 8) / 2)})
++                .to_string();
++        let mut data = sample_span();
++        data.attributes = vec![opentelemetry::KeyValue::new(
++            "sdk.outcome.data",
++            completion.clone(),
++        )];
++        // This ordinary data fits its original share of the record allowance.
++        for index in 0..7 {
++            data.attributes.push(opentelemetry::KeyValue::new(
++                format!("ordinary.{index}"),
++                "g".repeat(4000),
++            ));
++        }
++        let mut routes = Routes {
++            processors: vec!["recording".into()],
++            ..Default::default()
++        };
++        event(&mut routes, &data, "end", None, None, None);
++        assert_eq!(routes.queue.len(), 1);
++        let snapshot = &routes.queue.front().unwrap().1;
++        assert_eq!(snapshot["attributes"]["sdk.outcome.data"], completion);
++        let encoded_bytes = serde_json::to_vec(snapshot).unwrap().len();
++        assert_eq!(routes.bytes, encoded_bytes);
++        let attrs = snapshot["attributes"].as_object().unwrap();
++        assert!(completion_projection_bytes(attrs.get("sdk.outcome.data"), false) > 32_768);
++        let mut invalid = attrs.clone();
++        invalid.insert("sdk.outcome.data".into(), json!("x".repeat(65_537)));
++        assert_eq!(
++            completion_projection_bytes(invalid.get("sdk.outcome.data"), false),
++            0
++        );
++        invalid.insert("sdk.outcome.data".into(), json!("not JSON"));
++        assert_eq!(
++            completion_projection_bytes(invalid.get("sdk.outcome.data"), false),
++            0
++        );
++        // The larger record still fails a queue with one fewer actual byte.
++        let mut constrained = Routes {
++            processors: vec!["recording".into()],
++            ..Default::default()
++        };
++        constrained.delivery.max_queue_bytes = (encoded_bytes - 1) as u32;
++        event(&mut constrained, &data, "end", None, None, None);
++        assert!(constrained.queue.is_empty());
++        assert_eq!(constrained.bytes, 0);
++        // Completion data grants no allowance to an unrelated large field.
++        for index in 0..20 {
++            data.attributes.push(opentelemetry::KeyValue::new(
++                format!("other.{index}"),
++                "g".repeat(4000),
++            ));
++        }
++        let mut unrelated = Routes {
++            processors: vec!["recording".into()],
++            ..Default::default()
++        };
++        event(&mut unrelated, &data, "end", None, None, None);
++        assert!(unrelated.queue.is_empty());
++    }
+ }

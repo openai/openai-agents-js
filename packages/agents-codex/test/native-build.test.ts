@@ -650,13 +650,20 @@ if (args[0] === 'build' && process.env.TEST_DISABLE_POST_BUILD_GIT === '1') fs.w
           );
         const suffix = windows ? '.exe' : '';
         const bin = join(pkg, 'bin');
+        writeFileSync(
+          join(native, 'index.js'),
+          'module.exports = { CODEX_REVISION: ' +
+            JSON.stringify(git('rev-parse', 'HEAD')) +
+            ', create_engine() {}, create_checkpoint_engine() {}, _packaged_runtime() { return []; } };',
+        );
+        const packageFixture =
+          host === 'x86_64-unknown-linux-gnu' && configured;
         const build = [
-          'build',
+          ...(packageFixture ? ['package'] : ['build', '--release']),
           '--source',
           source,
           '--rmcp-source',
           source,
-          '--release',
           '--test-fixture',
         ];
         for (const args of [
@@ -828,7 +835,9 @@ if (args[0] === 'build' && process.env.TEST_DISABLE_POST_BUILD_GIT === '1') fs.w
         expect(Object.keys(receipt.products).sort()).toEqual(
           [
             'native/codex.node',
-            'native/test-bin/exec-server-fixture' + suffix,
+            ...(packageFixture
+              ? []
+              : ['native/test-bin/exec-server-fixture' + suffix]),
             ...filenames.map((name) => 'bin/' + name),
           ].sort(),
         );
@@ -958,12 +967,6 @@ if (args[0] === 'build' && process.env.TEST_DISABLE_POST_BUILD_GIT === '1') fs.w
               JSON.stringify(receipt),
             );
           }
-          writeFileSync(
-            join(native, 'index.js'),
-            'module.exports = { CODEX_REVISION: ' +
-              JSON.stringify(addonReceipt.sources.codex.revision) +
-              ', create_engine() {}, create_checkpoint_engine() {}, _packaged_runtime() { return []; } };',
-          );
           appendFileSync(
             preload,
             "\nif (process.env.TEST_WINDOWS_ASSEMBLY) Object.defineProperties(process, { platform: { value: 'win32' }, arch: { value: 'x64' } });\n",
