@@ -98,6 +98,8 @@ With `reasoning.summary`, Codex has been returning any available summary as `pro
 
 By default, Codex has been choosing tools automatically. With `modelSettings: { toolChoice: 'required' }`, the provider has been returning a successful turn only after Codex has been requesting an SDK tool or handoff, including an SDK-managed shell or file edit. To keep Codex focused on those tools, the provider has also been disabling Codex's own shell and image viewer for that turn. The SDK has been raising a `UserError` when no such tool has been available or when Codex has been replying without requesting one. To confirm that a tool has actually been running, check its result; a request alone has not been guaranteeing execution or approval.
 
+If an agent has been delegating to `codexTool()`, check which tools each Codex process can use. With an MCP server in both profiles, the outer agent has sometimes been using that server directly. For the [Codex tool example](./codex.ts), keeping the docs server in the inner tool's profile has been preventing this shortcut.
+
 Codex has been using ephemeral threads. It has been accepting `toolChoice: 'auto'` and `store: false` to match that behavior. The Runner has been applying `timeoutMs` and `retry` to Codex calls. It has been treating Codex calls as unsafe to replay because native tools can change the workspace.
 
 ### Conversation history and compaction

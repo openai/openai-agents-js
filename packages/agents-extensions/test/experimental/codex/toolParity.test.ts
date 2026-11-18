@@ -382,7 +382,6 @@ test('runs local patch operations through the configured SDK editor', async () =
 
 test.each([
   { toolChoice: 'none' },
-  { toolChoice: 'required' },
   { toolChoice: 'lookup_weather' },
   { parallelToolCalls: false },
   { parallelToolCalls: true },

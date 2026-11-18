@@ -28,11 +28,14 @@ These examples demonstrate the hosted tools provided by the Agents SDK.
   pnpm examples:tools-programmatic-tool-calling
   ```
 
-- `codex.ts` – Runs the Codex CLI via the codex tool wrapper with streaming event logs and skill usage. Requires `CODEX_API_KEY` or `OPENAI_API_KEY` (Codex falls back to this unless `CODEX_API_KEY` is set). You can set `CODEX_PATH` to override the Codex CLI path.
+- `codex.ts` – Runs the Codex CLI via the codex tool wrapper with streaming event logs and skill usage. Uses a read-only sandbox for workspace inspection. Requires `CODEX_API_KEY` or `OPENAI_API_KEY` (Codex falls back to this unless `CODEX_API_KEY` is set). You can set `CODEX_PATH` to override the Codex CLI path.
 
   ```bash
+  codex mcp add openaiDeveloperDocs --url https://developers.openai.com/mcp
   pnpm examples:tools-codex
   ```
+
+  The `$openai-knowledge` skill requires that docs server in the nested worker's Codex profile. If the outer agent also uses `CodexProvider`, give it a separate `CODEX_HOME` through `codexOptions.env` so its tools stay scoped to orchestration. That option replaces the CLI environment, so preserve the inherited `PATH`, authentication, and proxy variables it needs.
 
 - `codex-same-thread.ts` – Reuses a Codex thread across multiple agent turns via `useRunContextThreadId`.
 
