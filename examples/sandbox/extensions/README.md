@@ -96,24 +96,9 @@ Optional bearer auth:
 export CLOUDFLARE_SANDBOX_API_KEY=...
 ```
 
-Cloudflare Sandbox SDK is currently available on the Workers Paid plan. You must deploy a Worker-backed sandbox endpoint first, then point this example at that deployment.
+Use this example if you already have access to a Worker that implements the Cloudflare Sandbox bridge API. Set `CLOUDFLARE_SANDBOX_WORKER_URL` to that Worker's base URL. The client calls `POST /v1/sandbox` there to create a sandbox, then uses the bridge to write the example files and run shell commands. A generic Worker URL won't work.
 
-This example expects a worker created from the Cloudflare Sandbox bridge template:
-
-```bash
-npm create cloudflare@latest -- my-sandbox --template=cloudflare/sandbox-sdk/bridge/worker
-```
-
-Cloudflare's Sandbox SDK guides also require Docker locally when you deploy with Wrangler because the container image is built during `wrangler deploy`.
-
-After creating the project, deploy it and copy the worker URL:
-
-```bash
-cd my-sandbox
-npx wrangler deploy
-```
-
-Point `CLOUDFLARE_SANDBOX_WORKER_URL` at that deployed worker. A generic Worker URL will not expose the bridge endpoints this example expects.
+Cloudflare [removed the bridge template](https://github.com/cloudflare/sandbox-sdk/commit/c3b61c38c6) from its default branch. The [archived bridge](https://github.com/cloudflare/sandbox-sdk/tree/bc0de65a1f/bridge/worker) documents the protocol; it isn't a current deployment guide. If you don't have a compatible Worker and just want to try the same agent workflow, [run the local sandbox example](../README.md) instead.
 
 If your bridge worker enforces bearer auth, set `CLOUDFLARE_SANDBOX_API_KEY` to the same secret value that worker expects. This is not a generic Cloudflare account API token; this example forwards it as `Authorization: Bearer ...` to your worker.
 

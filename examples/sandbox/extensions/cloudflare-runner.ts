@@ -15,9 +15,8 @@ import {
 const DEFAULT_QUESTION =
   'Summarize this cloud sandbox workspace in 2 sentences.';
 
-// This example expects a worker created from the Cloudflare Sandbox bridge template:
-// `npm create cloudflare@latest -- my-sandbox --template=cloudflare/sandbox-sdk/bridge/worker`
-// A generic Worker URL will not expose the sandbox bridge endpoints this client needs.
+// Set CLOUDFLARE_SANDBOX_WORKER_URL to a Worker that implements the bridge API.
+// See README.md in this directory for the required endpoints and authentication.
 
 function buildManifest(): Manifest {
   return new Manifest({
