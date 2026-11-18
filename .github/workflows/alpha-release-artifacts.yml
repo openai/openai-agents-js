@@ -371,6 +371,9 @@ jobs:
           pnpm exec vitest run --pool=forks --project @openai/agents-codex
           packages/agents-codex/test/native/mcp-owned-stdio-native.test.ts
           -t 'environment name rules' --maxWorkers=1 --reporter=verbose
+      - name: Prepare reviewed Codex sources for the Linux worker
+        if: runner.os == 'Linux'
+        run: node packages/agents-codex/scripts/native.mjs prepare
       - name: Qualify the Linux worker
         if: runner.os == 'Linux'
         env:

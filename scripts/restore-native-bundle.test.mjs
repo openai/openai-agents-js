@@ -823,6 +823,9 @@ test('workflow preserves qualification coverage on explicit protected transfers'
   expect(qualify).toContain('NATIVE_ARTIFACT: ${{ matrix.artifact }}');
   expect(qualify).toContain('Check runner platform');
   expect(qualify).toContain('apparmor-profiles bubblewrap');
+  expect(qualify).toContain(
+    "if: runner.os == 'Linux'\n        run: node packages/agents-codex/scripts/native.mjs prepare\n      - name: Qualify the Linux worker",
+  );
   for (const step of [
     'Restore the common SDK build',
     'Qualify canonical native storage',
