@@ -39,7 +39,20 @@ pnpm -F tools exec tsx codex-provider.ts codex
 
 `CODEX_MODEL` has been selecting the model for Codex mode.
 
-Without `CODEX_MODEL`, the example has been leaving model selection to Codex. For the temporary directory, it has been selecting `workspace-write`, skipping the Git repository check, and setting the approval policy to `never` for unattended execution. Codex has been applying its own configuration and sandbox rules. Linux execution has been depending on a host permitting Codex to start its Bubblewrap sandbox.
+Without `CODEX_MODEL`, Codex has been selecting its default model. For an unattended run, the example has been using a temporary workspace, selecting `workspace-write`, skipping the Git repository check, and setting the approval policy to `never`.
+
+### Missing `hello.txt` in Codex mode on Linux
+
+The example has been checking the file on disk. If that check has been returning `ENOENT`, check shell startup separately, without a model call:
+
+```sh
+codex sandbox -c 'sandbox_mode="workspace-write"' -- /bin/sh -c 'echo sandbox-ready'
+```
+
+- **`sandbox-ready`:** Codex has been starting its native shell. Check the output of the command that should have written the file.
+- **`app-server socket directory must be a user-owned directory with mode 0700`:** Codex has been stopping before shell startup. On some hosts, an outer sandbox has been masking `/tmp/codex-daemon-<uid>` with a read-only directory of mode `000`. Changing `CODEX_HOME` has not been changing that mount.
+
+For the socket error, retry the example on a host where the check has been printing `sandbox-ready`. Keep `workspace-write` enabled. Both modes have been printing `Verified hello.txt: Hello from Codex` on success, without an MCP server.
 
 ## Image, handoff, tool, and structured output
 
