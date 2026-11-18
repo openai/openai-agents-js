@@ -1,3 +1,4 @@
+import { OpenAIProvider, Runner } from '@openai/agents';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   FinancialReportData,
@@ -5,7 +6,12 @@ import {
   plannerAgent,
   VerificationResult,
 } from './agents';
-import { FinancialResearchManager } from './manager';
+import { FinancialResearchManager, type SearchResult } from './manager';
+
+const evidence = (summary: string): SearchResult => ({
+  summary,
+  sources: [{ url: 'https://example.com/results', title: 'Results' }],
+});
 
 const { runMock } = vi.hoisted(() => ({ runMock: vi.fn() }));
 
@@ -16,19 +22,19 @@ vi.mock('@openai/agents', async (importOriginal) => ({
 
 const initialReport: FinancialReportData = {
   short_summary: 'Initial summary',
-  markdown_report: 'Initial report',
+  markdown_report: 'Initial report [Results](https://example.com/results)',
   follow_up_questions: [],
 };
 
 const revisedReport: FinancialReportData = {
   short_summary: 'Revised summary',
-  markdown_report: 'Revised report',
+  markdown_report: 'Revised report [Results](https://example.com/results)',
   follow_up_questions: [],
 };
 
 class TestFinancialResearchManager extends FinancialResearchManager {
-  searchResults = ['Primary source summary'];
-  writeReportSearchResults: string[] | undefined;
+  searchResults = [evidence('Primary source summary')];
+  writeReportSearchResults: SearchResult[] | undefined;
   writeReportCalls = 0;
   verificationCalls = 0;
   revisionCalls = 0;
@@ -38,13 +44,13 @@ class TestFinancialResearchManager extends FinancialResearchManager {
     return { searches: [] };
   }
 
-  async performSearches(): Promise<string[]> {
+  async performSearches(): Promise<SearchResult[]> {
     return this.searchResults;
   }
 
   async writeReport(
     _query: string,
-    searchResults: string[],
+    searchResults: SearchResult[],
   ): Promise<FinancialReportData> {
     this.writeReportCalls++;
     this.writeReportSearchResults = searchResults;
@@ -53,6 +59,7 @@ class TestFinancialResearchManager extends FinancialResearchManager {
 
   async verifyReport(
     _report: FinancialReportData,
+    _searchResults: SearchResult[],
   ): Promise<VerificationResult> {
     this.verificationCalls++;
     if (this.verificationCalls <= this.verificationFailuresBeforePass) {
@@ -68,7 +75,7 @@ class TestFinancialResearchManager extends FinancialResearchManager {
     _query: string,
     _report: FinancialReportData,
     _verification: VerificationResult,
-    _searchResults: string[],
+    _searchResults: SearchResult[],
   ): Promise<FinancialReportData> {
     this.revisionCalls++;
     return {
@@ -105,7 +112,9 @@ test.each([
     runMock.mockResolvedValueOnce({ finalOutput: plan });
     const search = vi
       .spyOn(manager, 'search')
-      .mockImplementation(async (item) => `Summary for ${item.query}`);
+      .mockImplementation(async (item) =>
+        evidence(`Summary for ${item.query}`),
+      );
 
     const returnedPlan = await manager.planSearches('Research query');
     const results = await manager.performSearches(returnedPlan);
@@ -120,9 +129,8 @@ test.each([
       plan.searches.slice(0, expected).map((item) => [item]),
     );
     expect(results).toEqual(
-      Array.from(
-        { length: expected },
-        (_, index) => `Summary for query ${index}`,
+      Array.from({ length: expected }, (_, index) =>
+        evidence(`Summary for query ${index}`),
       ),
     );
     expect(console.log).toHaveBeenCalledWith(
@@ -151,10 +159,10 @@ test('preserves plan order and counts failed searches without replacing them', a
     })),
   };
   // Control completion order at the search boundary without calling a model.
-  const completions: ((result: string | null) => void)[] = [];
+  const completions: ((result: SearchResult | null) => void)[] = [];
   const search = vi.spyOn(manager, 'search').mockImplementation(
     () =>
-      new Promise<string | null>((resolve) => {
+      new Promise<SearchResult | null>((resolve) => {
         completions.push(resolve);
       }),
   );
@@ -162,12 +170,14 @@ test('preserves plan order and counts failed searches without replacing them', a
   const pendingResults = manager.performSearches(plan);
   expect(search).toHaveBeenCalledTimes(15);
   for (let index = 14; index >= 0; index--) {
-    completions[index](index === 1 ? null : `Summary ${index}`);
+    completions[index](index === 1 ? null : evidence(`Summary ${index}`));
   }
 
   expect(await pendingResults).toEqual([
-    'Summary 0',
-    ...Array.from({ length: 13 }, (_, index) => `Summary ${index + 2}`),
+    evidence('Summary 0'),
+    ...Array.from({ length: 13 }, (_, index) =>
+      evidence(`Summary ${index + 2}`),
+    ),
   ]);
   expect(search.mock.calls).toEqual(
     plan.searches.slice(0, 15).map((item) => [item]),
@@ -217,7 +227,7 @@ test('fails before writing when no usable search summaries remain', async () => 
 
 test('fails before writing when the search summary is blank', async () => {
   const manager = new TestFinancialResearchManager();
-  manager.searchResults = [''];
+  manager.searchResults = [evidence('')];
 
   await expect(manager.run('Research query')).rejects.toThrow(
     'Financial research failed because no usable search summaries were returned.',
@@ -230,17 +240,17 @@ test('fails before writing when the search summary is blank', async () => {
 test('filters blank search summaries while preserving usable results', async () => {
   const manager = new TestFinancialResearchManager();
   manager.searchResults = [
-    '',
-    'Primary source summary',
-    ' \n',
-    'Secondary source summary',
+    evidence(''),
+    evidence('Primary source summary'),
+    evidence(' \n'),
+    evidence('Secondary source summary'),
   ];
 
   await manager.run('Research query');
 
   expect(manager.writeReportSearchResults).toEqual([
-    'Primary source summary',
-    'Secondary source summary',
+    evidence('Primary source summary'),
+    evidence('Secondary source summary'),
   ]);
 });
 
@@ -254,4 +264,279 @@ test('fails closed when the report remains unverified', async () => {
 
   expect(manager.revisionCalls).toBe(2);
   expect(manager.verificationCalls).toBe(3);
+});
+
+test('collects only service-returned search sources and citation annotations', async () => {
+  const { collectSearchSources } = await import('./manager');
+  expect(
+    collectSearchSources([
+      {
+        rawItem: {
+          type: 'hosted_tool_call',
+          name: 'web_search_call',
+          providerData: {
+            action: {
+              sources: [
+                { url: 'https://example.com/results', title: 'Results' },
+              ],
+            },
+          },
+        },
+      },
+      {
+        rawItem: {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            {
+              type: 'output_text',
+              text: 'Invented https://invented.example/',
+              providerData: {
+                annotations: [
+                  {
+                    type: 'url_citation',
+                    url: 'https://example.com/results',
+                    title: 'Results',
+                  },
+                  {
+                    type: 'url_citation',
+                    url: 'https://example.com/filing',
+                    title: 'Filing',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      {
+        rawItem: {
+          type: 'function_call',
+          providerData: {
+            action: { sources: [{ url: 'https://invented.example/' }] },
+          },
+        },
+      },
+    ]),
+  ).toEqual([
+    { url: 'https://example.com/results', title: 'Results' },
+    { url: 'https://example.com/filing', title: 'Filing' },
+  ]);
+});
+
+test('verifies the executive summary and follow-up questions with the report', async () => {
+  const manager = new FinancialResearchManager();
+  runMock.mockResolvedValueOnce({
+    finalOutput: { verified: true, issues: '' },
+  });
+  await manager.verifyReport(initialReport, [evidence('Source evidence')]);
+  const input = runMock.mock.calls[0][1];
+  expect(input).toContain(JSON.stringify(initialReport, null, 2));
+  expect(input).toContain('Source evidence');
+});
+
+test('keeps hosted search on Responses and passes actual source metadata onward', async () => {
+  const selectedRunner = { run: vi.fn() };
+  const manager = new FinancialResearchManager(selectedRunner);
+  const searchRun = vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+    finalOutput: 'Revenue rose [Results](https://example.com/results).',
+    newItems: [
+      {
+        rawItem: {
+          type: 'hosted_tool_call',
+          name: 'web_search_call',
+          providerData: {
+            action: {
+              sources: [
+                { url: 'https://example.com/results', title: 'Results' },
+              ],
+            },
+          },
+        },
+      },
+    ],
+  } as any);
+
+  const output = await manager.search({
+    query: 'Company earnings',
+    reason: 'Reported results',
+  });
+
+  expect(output?.sources).toEqual([
+    { url: 'https://example.com/results', title: 'Results' },
+  ]);
+  expect(output?.summary).toContain('Revenue rose');
+  expect(
+    (searchRun.mock.instances[0] as Runner).config.modelProvider,
+  ).toBeInstanceOf(OpenAIProvider);
+  expect(selectedRunner.run).not.toHaveBeenCalled();
+});
+
+test.each([
+  '',
+  'Summary with a prose-only URL https://example.com/unretrieved',
+])(
+  'rejects search output without service source metadata: %s',
+  async (finalOutput) => {
+    vi.spyOn(Runner.prototype, 'run').mockResolvedValue({
+      finalOutput,
+      newItems: [],
+    } as any);
+    const manager = new FinancialResearchManager();
+    expect(
+      await manager.search({
+        query: 'Company earnings',
+        reason: 'Reported results',
+      }),
+    ).toBeNull();
+  },
+);
+
+test.each([
+  'Uncited report',
+  '[Unretrieved](https://example.com/results/extra)',
+  '[Unretrieved](https://example.com/results?invented=1)',
+  '[Unretrieved](https://invented.example/) https://example.com/results',
+])(
+  'rejects a falsely approved report without an exact retrieved citation: %s',
+  async (markdown_report) => {
+    const manager = new TestFinancialResearchManager();
+    const report = { ...initialReport, markdown_report };
+    vi.spyOn(manager, 'writeReport').mockResolvedValue(report);
+    vi.spyOn(manager, 'reviseReport').mockResolvedValue(report);
+
+    await expect(manager.run('Research query')).rejects.toThrow(
+      'The report must include an inline Markdown citation to an exact service-returned source URL.',
+    );
+    expect(manager.verificationCalls).toBe(3);
+  },
+);
+
+test('rejects a verifier approval that still lists issues', async () => {
+  const manager = new TestFinancialResearchManager();
+  vi.spyOn(manager, 'verifyReport').mockResolvedValue({
+    verified: true,
+    issues: 'Revenue conflicts with the source.',
+  });
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'Revenue conflicts with the source.',
+  );
+  expect(manager.revisionCalls).toBe(2);
+});
+
+test('retains original service evidence when revising an uncited report', async () => {
+  const manager = new TestFinancialResearchManager();
+  const sources = [
+    evidence(
+      'Revenue rose; prose-only https://invented.example/ is not retrieved.',
+    ),
+  ];
+  manager.searchResults = sources;
+  vi.spyOn(manager, 'writeReport').mockResolvedValue({
+    ...initialReport,
+    markdown_report: '[Invented](https://invented.example/)',
+  });
+  const revise = vi.spyOn(manager, 'reviseReport');
+  const verify = vi.spyOn(manager, 'verifyReport');
+
+  await manager.run('Research query');
+
+  expect(revise).toHaveBeenCalledTimes(1);
+  expect(revise.mock.calls[0][3]).toEqual(sources);
+  expect(revise.mock.calls[0][2].verified).toBe(false);
+  expect(verify.mock.calls[1][1]).toEqual(sources);
+  expect(console.log).toHaveBeenCalledWith(
+    `Report:\n${revisedReport.markdown_report}`,
+  );
+});
+
+test('renders source IDs to exact service URLs before verification and printing', async () => {
+  const manager = new TestFinancialResearchManager();
+  const url = 'https://images.example.com/earnings.pdf?utm_source=api_returned';
+  manager.searchResults = [
+    { summary: 'Reported revenue rose.', sources: [{ url }] },
+  ];
+  vi.spyOn(manager, 'writeReport').mockResolvedValue({
+    short_summary: 'Revenue rose [source:S1]',
+    markdown_report: 'Reported results [source:S1]',
+    follow_up_questions: [],
+  });
+  const verify = vi.spyOn(manager, 'verifyReport');
+
+  await manager.run('Research query');
+
+  expect(verify.mock.calls[0][0]).toEqual({
+    short_summary: `Revenue rose [S1](${url})`,
+    markdown_report: `Reported results [S1](${url})`,
+    follow_up_questions: [],
+  });
+  expect(console.log).toHaveBeenCalledWith(
+    `Report:\nReported results [S1](${url})`,
+  );
+  expect(manager.revisionCalls).toBe(0);
+});
+
+test('rejects unknown IDs even when a valid citation also appears', async () => {
+  const manager = new TestFinancialResearchManager();
+  const report = {
+    ...initialReport,
+    markdown_report: '[source:S1] and [source:S999]',
+  };
+  vi.spyOn(manager, 'writeReport').mockResolvedValue(report);
+  vi.spyOn(manager, 'reviseReport').mockResolvedValue(report);
+
+  await expect(manager.run('Research query')).rejects.toThrow(
+    'The report contains an unknown source reference.',
+  );
+});
+
+test('keeps one source mapping through retries without repairing guessed tracking suffixes', async () => {
+  const manager = new TestFinancialResearchManager();
+  const url = 'https://images.example.com/results.pdf?utm_source=service';
+  manager.searchResults = [
+    { summary: 'First results.', sources: [{ url }] },
+    {
+      summary: 'Repeated source.',
+      sources: [{ url }, { url: 'https://example.com/filing' }],
+    },
+  ];
+  const guessed = {
+    ...initialReport,
+    markdown_report:
+      '[Results](https://www.example.com/results.pdf?utm_source=openai)',
+  };
+  vi.spyOn(manager, 'writeReport').mockResolvedValue(guessed);
+  vi.spyOn(manager, 'reviseReport').mockResolvedValue({
+    ...initialReport,
+    markdown_report: 'Results [source:S1]. Filing [source:S2].',
+  });
+  const verify = vi.spyOn(manager, 'verifyReport');
+
+  await manager.run('Research query');
+
+  expect(verify.mock.calls[0][0]).toEqual(guessed);
+  expect(verify.mock.calls[1][0].markdown_report).toBe(
+    `Results [S1](${url}). Filing [S2](https://example.com/filing).`,
+  );
+  expect(verify.mock.calls[1][1]).toEqual(manager.searchResults);
+});
+
+test('exposes deterministic deduplicated source IDs to the writer and reviser', async () => {
+  const manager = new FinancialResearchManager();
+  const sources = [evidence('First'), evidence('Second')];
+  runMock.mockResolvedValue({ finalOutput: initialReport });
+
+  await manager.writeReport('Query', sources);
+  await manager.reviseReport(
+    'Query',
+    initialReport,
+    { verified: false, issues: 'Cite the result.' },
+    sources,
+  );
+
+  for (const [, input] of runMock.mock.calls) {
+    expect(input).toContain('"id":"S1","url":"https://example.com/results"');
+    expect(input).not.toContain('"id":"S2"');
+  }
 });

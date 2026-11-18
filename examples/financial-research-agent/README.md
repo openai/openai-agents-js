@@ -1,26 +1,25 @@
-# Financial Research Agent
+# Write a financial report with source checks
 
-This example demonstrates a multi-agent workflow that produces a short financial analysis report.
+Ask a financial question to see how an agent plans searches, consults specialists, and checks the resulting report. Both modes require an `OPENAI_API_KEY` with access to Responses API web search. Both incur model and search charges.
 
-The entrypoint in `main.ts` prompts for a query, then traces the run and hands control to `FinancialResearchManager`.
-
-The manager orchestrates several specialized agents:
-
-1. **Planner** – creates a list of search tasks for the query.
-2. **Search** – runs at most the first 15 planned searches in parallel and gathers summaries.
-3. **Writer** – synthesizes the search results, optionally calling fundamentals and risk analyst tools.
-4. **Verifier** – checks the final report for consistency and issues.
-
-The search limit bounds search-agent invocations per search phase. It does not cap total model requests, tool calls, or spending.
-
-After running these steps the manager prints a short summary, the full markdown report, suggested follow-up questions, and verification results. If no search produces a usable summary, or if blocking source-grounding issues remain after two revisions, it exits with an error instead of presenting an ungrounded or unverified report as successful output.
-
-Run the example with:
+From the repository root, run the same question with either provider:
 
 ```bash
-pnpm examples:financial-research-agent
+# Default provider
+pnpm --filter financial-research-agent start "Summarize Apple's latest earnings."
+
+# Stock Codex for planning, analysis, writing, and verification
+pnpm --filter financial-research-agent start --codex "Summarize Apple's latest earnings."
 ```
 
-## Runtime requirements
+Omit the question to type it at a prompt. For Codex mode, install the workspace dependencies (including the stock Codex CLI) and configure Codex authentication. Use `CODEX_MODEL` to choose the model for the Codex stages.
 
-Use Node.js 22.18 or later within the 22.x line, Node.js 24.x, or Node.js 26 or later. The following commands execute TypeScript directly with Node.js: `start`.
+## Why both modes use the same search
+
+A URL in a model's reply doesn't prove that a search took place. The example runs its search agent on the Responses API in both modes to get the URLs from the search itself. Stock Codex doesn't return the same source metadata.
+
+The writer cites sources by ID, such as `[source:S1]`. The example replaces each known ID with the URL returned by search, so the writer doesn't have to copy it.
+
+The verifier checks the executive summary, full report, and follow-up questions against the same evidence. The writer can revise a rejected draft twice. If no search yields usable sources, or if the verifier still rejects the draft, the example exits with an error instead of printing the report. A pass means the report cleared these checks against the retrieved evidence; the verifier can still make mistakes.
+
+The `start` script runs TypeScript directly with Node.js. Use Node 22.18 or later in the 22.x line, Node 24.x, or Node 26 or later.

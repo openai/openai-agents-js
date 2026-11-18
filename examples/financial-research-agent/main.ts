@@ -1,20 +1,40 @@
-import { withTrace } from '@openai/agents';
+import { Runner, withTrace } from '@openai/agents';
 import { FinancialResearchManager } from './manager.ts';
 
-// Entrypoint for the financial bot example.
-// Run this as `npx tsx examples/financial-research-agent/main.ts` and enter a financial research query, for example:
-// "Write up an analysis of Apple Inc.'s most recent quarter."
-
 async function main() {
-  const readline = await import('node:readline/promises');
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-  const query = await rl.question('Enter a financial research query: ');
-  rl.close();
+  const args = process.argv.slice(2);
+  const useCodex = args.includes('--codex');
+  let query = args
+    .filter((arg) => arg !== '--codex')
+    .join(' ')
+    .trim();
+  if (!query) {
+    const readline = await import('node:readline/promises');
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    query = await rl.question('Enter a financial research query: ');
+    rl.close();
+  }
+  let runner: Runner | undefined;
+  if (useCodex) {
+    const { CodexProvider } =
+      await import('@openai/agents-extensions/experimental/codex');
+    runner = new Runner({
+      modelProvider: new CodexProvider({
+        threadOptions: {
+          workingDirectory: process.cwd(),
+          skipGitRepoCheck: true,
+          sandboxMode: 'read-only',
+          approvalPolicy: 'never',
+        },
+      }),
+      model: process.env.CODEX_MODEL ?? 'gpt-5.5',
+    });
+  }
   await withTrace('Financial research workflow', async () => {
-    const manager = new FinancialResearchManager();
+    const manager = new FinancialResearchManager(runner);
     await manager.run(query);
   });
 }

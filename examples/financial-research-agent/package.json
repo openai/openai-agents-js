@@ -3,6 +3,7 @@
   "name": "financial-research-agent",
   "dependencies": {
     "@openai/agents": "workspace:*",
+    "@openai/agents-extensions": "workspace:*",
     "zod": "^4.6.7"
   },
   "scripts": {

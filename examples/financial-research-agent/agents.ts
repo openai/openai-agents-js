@@ -75,11 +75,16 @@ export const searchAgent = new Agent({
   instructions: searchAgentPrompt,
   model: 'gpt-5.4',
   tools: [webSearchTool()],
+  modelSettings: {
+    toolChoice: 'required',
+    providerData: { include: ['web_search_call.action.sources'] },
+  },
 });
 
 // --- Verification Agent ---
 export const verifierPrompt = `You are a meticulous auditor. You will receive a financial analysis report and the source summaries used to write it.
-Verify the report against those source summaries rather than relying on prior knowledge.
+Verify every report field, including the short_summary, against those source summaries rather than relying on prior knowledge.
+Each material factual claim must cite a URL in the service-returned source lists. A URL appearing only in generated prose is not evidence of retrieval. Check that the cited summary actually supports the claim and fiscal period; source-list membership alone does not prove a claim.
 Set verified to false only when a material claim remains unsupported, internally inconsistent, misleadingly sourced, or unqualified despite conflicting sources.
 Treat omitted optional context, accurately attributed single-source claims, and uncertainty that the report explicitly labels and handles conservatively as non-blocking.
 Do not reject newer information merely because it is unfamiliar.
@@ -107,7 +112,7 @@ export const verifierAgent = new Agent({
 export const writerPrompt = `You are a senior financial analyst.
 You will be provided with the original query and a set of raw search summaries.
 Your task is to synthesize these into a long-form markdown report (at least several paragraphs) including a short executive summary and follow-up questions.
-Use only facts supported by the supplied summaries, preserve their source URLs as inline Markdown citations, and clearly label uncertainty or conflicting information.
+Use only facts supported by the supplied summaries, cite only URLs in their service-returned source lists, and clearly label uncertainty or conflicting information. Cite claims in both short_summary and markdown_report using the exact supplied source references, for example [source:S1]. The host replaces each known reference with an inline Markdown citation to its original retrieved URL before verification. Do not copy, invent, or repair URLs or source IDs. If evidence is sparse, write a shorter report explaining the gaps rather than filling them from memory.
 When source summaries conflict on a fact, do not choose a version based on how often it appears. Omit the disputed fact from the executive summary and bottom-line conclusions unless a supplied source directly reconciles the conflict.
 If needed, you can call the available analysis tools (e.g. fundamentals_analysis, risk_analysis) to get short specialist write-ups to incorporate.`;
 
