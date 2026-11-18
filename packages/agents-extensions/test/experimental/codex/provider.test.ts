@@ -788,6 +788,73 @@ test('requires an SDK function call and lets Runner finish after executing it', 
   expect(boundary.open).toHaveBeenCalledTimes(2);
 });
 
+test('suppresses only native workspace tools on required turns and preserves caller settings on auto continuation', async () => {
+  const first = server(callback('lookup'));
+  const second = server(completed('Account found.'));
+  const configOverrides = [
+    'features.shell_tool=true',
+    'features.view_image=true',
+    'features.apps=true',
+  ];
+  const sdkRunner = new Runner({
+    modelProvider: new CodexProvider({ codexOptions: { configOverrides } }),
+    tracingDisabled: true,
+  });
+  const result = await sdkRunner.run(
+    new Agent({
+      name: 'assistant',
+      modelSettings: { toolChoice: 'required' },
+      tools: [
+        tool({
+          name: 'lookup',
+          description: 'Find an account.',
+          parameters: z.object({}),
+          execute: async () => 'account',
+        }),
+      ],
+    }),
+    'Find my account.',
+  );
+  expect(result.finalOutput).toBe('Account found.');
+  expect(boundary.open.mock.calls[0][0].codexOptions.configOverrides).toEqual([
+    ...configOverrides,
+    'features.shell_tool=false',
+    'features.view_image=false',
+  ]);
+  expect(boundary.open.mock.calls[1][0].codexOptions.configOverrides).toEqual(
+    configOverrides,
+  );
+  expect(configOverrides).toEqual([
+    'features.shell_tool=true',
+    'features.view_image=true',
+    'features.apps=true',
+  ]);
+  expect(first.request).not.toHaveBeenCalledWith(
+    'config/read',
+    expect.anything(),
+  );
+  expect(first.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.not.objectContaining({ environments: [] }),
+  );
+  expect(first.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.not.objectContaining({
+      developerInstructions: expect.stringContaining('agents_sdk'),
+    }),
+  );
+  expect(second.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.not.objectContaining({ environments: [] }),
+  );
+  expect(second.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.not.objectContaining({
+      developerInstructions: expect.stringContaining('agents_sdk'),
+    }),
+  );
+});
+
 test('accepts a handoff as the required SDK tool call', async () => {
   server(callback('transfer_to_specialist'));
   server(completed('Specialist answer.'));

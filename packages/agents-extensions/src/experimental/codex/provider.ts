@@ -147,6 +147,7 @@ class CodexModel implements Model {
         isolateNativeTools,
         deferred,
         webSearch,
+        requiresTool,
       ),
       cwd,
       signal: request.signal,
@@ -1081,6 +1082,7 @@ function appServerOptions(
   sdkSandbox = false,
   deferred = false,
   hostedWebSearch?: HostedWebSearch,
+  requiresTool = false,
 ): CodexAppServerOptions | undefined {
   const thread = options.threadOptions;
   const configOverrides = [...(options.codexOptions?.configOverrides ?? [])];
@@ -1117,6 +1119,13 @@ function appServerOptions(
       'features.code_mode=false',
       'notify=[]',
       'web_search="disabled"',
+    );
+  }
+  if (requiresTool && !sdkSandbox) {
+    // Required turns must delegate to SDK tools rather than native workspace tools.
+    configOverrides.push(
+      'features.shell_tool=false',
+      'features.view_image=false',
     );
   }
   if (hostedWebSearch) {
