@@ -1591,7 +1591,9 @@ export class OpenAIResponsesModel implements Model {
       inputTokens: response.usage?.input_tokens ?? 0,
       outputTokens: response.usage?.output_tokens ?? 0,
       totalTokens: response.usage?.total_tokens ?? 0,
-      inputTokensDetails: { ...response.usage?.input_tokens_details },
+      inputTokensDetails: protocol.TokenDetails.parse(
+        response.usage?.input_tokens_details ?? {},
+      ),
       outputTokensDetails: { ...response.usage?.output_tokens_details },
       requestUsageEntries: [
         toRequestUsageEntry(response.usage, 'responses.create'),
@@ -1609,7 +1611,9 @@ export class OpenAIResponsesModel implements Model {
       inputTokens: response.usage?.input_tokens ?? 0,
       outputTokens: response.usage?.output_tokens ?? 0,
       totalTokens: response.usage?.total_tokens ?? 0,
-      inputTokensDetails: { ...response.usage?.input_tokens_details },
+      inputTokensDetails: protocol.TokenDetails.parse(
+        response.usage?.input_tokens_details ?? {},
+      ),
       outputTokensDetails: { ...response.usage?.output_tokens_details },
       requestUsageEntries: [
         toRequestUsageEntry(response.usage, 'responses.create'),
