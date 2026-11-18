@@ -667,3 +667,81 @@ test('rejects an audit relying on a failed open_page receipt', async () => {
   expect(verdict.verified).toBe(false);
   expect(verdict.issues).toContain('no opened primary-source evidence');
 });
+
+test.each([
+  [true, true],
+  [false, true],
+  [true, false],
+])(
+  'uses earlier supported findings on only the last revision and preserves both final verdicts: %s/%s',
+  async (finalApproval, selectedApproval) => {
+    const manager = new FinancialResearchManager();
+    vi.spyOn(manager, 'planSearches').mockResolvedValue({ searches: [] });
+    vi.spyOn(manager, 'performSearches').mockResolvedValue([
+      evidence('Mixed research'),
+    ]);
+    vi.spyOn(manager, 'writeReport').mockResolvedValue(initialReport);
+    const revise = vi
+      .spyOn(manager, 'reviseReport')
+      .mockResolvedValue(revisedReport);
+    const checks = [
+      {
+        claim: 'Services generated revenue',
+        source_url: primaryUrl,
+        supporting_extract: 'FY26 Services revenue: $123.301 billion',
+        supported: true,
+        explanation: 'Full fiscal year, billions.',
+      },
+      {
+        claim: 'The company returned cash to shareholders',
+        source_url: primaryUrl,
+        supporting_extract: 'Cash dividends paid: $15.7 billion',
+        supported: true,
+        explanation: 'Full fiscal year cash flow, billions.',
+      },
+    ];
+    const firstAudit = auditResponse(false);
+    firstAudit.finalOutput.checks = [
+      ...checks,
+      ...firstAudit.finalOutput.checks,
+    ];
+    const secondAudit = auditResponse(false, false);
+    secondAudit.finalOutput.checks = [];
+    const finalAudit = auditResponse(finalApproval);
+    finalAudit.finalOutput.checks = checks;
+    const audit = vi
+      .spyOn(Runner.prototype, 'run')
+      .mockResolvedValueOnce(firstAudit)
+      .mockResolvedValueOnce(secondAudit)
+      .mockResolvedValueOnce(finalAudit);
+    runMock
+      .mockResolvedValueOnce({ finalOutput: { verified: true, issues: '' } })
+      .mockResolvedValueOnce({ finalOutput: { verified: true, issues: '' } })
+      .mockResolvedValueOnce({
+        finalOutput: {
+          verified: selectedApproval,
+          issues: selectedApproval
+            ? ''
+            : 'The selected verifier still rejects the report.',
+        },
+      });
+
+    const result = manager.run('Analyze the annual financial results.');
+    if (finalApproval && selectedApproval) await result;
+    else
+      await expect(result).rejects.toThrow(
+        'Report failed verification after 2 revisions',
+      );
+
+    expect(revise).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledTimes(3);
+    expect(runMock).toHaveBeenCalledTimes(3);
+    const scopedInput = String(audit.mock.calls[2][1]);
+    expect(scopedInput).toContain('Selected primary-source findings');
+    expect(scopedInput).toContain('$123.301 billion');
+    expect(scopedInput).toContain('$15.7 billion');
+    expect(scopedInput).toContain('narrower coverage');
+    expect(scopedInput).not.toContain('not $105B');
+    expect(scopedInput.match(/Services generated revenue/g)).toHaveLength(2); // Executive summary and report, one finding each.
+  },
+);

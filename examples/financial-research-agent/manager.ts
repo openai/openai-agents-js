@@ -10,18 +10,44 @@ import { riskAgent } from './agents.ts';
 import { searchAgent } from './agents.ts';
 import {
   primarySourceAuditAgent,
+  type PrimaryAuditCheck,
   verifierAgent,
   VerificationResult,
 } from './agents.ts';
 import { writerAgent, FinancialReportData } from './agents.ts';
 
 const MAX_REPORT_REVISIONS = 2;
+type ReportVerification = VerificationResult & {
+  primary_checks?: PrimaryAuditCheck[];
+};
+
+function scopedReport(checks: PrimaryAuditCheck[]): FinancialReportData | null {
+  const documents = new Set<string>();
+  const selected = checks
+    .filter((check) => {
+      if (!documents.has(check.source_url) && documents.size >= 2) return false;
+      documents.add(check.source_url);
+      return true;
+    })
+    .slice(0, 4);
+  if (selected.length < 2) return null;
+  const finding = (check: PrimaryAuditCheck) =>
+    `${check.claim}: ${check.supporting_extract} [Primary source](${check.source_url})`;
+  return {
+    short_summary: selected.slice(0, 2).map(finding).join(' '),
+    markdown_report: `# Selected primary-source findings\n\nThis note covers only the audited findings below, with narrower coverage than a full earnings review.\n\n${selected.map((check) => finding(check)).join('\n\n')}`,
+    follow_up_questions: [
+      'Which underlying drivers explain these reported results?',
+      'How do the same measures compare across reporting periods?',
+    ],
+  };
+}
 
 function enforceVerification(
   report: FinancialReportData,
   searchResults: SearchResult[],
-  verification: VerificationResult,
-): VerificationResult {
+  verification: ReportVerification,
+): ReportVerification {
   const reportText = `${report.short_summary}\n${report.markdown_report}`;
   const hasCitation = searchResults.some(({ sources }) =>
     sources.some(
@@ -41,6 +67,7 @@ function enforceVerification(
     );
   }
   return {
+    ...verification,
     verified: verification.verified && issues.every((issue) => !issue),
     issues: issues.filter(Boolean).join('\n'),
   };
@@ -180,13 +207,21 @@ export class FinancialResearchManager {
       searchResults,
       await this.verifyReport(report, searchResults),
     );
+    const supported = new Map<string, PrimaryAuditCheck>();
     let revisions = 0;
     while (!verification.verified && revisions < MAX_REPORT_REVISIONS) {
       // Append audit sources without changing IDs assigned to earlier research.
       for (const [id, source] of sourceReferences(searchResults))
         references.set(id, source);
+      for (const check of verification.primary_checks ?? [])
+        supported.set(check.claim, check);
+      const scoped =
+        revisions === MAX_REPORT_REVISIONS - 1
+          ? scopedReport([...supported.values()])
+          : null;
       report = renderSourceReferences(
-        await this.reviseReport(query, report, verification, searchResults),
+        scoped ??
+          (await this.reviseReport(query, report, verification, searchResults)),
         references,
       );
       verification = enforceVerification(
@@ -272,7 +307,7 @@ export class FinancialResearchManager {
   async verifyReport(
     report: FinancialReportData,
     searchResults: SearchResult[],
-  ): Promise<VerificationResult> {
+  ): Promise<ReportVerification> {
     const audit = await this.auditReport(report, searchResults);
     console.log(`[verifying] Verifying report...`);
     const inputData = `Complete report:\n${JSON.stringify(report, null, 2)}\n\nSource summaries:\n${formatSearchResults(searchResults)}`;
@@ -280,6 +315,7 @@ export class FinancialResearchManager {
     console.log(`[verifying] Done verifying report.`);
     const verification = result.finalOutput!;
     return {
+      primary_checks: audit.primary_checks,
       verified: verification.verified && audit.verified,
       issues: [verification.issues, audit.issues].filter(Boolean).join('\n'),
     };
@@ -288,7 +324,7 @@ export class FinancialResearchManager {
   async auditReport(
     report: FinancialReportData,
     searchResults: SearchResult[],
-  ): Promise<VerificationResult> {
+  ): Promise<ReportVerification> {
     console.log('[auditing] Reading primary sources independently...');
     const result = await this.searchRunner.run(
       primarySourceAuditAgent,
@@ -338,6 +374,13 @@ export class FinancialResearchManager {
       `[auditing] Read ${opened.size} primary-source pages; checked ${audit.checks.length} claims.`,
     );
     return {
+      primary_checks: audit.checks.filter(
+        (check) =>
+          check.supported &&
+          opened.has(check.source_url) &&
+          Boolean(check.claim.trim()) &&
+          Boolean(check.supporting_extract.trim()),
+      ),
       verified: audit.verified && issues.every((issue) => !issue),
       issues: issues.filter(Boolean).join('\n'),
     };

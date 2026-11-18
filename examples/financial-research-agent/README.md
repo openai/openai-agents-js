@@ -22,6 +22,6 @@ The writer cites sources by ID, such as `[source:S1]`. The example replaces each
 
 The verifier checks the executive summary, report, and follow-up questions against the collected evidence. A second check goes back to primary documents using hosted web search. That check matters when, for example, a search summary gives the wrong year's revenue. Both modes pay for these search calls.
 
-The writer can revise a rejected draft twice. If no search yields usable sources, or if the verifier still rejects the draft, the example exits with an error instead of printing the report. A pass means the report cleared these checks against the retrieved evidence; the verifier can still make mistakes.
+There are at most two revisions. If the broader draft keeps failing but enough primary evidence remains, the last revision can narrow the report to findings that the auditor could confirm. The narrower report goes through both checks again. If no search yields usable sources, or if the verifier still rejects the draft, the example exits with an error instead of printing the report. A pass means the report cleared these checks against the retrieved evidence; the verifier can still make mistakes.
 
 The `start` script runs TypeScript directly with Node.js. Use Node 22.18 or later in the 22.x line, Node 24.x, or Node 26 or later.

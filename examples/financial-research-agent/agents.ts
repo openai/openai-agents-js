@@ -120,6 +120,10 @@ export const PrimarySourceAudit = VerificationResult.extend({
   ),
 });
 
+export type PrimaryAuditCheck = z.infer<
+  typeof PrimarySourceAudit
+>['checks'][number];
+
 export const primarySourceAuditAgent = new Agent({
   name: 'PrimarySourceAuditAgent',
   model: 'gpt-5.4',
