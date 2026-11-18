@@ -89,14 +89,18 @@ function run(command, args, cwd, env = process.env) {
       stdio: 'inherit',
       timeout: 300_000,
     });
-    child.once('error', reject);
-    child.once('exit', (code, signal) =>
-      code === 0
+    let error;
+    child.once('error', (cause) => {
+      error = cause;
+    });
+    child.once('close', (code, signal) =>
+      code === 0 && !error
         ? resolveRun()
         : reject(
-            new Error(
-              `${command} ${args.join(' ')} failed (${code ?? signal})`,
-            ),
+            error ??
+              new Error(
+                `${command} ${args.join(' ')} failed (${code ?? signal})`,
+              ),
           ),
     );
   });
@@ -196,15 +200,21 @@ export async function verifyAlphaPackage(directory) {
       join(consumer, 'verification-build.json'),
       JSON.stringify(receipt),
     );
-    await run(
-      process.execPath,
-      [npmCli, 'ci', '--ignore-scripts'],
-      consumer,
-      installEnv,
+    // Transplant the vendored packages and lock into another application. A
+    // failing lifecycle hook proves documented installation never compiles code.
+    const existing = join(staging, 'existing-application');
+    await cp(consumer, existing, {
+      recursive: true,
+      filter: (file) => !file.split(sep).includes('node_modules'),
+    });
+    manifest.scripts = { preinstall: 'node -e "process.exit(99)"' };
+    manifest.description = 'Existing application with vendored SDK archives';
+    await writeFile(
+      join(existing, 'package.json'),
+      JSON.stringify(manifest, null, 2),
     );
-    await verifyConsumer('starter', consumer);
-    const types = await verifyTypes(consumer, env);
-    const record = async (profile) =>
+
+    const record = async (profile, types) =>
       writeFile(
         join(directory, `installed-${profile}-${receipt.platform}.json`),
         `${JSON.stringify(
@@ -238,30 +248,29 @@ export async function verifyAlphaPackage(directory) {
           2,
         )}\n`,
       );
-    await record('starter');
-
-    // Transplant the vendored packages and lock into another application. A
-    // failing lifecycle hook proves documented installation never compiles code.
-    const existing = join(staging, 'existing-application');
-    await cp(consumer, existing, {
-      recursive: true,
-      filter: (file) => !file.split(sep).includes('node_modules'),
-    });
-    manifest.scripts = { preinstall: 'node -e "process.exit(99)"' };
-    manifest.description = 'Existing application with vendored SDK archives';
-    await writeFile(
-      join(existing, 'package.json'),
-      JSON.stringify(manifest, null, 2),
-    );
-    await run(
-      process.execPath,
-      [npmCli, 'ci', '--ignore-scripts'],
-      existing,
-      installEnv,
-    );
-    await verifyConsumer('app', existing);
-    await verifyTypes(existing, env);
-    await record('app');
+    const qualify = async (profile, root) => {
+      await run(
+        process.execPath,
+        [npmCli, 'ci', '--ignore-scripts'],
+        root,
+        installEnv,
+      );
+      await verifyConsumer(profile, root);
+      const types = await verifyTypes(root, env);
+      await record(profile, types);
+    };
+    // Join both profiles before removing their files, including on failure.
+    const results = await Promise.allSettled([
+      qualify('starter', consumer),
+      qualify('app', existing),
+    ]);
+    const failures = results.filter((result) => result.status === 'rejected');
+    if (failures.length) {
+      throw new AggregateError(
+        failures.map((result) => result.reason),
+        'Installed profile verification failed',
+      );
+    }
     console.log(
       `Alpha consumer verification passed: ${receipt.version} ${receipt.platform}`,
     );
