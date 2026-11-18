@@ -1,14 +1,27 @@
-import { Agent, run, tool } from '@openai/agents';
+import { Agent, MemorySession, tool } from '@openai/agents';
+import { exampleRunner } from '../tools/example-runner.ts';
 import OpenAI from 'openai';
 import z from 'zod';
 
 async function main() {
-  const client = new OpenAI();
-
-  console.log('### New conversation:\n');
-  const newConvo = await client.conversations.create({});
-  console.log(`New conversation: ${JSON.stringify(newConvo, null, 2)}`);
-  const conversationId = newConvo.id;
+  const args = process.argv.slice(2);
+  const local = args.includes('--local');
+  const useCodex = args.includes('--codex');
+  if (useCodex && !local) {
+    throw new Error(
+      '--codex requires --local; hosted conversation IDs are Responses API resources.',
+    );
+  }
+  const runner = await exampleRunner(useCodex);
+  const session = local ? new MemorySession() : undefined;
+  const client = local ? undefined : new OpenAI();
+  const newConvo = await client?.conversations.create({});
+  console.log(
+    local
+      ? '### SDK-managed conversation'
+      : `New conversation: ${JSON.stringify(newConvo, null, 2)}`,
+  );
+  const conversationId = newConvo?.id;
 
   const getWeatherTool = tool({
     name: 'get_weather',
@@ -28,23 +41,31 @@ async function main() {
 
   // Set the conversation ID for the runs
   console.log('\n### Agent runs:\n');
-  const options = { conversationId };
-  let result = await run(
+  const options = session ? { session } : { conversationId };
+  let result = await runner.run(
     agent,
     'What is the largest country in South America?',
     options,
   );
   // First run: The largest country in South America is Brazil.
   console.log(`First run: ${result.finalOutput}`);
-  result = await run(agent, 'What is the capital of that country?', options);
+  result = await runner.run(
+    agent,
+    'What is the capital of that country?',
+    options,
+  );
   // Second run: The capital of Brazil is Brasília.
   console.log(`Second run: ${result.finalOutput}`);
 
-  result = await run(agent, 'What is the weather in the city today?', options);
+  result = await runner.run(
+    agent,
+    'What is the weather in the city today?',
+    options,
+  );
   // Third run: The weather in Brasília today is sunny.
   console.log(`Third run: ${result.finalOutput}`);
 
-  result = await run(
+  result = await runner.run(
     agent,
     `Can you share the same information about the smallest country's capital in South America?`,
     options,
@@ -53,6 +74,13 @@ async function main() {
   console.log(`Fourth run: ${result.finalOutput}`);
 
   console.log('\n### Conversation items:\n');
+  if (session) {
+    for (const item of await session.getItems())
+      console.log(JSON.stringify(item, null, 2));
+    return;
+  }
+  if (!client || !conversationId)
+    throw new Error('Missing hosted conversation.');
   const convo = await client.conversations.items.list(conversationId);
   for await (const page of convo.iterPages()) {
     for (const item of page.getPaginatedItems()) {

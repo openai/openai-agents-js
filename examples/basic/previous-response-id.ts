@@ -1,4 +1,5 @@
-import { Agent, run } from '@openai/agents';
+import { Agent, MemorySession, run } from '@openai/agents';
+import { exampleRunner } from '../tools/example-runner.ts';
 
 async function runBasic() {
   const agent = new Agent({
@@ -54,7 +55,43 @@ async function runStream() {
   console.log();
 }
 
+async function runLocal(stream: boolean, useCodex: boolean) {
+  const runner = await exampleRunner(useCodex);
+  const session = new MemorySession();
+  const agent = new Agent({
+    name: 'Assistant',
+    instructions: 'Answer very concisely.',
+  });
+  for (const question of [
+    'What is the largest country in South America?',
+    'What is the capital of that country?',
+  ]) {
+    if (stream) {
+      const result = await runner.run(agent, question, {
+        session,
+        stream: true,
+      });
+      for await (const text of result.toTextStream())
+        process.stdout.write(text);
+      console.log();
+    } else {
+      const result = await runner.run(agent, question, { session });
+      console.log(result.finalOutput);
+    }
+  }
+}
+
 async function main() {
+  const args = process.argv.slice(2);
+  const local = args.includes('--local');
+  const useCodex = args.includes('--codex');
+  if (useCodex && !local) {
+    throw new Error(
+      '--codex requires --local; hosted response IDs are Responses API resources.',
+    );
+  }
+  if (local) return runLocal(args.includes('--stream'), useCodex);
+  if (args.includes('--stream')) return runStream();
   const readline = await import('node:readline/promises');
   const rl = readline.createInterface({
     input: process.stdin,

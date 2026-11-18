@@ -1,25 +1,24 @@
+import { exampleRunner } from '../tools/example-runner.ts';
+import { mediaOptions, pdfText } from './media-input.ts';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Agent, run } from '@openai/agents';
+import { Agent } from '@openai/agents';
 
 const filePath = path.join(
   import.meta.dirname,
   'media/partial_o3-and-o4-mini-system-card.pdf',
 );
 
-function fileToBase64(filePath: string): string {
-  const fileBuffer = fs.readFileSync(filePath);
-  return fileBuffer.toString('base64');
-}
-
 async function main() {
+  const options = mediaOptions();
+  const runner = await exampleRunner(options.codex ?? false);
   const agent = new Agent({
     name: 'Assistant',
     instructions: 'You are a helpful assistant.',
   });
 
-  const b64File = fileToBase64(filePath);
-  const result = await run(agent, [
+  const pdf = fs.readFileSync(filePath);
+  const result = await runner.run(agent, [
     {
       role: 'user',
       content: [
@@ -27,11 +26,13 @@ async function main() {
           type: 'input_text',
           text: 'What is the first sentence of the introduction?',
         },
-        {
-          type: 'input_file',
-          file: `data:application/pdf;base64,${b64File}`,
-          filename: 'partial_o3-and-o4-mini-system-card.pdf',
-        },
+        options.codex
+          ? { type: 'input_text', text: pdfText(pdf) }
+          : {
+              type: 'input_file',
+              file: `data:application/pdf;base64,${pdf.toString('base64')}`,
+              filename: 'partial_o3-and-o4-mini-system-card.pdf',
+            },
       ],
     },
   ]);

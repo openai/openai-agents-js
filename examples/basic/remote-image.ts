@@ -1,21 +1,27 @@
-import { Agent, run } from '@openai/agents';
+import { exampleRunner } from '../tools/example-runner.ts';
+import { jpegDataUrl, mediaOptions, readSample } from './media-input.ts';
+import { Agent } from '@openai/agents';
 
 const url =
   'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';
 
 async function main() {
+  const options = mediaOptions(true);
+  const runner = await exampleRunner(options.codex ?? false);
   const agent = new Agent({
     name: 'Assistant',
     instructions: 'You are a helpful assistant.',
   });
 
-  const result = await run(agent, [
+  const result = await runner.run(agent, [
     {
       role: 'user',
       content: [
         {
           type: 'input_image',
-          image: url,
+          image: options.codex
+            ? jpegDataUrl(await readSample(url, options.file))
+            : url,
           providerData: {
             detail: 'auto',
           },

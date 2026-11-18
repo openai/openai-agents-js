@@ -1,30 +1,37 @@
+import { exampleRunner } from '../tools/example-runner.ts';
+import { jpegDataUrl, mediaOptions, readSample } from './media-input.ts';
 import { pathToFileURL } from 'node:url';
-import { Agent, run, tool, type ToolOutputImage } from '@openai/agents';
+import { Agent, tool, type ToolOutputImage } from '@openai/agents';
 import { z } from 'zod';
 
-const fetchRandomImage = tool({
-  name: 'fetch_random_image',
-  description: 'Return a sample image for the model to describe.',
-  parameters: z.object({}),
-  execute: async (): Promise<ToolOutputImage> => {
-    console.log('[tool] Returning a publicly accessible URL for the image ...');
-    return {
-      type: 'image',
-      image:
-        'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80',
-      detail: 'auto',
-    };
-  },
-});
-
-const agent = new Agent({
-  name: 'Assistant',
-  instructions: 'You are a helpful assistant.',
-  tools: [fetchRandomImage],
-});
-
+const url =
+  'https://images.unsplash.com/photo-1505761671935-60b3a7427bad?auto=format&fit=crop&w=400&q=80';
 async function main() {
-  const result = await run(
+  const options = mediaOptions(true);
+  const runner = await exampleRunner(options.codex ?? false);
+  const fetchRandomImage = tool({
+    name: 'fetch_random_image',
+    description: 'Return a sample image for the model to describe.',
+    parameters: z.object({}),
+    execute: async (): Promise<ToolOutputImage> => {
+      console.log('[tool] Returning the sample image.');
+      return {
+        type: 'image',
+        image: options.codex
+          ? jpegDataUrl(await readSample(url, options.file))
+          : url,
+        detail: 'auto',
+      };
+    },
+  });
+
+  const agent = new Agent({
+    name: 'Assistant',
+    instructions: 'You are a helpful assistant.',
+    tools: [fetchRandomImage],
+  });
+
+  const result = await runner.run(
     agent,
     'Call fetch_random_image and describe what you see in the picture.',
   );

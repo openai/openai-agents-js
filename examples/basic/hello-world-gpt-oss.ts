@@ -1,14 +1,30 @@
 import {
   Agent,
   OpenAIChatCompletionsModel,
-  run,
   setTracingDisabled,
 } from '@openai/agents';
 import OpenAI from 'openai';
+import { exampleRunner } from '../tools/example-runner.ts';
 
 setTracingDisabled(true);
 
+// After `ollama pull gpt-oss:20b`, run this file normally for Chat Completions.
+// Add --codex to run the same local model through stock Codex and Ollama's Responses API.
 async function main() {
+  const useCodex = process.argv.includes('--codex');
+  const runner = await exampleRunner(useCodex, {
+    config: {
+      model_provider: 'local_ollama',
+      model_providers: {
+        local_ollama: {
+          name: 'Local Ollama',
+          base_url: 'http://localhost:11434/v1',
+          wire_api: 'responses',
+          supports_websockets: false,
+        },
+      },
+    },
+  });
   // Note that using a custom outputType for an agent may not work well with gpt-oss models.
   // Consider going with the default "text" outputType.
   // See also: https://github.com/openai/openai-agents-python/issues/1414
@@ -17,27 +33,29 @@ async function main() {
     // This is an example of how to use gpt-oss with Ollama.
     // Refer to https://cookbook.openai.com/articles/gpt-oss/run-locally-ollama for more details.
     // If you prefer using LM Studio, refer to https://cookbook.openai.com/articles/gpt-oss/run-locally-lmstudio
-    // Passing this model object has been bypassing the default provider, including CodexProvider.
-    model: new OpenAIChatCompletionsModel(
-      new OpenAI({
-        baseURL: 'http://localhost:11434/v1',
-        apiKey: 'ollama',
-      }),
-      'gpt-oss:20b',
-    ),
+    // The default model object has been selecting Chat Completions explicitly.
+    model: useCodex
+      ? 'gpt-oss:20b'
+      : new OpenAIChatCompletionsModel(
+          new OpenAI({
+            baseURL: 'http://localhost:11434/v1',
+            apiKey: 'ollama',
+          }),
+          'gpt-oss:20b',
+        ),
     instructions: 'You answer questions concisely and to the point.',
     modelSettings: { reasoning: { effort: 'low' } },
   });
 
   const question = 'Tell me about recursion in programming.';
-  const stream = await run(agent, question, { stream: true });
+  const stream = await runner.run(agent, question, { stream: true });
   for await (const event of stream.toTextStream()) {
     process.stdout.write(event);
   }
   console.log();
 
   // or non-streaming mode:
-  // const result = await run(agent, question);
+  // const result = await runner.run(agent, question);
   // console.log(result.finalOutput);
 }
 
