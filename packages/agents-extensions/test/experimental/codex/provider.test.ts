@@ -5,6 +5,7 @@ import {
   OpenAIResponsesCompactionSession,
   UserError,
   handoff,
+  shellTool,
   tool,
   webSearchTool,
   type HandoffInputData,
@@ -757,9 +758,188 @@ test('rejects Responses IDs and unsupported hosted tool settings before opening 
   expect(boundary.open).not.toHaveBeenCalled();
 });
 
+test('requires an SDK function call and lets Runner finish after executing it', async () => {
+  const first = server(callback('lookup'));
+  server(completed('Account found.'));
+  const execute = vi.fn(async () => 'account');
+  const agent = new Agent({
+    name: 'assistant',
+    modelSettings: { toolChoice: 'required' },
+    tools: [
+      tool({
+        name: 'lookup',
+        description: 'Find an account.',
+        parameters: z.object({}),
+        execute,
+      }),
+    ],
+  });
+  const result = await runner().run(agent, 'Find my account.');
+  expect(result.finalOutput).toBe('Account found.');
+  expect(execute).toHaveBeenCalledOnce();
+  expect(first.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({
+      developerInstructions: expect.stringContaining(
+        'Call at least one exposed SDK tool or handoff',
+      ),
+    }),
+  );
+  expect(boundary.open).toHaveBeenCalledTimes(2);
+});
+
+test('accepts a handoff as the required SDK tool call', async () => {
+  server(callback('transfer_to_specialist'));
+  server(completed('Specialist answer.'));
+  const specialist = new Agent({ name: 'specialist' });
+  const result = await runner().run(
+    new Agent({
+      name: 'assistant',
+      handoffs: [specialist],
+      modelSettings: { toolChoice: 'required' },
+    }),
+    'Transfer this request.',
+  );
+  expect(result.lastAgent).toBe(specialist);
+  expect(result.finalOutput).toBe('Specialist answer.');
+});
+
+test.each(['none', 'hosted'])(
+  'rejects required tool choice with only %s tools before opening the CLI',
+  async (kind) => {
+    const tools = kind === 'hosted' ? [webSearchTool()] : [];
+    await expect(
+      runner().run(
+        new Agent({
+          name: 'assistant',
+          tools,
+          modelSettings: { toolChoice: 'required' },
+        }),
+        'Hello.',
+      ),
+    ).rejects.toThrow('requires an SDK tool or handoff');
+    expect(boundary.open).not.toHaveBeenCalled();
+  },
+);
+
+test.each([false, true])(
+  'executes a required SDK shell callback with stream=%s',
+  async (stream) => {
+    const events = callback('shell', 'agents_sdk');
+    events[0]!.params.arguments = { action: { commands: ['pwd'] } };
+    const first = server(events);
+    server(completed('Workspace inspected.'));
+    const run = vi.fn(async () => ({
+      output: [
+        {
+          stdout: '/workspace',
+          stderr: '',
+          outcome: { type: 'exit' as const, exitCode: 0 },
+        },
+      ],
+    }));
+    const agent = new Agent({
+      name: 'assistant',
+      modelSettings: { toolChoice: 'required', retry: { maxRetries: 2 } },
+      tools: [shellTool({ shell: { run } })],
+    });
+    const result = stream
+      ? await runner().run(agent, 'Inspect the workspace.', { stream: true })
+      : await runner().run(agent, 'Inspect the workspace.');
+    if (stream) {
+      for await (const _event of result as AsyncIterable<unknown>) {
+        /* Drain the live stream. */
+      }
+    }
+    expect(result.finalOutput).toBe('Workspace inspected.');
+    expect(run).toHaveBeenCalledOnce();
+    expect(first.close).toHaveBeenCalledOnce();
+    expect(boundary.open).toHaveBeenCalledTimes(2);
+  },
+);
+
+test.each(['empty', 'eof'])(
+  'reports required %s completion without a successful stream terminal',
+  async (kind) => {
+    const connection = server(
+      kind === 'empty'
+        ? [
+            {
+              method: 'turn/completed',
+              params: {
+                threadId: 'thread',
+                turn: { id: 'turn', status: 'completed' },
+              },
+            },
+          ]
+        : [],
+    );
+    const request = sandboxRequest();
+    request.modelSettings = { toolChoice: 'required' };
+    const events: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of new CodexProvider()
+          .getModel()
+          .getStreamedResponse(request))
+          events.push(event.type);
+      })(),
+    ).rejects.toThrow(
+      kind === 'empty'
+        ? 'did not call an SDK tool or handoff'
+        : 'Codex finished without a completed response.',
+    );
+    expect(events).not.toContain('response_done');
+    expect(connection.close).toHaveBeenCalledOnce();
+    expect(boundary.open).toHaveBeenCalledOnce();
+  },
+);
+
+test('fails required tool choice without a successful stream terminal when Codex only answers', async () => {
+  const connection = server([
+    {
+      method: 'item/completed',
+      params: {
+        threadId: 'thread',
+        turnId: 'turn',
+        item: {
+          type: 'commandExecution',
+          id: 'native',
+          command: 'echo native',
+        },
+      },
+    },
+    ...completed('A plain answer after a native tool.'),
+  ]);
+  const request = sandboxRequest();
+  request.modelSettings = { toolChoice: 'required', retry: { maxRetries: 2 } };
+  const model = new CodexProvider().getModel();
+  const events: string[] = [];
+  await expect(
+    (async () => {
+      for await (const event of model.getStreamedResponse(request))
+        events.push(event.type);
+    })(),
+  ).rejects.toThrow('did not call an SDK tool or handoff');
+  expect(events).not.toContain('response_done');
+  expect(connection.close).toHaveBeenCalledOnce();
+  expect(boundary.open).toHaveBeenCalledOnce();
+});
+
+test.each([undefined, 'auto' as const])(
+  'preserves %s tool choice without a function call',
+  async (toolChoice) => {
+    server(completed('A plain answer.'));
+    const result = await runner().run(
+      new Agent({ name: 'assistant', modelSettings: { toolChoice } }),
+      'Hello.',
+    );
+    expect(result.finalOutput).toBe('A plain answer.');
+  },
+);
+
 test.each([
   [{ toolChoice: 'none' }, 'toolChoice'],
-  [{ toolChoice: 'required' }, 'toolChoice'],
   [{ toolChoice: 'lookup' }, 'toolChoice'],
   [{ parallelToolCalls: false }, 'parallelToolCalls'],
   [{ store: true }, 'store'],

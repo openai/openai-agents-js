@@ -129,6 +129,12 @@ class CodexModel implements Model {
     );
     const { tools, identities, deferred, localExecution, webSearch } =
       prepareDynamicTools(request);
+    const requiresTool = request.modelSettings.toolChoice === 'required';
+    if (requiresTool && identities.size === 0) {
+      throw new UserError(
+        'CodexProvider requires an SDK tool or handoff for toolChoice="required".',
+      );
+    }
     const isolateNativeTools = sdkSandbox || localExecution;
     const threadOptions = this.options.threadOptions;
     const cwd = resolve(threadOptions?.workingDirectory ?? process.cwd());
@@ -267,6 +273,8 @@ class CodexModel implements Model {
         developerInstructions:
           [
             request.systemInstructions,
+            requiresTool &&
+              'Call at least one exposed SDK tool or handoff before responding. Native Codex tools do not satisfy this requirement.',
             isolateNativeTools &&
               'Use the agents_sdk namespace for workspace commands, file access, and editing. Native workspace tools have no execution environment in this run.',
             request.outputType !== 'text' &&
@@ -583,8 +591,13 @@ class CodexModel implements Model {
       await server.close();
     }
     request.signal?.throwIfAborted();
-    if (!completed || (!sdkCall && output.size === 0)) {
+    if (!completed || (!requiresTool && !sdkCall && output.size === 0)) {
       throw new Error('Codex finished without a completed response.');
+    }
+    if (requiresTool && !sdkCall) {
+      throw new UserError(
+        'CodexProvider did not call an SDK tool or handoff required by toolChoice="required".',
+      );
     }
     const items = [...output.values(), ...(sdkCall ? [sdkCall] : [])];
     if (reasoningSummaries.length) {
@@ -649,7 +662,10 @@ function prepareModelSettings(request: ModelRequest) {
       '',
       {
         ...unsupported,
-        toolChoice: toolChoice === 'auto' ? undefined : toolChoice,
+        toolChoice:
+          toolChoice === 'auto' || toolChoice === 'required'
+            ? undefined
+            : toolChoice,
         store: store === false ? undefined : store,
       },
     ],

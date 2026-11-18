@@ -96,7 +96,9 @@ Codex has been honoring explicit `reasoning.effort`, `reasoning.summary`, and `t
 
 With `reasoning.summary`, Codex has been returning any available summary as `providerData.codexReasoningSummary` on the last output item of the model step. With `preserveRawUsage: true`, the Runner has been including Codex's original token usage in `result.rawResponses[n].rawUsage` alongside the SDK's normalized usage.
 
-Codex has been using automatic tool selection and ephemeral threads. It has been accepting `toolChoice: 'auto'` and `store: false` to match that behavior. The Runner has been applying `timeoutMs` and `retry` to Codex calls. It has been treating Codex calls as unsafe to replay because native tools can change the workspace.
+By default, Codex has been choosing tools automatically. With `modelSettings: { toolChoice: 'required' }`, the provider has been returning a successful turn only after Codex has been requesting an SDK tool or handoff, including an SDK-managed shell or file edit. With no eligible tool, or when Codex has been returning only text or calls to its own shell, the SDK has been raising a `UserError`. The SDK has still been enforcing tool approvals; a request has not been guaranteeing successful execution.
+
+Codex has been using ephemeral threads. It has been accepting `toolChoice: 'auto'` and `store: false` to match that behavior. The Runner has been applying `timeoutMs` and `retry` to Codex calls. It has been treating Codex calls as unsafe to replay because native tools can change the workspace.
 
 ### Conversation history and compaction
 
