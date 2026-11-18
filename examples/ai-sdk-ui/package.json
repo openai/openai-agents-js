@@ -7,7 +7,7 @@
     "@openai/agents-extensions": "workspace:*",
     "@openai/agents-openai": "workspace:*",
     "ai": "^7.0.163",
-    "next": "16.4.5",
+    "next": "16.4.6",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",
